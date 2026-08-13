@@ -1,0 +1,8 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "tools/*"
+
+# Build scripts we have reviewed and allow to run on install.
+allowBuilds:
+  esbuild: true
