@@ -6,14 +6,14 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | WP | Package | Owner | State | Notes |
 |---|---|---|---|---|
 | 00 | Scaffold + contracts | Opus | merged | merged 2026-08-13; contracts frozen (incl. Next 16, TS 6, ApplyRow wire serializer) |
-| 01 | DB schema + RLS | Opus | in-progress | launched 2026-08-13 after WP-00 merge |
+| 01 | DB schema + RLS | Opus | merged | merged 2026-08-13 (44 tables, RLS on all tenant tables, partition automation, queue, Vault RPCs). Hosted-Supabase verification running; local supabase db reset still an operator TODO |
 | 02 | ads-api client | Codex | todo | GATE OPEN (WP-00 merged) — run HANDOFFS.md block in Codex |
 | 03 | Worker + queue | Codex | todo | GATE OPEN (WP-00 merged) — run HANDOFFS.md block in Codex |
 | 04 | Web auth + OAuth | Codex | todo | GATE OPEN (WP-00 merged) — run HANDOFFS.md block; LWA redirect URI still needed before live test |
 | 05 | core doctrine port | Opus | merged | merged 2026-08-13; 122 parity cases byte-equal to Python, bidding worked-examples green. Spawned WP-00.1 contract extension (merged 2026-08-13, 154/154 live-doc leaf coverage) |
 | 06 | Grid + dashboard | Codex | todo | shell after WP-00; columns wait for recon |
 | 07 | Recs UI + export bridge | Codex | todo | GATE OPEN (WP-05 merged) — after WP-06 grid shell |
-| 08 | Tags + goto links | Codex | todo | after WP-00/01 |
+| 08 | Tags + goto links | Codex | todo | GATE OPEN (WP-00/01 merged) |
 | 09 | MCP server | Opus | todo | v0 close |
 | 10 | Crosscheck harness | Opus | todo | v0 close (needs facts) |
 | 11 | AdLabs recon | Opus + Victor | review | MCP half done (13 specs, exact contracts). UI pass blocked twice: extension installed/enabled/permissioned but NOT PAIRED to the claude.ai account — operator pairing check needed, then session 3 (automations first). See tools/recon/BLOCKED.md |
