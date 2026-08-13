@@ -1,12 +1,26 @@
 /**
  * @wizard-ads/core (owned by WP-05).
  *
- * The doctrine engine: analyze, flags, pacing, recommendations, White Box bidding,
- * n-gram, crosscheck. Pure functions with ZERO I/O, ported from the Python
- * reference tools with their selftests as ground truth. Never imports db or
- * ads-api, which is what makes the parity harness possible at all.
+ * The doctrine engine: analyze, flags, pacing, recommendations, crosscheck,
+ * campaign classification, n-grams, and White Box bidding. Pure functions with
+ * ZERO I/O, ported from the Python reference tools with their selftests as
+ * ground truth. It never imports `db` or `ads-api`, which is exactly what makes
+ * the parity harness possible: an engine that can read a database cannot be
+ * replayed against a golden.
  *
- * Scaffold stub: WP-05 replaces this file. WP-00 owns only the manifest,
- * the tsconfig and the dependency wiring.
+ * Doctrine VALUES are not here. Thresholds arrive as arguments; what lives in
+ * this package is method.
  */
 export const PACKAGE_NAME = '@wizard-ads/core' as const;
+
+export * from './types.js';
+export * from './num.js';
+export * from './rows.js';
+export * from './classify.js';
+export * from './analyze.js';
+export * from './flags.js';
+export * from './pacing.js';
+export * from './crosscheck.js';
+export * from './recommendations.js';
+export * from './ngram.js';
+export * from './bidding/index.js';
