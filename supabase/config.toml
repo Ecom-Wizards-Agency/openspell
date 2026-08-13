@@ -1,0 +1,45 @@
+# Local Supabase stack configuration.
+#
+# Deliberately minimal: the CLI fills in every section that is not named here,
+# so this file carries only what wizard-ads actually depends on. Running
+# `supabase init` would write a much longer generated version; do not, because
+# the generated defaults drift between CLI releases and a hundred-line file
+# nobody reads is a hundred lines nobody reviews.
+#
+# The `major_version` below must match the hosted project. A local stack on a
+# different major version can accept SQL that the hosted one rejects, which is
+# the one failure this file exists to prevent.
+
+project_id = "wizard-ads"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 17
+
+[studio]
+enabled = true
+port = 54323
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = ["http://127.0.0.1:3000"]
+enable_signup = false
+
+# Development data is a TypeScript program, not a SQL file, because it generates
+# 60 days of facts from a fixed seed:
+#
+#   pnpm --filter @wizard-ads/db seed:dev
+#
+# so `db.seed` stays off and `supabase db reset` gives an empty, migrated
+# database.
+[db.seed]
+enabled = false
