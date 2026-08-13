@@ -1,0 +1,126 @@
+{
+  "schema": "wizard-ads.parity.v1",
+  "module": "trend",
+  "source": "amazon-agent/tools/amazon-ads-monitor (read-only reference)",
+  "synthetic": true,
+  "fixtures": {},
+  "cases": [
+    {
+      "name": "classify_trend[0]",
+      "input": {
+        "values": [
+          1,
+          1,
+          1,
+          2,
+          2,
+          2
+        ]
+      },
+      "expected": "up"
+    },
+    {
+      "name": "classify_trend[1]",
+      "input": {
+        "values": [
+          2,
+          2,
+          2,
+          1,
+          1,
+          1
+        ]
+      },
+      "expected": "down"
+    },
+    {
+      "name": "classify_trend[2]",
+      "input": {
+        "values": [
+          10,
+          10.2,
+          9.9,
+          10.1,
+          10,
+          9.95
+        ]
+      },
+      "expected": "flat"
+    },
+    {
+      "name": "classify_trend[3]",
+      "input": {
+        "values": [
+          null,
+          null,
+          5
+        ]
+      },
+      "expected": "flat"
+    },
+    {
+      "name": "classify_trend[4]",
+      "input": {
+        "values": []
+      },
+      "expected": "flat"
+    },
+    {
+      "name": "classify_trend[5]",
+      "input": {
+        "values": [
+          5
+        ]
+      },
+      "expected": "flat"
+    },
+    {
+      "name": "classify_trend[6]",
+      "input": {
+        "values": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "expected": "flat"
+    },
+    {
+      "name": "classify_trend[7]",
+      "input": {
+        "values": [
+          0,
+          0,
+          1,
+          1
+        ]
+      },
+      "expected": "up"
+    },
+    {
+      "name": "classify_trend[8]",
+      "input": {
+        "values": [
+          null,
+          3,
+          null,
+          4
+        ]
+      },
+      "expected": "up"
+    },
+    {
+      "name": "classify_trend[9]",
+      "input": {
+        "values": [
+          -4,
+          -4,
+          -2,
+          -2
+        ]
+      },
+      "expected": "up"
+    }
+  ]
+}

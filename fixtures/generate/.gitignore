@@ -1,0 +1,3 @@
+# Byte-compiled generator modules. The goldens are the artifact; these are not.
+__pycache__/
+*.pyc

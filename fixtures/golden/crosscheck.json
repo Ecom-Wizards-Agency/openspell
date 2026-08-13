@@ -1,0 +1,435 @@
+{
+  "schema": "wizard-ads.parity.v1",
+  "module": "crosscheck",
+  "source": "amazon-agent/tools/amazon-ads-monitor (read-only reference)",
+  "synthetic": true,
+  "fixtures": {},
+  "cases": [
+    {
+      "name": "cross_check:verified",
+      "input": {
+        "sellerboard": {
+          "ad_spend": 100.0,
+          "ad_sales": 500.0,
+          "total_sales": 2000.0
+        },
+        "adlabs": {
+          "ad_spend": 104.0,
+          "ad_sales": 480.0,
+          "total_sales": 2050.0
+        },
+        "tolerance": null
+      },
+      "expected": {
+        "result": {
+          "tolerance": 0.07,
+          "figures": [
+            {
+              "figure": "ad_spend",
+              "sellerboardValue": 100.0,
+              "adlabsValue": 104.0,
+              "deltaAbs": 4.0,
+              "deltaPct": 0.04,
+              "verdict": "verified"
+            },
+            {
+              "figure": "ad_sales",
+              "sellerboardValue": 500.0,
+              "adlabsValue": 480.0,
+              "deltaAbs": -20.0,
+              "deltaPct": -0.04,
+              "verdict": "verified"
+            },
+            {
+              "figure": "total_sales",
+              "sellerboardValue": 2000.0,
+              "adlabsValue": 2050.0,
+              "deltaAbs": 50.0,
+              "deltaPct": 0.025,
+              "verdict": "verified"
+            }
+          ],
+          "headlineVerdict": "verified"
+        },
+        "line": "Data verified: Sellerboard and AdLabs agree within tolerance (+/-7%).",
+        "emojiLine": "✅ Data verified: Sellerboard and AdLabs agree within tolerance (+/-7%)."
+      }
+    },
+    {
+      "name": "cross_check:mismatch_ad_spend",
+      "input": {
+        "sellerboard": {
+          "ad_spend": 100.0,
+          "ad_sales": 500.0,
+          "total_sales": 2000.0
+        },
+        "adlabs": {
+          "ad_spend": 160.0,
+          "ad_sales": 480.0,
+          "total_sales": 2050.0
+        },
+        "tolerance": null
+      },
+      "expected": {
+        "result": {
+          "tolerance": 0.07,
+          "figures": [
+            {
+              "figure": "ad_spend",
+              "sellerboardValue": 100.0,
+              "adlabsValue": 160.0,
+              "deltaAbs": 60.0,
+              "deltaPct": 0.6,
+              "verdict": "mismatch"
+            },
+            {
+              "figure": "ad_sales",
+              "sellerboardValue": 500.0,
+              "adlabsValue": 480.0,
+              "deltaAbs": -20.0,
+              "deltaPct": -0.04,
+              "verdict": "verified"
+            },
+            {
+              "figure": "total_sales",
+              "sellerboardValue": 2000.0,
+              "adlabsValue": 2050.0,
+              "deltaAbs": 50.0,
+              "deltaPct": 0.025,
+              "verdict": "verified"
+            }
+          ],
+          "headlineVerdict": "mismatch"
+        },
+        "line": "Data mismatch: ad spend SB $100.00 vs AdLabs $160.00 (+60%).",
+        "emojiLine": "⚠️ Data mismatch: ad spend SB $100.00 vs AdLabs $160.00 (+60%)."
+      }
+    },
+    {
+      "name": "cross_check:no_data",
+      "input": {
+        "sellerboard": {},
+        "adlabs": {},
+        "tolerance": null
+      },
+      "expected": {
+        "result": {
+          "tolerance": 0.07,
+          "figures": [
+            {
+              "figure": "ad_spend",
+              "sellerboardValue": null,
+              "adlabsValue": null,
+              "deltaAbs": null,
+              "deltaPct": null,
+              "verdict": "no_data"
+            },
+            {
+              "figure": "ad_sales",
+              "sellerboardValue": null,
+              "adlabsValue": null,
+              "deltaAbs": null,
+              "deltaPct": null,
+              "verdict": "no_data"
+            },
+            {
+              "figure": "total_sales",
+              "sellerboardValue": null,
+              "adlabsValue": null,
+              "deltaAbs": null,
+              "deltaPct": null,
+              "verdict": "no_data"
+            }
+          ],
+          "headlineVerdict": "no_data"
+        },
+        "line": "Data verified: not cross-checked (AdLabs or Sellerboard figure missing for this day).",
+        "emojiLine": "ℹ️ Data verified: not cross-checked (AdLabs or Sellerboard figure missing for this day)."
+      }
+    },
+    {
+      "name": "cross_check:custom_tolerance",
+      "input": {
+        "sellerboard": {
+          "ad_spend": 100.0,
+          "ad_sales": 500.0,
+          "total_sales": 2000.0
+        },
+        "adlabs": {
+          "ad_spend": 106.0
+        },
+        "tolerance": 0.1
+      },
+      "expected": {
+        "result": {
+          "tolerance": 0.1,
+          "figures": [
+            {
+              "figure": "ad_spend",
+              "sellerboardValue": 100.0,
+              "adlabsValue": 106.0,
+              "deltaAbs": 6.0,
+              "deltaPct": 0.06,
+              "verdict": "verified"
+            },
+            {
+              "figure": "ad_sales",
+              "sellerboardValue": 500.0,
+              "adlabsValue": null,
+              "deltaAbs": null,
+              "deltaPct": null,
+              "verdict": "no_data"
+            },
+            {
+              "figure": "total_sales",
+              "sellerboardValue": 2000.0,
+              "adlabsValue": null,
+              "deltaAbs": null,
+              "deltaPct": null,
+              "verdict": "no_data"
+            }
+          ],
+          "headlineVerdict": "verified"
+        },
+        "line": "Data verified: Sellerboard and AdLabs agree within tolerance (+/-10%).",
+        "emojiLine": "✅ Data verified: Sellerboard and AdLabs agree within tolerance (+/-10%)."
+      }
+    },
+    {
+      "name": "cross_check:partial_sides",
+      "input": {
+        "sellerboard": {
+          "ad_spend": 100.0,
+          "ad_sales": 500.0,
+          "total_sales": 2000.0
+        },
+        "adlabs": {
+          "ad_sales": 500.0
+        },
+        "tolerance": null
+      },
+      "expected": {
+        "result": {
+          "tolerance": 0.07,
+          "figures": [
+            {
+              "figure": "ad_spend",
+              "sellerboardValue": 100.0,
+              "adlabsValue": null,
+              "deltaAbs": null,
+              "deltaPct": null,
+              "verdict": "no_data"
+            },
+            {
+              "figure": "ad_sales",
+              "sellerboardValue": 500.0,
+              "adlabsValue": 500.0,
+              "deltaAbs": 0.0,
+              "deltaPct": 0.0,
+              "verdict": "verified"
+            },
+            {
+              "figure": "total_sales",
+              "sellerboardValue": 2000.0,
+              "adlabsValue": null,
+              "deltaAbs": null,
+              "deltaPct": null,
+              "verdict": "no_data"
+            }
+          ],
+          "headlineVerdict": "verified"
+        },
+        "line": "Data verified: Sellerboard and AdLabs agree within tolerance (+/-7%).",
+        "emojiLine": "✅ Data verified: Sellerboard and AdLabs agree within tolerance (+/-7%)."
+      }
+    },
+    {
+      "name": "cross_check:zero_base_nonzero_other",
+      "input": {
+        "sellerboard": {
+          "ad_spend": 0.0
+        },
+        "adlabs": {
+          "ad_spend": 12.0
+        },
+        "tolerance": null
+      },
+      "expected": {
+        "result": {
+          "tolerance": 0.07,
+          "figures": [
+            {
+              "figure": "ad_spend",
+              "sellerboardValue": 0.0,
+              "adlabsValue": 12.0,
+              "deltaAbs": 12.0,
+              "deltaPct": 1.0,
+              "verdict": "mismatch"
+            },
+            {
+              "figure": "ad_sales",
+              "sellerboardValue": null,
+              "adlabsValue": null,
+              "deltaAbs": null,
+              "deltaPct": null,
+              "verdict": "no_data"
+            },
+            {
+              "figure": "total_sales",
+              "sellerboardValue": null,
+              "adlabsValue": null,
+              "deltaAbs": null,
+              "deltaPct": null,
+              "verdict": "no_data"
+            }
+          ],
+          "headlineVerdict": "mismatch"
+        },
+        "line": "Data mismatch: ad spend SB $0.00 vs AdLabs $12.00 (+100%).",
+        "emojiLine": "⚠️ Data mismatch: ad spend SB $0.00 vs AdLabs $12.00 (+100%)."
+      }
+    },
+    {
+      "name": "cross_check:zero_base_zero_other",
+      "input": {
+        "sellerboard": {
+          "ad_spend": 0.0
+        },
+        "adlabs": {
+          "ad_spend": 0.0
+        },
+        "tolerance": null
+      },
+      "expected": {
+        "result": {
+          "tolerance": 0.07,
+          "figures": [
+            {
+              "figure": "ad_spend",
+              "sellerboardValue": 0.0,
+              "adlabsValue": 0.0,
+              "deltaAbs": 0.0,
+              "deltaPct": null,
+              "verdict": "no_data"
+            },
+            {
+              "figure": "ad_sales",
+              "sellerboardValue": null,
+              "adlabsValue": null,
+              "deltaAbs": null,
+              "deltaPct": null,
+              "verdict": "no_data"
+            },
+            {
+              "figure": "total_sales",
+              "sellerboardValue": null,
+              "adlabsValue": null,
+              "deltaAbs": null,
+              "deltaPct": null,
+              "verdict": "no_data"
+            }
+          ],
+          "headlineVerdict": "no_data"
+        },
+        "line": "Data verified: not cross-checked (AdLabs or Sellerboard figure missing for this day).",
+        "emojiLine": "ℹ️ Data verified: not cross-checked (AdLabs or Sellerboard figure missing for this day)."
+      }
+    },
+    {
+      "name": "cross_check:exactly_at_tolerance",
+      "input": {
+        "sellerboard": {
+          "ad_spend": 100.0
+        },
+        "adlabs": {
+          "ad_spend": 107.0
+        },
+        "tolerance": null
+      },
+      "expected": {
+        "result": {
+          "tolerance": 0.07,
+          "figures": [
+            {
+              "figure": "ad_spend",
+              "sellerboardValue": 100.0,
+              "adlabsValue": 107.0,
+              "deltaAbs": 7.0,
+              "deltaPct": 0.07,
+              "verdict": "verified"
+            },
+            {
+              "figure": "ad_sales",
+              "sellerboardValue": null,
+              "adlabsValue": null,
+              "deltaAbs": null,
+              "deltaPct": null,
+              "verdict": "no_data"
+            },
+            {
+              "figure": "total_sales",
+              "sellerboardValue": null,
+              "adlabsValue": null,
+              "deltaAbs": null,
+              "deltaPct": null,
+              "verdict": "no_data"
+            }
+          ],
+          "headlineVerdict": "verified"
+        },
+        "line": "Data verified: Sellerboard and AdLabs agree within tolerance (+/-7%).",
+        "emojiLine": "✅ Data verified: Sellerboard and AdLabs agree within tolerance (+/-7%)."
+      }
+    },
+    {
+      "name": "cross_check:negative_direction",
+      "input": {
+        "sellerboard": {
+          "ad_spend": 100.0,
+          "ad_sales": 500.0,
+          "total_sales": 2000.0
+        },
+        "adlabs": {
+          "ad_spend": 40.0,
+          "ad_sales": 500.0,
+          "total_sales": 2000.0
+        },
+        "tolerance": null
+      },
+      "expected": {
+        "result": {
+          "tolerance": 0.07,
+          "figures": [
+            {
+              "figure": "ad_spend",
+              "sellerboardValue": 100.0,
+              "adlabsValue": 40.0,
+              "deltaAbs": -60.0,
+              "deltaPct": -0.6,
+              "verdict": "mismatch"
+            },
+            {
+              "figure": "ad_sales",
+              "sellerboardValue": 500.0,
+              "adlabsValue": 500.0,
+              "deltaAbs": 0.0,
+              "deltaPct": 0.0,
+              "verdict": "verified"
+            },
+            {
+              "figure": "total_sales",
+              "sellerboardValue": 2000.0,
+              "adlabsValue": 2000.0,
+              "deltaAbs": 0.0,
+              "deltaPct": 0.0,
+              "verdict": "verified"
+            }
+          ],
+          "headlineVerdict": "mismatch"
+        },
+        "line": "Data mismatch: ad spend SB $100.00 vs AdLabs $40.00 (-60%).",
+        "emojiLine": "⚠️ Data mismatch: ad spend SB $100.00 vs AdLabs $40.00 (-60%)."
+      }
+    }
+  ]
+}
