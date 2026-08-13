@@ -145,6 +145,39 @@ describe('rule (c): the client denylist', () => {
     expect(findings.filter((f) => f.rule === 'denylisted-term')).toHaveLength(1);
   });
 
+  /**
+   * Found by running the real denylist over this repo: a three-letter client
+   * name matched inside the base64 integrity hashes in pnpm-lock.yaml, three
+   * times. Substring matching turns a short but genuine client name into noise.
+   */
+  it('is word-bounded, so a short name does not match inside a base64 hash', () => {
+    const findings = scanFiles(
+      [
+        {
+          path: 'pnpm-lock.yaml',
+          content: 'integrity: sha512-Zx9jbsKq2Lr7Vt4Nb6Ym1Wp3JbsHs8Gf0Ac2Ne4Ru6Ti8==',
+        },
+      ],
+      { denylist: ['JBS'] },
+    );
+    expect(findings).toHaveLength(0);
+  });
+
+  it('still matches a short name at a real word boundary', () => {
+    const findings = scanFiles([{ path: 'docs/n.md', content: 'profile: JBS (EU)' }], {
+      denylist: ['JBS'],
+    });
+    expect(findings.filter((f) => f.rule === 'denylisted-term')).toHaveLength(1);
+  });
+
+  it('matches across a slug separator', () => {
+    const findings = scanFiles(
+      [{ path: 'fixtures/x.json', content: '{"client": "northwind-trading-de"}' }],
+      { denylist: ['northwind'] },
+    );
+    expect(findings.filter((f) => f.rule === 'denylisted-term')).toHaveLength(1);
+  });
+
   it('does nothing when the denylist is absent', () => {
     const findings = scanFiles([
       { path: 'docs/notes.md', content: 'Pilot profiles: Northwind Trading and one other.' },
@@ -157,6 +190,11 @@ describe('rule (c): the client denylist', () => {
       'Acme Corp',
       'Globex',
     ]);
+  });
+
+  it('dedupes case-insensitively, so one leak is not reported twice', () => {
+    // A roster assembled from a folder name and a config slug yields both forms.
+    expect(parseDenylist('Northwind\nnorthwind\nNORTHWIND\n')).toEqual(['Northwind']);
   });
 });
 

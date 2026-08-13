@@ -217,12 +217,27 @@ function scanSecrets(target: ScanTarget, out: Finding[]): void {
   );
 }
 
-/** Rule (c): a term from the operator's client denylist. */
+/**
+ * Rule (c): a term from the operator's client denylist.
+ *
+ * Matching is word-bounded, not substring. A three-letter client name is a real
+ * thing, and a substring match for one finds it inside every base64 integrity
+ * hash in the lockfile: hundreds of findings, none of them a leak, and a gate
+ * nobody reads any more. Boundaries are added only where the term's own edges
+ * are word characters, so a term like `Acme (EU)` still matches literally.
+ */
+function denylistPattern(term: string): RegExp {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const lead = /^\w/.test(term) ? '\\b' : '';
+  const trail = /\w$/.test(term) ? '\\b' : '';
+  return new RegExp(`${lead}${escaped}${trail}`, 'gi');
+}
+
 function scanDenylist(target: ScanTarget, denylist: readonly string[], out: Finding[]): void {
   for (const raw of denylist) {
     const term = raw.trim();
     if (!term) continue;
-    const re = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    const re = denylistPattern(term);
     findAll(
       target.content,
       re,
@@ -299,10 +314,23 @@ export function formatFindings(findings: readonly Finding[]): string {
     .join('\n');
 }
 
-/** Parse the operator's denylist file: one term per line, `#` comments. */
+/**
+ * Parse the operator's denylist file: one term per line, `#` comments.
+ *
+ * Deduplicated case-insensitively, because matching is case-insensitive and a
+ * roster assembled from two sources yields `Acme` and `acme`, which would
+ * otherwise report the same leak twice.
+ */
 export function parseDenylist(content: string): string[] {
-  return content
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line !== '' && !line.startsWith('#'));
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const line of content.split('\n')) {
+    const term = line.trim();
+    if (term === '' || term.startsWith('#')) continue;
+    const key = term.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    terms.push(term);
+  }
+  return terms;
 }
