@@ -146,26 +146,29 @@ describe('rule (c): the client denylist', () => {
   });
 
   /**
-   * Found by running the real denylist over this repo: a three-letter client
-   * name matched inside the base64 integrity hashes in pnpm-lock.yaml, three
-   * times. Substring matching turns a short but genuine client name into noise.
+   * Found by running the operator's real denylist over this repo: a three-letter
+   * client name matched inside the base64 integrity hashes in pnpm-lock.yaml,
+   * three times. Substring matching turns a short but genuine client name into
+   * noise. The term used below is fictional, for the same reason the planted
+   * paths above are assembled rather than written out.
    */
   it('is word-bounded, so a short name does not match inside a base64 hash', () => {
     const findings = scanFiles(
       [
         {
           path: 'pnpm-lock.yaml',
-          content: 'integrity: sha512-Zx9jbsKq2Lr7Vt4Nb6Ym1Wp3JbsHs8Gf0Ac2Ne4Ru6Ti8==',
+          // The term appears twice inside the hash, mid-word both times.
+          content: 'integrity: sha512-Zx9nwtKq2Lr7Vt4Nb6Ym1Wp3JnwtHs8Gf0Ac2Ne4Ru6Ti8==',
         },
       ],
-      { denylist: ['JBS'] },
+      { denylist: ['NWT'] },
     );
     expect(findings).toHaveLength(0);
   });
 
   it('still matches a short name at a real word boundary', () => {
-    const findings = scanFiles([{ path: 'docs/n.md', content: 'profile: JBS (EU)' }], {
-      denylist: ['JBS'],
+    const findings = scanFiles([{ path: 'docs/n.md', content: 'profile: NWT (EU)' }], {
+      denylist: ['NWT'],
     });
     expect(findings.filter((f) => f.rule === 'denylisted-term')).toHaveLength(1);
   });
