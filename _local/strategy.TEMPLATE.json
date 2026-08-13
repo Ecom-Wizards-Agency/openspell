@@ -1,0 +1,95 @@
+{
+  "schema": "wizard-ads.tenant-strategy.v1",
+  "_comment": "TEMPLATE. Copy to _local/strategy.json (gitignored) and replace every <placeholder>, then seed it into profile_strategy with the operator-run seeder. This document is doctrine: it is per-tenant database data, and no filled-in copy may ever be committed. The shape is validated by TenantStrategy in packages/shared. Deliberately contains NO numbers.",
+  "refreshed_at": "<YYYY-MM-DD when these values were last checked against the strategy source>",
+
+  "pacing": {
+    "_comment": "Run-rate governor. The cut order is fixed method, not a threshold.",
+    "cut_order": ["waste", "discovery", "profit", "rank"],
+    "monthly_budget": null,
+    "run_rate_tolerance": "<fraction, e.g. how far off pace before acting>",
+    "lookback_days": "<int>"
+  },
+
+  "opt_groups": {
+    "_comment": "One entry per optimization group. Group names are yours; these keys are the contract.",
+    "<your-group-name>": {
+      "target_acos": "<fraction>",
+      "max_increase": "<fraction: a CEILING, never a step>",
+      "max_decrease": "<fraction: a CEILING, never a step>",
+      "goal_lens": "<rank | discovery | profit | shield>",
+      "cut_on_acos_alone": false
+    }
+  },
+
+  "rank_lifecycle": {
+    "source": "<rank_radar | sqp | manual>",
+    "graduation_rank": "<int>",
+    "demotion_rank": null,
+    "dwell_days": "<int>"
+  },
+
+  "staged_apply": {
+    "cooldown_days": "<int>",
+    "max_rows_per_batch": "<int>",
+    "at_cap_tolerance": "<fraction>",
+    "require_snapshot": true,
+    "levers": ["waste-cut", "bid-down", "push", "budget", "placement", "harvest", "negative", "pause", "revert", "other"]
+  },
+
+  "bids": {
+    "start_bid_pct_of_recommended": "<signed int, e.g. start N% below the suggested bid>",
+    "by_bucket": {
+      "<your-bucket-name>": {
+        "daily_budget": "<number>",
+        "top_of_search_placement": "<int percent>",
+        "rest_of_search_placement": "<int percent>",
+        "product_pages_placement": "<int percent>"
+      }
+    }
+  },
+
+  "sv_bands": {
+    "_comment": "Search-volume bands. severity 'warn' reports and allows; 'fail' blocks.",
+    "rank_skw": { "min": "<int>", "max": "<int>", "severity_outside": "warn" },
+    "halo": { "max": "<int>", "severity_above": "fail" },
+    "phase1": { "count_min": "<int>", "count_max": "<int>", "sv_min": "<int>", "sv_max": "<int>" }
+  },
+
+  "caps": {
+    "_comment": "Caps are ceilings. The optimizer clamps to them and never aims at them.",
+    "halo_keywords_per_campaign": "<int>",
+    "pat_asins_per_campaign": "<int>",
+    "max_bid_increase": "<fraction>",
+    "max_bid_decrease": "<fraction>",
+    "max_placement_increase": "<fraction>",
+    "sd_budget_share_ceiling": "<fraction>"
+  },
+
+  "pat_split": {
+    "method": "<median_revenue | revenue_floor | agent>",
+    "revenue_floor": null
+  },
+
+  "naming": {
+    "_comment": "Campaign naming. Mirrors the bulk-creator naming settings so proposed names match what gets created. goal: Discovery|Rank|Profit; match_type: EXACT|BROAD|PHRASE|ASIN_EXACT; campaign_type: SKW|Halo|BMM|Phrase|PAT. descriptor placeholders: {keyword} {root} {counter}.",
+    "variable_order": ["Goal", "SP", "MatchType", "ProductName", "TargetDescriptor", "Suffix"],
+    "delimiter": " | ",
+    "suffix": "<your agency marker>",
+    "use_counter": false,
+    "skw_mode": true,
+    "add_date": false,
+    "custom1_label": "",
+    "custom1_value": "",
+    "custom2_label": "",
+    "custom2_value": "",
+    "by_bucket": {
+      "<your-bucket-name>": {
+        "goal": "<Discovery | Rank | Profit>",
+        "match_type": "<EXACT | BROAD | PHRASE | ASIN_EXACT>",
+        "campaign_type": "<SKW | Halo | BMM | Phrase | PAT>",
+        "descriptor": "<e.g. {keyword}>"
+      }
+    }
+  }
+}
