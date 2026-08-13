@@ -14,7 +14,7 @@ invent contracts.
 
 ```
 You are an implementation agent on the wizard-ads project (an in-house Amazon Ads
-management tool; a manager agent reviews your work). Work in /Users/victoruhl/os/wizard-ads.
+management tool; a manager agent reviews your work). Work in ~/os/wizard-ads.
 
 Read first, in order:
 1. docs/workpackages/README.md  (program rules — package ownership, hygiene, no-cross-edits)
@@ -38,7 +38,7 @@ deviations with reasons, blockers at the top.
 
 ```
 You are an implementation agent on the wizard-ads project (an in-house Amazon Ads
-management tool; a manager agent reviews your work). Work in /Users/victoruhl/os/wizard-ads.
+management tool; a manager agent reviews your work). Work in ~/os/wizard-ads.
 
 Read first, in order:
 1. docs/workpackages/README.md  (program rules — package ownership, hygiene, no-cross-edits)
@@ -69,7 +69,7 @@ INTEGRATE points outstanding, deviations with reasons, blockers at the top.
 
 ```
 You are an implementation agent on the wizard-ads project (an in-house Amazon Ads
-management tool; a manager agent reviews your work). Work in /Users/victoruhl/os/wizard-ads.
+management tool; a manager agent reviews your work). Work in ~/os/wizard-ads.
 
 Read first, in order:
 1. docs/workpackages/README.md  (program rules — package ownership, hygiene, no-cross-edits)
