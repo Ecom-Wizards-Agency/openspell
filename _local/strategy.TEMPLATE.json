@@ -4,37 +4,67 @@
   "refreshed_at": "<YYYY-MM-DD when these values were last checked against the strategy source>",
 
   "pacing": {
-    "_comment": "Run-rate governor. The cut order is fixed method, not a threshold.",
+    "_comment": "Run-rate governor. The cut order is fixed method, not a threshold. Pacing is a three-band decision: warn_above reports, act_above triggers the cut order, underpace_below flags budget left on the table. run_rate_tolerance is the older single-tolerance form, kept optional for back-compat.",
     "cut_order": ["waste", "discovery", "profit", "rank"],
     "monthly_budget": null,
-    "run_rate_tolerance": "<fraction, e.g. how far off pace before acting>",
-    "lookback_days": "<int>"
+    "run_rate_tolerance": "<DEPRECATED fraction, e.g. how far off pace before acting>",
+    "warn_above": "<fraction of pace: report only>",
+    "act_above": "<fraction of pace: run the cut order>",
+    "underpace_below": "<fraction of pace: underspending>",
+    "rank_cut_requires_operator": true,
+    "lookback_days": "<int days>"
   },
 
   "opt_groups": {
-    "_comment": "One entry per optimization group. Group names are yours; these keys are the contract.",
+    "_comment": "One entry per optimization group. Group names are yours; these keys are the contract. bid_floor/bid_ceiling are the manual bounds the bidding engine clamps to before caps; the *_unit key says how to read the *_value.",
     "<your-group-name>": {
       "target_acos": "<fraction>",
       "max_increase": "<fraction: a CEILING, never a step>",
+      "max_increase_steady": "<fraction: the CEILING once the group is in steady state>",
       "max_decrease": "<fraction: a CEILING, never a step>",
       "goal_lens": "<rank | discovery | profit | shield>",
-      "cut_on_acos_alone": false
+      "cut_on_acos_alone": false,
+      "preset": "<your optimizer preset name>",
+      "bid_floor_unit": "<absolute | pct_of_recommended | times_cpc>",
+      "bid_floor_value": "<number, read per bid_floor_unit>",
+      "bid_ceiling_unit": "<absolute | pct_of_recommended | times_cpc>",
+      "bid_ceiling_value": "<number, read per bid_ceiling_unit>",
+      "placement_max_increase": "<fraction: a CEILING, never a step>",
+      "placement_max_decrease": "<fraction: a CEILING, never a step>",
+      "spend_share_max": "<fraction of profile spend this group may take>",
+      "tacos_x_breakeven": "<multiple of breakeven TACOS>",
+      "tacos_x_breakeven_min": "<multiple of breakeven TACOS, low end of the band>",
+      "tacos_x_breakeven_max": "<multiple of breakeven TACOS, high end of the band>"
     }
   },
 
   "rank_lifecycle": {
+    "_comment": "Durations state their unit in the key: dwell_days is DAYS, graduate_weeks_stable is WEEKS.",
     "source": "<rank_radar | sqp | manual>",
     "graduation_rank": "<int>",
     "demotion_rank": null,
-    "dwell_days": "<int>"
+    "dwell_days": "<int DAYS held before the lifecycle moves a keyword>",
+    "graduate_weeks_stable": "<int WEEKS of stable rank required to graduate>",
+    "stepdown_cycles_min": "<int cycles>",
+    "stepdown_cycles_max": "<int cycles>",
+    "regression_reescalate": "<what a regressed keyword returns to, e.g. a stage name>"
   },
 
   "staged_apply": {
-    "cooldown_days": "<int>",
+    "cooldown_days": "<int DAYS>",
     "max_rows_per_batch": "<int>",
+    "max_batches_per_run": "<int>",
     "at_cap_tolerance": "<fraction>",
     "require_snapshot": true,
-    "levers": ["waste-cut", "bid-down", "push", "budget", "placement", "harvest", "negative", "pause", "revert", "other"]
+    "levers": ["waste-cut", "bid-down", "push", "budget", "placement", "harvest", "negative", "pause", "revert", "other"],
+    "cooldown_bypasses": ["<lever name from levers that may ignore the cooldown>"],
+    "tag_format": "<template for the tag written onto a changed entity, e.g. with a {run} placeholder>",
+    "push_rank_min_days": "<int DAYS between two pushes on the same rank target>",
+    "priority_order": ["<lever name from levers, highest priority first>"],
+    "group_cadence": {
+      "<your-group-name>": "<how often this group is touched, e.g. a cadence name>"
+    },
+    "batch_unit": "<rows | entities>"
   },
 
   "bids": {
@@ -69,6 +99,16 @@
   "pat_split": {
     "method": "<median_revenue | revenue_floor | agent>",
     "revenue_floor": null
+  },
+
+  "discovery": {
+    "min_root_words": "<int words a root must have to count as a discovery root>"
+  },
+
+  "expanded_candidate_filter": {
+    "_comment": "Gate an expanded (tool- or agent-suggested) candidate must clear before it is considered.",
+    "min_relevancy": "<fraction>",
+    "max_sv": "<int monthly search volume>"
   },
 
   "naming": {
