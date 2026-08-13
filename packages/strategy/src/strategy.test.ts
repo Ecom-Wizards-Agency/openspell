@@ -158,6 +158,110 @@ describe('accessors', () => {
   });
 });
 
+/**
+ * The WP-00.1 widening, seen from the resolver.
+ *
+ * The contract tests prove the new keys parse; these prove they survive the
+ * thing that actually happens to them in production, which is a four-layer
+ * merge, and that a document written before the widening still resolves.
+ */
+describe('the widened contract, through the resolver', () => {
+  const WIDENED = {
+    ...TENANT,
+    pacing: {
+      ...TENANT.pacing,
+      warn_above: 1.1,
+      act_above: 1.2,
+      underpace_below: 0.8,
+      rank_cut_requires_operator: true,
+    },
+    opt_groups: {
+      ...TENANT.opt_groups,
+      rank: {
+        ...TENANT.opt_groups.rank,
+        preset: 'synthetic-preset',
+        bid_floor_unit: 'absolute' as const,
+        bid_floor_value: 0.3,
+        bid_ceiling_unit: 'times_cpc' as const,
+        bid_ceiling_value: 2,
+        placement_max_decrease: 0.4,
+        placement_max_increase: 0.4,
+        spend_share_max: 0.6,
+        tacos_x_breakeven: 1.5,
+        tacos_x_breakeven_min: 1.2,
+        tacos_x_breakeven_max: 1.8,
+      },
+    },
+    rank_lifecycle: {
+      ...TENANT.rank_lifecycle,
+      graduate_weeks_stable: 2,
+      stepdown_cycles_min: 1,
+      stepdown_cycles_max: 3,
+      regression_reescalate: 'synthetic-stage',
+    },
+    staged_apply: {
+      ...TENANT.staged_apply,
+      max_batches_per_run: 2,
+      cooldown_bypasses: ['waste-cut'],
+      tag_format: 'synthetic-{run}',
+      push_rank_min_days: 5,
+      priority_order: ['waste-cut', 'bid-down'],
+      group_cadence: { rank: 'synthetic-cadence' },
+      batch_unit: 'rows',
+    },
+    discovery: { min_root_words: 2 },
+    expanded_candidate_filter: { min_relevancy: 0.5, max_sv: 1000 },
+  };
+
+  it('resolves a document that uses every new field', () => {
+    const resolved = resolveStrategy({ tenant: WIDENED });
+    const rank = optGroup(resolved.value, 'rank');
+    expect(rank?.bid_ceiling_unit).toBe('times_cpc');
+    expect(rank?.bid_ceiling_value).toBe(2);
+    expect(rank?.bid_floor_unit).toBe('absolute');
+    expect(rank?.placement_max_decrease).toBe(0.4);
+    expect(rank?.spend_share_max).toBe(0.6);
+    expect(rank?.tacos_x_breakeven_min).toBe(1.2);
+    expect(resolved.value.pacing.act_above).toBe(1.2);
+    expect(resolved.value.pacing.rank_cut_requires_operator).toBe(true);
+    expect(resolved.value.rank_lifecycle.graduate_weeks_stable).toBe(2);
+    expect(resolved.value.staged_apply.group_cadence).toEqual({ rank: 'synthetic-cadence' });
+    expect(resolved.value.discovery?.min_root_words).toBe(2);
+    expect(resolved.value.expanded_candidate_filter?.max_sv).toBe(1000);
+  });
+
+  it('lets a profile override one new leaf without losing its siblings', () => {
+    const resolved = resolveStrategy({
+      tenant: WIDENED,
+      profile: { opt_groups: { rank: { bid_ceiling_value: 3 } } },
+    });
+    const rank = optGroup(resolved.value, 'rank');
+    expect(rank?.bid_ceiling_value).toBe(3);
+    expect(rank?.bid_ceiling_unit).toBe('times_cpc');
+    expect(layerOf(resolved.provenance, 'opt_groups.rank.bid_ceiling_value')).toBe('profile');
+    expect(layerOf(resolved.provenance, 'opt_groups.rank.bid_ceiling_unit')).toBe('tenant');
+  });
+
+  it('still resolves a document written before the widening', () => {
+    const resolved = resolveStrategy({ tenant: TENANT });
+    expect(resolved.value.discovery).toBeUndefined();
+    expect(resolved.value.expanded_candidate_filter).toBeUndefined();
+    expect(resolved.value.pacing.run_rate_tolerance).toBe(0.2);
+    expect(optGroup(resolved.value, 'rank')?.bid_ceiling_unit).toBeUndefined();
+  });
+
+  it('rejects a bid-bound unit outside the vocabulary', () => {
+    expect(() =>
+      resolveStrategy({
+        tenant: {
+          ...WIDENED,
+          opt_groups: { rank: { ...WIDENED.opt_groups.rank, bid_ceiling_unit: 'furlongs' } },
+        },
+      }),
+    ).toThrow();
+  });
+});
+
 describe('validation', () => {
   it('rejects a document whose placeholders were never filled in', () => {
     expect(() =>
@@ -211,5 +315,58 @@ describe('the tracked template ships no doctrine values', () => {
     // is exactly the kind that survives review because the file looks like an
     // example.
     expect(numbers).toEqual([]);
+  });
+
+  /**
+   * Structure yes, numbers no. The template is how an operator discovers that a
+   * field exists at all, so a widened contract with an unwidened template is a
+   * field nobody will ever fill in.
+   */
+  it('declares every section and key the WP-00.1 widening added', () => {
+    const raw = JSON.parse(readFileSync(templatePath, 'utf8')) as Record<string, never>;
+    const at = (path: string): unknown =>
+      path.split('.').reduce<unknown>((node, key) => (node as Record<string, unknown>)?.[key], raw);
+
+    const group = '<your-group-name>';
+    const added = [
+      'discovery.min_root_words',
+      'expanded_candidate_filter.min_relevancy',
+      'expanded_candidate_filter.max_sv',
+      'pacing.warn_above',
+      'pacing.act_above',
+      'pacing.underpace_below',
+      'pacing.rank_cut_requires_operator',
+      'pacing.run_rate_tolerance',
+      `opt_groups.${group}.bid_floor_unit`,
+      `opt_groups.${group}.bid_floor_value`,
+      `opt_groups.${group}.bid_ceiling_unit`,
+      `opt_groups.${group}.bid_ceiling_value`,
+      `opt_groups.${group}.placement_max_decrease`,
+      `opt_groups.${group}.spend_share_max`,
+      `opt_groups.${group}.preset`,
+      `opt_groups.${group}.tacos_x_breakeven`,
+      `opt_groups.${group}.tacos_x_breakeven_min`,
+      `opt_groups.${group}.tacos_x_breakeven_max`,
+      'rank_lifecycle.graduate_weeks_stable',
+      'rank_lifecycle.stepdown_cycles_min',
+      'rank_lifecycle.stepdown_cycles_max',
+      'rank_lifecycle.regression_reescalate',
+      'staged_apply.max_batches_per_run',
+      'staged_apply.cooldown_bypasses',
+      'staged_apply.tag_format',
+      'staged_apply.push_rank_min_days',
+      'staged_apply.priority_order',
+      'staged_apply.group_cadence',
+      'staged_apply.batch_unit',
+    ];
+    expect(added.filter((path) => at(path) === undefined)).toEqual([]);
+  });
+
+  it('states the unit on both rank-lifecycle durations', () => {
+    const raw = JSON.parse(readFileSync(templatePath, 'utf8')) as {
+      rank_lifecycle: Record<string, string>;
+    };
+    expect(raw.rank_lifecycle['dwell_days']).toContain('DAYS');
+    expect(raw.rank_lifecycle['graduate_weeks_stable']).toContain('WEEKS');
   });
 });
