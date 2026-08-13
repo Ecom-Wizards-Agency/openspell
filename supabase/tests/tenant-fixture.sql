@@ -1,0 +1,195 @@
+-- TEST FIXTURE. Not a migration.
+--
+-- `app.seed_tenant_fixture` writes exactly one row into every tenant table for
+-- one org. The RLS suite calls it twice, for two orgs, and then asserts that a
+-- member of one sees their row and none of the other's, table by table, walking
+-- the catalog rather than a hand-kept list.
+--
+-- That is why this function inserts into *every* table rather than a
+-- representative sample: the RLS test first checks that both orgs have a row in
+-- every tenant table, so a table added later without a fixture row fails the
+-- suite instead of passing it vacuously.
+
+create or replace function app.seed_tenant_fixture(
+  p_slug text,
+  p_user_id uuid,
+  p_role public.org_role default 'analyst',
+  p_date date default current_date
+)
+returns uuid
+language plpgsql
+set search_path = pg_catalog, public, pg_temp
+as $$
+declare
+  v_org uuid;
+  v_conn uuid;
+  v_profile uuid;
+  v_run uuid;
+  v_batch uuid;
+  v_tag uuid;
+  v_asset uuid;
+  v_report uuid;
+  v_strategy jsonb := jsonb_build_object(
+    'schema', 'wizard-ads.tenant-strategy.v1',
+    'pacing', '{}'::jsonb,
+    'opt_groups', '{}'::jsonb,
+    'rank_lifecycle', '{}'::jsonb,
+    'staged_apply', '{}'::jsonb,
+    'bids', '{}'::jsonb,
+    'sv_bands', '{}'::jsonb,
+    'caps', '{}'::jsonb,
+    'pat_split', '{}'::jsonb,
+    'naming', '{}'::jsonb
+  );
+begin
+  perform public.auth_user_stub(p_user_id);
+
+  insert into public.orgs (slug, name) values (p_slug, initcap(p_slug)) returning id into v_org;
+  insert into public.org_members (org_id, user_id, role) values (v_org, p_user_id, p_role);
+
+  insert into public.ads_connections (org_id, label, status)
+  values (v_org, p_slug || '-ads', 'active') returning id into v_conn;
+
+  insert into public.ad_profiles
+    (org_id, connection_id, amazon_profile_id, region, country_code, currency_code, timezone, sync_enabled)
+  values
+    (v_org, v_conn, p_slug || '-profile-1', 'NA', 'US', 'USD', 'UTC', true)
+  returning id into v_profile;
+
+  insert into public.profile_strategy (org_id, profile_id, schema_version, doc)
+  values (v_org, null, 'wizard-ads.tenant-strategy.v1', v_strategy);
+
+  -- Entity mirror
+  insert into public.portfolios (org_id, profile_id, amazon_id, ad_product, name, state)
+  values (v_org, v_profile, 'pf-1', 'SP', 'portfolio', 'enabled');
+  insert into public.campaigns
+    (org_id, profile_id, amazon_id, ad_product, name, state, budget_amount, budget_type)
+  values (v_org, v_profile, 'c-1', 'SP', 'campaign', 'enabled', 10.00, 'daily');
+  insert into public.ad_groups
+    (org_id, profile_id, amazon_id, ad_product, name, state, campaign_id, default_bid)
+  values (v_org, v_profile, 'ag-1', 'SP', 'ad group', 'enabled', 'c-1', 0.75);
+  insert into public.product_ads
+    (org_id, profile_id, amazon_id, ad_product, state, campaign_id, ad_group_id, asin)
+  values (v_org, v_profile, 'pa-1', 'SP', 'enabled', 'c-1', 'ag-1', 'B0TEST0001');
+  insert into public.keywords
+    (org_id, profile_id, amazon_id, ad_product, state, campaign_id, ad_group_id, keyword_text, match_type, bid)
+  values (v_org, v_profile, 'kw-1', 'SP', 'enabled', 'c-1', 'ag-1', 'widget', 'exact', 0.90);
+  insert into public.targets
+    (org_id, profile_id, amazon_id, ad_product, state, campaign_id, ad_group_id, expression, bid)
+  values (v_org, v_profile, 'tg-1', 'SP', 'enabled', 'c-1', 'ag-1',
+          '[{"type":"asin_same_as","value":"B0TEST0002"}]'::jsonb, 0.60);
+  insert into public.negatives
+    (org_id, profile_id, amazon_id, ad_product, state, campaign_id, ad_group_id, scope, keyword_text, match_type)
+  values (v_org, v_profile, 'ng-1', 'SP', 'enabled', 'c-1', 'ag-1', 'ad_group', 'free widget', 'negative_exact');
+  insert into public.entity_changes
+    (org_id, profile_id, entity_type, amazon_id, field, old_value, new_value, source)
+  values (v_org, v_profile, 'keyword', 'kw-1', 'bid', '0.80'::jsonb, '0.90'::jsonb, 'sync');
+
+  -- Facts
+  insert into public.fact_sp_target_daily
+    (org_id, profile_id, date, ad_product, campaign_id, ad_group_id, target_id, target_kind,
+     match_type, impressions, clicks, cost, purchases_7d, sales_7d, units_sold_7d)
+  values (v_org, v_profile, p_date, 'SP', 'c-1', 'ag-1', 'kw-1', 'keyword',
+          'exact', 100, 5, 4.50, 1, 25.00, 1);
+  insert into public.fact_search_term_daily
+    (org_id, profile_id, date, ad_product, campaign_id, ad_group_id, target_id, search_term,
+     match_type, impressions, clicks, cost, purchases_7d, sales_7d, units_sold_7d)
+  values (v_org, v_profile, p_date, 'SP', 'c-1', 'ag-1', 'kw-1', 'blue widget',
+          'exact', 80, 3, 2.70, 1, 25.00, 1);
+  insert into public.fact_placement_daily
+    (org_id, profile_id, date, ad_product, campaign_id, placement, impressions, clicks, cost,
+     purchases_7d, sales_7d)
+  values (v_org, v_profile, p_date, 'SP', 'c-1', 'top_of_search', 60, 4, 3.60, 1, 25.00);
+  insert into public.fact_sb_daily
+    (org_id, profile_id, date, campaign_id, impressions, clicks, cost, purchases_7d, sales_7d)
+  values (v_org, v_profile, p_date, 'sb-1', 40, 2, 1.80, 0, 0);
+  insert into public.fact_sd_daily
+    (org_id, profile_id, date, campaign_id, impressions, clicks, cost, purchases_7d, sales_7d)
+  values (v_org, v_profile, p_date, 'sd-1', 30, 1, 0.90, 0, 0);
+  insert into public.fact_profile_daily
+    (org_id, profile_id, date, currency_code, impressions, clicks, cost, purchases_7d, sales_7d,
+     units_sold_7d, provisional)
+  values (v_org, v_profile, p_date, 'USD', 230, 12, 10.80, 2, 50.00, 2, false);
+  insert into public.fact_monthly_rollup
+    (org_id, profile_id, month, source, dimensions, days, impressions, clicks, cost)
+  values (v_org, v_profile, date_trunc('month', p_date)::date, 'sp_target', '{}'::jsonb, 1, 100, 5, 4.50);
+
+  -- Sync
+  insert into public.sync_schedules (org_id, profile_id, job_type, cadence, lookback_days)
+  values (v_org, v_profile, 'entity.sync', interval '1 day', null);
+  insert into public.sync_jobs (org_id, profile_id, job_type, payload)
+  values (v_org, v_profile, 'entity.sync',
+          jsonb_build_object('type', 'entity.sync', 'orgId', v_org, 'profileId', v_profile, 'full', false));
+  insert into public.report_requests
+    (org_id, profile_id, report_type, start_date, end_date, status, rows_parsed, rows_loaded)
+  values (v_org, v_profile, 'spCampaigns', p_date - 1, p_date, 'completed', 10, 10)
+  returning id into v_report;
+
+  -- Analysis
+  insert into public.recommendation_runs (org_id, profile_id, status, lookback_days)
+  values (v_org, v_profile, 'succeeded', 30) returning id into v_run;
+  insert into public.recommendations
+    (run_id, org_id, profile_id, reason, entity_type, entity_id, field, current_value, proposed_value, inputs)
+  values (v_run, v_org, v_profile, 'high_acos', 'keyword', 'kw-1', 'bid', '0.90'::jsonb, '0.70'::jsonb,
+          jsonb_build_object('rpc', 5.0, 'clicks', 5, 'cvrSourceLevel', 'keyword',
+                             'ceilingApplied', null, 'capClamped', false));
+  insert into public.insights (org_id, profile_id, date, kind, title, body)
+  values (v_org, v_profile, p_date, 'daily', 'synthetic insight', 'body');
+  insert into public.crosscheck_results
+    (org_id, profile_id, date, grain, metric, ours, theirs, delta_pct, tolerance, verdict)
+  values (v_org, v_profile, p_date, 'profile', 'cost', 10.80, 10.80, 0, 0.07, 'verified');
+
+  -- Writes
+  insert into public.apply_batches (org_id, profile_id, tag, opt_group, lever, note, status, applied_on)
+  values (v_org, v_profile, p_slug || '-2026W33-rank-bid-down', 'rank', 'bid-down', 'synthetic', 'applied', p_date)
+  returning id into v_batch;
+  insert into public.apply_rows
+    (batch_id, org_id, entity_type, entity_id, entity_name, field, old_value, new_value, lever, clicks, revenue)
+  values (v_batch, v_org, 'keyword', 'kw-1', 'widget', 'bid', '0.90'::jsonb, '0.70'::jsonb, 'bid-down', 5, 25.00);
+  insert into public.campaign_maps (org_id, profile_id, name)
+  values (v_org, v_profile, 'harvest map');
+
+  -- Product surface
+  insert into public.tags (org_id, name, slug) values (v_org, 'Client', 'client') returning id into v_tag;
+  insert into public.entity_tags (tag_id, org_id, profile_id, entity_type, entity_id)
+  values (v_tag, v_org, v_profile, 'campaign', 'c-1');
+  insert into public.dashboards (org_id, name) values (v_org, 'Overview');
+  insert into public.goto_links (org_id, token, route)
+  values (v_org, p_slug || '-token', '/grid');
+  insert into public.audit_log (org_id, actor_type, action)
+  values (v_org, 'service', 'fixture.seed');
+
+  -- Reserved seams
+  insert into public.spapi_connections (org_id, label) values (v_org, p_slug || '-spapi');
+  insert into public.fact_sales_traffic_daily (org_id, profile_id, date, asin, sessions)
+  values (v_org, v_profile, p_date, 'B0TEST0001', 10);
+  insert into public.fact_sqp_weekly (org_id, profile_id, week_start, asin, search_query, search_volume)
+  values (v_org, v_profile, p_date - extract(dow from p_date)::integer, 'B0TEST0001', 'blue widget', 1000);
+  insert into public.supa_flags (org_id, profile_id, week_start, asin, search_query, rule)
+  values (v_org, v_profile, p_date - extract(dow from p_date)::integer, 'B0TEST0001', 'blue widget', 'P3');
+  insert into public.rank_observations (org_id, profile_id, asin, keyword, observed_on, organic_rank)
+  values (v_org, v_profile, 'B0TEST0001', 'blue widget', p_date, 12);
+  insert into public.keepa_bsr_observations (org_id, asin, observed_at, category, bsr)
+  values (v_org, 'B0TEST0001', now(), 'Widgets', 4200);
+  insert into public.competitor_links (org_id, profile_id, our_asin, competitor_asin)
+  values (v_org, v_profile, 'B0TEST0001', 'B0TEST0002');
+  insert into public.creative_assets (org_id, profile_id, kind, content_hash)
+  values (v_org, v_profile, 'video', p_slug || '-hash-1') returning id into v_asset;
+  insert into public.creative_placements (org_id, asset_id, profile_id, campaign_id)
+  values (v_org, v_asset, v_profile, 'c-1');
+
+  return v_org;
+end;
+$$;
+
+-- A user row the fixture can point at, created only when the auth schema is the
+-- shim's (a real Supabase project has its own users and its own admin API).
+create or replace function public.auth_user_stub(p_user_id uuid)
+returns void
+language plpgsql
+set search_path = pg_catalog, public, pg_temp
+as $$
+begin
+  insert into auth.users (id) values (p_user_id) on conflict (id) do nothing;
+end;
+$$;
