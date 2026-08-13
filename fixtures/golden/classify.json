@@ -1,0 +1,93 @@
+{
+  "schema": "wizard-ads.parity.v1",
+  "module": "classify",
+  "source": "amazon-agent/tools/amazon-ads-monitor (read-only reference)",
+  "synthetic": true,
+  "fixtures": {},
+  "cases": [
+    {
+      "name": "classify[0]",
+      "input": {
+        "campaignName": "Rank | SP | Exact | widget | SYN-WID | EW"
+      },
+      "expected": "Rank"
+    },
+    {
+      "name": "classify[1]",
+      "input": {
+        "campaignName": "Discovery Auto | SP | Auto | widget | SYN | EW"
+      },
+      "expected": "Discovery"
+    },
+    {
+      "name": "classify[2]",
+      "input": {
+        "campaignName": "Halo | SP | Exact | long tail | SYN | EW"
+      },
+      "expected": "Profit"
+    },
+    {
+      "name": "classify[3]",
+      "input": {
+        "campaignName": "Shield | SP | Exact | brand | SYN | EW"
+      },
+      "expected": "Shield"
+    },
+    {
+      "name": "classify[4]",
+      "input": {
+        "campaignName": "Shield Discovery BMM | SP | Broad | brand | SYN | EW"
+      },
+      "expected": "Shield"
+    },
+    {
+      "name": "classify[5]",
+      "input": {
+        "campaignName": "SKW gizmo"
+      },
+      "expected": "Rank"
+    },
+    {
+      "name": "classify[6]",
+      "input": {
+        "campaignName": "profit stack"
+      },
+      "expected": "Profit"
+    },
+    {
+      "name": "classify[7]",
+      "input": {
+        "campaignName": "phrase harvest"
+      },
+      "expected": "Discovery"
+    },
+    {
+      "name": "classify[8]",
+      "input": {
+        "campaignName": "broad sweep"
+      },
+      "expected": "Discovery"
+    },
+    {
+      "name": "classify[9]",
+      "input": {
+        "campaignName": "bmm test"
+      },
+      "expected": "Discovery"
+    },
+    {
+      "name": "classify[10]",
+      "input": {
+        "campaignName": "something else entirely"
+      },
+      "expected": "Unknown"
+    },
+    {
+      "name": "classify[11]",
+      "input": {
+        "campaignName": ""
+      },
+      "expected": "Unknown"
+    }
+  ]
+}

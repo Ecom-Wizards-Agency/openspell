@@ -1,0 +1,1824 @@
+{
+  "schema": "wizard-ads.parity.v1",
+  "module": "recommendations",
+  "source": "amazon-agent/tools/amazon-ads-monitor (read-only reference)",
+  "synthetic": true,
+  "fixtures": {},
+  "cases": [
+    {
+      "name": "build_recommendations:goal_profit_maintain",
+      "input": {
+        "rawEntities": [
+          {
+            "entity_type": "target",
+            "name": "mid acos halo target",
+            "campaign_name": "Halo | SP | Exact | widget long tail | SYN | EW",
+            "campaign_id": "c-halo",
+            "match_type": "exact",
+            "impressions": 2000,
+            "clicks": 100,
+            "spend": 90.0,
+            "sales": 300.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "high acos rank keyword",
+            "campaign_name": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "campaign_id": "c-rank",
+            "match_type": "exact",
+            "impressions": 3000,
+            "clicks": 150,
+            "spend": 150.0,
+            "sales": 100.0,
+            "orders": 5
+          }
+        ],
+        "goal": "profit-maintain",
+        "situation": null,
+        "rankRadar": null,
+        "config": null,
+        "signalItems": null,
+        "pacing": null
+      },
+      "expected": {
+        "push": [
+          {
+            "entity": "high acos rank keyword",
+            "scope": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target converting (5 order(s) this week, ACOS 150%) with budget headroom -- ACOS is an indicator, not a decision factor, for a keyword we're deliberately running at/above break-even to drive rank.",
+            "action": "Raise the bid modestly and/or lift the top-of-search placement modifier to accelerate rank.",
+            "expectedImpact": "Faster organic rank movement on this keyword."
+          }
+        ],
+        "pauseOptimize": [
+          {
+            "entity": "mid acos halo target",
+            "scope": "Halo | SP | Exact | widget long tail | SYN | EW",
+            "category": "Profit",
+            "why": "ACOS 30% vs the ~25% ceiling for a Profit target under this goal, despite converting.",
+            "action": "Lower the bid, tighten match type, or reallocate budget toward the account's Rank/Profit campaigns."
+          }
+        ],
+        "tests": [
+          {
+            "hypothesis": "Self-targeted product placement (STPP) on your own ASIN produces low-cost, incremental retargeting-like sales.",
+            "method": "Set up an STPP campaign on 1-2 SKUs; compare resulting ACOS and order volume to account baseline.",
+            "successMetric": "ACOS and incremental order volume vs. a matched control period/account.",
+            "source": "conflicts-and-tests.md#T4",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "Comparing your own CTR/CVR per keyword to the SQP market/aggregate average reliably distinguishes a listing/creative problem from a genuinely winnable keyword that deserves more spend.",
+            "method": "Pull SQP for the flagged high-ACOS non-rank keywords; flag >2x CTR/CVR gaps vs. market average; act on the flagged set.",
+            "successMetric": "CTR/CVR/rank change 4-8 weeks after acting on flagged keywords, vs. an unflagged control set.",
+            "source": "conflicts-and-tests.md#T6",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "Day-parting bid rules, applied only to Profit/Halo/Shield campaigns (never Rank) and only once volume/CTR/CVR fundamentals are solid, improve blended ACOS without suppressing Rank-campaign bids.",
+            "method": "Export hourly reports, build a red/white/green conditional pivot, apply bid rules only to the eligible campaign categories.",
+            "successMetric": "Blended ACOS variance and conversion rate before/after; Rank-category keyword bids unchanged.",
+            "source": "conflicts-and-tests.md#T13",
+            "status": "vetted_backlog",
+            "priority": "medium"
+          }
+        ],
+        "notes": [
+          "No Rank Radar rows supplied -- graduation and per-keyword rank protection were skipped; Rank reads above rest on the category rule alone, not live organic-rank data."
+        ],
+        "graduate": []
+      }
+    },
+    {
+      "name": "build_recommendations:goal_rank_launch",
+      "input": {
+        "rawEntities": [
+          {
+            "entity_type": "target",
+            "name": "mid acos halo target",
+            "campaign_name": "Halo | SP | Exact | widget long tail | SYN | EW",
+            "campaign_id": "c-halo",
+            "match_type": "exact",
+            "impressions": 2000,
+            "clicks": 100,
+            "spend": 90.0,
+            "sales": 300.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "high acos rank keyword",
+            "campaign_name": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "campaign_id": "c-rank",
+            "match_type": "exact",
+            "impressions": 3000,
+            "clicks": 150,
+            "spend": 150.0,
+            "sales": 100.0,
+            "orders": 5
+          }
+        ],
+        "goal": "rank-launch",
+        "situation": null,
+        "rankRadar": null,
+        "config": null,
+        "signalItems": null,
+        "pacing": null
+      },
+      "expected": {
+        "push": [
+          {
+            "entity": "high acos rank keyword",
+            "scope": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target converting (5 order(s) this week, ACOS 150%) with budget headroom -- ACOS is an indicator, not a decision factor, for a keyword we're deliberately running at/above break-even to drive rank.",
+            "action": "Raise the bid modestly and/or lift the top-of-search placement modifier to accelerate rank.",
+            "expectedImpact": "Faster organic rank movement on this keyword."
+          }
+        ],
+        "pauseOptimize": [],
+        "tests": [
+          {
+            "hypothesis": "Single-keyword exact-match Rank campaigns produce faster/more durable organic rank gains per dollar than equivalent broad/auto/category campaigns, despite showing worse headline ACOS.",
+            "method": "Run a matched broad-match and exact-match campaign for the same target keyword in parallel (same product, budget, period) for 4-8 weeks.",
+            "successMetric": "Organic rank position delta + ACOS/CVR, both campaign types, same window.",
+            "source": "conflicts-and-tests.md#T1",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "Self-targeted product placement (STPP) on your own ASIN produces low-cost, incremental retargeting-like sales.",
+            "method": "Set up an STPP campaign on 1-2 SKUs; compare resulting ACOS and order volume to account baseline.",
+            "successMetric": "ACOS and incremental order volume vs. a matched control period/account.",
+            "source": "conflicts-and-tests.md#T4",
+            "status": "vetted_backlog",
+            "priority": "high"
+          }
+        ],
+        "notes": [
+          "No Rank Radar rows supplied -- graduation and per-keyword rank protection were skipped; Rank reads above rest on the category rule alone, not live organic-rank data."
+        ],
+        "graduate": []
+      }
+    },
+    {
+      "name": "build_recommendations:goal_liquidate",
+      "input": {
+        "rawEntities": [
+          {
+            "entity_type": "target",
+            "name": "mid acos halo target",
+            "campaign_name": "Halo | SP | Exact | widget long tail | SYN | EW",
+            "campaign_id": "c-halo",
+            "match_type": "exact",
+            "impressions": 2000,
+            "clicks": 100,
+            "spend": 90.0,
+            "sales": 300.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "high acos rank keyword",
+            "campaign_name": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "campaign_id": "c-rank",
+            "match_type": "exact",
+            "impressions": 3000,
+            "clicks": 150,
+            "spend": 150.0,
+            "sales": 100.0,
+            "orders": 5
+          }
+        ],
+        "goal": "liquidate",
+        "situation": null,
+        "rankRadar": null,
+        "config": null,
+        "signalItems": null,
+        "pacing": null
+      },
+      "expected": {
+        "push": [
+          {
+            "entity": "high acos rank keyword",
+            "scope": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target converting (5 order(s) this week, ACOS 150%) with budget headroom -- ACOS is an indicator, not a decision factor, for a keyword we're deliberately running at/above break-even to drive rank.",
+            "action": "Raise the bid modestly and/or lift the top-of-search placement modifier to accelerate rank.",
+            "expectedImpact": "Faster organic rank movement on this keyword."
+          }
+        ],
+        "pauseOptimize": [],
+        "tests": [
+          {
+            "hypothesis": "Self-targeted product placement (STPP) on your own ASIN produces low-cost, incremental retargeting-like sales.",
+            "method": "Set up an STPP campaign on 1-2 SKUs; compare resulting ACOS and order volume to account baseline.",
+            "successMetric": "ACOS and incremental order volume vs. a matched control period/account.",
+            "source": "conflicts-and-tests.md#T4",
+            "status": "vetted_backlog",
+            "priority": "high"
+          }
+        ],
+        "notes": [
+          "No Rank Radar rows supplied -- graduation and per-keyword rank protection were skipped; Rank reads above rest on the category rule alone, not live organic-rank data."
+        ],
+        "graduate": []
+      }
+    },
+    {
+      "name": "build_recommendations:goal_none",
+      "input": {
+        "rawEntities": [
+          {
+            "entity_type": "target",
+            "name": "mid acos halo target",
+            "campaign_name": "Halo | SP | Exact | widget long tail | SYN | EW",
+            "campaign_id": "c-halo",
+            "match_type": "exact",
+            "impressions": 2000,
+            "clicks": 100,
+            "spend": 90.0,
+            "sales": 300.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "high acos rank keyword",
+            "campaign_name": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "campaign_id": "c-rank",
+            "match_type": "exact",
+            "impressions": 3000,
+            "clicks": 150,
+            "spend": 150.0,
+            "sales": 100.0,
+            "orders": 5
+          }
+        ],
+        "goal": null,
+        "situation": null,
+        "rankRadar": null,
+        "config": null,
+        "signalItems": null,
+        "pacing": null
+      },
+      "expected": {
+        "push": [
+          {
+            "entity": "high acos rank keyword",
+            "scope": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target converting (5 order(s) this week, ACOS 150%) with budget headroom -- ACOS is an indicator, not a decision factor, for a keyword we're deliberately running at/above break-even to drive rank.",
+            "action": "Raise the bid modestly and/or lift the top-of-search placement modifier to accelerate rank.",
+            "expectedImpact": "Faster organic rank movement on this keyword."
+          }
+        ],
+        "pauseOptimize": [],
+        "tests": [
+          {
+            "hypothesis": "Self-targeted product placement (STPP) on your own ASIN produces low-cost, incremental retargeting-like sales.",
+            "method": "Set up an STPP campaign on 1-2 SKUs; compare resulting ACOS and order volume to account baseline.",
+            "successMetric": "ACOS and incremental order volume vs. a matched control period/account.",
+            "source": "conflicts-and-tests.md#T4",
+            "status": "vetted_backlog",
+            "priority": "high"
+          }
+        ],
+        "notes": [
+          "No Rank Radar rows supplied -- graduation and per-keyword rank protection were skipped; Rank reads above rest on the category rule alone, not live organic-rank data."
+        ],
+        "graduate": []
+      }
+    },
+    {
+      "name": "build_recommendations:wide_neutral",
+      "input": {
+        "rawEntities": [
+          {
+            "entity_type": "target",
+            "name": "mid acos halo target",
+            "campaign_name": "Halo | SP | Exact | widget long tail | SYN | EW",
+            "campaign_id": "c-halo",
+            "match_type": "exact",
+            "impressions": 2000,
+            "clicks": 100,
+            "spend": 90.0,
+            "sales": 300.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "high acos rank keyword",
+            "campaign_name": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "campaign_id": "c-rank",
+            "match_type": "exact",
+            "impressions": 3000,
+            "clicks": 150,
+            "spend": 150.0,
+            "sales": 100.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "bleeding discovery term",
+            "campaign_name": "Discovery Auto | SP | Auto | widget | SYN | EW",
+            "campaign_id": "c-disco",
+            "match_type": "broad",
+            "impressions": 4000,
+            "clicks": 60,
+            "spend": 45.0,
+            "sales": 0.0,
+            "orders": 0
+          },
+          {
+            "entity_type": "target",
+            "name": "collapsed rank keyword",
+            "campaign_name": "Rank | SP | Exact | doohickey | SYN-DOO | EW",
+            "campaign_id": "c-rank-3",
+            "match_type": "exact",
+            "impressions": 40,
+            "clicks": 2,
+            "spend": 1.5,
+            "sales": 0.0,
+            "orders": 0,
+            "daily_budget": 20.0,
+            "budget_capped_days": 3
+          },
+          {
+            "entity_type": "target",
+            "name": "brand shield term",
+            "campaign_name": "Shield | SP | Exact | brand | SYN | EW",
+            "campaign_id": "c-shield",
+            "match_type": "exact",
+            "impressions": 50,
+            "clicks": 5,
+            "spend": 3.0,
+            "sales": 40.0,
+            "orders": 2,
+            "budget_capped_days": 2
+          },
+          {
+            "entity_type": "target",
+            "name": "duplicated term",
+            "campaign_name": "Halo | SP | Exact | dup | SYN | EW",
+            "campaign_id": "c-dup-a",
+            "match_type": "exact",
+            "impressions": 900,
+            "clicks": 30,
+            "spend": 12.0,
+            "sales": 100.0,
+            "orders": 3
+          },
+          {
+            "entity_type": "target",
+            "name": "duplicated term",
+            "campaign_name": "Discovery Phrase | SP | Phrase | dup | SYN | EW",
+            "campaign_id": "c-dup-b",
+            "match_type": "exact",
+            "impressions": 400,
+            "clicks": 10,
+            "spend": 8.0,
+            "sales": 20.0,
+            "orders": 1
+          },
+          {
+            "entity_type": "campaign",
+            "name": "Halo | SP | Exact | stalled | SYN | EW",
+            "campaign_name": "Halo | SP | Exact | stalled | SYN | EW",
+            "campaign_id": "c-stalled",
+            "impressions": 3,
+            "clicks": 0,
+            "spend": 0.0,
+            "sales": 0.0,
+            "orders": 0
+          }
+        ],
+        "goal": null,
+        "situation": null,
+        "rankRadar": null,
+        "config": null,
+        "signalItems": null,
+        "pacing": null
+      },
+      "expected": {
+        "push": [
+          {
+            "entity": "high acos rank keyword",
+            "scope": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target converting (5 order(s) this week, ACOS 150%) with budget headroom -- ACOS is an indicator, not a decision factor, for a keyword we're deliberately running at/above break-even to drive rank.",
+            "action": "Raise the bid modestly and/or lift the top-of-search placement modifier to accelerate rank.",
+            "expectedImpact": "Faster organic rank movement on this keyword."
+          },
+          {
+            "entity": "collapsed rank keyword",
+            "scope": "Rank | SP | Exact | doohickey | SYN-DOO | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target collapsed to 40 impressions this week -- losing visibility on the exact keyword we're trying to rank is the single worst outcome under the rank-first philosophy.",
+            "action": "Raise the bid (and lift the ToS/placement modifier if capped) to regain impression share; verify the listing isn't suppressed/out of stock first.",
+            "expectedImpact": "Restore impression share and resume rank progress on this keyword."
+          },
+          {
+            "entity": "brand shield term",
+            "scope": "Shield | SP | Exact | brand | SYN | EW",
+            "category": "Shield",
+            "why": "Brand-defense target is budget-capped or impressions collapsed -- ceding branded search real estate to a competitor/hijacker is the real risk here.",
+            "action": "Raise bid/budget to protect the brand term; confirm no listing/inventory issue is the real cause first.",
+            "expectedImpact": "Hold Amazon's Choice / top-of-search on the brand term."
+          },
+          {
+            "entity": "duplicated term",
+            "scope": "Halo | SP | Exact | dup | SYN | EW",
+            "category": "Profit",
+            "why": "Profit/Halo target converting at a clearly profitable ACOS (12%, 3 order(s) this week).",
+            "action": "Raise bid and/or budget to capture more of this low-ACOS demand.",
+            "expectedImpact": "Incremental profit at low risk."
+          },
+          {
+            "entity": "duplicated term",
+            "scope": "Discovery Phrase | SP | Phrase | dup | SYN | EW",
+            "category": "Discovery",
+            "why": "Discovery target converting well (CVR 10%, 1 order(s) this week) -- a candidate to graduate into an exact/Rank campaign, or a modest bid raise in place.",
+            "action": "Raise the bid slightly and/or harvest the converting search term into its own exact/Profit campaign; watch the account's overall discovery share stays near the ~20% cap.",
+            "expectedImpact": "Captures more of a proven-converting term without growing discovery bloat."
+          }
+        ],
+        "pauseOptimize": [
+          {
+            "entity": "bleeding discovery term",
+            "scope": "Discovery Auto | SP | Auto | widget | SYN | EW",
+            "category": "Discovery",
+            "why": "$45.00 spend with 0 orders this week, non-rank target -- negative-keyword/target candidate.",
+            "action": "Add as a negative exact (or pause the target) unless there's a known reason to keep testing it."
+          },
+          {
+            "entity": "duplicated term",
+            "scope": "Discovery Phrase | SP | Phrase | dup | SYN | EW",
+            "category": "Discovery",
+            "why": "ACOS 40% vs the ~35% ceiling for a Discovery target under this goal, despite converting.",
+            "action": "Lower the bid, tighten match type, or reallocate budget toward the account's Rank/Profit campaigns."
+          },
+          {
+            "entity": "duplicated term (exact)",
+            "scope": "Discovery Phrase | SP | Phrase | dup | SYN | EW, Halo | SP | Exact | dup | SYN | EW",
+            "category": "Profit",
+            "why": "Same target running in 2 campaigns (Discovery Phrase | SP | Phrase | dup | SYN | EW, Halo | SP | Exact | dup | SYN | EW) -- self-competition, bidding against itself in the auction.",
+            "action": "Consolidate into 'Halo | SP | Exact | dup | SYN | EW' (best performer: 3 order(s), ACOS 12%); pause/remove the duplicate(s) in Discovery Phrase | SP | Phrase | dup | SYN | EW."
+          },
+          {
+            "entity": "Halo | SP | Exact | stalled | SYN | EW",
+            "scope": "Halo | SP | Exact | stalled | SYN | EW",
+            "category": "Profit",
+            "why": "Near-zero activity this week ($0.00 spend, 3 impressions) -- stalled/redundant.",
+            "action": "Investigate (suppressed listing, exhausted keyword, mis-targeted) and archive if there's no path back to relevance."
+          }
+        ],
+        "tests": [
+          {
+            "hypothesis": "Self-targeted product placement (STPP) on your own ASIN produces low-cost, incremental retargeting-like sales.",
+            "method": "Set up an STPP campaign on 1-2 SKUs; compare resulting ACOS and order volume to account baseline.",
+            "successMetric": "ACOS and incremental order volume vs. a matched control period/account.",
+            "source": "conflicts-and-tests.md#T4",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "Comparing your own CTR/CVR per keyword to the SQP market/aggregate average reliably distinguishes a listing/creative problem from a genuinely winnable keyword that deserves more spend.",
+            "method": "Pull SQP for the flagged high-ACOS non-rank keywords; flag >2x CTR/CVR gaps vs. market average; act on the flagged set.",
+            "successMetric": "CTR/CVR/rank change 4-8 weeks after acting on flagged keywords, vs. an unflagged control set.",
+            "source": "conflicts-and-tests.md#T6",
+            "status": "vetted_backlog",
+            "priority": "high"
+          }
+        ],
+        "notes": [
+          "No Rank Radar rows supplied -- graduation and per-keyword rank protection were skipped; Rank reads above rest on the category rule alone, not live organic-rank data."
+        ],
+        "graduate": []
+      }
+    },
+    {
+      "name": "build_recommendations:wide_profit_maintain",
+      "input": {
+        "rawEntities": [
+          {
+            "entity_type": "target",
+            "name": "mid acos halo target",
+            "campaign_name": "Halo | SP | Exact | widget long tail | SYN | EW",
+            "campaign_id": "c-halo",
+            "match_type": "exact",
+            "impressions": 2000,
+            "clicks": 100,
+            "spend": 90.0,
+            "sales": 300.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "high acos rank keyword",
+            "campaign_name": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "campaign_id": "c-rank",
+            "match_type": "exact",
+            "impressions": 3000,
+            "clicks": 150,
+            "spend": 150.0,
+            "sales": 100.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "bleeding discovery term",
+            "campaign_name": "Discovery Auto | SP | Auto | widget | SYN | EW",
+            "campaign_id": "c-disco",
+            "match_type": "broad",
+            "impressions": 4000,
+            "clicks": 60,
+            "spend": 45.0,
+            "sales": 0.0,
+            "orders": 0
+          },
+          {
+            "entity_type": "target",
+            "name": "collapsed rank keyword",
+            "campaign_name": "Rank | SP | Exact | doohickey | SYN-DOO | EW",
+            "campaign_id": "c-rank-3",
+            "match_type": "exact",
+            "impressions": 40,
+            "clicks": 2,
+            "spend": 1.5,
+            "sales": 0.0,
+            "orders": 0,
+            "daily_budget": 20.0,
+            "budget_capped_days": 3
+          },
+          {
+            "entity_type": "target",
+            "name": "brand shield term",
+            "campaign_name": "Shield | SP | Exact | brand | SYN | EW",
+            "campaign_id": "c-shield",
+            "match_type": "exact",
+            "impressions": 50,
+            "clicks": 5,
+            "spend": 3.0,
+            "sales": 40.0,
+            "orders": 2,
+            "budget_capped_days": 2
+          },
+          {
+            "entity_type": "target",
+            "name": "duplicated term",
+            "campaign_name": "Halo | SP | Exact | dup | SYN | EW",
+            "campaign_id": "c-dup-a",
+            "match_type": "exact",
+            "impressions": 900,
+            "clicks": 30,
+            "spend": 12.0,
+            "sales": 100.0,
+            "orders": 3
+          },
+          {
+            "entity_type": "target",
+            "name": "duplicated term",
+            "campaign_name": "Discovery Phrase | SP | Phrase | dup | SYN | EW",
+            "campaign_id": "c-dup-b",
+            "match_type": "exact",
+            "impressions": 400,
+            "clicks": 10,
+            "spend": 8.0,
+            "sales": 20.0,
+            "orders": 1
+          },
+          {
+            "entity_type": "campaign",
+            "name": "Halo | SP | Exact | stalled | SYN | EW",
+            "campaign_name": "Halo | SP | Exact | stalled | SYN | EW",
+            "campaign_id": "c-stalled",
+            "impressions": 3,
+            "clicks": 0,
+            "spend": 0.0,
+            "sales": 0.0,
+            "orders": 0
+          }
+        ],
+        "goal": "profit-maintain",
+        "situation": null,
+        "rankRadar": null,
+        "config": null,
+        "signalItems": null,
+        "pacing": null
+      },
+      "expected": {
+        "push": [
+          {
+            "entity": "high acos rank keyword",
+            "scope": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target converting (5 order(s) this week, ACOS 150%) with budget headroom -- ACOS is an indicator, not a decision factor, for a keyword we're deliberately running at/above break-even to drive rank.",
+            "action": "Raise the bid modestly and/or lift the top-of-search placement modifier to accelerate rank.",
+            "expectedImpact": "Faster organic rank movement on this keyword."
+          },
+          {
+            "entity": "collapsed rank keyword",
+            "scope": "Rank | SP | Exact | doohickey | SYN-DOO | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target collapsed to 40 impressions this week -- losing visibility on the exact keyword we're trying to rank is the single worst outcome under the rank-first philosophy.",
+            "action": "Raise the bid (and lift the ToS/placement modifier if capped) to regain impression share; verify the listing isn't suppressed/out of stock first.",
+            "expectedImpact": "Restore impression share and resume rank progress on this keyword."
+          },
+          {
+            "entity": "brand shield term",
+            "scope": "Shield | SP | Exact | brand | SYN | EW",
+            "category": "Shield",
+            "why": "Brand-defense target is budget-capped or impressions collapsed -- ceding branded search real estate to a competitor/hijacker is the real risk here.",
+            "action": "Raise bid/budget to protect the brand term; confirm no listing/inventory issue is the real cause first.",
+            "expectedImpact": "Hold Amazon's Choice / top-of-search on the brand term."
+          },
+          {
+            "entity": "duplicated term",
+            "scope": "Halo | SP | Exact | dup | SYN | EW",
+            "category": "Profit",
+            "why": "Profit/Halo target converting at a clearly profitable ACOS (12%, 3 order(s) this week).",
+            "action": "Raise bid and/or budget to capture more of this low-ACOS demand.",
+            "expectedImpact": "Incremental profit at low risk."
+          },
+          {
+            "entity": "duplicated term",
+            "scope": "Discovery Phrase | SP | Phrase | dup | SYN | EW",
+            "category": "Discovery",
+            "why": "Discovery target converting well (CVR 10%, 1 order(s) this week) -- a candidate to graduate into an exact/Rank campaign, or a modest bid raise in place.",
+            "action": "Raise the bid slightly and/or harvest the converting search term into its own exact/Profit campaign; watch the account's overall discovery share stays near the ~20% cap.",
+            "expectedImpact": "Captures more of a proven-converting term without growing discovery bloat."
+          }
+        ],
+        "pauseOptimize": [
+          {
+            "entity": "mid acos halo target",
+            "scope": "Halo | SP | Exact | widget long tail | SYN | EW",
+            "category": "Profit",
+            "why": "ACOS 30% vs the ~25% ceiling for a Profit target under this goal, despite converting.",
+            "action": "Lower the bid, tighten match type, or reallocate budget toward the account's Rank/Profit campaigns."
+          },
+          {
+            "entity": "bleeding discovery term",
+            "scope": "Discovery Auto | SP | Auto | widget | SYN | EW",
+            "category": "Discovery",
+            "why": "$45.00 spend with 0 orders this week, non-rank target -- negative-keyword/target candidate.",
+            "action": "Add as a negative exact (or pause the target) unless there's a known reason to keep testing it."
+          },
+          {
+            "entity": "duplicated term",
+            "scope": "Discovery Phrase | SP | Phrase | dup | SYN | EW",
+            "category": "Discovery",
+            "why": "ACOS 40% vs the ~25% ceiling for a Discovery target under this goal, despite converting.",
+            "action": "Lower the bid, tighten match type, or reallocate budget toward the account's Rank/Profit campaigns."
+          },
+          {
+            "entity": "duplicated term (exact)",
+            "scope": "Discovery Phrase | SP | Phrase | dup | SYN | EW, Halo | SP | Exact | dup | SYN | EW",
+            "category": "Profit",
+            "why": "Same target running in 2 campaigns (Discovery Phrase | SP | Phrase | dup | SYN | EW, Halo | SP | Exact | dup | SYN | EW) -- self-competition, bidding against itself in the auction.",
+            "action": "Consolidate into 'Halo | SP | Exact | dup | SYN | EW' (best performer: 3 order(s), ACOS 12%); pause/remove the duplicate(s) in Discovery Phrase | SP | Phrase | dup | SYN | EW."
+          },
+          {
+            "entity": "Halo | SP | Exact | stalled | SYN | EW",
+            "scope": "Halo | SP | Exact | stalled | SYN | EW",
+            "category": "Profit",
+            "why": "Near-zero activity this week ($0.00 spend, 3 impressions) -- stalled/redundant.",
+            "action": "Investigate (suppressed listing, exhausted keyword, mis-targeted) and archive if there's no path back to relevance."
+          }
+        ],
+        "tests": [
+          {
+            "hypothesis": "Self-targeted product placement (STPP) on your own ASIN produces low-cost, incremental retargeting-like sales.",
+            "method": "Set up an STPP campaign on 1-2 SKUs; compare resulting ACOS and order volume to account baseline.",
+            "successMetric": "ACOS and incremental order volume vs. a matched control period/account.",
+            "source": "conflicts-and-tests.md#T4",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "Comparing your own CTR/CVR per keyword to the SQP market/aggregate average reliably distinguishes a listing/creative problem from a genuinely winnable keyword that deserves more spend.",
+            "method": "Pull SQP for the flagged high-ACOS non-rank keywords; flag >2x CTR/CVR gaps vs. market average; act on the flagged set.",
+            "successMetric": "CTR/CVR/rank change 4-8 weeks after acting on flagged keywords, vs. an unflagged control set.",
+            "source": "conflicts-and-tests.md#T6",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "Day-parting bid rules, applied only to Profit/Halo/Shield campaigns (never Rank) and only once volume/CTR/CVR fundamentals are solid, improve blended ACOS without suppressing Rank-campaign bids.",
+            "method": "Export hourly reports, build a red/white/green conditional pivot, apply bid rules only to the eligible campaign categories.",
+            "successMetric": "Blended ACOS variance and conversion rate before/after; Rank-category keyword bids unchanged.",
+            "source": "conflicts-and-tests.md#T13",
+            "status": "vetted_backlog",
+            "priority": "medium"
+          }
+        ],
+        "notes": [
+          "No Rank Radar rows supplied -- graduation and per-keyword rank protection were skipped; Rank reads above rest on the category rule alone, not live organic-rank data."
+        ],
+        "graduate": []
+      }
+    },
+    {
+      "name": "build_recommendations:wide_scale_with_situation",
+      "input": {
+        "rawEntities": [
+          {
+            "entity_type": "target",
+            "name": "mid acos halo target",
+            "campaign_name": "Halo | SP | Exact | widget long tail | SYN | EW",
+            "campaign_id": "c-halo",
+            "match_type": "exact",
+            "impressions": 2000,
+            "clicks": 100,
+            "spend": 90.0,
+            "sales": 300.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "high acos rank keyword",
+            "campaign_name": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "campaign_id": "c-rank",
+            "match_type": "exact",
+            "impressions": 3000,
+            "clicks": 150,
+            "spend": 150.0,
+            "sales": 100.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "bleeding discovery term",
+            "campaign_name": "Discovery Auto | SP | Auto | widget | SYN | EW",
+            "campaign_id": "c-disco",
+            "match_type": "broad",
+            "impressions": 4000,
+            "clicks": 60,
+            "spend": 45.0,
+            "sales": 0.0,
+            "orders": 0
+          },
+          {
+            "entity_type": "target",
+            "name": "collapsed rank keyword",
+            "campaign_name": "Rank | SP | Exact | doohickey | SYN-DOO | EW",
+            "campaign_id": "c-rank-3",
+            "match_type": "exact",
+            "impressions": 40,
+            "clicks": 2,
+            "spend": 1.5,
+            "sales": 0.0,
+            "orders": 0,
+            "daily_budget": 20.0,
+            "budget_capped_days": 3
+          },
+          {
+            "entity_type": "target",
+            "name": "brand shield term",
+            "campaign_name": "Shield | SP | Exact | brand | SYN | EW",
+            "campaign_id": "c-shield",
+            "match_type": "exact",
+            "impressions": 50,
+            "clicks": 5,
+            "spend": 3.0,
+            "sales": 40.0,
+            "orders": 2,
+            "budget_capped_days": 2
+          },
+          {
+            "entity_type": "target",
+            "name": "duplicated term",
+            "campaign_name": "Halo | SP | Exact | dup | SYN | EW",
+            "campaign_id": "c-dup-a",
+            "match_type": "exact",
+            "impressions": 900,
+            "clicks": 30,
+            "spend": 12.0,
+            "sales": 100.0,
+            "orders": 3
+          },
+          {
+            "entity_type": "target",
+            "name": "duplicated term",
+            "campaign_name": "Discovery Phrase | SP | Phrase | dup | SYN | EW",
+            "campaign_id": "c-dup-b",
+            "match_type": "exact",
+            "impressions": 400,
+            "clicks": 10,
+            "spend": 8.0,
+            "sales": 20.0,
+            "orders": 1
+          },
+          {
+            "entity_type": "campaign",
+            "name": "Halo | SP | Exact | stalled | SYN | EW",
+            "campaign_name": "Halo | SP | Exact | stalled | SYN | EW",
+            "campaign_id": "c-stalled",
+            "impressions": 3,
+            "clicks": 0,
+            "spend": 0.0,
+            "sales": 0.0,
+            "orders": 0
+          }
+        ],
+        "goal": "scale",
+        "situation": "competitor hijack on brand terms",
+        "rankRadar": null,
+        "config": null,
+        "signalItems": null,
+        "pacing": null
+      },
+      "expected": {
+        "push": [
+          {
+            "entity": "high acos rank keyword",
+            "scope": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target converting (5 order(s) this week, ACOS 150%) with budget headroom -- ACOS is an indicator, not a decision factor, for a keyword we're deliberately running at/above break-even to drive rank.",
+            "action": "Raise the bid modestly and/or lift the top-of-search placement modifier to accelerate rank.",
+            "expectedImpact": "Faster organic rank movement on this keyword."
+          },
+          {
+            "entity": "collapsed rank keyword",
+            "scope": "Rank | SP | Exact | doohickey | SYN-DOO | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target collapsed to 40 impressions this week -- losing visibility on the exact keyword we're trying to rank is the single worst outcome under the rank-first philosophy.",
+            "action": "Raise the bid (and lift the ToS/placement modifier if capped) to regain impression share; verify the listing isn't suppressed/out of stock first.",
+            "expectedImpact": "Restore impression share and resume rank progress on this keyword."
+          },
+          {
+            "entity": "brand shield term",
+            "scope": "Shield | SP | Exact | brand | SYN | EW",
+            "category": "Shield",
+            "why": "Brand-defense target is budget-capped or impressions collapsed -- ceding branded search real estate to a competitor/hijacker is the real risk here.",
+            "action": "Raise bid/budget to protect the brand term; confirm no listing/inventory issue is the real cause first.",
+            "expectedImpact": "Hold Amazon's Choice / top-of-search on the brand term."
+          },
+          {
+            "entity": "duplicated term",
+            "scope": "Halo | SP | Exact | dup | SYN | EW",
+            "category": "Profit",
+            "why": "Profit/Halo target converting at a clearly profitable ACOS (12%, 3 order(s) this week).",
+            "action": "Raise bid and/or budget to capture more of this low-ACOS demand.",
+            "expectedImpact": "Incremental profit at low risk."
+          },
+          {
+            "entity": "duplicated term",
+            "scope": "Discovery Phrase | SP | Phrase | dup | SYN | EW",
+            "category": "Discovery",
+            "why": "Discovery target converting well (CVR 10%, 1 order(s) this week) -- a candidate to graduate into an exact/Rank campaign, or a modest bid raise in place.",
+            "action": "Raise the bid slightly and/or harvest the converting search term into its own exact/Profit campaign; watch the account's overall discovery share stays near the ~20% cap.",
+            "expectedImpact": "Captures more of a proven-converting term without growing discovery bloat."
+          }
+        ],
+        "pauseOptimize": [
+          {
+            "entity": "bleeding discovery term",
+            "scope": "Discovery Auto | SP | Auto | widget | SYN | EW",
+            "category": "Discovery",
+            "why": "$45.00 spend with 0 orders this week, non-rank target -- negative-keyword/target candidate.",
+            "action": "Add as a negative exact (or pause the target) unless there's a known reason to keep testing it."
+          },
+          {
+            "entity": "duplicated term",
+            "scope": "Discovery Phrase | SP | Phrase | dup | SYN | EW",
+            "category": "Discovery",
+            "why": "ACOS 40% vs the ~35% ceiling for a Discovery target under this goal, despite converting.",
+            "action": "Lower the bid, tighten match type, or reallocate budget toward the account's Rank/Profit campaigns."
+          },
+          {
+            "entity": "Discovery campaigns (account-wide)",
+            "scope": "account",
+            "category": "Discovery",
+            "why": "Discovery is 17% of this week's spend (target ~15% or less per the ~80/20 exact/discovery split).",
+            "action": "Tighten Discovery bids and search-term hygiene; reallocate the freed budget toward Rank/exact campaigns."
+          },
+          {
+            "entity": "duplicated term (exact)",
+            "scope": "Discovery Phrase | SP | Phrase | dup | SYN | EW, Halo | SP | Exact | dup | SYN | EW",
+            "category": "Profit",
+            "why": "Same target running in 2 campaigns (Discovery Phrase | SP | Phrase | dup | SYN | EW, Halo | SP | Exact | dup | SYN | EW) -- self-competition, bidding against itself in the auction.",
+            "action": "Consolidate into 'Halo | SP | Exact | dup | SYN | EW' (best performer: 3 order(s), ACOS 12%); pause/remove the duplicate(s) in Discovery Phrase | SP | Phrase | dup | SYN | EW."
+          },
+          {
+            "entity": "Halo | SP | Exact | stalled | SYN | EW",
+            "scope": "Halo | SP | Exact | stalled | SYN | EW",
+            "category": "Profit",
+            "why": "Near-zero activity this week ($0.00 spend, 3 impressions) -- stalled/redundant.",
+            "action": "Investigate (suppressed listing, exhausted keyword, mis-targeted) and archive if there's no path back to relevance."
+          }
+        ],
+        "tests": [
+          {
+            "hypothesis": "Single-keyword exact-match Rank campaigns produce faster/more durable organic rank gains per dollar than equivalent broad/auto/category campaigns, despite showing worse headline ACOS.",
+            "method": "Run a matched broad-match and exact-match campaign for the same target keyword in parallel (same product, budget, period) for 4-8 weeks.",
+            "successMetric": "Organic rank position delta + ACOS/CVR, both campaign types, same window.",
+            "source": "conflicts-and-tests.md#T1",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "A permanent, very-low-bid scavenger/catch-all campaign captures incremental, low-ACOS orders without cannibalizing structured Rank/Discovery/Profit spend.",
+            "method": "Run alongside (never instead of) the existing structure; track for 60 days.",
+            "successMetric": "Incremental profit contribution net of any overlap with existing broad/auto discovery campaigns.",
+            "source": "conflicts-and-tests.md#T3",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "Self-targeted product placement (STPP) on your own ASIN produces low-cost, incremental retargeting-like sales.",
+            "method": "Set up an STPP campaign on 1-2 SKUs; compare resulting ACOS and order volume to account baseline.",
+            "successMetric": "ACOS and incremental order volume vs. a matched control period/account.",
+            "source": "conflicts-and-tests.md#T4",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "Comparing your own CTR/CVR per keyword to the SQP market/aggregate average reliably distinguishes a listing/creative problem from a genuinely winnable keyword that deserves more spend.",
+            "method": "Pull SQP for the flagged high-ACOS non-rank keywords; flag >2x CTR/CVR gaps vs. market average; act on the flagged set.",
+            "successMetric": "CTR/CVR/rank change 4-8 weeks after acting on flagged keywords, vs. an unflagged control set.",
+            "source": "conflicts-and-tests.md#T6",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "A formalized statistical negative-keyword threshold (e.g. 3x the clicks needed for one expected sale) produces fewer false-negative pauses than ad-hoc negation timing.",
+            "method": "Apply the threshold consistently to Discovery-category auto/broad campaigns for 60 days; audit the false-negative rate.",
+            "successMetric": "ACOS improvement and negative-keyword harvest speed vs. ad-hoc review.",
+            "source": "conflicts-and-tests.md#T18",
+            "status": "vetted_backlog",
+            "priority": "medium"
+          },
+          {
+            "hypothesis": "Pausing own-brand Shield campaigns opens the door to competitor capture of branded search real estate within weeks.",
+            "method": "Confirmatory only -- do not actually pause Shield spend to test this. Monitor competitor impression/click share on branded terms via SQP as a standing watch.",
+            "successMetric": "Competitor share-of-search on the brand term over time.",
+            "source": "conflicts-and-tests.md#T5",
+            "status": "vetted_backlog",
+            "priority": "high"
+          }
+        ],
+        "notes": [
+          "No Rank Radar rows supplied -- graduation and per-keyword rank protection were skipped; Rank reads above rest on the category rule alone, not live organic-rank data."
+        ],
+        "graduate": []
+      }
+    },
+    {
+      "name": "build_recommendations:radar_protection",
+      "input": {
+        "rawEntities": [
+          {
+            "entity_type": "target",
+            "name": "mid acos halo target",
+            "campaign_name": "Halo | SP | Exact | widget long tail | SYN | EW",
+            "campaign_id": "c-halo",
+            "match_type": "exact",
+            "impressions": 2000,
+            "clicks": 100,
+            "spend": 90.0,
+            "sales": 300.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "high acos rank keyword",
+            "campaign_name": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "campaign_id": "c-rank",
+            "match_type": "exact",
+            "impressions": 3000,
+            "clicks": 150,
+            "spend": 150.0,
+            "sales": 100.0,
+            "orders": 5
+          }
+        ],
+        "goal": "profit-maintain",
+        "situation": null,
+        "rankRadar": [
+          {
+            "keyword": "high acos rank keyword",
+            "rank_now": 1,
+            "rank_prev": 1,
+            "weeks_stable": 4
+          },
+          {
+            "keyword": "mid acos halo target",
+            "rank_now": 8,
+            "rank_prev": 15,
+            "weeks_stable": 0
+          },
+          {
+            "keyword": "almost there keyword",
+            "rank_now": 2,
+            "rank_prev": 4,
+            "weeks_stable": 1
+          },
+          {
+            "keyword": "",
+            "rank_now": 3,
+            "rank_prev": 4,
+            "weeks_stable": 5
+          },
+          {
+            "keyword": "no rank at all",
+            "rank_now": null,
+            "rank_prev": 2,
+            "weeks_stable": 5
+          }
+        ],
+        "config": null,
+        "signalItems": null,
+        "pacing": null
+      },
+      "expected": {
+        "push": [],
+        "pauseOptimize": [],
+        "tests": [
+          {
+            "hypothesis": "Self-targeted product placement (STPP) on your own ASIN produces low-cost, incremental retargeting-like sales.",
+            "method": "Set up an STPP campaign on 1-2 SKUs; compare resulting ACOS and order volume to account baseline.",
+            "successMetric": "ACOS and incremental order volume vs. a matched control period/account.",
+            "source": "conflicts-and-tests.md#T4",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "Day-parting bid rules, applied only to Profit/Halo/Shield campaigns (never Rank) and only once volume/CTR/CVR fundamentals are solid, improve blended ACOS without suppressing Rank-campaign bids.",
+            "method": "Export hourly reports, build a red/white/green conditional pivot, apply bid rules only to the eligible campaign categories.",
+            "successMetric": "Blended ACOS variance and conversion rate before/after; Rank-category keyword bids unchanged.",
+            "source": "conflicts-and-tests.md#T13",
+            "status": "vetted_backlog",
+            "priority": "medium"
+          }
+        ],
+        "notes": [
+          "'mid acos halo target' (Profit, Halo | SP | Exact | widget long tail | SYN | EW): ACOS 30% over the ~25% ceiling -- NOT proposed for a cut: organic rank improving (15 -> 8 per Rank Radar) -- we're buying position; don't cut on ACOS alone."
+        ],
+        "graduate": [
+          {
+            "keyword": "high acos rank keyword",
+            "rankNow": 1,
+            "weeksStable": 4,
+            "why": "Organic rank 1 for 4 consecutive Rank Radar weeks -- the rank push has done its job; stop paying above break-even here.",
+            "action": "Step the ToS placement modifier and bid down toward break-even over 2-3 optimizer cycles (never cliff-drop -- deranking follows cliff-drops); the keyword moves to the Profit role. Re-escalation if rank later slips past 5 is an operator decision."
+          }
+        ]
+      }
+    },
+    {
+      "name": "build_recommendations:radar_with_wide_set",
+      "input": {
+        "rawEntities": [
+          {
+            "entity_type": "target",
+            "name": "mid acos halo target",
+            "campaign_name": "Halo | SP | Exact | widget long tail | SYN | EW",
+            "campaign_id": "c-halo",
+            "match_type": "exact",
+            "impressions": 2000,
+            "clicks": 100,
+            "spend": 90.0,
+            "sales": 300.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "high acos rank keyword",
+            "campaign_name": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "campaign_id": "c-rank",
+            "match_type": "exact",
+            "impressions": 3000,
+            "clicks": 150,
+            "spend": 150.0,
+            "sales": 100.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "bleeding discovery term",
+            "campaign_name": "Discovery Auto | SP | Auto | widget | SYN | EW",
+            "campaign_id": "c-disco",
+            "match_type": "broad",
+            "impressions": 4000,
+            "clicks": 60,
+            "spend": 45.0,
+            "sales": 0.0,
+            "orders": 0
+          },
+          {
+            "entity_type": "target",
+            "name": "collapsed rank keyword",
+            "campaign_name": "Rank | SP | Exact | doohickey | SYN-DOO | EW",
+            "campaign_id": "c-rank-3",
+            "match_type": "exact",
+            "impressions": 40,
+            "clicks": 2,
+            "spend": 1.5,
+            "sales": 0.0,
+            "orders": 0,
+            "daily_budget": 20.0,
+            "budget_capped_days": 3
+          },
+          {
+            "entity_type": "target",
+            "name": "brand shield term",
+            "campaign_name": "Shield | SP | Exact | brand | SYN | EW",
+            "campaign_id": "c-shield",
+            "match_type": "exact",
+            "impressions": 50,
+            "clicks": 5,
+            "spend": 3.0,
+            "sales": 40.0,
+            "orders": 2,
+            "budget_capped_days": 2
+          },
+          {
+            "entity_type": "target",
+            "name": "duplicated term",
+            "campaign_name": "Halo | SP | Exact | dup | SYN | EW",
+            "campaign_id": "c-dup-a",
+            "match_type": "exact",
+            "impressions": 900,
+            "clicks": 30,
+            "spend": 12.0,
+            "sales": 100.0,
+            "orders": 3
+          },
+          {
+            "entity_type": "target",
+            "name": "duplicated term",
+            "campaign_name": "Discovery Phrase | SP | Phrase | dup | SYN | EW",
+            "campaign_id": "c-dup-b",
+            "match_type": "exact",
+            "impressions": 400,
+            "clicks": 10,
+            "spend": 8.0,
+            "sales": 20.0,
+            "orders": 1
+          },
+          {
+            "entity_type": "campaign",
+            "name": "Halo | SP | Exact | stalled | SYN | EW",
+            "campaign_name": "Halo | SP | Exact | stalled | SYN | EW",
+            "campaign_id": "c-stalled",
+            "impressions": 3,
+            "clicks": 0,
+            "spend": 0.0,
+            "sales": 0.0,
+            "orders": 0
+          }
+        ],
+        "goal": "defend",
+        "situation": null,
+        "rankRadar": [
+          {
+            "keyword": "high acos rank keyword",
+            "rank_now": 1,
+            "rank_prev": 1,
+            "weeks_stable": 4
+          },
+          {
+            "keyword": "mid acos halo target",
+            "rank_now": 8,
+            "rank_prev": 15,
+            "weeks_stable": 0
+          },
+          {
+            "keyword": "almost there keyword",
+            "rank_now": 2,
+            "rank_prev": 4,
+            "weeks_stable": 1
+          },
+          {
+            "keyword": "",
+            "rank_now": 3,
+            "rank_prev": 4,
+            "weeks_stable": 5
+          },
+          {
+            "keyword": "no rank at all",
+            "rank_now": null,
+            "rank_prev": 2,
+            "weeks_stable": 5
+          }
+        ],
+        "config": null,
+        "signalItems": null,
+        "pacing": null
+      },
+      "expected": {
+        "push": [
+          {
+            "entity": "collapsed rank keyword",
+            "scope": "Rank | SP | Exact | doohickey | SYN-DOO | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target collapsed to 40 impressions this week -- losing visibility on the exact keyword we're trying to rank is the single worst outcome under the rank-first philosophy.",
+            "action": "Raise the bid (and lift the ToS/placement modifier if capped) to regain impression share; verify the listing isn't suppressed/out of stock first.",
+            "expectedImpact": "Restore impression share and resume rank progress on this keyword."
+          },
+          {
+            "entity": "brand shield term",
+            "scope": "Shield | SP | Exact | brand | SYN | EW",
+            "category": "Shield",
+            "why": "Brand-defense target is budget-capped or impressions collapsed -- ceding branded search real estate to a competitor/hijacker is the real risk here.",
+            "action": "Raise bid/budget to protect the brand term; confirm no listing/inventory issue is the real cause first.",
+            "expectedImpact": "Hold Amazon's Choice / top-of-search on the brand term."
+          },
+          {
+            "entity": "duplicated term",
+            "scope": "Halo | SP | Exact | dup | SYN | EW",
+            "category": "Profit",
+            "why": "Profit/Halo target converting at a clearly profitable ACOS (12%, 3 order(s) this week).",
+            "action": "Raise bid and/or budget to capture more of this low-ACOS demand.",
+            "expectedImpact": "Incremental profit at low risk."
+          },
+          {
+            "entity": "duplicated term",
+            "scope": "Discovery Phrase | SP | Phrase | dup | SYN | EW",
+            "category": "Discovery",
+            "why": "Discovery target converting well (CVR 10%, 1 order(s) this week) -- a candidate to graduate into an exact/Rank campaign, or a modest bid raise in place.",
+            "action": "Raise the bid slightly and/or harvest the converting search term into its own exact/Profit campaign; watch the account's overall discovery share stays near the ~20% cap.",
+            "expectedImpact": "Captures more of a proven-converting term without growing discovery bloat."
+          }
+        ],
+        "pauseOptimize": [
+          {
+            "entity": "bleeding discovery term",
+            "scope": "Discovery Auto | SP | Auto | widget | SYN | EW",
+            "category": "Discovery",
+            "why": "$45.00 spend with 0 orders this week, non-rank target -- negative-keyword/target candidate.",
+            "action": "Add as a negative exact (or pause the target) unless there's a known reason to keep testing it."
+          },
+          {
+            "entity": "duplicated term (exact)",
+            "scope": "Discovery Phrase | SP | Phrase | dup | SYN | EW, Halo | SP | Exact | dup | SYN | EW",
+            "category": "Profit",
+            "why": "Same target running in 2 campaigns (Discovery Phrase | SP | Phrase | dup | SYN | EW, Halo | SP | Exact | dup | SYN | EW) -- self-competition, bidding against itself in the auction.",
+            "action": "Consolidate into 'Halo | SP | Exact | dup | SYN | EW' (best performer: 3 order(s), ACOS 12%); pause/remove the duplicate(s) in Discovery Phrase | SP | Phrase | dup | SYN | EW."
+          },
+          {
+            "entity": "Halo | SP | Exact | stalled | SYN | EW",
+            "scope": "Halo | SP | Exact | stalled | SYN | EW",
+            "category": "Profit",
+            "why": "Near-zero activity this week ($0.00 spend, 3 impressions) -- stalled/redundant.",
+            "action": "Investigate (suppressed listing, exhausted keyword, mis-targeted) and archive if there's no path back to relevance."
+          }
+        ],
+        "tests": [
+          {
+            "hypothesis": "Self-targeted product placement (STPP) on your own ASIN produces low-cost, incremental retargeting-like sales.",
+            "method": "Set up an STPP campaign on 1-2 SKUs; compare resulting ACOS and order volume to account baseline.",
+            "successMetric": "ACOS and incremental order volume vs. a matched control period/account.",
+            "source": "conflicts-and-tests.md#T4",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "Pausing own-brand Shield campaigns opens the door to competitor capture of branded search real estate within weeks.",
+            "method": "Confirmatory only -- do not actually pause Shield spend to test this. Monitor competitor impression/click share on branded terms via SQP as a standing watch.",
+            "successMetric": "Competitor share-of-search on the brand term over time.",
+            "source": "conflicts-and-tests.md#T5",
+            "status": "vetted_backlog",
+            "priority": "high"
+          }
+        ],
+        "notes": [],
+        "graduate": [
+          {
+            "keyword": "high acos rank keyword",
+            "rankNow": 1,
+            "weeksStable": 4,
+            "why": "Organic rank 1 for 4 consecutive Rank Radar weeks -- the rank push has done its job; stop paying above break-even here.",
+            "action": "Step the ToS placement modifier and bid down toward break-even over 2-3 optimizer cycles (never cliff-drop -- deranking follows cliff-drops); the keyword moves to the Profit role. Re-escalation if rank later slips past 5 is an operator decision."
+          }
+        ]
+      }
+    },
+    {
+      "name": "build_recommendations:healthy_rank_only",
+      "input": {
+        "rawEntities": [
+          {
+            "entity_type": "target",
+            "name": "healthy rank keyword",
+            "campaign_name": "Rank | SP | Exact | gizmo | SYN-GIZ | EW",
+            "campaign_id": "c-rank-2",
+            "match_type": "exact",
+            "impressions": 5000,
+            "clicks": 200,
+            "spend": 40.0,
+            "sales": 200.0,
+            "orders": 8
+          }
+        ],
+        "goal": null,
+        "situation": null,
+        "rankRadar": null,
+        "config": null,
+        "signalItems": null,
+        "pacing": null
+      },
+      "expected": {
+        "push": [
+          {
+            "entity": "healthy rank keyword",
+            "scope": "Rank | SP | Exact | gizmo | SYN-GIZ | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target converting (8 order(s) this week, ACOS 20%) with budget headroom -- ACOS is an indicator, not a decision factor, for a keyword we're deliberately running at/above break-even to drive rank.",
+            "action": "Raise the bid modestly and/or lift the top-of-search placement modifier to accelerate rank.",
+            "expectedImpact": "Faster organic rank movement on this keyword."
+          }
+        ],
+        "pauseOptimize": [],
+        "tests": [],
+        "notes": [
+          "No Rank Radar rows supplied -- graduation and per-keyword rank protection were skipped; Rank reads above rest on the category rule alone, not live organic-rank data.",
+          "No new tests warranted this week."
+        ],
+        "graduate": []
+      }
+    },
+    {
+      "name": "build_recommendations:signal_driven",
+      "input": {
+        "rawEntities": [
+          {
+            "entity_type": "target",
+            "name": "healthy rank keyword",
+            "campaign_name": "Rank | SP | Exact | gizmo | SYN-GIZ | EW",
+            "campaign_id": "c-rank-2",
+            "match_type": "exact",
+            "impressions": 5000,
+            "clicks": 200,
+            "spend": 40.0,
+            "sales": 200.0,
+            "orders": 8
+          }
+        ],
+        "goal": null,
+        "situation": null,
+        "rankRadar": null,
+        "config": null,
+        "signalItems": [
+          {
+            "hypothesis": "Test broad-match variants alongside the exact Rank keyword",
+            "successMetric": "Define a success metric mapped to this brand's goal before running.",
+            "source": "PPC Newsletter #42",
+            "confidence": "unverified",
+            "requires": [
+              [
+                "rank_present"
+              ]
+            ]
+          },
+          {
+            "hypothesis": "Untagged claim",
+            "successMetric": "Define a success metric mapped to this brand's goal before running.",
+            "source": "Somewhere",
+            "confidence": "low",
+            "requires": []
+          }
+        ],
+        "pacing": null
+      },
+      "expected": {
+        "push": [
+          {
+            "entity": "healthy rank keyword",
+            "scope": "Rank | SP | Exact | gizmo | SYN-GIZ | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target converting (8 order(s) this week, ACOS 20%) with budget headroom -- ACOS is an indicator, not a decision factor, for a keyword we're deliberately running at/above break-even to drive rank.",
+            "action": "Raise the bid modestly and/or lift the top-of-search placement modifier to accelerate rank.",
+            "expectedImpact": "Faster organic rank movement on this keyword."
+          }
+        ],
+        "pauseOptimize": [],
+        "tests": [
+          {
+            "hypothesis": "Test broad-match variants alongside the exact Rank keyword",
+            "method": "Design a small controlled test in this account before generalizing.",
+            "successMetric": "Define a success metric mapped to this brand's goal before running.",
+            "source": "PPC Newsletter #42",
+            "status": "external_signal_hypothesis",
+            "priority": "low"
+          }
+        ],
+        "notes": [
+          "No Rank Radar rows supplied -- graduation and per-keyword rank protection were skipped; Rank reads above rest on the category rule alone, not live organic-rank data."
+        ],
+        "graduate": []
+      }
+    },
+    {
+      "name": "build_recommendations:empty_entities",
+      "input": {
+        "rawEntities": [],
+        "goal": null,
+        "situation": null,
+        "rankRadar": null,
+        "config": null,
+        "signalItems": null,
+        "pacing": null
+      },
+      "expected": {
+        "push": [],
+        "pauseOptimize": [],
+        "tests": [],
+        "notes": [
+          "No AdLabs campaign/target-level rows supplied this week -- Push/Pause-Optimize lists are empty by construction, not a clean bill of health.",
+          "No new tests warranted this week."
+        ],
+        "graduate": []
+      }
+    },
+    {
+      "name": "build_recommendations:config_override",
+      "input": {
+        "rawEntities": [
+          {
+            "entity_type": "target",
+            "name": "mid acos halo target",
+            "campaign_name": "Halo | SP | Exact | widget long tail | SYN | EW",
+            "campaign_id": "c-halo",
+            "match_type": "exact",
+            "impressions": 2000,
+            "clicks": 100,
+            "spend": 90.0,
+            "sales": 300.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "high acos rank keyword",
+            "campaign_name": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "campaign_id": "c-rank",
+            "match_type": "exact",
+            "impressions": 3000,
+            "clicks": 150,
+            "spend": 150.0,
+            "sales": 100.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "bleeding discovery term",
+            "campaign_name": "Discovery Auto | SP | Auto | widget | SYN | EW",
+            "campaign_id": "c-disco",
+            "match_type": "broad",
+            "impressions": 4000,
+            "clicks": 60,
+            "spend": 45.0,
+            "sales": 0.0,
+            "orders": 0
+          },
+          {
+            "entity_type": "target",
+            "name": "collapsed rank keyword",
+            "campaign_name": "Rank | SP | Exact | doohickey | SYN-DOO | EW",
+            "campaign_id": "c-rank-3",
+            "match_type": "exact",
+            "impressions": 40,
+            "clicks": 2,
+            "spend": 1.5,
+            "sales": 0.0,
+            "orders": 0,
+            "daily_budget": 20.0,
+            "budget_capped_days": 3
+          },
+          {
+            "entity_type": "target",
+            "name": "brand shield term",
+            "campaign_name": "Shield | SP | Exact | brand | SYN | EW",
+            "campaign_id": "c-shield",
+            "match_type": "exact",
+            "impressions": 50,
+            "clicks": 5,
+            "spend": 3.0,
+            "sales": 40.0,
+            "orders": 2,
+            "budget_capped_days": 2
+          },
+          {
+            "entity_type": "target",
+            "name": "duplicated term",
+            "campaign_name": "Halo | SP | Exact | dup | SYN | EW",
+            "campaign_id": "c-dup-a",
+            "match_type": "exact",
+            "impressions": 900,
+            "clicks": 30,
+            "spend": 12.0,
+            "sales": 100.0,
+            "orders": 3
+          },
+          {
+            "entity_type": "target",
+            "name": "duplicated term",
+            "campaign_name": "Discovery Phrase | SP | Phrase | dup | SYN | EW",
+            "campaign_id": "c-dup-b",
+            "match_type": "exact",
+            "impressions": 400,
+            "clicks": 10,
+            "spend": 8.0,
+            "sales": 20.0,
+            "orders": 1
+          },
+          {
+            "entity_type": "campaign",
+            "name": "Halo | SP | Exact | stalled | SYN | EW",
+            "campaign_name": "Halo | SP | Exact | stalled | SYN | EW",
+            "campaign_id": "c-stalled",
+            "impressions": 3,
+            "clicks": 0,
+            "spend": 0.0,
+            "sales": 0.0,
+            "orders": 0
+          }
+        ],
+        "goal": "scale",
+        "situation": null,
+        "rankRadar": null,
+        "config": {
+          "rec_thresholds": {
+            "zero_sale_spend_min_weekly": 5.0,
+            "graduate_rank_max": 1
+          }
+        },
+        "signalItems": null,
+        "pacing": null
+      },
+      "expected": {
+        "push": [
+          {
+            "entity": "high acos rank keyword",
+            "scope": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target converting (5 order(s) this week, ACOS 150%) with budget headroom -- ACOS is an indicator, not a decision factor, for a keyword we're deliberately running at/above break-even to drive rank.",
+            "action": "Raise the bid modestly and/or lift the top-of-search placement modifier to accelerate rank.",
+            "expectedImpact": "Faster organic rank movement on this keyword."
+          },
+          {
+            "entity": "collapsed rank keyword",
+            "scope": "Rank | SP | Exact | doohickey | SYN-DOO | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target collapsed to 40 impressions this week -- losing visibility on the exact keyword we're trying to rank is the single worst outcome under the rank-first philosophy.",
+            "action": "Raise the bid (and lift the ToS/placement modifier if capped) to regain impression share; verify the listing isn't suppressed/out of stock first.",
+            "expectedImpact": "Restore impression share and resume rank progress on this keyword."
+          },
+          {
+            "entity": "brand shield term",
+            "scope": "Shield | SP | Exact | brand | SYN | EW",
+            "category": "Shield",
+            "why": "Brand-defense target is budget-capped or impressions collapsed -- ceding branded search real estate to a competitor/hijacker is the real risk here.",
+            "action": "Raise bid/budget to protect the brand term; confirm no listing/inventory issue is the real cause first.",
+            "expectedImpact": "Hold Amazon's Choice / top-of-search on the brand term."
+          },
+          {
+            "entity": "duplicated term",
+            "scope": "Halo | SP | Exact | dup | SYN | EW",
+            "category": "Profit",
+            "why": "Profit/Halo target converting at a clearly profitable ACOS (12%, 3 order(s) this week).",
+            "action": "Raise bid and/or budget to capture more of this low-ACOS demand.",
+            "expectedImpact": "Incremental profit at low risk."
+          },
+          {
+            "entity": "duplicated term",
+            "scope": "Discovery Phrase | SP | Phrase | dup | SYN | EW",
+            "category": "Discovery",
+            "why": "Discovery target converting well (CVR 10%, 1 order(s) this week) -- a candidate to graduate into an exact/Rank campaign, or a modest bid raise in place.",
+            "action": "Raise the bid slightly and/or harvest the converting search term into its own exact/Profit campaign; watch the account's overall discovery share stays near the ~20% cap.",
+            "expectedImpact": "Captures more of a proven-converting term without growing discovery bloat."
+          }
+        ],
+        "pauseOptimize": [
+          {
+            "entity": "bleeding discovery term",
+            "scope": "Discovery Auto | SP | Auto | widget | SYN | EW",
+            "category": "Discovery",
+            "why": "$45.00 spend with 0 orders this week, non-rank target -- negative-keyword/target candidate.",
+            "action": "Add as a negative exact (or pause the target) unless there's a known reason to keep testing it."
+          },
+          {
+            "entity": "duplicated term",
+            "scope": "Discovery Phrase | SP | Phrase | dup | SYN | EW",
+            "category": "Discovery",
+            "why": "ACOS 40% vs the ~35% ceiling for a Discovery target under this goal, despite converting.",
+            "action": "Lower the bid, tighten match type, or reallocate budget toward the account's Rank/Profit campaigns."
+          },
+          {
+            "entity": "Discovery campaigns (account-wide)",
+            "scope": "account",
+            "category": "Discovery",
+            "why": "Discovery is 17% of this week's spend (target ~15% or less per the ~80/20 exact/discovery split).",
+            "action": "Tighten Discovery bids and search-term hygiene; reallocate the freed budget toward Rank/exact campaigns."
+          },
+          {
+            "entity": "duplicated term (exact)",
+            "scope": "Discovery Phrase | SP | Phrase | dup | SYN | EW, Halo | SP | Exact | dup | SYN | EW",
+            "category": "Profit",
+            "why": "Same target running in 2 campaigns (Discovery Phrase | SP | Phrase | dup | SYN | EW, Halo | SP | Exact | dup | SYN | EW) -- self-competition, bidding against itself in the auction.",
+            "action": "Consolidate into 'Halo | SP | Exact | dup | SYN | EW' (best performer: 3 order(s), ACOS 12%); pause/remove the duplicate(s) in Discovery Phrase | SP | Phrase | dup | SYN | EW."
+          },
+          {
+            "entity": "Halo | SP | Exact | stalled | SYN | EW",
+            "scope": "Halo | SP | Exact | stalled | SYN | EW",
+            "category": "Profit",
+            "why": "Near-zero activity this week ($0.00 spend, 3 impressions) -- stalled/redundant.",
+            "action": "Investigate (suppressed listing, exhausted keyword, mis-targeted) and archive if there's no path back to relevance."
+          }
+        ],
+        "tests": [
+          {
+            "hypothesis": "Single-keyword exact-match Rank campaigns produce faster/more durable organic rank gains per dollar than equivalent broad/auto/category campaigns, despite showing worse headline ACOS.",
+            "method": "Run a matched broad-match and exact-match campaign for the same target keyword in parallel (same product, budget, period) for 4-8 weeks.",
+            "successMetric": "Organic rank position delta + ACOS/CVR, both campaign types, same window.",
+            "source": "conflicts-and-tests.md#T1",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "A permanent, very-low-bid scavenger/catch-all campaign captures incremental, low-ACOS orders without cannibalizing structured Rank/Discovery/Profit spend.",
+            "method": "Run alongside (never instead of) the existing structure; track for 60 days.",
+            "successMetric": "Incremental profit contribution net of any overlap with existing broad/auto discovery campaigns.",
+            "source": "conflicts-and-tests.md#T3",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "Self-targeted product placement (STPP) on your own ASIN produces low-cost, incremental retargeting-like sales.",
+            "method": "Set up an STPP campaign on 1-2 SKUs; compare resulting ACOS and order volume to account baseline.",
+            "successMetric": "ACOS and incremental order volume vs. a matched control period/account.",
+            "source": "conflicts-and-tests.md#T4",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "Comparing your own CTR/CVR per keyword to the SQP market/aggregate average reliably distinguishes a listing/creative problem from a genuinely winnable keyword that deserves more spend.",
+            "method": "Pull SQP for the flagged high-ACOS non-rank keywords; flag >2x CTR/CVR gaps vs. market average; act on the flagged set.",
+            "successMetric": "CTR/CVR/rank change 4-8 weeks after acting on flagged keywords, vs. an unflagged control set.",
+            "source": "conflicts-and-tests.md#T6",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "A formalized statistical negative-keyword threshold (e.g. 3x the clicks needed for one expected sale) produces fewer false-negative pauses than ad-hoc negation timing.",
+            "method": "Apply the threshold consistently to Discovery-category auto/broad campaigns for 60 days; audit the false-negative rate.",
+            "successMetric": "ACOS improvement and negative-keyword harvest speed vs. ad-hoc review.",
+            "source": "conflicts-and-tests.md#T18",
+            "status": "vetted_backlog",
+            "priority": "medium"
+          }
+        ],
+        "notes": [
+          "No Rank Radar rows supplied -- graduation and per-keyword rank protection were skipped; Rank reads above rest on the category rule alone, not live organic-rank data."
+        ],
+        "graduate": []
+      }
+    },
+    {
+      "name": "build_recommendations:pacing_act_note",
+      "input": {
+        "rawEntities": [
+          {
+            "entity_type": "target",
+            "name": "mid acos halo target",
+            "campaign_name": "Halo | SP | Exact | widget long tail | SYN | EW",
+            "campaign_id": "c-halo",
+            "match_type": "exact",
+            "impressions": 2000,
+            "clicks": 100,
+            "spend": 90.0,
+            "sales": 300.0,
+            "orders": 5
+          },
+          {
+            "entity_type": "target",
+            "name": "high acos rank keyword",
+            "campaign_name": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "campaign_id": "c-rank",
+            "match_type": "exact",
+            "impressions": 3000,
+            "clicks": 150,
+            "spend": 150.0,
+            "sales": 100.0,
+            "orders": 5
+          }
+        ],
+        "goal": "profit-maintain",
+        "situation": null,
+        "rankRadar": null,
+        "config": null,
+        "signalItems": null,
+        "pacing": {
+          "asOf": "2026-07-10",
+          "monthStart": "2026-07-01",
+          "dayOfMonth": 10,
+          "daysInMonth": 31,
+          "monthlyBudget": 3100.0,
+          "mtdSpend": 1300.0,
+          "budgetToDate": 1000.0,
+          "pace": 1.3,
+          "status": "act",
+          "daysWithData": 10,
+          "coverageComplete": true,
+          "guidance": [
+            "1. Waste first: high-spend-no-sales targets (the optimizer's own bucket).",
+            "2. Discovery: bids down, then budgets (share of spend must stay <= ~20% anyway).",
+            "3. Profit: bid trims toward target ACOS; never pause converting targets for pacing.",
+            "4. Rank LAST, and ONLY by explicit operator/client decision -- a mid-flight rank push is never cut silently by the governor."
+          ],
+          "notes": []
+        }
+      },
+      "expected": {
+        "push": [
+          {
+            "entity": "high acos rank keyword",
+            "scope": "Rank | SP | Exact | widget | SYN-WID | EW",
+            "category": "Rank",
+            "why": "Rank/SKW target converting (5 order(s) this week, ACOS 150%) with budget headroom -- ACOS is an indicator, not a decision factor, for a keyword we're deliberately running at/above break-even to drive rank.",
+            "action": "Raise the bid modestly and/or lift the top-of-search placement modifier to accelerate rank.",
+            "expectedImpact": "Faster organic rank movement on this keyword."
+          }
+        ],
+        "pauseOptimize": [
+          {
+            "entity": "mid acos halo target",
+            "scope": "Halo | SP | Exact | widget long tail | SYN | EW",
+            "category": "Profit",
+            "why": "ACOS 30% vs the ~25% ceiling for a Profit target under this goal, despite converting.",
+            "action": "Lower the bid, tighten match type, or reallocate budget toward the account's Rank/Profit campaigns."
+          }
+        ],
+        "tests": [
+          {
+            "hypothesis": "Self-targeted product placement (STPP) on your own ASIN produces low-cost, incremental retargeting-like sales.",
+            "method": "Set up an STPP campaign on 1-2 SKUs; compare resulting ACOS and order volume to account baseline.",
+            "successMetric": "ACOS and incremental order volume vs. a matched control period/account.",
+            "source": "conflicts-and-tests.md#T4",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "Comparing your own CTR/CVR per keyword to the SQP market/aggregate average reliably distinguishes a listing/creative problem from a genuinely winnable keyword that deserves more spend.",
+            "method": "Pull SQP for the flagged high-ACOS non-rank keywords; flag >2x CTR/CVR gaps vs. market average; act on the flagged set.",
+            "successMetric": "CTR/CVR/rank change 4-8 weeks after acting on flagged keywords, vs. an unflagged control set.",
+            "source": "conflicts-and-tests.md#T6",
+            "status": "vetted_backlog",
+            "priority": "high"
+          },
+          {
+            "hypothesis": "Day-parting bid rules, applied only to Profit/Halo/Shield campaigns (never Rank) and only once volume/CTR/CVR fundamentals are solid, improve blended ACOS without suppressing Rank-campaign bids.",
+            "method": "Export hourly reports, build a red/white/green conditional pivot, apply bid rules only to the eligible campaign categories.",
+            "successMetric": "Blended ACOS variance and conversion rate before/after; Rank-category keyword bids unchanged.",
+            "source": "conflicts-and-tests.md#T13",
+            "status": "vetted_backlog",
+            "priority": "medium"
+          }
+        ],
+        "notes": [
+          "No Rank Radar rows supplied -- graduation and per-keyword rank protection were skipped; Rank reads above rest on the category rule alone, not live organic-rank data.",
+          "Run-rate governor: pace 1.30 is over the act threshold -- apply the cut order waste -> discovery -> profit; Rank last and ONLY by explicit operator decision."
+        ],
+        "graduate": []
+      }
+    },
+    {
+      "name": "parse_signal_digest_markdown:mixed",
+      "input": {
+        "text": "- **Test broad-match variants alongside the exact Rank keyword.** Tags: rank_present. Source: PPC Newsletter #42. Confidence: unverified.\n- a bullet that does not follow the convention at all\n- **Untagged claim.** Tags: . Source: Somewhere. Confidence: low.\n"
+      },
+      "expected": [
+        {
+          "hypothesis": "Test broad-match variants alongside the exact Rank keyword",
+          "successMetric": "Define a success metric mapped to this brand's goal before running.",
+          "source": "PPC Newsletter #42",
+          "confidence": "unverified",
+          "requires": [
+            [
+              "rank_present"
+            ]
+          ]
+        },
+        {
+          "hypothesis": "Untagged claim",
+          "successMetric": "Define a success metric mapped to this brand's goal before running.",
+          "source": "Somewhere",
+          "confidence": "low",
+          "requires": []
+        }
+      ]
+    },
+    {
+      "name": "parse_signal_digest_markdown:empty",
+      "input": {
+        "text": ""
+      },
+      "expected": []
+    }
+  ]
+}
