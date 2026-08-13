@@ -64,6 +64,8 @@ registration edits in `~/os/AGENTS.md` (manager does those).
 
 - `pnpm install && pnpm check` green from clean clone.
 - `packages/shared` exports every type listed above; `zod` parse round-trips a sample of each.
-- Hygiene lint catches a planted `/Users/victoruhl` path and a planted fake key in a test run.
+- Hygiene lint catches a planted absolute home-directory path (the operator's own) and a
+  planted fake key in a test run. Written without the literal: the lint forbids exactly that
+  string in a tracked file, and this brief is tracked.
 - Grep over tracked files finds no client names, no threshold values, no secrets.
 - All work on branch `wp-00-scaffold`; report per acceptance check.
