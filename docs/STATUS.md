@@ -5,18 +5,18 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 
 | WP | Package | Owner | State | Notes |
 |---|---|---|---|---|
-| 00 | Scaffold + contracts | Opus | in-progress | kicked off 2026-08-13 |
-| 01 | DB schema + RLS | Opus | todo | starts after WP-00 contracts |
-| 02 | ads-api client | Codex | todo | starts after WP-00 contracts |
-| 03 | Worker + queue | Codex | todo | starts after WP-00; mock ads-api until WP-02 |
-| 04 | Web auth + OAuth | Codex | todo | needs LWA redirect URI added before live test |
-| 05 | core doctrine port | Opus | todo | fully parallel-safe after WP-00 |
+| 00 | Scaffold + contracts | Opus | merged | merged 2026-08-13; contracts frozen (incl. Next 16, TS 6, ApplyRow wire serializer) |
+| 01 | DB schema + RLS | Opus | in-progress | launched 2026-08-13 after WP-00 merge |
+| 02 | ads-api client | Codex | todo | GATE OPEN (WP-00 merged) — run HANDOFFS.md block in Codex |
+| 03 | Worker + queue | Codex | todo | GATE OPEN (WP-00 merged) — run HANDOFFS.md block in Codex |
+| 04 | Web auth + OAuth | Codex | todo | GATE OPEN (WP-00 merged) — run HANDOFFS.md block; LWA redirect URI still needed before live test |
+| 05 | core doctrine port | Opus | in-progress | launched 2026-08-13 after WP-00 merge |
 | 06 | Grid + dashboard | Codex | todo | shell after WP-00; columns wait for recon |
 | 07 | Recs UI + export bridge | Codex | todo | after WP-05 types |
 | 08 | Tags + goto links | Codex | todo | after WP-00/01 |
 | 09 | MCP server | Opus | todo | v0 close |
 | 10 | Crosscheck harness | Opus | todo | v0 close (needs facts) |
-| 11 | AdLabs recon | Opus + Victor | todo | schedule login session with Victor |
+| 11 | AdLabs recon | Opus + Victor | review | MCP half done (13 specs, exact contracts). UI pass blocked twice: extension installed/enabled/permissioned but NOT PAIRED to the claude.ai account — operator pairing check needed, then session 3 (automations first). See tools/recon/BLOCKED.md |
 | 12 | Staged-apply writes | Opus | gated | opens at v1 exit criterion |
 | 13 | Headless analyst | Opus | gated | opens when WP-09 stable |
 
@@ -30,7 +30,14 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 
 ## Operator action items (Victor)
 
-- [ ] Schedule the AdLabs recon session (WP-11) — you log in, Opus walks the UI.
+- [ ] Before the GitHub push: rewrite commit authors (early commits carry a machine-derived
+      email; repo-local identity fixed 2026-08-13 for new commits).
+
+- [ ] Fix Claude-in-Chrome connection for the recon UI follow-up (see tools/recon/BLOCKED.md):
+      extension enabled + Chrome restarted, same claude.ai account as Claude Code, site
+      permission for `dashboard.adlabs.app`, then open it logged in.
+- [x] Supabase project created 2026-08-13 (free tier, eu-central-1; ref recorded in the
+      operator's private project note — infra identifiers stay out of this repo).
 - [ ] Add wizard-ads redirect URI to the LWA app Allowed Return URLs (before WP-04 live test).
 - [ ] Place `_local/ads-api.config.json` for the WP-02 live smoke (copy shape from template).
 - [ ] Approve Supabase Pro (~$25/mo) at v0 close; Fly.io worker (~$5/mo) at WP-03 deploy.
