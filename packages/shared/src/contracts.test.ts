@@ -17,6 +17,7 @@ import {
   AdProduct,
   ApplyRow,
   ApplyRowWire,
+  BidBoundUnit,
   CvrSourceLevel,
   DailyFact,
   EntityRef,
@@ -387,10 +388,121 @@ describe('TenantStrategy', () => {
     naming: { delimiter: ' | ', by_bucket: { synthetic_bucket: { goal: 'Rank' } } },
   };
 
+  /**
+   * The WP-00.1 widening, on top of the same document.
+   *
+   * Kept as a separate object rather than folded into `synthetic` so the test
+   * above keeps proving the thing the widening promised: a document written
+   * against the original contract, with none of these keys, still parses.
+   */
+  const widened = {
+    ...synthetic,
+    pacing: {
+      ...synthetic.pacing,
+      run_rate_tolerance: 1,
+      warn_above: 1,
+      act_above: 1,
+      underpace_below: 1,
+      rank_cut_requires_operator: true,
+      lookback_days: 1,
+    },
+    opt_groups: {
+      'synthetic-group': {
+        ...synthetic.opt_groups['synthetic-group'],
+        max_increase_steady: 1,
+        preset: 'synthetic-preset',
+        bid_floor_unit: 'absolute',
+        bid_floor_value: 1,
+        bid_ceiling_unit: 'times_cpc',
+        bid_ceiling_value: 1,
+        placement_max_increase: 1,
+        placement_max_decrease: 1,
+        spend_share_max: 1,
+        tacos_x_breakeven: 1,
+        tacos_x_breakeven_min: 1,
+        tacos_x_breakeven_max: 1,
+      },
+      'other-group': { bid_ceiling_unit: 'pct_of_recommended', bid_ceiling_value: 1 },
+    },
+    rank_lifecycle: {
+      ...synthetic.rank_lifecycle,
+      dwell_days: 1,
+      graduate_weeks_stable: 1,
+      stepdown_cycles_min: 1,
+      stepdown_cycles_max: 1,
+      regression_reescalate: 'synthetic-stage',
+    },
+    staged_apply: {
+      ...synthetic.staged_apply,
+      max_batches_per_run: 1,
+      cooldown_bypasses: ['other'],
+      tag_format: 'synthetic-{run}',
+      push_rank_min_days: 1,
+      priority_order: ['other'],
+      group_cadence: { 'synthetic-group': 'synthetic-cadence' },
+      batch_unit: 'rows',
+    },
+    discovery: { min_root_words: 1 },
+    expanded_candidate_filter: { min_relevancy: 1, max_sv: 1 },
+  };
+
   it('round-trips the shape', () => {
     const parsed = roundTrip(TenantStrategy, synthetic);
     expect(parsed.schema).toBe(TENANT_STRATEGY_SCHEMA);
     expect(parsed.opt_groups['synthetic-group']?.target_acos).toBe(1);
+  });
+
+  it('round-trips every field the WP-00.1 widening added', () => {
+    const parsed = roundTrip(TenantStrategy, widened);
+
+    // Each assertion below names a leaf that had no contract home before WP-00.1.
+    expect(parsed.pacing.warn_above).toBe(1);
+    expect(parsed.pacing.act_above).toBe(1);
+    expect(parsed.pacing.underpace_below).toBe(1);
+    expect(parsed.pacing.rank_cut_requires_operator).toBe(true);
+    expect(parsed.pacing.run_rate_tolerance).toBe(1);
+
+    const group = parsed.opt_groups['synthetic-group'];
+    expect(group?.bid_floor_unit).toBe('absolute');
+    expect(group?.bid_floor_value).toBe(1);
+    expect(group?.bid_ceiling_unit).toBe('times_cpc');
+    expect(group?.bid_ceiling_value).toBe(1);
+    expect(group?.placement_max_increase).toBe(1);
+    expect(group?.placement_max_decrease).toBe(1);
+    expect(group?.spend_share_max).toBe(1);
+    expect(group?.preset).toBe('synthetic-preset');
+    expect(group?.max_increase_steady).toBe(1);
+    expect(group?.tacos_x_breakeven).toBe(1);
+    expect(group?.tacos_x_breakeven_min).toBe(1);
+    expect(group?.tacos_x_breakeven_max).toBe(1);
+    expect(parsed.opt_groups['other-group']?.bid_ceiling_unit).toBe('pct_of_recommended');
+
+    expect(parsed.rank_lifecycle.dwell_days).toBe(1);
+    expect(parsed.rank_lifecycle.graduate_weeks_stable).toBe(1);
+    expect(parsed.rank_lifecycle.stepdown_cycles_min).toBe(1);
+    expect(parsed.rank_lifecycle.stepdown_cycles_max).toBe(1);
+    expect(parsed.rank_lifecycle.regression_reescalate).toBe('synthetic-stage');
+
+    expect(parsed.staged_apply.max_batches_per_run).toBe(1);
+    expect(parsed.staged_apply.cooldown_bypasses).toEqual(['other']);
+    expect(parsed.staged_apply.tag_format).toBe('synthetic-{run}');
+    expect(parsed.staged_apply.push_rank_min_days).toBe(1);
+    expect(parsed.staged_apply.priority_order).toEqual(['other']);
+    expect(parsed.staged_apply.group_cadence).toEqual({ 'synthetic-group': 'synthetic-cadence' });
+    expect(parsed.staged_apply.batch_unit).toBe('rows');
+
+    expect(parsed.discovery?.min_root_words).toBe(1);
+    expect(parsed.expanded_candidate_filter?.min_relevancy).toBe(1);
+    expect(parsed.expanded_candidate_filter?.max_sv).toBe(1);
+  });
+
+  it('keeps the bid-bound unit a closed vocabulary', () => {
+    expect(BidBoundUnit.options).toEqual(['absolute', 'pct_of_recommended', 'times_cpc']);
+    // Casing is the seeder's job to normalize, not a second spelling of a token.
+    const group = { ...widened.opt_groups['synthetic-group'], bid_ceiling_unit: 'TIMES_CPC' };
+    expect(
+      TenantStrategy.safeParse({ ...widened, opt_groups: { 'synthetic-group': group } }).success,
+    ).toBe(false);
   });
 
   it('rejects a document that is not this schema version', () => {
