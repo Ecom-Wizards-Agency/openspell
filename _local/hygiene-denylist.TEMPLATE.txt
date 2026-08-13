@@ -1,0 +1,16 @@
+# Hygiene denylist TEMPLATE.
+#
+# Copy to `_local/hygiene-denylist.txt` (gitignored) and list the terms that
+# must never appear in a tracked file: client names, brand names, seller
+# account labels, profile names, anything that identifies who we work for.
+#
+# One term per line. Matching is case-insensitive and substring-based, so a
+# short term will over-match: prefer the full name.
+# Lines starting with `#` are comments; blank lines are ignored.
+#
+# `pnpm hygiene` skips this check with a warning when the real file is absent,
+# so a fresh clone is not blocked, but a machine that does client work should
+# have one.
+
+# Example Brand Ltd
+# Northwind Trading
