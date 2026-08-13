@@ -6,13 +6,22 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./schema": "./src/schema/index.ts",
+    "./testing": "./src/testing/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "seed:strategy": "tsx ../../supabase/seed/import-strategy.ts",
+    "seed:dev": "tsx ../../supabase/seed/dev-seed.ts"
   },
   "dependencies": {
-    "@wizard-ads/shared": "workspace:*"
+    "@wizard-ads/shared": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1"
   }
 }

@@ -1,6 +1,12 @@
 {
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // This package reads files, resolves URLs and talks to a process
+    // environment: the seed scripts and the test harness are Node programs.
+    "types": ["node"]
+  },
   "include": [
-    "src/**/*.ts"
+    "src/**/*.ts",
+    "../../supabase/seed/**/*.ts"
   ]
 }
