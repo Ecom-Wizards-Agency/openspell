@@ -10,9 +10,9 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 02 | ads-api client | Codex | todo | GATE OPEN (WP-00 merged) — run HANDOFFS.md block in Codex |
 | 03 | Worker + queue | Codex | todo | GATE OPEN (WP-00 merged) — run HANDOFFS.md block in Codex |
 | 04 | Web auth + OAuth | Codex | todo | GATE OPEN (WP-00 merged) — run HANDOFFS.md block; LWA redirect URI still needed before live test |
-| 05 | core doctrine port | Opus | in-progress | launched 2026-08-13 after WP-00 merge |
+| 05 | core doctrine port | Opus | merged | merged 2026-08-13; 122 parity cases byte-equal to Python, bidding worked-examples green. Spawned WP-00.1 contract extension |
 | 06 | Grid + dashboard | Codex | todo | shell after WP-00; columns wait for recon |
-| 07 | Recs UI + export bridge | Codex | todo | after WP-05 types |
+| 07 | Recs UI + export bridge | Codex | todo | GATE OPEN (WP-05 merged) — after WP-06 grid shell |
 | 08 | Tags + goto links | Codex | todo | after WP-00/01 |
 | 09 | MCP server | Opus | todo | v0 close |
 | 10 | Crosscheck harness | Opus | todo | v0 close (needs facts) |
