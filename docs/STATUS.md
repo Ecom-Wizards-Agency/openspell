@@ -40,6 +40,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
       permission for `dashboard.adlabs.app`, then open it logged in.
 - [x] Supabase project created 2026-08-13 (free tier, eu-central-1; ref recorded in the
       operator's private project note — infra identifiers stay out of this repo).
-- [ ] Add wizard-ads redirect URI to the LWA app Allowed Return URLs (before WP-04 live test).
+- [ ] Add `https://ads.ecomwizards.agency/api/amazon/oauth/callback` to the LWA app Allowed
+      Return URLs, and point the `ads` subdomain at the Vercel deployment (before WP-04 live test).
 - [ ] Place `_local/ads-api.config.json` for the WP-02 live smoke (copy shape from template).
 - [ ] Approve Supabase Pro (~$25/mo) at v0 close; Fly.io worker (~$5/mo) at WP-03 deploy.

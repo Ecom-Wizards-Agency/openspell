@@ -41,3 +41,10 @@ One line per decision the manager (Fable) or operator makes between work package
 - **2026-08-14 · SB/SD attribution window** — Amazon reports one 14-day window for SB/SD while
   fact columns are named *_7d. Parsers carry attributionWindowDays=14 explicitly instead of
   silently writing 14d numbers into 7d columns. Decide the landing column at SB/SD UI time.
+- **2026-08-14 · v1 hosting domain = ads.ecomwizards.agency** (operator decision;
+  app.ecomwizards.agency acceptable alternate). amazonwizards.com is explicitly ruled out for
+  this tool — "amazon" in a product domain violates Amazon brand guidelines and puts the LWA
+  app / Ads API access at suspension risk; the exposure includes cert-transparency logs and
+  the OAuth consent context, not just the callback. OAuth redirect URI:
+  https://ads.ecomwizards.agency/api/amazon/oauth/callback (same-domain callback, the WP-04
+  architecture). Public-launch brand comes later and will not contain "amazon".
