@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createTestDatabase, databaseAvailable } from '../../../packages/db/src/testing/harness.js';
-import type { TestDatabase } from '../../../packages/db/src/testing/harness.js';
-import { createGotoLink, stateFromGotoRedirect } from '../../../packages/db/src/queries/goto.js';
+import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
+import type { TestDatabase } from '@wizard-ads/db/testing';
+import { createGotoLink, stateFromGotoRedirect } from '@wizard-ads/db';
 import { POST } from '../app/api/goto/route.js';
 import { GET } from '../app/go/[token]/route.js';
 

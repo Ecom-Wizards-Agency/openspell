@@ -1,8 +1,16 @@
-'use client';
-
-import { useMemo } from 'react';
-import type { EntityTagFilter } from '../../../../packages/db/src/queries/tags.js';
-import type { JsonValue } from '../../../../packages/db/src/queries/goto.js';
+/**
+ * The tag filter, as a shape and three pure functions over it.
+ *
+ * Deliberately free of React and of any `'use client'` boundary: the grid
+ * filters rows on the client, a dashboard tile counts the same rows on the
+ * server, and both have to reach the identical predicate or the two disagree
+ * on screen. `useTagFilter` (the client-side memo) lives next door in
+ * `use-tag-filter.ts` for exactly that reason.
+ *
+ * A consumer supplies its own row type; the only requirement is a `tagIds`
+ * field, so no grid needs to know that tags have a UI at all.
+ */
+import type { EntityTagFilter, JsonValue } from '@wizard-ads/db';
 
 export type TagFilter = EntityTagFilter;
 
@@ -12,7 +20,7 @@ export interface TagFilterableRow {
 
 export type TagDescendants = Readonly<Record<string, readonly string[]>>;
 
-/** Pure adapter shared by the standalone list and its dashboard-style count. */
+/** The one predicate the list and the dashboard count both go through. */
 export function applyTagFilter<Row extends TagFilterableRow>(
   rows: readonly Row[],
   filter: TagFilter,
@@ -31,18 +39,6 @@ export function applyTagFilter<Row extends TagFilterableRow>(
     if (filter.mode === 'none') return matches.every((value) => !value);
     return matches.some(Boolean);
   });
-}
-
-/** WP-06 can consume this hook without importing any grid component. */
-export function useTagFilter<Row extends TagFilterableRow>(
-  rows: readonly Row[],
-  filter: TagFilter,
-  descendants: TagDescendants = {},
-): Row[] {
-  return useMemo(
-    () => applyTagFilter(rows, filter, descendants),
-    [rows, filter, descendants],
-  );
 }
 
 export function tagFilterFromState(state: JsonValue | undefined): TagFilter {
