@@ -24,7 +24,7 @@ import { specsFromRows, type CampaignBucket, type KeywordRow, type TargetRow } f
 import { EW_NAMING_PRESET, LEGACY_NAMING_PRESET } from './naming.js';
 import { buildCampaignPlan, planToRows } from './plan.js';
 import { preflight } from './preflight.js';
-import { checkStructureCaps, specDefaultsForBucket } from './strategy.js';
+import { bucketOf, checkStructureCaps, specDefaultsForBucket } from './strategy.js';
 import type { CampaignBuildConfig, CampaignSpec } from './types.js';
 import { validateRows } from './validate.js';
 
@@ -108,7 +108,7 @@ function randomConfig(seed: number): CampaignBuildConfig {
     productName: 'Widget',
     sku: ['SKU-1'],
   }).map((spec) => {
-    const bucket = BUCKETS.find((b) => b === spec.campaignPurpose) ?? null;
+    const bucket = bucketOf(spec);
     return bucket === null ? spec : { ...spec, ...specDefaultsForBucket(STRATEGY, bucket) };
   });
 

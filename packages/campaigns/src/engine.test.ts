@@ -20,6 +20,7 @@ import {
 import { buildCampaignPlan, planToRows } from './plan.js';
 import { preflight } from './preflight.js';
 import {
+  bucketOf,
   checkSearchVolumeBands,
   checkStructureCaps,
   formatDescriptor,
@@ -318,6 +319,26 @@ describe('the strategy readers', () => {
       strategy({ pat_split: { method: 'revenue_floor', revenue_floor: 100 } }),
     );
     expect(result.targets[0]?.bucket).toBe('pat_stronger');
+  });
+
+  it('recognises which bucket a spec came from, PAT lists included', () => {
+    const specs = specsFromRows(
+      [
+        { text: 'red widget', bucket: 'rank_skw' },
+        { text: 'brand widget', bucket: 'shield_skw' },
+        { text: 'widget for kitchen', bucket: 'halo' },
+      ],
+      [
+        { asin: 'B000000001', bucket: 'pat_stronger' },
+        { asin: 'B000000002', bucket: 'pat_weaker' },
+      ],
+      { productName: 'Widget', sku: ['SKU-1'] },
+    );
+    // The two PAT buckets share a type and a purpose, so only the descriptor
+    // tells them apart; getting that wrong would give both the same budget.
+    expect(specs.map(bucketOf))
+      .toEqual(['rank_skw', 'shield_skw', 'halo', 'pat_stronger', 'pat_weaker']);
+    expect(bucketOf({ campaignType: 'Auto' })).toBeNull();
   });
 
   it('never revives a dropped campaign type from a stale document', () => {

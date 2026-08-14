@@ -37,7 +37,7 @@ import {
 import { generateAll } from './generate.js';
 import { resolveNaming } from './naming.js';
 import { resolveSpecs, vendorCentralMode } from './resolve.js';
-import type { CampaignBuildConfig, ResolvedSpec } from './types.js';
+import type { CampaignBuildConfig } from './types.js';
 import { parseProductList, pyFloat, splitLines } from './util.js';
 
 export interface PreflightResult {
@@ -269,9 +269,4 @@ export function preflight(config: CampaignBuildConfig, today: string): Preflight
   }
 
   return { ready: issues.length === 0, issues, notes };
-}
-
-/** The specs a preflight ran against, for a caller that wants both. */
-export function preflightSpecs(config: CampaignBuildConfig): ResolvedSpec[] {
-  return resolveSpecs(config);
 }
