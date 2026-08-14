@@ -20,7 +20,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 12 | Staged-apply writes | Opus | gated | opens at v1 exit criterion |
 | 14a | Campaign generation engine | Opus | merged | merged 2026-08-14: 101 parity tests byte-equal to Python, 542 property tests, XLSX passes the reference toolkit's own --validate 11/11; BMM dropped with live diagnostic. UI surface lands with WP-07 |
 | 14b | Campaign creation via API | Opus | gated | opens after OAuth + entity sync live; paused-by-default, apply-batch audited |
-| 13 | Headless analyst | Opus | gated | opens when WP-09 stable |
+| 13 | Headless analyst | Opus | merged | merged 2026-08-14: apps/analyst — MCP read-only, insights writer + markdown digest; audit_log proves zero write calls; 10 tests. Deterministic analyzer (LLM narrator layerable later); Slack via operator helper. Roadmap card SHIPPED |
 | 15 | Feedback & roadmap | Opus | merged | merged 2026-08-14: form w/ page context, tracker, voting, roadmap columns + declined-with-note, column-level guard trigger, MCP submit_feedback; 12-item roadmap seeder (idempotent). Migration applied hosted, advisors clean |
 | 17 | AI skills library | Opus | todo | brief ready 2026-08-14 (WP-17): public-safe skill pack against our MCP + /connect-claude key page; amazon-agent skills as spec sources. Launches in v1.x |
 | 18 | AdLabs history backfill | Opus | merged | merged 2026-08-14: source-tagged loader + crosscheck isolation proven (backfilled rows unreadable by crosscheck, cent-exact 2-month verification). Local load done (4,453 profile-days, 14 profiles, up to ~25mo). HOSTED load pending DATABASE_URL; remaining ~1,790 Phase 1 pulls on demand |
