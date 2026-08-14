@@ -6,7 +6,9 @@ optimization group was created, updated, or deleted. The only optimizer call mad
 
 Sources: `VID` = AdLabs' own two tutorial videos (quick and advanced) for the bid optimizer, so
 UI labels are as spoken. `MCP` = the live `adlabs://docs/optimizer_actions` contract plus a live
-`list_groups` read. Nothing here was visually confirmed — see `BLOCKED.md`.
+`list_groups` read. `OPVID` = an operator Cap screen recording of a live optimizer preview
+(2026-08-14), the only source here that is visually confirmed — see §3 "Bid corridor". Everything
+not tagged `OPVID` or `UI-verified` was not seen — see `BLOCKED.md`.
 
 ---
 
@@ -298,6 +300,135 @@ operation.
 product.** It turns any missing guardrail into a two-minute workaround, and it is why an operator
 trusts the tool: they can always overrule it in bulk, in place, before anything ships.
 
+### Bid corridor (operator video, 2026-08-14)
+
+Evidence: **operator Cap recording** of a live optimizer preview, ~1:50. First visual confirmation
+of the preview grid and the per-target drill-down. Figures and account identifiers are deliberately
+not reproduced; only structure and labels are recorded.
+
+#### What it is
+
+**The bid corridor is not a control. It is a read-only time series of Amazon's own suggested-bid
+range for one target, drawn as a filled band, with that target's bid and realized CPC plotted
+inside it.** It is evidence about the auction, not policy about our economics — and that
+distinction is the whole reason to record it separately from §2's floors and ceilings.
+
+Concretely: for each day in the window, Amazon publishes a suggested bid **low / medium / high**
+triple for the target. Plot low and high as the edges of a shaded area and medium as a dashed line
+inside it, and you get a band that widens and narrows day to day as the auction moves. That band
+is the corridor. Nothing in it is computed by AdLabs; it is retrieved and stored per day. The
+operator names this explicitly — the suggested bids are *"which we can track as well through
+API"* — i.e. he is flagging it as a **sync-and-store** job, not an algorithm job.
+
+It is **not user-editable**. There is no input, no dropdown, no toggle that sets it. The only
+controls are visibility toggles for which series to draw.
+
+#### Where it appears in the flow
+
+Between preview and apply, as **per-row QA** — step 8 of §1. It is not reachable from the settings
+modal and does not affect what the optimizer proposes.
+
+1. The preview grid carries a **`Suggested Bids`** column rendered as a **two-line cell**: the
+   medium suggested bid on the first line, the `low – high` range in smaller grey text beneath it.
+   So the corridor's current-day value is already on every row, in miniature, before any drill-down.
+2. Immediately right of it, a separate **`Max Potential CPC`** column — the base bid inflated by
+   the target's placement and dayparting modifiers, i.e. the most a click can actually cost.
+3. Clicking through the row (the operator reaches it via **"view bid history"**) opens a **near
+   full-screen modal** over the grid, titled with the targeting expression, subtitled with the
+   breadcrumb `ad type | targeting type | product | opt-group • campaign name` plus an
+   external-link icon out to the campaign. Top-right: a date-range picker showing the **primary
+   range and the comparison range stacked**, primary in colour, comparison in grey underneath.
+4. The modal loads asynchronously with an explicit **"Loading bid history…"** state.
+
+#### The modal, as rendered
+
+**KPI tile row** across the top, two rows of tiles: `Impressions`, `Clicks`, `Orders`, `Spend`,
+`Sales`, `ACOS`, `CTR`, then `CVR`, `CPC`, `RPC`, `CPA`. Each tile shows the current value large,
+the comparison-period value small beneath it, and a signed **% delta coloured by whether the move
+is good for that metric** — a falling ACOS is green, a rising CPA is orange. There is one **empty
+tile with a chart icon**, an add-a-metric slot; a clicked tile gets an accent underline and drives
+the chart below. Clone the coloured-by-goodness rule: it is what lets a manager read eleven tiles
+in one pass.
+
+**Left rail, `Data Series`** — a checkbox tree, and the *nesting is the documentation*:
+
+| Series | Rendered as | Children |
+|---|---|---|
+| `Max CPC` | dashed red line | `Dayparting`, `Audience`, `Top of Search`, `Product Page`, `Rest of Search`, `Business` — each a nested checkbox |
+| `Amazon Suggested` | orange swatch (an area, not a line) | — |
+| `Bid` | purple swatch | — |
+
+The modifiers sit **as children of `Max CPC`** because they are precisely what turns a base bid into
+a max potential CPC. The tree states the composition without a sentence of explanation. Clone that.
+
+**The chart.** Single time axis, currency y-axis, a `D · W · M` granularity toggle in the top-right
+corner of the plot area. Four things are drawn at once:
+
+- **The corridor** — a filled orange area between suggested-bid low and high, with a dashed orange
+  line for medium running through it. Visibly non-constant: it fattens and thins across the window.
+- **`Bid`** — solid purple, and characteristically a **flat step function**, because a bid only
+  moves when somebody moves it. This is §3's "current bid is state, not evidence" made visible.
+- **`CPC`** — solid blue, the realized cost per click. In the recorded session it runs *well above*
+  the corridor and above the bid, which is exactly the diagnosis the chart exists to deliver.
+- **`Max CPC`** — dashed red, a step function far above everything else, stepping down on the day a
+  placement modifier was cut.
+
+**Hover** puts a vertical crosshair on the chart, a **value badge pinned to the y-axis edge** at the
+crosshair's height, and a tooltip listing, for that one day, in the rail's own order and with the
+same indentation:
+
+```
+<date>  <weekday>
+  Max CPC                      <amount>
+    Dayparting                 <pct>      (present only on days it ran)
+    Audience                   <pct>
+    Top of Search              <pct>
+    Rest of Search             <pct>
+  Amazon Suggested Bids
+    High / Medium / Low        <amounts>
+  CPC                          <amount>
+  Bid                          <amount>
+```
+
+The dayparting row **appears and disappears by day**, which answers "was dayparting on when this
+happened" without a second screen. The operator calls this out as its own fact: *"and then also our
+bid, and whether there's dayparting or not."*
+
+#### What the operator uses it for
+
+He is describing what to build, not running an optimization, so read the intent rather than the
+click path. Three uses are stated or shown:
+
+1. **Sanity-checking a proposal against the auction before accepting it.** He moves from
+   `current value` / `new value` to suggested bids to bid history to the corridor in one
+   continuous pass — the corridor is the last check on a row before pushing.
+2. **Diagnosing the bid / CPC / max-CPC relationship.** A bid sitting at the corridor's floor while
+   realized CPC runs above the corridor's ceiling is a placement-modifier problem, not a bid
+   problem, and only this chart shows both at once.
+3. **A build instruction.** The suggested-bid triple is *"which we can track as well through API"* —
+   he wants it synced daily and retained as a series, on the same footing as spend and clicks.
+
+#### Two incidental confirmations from the same frames
+
+- The **`Change Reasons` / `Limit Reasons` split is real and populated**, side by side as the two
+  right-most columns: reason pills (`High ACOS`, `Low ACOS`, `Low Visibility`) against limit pills
+  (`Max Bid Decrease`, `Ad Group Bid Ceiling`). §3's headline claim is now visually confirmed, and
+  the limit pill **names the specific guardrail that bound**, not just "clamped".
+- The settings summary is collapsed into a **single clickable chip in the toolbar** reading
+  `Settings · Target ACOS <n>% · Balanced` — the run's policy is legible from the grid without
+  reopening the modal. Small, and worth cloning.
+
+#### Verdict on the corridor itself
+
+**Clone the presentation; do not confuse it with a guardrail.** The corridor's value is that it
+puts an *external* opinion (Amazon's) next to our *internal* one (the proposal), and lets the
+operator see the gap. Our engine's floor/ceiling band is a different object entirely: it is derived
+from target ACOS and revenue per click, and it is prescriptive. Drawing both in the same chart —
+Amazon's corridor as the shaded band, our ceiling and change-cap band as an overlay — would beat
+AdLabs outright, because AdLabs shows the market band and never shows you its own.
+
+See §7 "Beat" #7 for the engine gap this exposes.
+
 ---
 
 ## 4. Optimization groups
@@ -468,6 +599,13 @@ a good precomputed-diagnosis pattern and it belongs in our WP-05 strategy layer.
 - Snapshot-before-write, permanent retention, one-click revert, `has_been_reverted` flag, and
   success/total/failed counts per job.
 - The `exclude_no_impressions` toggle framed by its blast radius (4,000 rows → 12,000).
+- The **bid corridor** drill-down (`OPVID`, §3): Amazon's daily suggested-bid low/medium/high as a
+  filled band, with bid, realized CPC and max potential CPC drawn over it, a modifier-composition
+  tooltip, and the placement/dayparting modifiers nested under `Max CPC` in the series tree.
+- The two-line `Suggested Bids` cell — point value with its range beneath — so the corridor's
+  current value is on every preview row without a drill-down.
+- Limit pills that name the specific guardrail that bound (`Ad Group Bid Ceiling`), not just that
+  something did.
 
 **Skip.**
 - PUT semantics on group update. Merge patch, always.
@@ -496,3 +634,66 @@ a good precomputed-diagnosis pattern and it belongs in our WP-05 strategy layer.
 6. **Revert to a point in time, not just a job.** They store snapshots permanently and expose
    revert per job. With the same data you can offer "restore this campaign's bids to what they
    were on the 1st", which is what someone actually asks for after a bad week.
+7. **Both corridors in one chart.** AdLabs draws the *market* band (Amazon's suggested bids) and
+   never draws its own guardrails; our engine computes a *policy* band (ceiling, change cap,
+   minimum) and has nowhere to draw it. Overlay them and the operator gets the one question they
+   actually have — "is our band anywhere near the auction's?" — answered in a glance. Prerequisite,
+   and it is a storage prerequisite not a math one: persist the daily suggested-bid triple, bid,
+   realized CPC and max potential CPC per target as a series. Nothing in the current schema does.
+   See §8 "Engine coverage" below.
+
+---
+
+## 8. Engine coverage: does our bidding core already express the corridor?
+
+Checked against `packages/core/src/bidding/ceilings.ts` and `types.ts` on 2026-08-14.
+
+**Partly — the clamp shape matches, the corridor's actual content is absent.**
+
+What we already have. `ceilingCandidates` builds every applicable ceiling (`manual_max_bid`,
+`max_affordable_cpc` from the target's own RPC × target ACOS, a `data_based_*` fallback across the
+keyword → ad group → campaign → profile hierarchy, and a `budget` ceiling at a share of daily
+budget), `applyCeilings` takes the minimum and **reports which one bound by name**, and
+`applyChangeCap` clamps to `current × (1 ± cap)` with independent up and down fractions, reporting
+`capClamped`. Together with `Math.max(rounded, settings.minBid)` in `bid.ts`, a proposal is already
+confined to a two-sided band and already says which side bound it. That is the same *shape* as
+AdLabs' `algo_new_value` → `new_value` + `limit_reasons`, and it is honestly better factored: their
+limit reason is a pill, ours is a typed `CeilingName`.
+
+Three specific gaps, in order of how much work they are.
+
+1. **`ceilingApplied: 'suggested_bid'` is asserted in a test that no code path can satisfy.**
+   `packages/shared/src/recommendations.ts` documents the field as *"(suggested-bid ceiling, budget
+   ceiling, …)"* and `apps/mcp/src/server.test.ts` asserts `ceilingApplied === 'suggested_bid'` —
+   but that test inserts the row into the database directly, and the engine can never produce the
+   value: `CeilingName` in `types.ts` is a closed union with no suggested-bid member, `CeilingConfig`
+   has no suggested-bid field, and `ceilingCandidates` never considers one. The shared schema keeps
+   `ceilingApplied` an open `string`, so nothing type-checks the inconsistency. **Resolve it
+   deliberately**: either the engine gains a suggested-bid-derived ceiling candidate, or the doc
+   comment and the test fixture stop implying one exists.
+
+2. **The floor is a constant, not a modelled band edge.** `bid.ts` floors at `settings.minBid`
+   (Amazon's absolute minimum) and that is the entire floor story: there is no `floorCandidates`
+   mirroring `ceilingCandidates`, no named floor in any outcome type, and no floor field on
+   `CeilingConfig`. AdLabs' modal has `BID FLOOR` as a first-class `Dynamic · Manual · Off`
+   dropdown alongside the ceiling. **A corridor is two-sided by definition; ours is one ceiling
+   plus a constant.** The fix is symmetric and small: a `floorCandidates` / `applyFloors` pair
+   taking the *maximum*, a `FloorName` union, and a `floorApplied` on the outcome.
+
+3. **The corridor is a history, and nothing stores one.** This is the real gap and it is not in the
+   bidding math at all. A recommendation carries exactly one scalar per entity per run plus
+   `ceilingApplied` / `capClamped`. The corridor needs, per target per day: suggested-bid low /
+   medium / high, the bid in force, realized CPC, and max potential CPC with its modifier
+   components. None of those are synced, none are persisted as a series, and `placement.ts`
+   computes a modifier adjustment but never composes a max-potential-CPC figure (base bid ×
+   modifier multiplier) that could be plotted. **So even a perfect suggested-bid ceiling in the
+   engine would not let us draw the corridor.** It is a WP-sync and schema item — a per-target daily
+   series table — not a bidding-core item, and it should be scoped as one.
+
+**Verdict.** The engine's clamp model expresses *a* corridor — a policy band with named edges — and
+expresses it cleanly. It does not express *the* corridor in the video, which is market evidence
+rather than policy, and which is a time series rather than a scalar. Nothing needs to be undone;
+two additions (a suggested-bid band as an input, a symmetric floor model) and one new data surface
+(the daily per-target series) close it. Until the series exists, close gap #1 the cheap way by
+correcting the doc comment and the test fixture, so the codebase stops advertising a ceiling it
+cannot compute.

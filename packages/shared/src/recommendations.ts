@@ -47,9 +47,12 @@ export const RecommendationInputs = z.object({
   clicks: z.number().int().nonnegative(),
   cvrSourceLevel: CvrSourceLevel,
   /**
-   * Name of the ceiling that bound the value (suggested-bid ceiling, budget
-   * ceiling, ...), or null when the formula result stood unbound. Deliberately
-   * a string: the ceiling set is doctrine and doctrine lives in tenant config,
+   * Name of the ceiling that bound the value (manual max bid, max-affordable
+   * CPC, data-based level ceiling, budget ceiling), or null when the formula
+   * result stood unbound. The engine's actual set is `CeilingName` in
+   * @wizard-ads/core — a suggested-bid ceiling is NOT among them today (the
+   * suggested-bid corridor is planned as synced history, not engine math).
+   * Deliberately a string: the ceiling set is doctrine and doctrine lives in tenant config,
    * never in this repo.
    */
   ceilingApplied: z.string().nullable(),

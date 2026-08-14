@@ -463,7 +463,7 @@ describe.skipIf(!available)('the MCP server', () => {
                 rpc: 1.83,
                 clicks: 30,
                 cvrSourceLevel: 'ad_group',
-                ceilingApplied: 'suggested_bid',
+                ceilingApplied: 'max_affordable_cpc',
                 capClamped: true,
               })}::jsonb)
     `;
@@ -482,7 +482,7 @@ describe.skipIf(!available)('the MCP server', () => {
       // better manners, so every input travels with it.
       expect(proposal?.inputs['rpc']).toBe(1.83);
       expect(proposal?.inputs['cvrSourceLevel']).toBe('ad_group');
-      expect(proposal?.inputs['ceilingApplied']).toBe('suggested_bid');
+      expect(proposal?.inputs['ceilingApplied']).toBe('max_affordable_cpc');
       expect(proposal?.inputs['capClamped']).toBe(true);
 
       // A filter that matches nothing returns an empty list, not the whole run.

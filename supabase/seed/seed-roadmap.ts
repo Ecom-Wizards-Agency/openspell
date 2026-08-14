@@ -79,6 +79,10 @@ export const ROADMAP_ITEMS: readonly RoadmapSeedItem[] = [
     body: 'Build campaigns from a brief in the tool; nothing starts spending without a human enabling it.',
   },
   {
+    title: 'Bid history & suggested-bid corridor charts (per-target daily series)',
+    body: 'Sync and store Amazon suggested-bid low/med/high + bid, CPC and max-potential CPC per target per day; corridor band chart on every bid row (recon 04-optimizer section 8).',
+  },
+  {
     title: 'Experiment tracking (A/B tests: spend pushes, creatives, listings, price)',
     body: 'First-class experiment records with chart-window overlays and before/during/after comparison. See docs/workpackages/WP-19-experiments.md.',
   },
