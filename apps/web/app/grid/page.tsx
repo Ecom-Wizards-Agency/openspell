@@ -12,6 +12,10 @@
  * The cap is 50k rows. Past it the page says the set is truncated rather than
  * quietly showing a prefix, because a total computed over an unmarked prefix is
  * the kind of wrong number that gets quoted on a client call.
+ *
+ * Entry goes through `gate()`, the same guard `/settings` uses: anonymous
+ * visitors are sent to `/login`, and both the roster and the rows are scoped by
+ * the org the gate resolved rather than by a profile id anybody could paste.
  */
 import type { CSSProperties } from 'react';
 import {
@@ -24,6 +28,8 @@ import {
 } from '@wizard-ads/ui';
 import type { EntityLevel } from '@wizard-ads/ui';
 import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
+import { gate } from '../../src/auth/guard';
+import { gateMessage } from '../../src/ui/gate-message';
 import { loadReportLedger } from '../_lib/dashboard-data';
 import { withDatabase } from '../_lib/db';
 import { ROW_CAP, loadGridRows } from '../_lib/grid-data';
@@ -42,24 +48,36 @@ function parseEntity(value: string | undefined): EntityLevel {
 }
 
 export default async function GridPage({ searchParams }: PageProps) {
+  const entry = await gate();
+  if (entry.state !== 'ok') {
+    return (
+      <main style={main}>
+        <h1 style={heading}>Grid</h1>
+        <p style={muted}>{gateMessage(entry.state)}</p>
+      </main>
+    );
+  }
+  const orgId = entry.context.active?.orgId ?? '';
+
   const params = await searchParams;
   const entity = parseEntity(params.entity);
   const period = periodFromParams(params, todayIso());
   const comparison = precedingPeriod(period);
 
   const data = await withDatabase(async (handle) => {
-    const profiles = await listProfiles(handle);
+    const profiles = await listProfiles(handle, orgId);
     const profile = selectProfile(profiles, params.profile);
     if (profile === null) return { profiles, profile: null };
 
     const [payload, ledger, crosscheck] = await Promise.all([
       loadGridRows(handle, entity, {
+        orgId,
         profileId: profile.id,
         currencyCode: profile.currencyCode,
         period,
         comparison,
       }),
-      loadReportLedger(handle, profile.id),
+      loadReportLedger(handle, orgId, profile.id),
       loadCrosscheckPanel(handle, { profileId: profile.id }).catch(() => null),
     ]);
 
@@ -70,9 +88,7 @@ export default async function GridPage({ searchParams }: PageProps) {
     return (
       <main style={main}>
         <h1 style={heading}>Grid</h1>
-        <p style={muted}>
-          No database is configured. Set <code>DATABASE_URL</code> and reload.
-        </p>
+        <p style={muted}>{gateMessage('no-database')}</p>
       </main>
     );
   }

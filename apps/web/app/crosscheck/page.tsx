@@ -11,10 +11,20 @@
  * Server component: it reads the database directly and renders. There is no
  * client-side state here, and no Amazon call — every one of those lives in the
  * worker.
+ *
+ * Entry goes through `gate()`, the same guard `/settings` uses. The profile
+ * switcher is then intersected with the org's own roster: `listCrosscheckedProfiles`
+ * belongs to `tools/crosscheck-cli` and takes no org, so the scoping happens
+ * here rather than by reaching into a package this route does not own. A
+ * profile id in the query string that survives that intersection is one the
+ * caller's org owns; anything else selects nothing.
  */
 import type { CSSProperties } from 'react';
 import { listCrosscheckedProfiles, loadCrosscheckPanel, withDatabase } from '@wizard-ads/crosscheck-cli';
 import type { CrosscheckPanelModel } from '@wizard-ads/crosscheck-cli/pure';
+import { gate } from '../../src/auth/guard';
+import { gateMessage } from '../../src/ui/gate-message';
+import { listProfiles } from '../_lib/profiles';
 import { CrosscheckPanel } from './panel';
 
 export const dynamic = 'force-dynamic';
@@ -24,11 +34,26 @@ interface PageProps {
 }
 
 export default async function CrosscheckPage({ searchParams }: PageProps) {
+  const entry = await gate();
+  if (entry.state !== 'ok') {
+    return (
+      <main style={main}>
+        <h1 style={heading}>Crosscheck</h1>
+        <p style={muted}>{gateMessage(entry.state)}</p>
+      </main>
+    );
+  }
+  const orgId = entry.context.active?.orgId ?? '';
+
   const { profile } = await searchParams;
 
   const data = await withDatabase(async (handle) => {
-    const profiles = await listCrosscheckedProfiles(handle);
-    const selected = profile ?? profiles[0]?.profileId ?? null;
+    const owned = new Set((await listProfiles(handle, orgId)).map((row) => row.id));
+    const profiles = (await listCrosscheckedProfiles(handle)).filter((row) =>
+      owned.has(row.profileId),
+    );
+    const requested = profile !== undefined && owned.has(profile) ? profile : null;
+    const selected = requested ?? profiles[0]?.profileId ?? null;
     const model: CrosscheckPanelModel | null =
       selected === null ? null : await loadCrosscheckPanel(handle, { profileId: selected });
     return { profiles, selected, model };
@@ -38,10 +63,7 @@ export default async function CrosscheckPage({ searchParams }: PageProps) {
     return (
       <main style={main}>
         <h1 style={heading}>Crosscheck</h1>
-        <p style={muted}>
-          No database is configured. Set <code>DATABASE_URL</code> and reload; the verdicts are
-          read, never computed, here.
-        </p>
+        <p style={muted}>{gateMessage('no-database')}</p>
       </main>
     );
   }

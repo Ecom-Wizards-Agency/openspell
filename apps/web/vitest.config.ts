@@ -11,6 +11,12 @@
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  // `tsconfig.json` sets `jsx: preserve`, which is what Next wants and what
+  // Vite refuses: it honours that setting and hands `.tsx` to the import
+  // analyser as invalid JS. Telling the transformer to compile JSX instead is
+  // the whole fix, and it is scoped to the test run — the build still goes
+  // through Next.
+  oxc: { jsx: { runtime: 'automatic' } },
   test: {
     include: ['src/**/*.test.ts', 'app/**/*.test.ts'],
     exclude: ['e2e/**', '**/node_modules/**', '**/.next/**'],

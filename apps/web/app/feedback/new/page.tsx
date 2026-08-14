@@ -7,7 +7,12 @@
  * is asked to approve is exactly what will be stored.
  */
 import { headers } from 'next/headers';
-import { openWebDatabase, requestActor } from '../../../src/server/request-context';
+import { redirect } from 'next/navigation';
+import {
+  isUnauthenticated,
+  openWebDatabase,
+  requestActor,
+} from '../../../src/server/request-context';
 import { requireOrgRole } from '../../../src/server/org-role';
 import { pageContext } from '../../../src/feedback/page-context';
 import { page, heading, muted } from '../../../src/ui/tokens';
@@ -35,12 +40,15 @@ export default async function NewFeedbackPage({ searchParams }: { searchParams: 
     });
     return <SubmitFeedbackForm context={context} />;
   } catch (error) {
+    // A page, not an API: an anonymous reporter gets the login screen rather
+    // than an instruction to sign in with nowhere to do it.
+    if (isUnauthenticated(error)) redirect('/login');
     const message = error instanceof Error ? error.message : 'Feedback is unavailable';
     return (
       <main style={page}>
         <h1 style={heading}>Feedback</h1>
         <p role="alert">{message}</p>
-        <p style={muted}>Sign in to file a bug report or a feature request.</p>
+        <p style={muted}>Nothing was filed; this is the form refusing to open.</p>
       </main>
     );
   } finally {

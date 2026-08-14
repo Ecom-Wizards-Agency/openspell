@@ -6,6 +6,9 @@
  * crosscheck page is the evidence behind the chip on both.
  */
 import type { CSSProperties } from 'react';
+import { currentUser } from '../src/auth/session';
+
+export const dynamic = 'force-dynamic';
 
 const ROUTES = [
   {
@@ -35,13 +38,37 @@ const ROUTES = [
   },
 ];
 
-export default function Page() {
+export default async function Page() {
+  // Every route below this one is per-tenant and signs the visitor in on
+  // arrival. Saying so here, once, is cheaper than five redirects that look
+  // like the product is broken.
+  const user = await currentUser();
+
   return (
     <main style={main}>
       <h1 style={{ fontSize: '1.5rem', margin: '0 0 0.5rem' }}>wizard-ads</h1>
       <p style={{ color: '#6b7280', margin: '0 0 1.5rem' }}>
         In-house Amazon Advertising tool.
       </p>
+
+      {user === null ? (
+        <p style={cta} data-testid="home-signin">
+          Every screen below is per-account and needs a session.{' '}
+          <a href="/login" style={{ fontWeight: 600 }}>
+            Sign in
+          </a>{' '}
+          to continue. There is no public signup: accounts are created by invitation.
+        </p>
+      ) : (
+        <p style={cta} data-testid="home-signed-in">
+          Signed in as {user.email ?? 'your account'}.{' '}
+          <a href="/dashboard" style={{ fontWeight: 600 }}>
+            Open the dashboard
+          </a>
+          .
+        </p>
+      )}
+
       <ul style={list}>
         {ROUTES.map((route) => (
           <li key={route.href}>
@@ -70,6 +97,14 @@ const list: CSSProperties = {
   listStyle: 'none',
   margin: 0,
   padding: 0,
+};
+
+const cta: CSSProperties = {
+  border: '1px solid #e5e7eb',
+  borderRadius: '0.375rem',
+  fontSize: '0.875rem',
+  margin: '0 0 1.5rem',
+  padding: '0.75rem 1rem',
 };
 
 const card: CSSProperties = {

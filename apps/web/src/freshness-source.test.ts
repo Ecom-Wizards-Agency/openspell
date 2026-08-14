@@ -75,7 +75,7 @@ suite('freshness comes from the report ledger', () => {
     `;
     expect((newestFact as { date: string }).date).toBe('2026-08-13');
 
-    const ledger = await loadReportLedger(database, profileId);
+    const ledger = await loadReportLedger(database, orgId, profileId);
     const assessment = assessFreshness(ledger, { now: NOW });
 
     expect(assessment.tone).toBe('warn');
@@ -93,7 +93,7 @@ suite('freshness comes from the report ledger', () => {
               '2026-08-14T03:00:00Z', '2026-08-14T03:25:00Z', 4300, 4300)
     `;
 
-    const assessment = assessFreshness(await loadReportLedger(database, profileId), { now: NOW });
+    const assessment = assessFreshness(await loadReportLedger(database, orgId, profileId), { now: NOW });
     expect(assessment.tone).toBe('good');
     expect(assessment.coversThrough).toBe('2026-08-13');
   });
@@ -107,7 +107,7 @@ suite('freshness comes from the report ledger', () => {
               '2026-08-14T04:00:00Z', '2026-08-14T04:30:00Z', 9000, 8800)
     `;
 
-    const ledger = await loadReportLedger(database, profileId);
+    const ledger = await loadReportLedger(database, orgId, profileId);
     const lossy = ledger.find((entry) => entry.reportType === 'spSearchTerm');
     // `counts_match` is a generated column: the database decided this, not the test.
     expect(lossy?.countsMatch).toBe(false);

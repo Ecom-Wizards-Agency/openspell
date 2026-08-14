@@ -7,6 +7,13 @@
  * fact is from Tuesday" is equally consistent with "the sync broke on Tuesday"
  * and "the account has spent nothing since Tuesday". Only the ledger tells them
  * apart, and telling them apart is the entire question the banner answers.
+ *
+ * Every read here takes the actor's `orgId` alongside the profile id and puts
+ * both in the predicate. The profile is already org-checked by the caller, so
+ * the second half is defence in depth rather than the only lock — but the web
+ * tier connects as the service role, so "already checked upstream" is the only
+ * kind of lock this layer has, and one that is written twice is the one that
+ * survives a refactor.
  */
 import { and, desc, eq, gte, lte } from 'drizzle-orm';
 import { factProfileDaily, reportRequests } from '@wizard-ads/db';
@@ -25,13 +32,14 @@ import type { Period } from './periods.js';
  */
 export async function loadReportLedger(
   handle: DbHandle,
+  orgId: string,
   profileId: string,
   limit = 40,
 ): Promise<ReportLedgerEntry[]> {
   const rows = await handle.db
     .select()
     .from(reportRequests)
-    .where(eq(reportRequests.profileId, profileId))
+    .where(and(eq(reportRequests.orgId, orgId), eq(reportRequests.profileId, profileId)))
     .orderBy(desc(reportRequests.requestedAt))
     .limit(limit);
 
@@ -57,6 +65,7 @@ export async function loadReportLedger(
  */
 export async function loadProfileDailyRows(
   handle: DbHandle,
+  orgId: string,
   profileId: string,
   account: string,
   window: Period,
@@ -66,6 +75,7 @@ export async function loadProfileDailyRows(
     .from(factProfileDaily)
     .where(
       and(
+        eq(factProfileDaily.orgId, orgId),
         eq(factProfileDaily.profileId, profileId),
         gte(factProfileDaily.date, window.start),
         lte(factProfileDaily.date, window.end),
@@ -88,6 +98,7 @@ export async function loadProfileDailyRows(
 /** Which of those days Amazon is still attributing. The dashboard must say so. */
 export async function loadProvisionalDates(
   handle: DbHandle,
+  orgId: string,
   profileId: string,
   window: Period,
 ): Promise<string[]> {
@@ -96,6 +107,7 @@ export async function loadProvisionalDates(
     .from(factProfileDaily)
     .where(
       and(
+        eq(factProfileDaily.orgId, orgId),
         eq(factProfileDaily.profileId, profileId),
         gte(factProfileDaily.date, window.start),
         lte(factProfileDaily.date, window.end),
@@ -113,6 +125,7 @@ export async function loadProvisionalDates(
  */
 export async function loadCampaignDailyRows(
   handle: DbHandle,
+  orgId: string,
   profileId: string,
   account: string,
   window: Period,
@@ -139,8 +152,9 @@ export async function loadCampaignDailyRows(
            sum(f.purchases_7d) as orders
       from public.fact_sp_target_daily f
       left join public.campaigns c
-        on c.profile_id = ${profileId} and c.amazon_id = f.campaign_id
-     where f.profile_id = ${profileId}
+        on c.org_id = ${orgId} and c.profile_id = ${profileId} and c.amazon_id = f.campaign_id
+     where f.org_id = ${orgId}
+       and f.profile_id = ${profileId}
        and f.date between ${window.start} and ${window.end}
      group by f.date, f.campaign_id, c.name
      order by f.date

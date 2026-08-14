@@ -7,8 +7,9 @@
  * browser would be a different question than the one the counts answer.
  */
 import { headers } from 'next/headers';
+import { redirect } from 'next/navigation';
 import { countFeedback, listFeedbackItems } from '@wizard-ads/db';
-import { openWebDatabase, requestActor } from '../../src/server/request-context';
+import { isUnauthenticated, openWebDatabase, requestActor } from '../../src/server/request-context';
 import { requireOrgRole } from '../../src/server/org-role';
 import { can } from '../../src/auth/roles';
 import { toUiItem } from '../../src/feedback/ui';
@@ -36,12 +37,14 @@ export default async function FeedbackPage() {
       />
     );
   } catch (error) {
+    // A page, not an API: an anonymous visitor gets the login screen.
+    if (isUnauthenticated(error)) redirect('/login');
     const message = error instanceof Error ? error.message : 'Feedback is unavailable';
     return (
       <main style={page}>
         <h1 style={heading}>Feedback</h1>
         <p role="alert">{message}</p>
-        <p style={muted}>This surface requires an authenticated request context.</p>
+        <p style={muted}>Nothing was read; this is the tracker refusing, not an empty tracker.</p>
       </main>
     );
   } finally {
