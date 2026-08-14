@@ -44,6 +44,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@wizard-ads/crosscheck-cli':
+        specifier: workspace:*
+        version: link:../../tools/crosscheck-cli
       '@wizard-ads/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -130,6 +133,22 @@ importers:
       '@wizard-ads/shared':
         specifier: workspace:*
         version: link:../shared
+
+  tools/crosscheck-cli:
+    dependencies:
+      '@wizard-ads/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@wizard-ads/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@wizard-ads/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
 
   tools/hygiene-lint: {}
 
