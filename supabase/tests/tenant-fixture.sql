@@ -27,6 +27,7 @@ declare
   v_run uuid;
   v_batch uuid;
   v_tag uuid;
+  v_feedback uuid;
   v_asset uuid;
   v_report uuid;
   v_strategy jsonb := jsonb_build_object(
@@ -158,6 +159,14 @@ begin
   values (v_org, p_slug || '-token', '/grid');
   insert into public.audit_log (org_id, actor_type, action)
   values (v_org, 'service', 'fixture.seed');
+
+  -- Feedback: one item and the author's own vote on it, so the RLS walk has a
+  -- row in both feedback tables for every org it seeds.
+  insert into public.feedback_items (org_id, author_id, type, title, body, severity, page_context)
+  values (v_org, p_user_id, 'bug', 'Fixture bug report', 'Seeded by the tenant fixture.', 'low',
+          jsonb_build_object('route', '/settings/profiles', 'actorType', 'fixture'))
+  returning id into v_feedback;
+  insert into public.feedback_votes (item_id, org_id, user_id) values (v_feedback, v_org, p_user_id);
 
   -- Reserved seams
   insert into public.spapi_connections (org_id, label) values (v_org, p_slug || '-spapi');
