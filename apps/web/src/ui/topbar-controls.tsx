@@ -9,8 +9,13 @@
  * switchable parameter on every route, never a path prefix — so the switcher
  * belongs to the chrome and rewrites `?profile=` on whatever route you are
  * standing on. Screens that do not read the parameter simply ignore it.
+ *
+ * WP-24 makes it the AdLabs top-right dropdown: a trigger showing the active
+ * profile, a popover with a search box, the profile list, and a "Manage
+ * Profiles" link. Switching is still a navigation, so the resulting URL stays
+ * the shareable thing it always should have been.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { THEME_KEY } from './theme-script';
 
@@ -20,47 +25,129 @@ export interface NavProfile {
   countryCode: string;
 }
 
-/**
- * The switcher.
- *
- * The selected value is read from the URL after mount, so the server render is
- * a plain list with no assumption about which one is showing — and switching is
- * a navigation, which means the resulting URL is the shareable thing it should
- * have been all along.
- */
 export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] }): ReactNode {
   const [selected, setSelected] = useState('');
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setSelected(new URL(window.location.href).searchParams.get('profile') ?? '');
   }, []);
 
+  // Close on an outside click or Escape — a popover that only closes by
+  // re-clicking the trigger is a popover an operator fights.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent): void => {
+      if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (open) searchRef.current?.focus();
+    else setQuery('');
+  }, [open]);
+
   if (profiles.length === 0) return null;
 
+  const go = (profileId: string): void => {
+    const url = new URL(window.location.href);
+    if (profileId === '') url.searchParams.delete('profile');
+    else url.searchParams.set('profile', profileId);
+    window.location.href = `${url.pathname}${url.search}`;
+  };
+
+  const active = profiles.find((profile) => profile.id === selected) ?? null;
+  const needle = query.trim().toLowerCase();
+  const matches = profiles.filter(
+    (profile) =>
+      needle === '' ||
+      profile.label.toLowerCase().includes(needle) ||
+      profile.countryCode.toLowerCase().includes(needle),
+  );
+
   return (
-    <label className="wa-row" style={{ gap: '0.375rem' }}>
-      <span className="wa-sr-only">Profile</span>
-      <select
-        aria-label="Profile"
-        className="wa-select wa-select--sm"
+    <div className="wa-profile" ref={rootRef}>
+      <button
+        type="button"
+        className="wa-profile-trigger"
         data-testid="profile-switcher"
-        style={{ maxWidth: '15rem', width: 'auto' }}
-        value={selected}
-        onChange={(event) => {
-          const url = new URL(window.location.href);
-          if (event.target.value === '') url.searchParams.delete('profile');
-          else url.searchParams.set('profile', event.target.value);
-          window.location.href = `${url.pathname}${url.search}`;
-        }}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label="Advertising profile"
+        onClick={() => setOpen((value) => !value)}
       >
-        <option value="">All profiles</option>
-        {profiles.map((profile) => (
-          <option key={profile.id} value={profile.id}>
-            {profile.label} · {profile.countryCode}
-          </option>
-        ))}
-      </select>
-    </label>
+        <span className="wa-profile-trigger-label">
+          {active === null ? 'All profiles' : `${active.label} · ${active.countryCode}`}
+        </span>
+        <svg aria-hidden="true" viewBox="0 0 10 10" className="wa-profile-caret">
+          <path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+        </svg>
+      </button>
+
+      {open ? (
+        <div className="wa-profile-menu" role="dialog" aria-label="Choose advertising profile">
+          <input
+            ref={searchRef}
+            type="text"
+            className="wa-input wa-input--sm wa-profile-search"
+            placeholder="Search profiles…"
+            aria-label="Search profiles"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <ul className="wa-profile-list" role="listbox" aria-label="Advertising profiles">
+            <li>
+              <button
+                type="button"
+                className="wa-profile-option"
+                aria-selected={selected === ''}
+                role="option"
+                onClick={() => go('')}
+              >
+                <span>All profiles</span>
+                {selected === '' ? <span aria-hidden="true">✓</span> : null}
+              </button>
+            </li>
+            {matches.map((profile) => (
+              <li key={profile.id}>
+                <button
+                  type="button"
+                  className="wa-profile-option"
+                  aria-selected={profile.id === selected}
+                  role="option"
+                  onClick={() => go(profile.id)}
+                >
+                  <span>
+                    {profile.label} <span className="wa-hint">· {profile.countryCode}</span>
+                  </span>
+                  {profile.id === selected ? <span aria-hidden="true">✓</span> : null}
+                </button>
+              </li>
+            ))}
+            {matches.length === 0 ? (
+              <li className="wa-profile-empty">No profile matches “{query}”.</li>
+            ) : null}
+          </ul>
+          <a href="/settings/profiles" className="wa-profile-manage">
+            Manage Profiles
+          </a>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

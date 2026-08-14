@@ -188,8 +188,9 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               title="Spend and sales"
               ariaLabel="Daily spend and sales"
               scale="money"
+              aggregatable
               currencyCode={profile.currencyCode}
-              caption={`Daily, in ${profile.currencyCode}.`}
+              caption={`Spend and sales are additive, so weekly and monthly roll up by sum. In ${profile.currencyCode}.`}
               series={[
                 { label: 'Spend', points: series(inPeriod, 'spend') },
                 { label: 'Sales', points: series(inPeriod, 'sales') },

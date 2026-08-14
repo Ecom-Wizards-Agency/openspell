@@ -17,20 +17,19 @@ import type { OrgContext } from '../data/orgs';
 import { selectOrg } from './actions';
 import { Badge, Button, Select, Tabs } from './primitives';
 
+// Feedback and Roadmap deliberately do NOT appear here. They live in the
+// sidebar's PRODUCT group and were duplicated as Settings tabs; WP-24 removes
+// the duplicate so each surface has exactly one home in the nav.
 const TABS = [
   { href: '/settings/connections', label: 'Connections' },
   { href: '/settings/profiles', label: 'Profiles' },
   { href: '/sync-status', label: 'Sync status' },
-  { href: '/feedback', label: 'Feedback' },
-  { href: '/roadmap', label: 'Roadmap' },
 ] as const;
 
 const HREF_FOR = {
   connections: '/settings/connections',
   profiles: '/settings/profiles',
   sync: '/sync-status',
-  feedback: '/feedback',
-  roadmap: '/roadmap',
 } as const;
 
 export function Shell({
