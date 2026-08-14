@@ -1,5 +1,5 @@
 import { headers } from 'next/headers';
-import { actorFromHeaders, openWebDatabase, requireOrgMembership } from '../../src/server/request-context';
+import { requestActor, openWebDatabase, requireOrgMembership } from '../../src/server/request-context';
 import { listCampaignsByTagFilter, listTagTree } from '@wizard-ads/db';
 import type { JsonValue } from '@wizard-ads/db';
 import { TagManager } from './tag-manager';
@@ -21,7 +21,7 @@ function parseState(value: string | string[] | undefined): JsonValue | undefined
 export default async function TagsPage({ searchParams }: { searchParams: SearchParams }) {
   const database = openWebDatabase();
   try {
-    const actor = actorFromHeaders(await headers());
+    const actor = await requestActor(await headers());
     await requireOrgMembership(database, actor);
     const [tags, campaigns] = await Promise.all([
       listTagTree(database, actor.orgId),

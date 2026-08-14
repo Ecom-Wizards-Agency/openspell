@@ -1,15 +1,23 @@
 /**
- * End-to-end configuration for the tag and goto surfaces.
+ * End-to-end configuration for the tag and goto surfaces (WP-08).
  *
- * The database, the seed data and the environment are prepared by
- * `e2e/run.ts`, which is what `pnpm --filter @wizard-ads/web test:e2e` runs.
- * Starting Playwright directly will fail on the missing variables rather than
- * silently testing an empty database.
+ * There is no default `playwright.config.ts` in this app on purpose: the two
+ * browser suites need two incompatible servers, so each has a named config and
+ * `e2e/run.ts` is the only supported entry point. See the header of that file
+ * for why the split exists.
  *
- * Authentication is a header bridge (see `src/server/request-context.ts`):
- * WP-04 owns the browser session and its middleware is not in the tree yet, so
- * the browser context supplies the same verified-actor headers the middleware
- * will. Every request the page makes carries them, navigations included.
+ * The database, the seed data and the environment are prepared by `e2e/run.ts`,
+ * which is what `pnpm --filter @wizard-ads/web test:e2e` runs. Starting
+ * Playwright directly will fail on the missing variables rather than silently
+ * testing an empty database.
+ *
+ * Authentication here is the e2e-only header bridge (see
+ * `src/server/request-context.ts`): the browser context supplies the same
+ * verified-actor headers WP-04's session layer would produce, and every request
+ * the page makes carries them, navigations included. The bridge is inert unless
+ * `WIZARD_ADS_E2E_AUTH_BRIDGE=1` is set on the server, which only `e2e/run.ts`
+ * does — outside this suite the same routes resolve their actor from the real
+ * Supabase session.
  */
 import { defineConfig, devices } from '@playwright/test';
 
@@ -24,7 +32,8 @@ const baseURL = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /.*\.spec\.ts/,
+  testMatch: /tags-goto\.spec\.ts$/,
+  outputDir: './node_modules/.cache/playwright/tags-goto',
   fullyParallel: false,
   workers: 1,
   forbidOnly: !!process.env['CI'],
@@ -41,7 +50,7 @@ export default defineConfig({
       'x-wizard-ads-org-id': required('WIZARD_ADS_E2E_ORG_A'),
     },
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [{ name: 'tags-goto', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
     // A production server, not `next dev`: the dev client bootstraps through an
     // HMR websocket that never completes behind Playwright's request headers,

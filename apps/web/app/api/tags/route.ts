@@ -1,4 +1,4 @@
-import { actorFromHeaders, errorResponse, openWebDatabase, requireOrgMembership } from '../../../src/server/request-context';
+import { requestActor, errorResponse, openWebDatabase, requireOrgMembership } from '../../../src/server/request-context';
 import { createTag, listTagTree } from '@wizard-ads/db';
 
 export const runtime = 'nodejs';
@@ -6,7 +6,7 @@ export const runtime = 'nodejs';
 export async function GET(request: Request): Promise<Response> {
   const database = openWebDatabase();
   try {
-    const actor = actorFromHeaders(request.headers);
+    const actor = await requestActor(request.headers);
     await requireOrgMembership(database, actor);
     return Response.json({ tags: await listTagTree(database, actor.orgId) });
   } catch (error) {
@@ -19,7 +19,7 @@ export async function GET(request: Request): Promise<Response> {
 export async function POST(request: Request): Promise<Response> {
   const database = openWebDatabase();
   try {
-    const actor = actorFromHeaders(request.headers);
+    const actor = await requestActor(request.headers);
     await requireOrgMembership(database, actor);
     const body = (await request.json()) as {
       name?: unknown;

@@ -1,4 +1,4 @@
-import { actorFromHeaders, errorResponse, openWebDatabase, requireOrgMembership } from '../../../src/server/request-context';
+import { requestActor, errorResponse, openWebDatabase, requireOrgMembership } from '../../../src/server/request-context';
 import { createGotoLink } from '@wizard-ads/db';
 import type { JsonValue } from '@wizard-ads/db';
 
@@ -7,7 +7,7 @@ export const runtime = 'nodejs';
 export async function POST(request: Request): Promise<Response> {
   const database = openWebDatabase();
   try {
-    const actor = actorFromHeaders(request.headers);
+    const actor = await requestActor(request.headers);
     await requireOrgMembership(database, actor);
     const body = (await request.json()) as {
       route?: unknown;
