@@ -104,7 +104,8 @@ is in the *profile's* timezone, which is the only calendar Amazon's report dates
 a newly connected profile starts syncing without an onboarding step somebody forgets. It only ever
 fills an empty set: a profile whose schedules an operator pruned stays pruned.
 
-`variant` is a column added by `supabase/migrations/20260814140000_sync_schedule_variant.sql`. The
+`variant` is a column added by the `sync_schedule_variant` migration (0017, in
+`supabase/migrations/`). The
 original uniqueness key was `(profile_id, job_type, report_type)`, which made the daily and weekly
 schedules for one report type mutually exclusive — the restatement pass could not be scheduled at
 all. `variant` joins the key; existing rows default to `default` and keep the uniqueness they had.
