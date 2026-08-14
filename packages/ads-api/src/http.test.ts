@@ -1,0 +1,332 @@
+/**
+ * The retry engine, which is where an Amazon integration lives or dies.
+ *
+ * Amazon signals throttling with a bare 429 and no quota headers, so there is
+ * nothing to test against but behaviour: how long we wait, how many times, and
+ * which requests are safe to send twice. Every case below is one of the failure
+ * modes the brief names.
+ */
+import { describe, expect, it } from 'vitest';
+import { createHttpContext } from './context.js';
+import { AdsApiHttpError, AdsThrottleError } from './errors.js';
+import { backoffCeiling, backoffDelay, decodeText, httpRequest, parseRetryAfter } from './http.js';
+import type { RetryEvent } from './types.js';
+import { createMockServer, testEffects } from './__fixtures__/server.js';
+
+const URL_BASE = 'https://advertising-api.amazon.com';
+
+function context(fetchImpl: ReturnType<typeof createMockServer>['fetch'], onRetry?: (e: RetryEvent) => void) {
+  const effects = testEffects();
+  const ctx = createHttpContext('NA', {
+    fetch: fetchImpl,
+    sleep: effects.sleep,
+    now: effects.now,
+    random: effects.random,
+    ...(onRetry === undefined ? {} : { onRetry }),
+  });
+  return { ctx, effects };
+}
+
+const staticHeaders = async () => ({ Authorization: 'Bearer fake-access-token' });
+
+describe('backoff arithmetic', () => {
+  it('doubles per attempt and stops at the ceiling', () => {
+    const policy = { maxAttempts: 6, baseDelayMs: 1_000, maxDelayMs: 8_000, jitter: 0, maxRetryAfterMs: 120_000 };
+    expect([1, 2, 3, 4, 5].map((n) => backoffCeiling(policy, n))).toEqual([1_000, 2_000, 4_000, 8_000, 8_000]);
+  });
+
+  it('keeps jitter inside [ceiling * (1 - jitter), ceiling]', () => {
+    const policy = { maxAttempts: 4, baseDelayMs: 1_000, maxDelayMs: 30_000, jitter: 0.5, maxRetryAfterMs: 120_000 };
+    for (const random of [0, 0.25, 0.5, 0.75, 1]) {
+      const delay = backoffDelay(policy, 3, random);
+      expect(delay).toBeGreaterThanOrEqual(2_000);
+      expect(delay).toBeLessThanOrEqual(4_000);
+    }
+  });
+});
+
+describe('Retry-After parsing', () => {
+  const now = Date.parse('2026-08-14T10:00:00Z');
+
+  it('reads the seconds form Amazon actually sends', () => {
+    expect(parseRetryAfter('30', now)).toBe(30_000);
+  });
+
+  it('reads the HTTP-date form the RFC allows', () => {
+    expect(parseRetryAfter('Fri, 14 Aug 2026 10:00:45 GMT', now)).toBe(45_000);
+  });
+
+  it('is null when absent or unparseable, never zero', () => {
+    expect(parseRetryAfter(null, now)).toBeNull();
+    expect(parseRetryAfter('   ', now)).toBeNull();
+    expect(parseRetryAfter('soon', now)).toBeNull();
+  });
+});
+
+describe('throttling', () => {
+  it('backs off exponentially with jitter and then succeeds', async () => {
+    const server = createMockServer([
+      {
+        method: 'GET',
+        match: '/v2/profiles',
+        responses: [{ status: 429, json: {} }, { status: 429, json: {} }, { status: 200, json: [] }],
+      },
+    ]);
+    const events: RetryEvent[] = [];
+    const { ctx, effects } = context(server.fetch, (event) => events.push(event));
+
+    const result = await httpRequest(ctx, {
+      method: 'GET',
+      url: `${URL_BASE}/v2/profiles`,
+      path: '/v2/profiles',
+      headers: staticHeaders,
+      idempotent: true,
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.attempts).toBe(3);
+    // random() is pinned at 0.5, so each wait is 75% of its ceiling.
+    expect(effects.slept).toEqual([750, 1_500]);
+    expect(events.map((event) => event.reason)).toEqual(['throttled', 'throttled']);
+    expect(events[0]?.retryAfterMs).toBeNull();
+  });
+
+  it('honours Retry-After when Amazon bothers to send one', async () => {
+    const server = createMockServer([
+      {
+        method: 'GET',
+        match: '/v2/profiles',
+        responses: [{ status: 429, headers: { 'retry-after': '5' }, json: {} }, { status: 200, json: [] }],
+      },
+    ]);
+    const { ctx, effects } = context(server.fetch);
+
+    await httpRequest(ctx, {
+      method: 'GET',
+      url: `${URL_BASE}/v2/profiles`,
+      path: '/v2/profiles',
+      headers: staticHeaders,
+      idempotent: true,
+    });
+
+    expect(effects.slept).toEqual([5_000]);
+    expect(ctx.throttle.snapshot().lastRetryAfterMs).toBe(5_000);
+  });
+
+  it('caps a hostile Retry-After rather than parking the worker', async () => {
+    const server = createMockServer([
+      {
+        method: 'GET',
+        match: '/v2/profiles',
+        responses: [{ status: 429, headers: { 'retry-after': '86400' }, json: {} }, { status: 200, json: [] }],
+      },
+    ]);
+    const { ctx, effects } = context(server.fetch);
+
+    await httpRequest(ctx, {
+      method: 'GET',
+      url: `${URL_BASE}/v2/profiles`,
+      path: '/v2/profiles',
+      headers: staticHeaders,
+      idempotent: true,
+    });
+
+    expect(effects.slept).toEqual([120_000]);
+  });
+
+  it('gives up as a typed throttle error the worker can pace on', async () => {
+    const server = createMockServer([
+      { method: 'GET', match: '/v2/profiles', responses: [{ status: 429, headers: { 'retry-after': '2' }, json: {} }] },
+    ]);
+    const { ctx, effects } = context(server.fetch);
+
+    await expect(
+      httpRequest(ctx, {
+        method: 'GET',
+        url: `${URL_BASE}/v2/profiles`,
+        path: '/v2/profiles',
+        headers: staticHeaders,
+        idempotent: true,
+      }),
+    ).rejects.toBeInstanceOf(AdsThrottleError);
+
+    // Four attempts, three waits: the last failure is not slept on.
+    expect(effects.slept).toHaveLength(3);
+    const state = ctx.throttle.snapshot();
+    expect(state.consecutiveThrottles).toBe(4);
+    expect(state.totalThrottles).toBe(4);
+    expect(state.region).toBe('NA');
+    expect(state.suggestedDelayMs).toBeGreaterThan(0);
+  });
+
+  it('resets the consecutive counter on any success', async () => {
+    const server = createMockServer([
+      { method: 'GET', match: '/v2/profiles', responses: [{ status: 429, json: {} }, { status: 200, json: [] }] },
+    ]);
+    const { ctx } = context(server.fetch);
+
+    await httpRequest(ctx, {
+      method: 'GET',
+      url: `${URL_BASE}/v2/profiles`,
+      path: '/v2/profiles',
+      headers: staticHeaders,
+      idempotent: true,
+    });
+
+    const state = ctx.throttle.snapshot();
+    expect(state.consecutiveThrottles).toBe(0);
+    expect(state.totalThrottles).toBe(1);
+  });
+});
+
+describe('server errors', () => {
+  it('retries a read', async () => {
+    const server = createMockServer([
+      { method: 'GET', match: '/v2/profiles', responses: [{ status: 503, json: {} }, { status: 200, json: [] }] },
+    ]);
+    const { ctx, effects } = context(server.fetch);
+
+    const result = await httpRequest(ctx, {
+      method: 'GET',
+      url: `${URL_BASE}/v2/profiles`,
+      path: '/v2/profiles',
+      headers: staticHeaders,
+      idempotent: true,
+    });
+
+    expect(result.attempts).toBe(2);
+    expect(effects.slept).toEqual([750]);
+  });
+
+  it('does not retry a write, because the write may already have happened', async () => {
+    const server = createMockServer([
+      { method: 'POST', match: '/reporting/reports', responses: [{ status: 503, json: {} }] },
+    ]);
+    const { ctx, effects } = context(server.fetch);
+
+    const error = await httpRequest(ctx, {
+      method: 'POST',
+      url: `${URL_BASE}/reporting/reports`,
+      path: '/reporting/reports',
+      headers: staticHeaders,
+      body: '{}',
+      idempotent: false,
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(AdsApiHttpError);
+    expect((error as AdsApiHttpError).attempts).toBe(1);
+    expect(effects.slept).toEqual([]);
+    expect(server.requests).toHaveLength(1);
+  });
+});
+
+describe('token expiry', () => {
+  it('forces one refresh and retries exactly once', async () => {
+    const server = createMockServer([
+      { method: 'GET', match: '/v2/profiles', responses: [{ status: 401, json: {} }, { status: 200, json: [] }] },
+    ]);
+    const events: RetryEvent[] = [];
+    const { ctx, effects } = context(server.fetch, (event) => events.push(event));
+    const forced: boolean[] = [];
+
+    const result = await httpRequest(ctx, {
+      method: 'GET',
+      url: `${URL_BASE}/v2/profiles`,
+      path: '/v2/profiles',
+      headers: async (force) => {
+        forced.push(force);
+        return { Authorization: 'Bearer fake-access-token' };
+      },
+      idempotent: true,
+    });
+
+    expect(result.status).toBe(200);
+    expect(forced).toEqual([false, true, false]);
+    expect(events.map((event) => event.reason)).toEqual(['token-expired']);
+    // A refresh is not a backoff: nothing is slept on.
+    expect(effects.slept).toEqual([]);
+  });
+
+  it('stops after the second 401, because the grant itself is gone', async () => {
+    const server = createMockServer([
+      { method: 'GET', match: '/v2/profiles', responses: [{ status: 401, text: 'denied' }] },
+    ]);
+    const { ctx } = context(server.fetch);
+
+    const error = await httpRequest(ctx, {
+      method: 'GET',
+      url: `${URL_BASE}/v2/profiles`,
+      path: '/v2/profiles',
+      headers: staticHeaders,
+      idempotent: true,
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(AdsApiHttpError);
+    expect((error as AdsApiHttpError).status).toBe(401);
+    expect((error as AdsApiHttpError).attempts).toBe(2);
+  });
+});
+
+describe('transport failures', () => {
+  it('retries a read when fetch itself throws', async () => {
+    let calls = 0;
+    const { ctx, effects } = context(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('socket hang up');
+      return new Response('[]', { status: 200 });
+    });
+
+    const result = await httpRequest(ctx, {
+      method: 'GET',
+      url: `${URL_BASE}/v2/profiles`,
+      path: '/v2/profiles',
+      headers: staticHeaders,
+      idempotent: true,
+    });
+
+    expect(result.attempts).toBe(2);
+    expect(effects.slept).toEqual([750]);
+  });
+
+  it('never retries a write when fetch throws: the request may have landed', async () => {
+    let calls = 0;
+    const { ctx } = context(async () => {
+      calls += 1;
+      throw new Error('socket hang up');
+    });
+
+    await expect(
+      httpRequest(ctx, {
+        method: 'POST',
+        url: `${URL_BASE}/reporting/reports`,
+        path: '/reporting/reports',
+        headers: staticHeaders,
+        body: '{}',
+        idempotent: false,
+      }),
+    ).rejects.toBeInstanceOf(AdsApiHttpError);
+    expect(calls).toBe(1);
+  });
+});
+
+describe('expected statuses', () => {
+  it('returns rather than throws, so the caller can handle 425 itself', async () => {
+    const server = createMockServer([
+      { method: 'POST', match: '/reporting/reports', responses: [{ status: 425, json: { detail: 'duplicate' } }] },
+    ]);
+    const { ctx } = context(server.fetch);
+
+    const result = await httpRequest(ctx, {
+      method: 'POST',
+      url: `${URL_BASE}/reporting/reports`,
+      path: '/reporting/reports',
+      headers: staticHeaders,
+      body: '{}',
+      idempotent: false,
+      expectedStatuses: [425],
+    });
+
+    expect(result.status).toBe(425);
+    expect(decodeText(result.body)).toContain('duplicate');
+  });
+});
