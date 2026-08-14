@@ -13,9 +13,36 @@
  * lives on targets, SB and SD on their own dailies. Summing targets to a
  * campaign is exactly what the grid does, so a disagreement here is a real
  * disagreement and not an artefact of a different roll-up.
+ *
+ * Every read here excludes backfilled facts. See the note above the queries.
  */
 import type { DbHandle } from '@wizard-ads/db';
 import type { OurCampaignTotals, OurProfileDay } from './compare.js';
+
+/**
+ * ## Why every fact read below carries the same `not exists` clause
+ *
+ * A fact row's provenance is its `report_request_id`. The AdLabs history
+ * backfill (WP-18) writes rows whose request carries
+ * `source = 'adlabs_backfill'` — data we got *from* AdLabs. Comparing those
+ * against a fresh AdLabs export is comparing AdLabs against itself: it agrees,
+ * it returns `verified`, and the verdict means nothing. That is worse than no
+ * check at all, because it is shaped exactly like a passing one.
+ *
+ * So the reader drops them, and the day falls out as `missing_ours` — which is
+ * the truth: we hold no independently-sourced figure for that day.
+ *
+ * `not exists` rather than a join on `source = 'amazon_api'` because
+ * `report_request_id` is nullable. A fact with no request row is not thereby
+ * suspect (fixtures and pre-ledger loads have none); a fact pointing at a
+ * request that names a non-Amazon source is. The backfill loader's side of this
+ * bargain is that it never writes a fact row without a ledger row.
+ *
+ * The clause is written out at each call site rather than interpolated from a
+ * constant: these are tagged templates, a spliced string is the one thing that
+ * turns a parameterised query into an injectable one, and four lines repeated
+ * three times is a cheaper price than a fragment builder nobody audits.
+ */
 
 export interface ProfileIdentity {
   profileId: string;
@@ -73,10 +100,14 @@ export async function readOurProfileDays(
   const rows = await handle.sql<
     { date: string; cost: string | number; sales_7d: string | number; provisional: boolean }[]
   >`
-    select date::text as date, cost, sales_7d, provisional
-    from public.fact_profile_daily
-    where profile_id = ${profileId} and date between ${startDate} and ${endDate}
-    order by date
+    select f.date::text as date, f.cost, f.sales_7d, f.provisional
+    from public.fact_profile_daily f
+    where f.profile_id = ${profileId} and f.date between ${startDate} and ${endDate}
+      and not exists (
+        select 1 from public.report_requests r
+        where r.id = f.report_request_id and r.source <> 'amazon_api'
+      )
+    order by f.date
   `;
   return rows.map((row) => ({
     date: row.date,
@@ -97,17 +128,29 @@ export async function readOurCampaignTotals(
     { campaign_id: string; cost: string | number; sales: string | number }[]
   >`
     with grains as (
-      select campaign_id, cost, sales_7d
-      from public.fact_sp_target_daily
-      where profile_id = ${profileId} and date between ${startDate} and ${endDate}
+      select f.campaign_id, f.cost, f.sales_7d
+      from public.fact_sp_target_daily f
+      where f.profile_id = ${profileId} and f.date between ${startDate} and ${endDate}
+        and not exists (
+          select 1 from public.report_requests r
+          where r.id = f.report_request_id and r.source <> 'amazon_api'
+        )
       union all
-      select campaign_id, cost, sales_7d
-      from public.fact_sb_daily
-      where profile_id = ${profileId} and date between ${startDate} and ${endDate}
+      select f.campaign_id, f.cost, f.sales_7d
+      from public.fact_sb_daily f
+      where f.profile_id = ${profileId} and f.date between ${startDate} and ${endDate}
+        and not exists (
+          select 1 from public.report_requests r
+          where r.id = f.report_request_id and r.source <> 'amazon_api'
+        )
       union all
-      select campaign_id, cost, sales_7d
-      from public.fact_sd_daily
-      where profile_id = ${profileId} and date between ${startDate} and ${endDate}
+      select f.campaign_id, f.cost, f.sales_7d
+      from public.fact_sd_daily f
+      where f.profile_id = ${profileId} and f.date between ${startDate} and ${endDate}
+        and not exists (
+          select 1 from public.report_requests r
+          where r.id = f.report_request_id and r.source <> 'amazon_api'
+        )
     )
     select campaign_id, sum(cost) as cost, sum(sales_7d) as sales
     from grains
