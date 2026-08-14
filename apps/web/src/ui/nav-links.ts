@@ -59,6 +59,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       { href: '/grid', label: 'Data Grid', icon: 'grid' },
       { href: '/ngrams', label: 'N-gram Explorer', icon: 'search' },
       { href: '/tags', label: 'Tags', icon: 'tag' },
+      { href: '/experiments', label: 'Experiments', icon: 'flask' },
     ],
   },
   {

@@ -93,6 +93,14 @@ function defaultView(entity: EntityLevel): SavedView {
   };
 }
 
+/** How each entity level's rows map into an experiment's scope. */
+const SCOPE_PARAM: Partial<Record<EntityLevel, { param: string; key: string }>> = {
+  campaigns: { param: 'campaigns', key: 'campaign_id' },
+  ad_groups: { param: 'adgroups', key: 'ad_group_id' },
+  targets: { param: 'targets', key: 'target_id' },
+  search_terms: { param: 'terms', key: 'search_term' },
+};
+
 export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
   const available = useMemo(() => columnsFor(props.entity), [props.entity]);
   const [view, setView] = useState<SavedView>(() => defaultView(props.entity));
@@ -191,6 +199,29 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
     [update, view.columns],
   );
 
+  /**
+   * "Start an experiment from this view" (WP-19): carry the ids of the currently
+   * filtered rows into the new-experiment form, so the scope is pre-filled with
+   * what the operator has selected in the grid. Additive — a link, not a change
+   * to the grid or its model.
+   */
+  const experimentHref = useMemo(() => {
+    const mapping = SCOPE_PARAM[props.entity];
+    if (mapping === undefined) return null;
+    const ids = Array.from(
+      new Set(
+        model.rows
+          .map((row) => row.dimensions[mapping.key])
+          .filter((value): value is string | number => value !== null && value !== undefined)
+          .map((value) => String(value)),
+      ),
+    ).slice(0, 100);
+    if (ids.length === 0) return null;
+    const params = new URLSearchParams({ profile: props.profileId, entity: props.entity });
+    params.set(mapping.param, ids.join(','));
+    return `/experiments/new?${params.toString()}`;
+  }, [model.rows, props.entity, props.profileId]);
+
   return (
     // `wa-embed` re-points WP-06's inline palette at the design-system tokens so
     // the DataGrid and its toolbar follow dark mode; WP-21 does not own
@@ -218,6 +249,18 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
         onApplyView={(applied) => setView(applied)}
         onSaveView={handleSaveView}
       />
+
+      {experimentHref === null ? null : (
+        <div className="wa-row" style={{ justifyContent: 'flex-end' }}>
+          <a
+            href={experimentHref}
+            data-testid="grid-start-experiment"
+            className="wa-btn wa-btn--sm"
+          >
+            Start an experiment from this view →
+          </a>
+        </div>
+      )}
 
       {filterError === null ? null : (
         <p role="alert" style={filterErrorStyle}>

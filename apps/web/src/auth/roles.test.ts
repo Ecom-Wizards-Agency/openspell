@@ -17,6 +17,7 @@ const EXPECTED: Record<OrgRole, Record<Capability, boolean>> = {
     toggleSync: true,
     manageConnection: true,
     triageFeedback: true,
+    manageExperiments: true,
   },
   admin: {
     read: true,
@@ -24,6 +25,7 @@ const EXPECTED: Record<OrgRole, Record<Capability, boolean>> = {
     toggleSync: true,
     manageConnection: true,
     triageFeedback: true,
+    manageExperiments: true,
   },
   analyst: {
     read: true,
@@ -31,6 +33,7 @@ const EXPECTED: Record<OrgRole, Record<Capability, boolean>> = {
     toggleSync: false,
     manageConnection: false,
     triageFeedback: false,
+    manageExperiments: true,
   },
   viewer: {
     read: true,
@@ -38,6 +41,7 @@ const EXPECTED: Record<OrgRole, Record<Capability, boolean>> = {
     toggleSync: false,
     manageConnection: false,
     triageFeedback: false,
+    manageExperiments: false,
   },
 };
 

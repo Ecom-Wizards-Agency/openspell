@@ -35,6 +35,7 @@ import { TrendChart } from '../../src/ui/viz';
 import type { TrendPoint } from '../../src/ui/viz';
 import { page } from '../../src/ui/tokens';
 import { loadCampaignDailyRows, loadProfileDailyRows, loadProvisionalDates, loadReportLedger } from '../_lib/dashboard-data';
+import { loadExperimentWindows } from '../_lib/experiment-windows';
 import { withDatabase } from '../_lib/db';
 import { addDays, periodFromParams, precedingPeriod, todayIso } from '../_lib/periods';
 import { listProfiles, selectProfile } from '../_lib/profiles';
@@ -68,15 +69,16 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     if (profile === null) return { profiles, profile: null };
 
     const window = { start: addDays(period.start, -8), end: period.end };
-    const [ledger, accountRows, campaignRows, provisional, crosscheck] = await Promise.all([
+    const [ledger, accountRows, campaignRows, provisional, crosscheck, experimentWindows] = await Promise.all([
       loadReportLedger(handle, orgId, profile.id),
       loadProfileDailyRows(handle, orgId, profile.id, profile.label, window),
       loadCampaignDailyRows(handle, orgId, profile.id, profile.label, window),
       loadProvisionalDates(handle, orgId, profile.id, window),
       loadCrosscheckPanel(handle, { profileId: profile.id }).catch(() => null),
+      loadExperimentWindows(handle, orgId, profile.id).catch(() => []),
     ]);
 
-    return { profiles, profile, ledger, accountRows, campaignRows, provisional, crosscheck };
+    return { profiles, profile, ledger, accountRows, campaignRows, provisional, crosscheck, experimentWindows };
   });
 
   if (data === null) {
@@ -105,7 +107,14 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     );
   }
 
-  const { profile, accountRows = [], campaignRows = [], ledger = [], provisional = [] } = data;
+  const {
+    profile,
+    accountRows = [],
+    campaignRows = [],
+    ledger = [],
+    provisional = [],
+    experimentWindows = [],
+  } = data;
   const context = { currencyCode: profile.currencyCode };
 
   const categorised: DailyRow[] = campaignRows.map((row) => ({
@@ -190,6 +199,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               scale="money"
               aggregatable
               currencyCode={profile.currencyCode}
+              windows={experimentWindows}
               caption={`Spend and sales are additive, so weekly and monthly roll up by sum. In ${profile.currencyCode}.`}
               series={[
                 { label: 'Spend', points: series(inPeriod, 'spend') },
@@ -204,6 +214,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 ariaLabel="Daily ACOS"
                 scale="percent"
                 currencyCode={profile.currencyCode}
+                windows={experimentWindows}
                 caption="Advertising cost of sales, as a fraction of sales."
                 series={[{ label: 'ACOS', points: series(inPeriod, 'acos') }]}
               />

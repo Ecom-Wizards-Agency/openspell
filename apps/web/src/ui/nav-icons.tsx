@@ -98,6 +98,12 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M8 8h5.5M11.5 8v2M13.5 8v2.5" />
     </>
   ),
+  flask: (
+    <>
+      <path d="M6.5 2.5v4L3.5 12a1 1 0 0 0 .9 1.5h7.2a1 1 0 0 0 .9-1.5L9.5 6.5v-4" />
+      <path d="M5.5 2.5h5M5.6 9.5h4.8" />
+    </>
+  ),
 };
 
 export function NavIcon({ icon }: { icon: string }): ReactNode {
