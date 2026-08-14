@@ -18,7 +18,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 10 | Crosscheck harness | Opus | merged | merged 2026-08-14: CLI, ingest handler (docs/handoffs-to-wp03.md), standalone /crosscheck route, export contract, exit-report generator; 59 tests green. Live-pilot verdict PENDING until real facts. KNOWN ISSUE found: repo-wide `next build` Turbopack blocker (.js specifiers) — manager fixes once, post-wave, before v0 close |
 | 11 | AdLabs recon | Opus + Victor | review | MCP half done (13 specs, exact contracts). UI pass blocked twice: extension installed/enabled/permissioned but NOT PAIRED to the claude.ai account — operator pairing check needed, then session 3 (automations first). See tools/recon/BLOCKED.md |
 | 12 | Staged-apply writes | Opus | gated | opens at v1 exit criterion |
-| 14a | Campaign generation engine | Opus | in-progress | launched 2026-08-14 (worktree; port of amazon-campaign-builder, XLSX parity) |
+| 14a | Campaign generation engine | Opus | merged | merged 2026-08-14: 101 parity tests byte-equal to Python, 542 property tests, XLSX passes the reference toolkit's own --validate 11/11; BMM dropped with live diagnostic. UI surface lands with WP-07 |
 | 14b | Campaign creation via API | Opus | gated | opens after OAuth + entity sync live; paused-by-default, apply-batch audited |
 | 13 | Headless analyst | Opus | gated | opens when WP-09 stable |
 
