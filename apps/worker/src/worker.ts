@@ -7,6 +7,7 @@ import {
   type AdsApiClient,
   type AdsProfileContext,
 } from './ads-api.js';
+import { runBidSeriesSync, type BidSeriesSyncDeps } from './bid-series.js';
 import { gunzipJson, parseReportRows } from './parsers.js';
 import {
   defaultRegionTokenBuckets,
@@ -445,6 +446,34 @@ export class StaleClaimReaper extends PeriodicPass {
     const requeued = await this.store.requeueStale(this.olderThan);
     if (requeued > 0) this.reaperLogger.info('requeued stale jobs', { requeued, olderThan: this.olderThan });
     return requeued;
+  }
+}
+
+/**
+ * Syncs the per-target bid corridor once a day (WP-28).
+ *
+ * A `PeriodicPass` rather than a queue job, and deliberately so: the `sync_jobs`
+ * queue is driven by `@wizard-ads/shared`'s `JobPayload`, which this WP does not
+ * own, so a queue job would need a cross-package contract change (see
+ * `bid-series.ts`). The corridor is market evidence retrieved daily on the same
+ * footing as spend and clicks — a daily in-process pass is exactly the shape,
+ * and it sits beside the auth healthcheck and the reaper for the same reason.
+ */
+export class BidSeriesSyncPass extends PeriodicPass {
+  constructor(
+    private readonly deps: BidSeriesSyncDeps,
+    intervalMs = 24 * 60 * MINUTE_MS,
+    private readonly passLogger: WorkerLogger = consoleLogger,
+  ) {
+    super(intervalMs, passLogger);
+  }
+  protected get name(): string { return 'bid series sync'; }
+  protected async pass(): Promise<unknown> {
+    const counts = await runBidSeriesSync({ logger: this.passLogger, ...this.deps });
+    if (counts.written > 0) {
+      this.passLogger.info('bid series sync pass', { ...counts });
+    }
+    return counts;
   }
 }
 

@@ -30,21 +30,87 @@ function shortDate(iso: string | null): string {
   return iso === null ? '—' : iso.slice(0, 10);
 }
 
+/** The `claude mcp add` line for a bearer-auth HTTP MCP server. */
+function claudeSnippet(endpoint: string, token: string): string {
+  return `claude mcp add --transport http wizard-ads ${endpoint} \\\n  --header "Authorization: Bearer ${token}"`;
+}
+
+/** The `~/.codex/config.toml` block for the same bearer-auth HTTP MCP server. */
+function codexSnippet(endpoint: string, token: string): string {
+  return [
+    '[mcp_servers.wizard_ads]',
+    `url = "${endpoint}"`,
+    '',
+    '[mcp_servers.wizard_ads.http_headers]',
+    `Authorization = "Bearer ${token}"`,
+  ].join('\n');
+}
+
+/** One labelled, copy-buttoned code block for a connection snippet. */
+function Snippet({
+  testId,
+  title,
+  hint,
+  code,
+  copied,
+  onCopy,
+}: {
+  testId: string;
+  title: string;
+  hint: ReactNode;
+  code: string;
+  copied: boolean;
+  onCopy: () => void;
+}): ReactNode {
+  return (
+    <div style={{ marginTop: '0.75rem' }} data-testid={testId}>
+      <div className="wa-row" style={{ alignItems: 'baseline', justifyContent: 'space-between', gap: '0.5rem' }}>
+        <span className="wa-label">
+          {title} <span className="wa-hint" style={{ fontWeight: 400 }}>{hint}</span>
+        </span>
+        <Button size="sm" onClick={onCopy} data-testid={`copy-${testId}`}>
+          {copied ? 'Copied' : 'Copy'}
+        </Button>
+      </div>
+      <pre
+        className="wa-code"
+        style={{
+          marginTop: '0.375rem',
+          marginBottom: 0,
+          padding: '0.625rem 0.75rem',
+          overflowX: 'auto',
+          background: 'var(--wa-surface)',
+          border: '1px solid var(--wa-border-strong)',
+          borderRadius: 'var(--wa-radius)',
+        }}
+      >
+        <code data-testid={`${testId}-code`} style={{ whiteSpace: 'pre', fontSize: 'var(--wa-fs-xs)' }}>
+          {code}
+        </code>
+      </pre>
+    </div>
+  );
+}
+
 export function ConnectClaudeManager({
   keys,
   canManage,
   role,
+  endpoint,
 }: {
   keys: readonly McpKeyRecord[];
   canManage: boolean;
   role: string;
+  /** The org's MCP endpoint URL, for the copy-paste connection snippets. */
+  endpoint: string;
 }): ReactNode {
   const [list, setList] = useState<Row[]>([...keys]);
   const [label, setLabel] = useState('');
   const [token, setToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  /** Which copy target was last copied, so each button shows its own state. */
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const issue = useCallback(async () => {
     setError(null);
@@ -65,7 +131,7 @@ export function ConnectClaudeManager({
       }
       setList((current) => [payload.key as McpKeyRecord, ...current]);
       setToken(payload.token);
-      setCopied(false);
+      setCopiedId(null);
       setLabel('');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'The key could not be issued.');
@@ -93,15 +159,14 @@ export function ConnectClaudeManager({
     }
   }, []);
 
-  const copy = useCallback(async () => {
-    if (token === null) return;
+  const copyText = useCallback(async (id: string, text: string) => {
     try {
-      await navigator.clipboard.writeText(token);
-      setCopied(true);
+      await navigator.clipboard.writeText(text);
+      setCopiedId(id);
     } catch {
-      // Clipboard blocked: the token is still on screen to copy by hand.
+      // Clipboard blocked: the text is still on screen to copy by hand.
     }
-  }, [token]);
+  }, []);
 
   return (
     <section className="wa-card">
@@ -154,19 +219,43 @@ export function ConnectClaudeManager({
               <code data-testid="issued-token" style={{ wordBreak: 'break-all', flex: '1 1 auto' }}>
                 {token}
               </code>
-              <Button size="sm" onClick={() => void copy()}>
-                {copied ? 'Copied' : 'Copy'}
+              <Button size="sm" onClick={() => void copyText('token', token)}>
+                {copiedId === 'token' ? 'Copied' : 'Copy'}
               </Button>
               <Button size="sm" variant="ghost" onClick={() => setToken(null)}>
                 Done
               </Button>
             </div>
+
+            <p className="wa-hint" style={{ marginTop: '0.75rem', marginBottom: 0 }}>
+              This one key works with any MCP client — Claude, Codex, ChatGPT, Cursor, Gemini.
+              Paste one of the snippets below, or point your client at{' '}
+              <code style={{ wordBreak: 'break-all' }}>{endpoint}</code> with the key as a
+              <code> Bearer</code> token.
+            </p>
+
+            <Snippet
+              testId="claude-snippet"
+              title="Claude"
+              hint="Add it as a custom connector in Claude, or from the CLI:"
+              code={claudeSnippet(endpoint, token)}
+              copied={copiedId === 'claude'}
+              onCopy={() => void copyText('claude', claudeSnippet(endpoint, token))}
+            />
+            <Snippet
+              testId="codex-snippet"
+              title="Codex"
+              hint={<>Add to <code>~/.codex/config.toml</code>:</>}
+              code={codexSnippet(endpoint, token)}
+              copied={copiedId === 'codex'}
+              onCopy={() => void copyText('codex', codexSnippet(endpoint, token))}
+            />
           </div>
         )}
 
         {list.length === 0 ? (
           <p className="wa-hint" style={{ marginTop: '0.75rem' }} data-testid="mcp-key-empty">
-            No keys yet. {canManage ? 'Issue one above to connect Claude.' : 'Ask an admin to issue one.'}
+            No keys yet. {canManage ? 'Issue one above to connect your AI client.' : 'Ask an admin to issue one.'}
           </p>
         ) : (
           <div className="wa-tablewrap" style={{ marginTop: '0.75rem' }}>

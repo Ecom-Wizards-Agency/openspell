@@ -10,8 +10,79 @@
  */
 import type { ReactNode } from 'react';
 import { Badge } from '../../src/ui/primitives';
+import { BidCorridorChart } from '../../src/ui/viz';
+import type { BidCorridorPoint } from '../../src/ui/viz';
 import type { OptimizationGroup, SettingsSummary } from '../../src/optimizer/view';
 import type { ReasonCoverage } from '../../src/recommendations/view';
+
+/** A target that has a corridor, as the chooser renders it. */
+export interface CorridorTargetOption {
+  targetId: string;
+  isKeyword: boolean;
+}
+
+/**
+ * The bid-corridor drill-down (`tools/recon/04-optimizer.md` §3), on the
+ * optimizer detail. A chooser of the targets that carry a corridor, then the
+ * band chart for the selected one: Amazon's suggested-bid band drawn around the
+ * target's bid, realized CPC and max-potential CPC. Read-only market evidence —
+ * the last check on a row before it ships.
+ */
+export function CorridorSection({
+  targets,
+  selectedTargetId,
+  points,
+  currencyCode,
+  hrefFor,
+}: {
+  targets: readonly CorridorTargetOption[];
+  selectedTargetId: string | null;
+  points: readonly BidCorridorPoint[];
+  currencyCode: string;
+  hrefFor: (targetId: string) => string;
+}): ReactNode {
+  const selected = targets.find((t) => t.targetId === selectedTargetId) ?? null;
+  return (
+    <section className="wa-card" aria-label="Bid corridor" data-testid="bid-corridor-section">
+      <header className="wa-card__head">
+        <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+          <h3 className="wa-card__title">Bid corridor</h3>
+          <p className="wa-card__sub">
+            Amazon&apos;s daily suggested-bid band with the bid, realized CPC and max-potential CPC
+            drawn inside it — the market&apos;s opinion next to ours.
+          </p>
+        </div>
+      </header>
+
+      {targets.length === 0 ? null : (
+        <div className="wa-row" style={{ gap: '0.375rem', flexWrap: 'wrap', padding: '0 1rem 0.5rem' }} data-testid="corridor-targets">
+          {targets.map((target) => (
+            <a
+              key={target.targetId}
+              href={hrefFor(target.targetId)}
+              className="wa-pill"
+              data-testid={`corridor-target-${target.targetId}`}
+              aria-current={target.targetId === selectedTargetId ? 'true' : undefined}
+              style={target.targetId === selectedTargetId ? { outline: '2px solid var(--wa-accent-border)' } : undefined}
+            >
+              {target.isKeyword ? 'kw' : 'tgt'} · {target.targetId}
+            </a>
+          ))}
+        </div>
+      )}
+
+      <div style={{ padding: '0 1rem 1rem' }}>
+        <BidCorridorChart
+          title={selected === null ? 'Bid corridor' : `${selected.isKeyword ? 'Keyword' : 'Target'} ${selected.targetId}`}
+          ariaLabel="Amazon suggested-bid corridor with bid, CPC and max potential CPC"
+          currencyCode={currencyCode}
+          points={points}
+          caption={`Suggested-bid band, bid, realized CPC and max potential CPC. In ${currencyCode}.`}
+        />
+      </div>
+    </section>
+  );
+}
 
 function percent(value: number | null): string {
   if (value === null) return '—';

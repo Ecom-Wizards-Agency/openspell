@@ -57,8 +57,14 @@ function underlying(overrides: Partial<UnderlyingClient> = {}): UnderlyingClient
     getProfiles: async () => [],
     createReport: async () => reportMeta('PENDING'),
     getReport: async () => reportMeta('PENDING'),
+    getSpKeywordBidRecommendations: async () => emptyRecommendations(),
+    getSpTargetBidRecommendations: async () => emptyRecommendations(),
   };
   return { ...base, ...overrides };
+}
+
+function emptyRecommendations() {
+  return { items: [], errors: [], submitted: 0, batches: 0 };
 }
 
 function reportMeta(status: string, extra: Partial<ReportMetadata> = {}): ReportMetadata {
@@ -286,6 +292,57 @@ describe('DbAdsApiClient.listProfiles', () => {
     const { adapter, createClient } = makeAdapter(client, { getRefreshToken: async () => null });
     expect(await adapter.listProfiles('NA')).toEqual([]);
     expect(createClient).not.toHaveBeenCalled();
+  });
+});
+
+describe('DbAdsApiClient.getSpSuggestedBids', () => {
+  const corridor = (targetId: string, low: number, median: number, high: number) => ({
+    kind: 'keywords' as const,
+    index: 0,
+    targetId,
+    low,
+    median,
+    high,
+    suggestedBid: median,
+    raw: {},
+  });
+
+  it('reads both endpoints and keys the corridor by target, counting returns and errors', async () => {
+    const client = underlying({
+      getSpKeywordBidRecommendations: async () => ({
+        items: [corridor('kw-1', 0.5, 0.8, 1.2)],
+        errors: [{ kind: 'keywords', index: 1, targetId: 'kw-2', code: 'X', details: null, raw: {} }],
+        submitted: 2,
+        batches: 1,
+      }),
+      getSpTargetBidRecommendations: async () => ({
+        items: [{ ...corridor('tg-1', 0.3, 0.4, 0.6), kind: 'targets' as const }],
+        errors: [],
+        submitted: 1,
+        batches: 1,
+      }),
+    });
+    const { adapter } = makeAdapter(client);
+    const result = await adapter.getSpSuggestedBids(profile, {
+      keywordIds: ['kw-1', 'kw-2'],
+      targetIds: ['tg-1'],
+    });
+    expect(result.submitted).toBe(3);
+    expect(result.returned).toBe(2);
+    expect(result.errors).toBe(1);
+    expect(result.byTarget.get('kw-1')).toEqual({ targetId: 'kw-1', low: 0.5, median: 0.8, high: 1.2 });
+    expect(result.byTarget.get('tg-1')?.high).toBe(0.6);
+  });
+
+  it('skips an endpoint with no ids to read', async () => {
+    const keywords = vi.fn(async () => ({ items: [corridor('kw-1', 0.5, 0.8, 1.2)], errors: [], submitted: 1, batches: 1 }));
+    const targets = vi.fn(async () => ({ items: [], errors: [], submitted: 0, batches: 0 }));
+    const client = underlying({ getSpKeywordBidRecommendations: keywords, getSpTargetBidRecommendations: targets });
+    const { adapter } = makeAdapter(client);
+    const result = await adapter.getSpSuggestedBids(profile, { keywordIds: ['kw-1'], targetIds: [] });
+    expect(keywords).toHaveBeenCalledOnce();
+    expect(targets).not.toHaveBeenCalled();
+    expect(result.submitted).toBe(1);
   });
 });
 

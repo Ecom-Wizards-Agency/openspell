@@ -31,7 +31,7 @@ export default async function ConnectClaudePage(): Promise<ReactNode> {
   if (entry.state !== 'ok') {
     return (
       <main style={page}>
-        <PageHeader title="Connect Claude" />
+        <PageHeader title="Connect AI (MCP)" />
         <p className="wa-page-sub">{gateMessage(entry.state)}</p>
       </main>
     );
@@ -47,8 +47,8 @@ export default async function ConnectClaudePage(): Promise<ReactNode> {
   return (
     <main style={page}>
       <PageHeader
-        title="Connect Claude"
-        subtitle="Give Claude a read-only key to your advertising data over the Model Context Protocol."
+        title="Connect AI (MCP)"
+        subtitle="Give any MCP client a read-only key to your advertising data over the Model Context Protocol."
       />
 
       <div className="wa-stack">
@@ -60,22 +60,26 @@ export default async function ConnectClaudePage(): Promise<ReactNode> {
             <ol style={{ margin: 0, paddingLeft: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
               <li>Issue a key below and copy it — it is shown once and never stored in full.</li>
               <li>
-                In Claude, add a custom connector pointing at your MCP endpoint:{' '}
-                <code>{endpoint}</code>
+                Point your client at your MCP endpoint: <code>{endpoint}</code>
               </li>
               <li>
-                Paste the key as the bearer token. Claude then reads this org&rsquo;s profiles,
+                Paste the key as the bearer token. The client then reads this org&rsquo;s profiles,
                 campaigns and reports — read-only, exactly what the key grants.
               </li>
             </ol>
             <p className="wa-hint" style={{ marginTop: '0.75rem' }}>
+              One key, any MCP client — Claude, Codex, ChatGPT, Cursor or Gemini all connect over the
+              same endpoint and bearer token. Ready-to-paste snippets for Claude and Codex appear the
+              moment you issue a key.
+            </p>
+            <p className="wa-hint" style={{ marginTop: '0.5rem' }}>
               Keys are org-wide and read-only in v1. Narrowing a key to specific profiles, or
               granting write, is a later capability — not a default you can reach for by accident.
             </p>
           </div>
         </section>
 
-        <ConnectClaudeManager keys={keys} canManage={canManage} role={org.role} />
+        <ConnectClaudeManager keys={keys} canManage={canManage} role={org.role} endpoint={endpoint} />
       </div>
     </main>
   );
