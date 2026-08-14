@@ -1,0 +1,23 @@
+{
+  "_readme": [
+    "Copy this file to _local/ads-api.config.json and fill it in. That path is",
+    "gitignored; only this template is tracked. Never paste a credential into a",
+    "chat, a commit, or anywhere outside _local/.",
+    "",
+    "The live smoke test reads it:  cd packages/ads-api && pnpm smoke",
+    "",
+    "It is read-only against Amazon, but creating a report consumes quota, so it",
+    "creates exactly one per run."
+  ],
+  "lwa": {
+    "clientId": "<LWA client id: amzn1.application-oa2-client....>",
+    "clientSecret": "<LWA client secret>",
+    "refreshToken": "<refresh token from the OAuth consent flow>"
+  },
+  "region": "<NA | EU | FE — the host the profile lives on>",
+  "profileId": "<Amazon profile id, as a string>",
+  "date": "<YYYY-MM-DD, one day, ideally yesterday in the profile's timezone>",
+  "reportType": "spCampaigns",
+  "maxWaitMinutes": 45,
+  "pollIntervalSeconds": 20
+}
