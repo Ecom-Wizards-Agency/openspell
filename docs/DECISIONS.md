@@ -28,3 +28,10 @@ One line per decision the manager (Fable) or operator makes between work package
 - **2026-08-14 · BMM dropped from campaign generation** (operator: BMM doesn't work on his
   accounts). Generation matrix is SKW/Halo/Phrase/Auto/PAT only; BMM parity scenarios
   excluded from goldens. Read-side BMM awareness (classifying existing campaigns) stays.
+- **2026-08-14 · Codex-runtime handicap on this machine** — the launched-from-Claude Codex
+  tasks hit two structural walls: (1) isolation worktrees are auto-cleaned when the launch
+  wrapper exits, deleting the directory before Codex uses it; (2) the Codex sandbox denies
+  local sockets (no Postgres), npm registry, and .git writes. Salvage: WP-03/WP-08 work
+  recovered via git bundles; WP-02/WP-06 lost. All five relaunched/completed on Opus.
+  Rule going forward: DB-heavy or e2e-heavy packages run on Opus; Codex is fine for pure-logic
+  packages or when run attended in the Codex app with full permissions.

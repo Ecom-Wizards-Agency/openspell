@@ -7,13 +7,13 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 |---|---|---|---|---|
 | 00 | Scaffold + contracts | Opus | merged | merged 2026-08-13; contracts frozen (incl. Next 16, TS 6, ApplyRow wire serializer) |
 | 01 | DB schema + RLS | Opus | merged | merged 2026-08-13 (44 tables, RLS on all tenant tables, partition automation, queue, Vault RPCs). Hosted-Supabase verification DONE 2026-08-14: all 13 migrations applied to the hosted project, counts match local, cron jobs live, security advisors clean after RPC grant hardening (migration 0013) |
-| 02 | ads-api client | Codex | in-progress | launched 2026-08-14 via Codex runtime (worktree) |
-| 03 | Worker + queue | Codex | in-progress | launched 2026-08-14 (worktree; real db, ads-api mocked w/ INTEGRATE markers) |
-| 04 | Web auth + OAuth | Codex | in-progress | launched 2026-08-14 (worktree; mocked LWA; redirect URI still needed for live test) |
+| 02 | ads-api client | Opus | in-progress | Codex run failed on env (worktree lifecycle + sandbox); relaunched fresh on Opus 2026-08-14 |
+| 03 | Worker + queue | Codex+Opus | in-progress | Codex implemented (bundle salvaged, commit ae5d553) but DB tests never ran in its sandbox; Opus completing on the same branch: run tests, schedule-variant migration, crosscheck ingest wiring |
+| 04 | Web auth + OAuth | Opus | in-progress | Codex stopped at real gaps (target_total_acos missing, lint conflict) — both fixed on main (migration 0016 + OAuth-route lint carve-out); relaunched fresh on Opus |
 | 05 | core doctrine port | Opus | merged | merged 2026-08-13; 122 parity cases byte-equal to Python, bidding worked-examples green. Spawned WP-00.1 contract extension (merged 2026-08-13, 154/154 live-doc leaf coverage) |
-| 06 | Grid + dashboard | Codex | in-progress | launched 2026-08-14 (worktree; MCP-recon column sets, visual details provisional) |
+| 06 | Grid + dashboard | Opus | in-progress | Codex session never started; relaunched fresh on Opus 2026-08-14 |
 | 07 | Recs UI + export bridge | Codex | todo | GATE OPEN (WP-05 merged) — after WP-06 grid shell |
-| 08 | Tags + goto links | Codex | in-progress | launched 2026-08-14 (worktree) |
+| 08 | Tags + goto links | Codex+Opus | in-progress | Codex implemented (bundle salvaged, f0cf4ec) but DB/RLS tests skipped in its sandbox; Opus completing: run tests + Playwright |
 | 09 | MCP server | Opus | merged | merged 2026-08-14: 10 read tools, scoped/hashed API keys (per-key profile allowlist — the AdLabs gap), full audit log, write stubs gated; 48 tests. mcp.api_keys migration applied hosted, advisors clean. Live Claude-client session vs staging = operator step |
 | 10 | Crosscheck harness | Opus | merged | merged 2026-08-14: CLI, ingest handler (docs/handoffs-to-wp03.md), standalone /crosscheck route, export contract, exit-report generator; 59 tests green. Live-pilot verdict PENDING until real facts. KNOWN ISSUE found: repo-wide `next build` Turbopack blocker (.js specifiers) — manager fixes once, post-wave, before v0 close |
 | 11 | AdLabs recon | Opus + Victor | review | MCP half done (13 specs, exact contracts). UI pass blocked twice: extension installed/enabled/permissioned but NOT PAIRED to the claude.ai account — operator pairing check needed, then session 3 (automations first). See tools/recon/BLOCKED.md |
