@@ -9,7 +9,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 01 | DB schema + RLS | Opus | merged | merged 2026-08-13 (44 tables, RLS on all tenant tables, partition automation, queue, Vault RPCs). Hosted-Supabase verification DONE 2026-08-14: all 13 migrations applied to the hosted project, counts match local, cron jobs live, security advisors clean after RPC grant hardening (migration 0013) |
 | 02 | ads-api client | Opus | merged | merged 2026-08-14: full client (LWA, profiles, entities, exports, reporting v3, 429/Retry-After budget), 130 fixture tests, purity gate. Live smoke = operator step: fill _local/ads-api.config.json then `pnpm --filter @wizard-ads/ads-api smoke` |
 | 03 | Worker + queue | Codex+Opus | merged | merged 2026-08-14. Live tests exposed and fixed 2 product bugs (timestamptz boundary; multi-campaign fact aggregation) + tombstone gating + in-process stale-claim reaper. Schedule-variant migration 0017 (applied hosted). crosscheck.ingest wired. INTEGRATE(WP-02) seam remains (1 function) |
-| 04 | Web auth + OAuth | Opus | in-progress | Codex stopped at real gaps (target_total_acos missing, lint conflict) — both fixed on main (migration 0016 + OAuth-route lint carve-out); relaunched fresh on Opus |
+| 04 | Web auth + OAuth | Opus | merged | merged 2026-08-14 via integration branch: login/orgs/roles, LWA OAuth (signed state, Vault custody, region-partial grants), settings + sync-status; 17 e2e green across two unified harnesses. Live OAuth awaits redirect-URI registration |
 | 05 | core doctrine port | Opus | merged | merged 2026-08-13; 122 parity cases byte-equal to Python, bidding worked-examples green. Spawned WP-00.1 contract extension (merged 2026-08-13, 154/154 live-doc leaf coverage) |
 | 06 | Grid + dashboard | Opus | in-progress | Codex session never started; relaunched fresh on Opus 2026-08-14 |
 | 07 | Recs UI + export bridge | Codex | todo | GATE OPEN (WP-05 merged) — after WP-06 grid shell |
@@ -21,7 +21,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 14a | Campaign generation engine | Opus | merged | merged 2026-08-14: 101 parity tests byte-equal to Python, 542 property tests, XLSX passes the reference toolkit's own --validate 11/11; BMM dropped with live diagnostic. UI surface lands with WP-07 |
 | 14b | Campaign creation via API | Opus | gated | opens after OAuth + entity sync live; paused-by-default, apply-batch audited |
 | 13 | Headless analyst | Opus | gated | opens when WP-09 stable |
-| 15 | Feedback & roadmap | Opus | todo | brief ready (operator request 2026-08-14); launches after the wp-04 apps/web integration merges |
+| 15 | Feedback & roadmap | Opus | in-progress | launched 2026-08-14 after wp-04 integration merge |
 
 ## Milestone gates
 
