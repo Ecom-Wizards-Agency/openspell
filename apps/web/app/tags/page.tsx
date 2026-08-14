@@ -1,7 +1,7 @@
 import { headers } from 'next/headers';
-import { actorFromHeaders, openWebDatabase, requireOrgMembership } from '../../src/server/wp08-context';
-import { listCampaignsByTagFilter, listTagTree } from '../../src/server/wp08-service';
-import type { JsonValue } from '../../src/server/wp08-service';
+import { actorFromHeaders, openWebDatabase, requireOrgMembership } from '../../src/server/request-context';
+import { listCampaignsByTagFilter, listTagTree } from '@wizard-ads/db';
+import type { JsonValue } from '@wizard-ads/db';
 import { TagManager } from './tag-manager';
 
 export const runtime = 'nodejs';

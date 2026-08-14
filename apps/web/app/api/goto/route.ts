@@ -1,6 +1,6 @@
-import { actorFromHeaders, errorResponse, openWebDatabase, requireOrgMembership } from '../../../src/server/wp08-context';
-import { createGotoLink } from '../../../src/server/wp08-service';
-import type { JsonValue } from '../../../src/server/wp08-service';
+import { actorFromHeaders, errorResponse, openWebDatabase, requireOrgMembership } from '../../../src/server/request-context';
+import { createGotoLink } from '@wizard-ads/db';
+import type { JsonValue } from '@wizard-ads/db';
 
 export const runtime = 'nodejs';
 

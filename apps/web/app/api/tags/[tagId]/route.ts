@@ -1,6 +1,6 @@
-import { actorFromHeaders, errorResponse, openWebDatabase, requireOrgMembership } from '../../../../src/server/wp08-context';
-import { deleteTag, updateTag } from '../../../../src/server/wp08-service';
-import type { DeleteTagMode } from '../../../../src/server/wp08-service';
+import { actorFromHeaders, errorResponse, openWebDatabase, requireOrgMembership } from '../../../../src/server/request-context';
+import { deleteTag, updateTag } from '@wizard-ads/db';
+import type { DeleteTagMode } from '@wizard-ads/db';
 
 export const runtime = 'nodejs';
 type RouteContext = { params: Promise<{ tagId: string }> };

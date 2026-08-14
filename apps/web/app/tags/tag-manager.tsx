@@ -1,15 +1,11 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { CampaignTagListRow } from '../../../../packages/db/src/queries/tags.js';
-import type { JsonValue } from '../../../../packages/db/src/queries/goto.js';
-import {
-  tagFilterFromState,
-  tagFilterState,
-  useTagFilter,
-} from '../../src/tags/filter';
+import type { CampaignTagListRow, JsonValue } from '@wizard-ads/db';
+import { tagFilterFromState, tagFilterState } from '../../src/tags/filter';
 import type { TagDescendants, TagFilter } from '../../src/tags/filter';
+import { useTagFilter } from '../../src/tags/use-tag-filter';
 
 interface UiTag {
   id: string;
@@ -70,6 +66,15 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
   const [message, setMessage] = useState('');
   const filteredCampaigns = useTagFilter(campaigns, filter, descendants);
 
+  /**
+   * Every control here is server-rendered before React attaches to it, so a
+   * click that lands early submits the form natively and silently does
+   * nothing. The flag marks the point where the handlers are live; the
+   * end-to-end suite waits on it rather than on a timer.
+   */
+  const [ready, setReady] = useState(false);
+  useEffect(() => setReady(true), []);
+
   const act = async (operation: () => Promise<void>, success: string) => {
     setMessage('Working…');
     try {
@@ -116,16 +121,26 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
     void act(() => mutate(`/api/tags/${tag.id}`, 'DELETE', body), 'Tag deleted');
   };
 
+  const bulkFilter = () => ({
+    filter: {
+      entityType: 'campaign',
+      entityIds: filteredCampaigns.map((campaign) => campaign.entityId),
+    },
+  });
+
   const bulkAssign = () => {
     if (!bulkTagId) return setMessage('Choose a destination tag first');
     void act(
-      () => mutate(`/api/tags/${bulkTagId}/assign`, 'POST', {
-        filter: {
-          entityType: 'campaign',
-          entityIds: filteredCampaigns.map((campaign) => campaign.entityId),
-        },
-      }),
+      () => mutate(`/api/tags/${bulkTagId}/assign`, 'POST', bulkFilter()),
       `Tagged ${filteredCampaigns.length} filtered campaigns`,
+    );
+  };
+
+  const bulkUnassign = () => {
+    if (!bulkTagId) return setMessage('Choose a tag to remove first');
+    void act(
+      () => mutate(`/api/tags/${bulkTagId}/assign`, 'DELETE', bulkFilter()),
+      `Untagged ${filteredCampaigns.length} filtered campaigns`,
     );
   };
 
@@ -160,7 +175,10 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
   ));
 
   return (
-    <main style={{ maxWidth: 1100, margin: '40px auto', padding: '0 20px', fontFamily: 'system-ui', color: '#172033' }}>
+    <main
+      data-interactive={ready ? 'true' : 'false'}
+      style={{ maxWidth: 1100, margin: '40px auto', padding: '0 20px', fontFamily: 'system-ui', color: '#172033' }}
+    >
       <header style={{ marginBottom: 24 }}>
         <h1 style={{ marginBottom: 4 }}>Nested tags</h1>
         <p style={{ marginTop: 0, color: '#526071' }}>Classify profiles and advertising entities, then reuse one filter across lists and dashboards.</p>
@@ -213,6 +231,7 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
               {allTags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
             </select>
             <button type="button" onClick={bulkAssign}>Tag filtered campaigns</button>
+            <button type="button" onClick={bulkUnassign}>Remove tag from filtered campaigns</button>
           </div>
           <ul data-testid="campaign-list">
             {filteredCampaigns.map((campaign) => (

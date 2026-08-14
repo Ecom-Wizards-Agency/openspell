@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
-import { createWp08Database } from './wp08-service';
-import type { Wp08Database } from './wp08-service';
+import { createRequestDatabase } from '@wizard-ads/db';
+import type { RequestDatabase } from '@wizard-ads/db';
 
 export interface RequestActor {
   userId: string;
@@ -50,14 +50,14 @@ export function actorFromHeaders(
   return { userId, orgId };
 }
 
-export function openWebDatabase(env: NodeJS.ProcessEnv = process.env): Wp08Database {
+export function openWebDatabase(env: NodeJS.ProcessEnv = process.env): RequestDatabase {
   const connectionString = env['DATABASE_URL'];
   if (!connectionString) throw new RequestAuthError('Database is not configured', 503);
-  return createWp08Database(connectionString);
+  return createRequestDatabase(connectionString);
 }
 
 export async function requireOrgMembership(
-  handle: Pick<Wp08Database, 'sql'>,
+  handle: Pick<RequestDatabase, 'sql'>,
   actor: RequestActor,
 ): Promise<void> {
   const rows = await handle.sql<{ exists: boolean }[]>`

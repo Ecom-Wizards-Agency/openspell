@@ -1,5 +1,5 @@
-import { actorFromHeaders, openWebDatabase, requireOrgMembership } from '../../../src/server/wp08-context';
-import { gotoRedirectLocation, resolveGotoLink } from '../../../src/server/wp08-service';
+import { actorFromHeaders, openWebDatabase, requireOrgMembership } from '../../../src/server/request-context';
+import { gotoRedirectLocation, resolveGotoLink } from '@wizard-ads/db';
 
 export const runtime = 'nodejs';
 type RouteContext = { params: Promise<{ token: string }> };
