@@ -25,3 +25,6 @@ One line per decision the manager (Fable) or operator makes between work package
   port of amazon-campaign-builder (types package-local, XLSX byte-parity, paused-by-default)
   ships in v1; 14b: API-create lane gated only on OAuth + entity sync (creation is
   lower-risk than bid writes), still per-plan operator approval through apply batches.
+- **2026-08-14 · BMM dropped from campaign generation** (operator: BMM doesn't work on his
+  accounts). Generation matrix is SKW/Halo/Phrase/Auto/PAT only; BMM parity scenarios
+  excluded from goldens. Read-side BMM awareness (classifying existing campaigns) stays.

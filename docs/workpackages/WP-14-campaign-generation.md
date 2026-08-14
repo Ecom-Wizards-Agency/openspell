@@ -12,6 +12,11 @@ the audited apply-batch path.
 ## 14a spec (this brief)
 
 1. **New package `packages/campaigns`** (pure logic; may depend on shared + strategy only).
+   **Scope cut (operator, 2026-08-14): BMM campaigns are DROPPED from generation** — Victor
+   confirmed BMM doesn't work on his accounts. Generate only SKW/Halo/Phrase/Auto/PAT.
+   Exclude BMM scenarios from the parity goldens. Do NOT remove BMM from anything that reads
+   existing accounts (e.g. core's campaign-name classification) — existing campaigns may still
+   carry BMM names; only generation drops it.
    Port the create-mode generation from:
    - `~/os/amazon-agent/tools/amazon-campaign-builder/campaign_model.py` (615L — the model:
      campaign type matrix SKW/Halo/BMM/Phrase/Auto/PAT, naming conventions, per-purpose
