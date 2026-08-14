@@ -52,6 +52,19 @@ export class RequestAuthError extends Error {
   }
 }
 
+/**
+ * "Nobody is signed in", as distinct from every other reason a page can fail.
+ *
+ * A route handler turns this into a 401 and a page turns it into a redirect to
+ * `/login`; both need the same test, and neither should be matching on a
+ * message string. 403 and 503 deliberately do not qualify: a member of the
+ * wrong org and an instance with no database are not fixed by signing in, and
+ * bouncing them to a login screen they are already past is a loop.
+ */
+export function isUnauthenticated(error: unknown): boolean {
+  return error instanceof RequestAuthError && error.status === 401;
+}
+
 function equalSecret(supplied: string, expected: string): boolean {
   const suppliedBytes = Buffer.from(supplied);
   const expectedBytes = Buffer.from(expected);

@@ -16,12 +16,14 @@
  */
 import type { CSSProperties } from 'react';
 import { headers } from 'next/headers';
+import { redirect } from 'next/navigation';
 import {
   getRecommendationRun,
   listRecommendationRuns,
   listRecommendations,
 } from '@wizard-ads/db';
 import {
+  isUnauthenticated,
   openWebDatabase,
   requestActor,
   requireOrgMembership,
@@ -141,6 +143,10 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
       </main>
     );
   } catch (error) {
+    // Nobody is signed in. A page is not an API: the answer to "who are you" is
+    // the login screen, not a 200 that says "Authentication required" and
+    // leaves the visitor to find `/login` themselves.
+    if (isUnauthenticated(error)) redirect('/login');
     const message = error instanceof Error ? error.message : 'Recommendations are unavailable';
     return (
       <main style={main}>

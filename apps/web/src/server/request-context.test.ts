@@ -11,6 +11,7 @@ import {
   RequestAuthError,
   actorFromHeaders,
   e2eAuthBridgeEnabled,
+  isUnauthenticated,
   requestActor,
 } from './request-context.js';
 
@@ -83,5 +84,25 @@ describe('the e2e auth bridge', () => {
       userId: USER,
       orgId: ORG,
     });
+  });
+});
+
+/**
+ * The five WP-07/08/15 pages used to catch every one of these and render the
+ * message with a 200. Only the first is answered by signing in, so only the
+ * first may become a redirect to `/login`; sending the other two there would be
+ * a loop for a visitor who is already signed in.
+ */
+describe('isUnauthenticated', () => {
+  it('is true only for a 401', () => {
+    expect(isUnauthenticated(new RequestAuthError('Authentication required', 401))).toBe(true);
+    expect(isUnauthenticated(new RequestAuthError('Resource not found', 403))).toBe(false);
+    expect(isUnauthenticated(new RequestAuthError('Database is not configured', 503))).toBe(false);
+  });
+
+  it('does not match a look-alike from anywhere else', () => {
+    expect(isUnauthenticated(new Error('Authentication required'))).toBe(false);
+    expect(isUnauthenticated({ status: 401 })).toBe(false);
+    expect(isUnauthenticated(null)).toBe(false);
   });
 });

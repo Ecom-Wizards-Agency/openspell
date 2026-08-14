@@ -1,5 +1,11 @@
 import { headers } from 'next/headers';
-import { requestActor, openWebDatabase, requireOrgMembership } from '../../src/server/request-context';
+import { redirect } from 'next/navigation';
+import {
+  isUnauthenticated,
+  openWebDatabase,
+  requestActor,
+  requireOrgMembership,
+} from '../../src/server/request-context';
 import { listCampaignsByTagFilter, listTagTree } from '@wizard-ads/db';
 import type { JsonValue } from '@wizard-ads/db';
 import { TagManager } from './tag-manager';
@@ -42,15 +48,13 @@ export default async function TagsPage({ searchParams }: { searchParams: SearchP
       />
     );
   } catch (error) {
+    // A page, not an API: an anonymous visitor gets the login screen.
+    if (isUnauthenticated(error)) redirect('/login');
     const message = error instanceof Error ? error.message : 'Tags are unavailable';
     return (
       <main style={{ maxWidth: 760, margin: '48px auto', fontFamily: 'system-ui' }}>
         <h1>Tags</h1>
         <p role="alert">{message}</p>
-        <p>
-          This surface requires the authenticated request context supplied by the web auth
-          middleware.
-        </p>
       </main>
     );
   } finally {

@@ -8,8 +8,9 @@
  * them ask again in six weeks.
  */
 import { headers } from 'next/headers';
+import { redirect } from 'next/navigation';
 import { listRoadmap } from '@wizard-ads/db';
-import { openWebDatabase, requestActor } from '../../src/server/request-context';
+import { isUnauthenticated, openWebDatabase, requestActor } from '../../src/server/request-context';
 import { requireOrgRole } from '../../src/server/org-role';
 import { toUiItem } from '../../src/feedback/ui';
 import { heading, muted, page } from '../../src/ui/tokens';
@@ -34,12 +35,14 @@ export default async function RoadmapPage() {
       />
     );
   } catch (error) {
+    // A page, not an API: an anonymous visitor gets the login screen.
+    if (isUnauthenticated(error)) redirect('/login');
     const message = error instanceof Error ? error.message : 'The roadmap is unavailable';
     return (
       <main style={page}>
         <h1 style={heading}>Roadmap</h1>
         <p role="alert">{message}</p>
-        <p style={muted}>This surface requires an authenticated request context.</p>
+        <p style={muted}>Nothing was read; this is the board refusing, not an empty board.</p>
       </main>
     );
   } finally {
