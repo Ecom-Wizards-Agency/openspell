@@ -197,5 +197,49 @@ describe.skipIf(!available)('sync job queue', () => {
       expect(enqueued).toEqual([]);
       await database.sql`update public.ad_profiles set sync_enabled = true where id = ${profileId}`;
     });
+
+    it('anchors next_run_at to the preferred sync hour in the profile timezone', async () => {
+      // 6am in Los Angeles, and a tick at 13:00 PDT (20:00 UTC) that same day —
+      // past 6am, so the anchor lands on the *next* day's 6am, not this one.
+      await database.sql`
+        update public.ad_profiles
+           set timezone = 'America/Los_Angeles', preferred_sync_hour = 6
+         where id = ${profileId}
+      `;
+      const [schedule] = await database.sql<{ id: string }[]>`
+        insert into public.sync_schedules
+          (org_id, profile_id, job_type, variant, cadence, next_run_at)
+        values (${orgId}, ${profileId}, 'entity.sync', 'anchored-test', interval '1 day',
+                '2026-06-15T19:59:00Z')
+        returning id
+      `;
+      const scheduleId = schedule?.id ?? '';
+
+      const at = new Date('2026-06-15T20:00:00Z');
+      const rows = await enqueueDueSchedules(database, at);
+      expect(rows.find((row) => row.scheduleId === scheduleId)?.enqueued).toBe(true);
+
+      const [anchored] = await database.sql<{ local_hour: number; local_date: string }[]>`
+        select extract(hour from next_run_at at time zone 'America/Los_Angeles')::int as local_hour,
+               (next_run_at at time zone 'America/Los_Angeles')::date::text as local_date
+          from public.sync_schedules where id = ${scheduleId}
+      `;
+      expect(anchored?.local_hour).toBe(6);
+      expect(anchored?.local_date).toBe('2026-06-16');
+
+      // A tick before 6am local anchors to the same day's 6am, not the next.
+      await database.sql`
+        update public.sync_schedules set next_run_at = '2026-06-15T11:59:00Z'
+         where id = ${scheduleId}
+      `;
+      await enqueueDueSchedules(database, new Date('2026-06-15T12:00:00Z')); // 05:00 PDT
+      const [early] = await database.sql<{ local_hour: number; local_date: string }[]>`
+        select extract(hour from next_run_at at time zone 'America/Los_Angeles')::int as local_hour,
+               (next_run_at at time zone 'America/Los_Angeles')::date::text as local_date
+          from public.sync_schedules where id = ${scheduleId}
+      `;
+      expect(early?.local_hour).toBe(6);
+      expect(early?.local_date).toBe('2026-06-15');
+    });
   });
 });

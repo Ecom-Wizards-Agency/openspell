@@ -196,7 +196,13 @@ async function upsertProfiles(
           region = excluded.region,
           country_code = excluded.country_code,
           currency_code = excluded.currency_code,
-          timezone = excluded.timezone,
+          -- A timezone an operator pinned by hand sticks: Amazon's re-sync
+          -- reports the marketplace timezone, but a manual choice (the
+          -- account's own reporting calendar) must survive the next connect.
+          timezone = case
+            when ad_profiles.timezone_locked then ad_profiles.timezone
+            else excluded.timezone
+          end,
           account_type = excluded.account_type,
           account_name = excluded.account_name,
           amazon_account_id = excluded.amazon_account_id

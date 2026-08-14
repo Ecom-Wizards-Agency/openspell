@@ -32,6 +32,8 @@ interface FakeOptions {
   perRegion: Partial<Record<Region, number>>;
   failing?: Partial<Record<Region, string>>;
   token?: string;
+  /** The timezone Amazon reports for every profile; defaults to 'UTC'. */
+  timezone?: string;
 }
 
 function fakeAmazon(options: FakeOptions): AmazonOAuthPort & { exchanges: number } {
@@ -54,7 +56,7 @@ function fakeAmazon(options: FakeOptions): AmazonOAuthPort & { exchanges: number
         profileId: `${region.toLowerCase()}-profile-${index + 1}`,
         countryCode: region === 'NA' ? 'US' : region === 'EU' ? 'DE' : 'JP',
         currencyCode: region === 'NA' ? 'USD' : region === 'EU' ? 'EUR' : 'JPY',
-        timezone: 'UTC',
+        timezone: options.timezone ?? 'UTC',
         accountType: 'seller',
         accountName: `${region} account ${index + 1}`,
         amazonAccountId: `ENTITY${region}${index + 1}`,
@@ -196,6 +198,41 @@ describe.skipIf(!available)('completeConnection', () => {
     expect(row?.sync_enabled).toBe(true);
     expect(Number(row?.target_acos)).toBeCloseTo(0.25, 4);
     expect(row?.goal_lens).toBe('scale');
+  });
+
+  it('keeps a locked timezone but updates an unlocked one on reconnect', async () => {
+    // First connect lands both NA profiles reporting UTC.
+    await completeConnection(
+      database,
+      fakeAmazon({ perRegion: { NA: 2 }, timezone: 'UTC' }),
+      input(() => orgId),
+    );
+    // The operator pins na-profile-1's calendar by hand; na-profile-2 is left
+    // as Amazon set it.
+    await database.sql`
+      update public.ad_profiles
+         set timezone = 'America/New_York', timezone_locked = true
+       where org_id = ${orgId} and amazon_profile_id = 'na-profile-1'
+    `;
+
+    // Amazon re-syncs and now reports a different timezone for both.
+    await completeConnection(
+      database,
+      fakeAmazon({ perRegion: { NA: 2 }, timezone: 'Asia/Tokyo' }),
+      input(() => orgId),
+    );
+
+    const [locked] = await database.sql<{ timezone: string }[]>`
+      select timezone from public.ad_profiles
+       where org_id = ${orgId} and amazon_profile_id = 'na-profile-1'
+    `;
+    const [unlocked] = await database.sql<{ timezone: string }[]>`
+      select timezone from public.ad_profiles
+       where org_id = ${orgId} and amazon_profile_id = 'na-profile-2'
+    `;
+    // The pinned one survived the re-sync; the unpinned one followed Amazon.
+    expect(locked?.timezone).toBe('America/New_York');
+    expect(unlocked?.timezone).toBe('Asia/Tokyo');
   });
 
   it('records a failing region and still lands the others', async () => {
