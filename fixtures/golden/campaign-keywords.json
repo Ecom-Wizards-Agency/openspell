@@ -1,0 +1,539 @@
+{
+  "schema": "wizard-ads.parity.v1",
+  "module": "campaign-keywords",
+  "source": "amazon-agent/tools/amazon-campaign-builder (read-only reference)",
+  "synthetic": true,
+  "today": "2026-08-14",
+  "columns": [
+    "Product",
+    "Entity",
+    "Operation",
+    "Campaign ID",
+    "Ad Group ID",
+    "Portfolio ID",
+    "Ad ID",
+    "Keyword ID",
+    "Product Targeting ID",
+    "Campaign Name",
+    "Ad Group Name",
+    "Start Date",
+    "End Date",
+    "Targeting Type",
+    "State",
+    "Daily Budget",
+    "SKU",
+    "ASIN",
+    "Ad Group Default Bid",
+    "Bid",
+    "Keyword Text",
+    "Match Type",
+    "Bidding Strategy",
+    "Placement",
+    "Percentage",
+    "Product Targeting Expression",
+    "Sites"
+  ],
+  "sheetName": "Sponsored Products Campaigns",
+  "cases": [
+    {
+      "name": "sections_to_specs:scanned_workbook",
+      "input": {
+        "sections": [
+          {
+            "campaignType": "SKW",
+            "campaignPurpose": "RANK_SKW",
+            "label": "",
+            "kind": "keywords",
+            "values": [
+              [
+                "red widget",
+                2000
+              ],
+              [
+                "blue widget",
+                1500
+              ]
+            ]
+          },
+          {
+            "campaignType": "SKW",
+            "campaignPurpose": "SHIELD",
+            "label": "",
+            "kind": "keywords",
+            "values": [
+              [
+                "sample widget",
+                500
+              ]
+            ]
+          },
+          {
+            "campaignType": "Halo",
+            "campaignPurpose": "HALO",
+            "label": "",
+            "kind": "keywords",
+            "values": [
+              [
+                "red widget for kitchen",
+                300
+              ],
+              [
+                "red widget for office",
+                300
+              ]
+            ]
+          },
+          {
+            "campaignType": "Phrase",
+            "campaignPurpose": "DISCOVERY",
+            "label": "Phrase Root",
+            "kind": "keywords",
+            "values": [
+              [
+                "widget",
+                5000
+              ],
+              [
+                "widget accessory",
+                4000
+              ]
+            ]
+          },
+          {
+            "campaignType": "PAT",
+            "campaignPurpose": "DISCOVERY",
+            "label": "Stronger",
+            "kind": "asins",
+            "values": [
+              [
+                "B000000001",
+                "Rival One"
+              ]
+            ]
+          },
+          {
+            "campaignType": "PAT",
+            "campaignPurpose": "DISCOVERY",
+            "label": "Weaker",
+            "kind": "asins",
+            "values": [
+              [
+                "B000000002",
+                "Rival Two"
+              ]
+            ]
+          }
+        ],
+        "productName": "Widget",
+        "sku": [
+          "SKU-1"
+        ],
+        "asin": []
+      },
+      "expected": [
+        {
+          "campaignType": "SKW",
+          "campaignPurpose": "RANK_SKW",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1"
+          ],
+          "asin": [],
+          "keywords": [
+            "red widget"
+          ],
+          "targetDescriptor": "red widget"
+        },
+        {
+          "campaignType": "SKW",
+          "campaignPurpose": "RANK_SKW",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1"
+          ],
+          "asin": [],
+          "keywords": [
+            "blue widget"
+          ],
+          "targetDescriptor": "blue widget"
+        },
+        {
+          "campaignType": "SKW",
+          "campaignPurpose": "SHIELD",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1"
+          ],
+          "asin": [],
+          "keywords": [
+            "sample widget"
+          ],
+          "targetDescriptor": "sample widget"
+        },
+        {
+          "campaignType": "Halo",
+          "campaignPurpose": "HALO",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1"
+          ],
+          "asin": [],
+          "keywords": [
+            "red widget for kitchen",
+            "red widget for office"
+          ],
+          "targetDescriptor": ""
+        },
+        {
+          "campaignType": "Phrase",
+          "campaignPurpose": "DISCOVERY",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1"
+          ],
+          "asin": [],
+          "keywords": [
+            "widget"
+          ],
+          "targetDescriptor": "widget"
+        },
+        {
+          "campaignType": "Phrase",
+          "campaignPurpose": "DISCOVERY",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1"
+          ],
+          "asin": [],
+          "keywords": [
+            "widget accessory"
+          ],
+          "targetDescriptor": "widget accessory"
+        },
+        {
+          "campaignType": "PAT",
+          "campaignPurpose": "DISCOVERY",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1"
+          ],
+          "asin": [],
+          "targetAsins": [
+            "B000000001"
+          ],
+          "targetDescriptor": "Stronger"
+        },
+        {
+          "campaignType": "PAT",
+          "campaignPurpose": "DISCOVERY",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1"
+          ],
+          "asin": [],
+          "targetAsins": [
+            "B000000002"
+          ],
+          "targetDescriptor": "Weaker"
+        }
+      ]
+    },
+    {
+      "name": "sections_to_specs:hand_built_buckets",
+      "input": {
+        "sections": [
+          {
+            "campaignType": "SKW",
+            "campaignPurpose": "RANK_SKW",
+            "label": "",
+            "kind": "keywords",
+            "values": [
+              [
+                "red widget",
+                2000
+              ],
+              [
+                "blue widget",
+                1500
+              ]
+            ]
+          },
+          {
+            "campaignType": "SKW",
+            "campaignPurpose": "SHIELD",
+            "label": "",
+            "kind": "keywords",
+            "values": [
+              [
+                "sample widget",
+                500
+              ]
+            ]
+          },
+          {
+            "campaignType": "Halo",
+            "campaignPurpose": "HALO",
+            "label": "long-tail",
+            "kind": "keywords",
+            "values": [
+              [
+                "widget for kitchen",
+                300
+              ],
+              [
+                "widget for office",
+                250
+              ]
+            ]
+          },
+          {
+            "campaignType": "Phrase",
+            "campaignPurpose": "DISCOVERY",
+            "label": "Phrase Root",
+            "kind": "keywords",
+            "values": [
+              [
+                "widget",
+                5000
+              ],
+              [
+                "widget holder",
+                900
+              ]
+            ]
+          },
+          {
+            "campaignType": "Phrase",
+            "campaignPurpose": "SHIELD",
+            "label": "Phrase Brand",
+            "kind": "keywords",
+            "values": [
+              [
+                "sample widget holder",
+                400
+              ]
+            ]
+          },
+          {
+            "campaignType": "PAT",
+            "campaignPurpose": "DISCOVERY",
+            "label": "Stronger",
+            "kind": "asins",
+            "values": [
+              [
+                "b000000001",
+                "Rival One"
+              ],
+              [
+                "B000000002",
+                "Rival Two"
+              ]
+            ]
+          }
+        ],
+        "productName": "Widget",
+        "sku": [
+          "SKU-1",
+          "SKU-2"
+        ],
+        "asin": [
+          "B000000011"
+        ]
+      },
+      "expected": [
+        {
+          "campaignType": "SKW",
+          "campaignPurpose": "RANK_SKW",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1",
+            "SKU-2"
+          ],
+          "asin": [
+            "B000000011"
+          ],
+          "keywords": [
+            "red widget"
+          ],
+          "targetDescriptor": "red widget"
+        },
+        {
+          "campaignType": "SKW",
+          "campaignPurpose": "RANK_SKW",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1",
+            "SKU-2"
+          ],
+          "asin": [
+            "B000000011"
+          ],
+          "keywords": [
+            "blue widget"
+          ],
+          "targetDescriptor": "blue widget"
+        },
+        {
+          "campaignType": "SKW",
+          "campaignPurpose": "SHIELD",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1",
+            "SKU-2"
+          ],
+          "asin": [
+            "B000000011"
+          ],
+          "keywords": [
+            "sample widget"
+          ],
+          "targetDescriptor": "sample widget"
+        },
+        {
+          "campaignType": "Halo",
+          "campaignPurpose": "HALO",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1",
+            "SKU-2"
+          ],
+          "asin": [
+            "B000000011"
+          ],
+          "keywords": [
+            "widget for kitchen",
+            "widget for office"
+          ],
+          "targetDescriptor": "long-tail"
+        },
+        {
+          "campaignType": "Phrase",
+          "campaignPurpose": "DISCOVERY",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1",
+            "SKU-2"
+          ],
+          "asin": [
+            "B000000011"
+          ],
+          "keywords": [
+            "widget"
+          ],
+          "targetDescriptor": "widget"
+        },
+        {
+          "campaignType": "Phrase",
+          "campaignPurpose": "DISCOVERY",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1",
+            "SKU-2"
+          ],
+          "asin": [
+            "B000000011"
+          ],
+          "keywords": [
+            "widget holder"
+          ],
+          "targetDescriptor": "widget holder"
+        },
+        {
+          "campaignType": "Phrase",
+          "campaignPurpose": "SHIELD",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1",
+            "SKU-2"
+          ],
+          "asin": [
+            "B000000011"
+          ],
+          "keywords": [
+            "sample widget holder"
+          ],
+          "targetDescriptor": "sample widget holder"
+        },
+        {
+          "campaignType": "PAT",
+          "campaignPurpose": "DISCOVERY",
+          "productName": "Widget",
+          "sku": [
+            "SKU-1",
+            "SKU-2"
+          ],
+          "asin": [
+            "B000000011"
+          ],
+          "targetAsins": [
+            "B000000001",
+            "B000000002"
+          ],
+          "targetDescriptor": "Stronger"
+        }
+      ]
+    },
+    {
+      "name": "sections_to_specs:no_product_identity",
+      "input": {
+        "sections": [
+          {
+            "campaignType": "SKW",
+            "campaignPurpose": "RANK_SKW",
+            "label": "",
+            "kind": "keywords",
+            "values": [
+              [
+                "red widget",
+                2000
+              ],
+              [
+                "blue widget",
+                1500
+              ]
+            ]
+          }
+        ],
+        "productName": "",
+        "sku": [],
+        "asin": []
+      },
+      "expected": [
+        {
+          "campaignType": "SKW",
+          "campaignPurpose": "RANK_SKW",
+          "productName": "",
+          "sku": [],
+          "asin": [],
+          "keywords": [
+            "red widget"
+          ],
+          "targetDescriptor": "red widget"
+        },
+        {
+          "campaignType": "SKW",
+          "campaignPurpose": "RANK_SKW",
+          "productName": "",
+          "sku": [],
+          "asin": [],
+          "keywords": [
+            "blue widget"
+          ],
+          "targetDescriptor": "blue widget"
+        }
+      ]
+    },
+    {
+      "name": "sections_to_specs:empty",
+      "input": {
+        "sections": [],
+        "productName": "Widget",
+        "sku": [
+          "SKU-1"
+        ],
+        "asin": []
+      },
+      "expected": []
+    }
+  ]
+}

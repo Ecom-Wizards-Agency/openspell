@@ -1,0 +1,1520 @@
+{
+  "schema": "wizard-ads.parity.v1",
+  "module": "campaign-preflight",
+  "source": "amazon-agent/tools/amazon-campaign-builder (read-only reference)",
+  "synthetic": true,
+  "today": "2026-08-14",
+  "columns": [
+    "Product",
+    "Entity",
+    "Operation",
+    "Campaign ID",
+    "Ad Group ID",
+    "Portfolio ID",
+    "Ad ID",
+    "Keyword ID",
+    "Product Targeting ID",
+    "Campaign Name",
+    "Ad Group Name",
+    "Start Date",
+    "End Date",
+    "Targeting Type",
+    "State",
+    "Daily Budget",
+    "SKU",
+    "ASIN",
+    "Ad Group Default Bid",
+    "Bid",
+    "Keyword Text",
+    "Match Type",
+    "Bidding Strategy",
+    "Placement",
+    "Percentage",
+    "Product Targeting Expression",
+    "Sites"
+  ],
+  "sheetName": "Sponsored Products Campaigns",
+  "cases": [
+    {
+      "name": "preflight:missing_product_name",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ]
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): product_name is required (used in the campaign name)"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:missing_sku",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "keywords": [
+                "widget"
+              ]
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): sku(s) required for the Product Ad rows (seller accounts advertise by SKU)"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:vendor_without_asin",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": true,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ]
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): vendor mode needs asin(s) for the Product Ad rows"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:missing_keywords",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Phrase",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ]
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Phrase): keywords[] is required for Phrase"
+        ],
+        "notes": [
+          "campaign 1 (Phrase): discovery campaign has no negative_keywords; naming-convention.md QC requires a Never-Ever/negative-phrase list at ad-group level from day one"
+        ]
+      }
+    },
+    {
+      "name": "preflight:pat_without_targets",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "PAT",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ]
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (PAT): target_asins[] or target_categories[] is required for PAT"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:pat_bad_asins",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "PAT",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "targetAsins": [
+                "nope",
+                "B000000001"
+              ]
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (PAT): target_asins entries not ASIN-shaped: nope"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:pat_bad_categories",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "PAT",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "targetCategories": [
+                "kitchen",
+                "123456"
+              ]
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (PAT): target_categories entries must be numeric category IDs: kitchen"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:bad_negative_asins",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "negativeTargetAsins": [
+                "short"
+              ]
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): negative_target_asins entries not ASIN-shaped: short"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:bad_goal",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "goal": "Growth"
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): goal must be one of Discovery/Rank/Profit/Brand"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:unusual_goal",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "goal": "Discovery"
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": true,
+        "issues": [],
+        "notes": [
+          "campaign 1 (Halo): goal 'Discovery' is unusual for Halo (app allows Profit)"
+        ]
+      }
+    },
+    {
+      "name": "preflight:bad_match_type",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "matchType": "NEAR"
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): match_type must be one of EXACT/BROAD/PHRASE/ASIN_EXACT/ASIN_EXPANDED/AUTO (or empty for the Halo default EXACT)"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:bad_purpose",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "campaignPurpose": "PROFIT"
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): campaign_purpose must be one of RANK_SKW/HALO/DISCOVERY/AUTO/CATEGORY/SELF_TARGETING/SHIELD (or empty for the Halo default HALO)"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:bad_bidding_strategy",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "biddingStrategy": "Aggressive"
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): bidding_strategy must be one of Down only/Up and down/Fixed bids (or empty)"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:bidding_override_note",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "biddingStrategy": "Up and down"
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": true,
+        "issues": [],
+        "notes": [
+          "campaign 1 (Halo): bidding_strategy override 'Up and down' differs from the naming-convention.md default 'Down only' for purpose HALO (QC-enforced table)"
+        ]
+      }
+    },
+    {
+      "name": "preflight:bad_states",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "state": "archived",
+              "childState": "running"
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): state must be enabled|paused",
+          "campaign 1 (Halo): child_state must be enabled|paused (or empty to inherit state)"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:bid_out_of_range",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "keywordBid": 0.01
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): keyword_bid 0.01 outside [0.02, 1000.0]"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:budget_below_minimum",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "dailyBudget": 0.5
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): daily_budget 0.5 below Amazon's minimum 1.0"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:placement_out_of_range",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "topOfSearchPlacement": 901
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): top_of_search_placement 901 outside [0, 900]"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:bad_negative_settings",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "negativeMatchType": "NEGATIVE_BROAD",
+              "negativeLevel": "profile"
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): negative_match_type must be one of NEGATIVE_EXACT/NEGATIVE_PHRASE",
+          "campaign 1 (Halo): negative_level must be ad_group|campaign"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:transpose_without_size",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "a widget",
+                "b widget"
+              ],
+              "transposeKeywords": true
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): transpose_keywords needs keywords_per_campaign >= 1"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:fan_out_collision",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "SP",
+              "MatchType",
+              "ProductName",
+              "TargetDescriptor",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "targetDescriptor": "long",
+              "sku": [
+                "SKU-1"
+              ],
+              "transposeKeywords": true,
+              "keywordsPerCampaign": 1,
+              "keywords": [
+                "a widget",
+                "b widget"
+              ]
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): fans out to several identically-named campaigns; add 'Counter' (or, for Halo/Auto, 'CampCounter') to naming.variable_order (Amazon rejects duplicate campaign names)"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:discovery_without_negatives",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Phrase",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ]
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": true,
+        "issues": [],
+        "notes": [
+          "campaign 1 (Phrase): discovery campaign has no negative_keywords; naming-convention.md QC requires a Never-Ever/negative-phrase list at ad-group level from day one"
+        ]
+      }
+    },
+    {
+      "name": "preflight:self_targeting_without_negatives",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "PAT",
+              "campaignPurpose": "SELF_TARGETING",
+              "matchType": "ASIN_EXPANDED",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "targetAsins": [
+                "B000000009"
+              ]
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": true,
+        "issues": [],
+        "notes": [
+          "campaign 1 (PAT): Self-Targeting Expanded needs negative_target_asins for the exact own-ASIN targets (naming-convention.md QC #7)"
+        ]
+      }
+    },
+    {
+      "name": "preflight:past_start_date",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "startDate": "2020-01-01"
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): start_date 2020-01-01 is in the past; Amazon rejects past start dates on create"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:malformed_start_date",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "startDate": "15/01/2099"
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "campaign 1 (Halo): start_date must be YYYY-MM-DD"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:enabled_state_note",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "state": "enabled",
+              "startDate": "2099-01-15"
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": true,
+        "issues": [],
+        "notes": [
+          "campaign 1 (Halo): state=enabled means campaigns go LIVE on upload; the safety default is paused"
+        ]
+      }
+    },
+    {
+      "name": "preflight:ad_group_name_equals_campaign_name",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "MatchType",
+              "ProductName"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ]
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": true,
+        "issues": [],
+        "notes": [
+          "'Exact | Widget': ad group name equals campaign name; naming-convention.md QC requires the ad group name to differ (drop prefix & suffix)"
+        ]
+      }
+    },
+    {
+      "name": "preflight:missing_client_and_campaigns",
+      "input": {
+        "config": {
+          "client": "",
+          "marketplace": "",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {},
+          "vendorCentralMode": false,
+          "campaigns": []
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": false,
+        "issues": [
+          "config: `client` is required",
+          "config: `marketplace` is required",
+          "config: `campaigns[]` is empty (nothing to build)"
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "preflight:ready",
+      "input": {
+        "config": {
+          "client": "Sample Tools Co",
+          "marketplace": "US",
+          "naming": {
+            "variableOrder": [
+              "Goal",
+              "AdType",
+              "MatchType",
+              "TriggerWord",
+              "ProductName",
+              "Keyword",
+              "CampCounter",
+              "EW"
+            ],
+            "delimiter": " | ",
+            "suffix": "EW",
+            "custom1Value": "",
+            "custom2Value": ""
+          },
+          "defaults": {
+            "dailyBudget": 10.0,
+            "keywordBid": 0.5,
+            "state": "paused"
+          },
+          "vendorCentralMode": false,
+          "campaigns": [
+            {
+              "campaignType": "Halo",
+              "productName": "Widget",
+              "sku": [
+                "SKU-1"
+              ],
+              "keywords": [
+                "widget"
+              ],
+              "startDate": "2099-01-15"
+            }
+          ]
+        },
+        "today": "2026-08-14"
+      },
+      "expected": {
+        "ready": true,
+        "issues": [],
+        "notes": []
+      }
+    }
+  ]
+}
