@@ -21,3 +21,7 @@ One line per decision the manager (Fable) or operator makes between work package
   didn't reproduce PostgREST default grants; the in-body service-role guard still blocked use).
   EXECUTE now service_role-only; advisors clean. Lesson: hosted advisor run is part of every
   migration review.
+- **2026-08-14 · Campaign generation added as WP-14** (operator request) — 14a: pure engine
+  port of amazon-campaign-builder (types package-local, XLSX byte-parity, paused-by-default)
+  ships in v1; 14b: API-create lane gated only on OAuth + entity sync (creation is
+  lower-risk than bid writes), still per-plan operator approval through apply batches.

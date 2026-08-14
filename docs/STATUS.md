@@ -18,6 +18,8 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 10 | Crosscheck harness | Opus | in-progress | launched 2026-08-14 (worktree; fixture-tested, live-pilot check deferred until real facts) |
 | 11 | AdLabs recon | Opus + Victor | review | MCP half done (13 specs, exact contracts). UI pass blocked twice: extension installed/enabled/permissioned but NOT PAIRED to the claude.ai account — operator pairing check needed, then session 3 (automations first). See tools/recon/BLOCKED.md |
 | 12 | Staged-apply writes | Opus | gated | opens at v1 exit criterion |
+| 14a | Campaign generation engine | Opus | in-progress | launched 2026-08-14 (worktree; port of amazon-campaign-builder, XLSX parity) |
+| 14b | Campaign creation via API | Opus | gated | opens after OAuth + entity sync live; paused-by-default, apply-batch audited |
 | 13 | Headless analyst | Opus | gated | opens when WP-09 stable |
 
 ## Milestone gates
