@@ -62,7 +62,12 @@ export default tseslint.config(
     },
   },
   {
+    // The LWA OAuth server routes are the ONE sanctioned exception to the
+    // no-ads-api-in-web rule (WP-04 brief): the code exchange and the
+    // first profile fetch happen in the callback. Everything else in web
+    // stays banned below.
     files: ['apps/web/**/*.{ts,tsx}'],
+    ignores: ['apps/web/app/api/amazon/oauth/**'],
     rules: {
       'no-restricted-imports': forbid([
         ['@wizard-ads/ads-api', 'every Amazon API call lives in apps/worker, never in the web app.'],

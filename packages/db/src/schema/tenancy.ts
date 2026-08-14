@@ -103,6 +103,7 @@ export const adProfiles = pgTable(
     /** The cost gate: nothing syncs until somebody turns it on. */
     syncEnabled: boolean('sync_enabled').notNull().default(false),
     targetAcos: money('target_acos', 6, 4),
+    targetTotalAcos: money('target_total_acos', 6, 4),
     goalLens: text('goal_lens'),
     monthlyBudget: money('monthly_budget', 14, 2),
     firstSeenAt: ts('first_seen_at').notNull().defaultNow(),
