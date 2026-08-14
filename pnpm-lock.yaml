@@ -91,6 +91,12 @@ importers:
         specifier: workspace:*
         version: link:../shared
 
+  packages/campaigns:
+    dependencies:
+      '@wizard-ads/shared':
+        specifier: workspace:*
+        version: link:../shared
+
   packages/core:
     dependencies:
       '@wizard-ads/shared':
