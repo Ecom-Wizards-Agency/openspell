@@ -30,6 +30,10 @@ import type { NextConfig } from 'next';
  * (every Amazon API call lives in apps/worker).
  */
 const nextConfig: NextConfig = {
+  // pnpm monorepo: file tracing must walk from the workspace root, or the
+  // serverless bundle references ../../node_modules/.pnpm paths that do not
+  // exist inside the deployment (Vercel --prebuilt rejects exactly that).
+  outputFileTracingRoot: new URL('../..', import.meta.url).pathname,
   transpilePackages: [
     '@wizard-ads/core',
     '@wizard-ads/crosscheck-cli',

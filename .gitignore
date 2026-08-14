@@ -31,3 +31,4 @@ fixtures/golden/**/*.local.*
 
 # agent worktrees
 .claude/
+.vercel/
