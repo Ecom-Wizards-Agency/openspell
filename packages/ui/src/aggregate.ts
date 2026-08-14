@@ -1,0 +1,158 @@
+/**
+ * Group-by, and the grand total.
+ *
+ * The whole reason this module exists is stated in `metrics.ts`: base metrics
+ * are summed, ratios are rebuilt from those sums, and there is no code path
+ * that averages a ratio because a ratio is never stored anywhere to average.
+ * A grouped row is a `GridRow` like any other -- same shape, same resolver, same
+ * cells -- so the grid does not need a second rendering path for totals, and a
+ * bug in group-by arithmetic would show up in the ungrouped grid too.
+ *
+ * Currency is a correctness property, not a formatting one. `assertSingleCurrency`
+ * throws rather than summing across profiles: v1 has no FX layer, and a EUR
+ * figure quietly added to a USD one is the kind of wrong number that survives
+ * three client calls before anybody catches it.
+ */
+import type { BaseTotals } from './metrics.js';
+import { addTotals, emptyTotals } from './metrics.js';
+import type { DimensionValue, GridRow } from './rows.js';
+import { resolveField } from './rows.js';
+
+export class MixedCurrencyError extends Error {
+  constructor(readonly currencies: readonly string[]) {
+    super(
+      `refusing to aggregate across currencies (${currencies.join(', ')}). ` +
+        'v1 renders a single profile in its own currency; there is no conversion layer, ' +
+        'and a summed total across two currencies is a wrong number that looks right.',
+    );
+    this.name = 'MixedCurrencyError';
+  }
+}
+
+/** The one currency in play, or a throw. Empty input is null, not an error. */
+export function assertSingleCurrency(rows: readonly GridRow[]): string | null {
+  let seen: string | null = null;
+  for (const row of rows) {
+    if (seen === null) seen = row.currencyCode;
+    else if (seen !== row.currencyCode) {
+      const all = [...new Set(rows.map((r) => r.currencyCode))].sort();
+      throw new MixedCurrencyError(all);
+    }
+  }
+  return seen;
+}
+
+const GROUP_SEPARATOR = '\u0000';
+
+/**
+ * `GROUP_SEPARATOR` above is NUL, because it cannot occur in a dimension
+ * value: grouping by campaign name and match type together must not collide
+ * with a campaign whose name happens to contain whatever separator we picked.
+ * It is written as an escape rather than a literal byte — a raw NUL in the
+ * source makes git treat the whole file as binary, and a file nobody can read
+ * a diff of is a file nobody reviews.
+ */
+function groupKeyOf(row: GridRow, columnIds: readonly string[]): string {
+  return columnIds.map((id) => String(resolveField(row, id) ?? '')).join(GROUP_SEPARATOR);
+}
+
+export interface GroupedRow extends GridRow {
+  /** How many source rows folded into this one. Shown in the grid. */
+  groupSize: number;
+  /** The columns that defined the group, in order. */
+  groupBy: readonly string[];
+}
+
+export function isGroupedRow(row: GridRow): row is GroupedRow {
+  return 'groupSize' in row;
+}
+
+/**
+ * Fold rows onto the given dimension columns.
+ *
+ * Dimension columns that are not part of the group key are dropped rather than
+ * taking an arbitrary row's value: showing one campaign's bid on a row that
+ * aggregates four hundred targets is worse than showing nothing. Only the group
+ * key survives, plus tag ids, which are a union (a group is tagged with every
+ * tag any member carries).
+ */
+export function groupRows(rows: readonly GridRow[], columnIds: readonly string[]): GroupedRow[] {
+  if (columnIds.length === 0) return [];
+  assertSingleCurrency(rows);
+
+  const buckets = new Map<string, GroupedRow>();
+  const tagSets = new Map<string, Set<string>>();
+  /** Only entities that reported in the comparison window contribute to it. */
+  const comparisonSeen = new Map<string, boolean>();
+
+  for (const row of rows) {
+    const key = groupKeyOf(row, columnIds);
+    let bucket = buckets.get(key);
+    if (bucket === undefined) {
+      const dimensions: Record<string, DimensionValue> = {};
+      for (const id of columnIds) dimensions[id] = resolveField(row, id);
+      bucket = {
+        id: `group:${key}`,
+        dimensions,
+        totals: emptyTotals(),
+        comparison: null,
+        currencyCode: row.currencyCode,
+        groupSize: 0,
+        groupBy: columnIds,
+      };
+      buckets.set(key, bucket);
+      tagSets.set(key, new Set());
+      comparisonSeen.set(key, false);
+    }
+
+    addTotals(bucket.totals, row.totals);
+    bucket.groupSize += 1;
+
+    if (row.comparison !== null) {
+      if (bucket.comparison === null) bucket.comparison = emptyTotals();
+      addTotals(bucket.comparison, row.comparison);
+      comparisonSeen.set(key, true);
+    }
+
+    const tags = tagSets.get(key);
+    if (tags !== undefined) for (const tagId of row.tagIds ?? []) tags.add(tagId);
+  }
+
+  const out: GroupedRow[] = [];
+  for (const [key, bucket] of buckets) {
+    const tags = tagSets.get(key);
+    if (tags !== undefined && tags.size > 0) bucket.tagIds = [...tags].sort();
+    out.push(bucket);
+  }
+  return out;
+}
+
+/**
+ * One row summing everything shown. The grid pins it above the body, so the
+ * number an operator quotes is the number the filter produced -- not a total of
+ * a page they happen to be scrolled to.
+ */
+export function grandTotal(rows: readonly GridRow[], label = 'Total'): GroupedRow | null {
+  if (rows.length === 0) return null;
+  const currency = assertSingleCurrency(rows);
+  const totals = emptyTotals();
+  let comparison: BaseTotals | null = null;
+
+  for (const row of rows) {
+    addTotals(totals, row.totals);
+    if (row.comparison !== null) {
+      if (comparison === null) comparison = emptyTotals();
+      addTotals(comparison, row.comparison);
+    }
+  }
+
+  return {
+    id: 'grand-total',
+    dimensions: { __total__: label },
+    totals,
+    comparison,
+    currencyCode: currency ?? '',
+    groupSize: rows.length,
+    groupBy: [],
+  };
+}

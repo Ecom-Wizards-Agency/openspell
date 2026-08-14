@@ -46,6 +46,13 @@ const nextConfig: NextConfig = {
     };
     return config;
   },
+  /**
+   * `next dev` otherwise writes its own `AGENTS.md` and `CLAUDE.md` into this
+   * directory. This repo already has an authoritative `AGENTS.md` at the root
+   * and a work-package system on top of it; a second, generated one that says
+   * something else is worse than none.
+   */
+  agentRules: false,
 };
 
 export default nextConfig;
