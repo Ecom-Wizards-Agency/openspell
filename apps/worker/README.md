@@ -14,7 +14,7 @@ in the repo talks to the Amazon Ads API — `apps/web` reads the database the wo
 | `region-token-buckets.ts` | Per-region concurrency caps. NA/EU/FE are separate hosts and separate limits. |
 | `crosscheck.ts` | The seam WP-10's `runCrosscheckIngest` is called through, plus the retry classification. |
 | `schedules.ts` | The default cadences, as rows rather than as a comment. |
-| `ads-api.ts` | The narrow client interface the worker needs. **WP-02 is not integrated yet** — `createAdsApiClientFromEnv` throws. |
+| `ads-api.ts` | The narrow client interface the worker needs, plus `DbAdsApiClient` — the adapter that maps it onto the real `@wizard-ads/ads-api` client (per-connection/per-region, Vault-backed refresh token). |
 | `main.ts` | Process entry: config, health server, the two passes, graceful shutdown. |
 
 ## The job pipeline
@@ -114,7 +114,10 @@ all. `variant` joins the key; existing rows default to `default` and keep the un
 
 | Variable | Default | What it is |
 |---|---|---|
-| `DATABASE_URL` | — | Service-role connection string. Required. |
+| `DATABASE_URL` | — | Service-role connection string. Required. Only the service role may call `get_ads_refresh_token`. |
+| `LWA_CLIENT_ID` | — | The LWA application's client id. Required. Same app for every connection. |
+| `LWA_CLIENT_SECRET` | — | The LWA application's client secret. Required. Secret. |
+| `AMAZON_ADS_USER_AGENT` | unset | Sent on every Amazon request. Amazon asks integrators to identify. |
 | `WORKER_ID` | `worker-<pid>` | Identifies the claimer in `sync_jobs.claimed_by`. |
 | `PORT` | `3000` | `/healthz`. |
 | `WORKER_POLL_INTERVAL_MS` | `1000` | Idle sleep between empty claims. |
@@ -127,6 +130,123 @@ all. `variant` joins the key; existing rows default to `default` and keep the un
 Region concurrency is capped in code at 2 concurrent report creates per region (NA/EU/FE
 independently), which is the conservative starting point the plan asks for.
 
+## The Amazon client
+
+`createAdsApiClientFromEnv(handle)` builds `DbAdsApiClient`, the adapter that satisfies the worker's
+`AdsApiClient` on top of the real `@wizard-ads/ads-api` client. Three things it does that a fake did
+not:
+
+- **One client per `(connection, region)`, built lazily and cached.** A profile's connection id is
+  looked up from `ad_profiles`, the refresh token is read from Vault via `get_ads_refresh_token`
+  (service role only — hence the service-role `DATABASE_URL`), and the LWA app identity is the same
+  `LWA_CLIENT_ID` / `LWA_CLIENT_SECRET` for every connection. The token is passed to the client and
+  never returned, logged, or held anywhere the adapter exposes. A 401/403 evicts the cached client
+  so a rotated credential is picked up on the next attempt.
+- **`listEntities` lists every ad product** (SP campaigns/ad groups/keywords/targets/product
+  ads/negatives, SB and SD campaigns/ad groups), sequentially so one profile does not blow the
+  region concurrency cap, and stamps our profile uuid back onto each mapped row.
+- **Errors are narrowed to what the retry policy can act on.** A 429 (with any `Retry-After`), a 5xx
+  or a timeout becomes `AdsApiRetryableError`; a stale S3 download URL (403/410) becomes
+  `DownloadUrlExpiredError` so `report.fetch` re-polls for a fresh one; a 425 on create adopts the
+  in-flight report id. Everything else ages out through the generic attempt counter into the
+  dead-letter.
+
+`recommendations.run` still returns a stub result pending WP-05's engine.
+
+## Running it
+
+```
+DATABASE_URL='postgres://…service-role…' \
+LWA_CLIENT_ID='amzn1.application-oa2-client.…' \
+LWA_CLIENT_SECRET='…' \
+  pnpm --filter @wizard-ads/worker start
+```
+
+`start` runs `tsx src/main.ts`: config from env, the health server on `PORT`, the claim loop, the
+auth healthcheck, the stale-claim reaper and the schedule provisioner, with graceful shutdown on
+SIGTERM/SIGINT. Nothing syncs until a profile has `sync_enabled = true` **and** a schedule (the
+provisioner installs defaults for enabled profiles that have none).
+
+## Enabling pilot profiles
+
+The worker spends money, so profiles are off by default. Turn on exactly two — the smallest, to keep
+the pilot cheap. First choose them (fewest campaigns wins):
+
+```sql
+select p.id, p.amazon_profile_id, p.account_name, count(c.id) as campaigns
+  from public.ad_profiles p
+  left join public.campaigns c on c.profile_id = p.id
+ where p.connection_id is not null
+   and exists (
+     select 1 from public.ads_connections k
+      where k.id = p.connection_id and k.status = 'active'
+   )
+ group by p.id
+ order by campaigns asc, p.amazon_profile_id
+ limit 10;
+```
+
+Then enable exactly the two smallest:
+
+```sql
+update public.ad_profiles set sync_enabled = true
+ where id in (
+   select p.id from public.ad_profiles p
+     left join public.campaigns c on c.profile_id = p.id
+    where p.connection_id is not null
+      and exists (select 1 from public.ads_connections k where k.id = p.connection_id and k.status = 'active')
+    group by p.id order by count(c.id) asc, p.amazon_profile_id limit 2
+ );
+```
+
+Within ~15 minutes the provisioner installs their default schedules; within ~5 more, pg_cron enqueues
+the first jobs.
+
+## Verifying facts landed
+
+After a report cycle completes (a `report.request` → `report.poll` → `report.fetch` chain), the
+per-profile daily facts prove data reached the database:
+
+```sql
+select p.amazon_profile_id,
+       count(*)      as fact_rows,
+       max(f.date)   as latest_day,
+       sum(f.cost)   as total_cost,
+       max(r.rows_loaded) filter (where r.status = 'completed') as last_report_rows
+  from public.ad_profiles p
+  join public.fact_profile_daily f on f.profile_id = p.id
+  left join public.report_requests r on r.profile_id = p.id
+ where p.sync_enabled
+ group by p.amazon_profile_id
+ order by p.amazon_profile_id;
+```
+
+`report_requests.rows_parsed = rows_loaded` (its generated `counts_match`) is the Rule-4 receipt for
+each report; a completed report with a positive `fact_rows` count is the sync working end to end.
+
+## Deploying to Fly.io
+
+`fly.toml` and `Dockerfile` here define the machine (`wizard-ads-worker`, `ams`, one always-on
+instance, `/healthz` check). Deploy from the repo root:
+
+```
+fly deploy --config apps/worker/fly.toml
+```
+
+Three secrets must be set before the first real sync (build-time env like `PORT` stays in
+`fly.toml`; credentials never do):
+
+```
+fly secrets set \
+  DATABASE_URL='postgres://…service-role…' \
+  LWA_CLIENT_ID='amzn1.application-oa2-client.…' \
+  LWA_CLIENT_SECRET='…' \
+  --config apps/worker/fly.toml
+```
+
+Do **not** run the first live sync against the hosted database from a developer machine — enable the
+pilot profiles and let the deployed worker pick them up on its own cadence.
+
 ## Tests
 
 ```
@@ -137,10 +257,6 @@ The DB-backed suite skips itself when no Postgres is reachable, so `pnpm check` 
 machine without one — which also means **a green run on such a machine has not tested the worker**.
 Point it at a database.
 
-## Not done yet
-
-`createAdsApiClientFromEnv` throws: WP-02's client is not wired in. Everything above is exercised
-against `AdsApiClient` fakes and a real database. The `INTEGRATE(WP-02)` comment in `ads-api.ts`
-marks the one function that has to change.
-
-`recommendations.run` returns a stub result pending WP-05's engine.
+Everything above the client is exercised against `AdsApiClient` fakes and a real database;
+`DbAdsApiClient` itself is unit-tested against a mock underlying client and a mock Vault
+(`ads-api.test.ts`, no network, no DB).

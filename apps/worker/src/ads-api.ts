@@ -1,3 +1,17 @@
+import {
+  AdsApiClient as UnderlyingAdsApiClient,
+  AdsApiHttpError,
+  AdsApiTimeoutError,
+  AdsThrottleError,
+  DuplicateReportError,
+  type ReportMetadata,
+} from '@wizard-ads/ads-api';
+import {
+  getAdsRefreshToken,
+  getProfileConnectionId,
+  listActiveConnectionIdsForRegion,
+  type DbHandle,
+} from '@wizard-ads/db';
 import type { EntityRow, Region, ReportType } from '@wizard-ads/shared';
 
 /** The profile routing information every Amazon call needs. */
@@ -50,8 +64,287 @@ export class DownloadUrlExpiredError extends AdsApiRetryableError {
   }
 }
 
-// INTEGRATE(WP-02): construct the final @wizard-ads/ads-api client here and
-// map its entity/report/profile methods onto AdsApiClient.
-export function createAdsApiClientFromEnv(_env: NodeJS.ProcessEnv = process.env): AdsApiClient {
-  throw new Error('WP-02 ads-api adapter is not integrated yet');
+/**
+ * The methods this adapter drives on the real `@wizard-ads/ads-api` client.
+ * A `Pick` rather than the whole class so a unit test can supply a mock that
+ * implements only these, with no HTTP and no credentials.
+ */
+export type UnderlyingClient = Pick<
+  UnderlyingAdsApiClient,
+  | 'listSpCampaigns'
+  | 'listSpAdGroups'
+  | 'listSpKeywords'
+  | 'listSpTargets'
+  | 'listSpNegativeKeywords'
+  | 'listSpCampaignNegativeKeywords'
+  | 'listSpNegativeTargets'
+  | 'listSpProductAds'
+  | 'listSbCampaigns'
+  | 'listSbAdGroups'
+  | 'listSdCampaigns'
+  | 'listSdAdGroups'
+  | 'getProfiles'
+  | 'createReport'
+  | 'getReport'
+>;
+
+/** The subset of `fetch` the report download needs. */
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+export interface AdsApiAdapterDeps {
+  /** Amazon's connection id for one of our profile uuids, or null when it has none. */
+  resolveConnectionId(profileId: string): Promise<string | null>;
+  /** Active, credentialed connections that own a profile in the region. */
+  listConnectionIds(region: Region): Promise<readonly string[]>;
+  /** The Vault-backed refresh token for a connection. Never logged. */
+  getRefreshToken(connectionId: string): Promise<string | null>;
+  /** Build one region-scoped client for one connection's grant. */
+  createClient(input: { connectionId: string; region: Region; refreshToken: string }): UnderlyingClient;
+  /** Download transport. Defaults to the global `fetch`. */
+  fetch?: FetchLike;
+}
+
+const KNOWN_REPORT_STATUSES = new Set<AdsReportStatus['status']>([
+  'PENDING',
+  'PROCESSING',
+  'COMPLETED',
+  'FAILURE',
+  'CANCELLED',
+]);
+
+/**
+ * The worker's `AdsApiClient`, backed by the real Amazon client.
+ *
+ * One underlying client per `(connection, region)` pair, built lazily: the
+ * refresh token is read from Vault the first time a connection is touched and
+ * the client cached, because minting an access token per job would refresh the
+ * grant hundreds of times an hour. An auth failure evicts the cache entry so a
+ * rotated credential is picked up on the next attempt rather than never.
+ *
+ * Every Amazon error is narrowed to what the worker's retry policy can act on:
+ * a 429 or 5xx (or a timeout) becomes `AdsApiRetryableError` so the job is
+ * requeued with backoff, a stale download URL becomes `DownloadUrlExpiredError`
+ * so the fetch re-polls, and everything else is left as-is for the generic
+ * attempt counter to age out into the dead-letter.
+ */
+export class DbAdsApiClient implements AdsApiClient {
+  private readonly clients = new Map<string, UnderlyingClient>();
+  private readonly fetch: FetchLike;
+
+  constructor(private readonly deps: AdsApiAdapterDeps) {
+    this.fetch = deps.fetch ?? ((input, init) => fetch(input, init));
+  }
+
+  async listEntities(profile: AdsProfileContext, _full: boolean): Promise<readonly EntityRow[]> {
+    const client = await this.clientForProfile(profile);
+    const amazonProfileId = profile.amazonProfileId;
+    // Sequential, not parallel: a single profile firing a dozen simultaneous
+    // requests would defeat the region concurrency cap the worker wraps this
+    // call in, and Amazon throttles a whole grant at once.
+    const steps: Array<() => Promise<{ items: readonly unknown[] }>> = [
+      () => client.listSpCampaigns(amazonProfileId),
+      () => client.listSpAdGroups(amazonProfileId),
+      () => client.listSpKeywords(amazonProfileId),
+      () => client.listSpTargets(amazonProfileId),
+      () => client.listSpProductAds(amazonProfileId),
+      () => client.listSpNegativeKeywords(amazonProfileId),
+      () => client.listSpCampaignNegativeKeywords(amazonProfileId),
+      () => client.listSpNegativeTargets(amazonProfileId),
+      () => client.listSbCampaigns(amazonProfileId),
+      () => client.listSbAdGroups(amazonProfileId),
+      () => client.listSdCampaigns(amazonProfileId),
+      () => client.listSdAdGroups(amazonProfileId),
+    ];
+
+    const rows: EntityRow[] = [];
+    for (const step of steps) {
+      const listed = await this.guard(profile.region, step);
+      for (const item of listed.items) {
+        // The mapper drops `profileId` (its own value is Amazon's id, not our
+        // uuid); the worker owns the join, so we add ours back here.
+        rows.push({ ...(item as object), profileId: profile.id } as EntityRow);
+      }
+    }
+    return rows;
+  }
+
+  async createReport(input: CreateReportInput): Promise<{ reportId: string }> {
+    const client = await this.clientForProfile(input.profile);
+    try {
+      const meta = await client.createReport(input.profile.amazonProfileId, {
+        reportType: input.reportType,
+        startDate: input.startDate,
+        endDate: input.endDate,
+      });
+      return { reportId: meta.reportId };
+    } catch (error) {
+      // A 425 is Amazon saying it already has this exact report in flight. The
+      // right move is to adopt that report id, not mint a second copy.
+      if (error instanceof DuplicateReportError) {
+        if (error.existingReportId) return { reportId: error.existingReportId };
+        throw new AdsApiRetryableError('duplicate report in flight with no id to adopt; retrying');
+      }
+      throw this.mapError(error);
+    }
+  }
+
+  async getReport(profile: AdsProfileContext, reportId: string): Promise<AdsReportStatus> {
+    const client = await this.clientForProfile(profile);
+    const meta = await this.guard(profile.region, () => client.getReport(profile.amazonProfileId, reportId));
+    return this.toReportStatus(meta);
+  }
+
+  async downloadReport(url: string): Promise<AsyncIterable<Uint8Array>> {
+    let response: Response;
+    try {
+      response = await this.fetch(url);
+    } catch (error) {
+      // A dropped connection mid-download is worth retrying.
+      throw new AdsApiRetryableError(errorText(error));
+    }
+    // A pre-signed S3 URL answers 403 once its signature has expired, and 410
+    // once the object is gone. Both mean "the URL is stale" — re-poll for a
+    // fresh one rather than retry the same dead link.
+    if (response.status === 403 || response.status === 410) throw new DownloadUrlExpiredError();
+    if (response.status === 429 || response.status >= 500) {
+      throw new AdsApiRetryableError(`report download failed with ${response.status}`);
+    }
+    if (!response.ok) throw new Error(`report download failed with ${response.status}`);
+    const body = response.body;
+    if (!body) return emptyStream();
+    return toByteStream(body);
+  }
+
+  async listProfiles(region: Region): Promise<readonly string[]> {
+    const connectionIds = await this.deps.listConnectionIds(region);
+    const profileIds: string[] = [];
+    for (const connectionId of connectionIds) {
+      const client = await this.clientFor(connectionId, region);
+      if (!client) continue;
+      const profiles = await this.guard(region, () => client.getProfiles(), connectionId);
+      for (const profile of profiles) profileIds.push(profile.profileId);
+    }
+    return profileIds;
+  }
+
+  private toReportStatus(meta: ReportMetadata): AdsReportStatus {
+    const status = KNOWN_REPORT_STATUSES.has(meta.status as AdsReportStatus['status'])
+      ? (meta.status as AdsReportStatus['status'])
+      // An unrecognised status is treated as still-running: keep polling rather
+      // than fail a report that may yet complete.
+      : 'PROCESSING';
+    const result: AdsReportStatus = { status };
+    if (meta.url) result.downloadUrl = meta.url;
+    if (meta.urlExpiresAt) {
+      const expires = new Date(meta.urlExpiresAt);
+      if (!Number.isNaN(expires.getTime())) result.downloadExpiresAt = expires;
+    }
+    if (meta.failureReason) result.failureReason = meta.failureReason;
+    return result;
+  }
+
+  private async clientForProfile(profile: AdsProfileContext): Promise<UnderlyingClient> {
+    const connectionId = await this.deps.resolveConnectionId(profile.id);
+    if (!connectionId) throw new Error(`profile ${profile.id} has no Amazon connection`);
+    const client = await this.clientFor(connectionId, profile.region);
+    if (!client) throw new Error(`connection ${connectionId} has no stored refresh token`);
+    return client;
+  }
+
+  private async clientFor(connectionId: string, region: Region): Promise<UnderlyingClient | null> {
+    const key = `${connectionId}:${region}`;
+    const cached = this.clients.get(key);
+    if (cached) return cached;
+    const refreshToken = await this.deps.getRefreshToken(connectionId);
+    if (!refreshToken) return null;
+    const client = this.deps.createClient({ connectionId, region, refreshToken });
+    this.clients.set(key, client);
+    return client;
+  }
+
+  private async guard<T>(region: Region, run: () => Promise<T>, evictConnectionId?: string): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      throw this.mapError(error, region, evictConnectionId);
+    }
+  }
+
+  private mapError(error: unknown, region?: Region, evictConnectionId?: string): Error {
+    if (error instanceof DownloadUrlExpiredError || error instanceof AdsApiRetryableError) return error;
+    // Throttle first: it is a subclass of the generic HTTP error.
+    if (error instanceof AdsThrottleError) {
+      const retryAfter = error.retryAfterMs === null ? undefined : Math.ceil(error.retryAfterMs / 1000);
+      return new AdsApiRetryableError(error.message, retryAfter);
+    }
+    if (error instanceof AdsApiHttpError) {
+      // 401/403 mean the grant is dead: drop the cached client so a rotated
+      // credential is refetched on the next attempt.
+      if ((error.status === 401 || error.status === 403) && region && evictConnectionId) {
+        this.clients.delete(`${evictConnectionId}:${region}`);
+      }
+      if (error.status === 429 || error.status >= 500) return new AdsApiRetryableError(error.message);
+      return error;
+    }
+    if (error instanceof AdsApiTimeoutError) return new AdsApiRetryableError(error.message);
+    return error instanceof Error ? error : new Error(String(error));
+  }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function* emptyStream(): AsyncGenerator<Uint8Array> {
+  // nothing
+}
+
+/** Normalise a web `ReadableStream` or an already-async-iterable body to bytes. */
+function toByteStream(body: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
+  if (Symbol.asyncIterator in body) return body as AsyncIterable<Uint8Array>;
+  return readWebStream(body);
+}
+
+async function* readWebStream(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
+  const reader = stream.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/**
+ * Wire the adapter to the real database and the real Amazon client.
+ *
+ * The LWA app identity (`LWA_CLIENT_ID` / `LWA_CLIENT_SECRET`) is the same for
+ * every connection — it is our application. The per-advertiser grant is the
+ * refresh token, read from Vault per connection. The service-role database
+ * handle is what makes `get_ads_refresh_token` callable at all.
+ */
+export function createAdsApiClientFromEnv(
+  handle: DbHandle,
+  env: NodeJS.ProcessEnv = process.env,
+): AdsApiClient {
+  const clientId = env['LWA_CLIENT_ID'];
+  const clientSecret = env['LWA_CLIENT_SECRET'];
+  if (!clientId) throw new Error('LWA_CLIENT_ID is not set');
+  if (!clientSecret) throw new Error('LWA_CLIENT_SECRET is not set');
+  const userAgent = env['AMAZON_ADS_USER_AGENT'];
+
+  return new DbAdsApiClient({
+    resolveConnectionId: (profileId) => getProfileConnectionId(handle, profileId),
+    listConnectionIds: (region) => listActiveConnectionIdsForRegion(handle, region),
+    getRefreshToken: (connectionId) => getAdsRefreshToken(handle, connectionId),
+    createClient: ({ region, refreshToken }) =>
+      new UnderlyingAdsApiClient({
+        region,
+        credentials: { clientId, clientSecret, refreshToken },
+        ...(userAgent ? { userAgent } : {}),
+      }),
+  });
 }
