@@ -61,6 +61,11 @@ One line per decision the manager (Fable) or operator makes between work package
   SD through apply batches, MCP tools). Gated on first provisioned instance + AWS bucket;
   sponsored-ads AMC eligibility verified per account at gate-open. Seeded onto the in-app
   roadmap so it stays visible.
+- **2026-08-14 · AdLabs backfill Phases 0+1 approved, Phase 2 gated** — feasibility proven
+  (docs/research/adlabs-backfill-feasibility.md: up to ~25mo ads / ~31mo seller history,
+  cent-exact fidelity, no export caps). Source-tagged loads + crosscheck source filter first.
+  Phase 2 (bulk daily walk, ~55k calls) awaits the operator's ToS/contract call and the
+  attribution-window mapping against the 60-95d overlap.
 - **2026-08-14 · AI skills library planned as WP-17** (operator idea, validated vs
   adlabs.app/skills) — downloadable skills against our MCP + a /connect-claude onboarding
   page with key issuance; amazon-agent skills are spec sources, every shipped skill rewritten

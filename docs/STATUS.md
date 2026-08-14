@@ -23,6 +23,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 13 | Headless analyst | Opus | gated | opens when WP-09 stable |
 | 15 | Feedback & roadmap | Opus | merged | merged 2026-08-14: form w/ page context, tracker, voting, roadmap columns + declined-with-note, column-level guard trigger, MCP submit_feedback; 12-item roadmap seeder (idempotent). Migration applied hosted, advisors clean |
 | 17 | AI skills library | Opus | todo | brief ready 2026-08-14 (WP-17): public-safe skill pack against our MCP + /connect-claude key page; amazon-agent skills as spec sources. Launches in v1.x |
+| 18 | AdLabs history backfill | Opus | in-progress | launched 2026-08-14: Phases 0+1 (profile depth + monthly rollups, crosscheck-poisoning fix first). Phase 2 (daily walk) gated on operator ToS decision + attribution resolution |
 | 16 | AMC lane | Opus | gated | brief ready 2026-08-14 (docs/workpackages/WP-16-amc.md); opens at first provisioned AMC instance + AWS bucket. Visible on the in-app roadmap via WP-15 seed |
 
 ## Milestone gates
@@ -46,7 +47,8 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 - [ ] Add `https://ads.ecomwizards.agency/api/amazon/oauth/callback` to the LWA app Allowed
       Return URLs, and point the `ads` subdomain at the Vercel deployment (before WP-04 live test).
 - [ ] Place `_local/ads-api.config.json` for the WP-02 live smoke (copy shape from template).
-- [ ] Approve Supabase Pro (~$25/mo) at v0 close; Fly.io worker (~$5/mo) at WP-03 deploy.
+- [x] Supabase Pro upgraded 2026-08-14 (org-level; auto-pause risk gone, storage headroom for
+      backfill). Fly.io worker (~$5/mo) still pending at WP-03 deploy.
 
 ## Manager follow-ups (post-wave)
 
