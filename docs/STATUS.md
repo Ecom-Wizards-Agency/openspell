@@ -30,6 +30,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 26 | Bidding corridor engine slice | Opus | merged | merged 2026-08-14 (Opus redo after Codex git-lock refusal): suggested_bid ceiling + symmetric floor + max-potential-CPC; 214 core tests, parity untouched. Unblocks the corridor sync+chart Opus package |
 | 24 | AdLabs-fidelity UI | Opus | merged | merged+DEPLOYED 2026-08-14: /optimizer campaign-level view, dense tables, top-right profile switcher, /connect-claude MCP-key page, AMC/SVC connect stubs, sidebar icons+collapse, chart D/W/M + KPI tiles, Feedback/Roadmap de-duped from Settings. Roadmap card SHIPPED. Opt-Group column deferred (packages/ui owned by WP-06) |
 | 27 | ads-api suggested-bid + SB v4 | Codex | merged | merged 2026-08-14: SP keyword+target bid-recommendation reads + SB v4 media/creative endpoints; 182 tests. Codex bundle-recovered. Unblocks corridor charts (WP-28) + Creative Hub |
+| 19 | Experiments (A/B tracking) | Opus | merged | merged+DEPLOYED 2026-08-14: /experiments CRUD, chart-window overlay, before/during/after comparison, entity-changes-in-window, MCP list/get, RLS both layers. Migration 0019 applied hosted. Roadmap card SHIPPED |
 | 16 | AMC lane | Opus | gated | brief ready 2026-08-14 (docs/workpackages/WP-16-amc.md); opens at first provisioned AMC instance + AWS bucket. Visible on the in-app roadmap via WP-15 seed |
 
 ## Milestone gates
