@@ -66,3 +66,8 @@ One line per decision the manager (Fable) or operator makes between work package
   page with key issuance; amazon-agent skills are spec sources, every shipped skill rewritten
   public-safe (thresholds stay in tenant strategy, read via MCP at runtime). Seeded onto the
   in-app roadmap.
+- **2026-08-14 · Recon verdicts revised after session-3 UI pass** — AdLabs alerting exists
+  (hidden /automations, off-nav, absent from MCP); white-label is complete at org level. Our
+  beat list shifts to: scoped MCP keys (shipped), 4-role model vs their Owner+Admin,
+  approval-gated writes vs their unattended scheduled optimizer, goto-link governance, and
+  cross-profile analytics. Specs in tools/recon/ are now UI-verified.
