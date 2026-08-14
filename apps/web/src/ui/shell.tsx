@@ -16,7 +16,7 @@ export function Shell({
   children,
 }: {
   context: OrgContext;
-  current: 'connections' | 'profiles' | 'sync';
+  current: 'connections' | 'profiles' | 'sync' | 'feedback' | 'roadmap';
   children: ReactNode;
 }): ReactNode {
   return (
@@ -42,6 +42,12 @@ export function Shell({
           </NavLink>
           <NavLink href="/sync-status" active={current === 'sync'}>
             Sync status
+          </NavLink>
+          <NavLink href="/feedback" active={current === 'feedback'}>
+            Feedback
+          </NavLink>
+          <NavLink href="/roadmap" active={current === 'roadmap'}>
+            Roadmap
           </NavLink>
         </nav>
 

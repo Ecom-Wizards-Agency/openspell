@@ -11,10 +11,34 @@ import { authorize, can, Forbidden, ORG_ROLES, isOrgRole, rolesWith } from './ro
 import type { Capability, OrgRole } from './roles';
 
 const EXPECTED: Record<OrgRole, Record<Capability, boolean>> = {
-  owner: { read: true, editTargets: true, toggleSync: true, manageConnection: true },
-  admin: { read: true, editTargets: true, toggleSync: true, manageConnection: true },
-  analyst: { read: true, editTargets: true, toggleSync: false, manageConnection: false },
-  viewer: { read: true, editTargets: false, toggleSync: false, manageConnection: false },
+  owner: {
+    read: true,
+    editTargets: true,
+    toggleSync: true,
+    manageConnection: true,
+    triageFeedback: true,
+  },
+  admin: {
+    read: true,
+    editTargets: true,
+    toggleSync: true,
+    manageConnection: true,
+    triageFeedback: true,
+  },
+  analyst: {
+    read: true,
+    editTargets: true,
+    toggleSync: false,
+    manageConnection: false,
+    triageFeedback: false,
+  },
+  viewer: {
+    read: true,
+    editTargets: false,
+    toggleSync: false,
+    manageConnection: false,
+    triageFeedback: false,
+  },
 };
 
 describe('org roles', () => {
@@ -37,6 +61,7 @@ describe('org roles', () => {
     expect(rolesWith('toggleSync')).toEqual(['owner', 'admin']);
     expect(rolesWith('editTargets')).toEqual(['owner', 'admin', 'analyst']);
     expect(rolesWith('manageConnection')).toEqual(['owner', 'admin']);
+    expect(rolesWith('triageFeedback')).toEqual(['owner', 'admin']);
   });
 
   it('recognises only real roles', () => {

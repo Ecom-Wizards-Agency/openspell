@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "seed:strategy": "tsx ../../supabase/seed/import-strategy.ts",
-    "seed:dev": "tsx ../../supabase/seed/dev-seed.ts"
+    "seed:dev": "tsx ../../supabase/seed/dev-seed.ts",
+    "seed:roadmap": "tsx ../../supabase/seed/seed-roadmap.ts"
   },
   "dependencies": {
     "@wizard-ads/shared": "workspace:*",

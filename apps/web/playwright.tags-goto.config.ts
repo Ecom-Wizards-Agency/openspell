@@ -32,7 +32,10 @@ const baseURL = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /tags-goto\.spec\.ts$/,
+  // WP-15's feedback specs ride this config: they need the same header bridge
+  // against the same production build, and standing up a third server to run
+  // four more tests would buy nothing.
+  testMatch: /(tags-goto|feedback)\.spec\.ts$/,
   outputDir: './node_modules/.cache/playwright/tags-goto',
   fullyParallel: false,
   workers: 1,

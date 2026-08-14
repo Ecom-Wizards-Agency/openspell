@@ -6,19 +6,27 @@
  * hides a control and once in the server action behind it. Hiding a button is
  * decoration; the action's check is the enforcement, and both read this table.
  *
- * The three capabilities are the ones WP-04 owns, straight from the brief:
+ * The first three capabilities are the ones WP-04 owns, straight from its brief:
  * viewer read-only, analyst edits targets, admin and owner toggle sync and
- * connect Amazon.
+ * connect Amazon. `triageFeedback` is WP-15's addition and follows the same
+ * shape: everyone files and votes on feedback, only owner and admin move a
+ * status or write an admin note. It is here rather than in a table of its own
+ * because a second capability table is how two answers to one question appear.
  */
 
 export const ORG_ROLES = ['owner', 'admin', 'analyst', 'viewer'] as const;
 export type OrgRole = (typeof ORG_ROLES)[number];
 
-export type Capability = 'read' | 'editTargets' | 'toggleSync' | 'manageConnection';
+export type Capability =
+  | 'read'
+  | 'editTargets'
+  | 'toggleSync'
+  | 'manageConnection'
+  | 'triageFeedback';
 
 const CAPABILITIES: Record<OrgRole, readonly Capability[]> = {
-  owner: ['read', 'editTargets', 'toggleSync', 'manageConnection'],
-  admin: ['read', 'editTargets', 'toggleSync', 'manageConnection'],
+  owner: ['read', 'editTargets', 'toggleSync', 'manageConnection', 'triageFeedback'],
+  admin: ['read', 'editTargets', 'toggleSync', 'manageConnection', 'triageFeedback'],
   analyst: ['read', 'editTargets'],
   viewer: ['read'],
 };
