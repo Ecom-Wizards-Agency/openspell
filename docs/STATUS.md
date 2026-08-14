@@ -28,6 +28,8 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 23 | Cron sync + profile UX | Opus | merged | merged+DEPLOYED 2026-08-14: Vercel cron /api/cron/sync (5-min pump, CRON_SECRET-gated, 401 verified live), profile roster sort-by-name/search/bulk-select/editable tz+hour, sticky timezone, active-profile default. Migration applied hosted. Cron live; awaits operator enabling ~15 profiles |
 | 25 | Ads API write endpoints | Codex | merged | merged 2026-08-14: SP create/update/archive + placement/off-Amazon + SB v4 stubs; 167 tests. Codex built it but couldn't commit (sandbox git RO) — recovered from working tree/bundle. Unblocks WP-12/14b/off-Amazon/Creative-Hub |
 | 26 | Bidding corridor engine slice | Opus | merged | merged 2026-08-14 (Opus redo after Codex git-lock refusal): suggested_bid ceiling + symmetric floor + max-potential-CPC; 214 core tests, parity untouched. Unblocks the corridor sync+chart Opus package |
+| 24 | AdLabs-fidelity UI | Opus | merged | merged+DEPLOYED 2026-08-14: /optimizer campaign-level view, dense tables, top-right profile switcher, /connect-claude MCP-key page, AMC/SVC connect stubs, sidebar icons+collapse, chart D/W/M + KPI tiles, Feedback/Roadmap de-duped from Settings. Roadmap card SHIPPED. Opt-Group column deferred (packages/ui owned by WP-06) |
+| 27 | ads-api suggested-bid + SB v4 | Codex | merged | merged 2026-08-14: SP keyword+target bid-recommendation reads + SB v4 media/creative endpoints; 182 tests. Codex bundle-recovered. Unblocks corridor charts (WP-28) + Creative Hub |
 | 16 | AMC lane | Opus | gated | brief ready 2026-08-14 (docs/workpackages/WP-16-amc.md); opens at first provisioned AMC instance + AWS bucket. Visible on the in-app roadmap via WP-15 seed |
 
 ## Milestone gates
