@@ -40,10 +40,10 @@ import {
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 // The drain runs to a ~50s budget; give the platform function room past it.
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 /** How long one tick spends draining before it releases and returns. */
-const DRAIN_BUDGET_MS = 50_000;
+const DRAIN_BUDGET_MS = 240_000;
 
 export async function GET(request: Request): Promise<Response> {
   const expected = process.env['CRON_SECRET'];
