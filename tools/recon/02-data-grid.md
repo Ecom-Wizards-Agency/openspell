@@ -3,8 +3,40 @@
 **WP-11 recon · read-only.** Column sets below are exact: they were read off live
 `get_entity_data` responses against the operator's own org, not transcribed from documentation.
 Filter semantics come from the live filter schema resources. UI chrome (widths, chips, menus)
-is from AdLabs' own tutorial videos and is marked `VID`; it was not visually verified because
-the browser session never came up — see `BLOCKED.md`.
+is from AdLabs' own tutorial videos and is marked `VID`.
+
+> **Session 3 addendum — the grid chrome and the filter modal were seen.** Corrections and
+> confirmations below; §3 (Filter UI semantics) gains a `UI-verified` subsection.
+
+## 0. What the rendered grid actually looks like — `UI-verified`
+
+Every profile-scoped grid page shares one chrome, top to bottom:
+
+1. **Header bar** — page title, `Sync · <HH:MM> <GMT±N>`, the signed-in user, a manual refresh
+   button, and the **profile switcher with a coloured sync-status dot**.
+2. **A stat-tile row** — 13 tiles observed on the campaign grid: `Spend · Sales · Orders · ROAS ·
+   ACOS · RPC · Impressions · Clicks · CTR · CPC · AOV · CPA · CVR · CPM`, plus an empty
+   "add metric" tile. Each tile shows **value, comparison value, and delta %** — confirming the
+   four-values-per-metric model in §2. Tiles are **selectable** and drive the chart below (the
+   selected tile carries a coloured underline).
+3. **A dual-series trend chart** with a `D / W / M` granularity switcher and, down the right
+   edge, buttons for table view, image export and **`.csv`**.
+4. **The toolbar** — entity search box, **`Filters`**, active-filter chips, `Time Table`, and the
+   **date-range control which renders the comparison range beneath it** (e.g.
+   `31 Jul - 13 Aug, 2026` over `17 Jul - 30 Jul, 2026`).
+5. **A group-by drop zone** — literally *"Drag & drop column headers here to Group By"* —
+   confirming §4's group-by model is a direct-manipulation gesture, not a menu.
+6. **Grid controls** — `Options`, **`Import`**, download, `Columns`, and a fullscreen toggle.
+7. The grid: checkbox column, then data columns, with a **sorted column showing its aggregate
+   under the header** (e.g. `Spend ↓` with `$1,257.08` beneath it). Column totals in the header
+   is a good idea and cheap; note it.
+
+Two things worth flagging:
+
+- **`Import` on the grid toolbar** was not on any prior evidence path. Bulk inbound edits from a
+  file appear to be a first-class grid affordance.
+- **There is no "Campaigns" nav item** — the campaign grid *is* the Campaign Optimizer /
+  `/optimizer` page, stat tiles, chart and all. See `01-navigation-map.md`.
 
 ---
 
@@ -220,6 +252,40 @@ target it. Full treatment in `07-sqp-ngrams-negatives.md`.
 ---
 
 ## 3. Filter UI semantics
+
+### 3.0 The Filters modal, as rendered — `UI-verified`, session 3
+
+Screenshot: `screenshots/05-automation-filter-operators.png` (captured from the automation
+builder, which reuses this exact modal — see `08-alerts-automations-dayparting.md` §1).
+
+- A modal titled **`Filters`** holding a list of filter rows. Each row is
+  **`Filter` combobox · `Operator` dropdown · value input (unit-suffixed) · `⊗` remove**.
+- Below the rows: **`+ Add New Filter`** and **`🗑 Clear All`**.
+- Footer: `Cancel` and **`Apply N Filter(s)`** — the button counts what it is about to apply.
+- The `Filter` combobox is **searchable and grouped by category** with sticky group headers
+  (observed for campaigns: `Campaigns · Portfolio · Tags · General · Bid Management · Ad Groups ·
+  Performance Metrics · Product`).
+- Applied filters render as **removable chips on the toolbar**, showing the resolved predicate
+  (`ACOS > 40.0%`, `Select Campaigns: 1 selected`).
+
+**Operator vocabulary for a numeric metric filter — exactly six**, `UI-verified`:
+`Less than` · `Less than or equal` · `Equal to` · `Between` · `Greater than` ·
+`Greater than or equal`. (The MCP contract additionally exposes `LIKE`, `NOT_LIKE`, `IN`,
+`NOT_IN`, `IS_NULL`, `IS_NOT_NULL` — those attach to text/ID/enum filters, not to metrics.)
+
+### 3.0.1 Delta filters are a feature flag, not base grammar — **correction**
+
+Delta filters (the `%`/`#` change-between-periods operators described later in this section)
+are **off by default**. They are enabled org-wide at **Settings → Advanced → `Delta Filters`**,
+described there as *"Enable delta filtering options (%, #) for metric filters to compare changes
+between time periods"*, and **the page must be reloaded before they appear in the filter list**.
+
+Same for **`Placement Mod`** (*"Enable editing placement modifiers for campaigns (new columns and
+bulk edit actions)"*), which gates whether `placement_mod` is an editable column or a read-only
+one.
+
+Treat any delta-filter capability described below as **conditional on that flag**. See
+`09-settings-and-admin.md` §Advanced for the full flag list and the Skip verdict on this pattern.
 
 The campaign filter schema has **54 filter keys**. The shape is uniform across entities, which
 is what makes the filter UI learnable.

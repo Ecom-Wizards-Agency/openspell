@@ -47,6 +47,92 @@ apply (WP-12).
 
 ## 2. Settings: exact inputs
 
+### 2.0 The Optimization Settings modal, as rendered — `UI-verified`, session 3
+
+Screenshot: `screenshots/09-optimization-settings-modal.png`. Captured from the automation
+builder's `AdLabs Bid Optimizer` action (see `08-alerts-automations-dayparting.md` §1), which
+opens the same modal the interactive optimizer uses. **Nothing was saved.**
+
+Layout: a **basic block always visible**, then a `— Hide / Show Advanced Options` expander
+revealing **three named columns**. This confirms the guardrails are advanced-only and therefore
+easy to never see.
+
+**Basic block**
+
+| Control | Rendered as | Default |
+|---|---|---|
+| `OPT GROUP SETTINGS` | checkbox **"Use Opt Group Settings"** | **checked** |
+| `TARGET ACOS` | numeric + `%` suffix | `30` |
+| `PRIORITIZATION` | dropdown — exactly **`Balanced` · `Reduce ACOS` · `Increase Sales`** | `Balanced` |
+
+with the live explainer: *"Applying Opt Group Targets when present. Campaigns without an Opt
+Group receive 30% Target ACOS (Balanced)."* — i.e. the modal states the fallback for unassigned
+campaigns inline. Clone that sentence pattern.
+
+Note the **unit split confirmed visually**: Target ACOS is a **percent** here (`30 %`) while the
+MCP `tacos` parameter is a **decimal fraction** (`0.30`). Two units for one concept, exactly as
+`00-INDEX.md` §Skip records.
+
+**Advanced — column 1, `Optimize Targets`**
+
+| Section | Control | Default |
+|---|---|---|
+| IMPROVE EFFICIENCY | ☑ `High ACOS` | on |
+| | ☑ `High Spend, No Sales` | on |
+| IMPROVE SALES | ☑ `Low ACOS` | on |
+| | ☑ `Low Visibility` | on |
+| | ↳ ☐ `Include 0 Impressions` (nested under Low Visibility) | **off** |
+
+Two corrections to §"The four optimization targets" below:
+
+- The four toggles are **all on by default**, so the default run is maximally broad.
+- `Include 0 Impressions` is **off by default** here. The MCP contract's
+  `exclude_no_impressions` defaults to `false` (i.e. zero-impression rows *included*) — the UI
+  default is the **opposite and safer** one. Note the double negative in the API name; ours
+  should be positively named, as the UI's is.
+- The UI renders it **indented under `Low Visibility`**, correctly expressing that it only
+  modifies that one target rather than the whole run.
+
+**Advanced — column 2, `Bid Change Limits`**
+
+| Control | Rendered as | Default |
+|---|---|---|
+| `BID FLOOR` | dropdown — **`Dynamic` · `Manual` · `Off`** | **`Off`** |
+| `BID CEILING` | same three-mode dropdown | **`Dynamic`** |
+| `TARGET CPC` (companion to a Dynamic ceiling) | dropdown | `1x CPC` |
+| `MAX INCREASE` | mode dropdown (`Max %`) + numeric + `%` | `Max %` / **`25`** |
+| `MAX DECREASE` | mode dropdown (`Max %`) + numeric + `%` | `Max %` / **`25`** |
+
+**Advanced — column 3, `Placement Settings`**
+
+| Control | Default |
+|---|---|
+| ☑ `Optimize Placements` | **on** |
+| `MAX INCREASE` — `Max %` + numeric | **`33`** |
+| `MAX DECREASE` — `Max %` + numeric | **`33`** |
+
+Footer: an **`AdLabs Algorithm Docs`** link (their public "white box" algorithm page), `Cancel`,
+`Save →`.
+
+#### This corrects a headline recon verdict
+
+`00-INDEX.md` §Beat #4 said *"every guardrail exists and every one ships **off** — confirmed on a
+live profile where all four optimization groups had every limit unset."*
+
+**Half of that is wrong.** The *optimization-group* records on the live profile did indeed have
+their limits unset — but the **optimizer's own defaults are not off**: a `Dynamic` bid ceiling at
+`1x CPC`, ±25% max bid change per cycle, and ±33% placement change per cycle all apply out of the
+box. Only the **bid floor** genuinely defaults to `Off`.
+
+The corrected statement: **AdLabs ships sane per-cycle rate limits by default and no bid floor,
+and an optimization group created through the API starts with every limit null** — so the
+dangerous path is not the default UI run, it is a group whose unset fields silently replace the
+defaults. That is a subtler and more useful lesson for WP-05/WP-12 than "everything ships off",
+and it argues for our group records to carry explicit inherited values rather than nulls.
+
+Still absent, and the beat that stands: **nowhere does this modal or the preview state the
+projected spend impact** of the settings it is about to apply.
+
 ### Core
 
 | Input | Values | Notes |

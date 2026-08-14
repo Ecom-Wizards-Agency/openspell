@@ -145,6 +145,22 @@ it should be a hard requirement for us.
 
 Those three gaps are the same gap: *tags classify, but nothing acts on the classification.*
 
+### Where tags DO reach — `UI-verified`, session 3 (partial correction)
+
+**Automations can be scoped by tag.** The automation trigger-condition filter list carries a
+`Tags` group with **`Tag (Campaigns)`** as a selectable filter
+(`08-alerts-automations-dayparting.md` §1). So a taxonomy you have already built *can* drive a
+scheduled rule's scope — and, transitively, an automated `Assign Opt Group` or
+`AdLabs Bid Optimizer` action.
+
+That is a real hole in the "nothing acts on the classification" claim, and it points at how they
+would have closed the rest: **the filter grammar is the join, and tags are in it.** Anything that
+takes a filter set can be tag-driven; only the things that take bare ID lists (optimization
+group membership, campaign maps, dayparting assignment) cannot.
+
+The corrected statement: *tags classify, and only the rules engine acts on the classification —
+every direct-assignment surface still demands IDs.*
+
 ---
 
 ## 4. Lifecycle

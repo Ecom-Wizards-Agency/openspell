@@ -1,9 +1,11 @@
 # 10 — Goto links: how deep links restore state
 
-**WP-11 recon · read-only.** `create_goto_link` was **deliberately not called** — it mints a
-persisted token, which is a write. So the token format and the restored-state payload were not
-observed directly. Everything below is from the live contract, from links the server returned
-unprompted, and from the surrounding architecture. Marked **partial coverage** in `00-INDEX.md`.
+**WP-11 recon · read-only, with one sanctioned exception.** In session 3 the manager explicitly
+authorised minting **exactly one** goto link to settle this file's open questions.
+`create_goto_link` was called **once**, from a deliberately tiny reference (one campaign, a
+3-day window), and the resulting link was opened twice in the browser. **No other write of any
+kind was made.** The section below marked `UI-verified` records what was actually observed;
+this file is **no longer partial coverage**.
 
 ---
 
@@ -80,9 +82,92 @@ authenticated user; a share link exposes a *dashboard* to anyone holding the URL
 
 ---
 
-## 3. How state is restored — what is known and what is not
+## 3. How state is restored — **`UI-verified`, session 3**
 
-**Known:**
+### The experiment
+
+1. `get_entity_data(entity_type="campaign", …)` with `DATE 2026-08-10 → 2026-08-12` **and**
+   `SPEND >= 50`. Result: **1 campaign**, plus a `COMPARE_DATE` applied automatically.
+2. `create_goto_link(reference=<row-level reference>)` → one URL.
+3. Opened it, inspected the restored state, then opened the **same URL a second time**.
+
+### The URL shape
+
+```
+https://dashboard.adlabs.app/<section>/?goto=mcp_<16 lowercase hex chars>
+```
+
+Observed verbatim: `https://dashboard.adlabs.app/optimizer/?goto=mcp_<redacted16>`
+(token redacted — this repo is public). Facts:
+
+- **The route is the destination grid**, chosen by the reference's entity type — a campaign
+  reference produced `/optimizer/` (which *is* the campaign grid; see `01-navigation-map.md`).
+  It is **not** a dedicated `/go/<token>` route.
+- **State travels in a single opaque query parameter**, `goto`, whose value is namespaced `mcp_`
+  — so the token space is explicitly tagged by producer.
+- **No `teamId` or `profileId` in the URL.** The link carries neither, yet correctly switched the
+  active profile. Tenancy is resolved **from the token**, not from the query string. This
+  corrects `01-navigation-map.md`'s "tenancy is in the query string" claim.
+- **The parameter is consumed on load**: after hydration the address bar reads
+  `https://dashboard.adlabs.app/optimizer/` with no query string. The link is not idempotent in
+  the address bar — copying the URL *after* opening it gives you a plain grid.
+
+### What it restores
+
+| Restored | Detail |
+|---|---|
+| **Active profile** | Switched the top-right profile switcher to the reference's profile. |
+| **An ID filter** | A single filter chip: **`Select Campaigns: 1 selected ✕`** — the materialised entity IDs from the reference. Removable like any other filter. |
+| **Date range** | `10 Aug - 12 Aug, 2026`, exactly the reference's `DATE`. |
+| **Comparison range** | `7 Aug - 9 Aug, 2026` — the auto-applied `COMPARE_DATE`, i.e. the immediately preceding equal-length period. |
+
+Screenshot: `screenshots/13-goto-link-restored-filter-bar.png`.
+
+### The answer to the file's central question
+
+**A goto link is a live query, not a frozen snapshot** — but a live query over a **frozen ID
+list**. On open, the grid re-runs against current data (metrics, the trend chart, the stat tiles
+and the comparison deltas were all computed fresh); what is preserved is *which entities* and
+*which window*.
+
+Two consequences, both load-bearing:
+
+1. **The predicate is lost; only its result survives.** The originating filter was
+   `SPEND >= 50`. The restored view carries **no spend filter at all** — just
+   `Select Campaigns: 1 selected`. So the link cannot answer "which campaigns spend over $50
+   today"; it answers "these specific campaigns, over this window". It is a *materialised* view,
+   not a saved search. This is precisely the "carries a result, not a lens" problem this file
+   already suspected — now confirmed by observation.
+2. **It is therefore not evidence either.** Because metrics re-run live, reopening the link
+   tomorrow shows different numbers for the same rows. It is neither an immutable snapshot nor a
+   reusable lens — it sits in between, and the UI gives you no way to tell which you are holding.
+
+### Lifetime
+
+**The token persists and is reusable.** Opening the same URL a second time restored identical
+state. It notably **outlives the underlying MCP reference**, which expires after ~2 hours —
+confirming the earlier inference that a goto link is backed by its own persisted record.
+
+No expiry, revocation, last-opened or listing surface for goto links was found anywhere in the
+UI or the MCP contract, and there is **no delete affordance** — the one link minted for this test
+cannot be removed. Whether it is authenticated was not tested (it was only ever opened in a
+logged-in session), but since it restores a filter in an authenticated grid rather than rendering
+a standalone page, it almost certainly is.
+
+### Still not established
+
+- Whether computed columns added via `query` survive into the restored view (the test reference
+  had none).
+- Goto links produced from a *preview* reference (`optimizer(preview_optimization)`), which the
+  contract says take an explicit `entity_type` and which may restore the preview **modal** rather
+  than a grid filter — a different and possibly snapshot-backed mechanism. Not exercised, because
+  producing an optimizer preview is out of the read-only envelope.
+
+---
+
+## 3b. Prior inferences, for the record
+
+**Known before session 3:**
 
 - Section routes carry `teamId` and `profileId` as query parameters, so tenancy is always
   restorable from the URL alone.
@@ -97,17 +182,10 @@ authenticated user; a share link exposes a *dashboard* to anyone holding the URL
   reference would be broken, so a goto link is presumably backed by its own persisted record
   rather than by the reference URI.
 
-**Not known, because the link was not minted:**
-
-- The token format and route (whether `/go/<token>` or a section route with a state parameter).
-- Whether a goto link stores **the resolved row set** or **the query that produced it** — i.e.
-  whether reopening it tomorrow shows yesterday's rows or today's. This is the single most
-  consequential unknown in this file: it is the difference between a link that is *evidence*
-  and a link that is a *saved search*.
-- Expiry, revocation, and whether a goto link is authenticated (a share link explicitly is not).
-- Whether computed columns added via `query` survive into the restored view.
-
-Recorded honestly as open questions. Each is a one-minute check in a live UI session.
+**Resolved in session 3** (see §3 above): the token format and route (`/<section>/?goto=mcp_<hex16>`,
+not `/go/<token>`); resolved-row-set vs query (**both** — frozen ID list, live metrics); and
+lifetime (persistent, reusable, no expiry or revocation surface). The one guess that was **wrong**
+was "tenancy is always restorable from the URL alone" — the goto URL carries no tenancy at all.
 
 ---
 
@@ -145,19 +223,25 @@ Recorded honestly as open questions. Each is a one-minute check in a live UI ses
 - Two link mechanisms with overlapping names ("View in AdLabs" for goto links, "view URL" and
   "share URL" for dashboards) and no shared vocabulary for lifetime or authentication.
 
-**Beat.**
-1. **A link should carry a lens, not just a result.** Ours should encode entity type + filters +
-   columns + date range + profile set, so the recipient can move the date range or swap the
-   profile and the link still means something. That is one object away from being the named saved
-   view that `02-data-grid.md` argues for — build them as the same thing.
-2. **Say which kind of link it is, on the link.** Frozen snapshot (evidence, immutable, for
-   approvals and audit) versus live query (a saved search that re-runs). Both are useful; a link
-   whose behavior you cannot tell from looking at it is not.
-3. **Links with a lifetime and an audit trail.** Expiry, revocation, and last-opened, consistent
+**Beat.** *(Items 1 and 2 are now backed by observation rather than inference.)*
+1. **A link should carry a lens, not just a result.** **Confirmed by test:** their link
+   materialises the reference into a `Select Campaigns: N selected` ID filter and **discards the
+   predicate that produced it**. Ours should encode entity type + filters + columns + date range
+   + profile set, so the recipient can move the date range or swap the profile and the link still
+   means something. That is one object away from being the named saved view that
+   `02-data-grid.md` argues for — build them as the same thing.
+2. **Say which kind of link it is, on the link.** **Confirmed by test:** theirs is a hybrid —
+   frozen rows, live metrics — and nothing in the URL or the UI tells you that. Frozen snapshot
+   (evidence, immutable, for approvals and audit) versus live query (a saved search that re-runs)
+   are both useful; a link whose behavior you cannot tell from looking at it is not.
+3. **Do not consume the state parameter on load.** Theirs strips `?goto=` from the address bar
+   after hydration, so copying the URL from a browser you already opened it in silently yields a
+   link to nothing. Keep the state in the URL.
+4. **Links with a lifetime and an audit trail.** Expiry, revocation, and last-opened, consistent
    across goto links and dashboard share links, recorded against the same job log that already
    carries `username` and `note`.
-4. **Approval as a first-class object.** They have preview + link + apply. Add: who approved,
+5. **Approval as a first-class object.** They have preview + link + apply. Add: who approved,
    when, what note, and which rows they excluded — recorded on the preview, so the job log entry
    and the human decision are one record rather than two.
-5. **Deep links into any grid state, not only tool-produced results.** Anything an operator can
+6. **Deep links into any grid state, not only tool-produced results.** Anything an operator can
    see should be linkable; today only pipeline outputs and a handful of section routes are.

@@ -197,22 +197,70 @@ looking at, where the natural gesture is clicking the number.
 - `dark_mode` per link. So the same dashboard can be served light to one recipient and dark to
   another.
 
-### White-label
+### White-label — **CORRECTED: it exists, and it is thorough**
 
-**No white-label capability was found on any evidence path.** There is no logo field, no custom
-domain, no brand colour, no "powered by" toggle, and no per-link branding anywhere in the
-dashboard contract. The only presentation control on a share link is `dark_mode`.
+> **This section previously said "No white-label capability was found on any evidence path."
+> That was wrong**, and it was the single biggest error in the recon. White-label is an
+> **organization setting**, not a property of the dashboard object — which is exactly why it is
+> invisible to the dashboard contract that session 1 read.
 
-The nearest thing to a client-facing branded artefact in the operator's actual workflow is a
-separately rendered branded monthly report document that *sources* numbers from AdLabs — which
-is precisely what you have to build when the tool cannot produce a client-safe branded view
-itself.
+#### The surface — `UI-verified`, session 3
 
-- **Beat, and this is the largest single gap in the product.** An agency's dashboard is a
-  deliverable. It needs: agency logo and palette, a custom or vanity domain, a named recipient
-  per link, link expiry, optional passcode, a view log ("client opened this 3 times before the
-  call"), and a locked date range so a client cannot wander into a bad month. Every one of those
-  is absent. `dark_mode` is the only thing they let you change about how a client sees your work.
+**Settings → Dashboards** (`/configuration/settings/dashboards`), headed
+*"EDIT SETTINGS FOR ORGANIZATION:"*. Screenshots:
+`screenshots/11-white-label-domain-logo-icon.jpg`, `screenshots/12-white-label-color-palette.jpg`.
+
+| Setting | Detail (verbatim where quoted) |
+|---|---|
+| **Connect your own domain** | *"Share Dashboards with your own branding — no more 'adlabs.app' URLs."* A `Domain` field (placeholder `dashboards.my-agency.com`), a `Start Setup` button, and a "Learn how to connect a subdomain" doc link. |
+| **Custom Logo** | *"Upload a custom logo for your external Dashboards. Maximum size is **1.5MB**."* `Select Logo` / `Remove Logo`. |
+| **Custom Icon** | Favicon for external dashboards. Max **100KB**, *"Recommended size is 32x32 or 64x64 pixels."* |
+| **Custom Color** | Brand/accent colour — swatch picker **plus a hex field** (default `#155dfc`). |
+| **Custom Graph Color Palette** | **Eight** chart series colours, each a swatch + hex field, with `Update Palette` and a reset-to-defaults path. Defaults: `#0284c7 · #E97B20 · #10b981 · #586182 · #8b5cf6 · #ec4899 · #84cc16 · #ef4444`. |
+
+The dashboards list page carries a **`⚙ White-label Sharing Settings`** button pointing here, and
+the banner *"You can share each dashboard with your customers via a unique link"*.
+
+#### The rendered share view — `UI-verified`
+
+A live share link was opened (read-only). Findings:
+
+- URL shape: **`https://dashboard.adlabs.app/external/dashboard/<token>`**, where the token is a
+  ~128-character mixed-case alphanumeric string. Unauthenticated, as the contract says. (Token
+  not recorded here — this repo is public.)
+- **Zero AdLabs branding.** No logo, no footer, no "powered by", no attribution anywhere in the
+  accessibility tree. The agency's own logo renders in the sidebar footer. The browser tab title
+  is the generic *"Dashboard"*.
+- Chrome observed: dashboard name as the sidebar heading; the date range **with its comparison
+  period beneath it**; a **`Download PDF`** button; and a collapsible section → tab tree
+  (`General → Overview`) matching the object model in §1.
+- The widget canvas rendered stat tiles with comparison values and deltas, a **gauge/meter widget
+  with a target marker** (a "TACOS Meter" showing target vs actual on an arc), a dual-axis
+  combo chart, and a donut — i.e. the widget catalogue in §3 renders in the share view unchanged.
+
+**`Download PDF` on the client-facing view is a real finding** and is not in the MCP contract at
+all: the share link is not just a page, it is a self-serve report export.
+
+#### What is still missing — the narrowed beat
+
+The branding half of the old beat is **retired**: logo, favicon, palette, accent colour and a
+custom domain all exist, and the output carries no vendor marks. What remains missing is the
+**link governance** half, and it is unchanged:
+
+| Still absent | Consequence |
+|---|---|
+| Named recipient per link | Multiple links per dashboard exist solely so you can revoke one, but nothing records who it was for. There is no label field. |
+| Expiry | A link lives forever until manually removed. |
+| Passcode / any second factor | Possession of the URL remains the entire authorization model. |
+| View log | No "client opened this 3 times before the call". |
+| Locked date range | A client can wander into a bad month. |
+| Per-link branding | Branding is org-wide, so a single agency cannot present differently to two clients. |
+
+- **Beat, restated.** Not "build white-label" — theirs is good and should be cloned closely,
+  including the eight-colour chart palette, the favicon, the PDF export and the vendor-mark-free
+  output. Beat them on **the link as a governed object**: named recipient, expiry, passcode,
+  view log, locked range, and branding resolvable per link (or per client) rather than only per
+  organization.
 
 ---
 
@@ -248,6 +296,11 @@ subscription** — there is no template object, so a change to the "master" neve
 - `is_percent_scale` carried as metric metadata rather than inferred.
 - `duplicate` / `duplicate_tab` / `clone_widget` for fast composition.
 - Auto-managing the `is*OverrideEnabled` flags from value presence.
+- **The whole white-label stack** (`UI-verified`): org-level custom domain, logo, favicon, accent
+  colour, and an **eight-colour chart palette** with hex entry — plus a share view that carries
+  **no vendor branding at all** and a **`Download PDF`** button for the client.
+- **Comparison period rendered under the date range** in the share view, so a client sees what
+  "-12%" is measured against without asking.
 
 **Skip.**
 - Org-scoped visibility with team-scoped creation. Pick one scope.
@@ -257,10 +310,14 @@ subscription** — there is no template object, so a change to the "master" neve
 - PUT semantics anywhere. `configure_widget` already proves they know the merge-patch pattern.
 
 **Beat.**
-1. **White-label.** Logo, palette, custom domain, and a client-safe locked view. Currently
-   absent entirely; `dark_mode` is the whole presentation surface.
-2. **Real sharing.** Named recipients, expiry, optional passcode, revocation per recipient, and a
-   view log. Today: an unauthenticated token in a URL, forever, with no record of who has it.
+1. ~~**White-label.**~~ **CORRECTED — it exists and it is good.** Custom domain, logo, favicon,
+   accent colour, an eight-colour chart palette, a vendor-mark-free share view, and `Download
+   PDF`. **Moved to Clone** — see the Clone list above. What survives of this item: branding is
+   **org-wide only**, so one agency cannot present two clients differently.
+2. **Real sharing.** Named recipients, expiry, optional passcode, revocation per recipient, a
+   view log, and a locked date range. Today: an unauthenticated ~128-char token in a URL, forever,
+   with no record of who has it. **This half of the old beat stands unchanged** and is now the
+   whole of it.
 3. **Click-through drill-down** from widget to the filtered grid behind it. The shared filter
    vocabulary makes this nearly free and they did not do it.
 4. **Templates with live instances**, not duplication. Fifteen client dashboards should be one

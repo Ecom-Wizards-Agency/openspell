@@ -71,7 +71,7 @@ Footer is always `Cancel` · `Back: <prev>` · `Next: <next>` / `Save`. Validati
 summarised: an invalid step gets a red border plus a red "Please fix the following errors:" block
 listing `<Step>: <message>` (observed: *"Configuration: At least one profile must be selected"*).
 
-#### Step 1 — Configuration (`screenshots/02`, `03`)
+#### Step 1 — Configuration (`screenshots/02-alert-builder-configuration.jpg`, `03-alert-builder-frequency-weekly.jpg`)
 
 | Field | Detail |
 |---|---|
@@ -93,7 +93,7 @@ The second bullet is the load-bearing one: **the filter vocabulary is split into
 window-evaluated metrics and current-state attributes**, and the UI does not mark which is which
 outside this sentence. We should mark it per filter.
 
-#### Step 2 — Trigger Conditions (`screenshots/04`, `05`)
+#### Step 2 — Trigger Conditions (`screenshots/04-automation-entity-types.png`, `05-automation-filter-operators.png`)
 
 | Control | Detail |
 |---|---|
@@ -139,7 +139,7 @@ denominator from optimization-group membership.
 automation**. That partially refutes the "tags classify but nothing acts on the classification"
 verdict — tags drive automation scope, just not optimization groups, campaign maps or dayparting.
 
-**Operators** (`screenshots/05`), for a numeric metric filter — six, no more:
+**Operators** (`screenshots/05-automation-filter-operators.png`), for a numeric metric filter — six, no more:
 `Less than` · `Less than or equal` · `Equal to` · `Between` · `Greater than` · `Greater than or equal`.
 The value input is unit-aware (a `%` suffix for ACOS). A completed condition renders as a chip:
 `⚡ ACOS > 40.0%`.
@@ -157,7 +157,7 @@ minimum-match threshold, the resolved window, and a **drill-through link into th
 It is the "preview as a diff" primitive we wanted — for automations they already built it. Clone
 the whole panel, including the one-line restatement of the resolved window.
 
-#### Step 3a — Alerts (Alert kind) (`screenshots/06`)
+#### Step 3a — Alerts (Alert kind) (`screenshots/06-alert-delivery-email-only.png`)
 
 | Field | Detail |
 |---|---|
@@ -170,7 +170,7 @@ the whole panel, including the one-line restatement of the resolved window.
 What the email body contains could not be established without firing a rule, and firing one is a
 write. Recorded as the one remaining unknown in this area.
 
-#### Step 3b — Actions & Alerts (Automated Action kind) (`screenshots/07`, `08`, `09`)
+#### Step 3b — Actions & Alerts (Automated Action kind) (`screenshots/07-automation-action-types.png`, `08-automation-change-budget-modes.png`, `09-optimization-settings-modal.png`)
 
 Header note: *"Automated Actions will only apply to the filtered entities defined in the Trigger
 section."* Below the action row: **`+ Add New Action`** and **`+ Add New Alert`** — so one
@@ -307,34 +307,8 @@ must be creatable and editable through the API on day one. Keep this in the Skip
 `get_entity_data(entity_type="automation", team_id=<team>)` returned **"No automations found"**
 on the operator's team. So this is a feature the operator's own agency does not currently use —
 which is itself a finding worth carrying into the product decision. The weekly management loop
-is run as attended preview-and-approve, not as unattended rules.
-
----
-
-## 2. Alerts
-
-**No alerting capability was found on any evidence path.** No alert entity, no notification
-action, no threshold-breach object, no delivery channel (email, Slack, webhook), nothing in the
-changelog, nothing in the resource index.
-
-The nearest adjacent things, and they are not alerts:
-
-- `analyze(audit_summary)` — a **pull** scorecard you run, covering budget-capped campaigns, bid
-  category distribution, placement modifier accuracy, and spend distribution.
-- Automations — rules that *act* rather than notify.
-- Filters like `DAILY_SPEND_TO_BUDGET > 0.8` or `ACOS_TO_TARGET >= 1.1` — the conditions an alert
-  would test, available as filters you have to run yourself.
-
-**Beat, and it is a clean gap.** Every ingredient for alerting already exists in their model:
-target-relative ratio filters that are portable across profiles, a team-scoped rule object that
-already spans profiles, and a job log with a `note` field. What is missing is the delivery half.
-"Every profile where `ACOS_TO_TARGET >= 1.3` or `DAILY_SPEND_TO_BUDGET >= 0.95`, every Monday, to
-Slack" is the agency's actual morning question, and answering it today means running a report per
-profile.
-
-Note also that our own operating context already solves this outside the tool with a scheduled
-daily brief posted to Slack, cross-checked against a second source. That is direct evidence of
-the gap being real: when a tool has no alerting, agencies build it around the tool.
+is run as attended preview-and-approve, not as unattended rules. **Session 3 confirmed this
+visually**: the automations grid renders "No Rows to Show" across all profiles.
 
 ---
 
@@ -486,6 +460,19 @@ progress means a stale sync silently produces a wrong answer that looks right.
 ## 6. Verdicts
 
 **Clone.**
+- **`Test Trigger`** — a dry run that reports the match count, restates the resolved window, says
+  whether the rule *would* fire against the minimum-match threshold, and drills through to the
+  matching rows. The single best-designed control found in the whole recon.
+- **Trigger filters vs scope filters as a marked distinction** in one shared filter grammar, with
+  the badge rendered inline in the filter picker.
+- **The wizard rail as a live summary** — each step card fills with chips describing what you set.
+- **`Minimum Match Count`** as a first-class threshold, with the live sentence restating it.
+- **Lookback window expressed twice** — as a preset *and* as `Lookback N days` + `Ignore Last N
+  days`, with the resolved absolute range shown next to the preset.
+- **Guardrails on the action, not just the algorithm**: `Budget Floor` / `Budget Ceiling` on a
+  Change Budget action.
+- The standing note that **archived and ended entities are excluded from automations**, stated in
+  the builder rather than discovered at runtime.
 - Automations as **team-scoped objects spanning multiple profiles**, with `action_count`,
   `created_by`, and `last_triggered_at`.
 - `has_opt_rule` as a boolean column on campaign / target / placement, so automation coverage is
@@ -511,18 +498,26 @@ progress means a stale sync silently produces a wrong answer that looks right.
 - PRO-gating a data capability (AMC) rather than gating seats or volume.
 
 **Beat.**
-1. **Alerting, which does not exist at all.** Every ingredient is already there — portable
-   ratio filters, a cross-profile rule object, a job log with notes. What is missing is delivery.
-   Threshold alerts across all profiles, to Slack/email, on a schedule, with the breaching rows
-   attached. This is the clearest single product gap found in the whole recon.
-2. **A run-rate pacing governor.** Month-to-date vs plan, projected landing, implied daily
+1. ~~**Alerting, which does not exist at all.**~~ **CORRECTED — alerting exists.** The narrowed,
+   still-true beat is **the delivery layer**: one channel (email), a count rather than the rows,
+   no digest across profiles, no alert state between runs, and the whole feature hidden from the
+   nav and from search. Build Slack-first multi-channel delivery, row-level payloads, one
+   scheduled cross-profile digest instead of N emails, and firing/acked/resolved state. Clone
+   their rule engine closely; replace their postbox.
+2. **An approval gate on unattended optimization.** They ship `AdLabs Bid Optimizer` as a
+   scheduled automation action with **no preview and no confirmation** — the exact opposite of
+   their own interactive flow, on the same object model. This is WP-12's whole thesis, validated:
+   staged apply with a diff and a revert, even when the run is scheduled.
+3. **A run-rate pacing governor.** Month-to-date vs plan, projected landing, implied daily
    allowance, per profile and rolled up. Budget today answers "capped now", never "on pace".
-3. **Cross-profile everything.** Automations prove they can build objects that span profiles.
-   Nothing else does. Grids, dashboards, optimizer runs, campaign maps, and dayparting are all
-   single-profile, and the agency job is fifteen profiles.
-4. **Tag-driven assignment** for dayparting schedules and automations, not ID lists.
-5. **Document the dayparting × optimizer interaction.** Bids are recalculated from performance
+4. **Cross-profile beyond rules and read-only overview.** Automations span profiles and
+   `Profiles Overview` reads across them; grids, optimizer runs, campaign maps, dayparting, tags
+   and saved views still do not.
+5. **Tag-driven assignment** for dayparting schedules and optimization groups, not ID lists.
+   (Note: automations *can* already be scoped by `Tag (Campaigns)` — see §1.)
+6. **Authorable rules.** Their automation cannot be created or edited through the API at all.
+7. **Document the dayparting × optimizer interaction.** Bids are recalculated from performance
    collected under a dayparting modifier. Whether smart bid ceilings account for it is unknown
    from this recon and must not be unknown in ours.
-6. **Budget scheduling as a first-class object** — a deal-event plan that raises budgets and
+8. **Budget scheduling as a first-class object** — a deal-event plan that raises budgets and
    ceilings for a window and reverts automatically, with the revert in the job log.

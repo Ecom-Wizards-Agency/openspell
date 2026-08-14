@@ -137,14 +137,85 @@ Direct user-management surface found in this recon:
 | `username` | On every job-log row, beside `automation_name` — human or machine, per job |
 | Team membership | Implicit: `teams` returns the teams the authenticated user belongs to; "Must be a team you are a member of" gates dashboard creation and share-link creation |
 
-**No invite, role, permission, or seat-management surface appeared on any evidence path.** There
-is no roles enum, no per-entity permission model, no read-only user, no client-user concept.
-Access appears to be: you are in a team, therefore you see its profiles; plus per-dashboard
-collaborator grants.
+### The real settings surface — `UI-verified`, session 3
 
-That is a thin model for an agency with staff, contractors, and clients. Recorded as a gap, but
-honestly: it may simply be UI-only and invisible to the MCP surface, and the UI session that
-would have confirmed it did not run. Marked as **partial coverage** in `00-INDEX.md`.
+Reached via the sidebar footer **Settings** → a popover (Organization name · **Settings** ·
+**Subscription & Billing** · **Dark Mode** toggle · signed-in user · sign out), then a four-tab
+page at `/configuration/settings/*`:
+
+| Tab | Route | Holds |
+|---|---|---|
+| **Personal** | `/user` | Organization Details (org name, `Update Organization`) · User Details (e-mail **read-only**, first/last name) · Update Password · **Multi-Factor Authentication (MFA)** via TOTP · **MCP API Key** (see §5) |
+| **Teams** | `/teams` | The team admin grid (below) |
+| **Advanced** | `/advanced` | Feature flags (below) |
+| **Dashboards** | `/dashboards` | The **white-label** surface — see `03-dashboards.md` §White-label |
+
+MFA is TOTP-based and gated on email verification (*"You must verify your email address before
+enabling MFA"* + `Send Verification Email`). Note the shape: **org name lives on the Personal
+tab**, which is a small but real information-architecture error worth not copying.
+
+### Teams tab
+
+Banner: *"Each team has separate billing. To share billing across profiles, add them to the same
+team."* — so **team is the billing boundary**, and that is why an agency ends up with one team.
+
+`+ Create New Team`, and a grid with columns:
+
+```
+Organization  Name  Team Owner  Amazon Auth  Plan  # of profiles
+Daily sync time  Timezone  Members  Actions
+```
+
+- `Plan` renders as a badge (`Pro`).
+- `Amazon Auth` is the authorising Amazon account e-mail — one LWA identity per team.
+- `Daily sync time` and `Timezone` are **team-level** and editable inline. This is the clock that
+  `08-alerts-automations-dayparting.md` §1 shows automations run against.
+- `Members` is an avatar stack; `Actions` holds `✎ Members` and `🗑 Delete`.
+
+### The role model — **exactly two roles**
+
+`✎ Members` opens a **Manage Members** modal: `+ Add New Member`, then rows of
+`MEMBER · EMAIL · ROLE · ACTIONS`.
+
+- The owner row carries a non-editable **`⭐ Owner`** badge, the subtitle *"Primary billing and
+  team owner"*, and a disabled delete.
+- Every other member is subtitled *"Team member"* and carries a **ROLE dropdown**.
+- Opening that dropdown reveals the entire role vocabulary: **`Admin (current)` (disabled) and
+  `Owner — "Transfer ownership to this member"`**.
+
+**So there are two roles, Owner and Admin, and the only role operation is ownership transfer.**
+Every non-owner is an Admin with full write access to every profile in the team. This
+**confirms** the session-1 inference and removes its hedge: there is **no read-only role, no
+viewer, no client user, no per-profile permission, and no seat concept**. It is not UI-only and
+invisible to MCP — it genuinely does not exist. This area is no longer partial coverage.
+
+For an agency with staff, contractors and clients that is a real problem: you cannot give a
+client a login, and you cannot give a junior a look-but-don't-touch seat. The only lever is
+excluding them from the team entirely, which also excludes them from the billing boundary.
+
+### Advanced tab — feature flags
+
+Screenshot: `screenshots/10-settings-advanced-feature-flags.png`. Banner: *"Use with caution:
+These settings are for advanced users only. Make sure you understand what each setting does
+before enabling it."*
+
+| Flag | Default | Description (verbatim) |
+|---|---|---|
+| **Placement Mod** | **off** | *"Enable editing placement modifiers for campaigns (new columns and bulk edit actions)"* |
+| **Delta Filters** | **off** | *"Enable delta filtering options (%, #) for metric filters to compare changes between time periods"* |
+
+Both matter to earlier specs:
+
+- **Delta filters are not part of the base filter grammar** — they are an opt-in flag, and the
+  automation builder warns you must reload the page after enabling it before they appear in the
+  filter list. `02-data-grid.md` should not present delta filters as always-available.
+- **Placement-modifier editing is off by default**, which is why `placement_mod` reads as a
+  passive column rather than an editable one.
+
+**Skip this pattern.** Two org-wide boolean flags, defaulted off, hidden behind a "use with
+caution" banner, that silently change which filters and columns exist — with no per-user
+override and no indication anywhere else in the product that a capability is being withheld.
+Either a feature is ready or it is not.
 
 Attribution, by contrast, is good: every job carries `username`, every mutating action requires a
 `note`, and several action docs say outright *"if the goal or intention of the change is not
@@ -155,8 +226,31 @@ on every bulk change, with no way to skip the why.
 
 ## 5. MCP key management
 
-**Not observable from within the MCP session, and not attempted** — creating an MCP key was
-explicitly out of scope for this recon.
+### The screen — `UI-verified`, session 3
+
+**Settings → Personal → MCP API Key.** No key was generated; the button was not clicked.
+
+The entire surface is three elements:
+
+> **MCP API Key** — *"Use this key to authenticate MCP (Model Context Protocol) integrations.
+> Keep it secret."*
+> ⓘ *"MCP access is disabled. Generate a key to enable it."*
+> **[ Generate Key ]**
+
+That is all of it. **No scope selector, no per-profile picker, no read-only option, no expiry, no
+rotation control, no last-used timestamp, and no key list** — a single button that turns on full
+access. The key is **per user** (it sits on the Personal tab, not on the team), which matches the
+contract's "authenticates as a user" behaviour, so one key inherits that user's access to every
+profile in every team they belong to.
+
+MCP access is also **off until you press it**, which is a reasonable default and the only
+guardrail present.
+
+This **confirms** everything inferred below and closes `00-INDEX.md`'s "MCP key management
+screen" gap. There is also a separate **AI → MCP `[BETA]`** nav item for the integration itself;
+key issuance lives only here.
+
+### What the contract already told us
 
 What can be stated from the evidence:
 

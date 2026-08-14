@@ -1,13 +1,68 @@
-# BLOCKED — the AdLabs UI walkthrough did not run
+# RESOLVED — the AdLabs UI walkthrough ran in session 3
 
-**Status:** the browser half of WP-11 could not be performed. The MCP/data half was completed in
-full. This file records exactly what failed, what was tried, what that costs, and what a
-30-minute follow-up session would recover.
+**Status: UNBLOCKED.** Sessions 1 and 2 could not reach a browser at all; this file recorded why.
+**Session 3 (14.08.2026) connected successfully and executed the entire six-item priority list.**
 
-**Session 2 (follow-up) also failed at the same point — see [§Session 2](#session-2--retry-also-blocked)
-before planning a session 3.** The six-item priority list below is still entirely outstanding.
+The historical record below is kept intact — the diagnosis in §Session 2 was correct, and the fix
+(pairing the extension to the same claude.ai account) is worth remembering. **Read
+[§Session 3](#session-3--unblocked-priority-list-executed) first; everything above it is history.**
 
 ---
+
+## Session 3 — UNBLOCKED, priority list executed
+
+**Browser connected on the first attempt.** `select_browser` with the operator-confirmed
+deviceId, then `tabs_context_mcp{createIfEmpty:true}` returned a live tab group. The
+account-pairing hypothesis from session 2 was the correct one.
+
+**No login wall was hit.** `https://dashboard.adlabs.app/` redirected straight to
+`/getting-started` in an authenticated session. **Total wait time at a login wall: zero.** The
+10-minute wait-and-recheck procedure was never invoked.
+
+### Priority list outcome
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | **Automations** — condition, action, schedule and scope vocabulary | **Done, and it was the right call to rank it first.** Whole rule builder captured. Found at the unlinked route `/automations`. **Alerting turned out to exist**, which reverses the recon's headline "Beat #1". `08-alerts-automations-dayparting.md` §1–§2 rewritten. |
+| 2 | **Navigation** — confirm/correct the section list | **Done — heavily corrected.** The session-1 list of 17 flat sections was wrong in grouping, naming and count. Real nav is 6 collapsible groups + footer. `01-navigation-map.md` rewritten. |
+| 3 | **Goto link** — mint one, capture URL shape, settle snapshot-vs-live | **Done.** Exactly one link minted (the sanctioned write). Shape `/<section>/?goto=mcp_<hex16>`; restores profile + materialised ID filter + date + comparison; **re-queries live over a frozen ID list**. `10-goto-links.md` §3 rewritten; no longer partial coverage. |
+| 4 | **Settings** — user/role/permission management, MCP-key screen | **Done, both gaps closed.** Role model is exactly **Owner + Admin** with ownership transfer as the only role operation — no read-only role exists. MCP key screen is a single unscoped `Generate Key` button. Also found a previously unknown **Advanced feature-flags tab**. `09-settings-and-admin.md` §4–§5 rewritten. |
+| 5 | **Dashboard share view** — confirm the white-label verdict | **Done — verdict reversed.** A full white-label stack exists (custom domain, logo, favicon, accent colour, 8-colour chart palette) as an *organization* setting, which is why the dashboard contract never showed it. Share view carries **zero AdLabs branding** and a `Download PDF` button. `03-dashboards.md` §5 rewritten. |
+| 6 | **Screenshots**, redacted, numbered into `screenshots/` | **Done — 13 captures**, all redacted or cropped. See below. |
+
+### Screenshot policy actually applied
+
+No demo/obfuscation mode was found in the product, so the rule used was: **capture only frames
+that contain no client-identifying data, and crop where a client name would otherwise be in
+frame.** Concretely —
+
+- Builder modals were captured **before** a profile was selected, or **cropped** to the right-hand
+  pane so the left rail's profile chip is out of frame.
+- The automations list, the Advanced settings tab and the white-label settings tab are captured
+  whole; they contain no client data (the automations grid is empty).
+- **Deliberately not captured, described in prose instead:** the profiles list, `Profiles
+  Overview`, the dashboards list, the Manage Members modal, the Teams grid, the campaign grid,
+  and the rendered client share view. All carry client or staff names, e-mails, or figures.
+- The goto-link token and the dashboard share token are **redacted** in the specs.
+
+13 files, `01-` … `13-`, in `tools/recon/screenshots/`.
+
+### Read-only confirmation for session 3
+
+**One sanctioned write, and nothing else.** `create_goto_link` was called exactly once (priority
+item 3, explicitly authorised). It has **no delete affordance** in either the UI or the MCP
+contract, so the link persists; it points at a 3-day, single-campaign view.
+
+Everything else was read-only. Specifically, both automation wizards were opened and walked to
+their final step and then **cancelled** — the automations grid still reads "No Rows to Show".
+`Generate Key`, `Save`, `Apply`, `Update Organization`, `Update Color`, `Update Palette`,
+`Start Setup`, `Delete` and every role-change control were **not** clicked. Form fields typed
+into (a profile selection, an ACOS threshold of 40, a frequency of Weekly) existed only inside
+cancelled modals. `Test Trigger` was run — it is a read-only match count.
+
+---
+
+## History — sessions 1 and 2 (kept for the record)
 
 ## What happened
 
@@ -149,7 +204,11 @@ same one the CLI is authenticated as. Two sessions have now been spent discoveri
 
 ---
 
-## To unblock
+## To unblock — ~~outstanding~~ **COMPLETED IN SESSION 3**
+
+> Kept for the record. Step 2 was the correct diagnosis: pairing the extension to the same
+> claude.ai account resolved it, and session 3 connected on the first call. All six follow-up
+> priorities below were executed — see [§Session 3](#session-3--unblocked-priority-list-executed).
 
 **Operator, in order** (steps 1 and 3 were verified locally in session 2 and are already
 satisfied — start at step 2):
