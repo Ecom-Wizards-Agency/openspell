@@ -22,6 +22,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 14b | Campaign creation via API | Opus | gated | opens after OAuth + entity sync live; paused-by-default, apply-batch audited |
 | 13 | Headless analyst | Opus | gated | opens when WP-09 stable |
 | 15 | Feedback & roadmap | Opus | in-progress | launched 2026-08-14; scope addition: seeded roadmap items (AMC, SP-API/SUPA, DataDive, Keepa, Creative Hub, off-Amazon, dayparting, writes, harvesting, campaign API, analyst) |
+| 17 | AI skills library | Opus | todo | brief ready 2026-08-14 (WP-17): public-safe skill pack against our MCP + /connect-claude key page; amazon-agent skills as spec sources. Launches in v1.x |
 | 16 | AMC lane | Opus | gated | brief ready 2026-08-14 (docs/workpackages/WP-16-amc.md); opens at first provisioned AMC instance + AWS bucket. Visible on the in-app roadmap via WP-15 seed |
 
 ## Milestone gates

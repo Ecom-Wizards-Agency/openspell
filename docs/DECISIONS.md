@@ -61,3 +61,8 @@ One line per decision the manager (Fable) or operator makes between work package
   SD through apply batches, MCP tools). Gated on first provisioned instance + AWS bucket;
   sponsored-ads AMC eligibility verified per account at gate-open. Seeded onto the in-app
   roadmap so it stays visible.
+- **2026-08-14 · AI skills library planned as WP-17** (operator idea, validated vs
+  adlabs.app/skills) — downloadable skills against our MCP + a /connect-claude onboarding
+  page with key issuance; amazon-agent skills are spec sources, every shipped skill rewritten
+  public-safe (thresholds stay in tenant strategy, read via MCP at runtime). Seeded onto the
+  in-app roadmap.
