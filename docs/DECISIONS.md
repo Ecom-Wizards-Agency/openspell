@@ -16,3 +16,8 @@ One line per decision the manager (Fable) or operator makes between work package
 - **2026-08-13 · Recommendation.status vocabulary** frozen as
   `proposed|accepted|dismissed|exported|applied|superseded` (WP-00's judgment call;
   `superseded` replaces the plan's `expired`).
+- **2026-08-14 · RPC grants hardened (migration 0013)** — hosted advisors showed the queue +
+  vault SECURITY DEFINER RPCs EXECUTE-callable by anon/authenticated via PostgREST (local shim
+  didn't reproduce PostgREST default grants; the in-body service-role guard still blocked use).
+  EXECUTE now service_role-only; advisors clean. Lesson: hosted advisor run is part of every
+  migration review.

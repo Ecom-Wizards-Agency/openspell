@@ -6,7 +6,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | WP | Package | Owner | State | Notes |
 |---|---|---|---|---|
 | 00 | Scaffold + contracts | Opus | merged | merged 2026-08-13; contracts frozen (incl. Next 16, TS 6, ApplyRow wire serializer) |
-| 01 | DB schema + RLS | Opus | merged | merged 2026-08-13 (44 tables, RLS on all tenant tables, partition automation, queue, Vault RPCs). Hosted-Supabase verification running; local supabase db reset still an operator TODO |
+| 01 | DB schema + RLS | Opus | merged | merged 2026-08-13 (44 tables, RLS on all tenant tables, partition automation, queue, Vault RPCs). Hosted-Supabase verification DONE 2026-08-14: all 13 migrations applied to the hosted project, counts match local, cron jobs live, security advisors clean after RPC grant hardening (migration 0013) |
 | 02 | ads-api client | Codex | todo | GATE OPEN (WP-00 merged) — run HANDOFFS.md block in Codex |
 | 03 | Worker + queue | Codex | todo | GATE OPEN (WP-00 merged) — run HANDOFFS.md block in Codex |
 | 04 | Web auth + OAuth | Codex | todo | GATE OPEN (WP-00 merged) — run HANDOFFS.md block; LWA redirect URI still needed before live test |
