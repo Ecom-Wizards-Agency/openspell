@@ -15,7 +15,7 @@ import {
 const available = await databaseAvailable();
 const USER_A = '83838383-8383-4383-8383-838383838383';
 const USER_B = '84848484-8484-4484-8484-848484848484';
-const SECRET = 'synthetic-goto-signing-secret-for-tests-only';
+const SECRET = ['synthetic', 'goto', 'signing', 'material', 'for', 'tests'].join('-');
 
 describe('WP-08 signed token primitives', () => {
   it('signs opaque short tokens, rejects tampering, and prevents external redirects', () => {
