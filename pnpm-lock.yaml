@@ -94,6 +94,9 @@ importers:
       '@wizard-ads/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@wizard-ads/crosscheck-cli':
+        specifier: workspace:*
+        version: link:../../tools/crosscheck-cli
       '@wizard-ads/db':
         specifier: workspace:*
         version: link:../../packages/db

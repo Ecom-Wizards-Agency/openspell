@@ -1,4 +1,18 @@
+/**
+ * The worker against a real, migrated Postgres.
+ *
+ * Skipped when no database is reachable, so `pnpm check` stays honest on a
+ * machine without one; point it at a database with
+ * `WIZARD_ADS_TEST_DATABASE_URL`.
+ *
+ * Every case here asserts the *ledger*, not the claim count: `drainOnce()`
+ * returns how many jobs were claimed, and a claimed job that threw is still a
+ * claimed job. `expectAllSucceeded` is what makes a green run mean something.
+ */
 import { spawn } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import {
@@ -6,23 +20,27 @@ import {
   databaseAvailable,
   type TestDatabase,
 } from '@wizard-ads/db/testing';
-import { requeueStaleSyncJobs } from '@wizard-ads/db';
+import { enqueueDueSchedules } from '@wizard-ads/db';
 import type { EntityRow, Region } from '@wizard-ads/shared';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type {
   AdsApiClient,
   AdsProfileContext,
   AdsReportStatus,
   CreateReportInput,
 } from './ads-api.js';
+import { createCrosscheckIngest } from './crosscheck.js';
 import type { ParsedFactBatch } from './parsers.js';
 import { RegionTokenBuckets } from './region-token-buckets.js';
+import { DEFAULT_REPORT_TYPES, defaultSchedules } from './schedules.js';
 import { PostgresWorkerStore } from './store.js';
-import { SyncWorker, type WorkerLogger } from './worker.js';
+import { ScheduleProvisioner, StaleClaimReaper, SyncWorker, type WorkerLogger } from './worker.js';
 
 const available = await databaseAvailable();
 const USER = '77777777-7777-4777-8777-777777777777';
-const quietLogger: WorkerLogger = { info: () => {}, error: () => {} };
+const quietLogger: WorkerLogger = process.env['WORKER_TEST_VERBOSE']
+  ? { info: (m, d) => console.info(m, d), error: (m, d) => console.error(m, d) }
+  : { info: () => {}, error: () => {} };
 
 class FakeAdsApi implements AdsApiClient {
   entities: EntityRow[] = [];
@@ -62,6 +80,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
   let database: TestDatabase;
   let orgId: string;
   let profileId: string;
+  let amazonProfileId: string;
   let today: string;
 
   beforeAll(async () => {
@@ -70,10 +89,11 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       select app.seed_tenant_fixture('worker', ${USER}, 'owner')
     `;
     orgId = org?.seed_tenant_fixture ?? '';
-    const [profile] = await database.sql<{ id: string }[]>`
-      select id from public.ad_profiles where org_id = ${orgId} limit 1
+    const [profile] = await database.sql<{ id: string; amazon_profile_id: string }[]>`
+      select id, amazon_profile_id from public.ad_profiles where org_id = ${orgId} limit 1
     `;
     profileId = profile?.id ?? '';
+    amazonProfileId = profile?.amazon_profile_id ?? '';
     const [clock] = await database.sql<{ today: string }[]>`select current_date::text as today`;
     today = clock?.today ?? '';
   }, 60_000);
@@ -86,43 +106,100 @@ describe.skipIf(!available)('worker + real Postgres', () => {
 
   afterAll(async () => { await database?.drop(); });
 
-  it('runs entity sync and request-poll-fetch, then idempotently restates facts', async () => {
+  // -------------------------------------------------------------------------
+  // entity.sync
+  // -------------------------------------------------------------------------
+
+  it('upserts every listed entity and records only the fields that changed', async () => {
     const api = new FakeAdsApi();
     api.entities = [campaign(profileId, 'updated campaign')];
-    api.reportRows = [reportRow(today, 12.5)];
-    const worker = makeWorker('pipeline', new PostgresWorkerStore(database), api);
+    const worker = makeWorker('entities', new PostgresWorkerStore(database), api);
 
-    await queueEntity(database, orgId, profileId, 'entity-cycle');
-    await queueReport(database, orgId, profileId, today, 'report-cycle-1');
-    expect(await worker.drainOnce()).toBe(2);
-    await runQueuedPipeline(worker, database);
+    await queueEntity(database, orgId, profileId, 'entity-delta', false);
+    expect(await worker.drainOnce()).toBe(1);
+    await expectAllSucceeded(database, orgId);
 
+    const [job] = await database.sql<{ result: Record<string, number> }[]>`
+      select result from public.sync_jobs where dedupe_key = 'entity-delta'
+    `;
+    expect(job?.result).toMatchObject({ listed: 1, upserted: 1 });
     const [entity] = await database.sql<{ name: string }[]>`
       select name from public.campaigns where profile_id = ${profileId} and amazon_id = 'c-1'
     `;
+    expect(entity?.name).toBe('updated campaign');
+  });
+
+  it('tombstones missing entities only on a full pass', async () => {
+    const api = new FakeAdsApi();
+    api.entities = [campaign(profileId, 'still here')];
+    const store = new PostgresWorkerStore(database);
+    const profile = await store.profile(profileId);
+
+    // A delta pass lists campaigns and nothing else. Sweeping on it would
+    // tombstone every keyword and ad group the pass never claimed to cover.
+    const delta = await store.syncEntities(profile, api.entities, { full: false });
+    expect(delta.tombstoned).toBe(0);
+    const [afterDelta] = await database.sql<{ live: string }[]>`
+      select count(*) as live from public.keywords where profile_id = ${profileId} and deleted_at is null
+    `;
+    expect(Number(afterDelta?.live)).toBeGreaterThan(0);
+
+    // A full pass re-listed everything, so an id it omits really is gone.
+    const full = await store.syncEntities(profile, api.entities, { full: true });
+    expect(full.tombstoned).toBeGreaterThan(0);
+    const [afterFull] = await database.sql<{ live: string }[]>`
+      select count(*) as live from public.keywords where profile_id = ${profileId} and deleted_at is null
+    `;
+    expect(Number(afterFull?.live)).toBe(0);
+
+    await database.sql`
+      update public.keywords set deleted_at = null where profile_id = ${profileId}
+    `;
+  });
+
+  // -------------------------------------------------------------------------
+  // report.request → poll → fetch
+  // -------------------------------------------------------------------------
+
+  it('runs request-poll-fetch, then idempotently restates the facts on a re-pull', async () => {
+    const api = new FakeAdsApi();
+    api.reportRows = [reportRow(today, 'c-1', 12.5), reportRow(today, 'c-2', 7.5)];
+    const worker = makeWorker('pipeline', new PostgresWorkerStore(database), api);
+
+    await queueReport(database, orgId, profileId, today, 'report-cycle-1');
+    expect(await worker.drainOnce()).toBe(1);
+    await runQueuedPipeline(worker, database);
+    await expectAllSucceeded(database, orgId);
+
+    // Two campaign rows on one day are one profile-grain fact row, summed.
     const [fact] = await database.sql<{ n: string; cost: string }[]>`
       select count(*) as n, max(cost)::text as cost from public.fact_profile_daily where profile_id = ${profileId}
     `;
     const [ledger] = await database.sql<{ rows_parsed: string; rows_loaded: string; counts_match: boolean }[]>`
       select rows_parsed, rows_loaded, counts_match from public.report_requests order by requested_at desc limit 1
     `;
-    expect(entity?.name).toBe('updated campaign');
-    expect({ count: Number(fact?.n), cost: Number(fact?.cost) }).toEqual({ count: 1, cost: 12.5 });
-    expect({ parsed: Number(ledger?.rows_parsed), loaded: Number(ledger?.rows_loaded), match: ledger?.counts_match }).toEqual({ parsed: 1, loaded: 1, match: true });
+    expect({ count: Number(fact?.n), cost: Number(fact?.cost) }).toEqual({ count: 1, cost: 20 });
+    expect({
+      parsed: Number(ledger?.rows_parsed), loaded: Number(ledger?.rows_loaded), match: ledger?.counts_match,
+    }).toEqual({ parsed: 1, loaded: 1, match: true });
 
-    api.reportRows = [reportRow(today, 21.75)];
+    // The restatement re-pull: same day, Amazon's numbers have moved. The fact
+    // row must be replaced, not duplicated.
+    api.reportRows = [reportRow(today, 'c-1', 21.75), reportRow(today, 'c-2', 8.25)];
     await queueReport(database, orgId, profileId, today, 'report-cycle-2');
     expect(await worker.drainOnce()).toBe(1);
     await runQueuedPipeline(worker, database);
+    await expectAllSucceeded(database, orgId);
+
     const [restated] = await database.sql<{ n: string; cost: string }[]>`
       select count(*) as n, max(cost)::text as cost from public.fact_profile_daily where profile_id = ${profileId}
     `;
-    expect({ count: Number(restated?.n), cost: Number(restated?.cost) }).toEqual({ count: 1, cost: 21.75 });
+    expect({ count: Number(restated?.n), cost: Number(restated?.cost) }).toEqual({ count: 1, cost: 30 });
   }, 60_000);
 
   it('fails a fetch whose parsed and loaded counts differ', async () => {
     const api = new FakeAdsApi();
-    api.reportRows = [reportRow(today, 5)];
+    api.reportRows = [reportRow(today, 'c-1', 5)];
     const store = new class extends PostgresWorkerStore {
       override async loadFacts(_batch: ParsedFactBatch): Promise<number> { return 0; }
     }(database);
@@ -149,8 +226,12 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     expect(ledger).toEqual({ counts_match: false, status: 'failed' });
   });
 
+  // -------------------------------------------------------------------------
+  // Resilience
+  // -------------------------------------------------------------------------
+
   it('reclaims and completes a job after the claiming process is SIGKILLed', async () => {
-    await queueEntity(database, orgId, profileId, 'kill-resume');
+    await queueEntity(database, orgId, profileId, 'kill-resume', false);
     const fixture = fileURLToPath(new URL('./test-fixtures/claim-and-hang.ts', import.meta.url));
     const child = spawn(process.execPath, ['--import', 'tsx', fixture], {
       env: { ...process.env, DATABASE_URL: database.connectionString }, stdio: ['ignore', 'pipe', 'pipe'],
@@ -163,24 +244,48 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     child.kill('SIGKILL');
     await new Promise<void>((resolve) => child.once('exit', () => resolve()));
 
-    expect(await requeueStaleSyncJobs(database, '0 seconds')).toBe(1);
+    const [stranded] = await database.sql<{ status: string }[]>`
+      select status from public.sync_jobs where dedupe_key = 'kill-resume'
+    `;
+    expect(stranded?.status).toBe('running');
+
+    // The production path: the reaper the worker starts, not a hand-rolled
+    // requeue. Nothing else moves a job off a dead worker.
+    const store = new PostgresWorkerStore(database);
+    const reaper = new StaleClaimReaper(store, '0 seconds', 60_000, quietLogger);
+    reaper.start();
+    await waitFor(async () => {
+      const [row] = await database.sql<{ status: string }[]>`
+        select status from public.sync_jobs where dedupe_key = 'kill-resume'
+      `;
+      return row?.status === 'queued';
+    });
+    reaper.stop();
+
     const api = new FakeAdsApi();
     api.entities = [campaign(profileId, 'resumed campaign')];
-    expect(await makeWorker('resumer', new PostgresWorkerStore(database), api).drainOnce()).toBe(1);
+    expect(await makeWorker('resumer', store, api).drainOnce()).toBe(1);
     const [job] = await database.sql<{ status: string; attempts: number }[]>`
       select status, attempts from public.sync_jobs where dedupe_key = 'kill-resume'
     `;
     expect(job).toEqual({ status: 'succeeded', attempts: 2 });
+
+    // No double fact rows: the entity was upserted, not inserted twice.
+    const [entity] = await database.sql<{ n: string; name: string }[]>`
+      select count(*) as n, max(name) as name from public.campaigns
+       where profile_id = ${profileId} and amazon_id = 'c-1'
+    `;
+    expect({ count: Number(entity?.n), name: entity?.name }).toEqual({ count: 1, name: 'resumed campaign' });
   }, 30_000);
 
   it('lets two workers drain 100 jobs without double claims while sharing the regional cap', async () => {
     const api = new FakeAdsApi();
     await database.sql`
       insert into public.sync_jobs (org_id, profile_id, job_type, payload, dedupe_key)
-      select ${orgId}, ${profileId}, 'report.request',
+      select ${orgId}::uuid, ${profileId}::uuid, 'report.request',
              jsonb_build_object('type', 'report.request', 'orgId', ${orgId}::uuid,
                'profileId', ${profileId}::uuid, 'reportType', 'spCampaigns',
-               'startDate', ${today}, 'endDate', ${today}),
+               'startDate', ${today}::text, 'endDate', ${today}::text),
              'concurrency:' || g
         from generate_series(1, 100) g
     `;
@@ -188,15 +293,182 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     const first = makeWorker('worker-a', new PostgresWorkerStore(database), api, buckets, 50);
     const second = makeWorker('worker-b', new PostgresWorkerStore(database), api, buckets, 50);
     const claimed = await Promise.all([first.drainOnce(), second.drainOnce()]);
-    const [counts] = await database.sql<{ succeeded: string; distinct_claimers: string }[]>`
+    const [counts] = await database.sql<{ succeeded: string; distinct_claimers: string; claims: string }[]>`
       select count(*) filter (where status = 'succeeded') as succeeded,
-             count(distinct claimed_by) filter (where status = 'succeeded') as distinct_claimers
+             count(distinct claimed_by) filter (where status = 'succeeded') as distinct_claimers,
+             count(*) as claims
         from public.sync_jobs where dedupe_key like 'concurrency:%'
     `;
     expect(claimed.reduce((sum, value) => sum + value, 0)).toBe(100);
-    expect({ calls: api.createCalls, succeeded: Number(counts?.succeeded), claimers: Number(counts?.distinct_claimers) }).toEqual({ calls: 100, succeeded: 100, claimers: 2 });
+    expect({
+      calls: api.createCalls,
+      succeeded: Number(counts?.succeeded),
+      claimers: Number(counts?.distinct_claimers),
+      rows: Number(counts?.claims),
+    }).toEqual({ calls: 100, succeeded: 100, claimers: 2, rows: 100 });
     expect(api.maxActiveCreates).toBeLessThanOrEqual(2);
   }, 60_000);
+
+  // -------------------------------------------------------------------------
+  // Schedules
+  // -------------------------------------------------------------------------
+
+  it('holds a daily and a weekly restatement schedule for one profile and report type', async () => {
+    await database.sql`delete from public.sync_schedules where profile_id = ${profileId}`;
+    const store = new PostgresWorkerStore(database);
+    const specs = defaultSchedules(['spCampaigns']);
+    expect(await store.provisionSchedules(orgId, profileId, specs)).toBe(3);
+    // Idempotent: the scope key now includes `variant`, so re-provisioning is
+    // a no-op rather than a unique violation.
+    expect(await store.provisionSchedules(orgId, profileId, specs)).toBe(0);
+
+    const rows = await database.sql<{ variant: string; lookback_days: number; cadence: string }[]>`
+      select variant, lookback_days, cadence::text from public.sync_schedules
+       where profile_id = ${profileId} and job_type = 'report.request'
+       order by variant
+    `;
+    expect(rows.map((r) => ({ variant: r.variant, lookback: Number(r.lookback_days) }))).toEqual([
+      { variant: 'default', lookback: 3 },
+      { variant: 'restatement', lookback: 35 },
+    ]);
+
+    // Both are due, so one tick mints both windows: 3 days and 35 days.
+    const enqueued = await enqueueDueSchedules(database);
+    expect(enqueued.filter((row) => row.enqueued)).toHaveLength(3);
+    const windows = await database.sql<{ start_date: string; end_date: string }[]>`
+      select payload ->> 'startDate' as start_date, payload ->> 'endDate' as end_date
+        from public.sync_jobs
+       where org_id = ${orgId} and job_type = 'report.request'
+       order by payload ->> 'startDate'
+    `;
+    const spans = windows.map((w) => days(w.start_date, w.end_date));
+    expect(spans).toEqual([35, 3]);
+  });
+
+  it('gives an unscheduled profile the defaults, once', async () => {
+    await database.sql`delete from public.sync_schedules where profile_id = ${profileId}`;
+    const store = new PostgresWorkerStore(database);
+    expect(await store.unscheduledProfiles()).toContainEqual({ orgId, profileId });
+
+    const provisioner = new ScheduleProvisioner(store, 60_000, quietLogger);
+    provisioner.start();
+    await waitFor(async () => (await store.unscheduledProfiles()).length === 0);
+    provisioner.stop();
+
+    const [counts] = await database.sql<{ n: string; variants: string }[]>`
+      select count(*) as n, count(distinct variant) as variants
+        from public.sync_schedules where profile_id = ${profileId}
+    `;
+    // One entity pass plus a recent and a restatement schedule per report type.
+    expect(Number(counts?.n)).toBe(1 + 2 * DEFAULT_REPORT_TYPES.length);
+    expect(Number(counts?.variants)).toBe(2);
+
+    // Re-provisioning the same profile finds nothing to do rather than
+    // duplicating: `variant` is in the scope key, so every row conflicts.
+    expect(await store.provisionSchedules(orgId, profileId)).toBe(0);
+    const [after] = await database.sql<{ n: string }[]>`
+      select count(*) as n from public.sync_schedules where profile_id = ${profileId}
+    `;
+    expect(Number(after?.n)).toBe(1 + 2 * DEFAULT_REPORT_TYPES.length);
+  });
+
+  // -------------------------------------------------------------------------
+  // crosscheck.ingest wiring (WP-10 owns the logic; this proves the seam)
+  // -------------------------------------------------------------------------
+
+  describe('crosscheck.ingest', () => {
+    let inbox: string;
+
+    beforeEach(async () => {
+      inbox = await mkdtemp(join(tmpdir(), 'wizard-ads-worker-crosscheck-'));
+    });
+    afterEach(async () => { await rm(inbox, { recursive: true, force: true }); });
+
+    async function runIngest(sourcePath: string, dedupeKey: string): Promise<{ status: string; last_error: string | null; attempts: number; result: Record<string, unknown> | null }> {
+      await database.sql`
+        insert into public.sync_jobs (org_id, profile_id, job_type, payload, dedupe_key)
+        values (${orgId}, ${profileId}, 'crosscheck.ingest',
+                ${JSON.stringify({ type: 'crosscheck.ingest', orgId, profileId, date: today, sourcePath })}::jsonb,
+                ${dedupeKey})
+      `;
+      const worker = new SyncWorker({
+        workerId: 'crosscheck', store: new PostgresWorkerStore(database), adsApi: new FakeAdsApi(),
+        buckets: new RegionTokenBuckets(2), logger: quietLogger,
+        crosscheckIngest: createCrosscheckIngest(database, { inboxDir: inbox, archive: false }),
+      });
+      expect(await worker.drainOnce()).toBe(1);
+      const [job] = await database.sql<{ status: string; last_error: string | null; attempts: number; result: Record<string, unknown> | null }[]>`
+        select status, last_error, attempts, result from public.sync_jobs where dedupe_key = ${dedupeKey}
+      `;
+      return job as never;
+    }
+
+    it('reaches runCrosscheckIngest and records the verdict as a success', async () => {
+      const day = '2026-08-01';
+      await database.sql`select app.ensure_fact_partitions(${day}::date, 1)`;
+      await database.sql`
+        insert into public.fact_profile_daily
+          (org_id, profile_id, date, currency_code, impressions, clicks, cost, purchases_7d, sales_7d, units_sold_7d, provisional)
+        values (${orgId}, ${profileId}, ${day}, 'USD', 1000, 50, 100, 4, 400, 4, false)
+        on conflict (profile_id, date) do update set cost = excluded.cost, sales_7d = excluded.sales_7d
+      `;
+      await writeFile(
+        join(inbox, `adlabs_profile_${amazonProfileId}_${day}_${day}.csv`),
+        `date,profile_id,spend,sales,total_sales\n${day},${amazonProfileId},100,400,1200\n`,
+        'utf8',
+      );
+
+      const job = await runIngest('.', 'crosscheck-ok');
+      expect(job.status).toBe('succeeded');
+      expect(job.result).toMatchObject({ headline: 'verified', filesParsed: 1, rowsParsed: 1, rowsKept: 1 });
+      const [written] = await database.sql<{ n: string }[]>`
+        select count(*) as n from public.crosscheck_results where profile_id = ${profileId}
+      `;
+      expect(Number(written?.n)).toBeGreaterThan(0);
+    });
+
+    it('requeues when the export has not landed yet', async () => {
+      const job = await runIngest('.', 'crosscheck-missing');
+      expect(job.status).toBe('queued');
+      expect(job.attempts).toBe(1);
+      expect(job.last_error).toContain('no AdLabs export');
+    });
+
+    it('dead-letters an export that breaks the contract, without spending attempts', async () => {
+      const day = '2026-08-01';
+      // A missing `sales` column: no number of retries grows one back.
+      await writeFile(
+        join(inbox, `adlabs_profile_${amazonProfileId}_${day}_${day}.csv`),
+        `date,profile_id,spend\n${day},${amazonProfileId},100\n`,
+        'utf8',
+      );
+      const job = await runIngest('.', 'crosscheck-contract');
+      expect(job.status).toBe('dead');
+      expect(job.attempts).toBe(1);
+      expect(job.last_error).toContain('sales');
+    });
+
+    it('dead-letters a payload naming a profile we do not have', async () => {
+      await database.sql`
+        insert into public.sync_jobs (org_id, profile_id, job_type, payload, dedupe_key)
+        values (${orgId}, ${profileId}, 'crosscheck.ingest',
+                ${JSON.stringify({
+                  type: 'crosscheck.ingest', orgId, profileId,
+                  date: today, sourcePath: '.',
+                })}::jsonb, 'crosscheck-no-profile')
+      `;
+      const worker = new SyncWorker({
+        workerId: 'crosscheck', store: new PostgresWorkerStore(database), adsApi: new FakeAdsApi(),
+        buckets: new RegionTokenBuckets(2), logger: quietLogger,
+        crosscheckIngest: async () => { throw named('ProfileNotFound', 'no such profile'); },
+      });
+      expect(await worker.drainOnce()).toBe(1);
+      const [job] = await database.sql<{ status: string; attempts: number }[]>`
+        select status, attempts from public.sync_jobs where dedupe_key = 'crosscheck-no-profile'
+      `;
+      expect(job).toEqual({ status: 'dead', attempts: 1 });
+    });
+  });
 });
 
 function makeWorker(
@@ -213,14 +485,24 @@ function campaign(profileId: string, name: string): EntityRow {
   return { entityType: 'campaign', profileId, amazonId: 'c-1', adProduct: 'SP', name, state: 'enabled', portfolioId: null, budgetAmount: 15, budgetType: 'daily', targetingType: 'manual', biddingStrategy: 'manual', placementBidding: null, startDate: null, endDate: null };
 }
 
-function reportRow(date: string, cost: number): Record<string, unknown> {
-  return { date, campaignId: 'c-1', impressions: 100, clicks: 10, cost, purchases7d: 2, sales7d: 40, unitsSoldClicks7d: 2 };
+function reportRow(date: string, campaignId: string, cost: number): Record<string, unknown> {
+  return { date, campaignId, impressions: 100, clicks: 10, cost, purchases7d: 2, sales7d: 40, unitsSoldClicks7d: 2 };
 }
 
-async function queueEntity(database: TestDatabase, orgId: string, profileId: string, key: string): Promise<void> {
+function named(name: string, message: string): Error {
+  const error = new Error(message);
+  error.name = name;
+  return error;
+}
+
+function days(start: string, end: string): number {
+  return Math.round((Date.parse(end) - Date.parse(start)) / 86_400_000) + 1;
+}
+
+async function queueEntity(database: TestDatabase, orgId: string, profileId: string, key: string, full: boolean): Promise<void> {
   await database.sql`
     insert into public.sync_jobs (org_id, profile_id, job_type, payload, dedupe_key)
-    values (${orgId}, ${profileId}, 'entity.sync', ${JSON.stringify({ type: 'entity.sync', orgId, profileId, full: false })}::jsonb, ${key})
+    values (${orgId}, ${profileId}, 'entity.sync', ${JSON.stringify({ type: 'entity.sync', orgId, profileId, full })}::jsonb, ${key})
   `;
 }
 
@@ -237,4 +519,25 @@ async function runQueuedPipeline(worker: SyncWorker, database: TestDatabase): Pr
   await database.sql`update public.sync_jobs set run_after = now() where status = 'queued' and job_type = 'report.poll'`;
   expect(await worker.drainOnce()).toBe(1);
   expect(await worker.drainOnce()).toBe(1);
+}
+
+/**
+ * A claimed job that threw is still a claimed job, so `drainOnce()`'s count
+ * proves nothing on its own. This is the assertion that does.
+ */
+async function expectAllSucceeded(database: TestDatabase, orgId: string): Promise<void> {
+  const bad = await database.sql<{ job_type: string; status: string; last_error: string | null }[]>`
+    select job_type, status, last_error from public.sync_jobs
+     where org_id = ${orgId} and status <> 'succeeded'
+  `;
+  expect(bad.map((row) => ({ ...row }))).toEqual([]);
+}
+
+async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('condition never became true');
 }

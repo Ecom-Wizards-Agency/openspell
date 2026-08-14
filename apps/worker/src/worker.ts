@@ -1,5 +1,6 @@
 import type { ClaimedJob } from '@wizard-ads/db';
 import { JobPayload, type Region } from '@wizard-ads/shared';
+import { isPermanentCrosscheckError, type CrosscheckIngest } from './crosscheck.js';
 import {
   AdsApiRetryableError,
   DownloadUrlExpiredError,
@@ -17,6 +18,14 @@ const MINUTE_MS = 60_000;
 const FOUR_HOURS_MS = 4 * 60 * MINUTE_MS;
 const POLL_DELAYS_MINUTES = [5, 10, 20, 30] as const;
 
+/** A failure retrying cannot fix. Goes straight to `dead` with its attempts unspent. */
+export class PermanentJobError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PermanentJobError';
+  }
+}
+
 export interface WorkerLogger {
   info(message: string, details?: Record<string, unknown>): void;
   error(message: string, details?: Record<string, unknown>): void;
@@ -31,6 +40,8 @@ export interface SyncWorkerOptions {
   workerId: string;
   store: WorkerStore;
   adsApi: AdsApiClient;
+  /** WP-10's handler, bound to a database handle. Absent, the job dead-letters. */
+  crosscheckIngest?: CrosscheckIngest;
   buckets?: RegionTokenBuckets;
   claimBatchSize?: number;
   maxConcurrentJobs?: number;
@@ -43,6 +54,7 @@ export class SyncWorker {
   readonly workerId: string;
   private readonly store: WorkerStore;
   private readonly adsApi: AdsApiClient;
+  private readonly crosscheckIngest: CrosscheckIngest | undefined;
   private readonly buckets: RegionTokenBuckets;
   private readonly claimBatchSize: number;
   private readonly maxConcurrentJobs: number;
@@ -56,6 +68,7 @@ export class SyncWorker {
     this.workerId = options.workerId;
     this.store = options.store;
     this.adsApi = options.adsApi;
+    this.crosscheckIngest = options.crosscheckIngest;
     this.buckets = options.buckets ?? defaultRegionTokenBuckets;
     this.claimBatchSize = options.claimBatchSize ?? 10;
     this.maxConcurrentJobs = options.maxConcurrentJobs ?? 10;
@@ -137,6 +150,13 @@ export class SyncWorker {
       const result = await this.execute(job);
       await this.store.finish(job.id, 'succeeded', { result });
     } catch (error) {
+      if (error instanceof PermanentJobError || isPermanentCrosscheckError(error)) {
+        await this.store.deadLetter(job.id, errorMessage(error).slice(0, 4_000));
+        this.logger.error('sync job dead-lettered', {
+          jobId: job.id, type: job.jobType, error: errorMessage(error),
+        });
+        return;
+      }
       const retrySeconds = error instanceof AdsApiRetryableError && error.retryAfterSeconds !== undefined
         ? error.retryAfterSeconds
         : Math.min(60 * 2 ** Math.max(job.attempts - 1, 0), 30 * 60);
@@ -159,9 +179,16 @@ export class SyncWorker {
     switch (payload.type) {
       case 'entity.sync': {
         const entities = await this.buckets.run(profile.region, () => this.adsApi.listEntities(profile, payload.full));
-        const counts = await this.store.syncEntities(profile, entities, payload.adProduct);
+        const counts = await this.store.syncEntities(profile, entities, {
+          adProduct: payload.adProduct,
+          full: payload.full,
+        });
+        // Program rule 4: the artifact, not the exit code. A listing that
+        // upserted fewer rows than it listed lost some, and a sync that lost
+        // rows must fail loudly rather than report success.
         if (counts.listed !== counts.upserted) throw new Error(`listed ${counts.listed}, upserted ${counts.upserted}`);
-        return counts;
+        this.logger.info('entity sync', { profileId: profile.id, ...counts });
+        return { ...counts };
       }
       case 'report.request':
         return this.requestReport(job.id, profile, payload);
@@ -172,8 +199,45 @@ export class SyncWorker {
       case 'recommendations.run':
         return { stub: true, handler: 'recommendations.run', runId: payload.runId };
       case 'crosscheck.ingest':
-        return { stub: true, handler: 'crosscheck.ingest', sourcePath: payload.sourcePath };
+        return this.ingestCrosscheck(payload);
     }
+  }
+
+  /**
+   * WP-10's handler, run under this worker's claim loop and retry policy.
+   *
+   * A `mismatch` headline is the product, not a failure: the job succeeds and
+   * the verdict is the result. Only a throw fails it, and only the two
+   * permanent errors skip the retries.
+   */
+  private async ingestCrosscheck(
+    payload: Extract<JobPayload, { type: 'crosscheck.ingest' }>,
+  ): Promise<Record<string, unknown>> {
+    if (!this.crosscheckIngest) {
+      throw new PermanentJobError('crosscheck ingest is not configured on this worker');
+    }
+    const result = await this.crosscheckIngest(payload);
+    // Program rule 4: rows offered against rows kept, verdicts against rows
+    // written. `rowsParsed > rowsKept` is normal — the incumbent's export
+    // carries every profile the team can see.
+    this.logger.info('crosscheck ingest', {
+      profileId: payload.profileId,
+      date: payload.date,
+      filesParsed: result.filesParsed,
+      rowsParsed: result.rowsParsed,
+      rowsKept: result.rowsKept,
+      findings: result.findings.length,
+      written: result.written,
+      headline: result.summary.headline,
+    });
+    return {
+      headline: result.summary.headline,
+      filesParsed: result.filesParsed,
+      rowsParsed: result.rowsParsed,
+      rowsKept: result.rowsKept,
+      findings: result.findings.length,
+      written: result.written,
+    };
   }
 
   private async requestReport(
@@ -262,23 +326,113 @@ export class SyncWorker {
     const batch = parseReportRows(ledger.reportType, downloaded.value, profile, ledger.id);
     const parsed = batch.rows.length;
     const loaded = await this.store.loadFacts(batch);
+    // Program rule 4 again: `completeReport` throws on a mismatch, so a fetch
+    // that silently dropped rows fails the job instead of reporting success.
     await this.store.completeReport(ledger.id, { parsed, loaded, bytesDownloaded: downloaded.bytesDownloaded });
-    return { parsed, loaded, bytesDownloaded: downloaded.bytesDownloaded };
+    this.logger.info('report fetched', {
+      reportRequestId: ledger.id, reportType: ledger.reportType,
+      reportRows: batch.sourceRows, parsed, loaded,
+    });
+    return { reportRows: batch.sourceRows, parsed, loaded, bytesDownloaded: downloaded.bytesDownloaded };
   }
 }
 
-export class AuthHealthMonitor {
+/** A timer that runs one async pass and never lets a rejection reach the loop. */
+abstract class PeriodicPass {
   private timer: NodeJS.Timeout | undefined;
-  constructor(private readonly worker: SyncWorker, private readonly intervalMs = 60 * MINUTE_MS) {}
+  protected constructor(private readonly intervalMs: number, private readonly logger: WorkerLogger) {}
+  protected abstract pass(): Promise<unknown>;
+  protected abstract get name(): string;
+
   start(): void {
     if (this.timer) return;
-    void this.worker.runAuthHealthcheck();
-    this.timer = setInterval(() => void this.worker.runAuthHealthcheck(), this.intervalMs);
+    this.tick();
+    this.timer = setInterval(() => this.tick(), this.intervalMs);
     this.timer.unref();
   }
+
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+  }
+
+  private tick(): void {
+    void this.pass().catch((error: unknown) => {
+      this.logger.error(`${this.name} failed`, { error: errorMessage(error) });
+    });
+  }
+}
+
+/**
+ * The hourly `/v2/profiles` probe per region.
+ *
+ * **Deliberately not a queue job**, and the manager accepted it as such. A
+ * queued `auth.healthcheck` cannot answer the question the probe exists to
+ * answer: if the queue is the thing that is broken, the check that would have
+ * told you never runs. It also needs no per-profile scope, no dedupe slot and
+ * no retry policy — it is a liveness probe, and a liveness probe that depends
+ * on the subsystem it monitors is decoration. It runs in-process, on its own
+ * timer, and logs failure loudly. See `apps/worker/README.md`.
+ */
+export class AuthHealthMonitor extends PeriodicPass {
+  constructor(
+    private readonly worker: SyncWorker,
+    intervalMs = 60 * MINUTE_MS,
+    logger: WorkerLogger = consoleLogger,
+  ) {
+    super(intervalMs, logger);
+  }
+  protected get name(): string { return 'auth healthcheck'; }
+  protected pass(): Promise<unknown> { return this.worker.runAuthHealthcheck(); }
+}
+
+/**
+ * Gives a newly connected profile the default cadences.
+ *
+ * A profile with no schedules syncs nothing, and an always-on worker noticing
+ * that is better than an onboarding step somebody forgets. It only ever fills
+ * an empty set — a profile whose schedules an operator pruned stays pruned.
+ */
+export class ScheduleProvisioner extends PeriodicPass {
+  constructor(
+    private readonly store: WorkerStore,
+    intervalMs = 15 * MINUTE_MS,
+    private readonly provisionLogger: WorkerLogger = consoleLogger,
+  ) {
+    super(intervalMs, provisionLogger);
+  }
+  protected get name(): string { return 'schedule provisioning'; }
+  protected async pass(): Promise<unknown> {
+    const profiles = await this.store.unscheduledProfiles();
+    let written = 0;
+    for (const profile of profiles) {
+      written += await this.store.provisionSchedules(profile.orgId, profile.profileId);
+    }
+    if (written > 0) {
+      this.provisionLogger.info('provisioned default schedules', { profiles: profiles.length, schedules: written });
+    }
+    return written;
+  }
+}
+
+/**
+ * Sweeps jobs whose worker died mid-claim back onto the queue. Without it a
+ * SIGKILL loses the job permanently: `claim_sync_jobs` only ever sees `queued`.
+ */
+export class StaleClaimReaper extends PeriodicPass {
+  constructor(
+    private readonly store: WorkerStore,
+    private readonly olderThan = '30 minutes',
+    intervalMs = 5 * MINUTE_MS,
+    private readonly reaperLogger: WorkerLogger = consoleLogger,
+  ) {
+    super(intervalMs, reaperLogger);
+  }
+  protected get name(): string { return 'stale claim sweep'; }
+  protected async pass(): Promise<unknown> {
+    const requeued = await this.store.requeueStale(this.olderThan);
+    if (requeued > 0) this.reaperLogger.info('requeued stale jobs', { requeued, olderThan: this.olderThan });
+    return requeued;
   }
 }
 

@@ -43,13 +43,21 @@ export interface CampaignFactRow {
   reportRequestId: string;
 }
 
-export type ParsedFactBatch =
+/**
+ * `sourceRows` is how many rows Amazon sent; `rows` is how many fact rows they
+ * became. The two differ only for `spCampaigns`, which arrives per campaign and
+ * lands on a per-profile grain. Keeping both means the fetch handler can assert
+ * fact rows offered against fact rows written (the invariant the ledger
+ * records) without losing the number an operator compares to the Amazon UI.
+ */
+export type ParsedFactBatch = { sourceRows: number } & (
   | { kind: 'sp_target'; rows: NewSpTargetFact[] }
   | { kind: 'search_term'; rows: NewSearchTermFact[] }
   | { kind: 'placement'; rows: NewPlacementFact[] }
   | { kind: 'profile'; rows: NewProfileFact[] }
   | { kind: 'sb'; rows: CampaignFactRow[] }
-  | { kind: 'sd'; rows: CampaignFactRow[] };
+  | { kind: 'sd'; rows: CampaignFactRow[] }
+);
 
 export interface DownloadedJson {
   value: unknown;
@@ -168,6 +176,7 @@ export function parseReportRows(
   switch (reportType) {
     case 'spTargeting':
       return {
+        sourceRows: raw.length,
         kind: 'sp_target',
         rows: raw.map((item) => {
           const row = parseSpTarget(item);
@@ -198,6 +207,7 @@ export function parseReportRows(
       };
     case 'spSearchTerm':
       return {
+        sourceRows: raw.length,
         kind: 'search_term',
         rows: raw.map((item) => {
           const row = parseSearchTerm(item);
@@ -221,6 +231,7 @@ export function parseReportRows(
       };
     case 'spPlacement':
       return {
+        sourceRows: raw.length,
         kind: 'placement',
         rows: raw.map((item) => {
           const row = parsePlacement(item);
@@ -238,25 +249,45 @@ export function parseReportRows(
           };
         }),
       };
-    case 'spCampaigns':
-      return {
-        kind: 'profile',
-        rows: raw.map((item) => {
-          const row = parseSpCampaign(item);
-          return {
-            ...base,
-            date: row.date,
-            currencyCode: profile.currencyCode,
-            impressions: row.impressions,
-            clicks: row.clicks,
-            cost: row.cost,
-            purchases7d: row.purchases7d,
-            sales7d: row.sales7d,
-            unitsSold7d: row.unitsSoldClicks7d,
-            provisional: false,
-          };
-        }),
-      };
+    case 'spCampaigns': {
+      // The campaign report arrives one row per campaign per day, and
+      // `fact_profile_daily` is one row per profile per day. Summing here is
+      // not a convenience: two campaigns on one date are two rows with the same
+      // conflict target, and Postgres refuses to let one statement update the
+      // same row twice. Aggregating turns that error into the number the grain
+      // is supposed to hold.
+      const byDate = new Map<string, Required<Pick<NewProfileFact,
+        'impressions' | 'clicks' | 'cost' | 'purchases7d' | 'sales7d' | 'unitsSold7d'>>>();
+      for (const item of raw) {
+        const row = parseSpCampaign(item);
+        const running = byDate.get(row.date);
+        if (running) {
+          running.impressions += row.impressions;
+          running.clicks += row.clicks;
+          running.cost += row.cost;
+          running.purchases7d += row.purchases7d;
+          running.sales7d += row.sales7d;
+          running.unitsSold7d += row.unitsSoldClicks7d;
+          continue;
+        }
+        byDate.set(row.date, {
+          impressions: row.impressions,
+          clicks: row.clicks,
+          cost: row.cost,
+          purchases7d: row.purchases7d,
+          sales7d: row.sales7d,
+          unitsSold7d: row.unitsSoldClicks7d,
+        });
+      }
+      const rows = [...byDate.entries()].map(([date, totals]): NewProfileFact => ({
+        ...base,
+        date,
+        currencyCode: profile.currencyCode,
+        provisional: false,
+        ...totals,
+      }));
+      return { sourceRows: raw.length, kind: 'profile', rows };
+    }
     case 'sbCampaigns':
     case 'sdCampaigns': {
       const rows = raw.map((item): CampaignFactRow => {
@@ -275,7 +306,7 @@ export function parseReportRows(
           metrics: item as Record<string, unknown>,
         };
       });
-      return { kind: reportType === 'sbCampaigns' ? 'sb' : 'sd', rows };
+      return { sourceRows: raw.length, kind: reportType === 'sbCampaigns' ? 'sb' : 'sd', rows };
     }
   }
 }

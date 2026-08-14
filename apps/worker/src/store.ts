@@ -12,6 +12,7 @@ import {
   productAds,
   recordEntityChanges,
   reportRequests,
+  requeueStaleSyncJobs,
   targets,
   upsertMirrorRows,
   upsertPlacementFacts,
@@ -26,6 +27,7 @@ import {
 import type { EntityRow, JobPayload, ReportType } from '@wizard-ads/shared';
 import type { AdsProfileContext } from './ads-api.js';
 import type { CampaignFactRow, ParsedFactBatch } from './parsers.js';
+import { defaultSchedules, type ScheduleSpec } from './schedules.js';
 
 export interface ReportRequestState {
   id: string;
@@ -35,6 +37,44 @@ export interface ReportRequestState {
   pollAttempts: number;
 }
 
+/**
+ * `drizzle-orm/postgres-js` replaces the shared client's timestamptz serializer
+ * *and* parser with the identity function, because Drizzle does its own date
+ * mapping. `createDb` builds the Drizzle instance over the same postgres.js
+ * client the raw tag uses, so that override applies to every raw query in this
+ * file too: binding a `Date` throws, and reading a timestamptz yields the wire
+ * string rather than a `Date`.
+ *
+ * The two helpers below are that boundary, in both directions. Every raw
+ * timestamptz this store binds goes through `iso`; every one it reads comes
+ * back through `asDate`. Drizzle-built statements need neither.
+ */
+function iso(value: Date | null | undefined): string | null {
+  return value ? value.toISOString() : null;
+}
+
+function asDate(value: Date | string): Date {
+  return value instanceof Date ? value : new Date(value);
+}
+
+export interface EntitySyncOptions {
+  adProduct?: 'SP' | 'SB' | 'SD';
+  /**
+   * A full pass re-lists every entity the profile has, so an id the mirror
+   * holds and the listing omits really is gone and earns a tombstone. A delta
+   * pass carries no such information — sweeping on one would tombstone every
+   * entity type the pass did not happen to list.
+   */
+  full?: boolean;
+}
+
+export interface EntitySyncCounts {
+  listed: number;
+  upserted: number;
+  changes: number;
+  tombstoned: number;
+}
+
 export interface WorkerStore {
   claim(workerId: string, limit: number): Promise<ClaimedJob[]>;
   finish(
@@ -42,13 +82,25 @@ export interface WorkerStore {
     outcome: JobOutcome,
     options?: { error?: string; result?: unknown; retryIn?: string },
   ): Promise<void>;
+  /**
+   * Finish a job as `dead` without spending its remaining attempts. For
+   * failures no retry can fix — a malformed export, a payload naming a profile
+   * that does not exist — retrying five times only delays the human.
+   */
+  deadLetter(jobId: string, error: string): Promise<void>;
   release(workerId: string): Promise<number>;
+  /**
+   * Requeue jobs still `running` on a worker that died without releasing them.
+   * Nothing else does this: `claim_sync_jobs` only ever sees `queued`, so a
+   * SIGKILLed worker's jobs are lost until somebody sweeps them back.
+   */
+  requeueStale(olderThan: string): Promise<number>;
   profile(profileId: string): Promise<AdsProfileContext>;
   syncEntities(
     profile: AdsProfileContext,
     entities: readonly EntityRow[],
-    adProduct?: 'SP' | 'SB' | 'SD',
-  ): Promise<{ listed: number; upserted: number; changes: number }>;
+    options?: EntitySyncOptions,
+  ): Promise<EntitySyncCounts>;
   ensureReportRequest(jobId: string, payload: Extract<JobPayload, { type: 'report.request' }>): Promise<ReportRequestState>;
   setReportCreated(reportRequestId: string, amazonReportId: string, nextPollAt: Date): Promise<void>;
   getReportRequest(reportRequestId: string): Promise<ReportRequestState>;
@@ -63,6 +115,18 @@ export interface WorkerStore {
     },
   ): Promise<void>;
   enqueue(payload: JobPayload, runAt: Date, dedupeKey: string): Promise<boolean>;
+  /** Install the default cadences for a profile. Idempotent on the scope key. */
+  provisionSchedules(
+    orgId: string,
+    profileId: string,
+    specs?: readonly ScheduleSpec[],
+  ): Promise<number>;
+  /**
+   * Sync-enabled profiles with no schedule rows at all. Deliberately not "every
+   * enabled profile": a profile whose schedules an operator pruned should stay
+   * pruned, and only one that has never been provisioned gets the defaults.
+   */
+  unscheduledProfiles(): Promise<{ orgId: string; profileId: string }[]>;
   loadFacts(batch: ParsedFactBatch): Promise<number>;
   completeReport(
     reportRequestId: string,
@@ -77,7 +141,8 @@ export class ParsedLoadedMismatch extends Error {
   }
 }
 
-type ExistingEntity = { amazonId: string; deletedAt: Date | null; snapshot: Record<string, unknown> };
+/** `deletedAt` arrives as the wire string, not a `Date` — see the note on `asDate`. */
+type ExistingEntity = { amazonId: string; deletedAt: Date | string | null; snapshot: Record<string, unknown> };
 
 export class PostgresWorkerStore implements WorkerStore {
   constructor(readonly handle: DbHandle) {}
@@ -94,6 +159,17 @@ export class PostgresWorkerStore implements WorkerStore {
     await finishSyncJob(this.handle, jobId, outcome, options);
   }
 
+  async deadLetter(jobId: string, error: string): Promise<void> {
+    // `finish_sync_job` only derives `dead` from exhausted attempts, so a
+    // permanent failure says the word itself and takes the function's
+    // pass-through branch.
+    await this.handle.sql`
+      select public.finish_sync_job(
+        ${jobId}, 'dead'::public.sync_job_status, ${error}, null::jsonb, null::interval
+      )
+    `;
+  }
+
   async release(workerId: string): Promise<number> {
     const rows = await this.handle.sql<{ id: string }[]>`
       update public.sync_jobs
@@ -103,6 +179,10 @@ export class PostgresWorkerStore implements WorkerStore {
       returning id
     `;
     return rows.length;
+  }
+
+  requeueStale(olderThan: string): Promise<number> {
+    return requeueStaleSyncJobs(this.handle, olderThan);
   }
 
   async profile(profileId: string): Promise<AdsProfileContext> {
@@ -132,8 +212,9 @@ export class PostgresWorkerStore implements WorkerStore {
   async syncEntities(
     profile: AdsProfileContext,
     entities: readonly EntityRow[],
-    adProduct?: 'SP' | 'SB' | 'SD',
-  ): Promise<{ listed: number; upserted: number; changes: number }> {
+    options: EntitySyncOptions = {},
+  ): Promise<EntitySyncCounts> {
+    const { adProduct, full = false } = options;
     for (const entity of entities) {
       if (entity.profileId !== profile.id) {
         throw new Error(`entity ${entity.amazonId} belongs to profile ${entity.profileId}, expected ${profile.id}`);
@@ -141,6 +222,7 @@ export class PostgresWorkerStore implements WorkerStore {
     }
     const now = new Date();
     let upserted = 0;
+    let tombstoned = 0;
     const changes: NewEntityChange[] = [];
     const entityTypes = ['portfolio', 'campaign', 'ad_group', 'product_ad', 'keyword', 'target', 'negative'] as const;
 
@@ -164,12 +246,13 @@ export class PostgresWorkerStore implements WorkerStore {
             }
           }
           if (prior.deletedAt) {
-            changes.push(change(profile, entity, 'deletedAt', prior.deletedAt.toISOString(), null));
+            changes.push(change(profile, entity, 'deletedAt', asDate(prior.deletedAt).toISOString(), null));
           }
         }
       }
 
-      const missing = existing.filter((row) => !row.deletedAt && !seen.has(row.amazonId));
+      const missing = full ? existing.filter((row) => !row.deletedAt && !seen.has(row.amazonId)) : [];
+      tombstoned += missing.length;
       if (missing.length > 0) {
         const ids = missing.map((row) => row.amazonId);
         await this.markDeleted(profile.id, entityType, ids, now);
@@ -195,7 +278,7 @@ export class PostgresWorkerStore implements WorkerStore {
     if (entities.length !== upserted) {
       throw new Error(`entity sync listed ${entities.length} rows but upserted ${upserted}`);
     }
-    return { listed: entities.length, upserted, changes: writtenChanges };
+    return { listed: entities.length, upserted, changes: writtenChanges, tombstoned };
   }
 
   async ensureReportRequest(
@@ -216,7 +299,7 @@ export class PostgresWorkerStore implements WorkerStore {
   async setReportCreated(reportRequestId: string, amazonReportId: string, nextPollAt: Date): Promise<void> {
     await this.handle.sql`
       update public.report_requests
-         set amazon_report_id = ${amazonReportId}, status = 'pending', next_poll_at = ${nextPollAt}
+         set amazon_report_id = ${amazonReportId}, status = 'pending', next_poll_at = ${iso(nextPollAt)}
        where id = ${reportRequestId}
     `;
   }
@@ -226,7 +309,7 @@ export class PostgresWorkerStore implements WorkerStore {
       id: string;
       report_type: ReportType;
       amazon_report_id: string | null;
-      requested_at: Date;
+      requested_at: Date | string;
       poll_attempts: number;
     }[]>`
       select id, report_type, amazon_report_id, requested_at, poll_attempts
@@ -238,8 +321,8 @@ export class PostgresWorkerStore implements WorkerStore {
       id: row.id,
       reportType: row.report_type,
       amazonReportId: row.amazon_report_id,
-      requestedAt: row.requested_at,
-      pollAttempts: row.poll_attempts,
+      requestedAt: asDate(row.requested_at),
+      pollAttempts: Number(row.poll_attempts),
     };
   }
 
@@ -258,10 +341,10 @@ export class PostgresWorkerStore implements WorkerStore {
          set status = ${values.status}::public.report_status,
              poll_attempts = poll_attempts + 1,
              last_polled_at = now(),
-             next_poll_at = ${values.nextPollAt ?? null},
+             next_poll_at = ${iso(values.nextPollAt)},
              error = ${values.error ?? null},
              download_url = coalesce(${values.downloadUrl ?? null}, download_url),
-             download_expires_at = coalesce(${values.downloadExpiresAt ?? null}, download_expires_at)
+             download_expires_at = coalesce(${iso(values.downloadExpiresAt)}::timestamptz, download_expires_at)
        where id = ${reportRequestId}
     `;
   }
@@ -272,11 +355,43 @@ export class PostgresWorkerStore implements WorkerStore {
         (org_id, profile_id, job_type, payload, run_after, dedupe_key)
       values
         (${payload.orgId}, ${payload.profileId}, ${payload.type}::public.sync_job_type,
-         ${JSON.stringify(payload)}::jsonb, ${runAt}, ${dedupeKey})
+         ${JSON.stringify(payload)}::jsonb, ${runAt.toISOString()}::timestamptz, ${dedupeKey})
       on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
       returning id
     `;
     return rows.length === 1;
+  }
+
+  async provisionSchedules(
+    orgId: string,
+    profileId: string,
+    specs: readonly ScheduleSpec[] = defaultSchedules(),
+  ): Promise<number> {
+    let written = 0;
+    for (const spec of specs) {
+      const rows = await this.handle.sql<{ id: string }[]>`
+        insert into public.sync_schedules
+          (org_id, profile_id, job_type, report_type, variant, cadence, lookback_days, payload)
+        values
+          (${orgId}, ${profileId}, ${spec.jobType}::public.sync_job_type,
+           ${spec.reportType}::public.report_type, ${spec.variant},
+           ${spec.cadence}::interval, ${spec.lookbackDays}, ${JSON.stringify(spec.payload)}::jsonb)
+        on conflict (profile_id, job_type, report_type, variant) do nothing
+        returning id
+      `;
+      written += rows.length;
+    }
+    return written;
+  }
+
+  async unscheduledProfiles(): Promise<{ orgId: string; profileId: string }[]> {
+    const rows = await this.handle.sql<{ org_id: string; id: string }[]>`
+      select p.org_id, p.id
+        from public.ad_profiles p
+       where p.sync_enabled
+         and not exists (select 1 from public.sync_schedules s where s.profile_id = p.id)
+    `;
+    return rows.map((row) => ({ orgId: row.org_id, profileId: row.id }));
   }
 
   async loadFacts(batch: ParsedFactBatch): Promise<number> {
@@ -345,7 +460,7 @@ export class PostgresWorkerStore implements WorkerStore {
   ): Promise<void> {
     await this.handle.sql.unsafe(
       `update public.${tableName(entityType)} set deleted_at = $1, synced_at = $1 where profile_id = $2 and amazon_id = any($3::text[])`,
-      [at, profileId, amazonIds],
+      [at.toISOString(), profileId, amazonIds],
     );
   }
 
