@@ -15,7 +15,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 07 | Recs UI + export bridge | Codex | todo | GATE OPEN (WP-05 merged) — after WP-06 grid shell |
 | 08 | Tags + goto links | Codex | todo | GATE OPEN (WP-00/01 merged) |
 | 09 | MCP server | Opus | todo | v0 close |
-| 10 | Crosscheck harness | Opus | todo | v0 close (needs facts) |
+| 10 | Crosscheck harness | Opus | review | branch `wp-10-crosscheck`: CLI, ingest handler (handoff in `docs/handoffs-to-wp03.md`), standalone `/crosscheck` route (handoff in `docs/handoffs-to-wp06.md`), export contract in `docs/adlabs-export-contract.md`, exit-report generator. 59 tests green. Live-pilot verdict table PENDING — needs real synced facts. Found a repo-wide `next build` blocker (Turbopack cannot resolve `.js` specifiers in any workspace package) — see the WP-06 handoff |
 | 11 | AdLabs recon | Opus + Victor | review | MCP half done (13 specs, exact contracts). UI pass blocked twice: extension installed/enabled/permissioned but NOT PAIRED to the claude.ai account — operator pairing check needed, then session 3 (automations first). See tools/recon/BLOCKED.md |
 | 12 | Staged-apply writes | Opus | gated | opens at v1 exit criterion |
 | 13 | Headless analyst | Opus | gated | opens when WP-09 stable |
