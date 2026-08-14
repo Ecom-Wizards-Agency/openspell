@@ -23,7 +23,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 13 | Headless analyst | Opus | gated | opens when WP-09 stable |
 | 15 | Feedback & roadmap | Opus | merged | merged 2026-08-14: form w/ page context, tracker, voting, roadmap columns + declined-with-note, column-level guard trigger, MCP submit_feedback; 12-item roadmap seeder (idempotent). Migration applied hosted, advisors clean |
 | 17 | AI skills library | Opus | todo | brief ready 2026-08-14 (WP-17): public-safe skill pack against our MCP + /connect-claude key page; amazon-agent skills as spec sources. Launches in v1.x |
-| 18 | AdLabs history backfill | Opus | in-progress | launched 2026-08-14: Phases 0+1 (profile depth + monthly rollups, crosscheck-poisoning fix first). Phase 2 (daily walk) gated on operator ToS decision + attribution resolution |
+| 18 | AdLabs history backfill | Opus | merged | merged 2026-08-14: source-tagged loader + crosscheck isolation proven (backfilled rows unreadable by crosscheck, cent-exact 2-month verification). Local load done (4,453 profile-days, 14 profiles, up to ~25mo). HOSTED load pending DATABASE_URL; remaining ~1,790 Phase 1 pulls on demand |
 | 19 | Experiments (A/B tracking) | Opus | todo | brief ready 2026-08-14 (WP-19); queued behind WP-07 (shares apps/web); on the in-app roadmap seed |
 | 16 | AMC lane | Opus | gated | brief ready 2026-08-14 (docs/workpackages/WP-16-amc.md); opens at first provisioned AMC instance + AWS bucket. Visible on the in-app roadmap via WP-15 seed |
 
@@ -56,6 +56,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 - [ ] Close the worker INTEGRATE(WP-02) seam (one function) + operator runs the ads-api live smoke.
 - [ ] Promote EntityTagFilter (and SB/SD fact rows when needed) into packages/shared in one batch;
       promote WP-07's exportBatch role constant into roles.ts capabilities.
+- [ ] WP-06 dashboard: mark/aggregate backfilled history distinctly (reads fact_profile_daily with no source filter — WP-18 handoff).
 - [ ] Flake hardening: auth e2e admin-toggle spec + worker schedule integration test both fail
       under parallel DB load only (each green in isolation). Serialize DB-heavy suites or
       per-suite databases.

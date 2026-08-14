@@ -93,6 +93,8 @@ export const syncJobs = pgTable(
   ],
 );
 
+// NOTE: `source` ('amazon_api' | 'adlabs_backfill', check-constrained) was added
+// by migration 20260814160000; mirrored below per WP-18's handoff.
 export const reportRequests = pgTable(
   'report_requests',
   {
@@ -108,6 +110,7 @@ export const reportRequests = pgTable(
     endDate: date('end_date').notNull(),
     amazonReportId: text('amazon_report_id'),
     status: reportStatus('status').notNull().default('pending'),
+    source: text('source').notNull().default('amazon_api'),
     requestedAt: ts('requested_at').notNull().defaultNow(),
     completedAt: ts('completed_at'),
     downloadUrl: text('download_url'),
