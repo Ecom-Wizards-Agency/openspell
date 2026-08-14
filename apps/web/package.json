@@ -9,9 +9,14 @@
     "start": "next start",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "test:e2e": "tsx e2e/run.ts"
+    "test:e2e": "tsx e2e/run.ts",
+    "test:e2e:tags-goto": "tsx e2e/run.ts tags-goto",
+    "test:e2e:auth": "tsx e2e/run.ts auth"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.8.0",
+    "@supabase/supabase-js": "^2.60.0",
+    "@wizard-ads/core": "workspace:*",
     "@wizard-ads/crosscheck-cli": "workspace:*",
     "@wizard-ads/db": "workspace:*",
     "@wizard-ads/shared": "workspace:*",

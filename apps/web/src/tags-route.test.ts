@@ -27,6 +27,7 @@ describe.skipIf(!available)('tag routes', () => {
   const previous = {
     databaseUrl: process.env['DATABASE_URL'],
     bridgeSecret: process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET'],
+    bridgeEnabled: process.env['WIZARD_ADS_E2E_AUTH_BRIDGE'],
   };
 
   const headers = (userId: string, orgId: string, bridge = BRIDGE_SECRET) => ({
@@ -49,7 +50,11 @@ describe.skipIf(!available)('tag routes', () => {
     orgB = b?.seed_tenant_fixture ?? '';
     foreignTagId = (await createTag(database, { orgId: orgB, name: 'Other tenant taxonomy' })).id;
     process.env['DATABASE_URL'] = database.connectionString;
+    // These handlers resolve their actor from the real session unless the
+    // e2e header bridge is armed; this suite drives them as plain functions,
+    // so it arms it.
     process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET'] = BRIDGE_SECRET;
+    process.env['WIZARD_ADS_E2E_AUTH_BRIDGE'] = '1';
   }, 60_000);
 
   afterAll(async () => {
@@ -57,6 +62,8 @@ describe.skipIf(!available)('tag routes', () => {
     else process.env['DATABASE_URL'] = previous.databaseUrl;
     if (previous.bridgeSecret === undefined) delete process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET'];
     else process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET'] = previous.bridgeSecret;
+    if (previous.bridgeEnabled === undefined) delete process.env['WIZARD_ADS_E2E_AUTH_BRIDGE'];
+    else process.env['WIZARD_ADS_E2E_AUTH_BRIDGE'] = previous.bridgeEnabled;
     await database?.drop();
   });
 

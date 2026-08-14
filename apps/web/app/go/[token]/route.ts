@@ -1,4 +1,4 @@
-import { actorFromHeaders, openWebDatabase, requireOrgMembership } from '../../../src/server/request-context';
+import { requestActor, openWebDatabase, requireOrgMembership } from '../../../src/server/request-context';
 import { gotoRedirectLocation, resolveGotoLink } from '@wizard-ads/db';
 
 export const runtime = 'nodejs';
@@ -9,7 +9,7 @@ const notFound = () => new Response('Not found', { status: 404 });
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
   const database = openWebDatabase();
   try {
-    const actor = actorFromHeaders(request.headers);
+    const actor = await requestActor(request.headers);
     await requireOrgMembership(database, actor);
     const signingSecret = process.env['GOTO_LINK_SIGNING_SECRET'];
     if (!signingSecret) return notFound();

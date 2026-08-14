@@ -1,4 +1,4 @@
-import { actorFromHeaders, errorResponse, openWebDatabase, requireOrgMembership } from '../../../../src/server/request-context';
+import { requestActor, errorResponse, openWebDatabase, requireOrgMembership } from '../../../../src/server/request-context';
 import { deleteTag, updateTag } from '@wizard-ads/db';
 import type { DeleteTagMode } from '@wizard-ads/db';
 
@@ -8,7 +8,7 @@ type RouteContext = { params: Promise<{ tagId: string }> };
 export async function PATCH(request: Request, context: RouteContext): Promise<Response> {
   const database = openWebDatabase();
   try {
-    const actor = actorFromHeaders(request.headers);
+    const actor = await requestActor(request.headers);
     await requireOrgMembership(database, actor);
     const { tagId } = await context.params;
     const body = (await request.json()) as {
@@ -36,7 +36,7 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
 export async function DELETE(request: Request, context: RouteContext): Promise<Response> {
   const database = openWebDatabase();
   try {
-    const actor = actorFromHeaders(request.headers);
+    const actor = await requestActor(request.headers);
     await requireOrgMembership(database, actor);
     const { tagId } = await context.params;
     const body = (await request.json()) as { mode?: unknown; targetTagId?: unknown };

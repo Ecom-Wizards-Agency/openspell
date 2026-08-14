@@ -1,0 +1,58 @@
+/**
+ * Who is signed in.
+ *
+ * One function, `currentUser()`, and every page and route in this work package
+ * goes through it. It reads the Supabase Auth cookie and returns a user id, or
+ * null.
+ *
+ * ## The end-to-end seam
+ *
+ * The Playwright suite has to sign in, and Supabase Auth is a hosted service:
+ * a magic link means an inbox, and a Google redirect means Google. So there is
+ * one seam, and it is deliberately hard to leave open by accident:
+ *
+ *  - it is off unless `WIZARD_ADS_E2E_AUTH=1` is set **on the server**;
+ *  - it throws on startup if that flag is set with `NODE_ENV=production`;
+ *  - it reads a cookie the real flow never issues.
+ *
+ * A test-only door that cannot be opened in production is better than an
+ * untested login, and both are better than a mock so elaborate it stops
+ * resembling the thing it stands in for.
+ */
+import { cookies } from 'next/headers';
+import { E2E_USER_COOKIE } from '../cookies';
+import { supabaseConfigured, supabaseServerClient } from './supabase';
+
+export { E2E_USER_COOKIE };
+
+export interface SessionUser {
+  id: string;
+  email: string | null;
+}
+
+/** True when the test-only session cookie is honoured. Refuses production outright. */
+export function e2eAuthEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env['WIZARD_ADS_E2E_AUTH'] !== '1') return false;
+  if (env['NODE_ENV'] === 'production') {
+    throw new Error(
+      'WIZARD_ADS_E2E_AUTH=1 is set in a production build. This is a test-only ' +
+        'authentication bypass and must never be enabled on a deployed instance.',
+    );
+  }
+  return true;
+}
+
+export async function currentUser(): Promise<SessionUser | null> {
+  if (e2eAuthEnabled()) {
+    const store = await cookies();
+    const id = store.get(E2E_USER_COOKIE)?.value;
+    if (id) return { id, email: null };
+  }
+
+  if (!supabaseConfigured()) return null;
+
+  const supabase = await supabaseServerClient();
+  const { data, error } = await supabase.auth.getUser();
+  if (error || !data.user) return null;
+  return { id: data.user.id, email: data.user.email ?? null };
+}

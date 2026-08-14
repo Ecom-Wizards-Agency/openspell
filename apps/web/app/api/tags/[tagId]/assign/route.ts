@@ -1,4 +1,4 @@
-import { actorFromHeaders, errorResponse, openWebDatabase, requireOrgMembership } from '../../../../../src/server/request-context';
+import { requestActor, errorResponse, openWebDatabase, requireOrgMembership } from '../../../../../src/server/request-context';
 import { bulkAssignTagByFilter, bulkUnassignTagByFilter } from '@wizard-ads/db';
 import type { TagEntityFilter, TaggableEntityType } from '@wizard-ads/db';
 
@@ -34,7 +34,7 @@ function parseFilter(raw: Record<string, unknown> | undefined): TagEntityFilter 
 export async function POST(request: Request, context: RouteContext): Promise<Response> {
   const database = openWebDatabase();
   try {
-    const actor = actorFromHeaders(request.headers);
+    const actor = await requestActor(request.headers);
     await requireOrgMembership(database, actor);
     const { tagId } = await context.params;
     const body = (await request.json()) as { filter?: Record<string, unknown> };
@@ -56,7 +56,7 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
 export async function DELETE(request: Request, context: RouteContext): Promise<Response> {
   const database = openWebDatabase();
   try {
-    const actor = actorFromHeaders(request.headers);
+    const actor = await requestActor(request.headers);
     await requireOrgMembership(database, actor);
     const { tagId } = await context.params;
     const body = (await request.json()) as { filter?: Record<string, unknown> };
