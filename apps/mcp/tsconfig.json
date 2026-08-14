@@ -1,5 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // An HTTP server, a crypto hash and a process environment: this app is a
+    // Node program end to end.
+    "types": ["node"]
+  },
   "include": [
     "src/**/*.ts"
   ]

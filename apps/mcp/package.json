@@ -10,10 +10,19 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "start": "tsx src/bin/serve.ts",
+    "keys": "tsx src/bin/keys.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@wizard-ads/core": "workspace:*",
+    "@wizard-ads/db": "workspace:*",
     "@wizard-ads/shared": "workspace:*",
-    "@wizard-ads/db": "workspace:*"
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "tsx": "^4.23.12"
   }
 }
