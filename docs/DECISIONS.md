@@ -51,3 +51,8 @@ One line per decision the manager (Fable) or operator makes between work package
 - **2026-08-14 · Feedback & roadmap added as WP-15** (operator request) — in-tool bug/feature
   form with page context, org-scoped tracker, voting, roadmap columns from the same items,
   plus a submit_feedback MCP tool (AdLabs submit_bug_report parity, but with statuses/votes).
+- **2026-08-14 · Long-term vision captured in docs/VISION.md** (operator brain-dump): per-
+  campaign strategy assignment over the RPC default (stock/usage/performance-driven),
+  opportunity engine ("where we can win"), doctrine knowledge pack as per-tenant data (never
+  repo code), always-on Mac mini analyst. Constraint on WP-07/12: recommendation surfaces
+  must carry a strategy/objective dimension so assignment can be added without rework.

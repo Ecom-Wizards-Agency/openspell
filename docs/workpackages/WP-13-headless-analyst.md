@@ -12,6 +12,10 @@ Wizards AI helper (`~/os/wizards-ai/slack.sh` conventions — never a direct Sla
 
 ## Design points (already fixed)
 
+- Deployment target (operator, 2026-08-14): an always-on local Mac mini running the daily
+  analyst; see docs/VISION.md §4. The analyst's briefing includes the operator's doctrine
+  knowledge pack (per-tenant DB content, never repo code) — see docs/VISION.md §3.
+
 - Reads ONLY via MCP with a read-only key; `audit_log` must prove zero write calls.
 - Per-profile context resource (WP-09's Context-Manager equivalent) is the briefing input.
 - Optional operator-machine variant may additionally read amazon-agent workspace context
