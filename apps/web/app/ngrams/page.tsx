@@ -84,19 +84,21 @@ export default async function NgramsPage({ searchParams }: { searchParams: Searc
         </header>
 
         {payload.truncated ? (
-          <p style={{ ...muted, color: '#991b1b' }}>
+          <p style={{ ...muted, color: 'var(--wa-bad-text)' }}>
             More than {SEARCH_TERM_CAP} search terms in this period, so the set below is truncated
             and its totals cover only what is shown. Narrow the period for a complete read.
           </p>
         ) : null}
 
-        <NgramExplorer
-          rows={payload.rows}
+        <div className="wa-embed">
+          <NgramExplorer
+            rows={payload.rows}
           scopes={scopes}
           profileId={profile.id}
           currencyCode={profile.currencyCode}
-          period={period}
-        />
+            period={period}
+          />
+        </div>
 
         <p style={muted}>
           <a href={`/recommendations?profile=${profile.id}`}>Recommendations</a> ·{' '}
@@ -129,5 +131,5 @@ const main: CSSProperties = {
   maxWidth: '96rem',
   padding: '2rem 1.5rem',
 };
-const heading: CSSProperties = { fontSize: '1.5rem', margin: 0 };
-const muted: CSSProperties = { color: '#6b7280', fontSize: '0.875rem', margin: 0 };
+const heading: CSSProperties = { fontSize: 'var(--wa-fs-xl)', fontWeight: 640, letterSpacing: '-0.02em', margin: 0 };
+const muted: CSSProperties = { color: 'var(--wa-text-muted)', fontSize: '0.875rem', margin: 0 };

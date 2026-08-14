@@ -1,148 +1,125 @@
 /**
- * The application frame's one navigation bar, and the only place the app says
- * whether anybody is signed in.
+ * The application frame: a left sidebar, a top bar, and the only place the app
+ * says whether anybody is signed in.
  *
- * Before this existed the product had no visible way in: `/login` was reachable
- * only by typing it, and a signed-in operator had no way out except the settings
- * screens' own header. A tool whose sign-in is a URL you have to know is not
- * shipped, however complete the routes behind it are.
+ * Before this existed the product had no visible way in — `/login` was reachable
+ * only by typing it — and then, briefly, a flat bar of ten equal links. Neither
+ * is a shape a tool with ten screens can wear. This is the incumbent's pattern
+ * (`tools/recon/01-navigation-map.md`, `UI-verified`): grouped, collapsible
+ * navigation down the left, tenancy and identity along the top, content in the
+ * remaining space.
  *
- * Two exports, deliberately split:
+ * Two exports, deliberately split, unchanged from the version this replaces:
  *
- *  - `NavBar` is pure. It takes the identity it renders and touches nothing
- *    ambient, so a unit test can render both states without a request.
+ *  - `NavBar` is pure. It takes the identity and the roster it renders and
+ *    touches nothing ambient, so a unit test can render both states without a
+ *    request.
  *  - `AppNav` is the server component the root layout mounts. It resolves the
- *    session and hands it to `NavBar`.
+ *    session and the roster and hands them to `NavBar`.
  *
- * `AppNav` imports `currentUser` lazily for the reason `src/server/request-
- * context.ts` documents: `next/headers` only works inside a request, and a
- * top-level import would drag it into the module graph of every Vitest suite
- * that renders this file.
- *
- * Inline styles and `src/ui/tokens.ts`, matching the WP-04 screens. WP-06 owns
- * look and feel; when it lands, replacing this is a deletion rather than an
- * untangling.
+ * `AppNav` imports its data lazily for the reason `src/server/request-context.ts`
+ * documents: `next/headers` only works inside a request, and a top-level import
+ * would drag it into the module graph of every Vitest suite that renders this
+ * file.
  */
-import type { CSSProperties, ReactNode } from 'react';
-import { colors } from './tokens';
+import type { ReactNode } from 'react';
+import { NAV_GROUPS, NAV_LINKS } from './nav-links';
+import type { NavGroup, NavLink } from './nav-links';
+import { SidebarNav } from './sidebar';
+import { ProfileSwitcher, ThemeToggle } from './topbar-controls';
+import type { NavProfile } from './topbar-controls';
+
+export { NAV_GROUPS, NAV_LINKS };
+export type { NavGroup, NavLink, NavProfile };
 
 export interface NavUser {
   id: string;
   email: string | null;
 }
 
-/**
- * Every screen the product has, in the order an operator walks them: look at
- * the numbers, work the grid, review what the engine proposes, then the
- * supporting surfaces and finally the plumbing.
- */
-export const NAV_LINKS = [
-  { href: '/dashboard', label: 'Dashboard' },
-  { href: '/grid', label: 'Grid' },
-  { href: '/recommendations', label: 'Recommendations' },
-  { href: '/ngrams', label: 'N-gram' },
-  { href: '/tags', label: 'Tags' },
-  { href: '/feedback', label: 'Feedback' },
-  { href: '/roadmap', label: 'Roadmap' },
-  { href: '/crosscheck', label: 'Crosscheck' },
-  { href: '/settings', label: 'Settings' },
-  { href: '/sync-status', label: 'Sync status' },
-] as const;
+export interface NavBarProps {
+  user: NavUser | null;
+  /** The org's advertising profiles, for the top bar's switcher. */
+  profiles?: readonly NavProfile[];
+  /** The active organisation's name, when one could be resolved. */
+  orgName?: string | null;
+}
 
-export function NavBar({ user }: { user: NavUser | null }): ReactNode {
+export function NavBar({ user, profiles = [], orgName = null }: NavBarProps): ReactNode {
   return (
-    <header style={bar} data-testid="app-nav">
-      <a href="/" style={brand}>
-        wizard-ads
+    <div data-testid="app-nav">
+      <a className="wa-skip" href="#wa-main">
+        Skip to content
       </a>
 
-      <nav aria-label="Primary" style={links}>
-        {NAV_LINKS.map((link) => (
-          <a key={link.href} href={link.href} style={item}>
-            {link.label}
-          </a>
-        ))}
-      </nav>
-
-      {user === null ? (
-        <a href="/login" style={signIn} data-testid="nav-signin">
-          Sign in
+      <aside className="wa-sidebar">
+        <a className="wa-brand" href="/">
+          <span aria-hidden="true" className="wa-brand-mark">
+            w
+          </span>
+          wizard-ads
         </a>
-      ) : (
-        <span style={identity} data-testid="nav-identity">
-          <span style={{ color: colors.muted }}>
-            signed in as {user.email ?? 'your account'}
+
+        <SidebarNav />
+
+        <p className="wa-sidebar-foot">
+          Amazon Advertising, in house. Every number on every screen is only as
+          fresh as the last sync.
+        </p>
+      </aside>
+
+      <header className="wa-topbar">
+        {orgName === null ? null : (
+          <span className="wa-topbar-org" title={orgName}>
+            {orgName}
           </span>
-          <span aria-hidden="true" style={{ color: colors.border }}>
-            ·
+        )}
+
+        <span className="wa-topbar-spacer" />
+
+        <ProfileSwitcher profiles={profiles} />
+        <ThemeToggle />
+
+        {user === null ? (
+          <a href="/login" className="wa-btn wa-btn--primary wa-btn--sm" data-testid="nav-signin">
+            Sign in
+          </a>
+        ) : (
+          <span className="wa-identity" data-testid="nav-identity">
+            {/* One text node on purpose: the frame test asserts the whole
+                phrase "signed in as <email>" contiguously, so the label and the
+                address cannot be split across elements. */}
+            <span className="wa-identity-email">signed in as {user.email ?? 'your account'}</span>
+            <form action="/auth/signout" method="post">
+              <button
+                type="submit"
+                className="wa-btn wa-btn--ghost wa-btn--sm"
+                data-testid="nav-signout"
+              >
+                sign out
+              </button>
+            </form>
           </span>
-          <form action="/auth/signout" method="post" style={{ display: 'inline' }}>
-            <button type="submit" style={signOut} data-testid="nav-signout">
-              sign out
-            </button>
-          </form>
-        </span>
-      )}
-    </header>
+        )}
+      </header>
+    </div>
   );
 }
 
-/** The root layout's nav: the same bar, with the real session behind it. */
+/**
+ * The root layout's frame: the same chrome, with the real session behind it.
+ *
+ * The roster read is best-effort on purpose. The switcher is a convenience in
+ * the chrome, and chrome must never be the reason a screen fails to render — an
+ * unreachable database already has a page that says so, and it is not this one's
+ * job to say it a second time in a stack trace.
+ */
 export async function AppNav(): Promise<ReactNode> {
   const { currentUser } = await import('../auth/session');
   const user = await currentUser();
-  return <NavBar user={user} />;
+  if (user === null) return <NavBar user={null} />;
+
+  const { navContext } = await import('./nav-context');
+  const context = await navContext(user);
+  return <NavBar user={user} profiles={context.profiles} orgName={context.orgName} />;
 }
-
-const bar: CSSProperties = {
-  alignItems: 'center',
-  borderBottom: `1px solid ${colors.border}`,
-  display: 'flex',
-  flexWrap: 'wrap',
-  fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-  fontSize: '0.8125rem',
-  gap: '1rem',
-  justifyContent: 'space-between',
-  padding: '0.625rem 1.5rem',
-};
-
-const brand: CSSProperties = {
-  color: colors.text,
-  fontWeight: 600,
-  textDecoration: 'none',
-};
-
-const links: CSSProperties = {
-  display: 'flex',
-  flexWrap: 'wrap',
-  gap: '0.875rem',
-};
-
-const item: CSSProperties = {
-  color: colors.muted,
-  textDecoration: 'none',
-};
-
-const identity: CSSProperties = {
-  alignItems: 'center',
-  display: 'flex',
-  gap: '0.5rem',
-};
-
-const signIn: CSSProperties = {
-  border: `1px solid ${colors.border}`,
-  borderRadius: '0.25rem',
-  color: colors.text,
-  padding: '0.25rem 0.625rem',
-  textDecoration: 'none',
-};
-
-const signOut: CSSProperties = {
-  background: 'none',
-  border: 'none',
-  color: colors.muted,
-  cursor: 'pointer',
-  font: 'inherit',
-  padding: 0,
-  textDecoration: 'underline',
-};

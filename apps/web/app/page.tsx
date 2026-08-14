@@ -47,7 +47,7 @@ export default async function Page() {
   return (
     <main style={main}>
       <h1 style={{ fontSize: '1.5rem', margin: '0 0 0.5rem' }}>wizard-ads</h1>
-      <p style={{ color: '#6b7280', margin: '0 0 1.5rem' }}>
+      <p style={{ color: 'var(--wa-text-muted)', margin: '0 0 1.5rem' }}>
         In-house Amazon Advertising tool.
       </p>
 
@@ -74,7 +74,7 @@ export default async function Page() {
           <li key={route.href}>
             <a href={route.href} style={card}>
               <strong>{route.title}</strong>
-              <span style={{ color: '#6b7280', fontSize: '0.875rem' }}>{route.body}</span>
+              <span style={{ color: 'var(--wa-text-muted)', fontSize: '0.875rem' }}>{route.body}</span>
             </a>
           </li>
         ))}
@@ -100,7 +100,7 @@ const list: CSSProperties = {
 };
 
 const cta: CSSProperties = {
-  border: '1px solid #e5e7eb',
+  border: '1px solid var(--wa-border)',
   borderRadius: '0.375rem',
   fontSize: '0.875rem',
   margin: '0 0 1.5rem',
@@ -108,7 +108,7 @@ const cta: CSSProperties = {
 };
 
 const card: CSSProperties = {
-  border: '1px solid #e5e7eb',
+  border: '1px solid var(--wa-border)',
   borderRadius: '0.375rem',
   color: 'inherit',
   display: 'flex',

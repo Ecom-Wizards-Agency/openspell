@@ -321,7 +321,7 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
 
 const panel: CSSProperties = {
   alignItems: 'flex-end',
-  border: '1px solid #e5e7eb',
+  border: '1px solid var(--wa-border)',
   borderRadius: '0.5rem',
   display: 'flex',
   flexWrap: 'wrap',
@@ -330,27 +330,27 @@ const panel: CSSProperties = {
 };
 const legend: CSSProperties = { fontSize: '0.8125rem', fontWeight: 600, padding: '0 0.25rem' };
 const label: CSSProperties = { display: 'flex', flexDirection: 'column', fontSize: '0.8125rem', gap: '0.25rem' };
-const muted: CSSProperties = { color: '#6b7280', fontSize: '0.8125rem' };
+const muted: CSSProperties = { color: 'var(--wa-text-muted)', fontSize: '0.8125rem' };
 const table: CSSProperties = { borderCollapse: 'collapse', fontSize: '0.8125rem', width: '100%' };
 const th: CSSProperties = {
-  borderBottom: '1px solid #d1d5db',
+  borderBottom: '1px solid var(--wa-border-strong)',
   padding: '0.25rem 0.5rem',
   textAlign: 'left',
 };
 const thRight: CSSProperties = { ...th, textAlign: 'right' };
-const td: CSSProperties = { borderBottom: '1px solid #f3f4f6', padding: '0.25rem 0.5rem' };
+const td: CSSProperties = { borderBottom: '1px solid var(--wa-surface-3)', padding: '0.25rem 0.5rem' };
 const tdRight: CSSProperties = { ...td, textAlign: 'right' };
 const warning: CSSProperties = {
-  background: '#fef2f2',
-  border: '1px solid #fecaca',
+  background: 'var(--wa-bad-bg)',
+  border: '1px solid var(--wa-bad-border)',
   borderRadius: '0.375rem',
-  color: '#991b1b',
+  color: 'var(--wa-bad-text)',
   padding: '0.5rem 0.75rem',
 };
 const notice: CSSProperties = {
-  background: '#f0fdf4',
-  border: '1px solid #bbf7d0',
+  background: 'var(--wa-good-bg)',
+  border: '1px solid var(--wa-good-border)',
   borderRadius: '0.375rem',
-  color: '#166534',
+  color: 'var(--wa-good-text)',
   padding: '0.5rem 0.75rem',
 };

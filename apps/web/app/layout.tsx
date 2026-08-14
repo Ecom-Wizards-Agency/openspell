@@ -1,7 +1,10 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
+import '../src/ui/theme.css';
 import { AppNav } from '../src/ui/nav';
 import { FeedbackEntry } from '../src/ui/feedback-entry';
+import { ToastProvider } from '../src/ui/toast';
+import { THEME_SCRIPT } from '../src/ui/theme-script';
 
 export const metadata: Metadata = {
   title: 'wizard-ads',
@@ -11,22 +14,40 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#f5f7fa' },
+    { media: '(prefers-color-scheme: dark)', color: '#0b0f16' },
+  ],
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
-      <body>
+    // The theme stamp below rewrites `data-theme` before React sees the
+    // document, which is exactly the mismatch this attribute exists for.
+    <html lang="en" data-theme="light" suppressHydrationWarning>
+      <head>
         {/*
-          The frame's nav, on every screen including `/login`: it is the only
-          place the app offers a way in and a way out, so it cannot be a
-          per-screen decision. `AppNav` reads the session, which makes every
-          route dynamic — correct for a tool whose every page is per-tenant.
+          Before first paint, not after hydration: a dark-mode user who watches
+          the app flash white on every navigation does not have dark mode, they
+          have an apology.
         */}
-        <AppNav />
-        {children}
-        {/* WP-15: the feedback widget belongs to the frame, not to a screen. */}
-        <FeedbackEntry />
+        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+      </head>
+      <body>
+        <ToastProvider>
+          {/*
+            The frame, on every screen including `/login`: it is the only place
+            the app offers a way in and a way out, so it cannot be a per-screen
+            decision. `AppNav` reads the session, which makes every route
+            dynamic — correct for a tool whose every page is per-tenant.
+          */}
+          <AppNav />
+          <div className="wa-content" id="wa-main">
+            {children}
+          </div>
+          {/* WP-15: the feedback widget belongs to the frame, not to a screen. */}
+          <FeedbackEntry />
+        </ToastProvider>
       </body>
     </html>
   );
