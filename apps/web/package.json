@@ -4,16 +4,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
     "start": "next start",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@wizard-ads/core": "workspace:*",
     "@wizard-ads/crosscheck-cli": "workspace:*",
+    "@wizard-ads/db": "workspace:*",
     "@wizard-ads/shared": "workspace:*",
     "@wizard-ads/ui": "workspace:*",
+    "drizzle-orm": "^0.45.2",
     "next": "^16.3.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
