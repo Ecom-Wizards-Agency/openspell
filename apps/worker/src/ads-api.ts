@@ -50,6 +50,47 @@ export interface AdsApiClient {
   listProfiles(region: Region): Promise<readonly string[]>;
 }
 
+/** One target's Amazon suggested-bid corridor for the day (WP-27 read). */
+export interface SuggestedBidRead {
+  targetId: string;
+  low: number;
+  median: number;
+  high: number;
+}
+
+/** The SP keyword and product-target ids to read a suggested-bid corridor for. */
+export interface SuggestedBidRequest {
+  keywordIds: readonly string[];
+  targetIds: readonly string[];
+}
+
+export interface SuggestedBidResult {
+  /** By Amazon target id, the corridor Amazon answered with. */
+  byTarget: Map<string, SuggestedBidRead>;
+  /** Ids submitted across both endpoints. */
+  submitted: number;
+  /** Ids Amazon returned a corridor for. */
+  returned: number;
+  /** Ids Amazon returned an error for (still counted, just not corridors). */
+  errors: number;
+}
+
+/**
+ * The suggested-bid read capability, kept as its own interface rather than
+ * folded into `AdsApiClient`.
+ *
+ * INTEGRATE (WP-28): the bid-series sync (`bid-series.ts`) depends on this, not
+ * on the whole `AdsApiClient`, so the report/entity worker's own test doubles
+ * stay untouched and this can be mocked in isolation. `DbAdsApiClient`
+ * implements both, so one instance serves the worker and the sync.
+ */
+export interface SuggestedBidClient {
+  getSpSuggestedBids(
+    profile: AdsProfileContext,
+    ids: SuggestedBidRequest,
+  ): Promise<SuggestedBidResult>;
+}
+
 export class AdsApiRetryableError extends Error {
   constructor(message: string, readonly retryAfterSeconds?: number) {
     super(message);
@@ -86,6 +127,10 @@ export type UnderlyingClient = Pick<
   | 'getProfiles'
   | 'createReport'
   | 'getReport'
+  // INTEGRATE (WP-28): the two WP-27 suggested-bid reads the bid-series sync
+  // drives. Added to the Pick so a unit test can mock only these without HTTP.
+  | 'getSpKeywordBidRecommendations'
+  | 'getSpTargetBidRecommendations'
 >;
 
 /** The subset of `fetch` the report download needs. */
@@ -127,7 +172,7 @@ const KNOWN_REPORT_STATUSES = new Set<AdsReportStatus['status']>([
  * so the fetch re-polls, and everything else is left as-is for the generic
  * attempt counter to age out into the dead-letter.
  */
-export class DbAdsApiClient implements AdsApiClient {
+export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient {
   private readonly clients = new Map<string, UnderlyingClient>();
   private readonly fetch: FetchLike;
 
@@ -213,6 +258,51 @@ export class DbAdsApiClient implements AdsApiClient {
     const body = response.body;
     if (!body) return emptyStream();
     return toByteStream(body);
+  }
+
+  /**
+   * Read Amazon's daily suggested-bid corridor for a profile's SP keywords and
+   * product targets (WP-27 endpoints). A read, despite being a POST: the client
+   * marks it idempotent, so a transport failure retries safely.
+   *
+   * Errored ids are counted but not corridors — Amazon can answer some ids in a
+   * batch and error others, and the sync writes a corridor only where one came
+   * back. The two endpoints are hit sequentially for the same reason
+   * `listEntities` is: one profile must not fire simultaneous requests past the
+   * region concurrency cap the caller wraps this in.
+   */
+  async getSpSuggestedBids(
+    profile: AdsProfileContext,
+    ids: SuggestedBidRequest,
+  ): Promise<SuggestedBidResult> {
+    const client = await this.clientForProfile(profile);
+    const byTarget = new Map<string, SuggestedBidRead>();
+    let submitted = 0;
+    let returned = 0;
+    let errors = 0;
+
+    const reads: Array<{ ids: readonly string[]; run: () => Promise<{ items: readonly { targetId: string; low: number; median: number; high: number }[]; errors: readonly unknown[] }> }> = [
+      { ids: ids.keywordIds, run: () => client.getSpKeywordBidRecommendations(profile.amazonProfileId, ids.keywordIds) },
+      { ids: ids.targetIds, run: () => client.getSpTargetBidRecommendations(profile.amazonProfileId, ids.targetIds) },
+    ];
+
+    for (const read of reads) {
+      if (read.ids.length === 0) continue;
+      submitted += read.ids.length;
+      const result = await this.guard(profile.region, read.run);
+      for (const item of result.items) {
+        byTarget.set(item.targetId, {
+          targetId: item.targetId,
+          low: item.low,
+          median: item.median,
+          high: item.high,
+        });
+        returned += 1;
+      }
+      errors += result.errors.length;
+    }
+
+    return { byTarget, submitted, returned, errors };
   }
 
   async listProfiles(region: Region): Promise<readonly string[]> {
@@ -329,7 +419,7 @@ async function* readWebStream(stream: ReadableStream<Uint8Array>): AsyncGenerato
 export function createAdsApiClientFromEnv(
   handle: DbHandle,
   env: NodeJS.ProcessEnv = process.env,
-): AdsApiClient {
+): DbAdsApiClient {
   // The web app (and therefore the Vercel-cron drain) already carries these as
   // AMAZON_-prefixed names for the OAuth flow; accept them as fallbacks so the
   // worker needs no second copy of the same LWA app identity.

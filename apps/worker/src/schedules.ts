@@ -46,6 +46,19 @@ export const DEFAULT_CADENCES = {
   reportRecent: { cadence: '1 day', lookbackDays: 3 },
   /** Long enough to cover the 14+ day restatement window twice over. */
   reportRestatement: { cadence: '7 days', lookbackDays: 35 },
+  /**
+   * The bid corridor (WP-28): one suggested-bid low/median/high snapshot per
+   * target per day, on the same daily footing as spend and clicks.
+   *
+   * Deliberately NOT a `defaultSchedules()` entry. The schedule specs become
+   * `sync_jobs` rows whose `job_type` must be a `sync_job_type` enum value and a
+   * `@wizard-ads/shared` `JobPayload` member — neither of which this WP owns, so
+   * adding one is a cross-package contract change (program rule 1). The corridor
+   * sync instead runs as an in-process daily `BidSeriesSyncPass`
+   * (`bid-series.ts`), and this is its cadence, kept here beside the others so
+   * the whole cadence story reads in one place.
+   */
+  bidSeries: { cadence: '1 day' },
 } as const;
 
 export function defaultSchedules(

@@ -73,6 +73,10 @@
   --wa-viz-1: #2a78d6;
   --wa-viz-2: #eb6834;
   --wa-viz-3: #1baf7a;
+  /* WP-28 bid corridor: purple (Bid) and red (Max CPC). Validated against the
+     white surface with the dataviz script — all six checks pass. */
+  --wa-viz-4: #7d5fd1;
+  --wa-viz-5: #cf3a4a;
   --wa-viz-grid: #e6eaf0;
   --wa-viz-axis: #cdd6e1;
   --wa-viz-ink: #5b6b7f;
@@ -176,6 +180,8 @@
     --wa-viz-1: #3987e5;
     --wa-viz-2: #d95926;
     --wa-viz-3: #199e70;
+    --wa-viz-4: #9179e0;
+    --wa-viz-5: #e05563;
     --wa-viz-grid: #212b39;
     --wa-viz-axis: #354356;
     --wa-viz-ink: #9aa8b8;

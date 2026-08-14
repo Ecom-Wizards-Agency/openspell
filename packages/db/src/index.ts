@@ -24,6 +24,7 @@ export * from './queries/connections.js';
 export * from './queries/entities.js';
 export * from './queries/experiments.js';
 export * from './queries/facts.js';
+export * from './queries/bid-series.js';
 export * from './queries/feedback.js';
 export * from './queries/goto.js';
 export * from './queries/jobs.js';

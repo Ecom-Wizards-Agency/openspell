@@ -75,7 +75,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     id: 'ai',
     label: 'AI',
     icon: 'spark',
-    links: [{ href: '/connect-claude', label: 'Connect Claude', icon: 'spark', tag: 'Beta' }],
+    links: [{ href: '/connect-claude', label: 'Connect AI (MCP)', icon: 'spark', tag: 'Beta' }],
   },
   {
     id: 'product',

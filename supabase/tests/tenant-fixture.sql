@@ -115,6 +115,15 @@ begin
   insert into public.fact_monthly_rollup
     (org_id, profile_id, month, source, dimensions, days, impressions, clicks, cost)
   values (v_org, v_profile, date_trunc('month', p_date)::date, 'sp_target', '{}'::jsonb, 1, 100, 5, 4.50);
+  -- The bid corridor (WP-28): one target's suggested-bid band for the day, with
+  -- the bid, realized CPC and max-potential CPC and its modifier components.
+  insert into public.bid_series_daily
+    (org_id, profile_id, date, campaign_id, ad_group_id, target_id, is_keyword,
+     suggested_bid_low, suggested_bid_median, suggested_bid_high, bid, cpc, max_potential_cpc,
+     modifier_components)
+  values (v_org, v_profile, p_date, 'c-1', 'ag-1', 'kw-1', true,
+          0.50, 0.80, 1.20, 0.90, 1.10, 1.35,
+          '[{"name": "top_of_search", "pct": 50}]'::jsonb);
 
   -- Sync
   insert into public.sync_schedules (org_id, profile_id, job_type, cadence, lookback_days)
