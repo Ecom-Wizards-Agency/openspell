@@ -111,10 +111,10 @@ const main: CSSProperties = {
 };
 
 const heading: CSSProperties = { fontSize: '1.5rem', margin: '0 0 0.5rem' };
-const muted: CSSProperties = { color: '#6b7280', fontSize: '0.875rem' };
+const muted: CSSProperties = { color: 'var(--wa-text-muted)', fontSize: '0.875rem' };
 const nav: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: '0.75rem', margin: '1rem 0' };
 const tab: CSSProperties = {
-  border: '1px solid #e5e7eb',
+  border: '1px solid var(--wa-border)',
   borderRadius: '0.375rem',
   color: 'inherit',
   padding: '0.25rem 0.625rem',

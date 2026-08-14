@@ -109,18 +109,20 @@ export default async function GridPage({ searchParams }: PageProps) {
     <main style={main}>
       <header style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(3) }}>
         <div>
-          <h1 style={heading}>{ENTITY_LABELS[entity]}</h1>
-          <p style={muted}>
+          <h1 className="wa-page-title">{ENTITY_LABELS[entity]}</h1>
+          <p className="wa-page-sub">
             {profile.label} · {period.start} to {period.end} · compared against {comparison.start} to{' '}
             {comparison.end} · all figures in {profile.currencyCode}
           </p>
         </div>
 
-        <ProfileSwitcher
-          profiles={data.profiles}
-          selectedId={profile.id}
-          hrefFor={(id) => `/grid?profile=${id}&entity=${entity}&from=${period.start}&to=${period.end}`}
-        />
+        <div className="wa-embed">
+          <ProfileSwitcher
+            profiles={data.profiles}
+            selectedId={profile.id}
+            hrefFor={(id) => `/grid?profile=${id}&entity=${entity}&from=${period.start}&to=${period.end}`}
+          />
+        </div>
       </header>
 
       {payload?.truncated ? (

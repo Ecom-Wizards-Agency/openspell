@@ -19,10 +19,10 @@ import type {
 } from '@wizard-ads/crosscheck-cli/pure';
 
 const TONE_COLORS: Record<ChipTone, { background: string; border: string; text: string }> = {
-  good: { background: '#ecfdf5', border: '#a7f3d0', text: '#065f46' },
-  warn: { background: '#fffbeb', border: '#fde68a', text: '#92400e' },
-  bad: { background: '#fef2f2', border: '#fecaca', text: '#991b1b' },
-  muted: { background: '#f9fafb', border: '#e5e7eb', text: '#4b5563' },
+  good: { background: 'var(--wa-good-bg)', border: 'var(--wa-good-border)', text: 'var(--wa-good-text)' },
+  warn: { background: 'var(--wa-warn-bg)', border: 'var(--wa-warn-border)', text: 'var(--wa-warn-text)' },
+  bad: { background: 'var(--wa-bad-bg)', border: 'var(--wa-bad-border)', text: 'var(--wa-bad-text)' },
+  muted: { background: 'var(--wa-surface-2)', border: 'var(--wa-border)', text: 'var(--wa-text-muted)' },
 };
 
 export function CrosscheckChip({ chip }: { chip: VerdictChip }): ReactNode {
@@ -172,7 +172,7 @@ function percent(value: number | null | undefined): string {
   return `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)}%`;
 }
 
-const muted: CSSProperties = { color: '#6b7280', fontSize: '0.8125rem' };
+const muted: CSSProperties = { color: 'var(--wa-text-muted)', fontSize: '0.8125rem' };
 const subheading: CSSProperties = { fontSize: '1rem', margin: '1.5rem 0 0.5rem' };
 const table: CSSProperties = {
   borderCollapse: 'collapse',
@@ -180,10 +180,10 @@ const table: CSSProperties = {
   width: '100%',
 };
 const th: CSSProperties = {
-  borderBottom: '1px solid #e5e7eb',
+  borderBottom: '1px solid var(--wa-border)',
   padding: '0.375rem 0.5rem',
   textAlign: 'left',
 };
 const thRight: CSSProperties = { ...th, textAlign: 'right' };
-const td: CSSProperties = { borderBottom: '1px solid #f3f4f6', padding: '0.375rem 0.5rem' };
+const td: CSSProperties = { borderBottom: '1px solid var(--wa-border)', padding: '0.375rem 0.5rem' };
 const tdRight: CSSProperties = { ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };

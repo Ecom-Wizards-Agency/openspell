@@ -1,0 +1,1397 @@
+/*
+ * wizard-ads design system — the one stylesheet.
+ *
+ * Everything visual in `apps/web` resolves to a custom property declared here.
+ * That is the whole point: the app used to carry a hundred hardcoded greys in a
+ * hundred inline styles, which is why it had no dark mode and no consistency.
+ * Tokens first, primitives second, screens third.
+ *
+ * Three theme scopes, in this order:
+ *
+ *   :root                                     light (the default)
+ *   @media (prefers-color-scheme: dark)       the OS setting, unless a light
+ *                                             stamp overrides it
+ *   :root[data-theme='dark']                  the in-app toggle, which wins
+ *                                             both ways
+ *
+ * A colour is never defined *only* inside a media query, so a surface can never
+ * arrive unpainted.
+ */
+
+/* ---------------------------------------------------------------- tokens -- */
+
+:root {
+  color-scheme: light;
+
+  /* Plane and surfaces */
+  --wa-bg: #f5f7fa;
+  --wa-surface: #ffffff;
+  --wa-surface-2: #f8fafc;
+  --wa-surface-3: #eef2f7;
+  --wa-surface-sunken: #f1f4f9;
+  --wa-sidebar-bg: #ffffff;
+  --wa-topbar-bg: rgba(255, 255, 255, 0.88);
+
+  /* Ink */
+  --wa-text: #0f172a;
+  --wa-text-muted: #5b6b7f;
+  --wa-text-faint: #8b9bad;
+  --wa-text-invert: #ffffff;
+
+  /* Lines */
+  --wa-border: #e3e8ef;
+  --wa-border-strong: #cdd6e1;
+  --wa-ring: #2a78d6;
+
+  /* Accent — the same blue as categorical series slot 1, so a primary button
+     and the first line on a chart are recognisably one system. */
+  --wa-accent: #2a78d6;
+  --wa-accent-hover: #256abf;
+  --wa-accent-active: #1c5cab;
+  --wa-accent-soft: #eaf2fd;
+  --wa-accent-border: #b7d3f6;
+  --wa-accent-text: #1c5cab;
+  --wa-on-accent: #ffffff;
+
+  /* Status. Reserved: never reused as a chart series. */
+  --wa-good-text: #05683a;
+  --wa-good-bg: #ecfdf3;
+  --wa-good-border: #a7e8c4;
+  --wa-warn-text: #8a5200;
+  --wa-warn-bg: #fff8e9;
+  --wa-warn-border: #f5d78e;
+  --wa-bad-text: #b42318;
+  --wa-bad-bg: #fef3f2;
+  --wa-bad-border: #f7bdb7;
+  --wa-info-text: #1c5cab;
+  --wa-info-bg: #eaf2fd;
+  --wa-info-border: #b7d3f6;
+
+  /* Data visualisation. Validated (see the WP-21 report): light surface
+     #ffffff, adjacent CVD ΔE 9.2, normal-vision ΔE 27.6. */
+  --wa-viz-surface: #ffffff;
+  --wa-viz-1: #2a78d6;
+  --wa-viz-2: #eb6834;
+  --wa-viz-3: #1baf7a;
+  --wa-viz-grid: #e6eaf0;
+  --wa-viz-axis: #cdd6e1;
+  --wa-viz-ink: #5b6b7f;
+
+  /* Shape and depth */
+  --wa-radius-sm: 0.25rem;
+  --wa-radius: 0.5rem;
+  --wa-radius-lg: 0.75rem;
+  --wa-radius-pill: 999px;
+  --wa-shadow-1: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.05);
+  --wa-shadow-2: 0 4px 12px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.06);
+  --wa-shadow-3: 0 12px 32px rgba(15, 23, 42, 0.16);
+
+  /* Type */
+  --wa-font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --wa-font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  --wa-fs-2xs: 0.6875rem;
+  --wa-fs-xs: 0.75rem;
+  --wa-fs-sm: 0.8125rem;
+  --wa-fs-base: 0.875rem;
+  --wa-fs-md: 1rem;
+  --wa-fs-lg: 1.125rem;
+  --wa-fs-xl: 1.375rem;
+  --wa-fs-2xl: 1.75rem;
+
+  /* Frame */
+  --wa-sidebar-w: 15rem;
+  --wa-topbar-h: 3.5rem;
+
+  /*
+   * Legacy bridge.
+   *
+   * `packages/ui` (WP-06) styles the DataGrid and its toolbar with inline hex
+   * literals, and WP-21 does not own that package. These properties hold the
+   * *same* literals in light mode, so the rules at the bottom of this file are
+   * a no-op; the dark scopes below re-point them. When WP-06 moves its theme to
+   * custom properties, delete both this block and the `.wa-embed` rules.
+   */
+  --wa-legacy-surface: #ffffff;
+  --wa-legacy-surface-alt: #f9fafb;
+  --wa-legacy-surface-hover: #f3f4f6;
+  --wa-legacy-accent-soft: #eff6ff;
+  --wa-legacy-text: #111827;
+  --wa-legacy-text-muted: #6b7280;
+  --wa-legacy-text-faint: #9ca3af;
+  --wa-legacy-accent: #1d4ed8;
+  --wa-legacy-good: #065f46;
+  --wa-legacy-warn: #92400e;
+  --wa-legacy-bad: #991b1b;
+  --wa-legacy-border: #e5e7eb;
+  --wa-legacy-border-strong: #d1d5db;
+  --wa-legacy-good-soft: #ecfdf5;
+  --wa-legacy-warn-soft: #fffbeb;
+  --wa-legacy-bad-soft: #fef2f2;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+
+    --wa-bg: #0b0f16;
+    --wa-surface: #141a23;
+    --wa-surface-2: #19202b;
+    --wa-surface-3: #212a37;
+    --wa-surface-sunken: #10161e;
+    --wa-sidebar-bg: #10161e;
+    --wa-topbar-bg: rgba(16, 22, 30, 0.9);
+
+    --wa-text: #e6edf3;
+    --wa-text-muted: #9aa8b8;
+    --wa-text-faint: #6d7d8f;
+    --wa-text-invert: #0b0f16;
+
+    --wa-border: #253040;
+    --wa-border-strong: #354356;
+    --wa-ring: #58a0f0;
+
+    --wa-accent: #3987e5;
+    --wa-accent-hover: #4d95ea;
+    --wa-accent-active: #63a3ee;
+    --wa-accent-soft: #16273c;
+    --wa-accent-border: #27456b;
+    --wa-accent-text: #8dbcf3;
+    --wa-on-accent: #ffffff;
+
+    --wa-good-text: #5fd39a;
+    --wa-good-bg: #0f2a1e;
+    --wa-good-border: #1f5340;
+    --wa-warn-text: #f0be5c;
+    --wa-warn-bg: #2b2211;
+    --wa-warn-border: #574318;
+    --wa-bad-text: #f79a92;
+    --wa-bad-bg: #2c1719;
+    --wa-bad-border: #5a2a2a;
+    --wa-info-text: #8dbcf3;
+    --wa-info-bg: #16273c;
+    --wa-info-border: #27456b;
+
+    /* Validated against the dark surface #141a23: CVD ΔE 9.4, contrast ≥ 3:1. */
+    --wa-viz-surface: #141a23;
+    --wa-viz-1: #3987e5;
+    --wa-viz-2: #d95926;
+    --wa-viz-3: #199e70;
+    --wa-viz-grid: #212b39;
+    --wa-viz-axis: #354356;
+    --wa-viz-ink: #9aa8b8;
+
+    --wa-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --wa-shadow-2: 0 4px 14px rgba(0, 0, 0, 0.55);
+    --wa-shadow-3: 0 14px 36px rgba(0, 0, 0, 0.65);
+
+    --wa-legacy-surface: #141a23;
+    --wa-legacy-surface-alt: #19202b;
+    --wa-legacy-surface-hover: #212a37;
+    --wa-legacy-accent-soft: #16273c;
+    --wa-legacy-text: #e6edf3;
+    --wa-legacy-text-muted: #9aa8b8;
+    --wa-legacy-text-faint: #6d7d8f;
+    --wa-legacy-accent: #8dbcf3;
+    --wa-legacy-good: #5fd39a;
+    --wa-legacy-warn: #f0be5c;
+    --wa-legacy-bad: #f79a92;
+    --wa-legacy-border: #253040;
+    --wa-legacy-border-strong: #354356;
+    --wa-legacy-good-soft: #0f2a1e;
+    --wa-legacy-warn-soft: #2b2211;
+    --wa-legacy-bad-soft: #2c1719;
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --wa-bg: #0b0f16;
+  --wa-surface: #141a23;
+  --wa-surface-2: #19202b;
+  --wa-surface-3: #212a37;
+  --wa-surface-sunken: #10161e;
+  --wa-sidebar-bg: #10161e;
+  --wa-topbar-bg: rgba(16, 22, 30, 0.9);
+
+  --wa-text: #e6edf3;
+  --wa-text-muted: #9aa8b8;
+  --wa-text-faint: #6d7d8f;
+  --wa-text-invert: #0b0f16;
+
+  --wa-border: #253040;
+  --wa-border-strong: #354356;
+  --wa-ring: #58a0f0;
+
+  --wa-accent: #3987e5;
+  --wa-accent-hover: #4d95ea;
+  --wa-accent-active: #63a3ee;
+  --wa-accent-soft: #16273c;
+  --wa-accent-border: #27456b;
+  --wa-accent-text: #8dbcf3;
+  --wa-on-accent: #ffffff;
+
+  --wa-good-text: #5fd39a;
+  --wa-good-bg: #0f2a1e;
+  --wa-good-border: #1f5340;
+  --wa-warn-text: #f0be5c;
+  --wa-warn-bg: #2b2211;
+  --wa-warn-border: #574318;
+  --wa-bad-text: #f79a92;
+  --wa-bad-bg: #2c1719;
+  --wa-bad-border: #5a2a2a;
+  --wa-info-text: #8dbcf3;
+  --wa-info-bg: #16273c;
+  --wa-info-border: #27456b;
+
+  --wa-viz-surface: #141a23;
+  --wa-viz-1: #3987e5;
+  --wa-viz-2: #d95926;
+  --wa-viz-3: #199e70;
+  --wa-viz-grid: #212b39;
+  --wa-viz-axis: #354356;
+  --wa-viz-ink: #9aa8b8;
+
+  --wa-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --wa-shadow-2: 0 4px 14px rgba(0, 0, 0, 0.55);
+  --wa-shadow-3: 0 14px 36px rgba(0, 0, 0, 0.65);
+
+  --wa-legacy-surface: #141a23;
+  --wa-legacy-surface-alt: #19202b;
+  --wa-legacy-surface-hover: #212a37;
+  --wa-legacy-accent-soft: #16273c;
+  --wa-legacy-text: #e6edf3;
+  --wa-legacy-text-muted: #9aa8b8;
+  --wa-legacy-text-faint: #6d7d8f;
+  --wa-legacy-accent: #8dbcf3;
+  --wa-legacy-good: #5fd39a;
+  --wa-legacy-warn: #f0be5c;
+  --wa-legacy-bad: #f79a92;
+  --wa-legacy-border: #253040;
+  --wa-legacy-border-strong: #354356;
+  --wa-legacy-good-soft: #0f2a1e;
+  --wa-legacy-warn-soft: #2b2211;
+  --wa-legacy-bad-soft: #2c1719;
+}
+
+/* ------------------------------------------------------------------ base -- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--wa-bg);
+  color: var(--wa-text);
+  font-family: var(--wa-font);
+  font-size: var(--wa-fs-base);
+  line-height: 1.5;
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--wa-accent-text);
+  text-decoration-color: color-mix(in srgb, var(--wa-accent-text) 35%, transparent);
+  text-underline-offset: 0.15em;
+}
+
+a:hover {
+  text-decoration-color: currentColor;
+}
+
+code,
+kbd {
+  background: var(--wa-surface-3);
+  border-radius: var(--wa-radius-sm);
+  font-family: var(--wa-font-mono);
+  font-size: 0.9em;
+  padding: 0.05em 0.3em;
+}
+
+:focus-visible {
+  outline: 2px solid var(--wa-ring);
+  outline-offset: 2px;
+  border-radius: var(--wa-radius-sm);
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--wa-border);
+  margin: 1.5rem 0;
+}
+
+/* Native controls that the primitives do not wrap still have to look native to
+   the theme rather than to the platform default. */
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+::placeholder {
+  color: var(--wa-text-faint);
+}
+
+.wa-sr-only {
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.wa-skip {
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-radius);
+  left: 0.75rem;
+  padding: 0.5rem 0.875rem;
+  position: fixed;
+  top: -6rem;
+  transition: top 0.15s ease;
+  z-index: 80;
+}
+
+.wa-skip:focus {
+  top: 0.75rem;
+}
+
+/* ----------------------------------------------------------------- frame -- */
+
+.wa-frame {
+  display: block;
+  min-height: 100dvh;
+}
+
+.wa-sidebar {
+  background: var(--wa-sidebar-bg);
+  border-right: 1px solid var(--wa-border);
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  left: 0;
+  overflow-y: auto;
+  padding: 0.75rem 0.625rem 1.25rem;
+  position: fixed;
+  top: 0;
+  width: var(--wa-sidebar-w);
+  z-index: 20;
+}
+
+.wa-brand {
+  align-items: center;
+  border-radius: var(--wa-radius);
+  color: var(--wa-text);
+  display: flex;
+  font-size: var(--wa-fs-md);
+  font-weight: 650;
+  gap: 0.5rem;
+  letter-spacing: -0.01em;
+  margin-bottom: 0.5rem;
+  padding: 0.5rem 0.5rem;
+  text-decoration: none;
+}
+
+.wa-brand:hover {
+  background: var(--wa-surface-3);
+}
+
+.wa-brand-mark {
+  align-items: center;
+  background: var(--wa-accent);
+  border-radius: var(--wa-radius-sm);
+  color: var(--wa-on-accent);
+  display: inline-flex;
+  flex: none;
+  font-size: var(--wa-fs-xs);
+  font-weight: 700;
+  height: 1.375rem;
+  justify-content: center;
+  letter-spacing: 0;
+  width: 1.375rem;
+}
+
+.wa-navgroup {
+  border-radius: var(--wa-radius);
+}
+
+.wa-navgroup > summary {
+  align-items: center;
+  color: var(--wa-text-faint);
+  cursor: pointer;
+  display: flex;
+  font-size: var(--wa-fs-2xs);
+  font-weight: 650;
+  gap: 0.375rem;
+  letter-spacing: 0.07em;
+  list-style: none;
+  padding: 0.5rem 0.5rem 0.375rem;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.wa-navgroup > summary::-webkit-details-marker {
+  display: none;
+}
+
+.wa-navgroup > summary:hover {
+  color: var(--wa-text-muted);
+}
+
+.wa-navgroup-caret {
+  flex: none;
+  height: 0.5rem;
+  transform: rotate(90deg);
+  transition: transform 0.15s ease;
+  width: 0.5rem;
+}
+
+.wa-navgroup[open] > summary .wa-navgroup-caret {
+  transform: rotate(180deg);
+}
+
+.wa-navlist {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  list-style: none;
+  margin: 0 0 0.375rem;
+  padding: 0;
+}
+
+.wa-navlink {
+  align-items: center;
+  border-radius: var(--wa-radius-sm);
+  color: var(--wa-text-muted);
+  display: flex;
+  font-size: var(--wa-fs-base);
+  gap: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  text-decoration: none;
+}
+
+.wa-navlink:hover {
+  background: var(--wa-surface-3);
+  color: var(--wa-text);
+}
+
+.wa-navlink[aria-current='page'] {
+  background: var(--wa-accent-soft);
+  color: var(--wa-accent-text);
+  font-weight: 600;
+}
+
+.wa-navlink-dot {
+  background: currentColor;
+  border-radius: 999px;
+  flex: none;
+  height: 0.3125rem;
+  opacity: 0.4;
+  width: 0.3125rem;
+}
+
+.wa-navlink[aria-current='page'] .wa-navlink-dot {
+  opacity: 1;
+}
+
+.wa-sidebar-foot {
+  border-top: 1px solid var(--wa-border);
+  color: var(--wa-text-faint);
+  font-size: var(--wa-fs-xs);
+  margin-top: auto;
+  padding: 0.75rem 0.5rem 0;
+}
+
+.wa-topbar {
+  align-items: center;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  background: var(--wa-topbar-bg);
+  border-bottom: 1px solid var(--wa-border);
+  display: flex;
+  gap: 0.75rem;
+  height: var(--wa-topbar-h);
+  margin-left: var(--wa-sidebar-w);
+  padding: 0 1.25rem;
+  position: sticky;
+  top: 0;
+  z-index: 25;
+}
+
+.wa-topbar-spacer {
+  flex: 1 1 auto;
+  min-width: 0.5rem;
+}
+
+.wa-topbar-org {
+  color: var(--wa-text-muted);
+  font-size: var(--wa-fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wa-identity {
+  align-items: center;
+  background: var(--wa-surface-2);
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-radius-pill);
+  display: flex;
+  font-size: var(--wa-fs-sm);
+  gap: 0.5rem;
+  max-width: 20rem;
+  padding: 0.1875rem 0.1875rem 0.1875rem 0.625rem;
+}
+
+.wa-identity-email {
+  color: var(--wa-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wa-content {
+  margin-left: var(--wa-sidebar-w);
+  padding: 1.75rem 1.75rem 5rem;
+}
+
+@media (max-width: 60rem) {
+  .wa-sidebar {
+    border-bottom: 1px solid var(--wa-border);
+    border-right: 0;
+    bottom: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    overflow-x: auto;
+    position: static;
+    width: 100%;
+  }
+
+  .wa-sidebar-foot {
+    display: none;
+  }
+
+  .wa-navgroup {
+    flex: 1 1 10rem;
+  }
+
+  .wa-topbar,
+  .wa-content {
+    margin-left: 0;
+  }
+
+  .wa-content {
+    padding: 1.25rem 1rem 4rem;
+  }
+}
+
+/* ------------------------------------------------------------ primitives -- */
+
+.wa-btn {
+  align-items: center;
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border-strong);
+  border-radius: var(--wa-radius);
+  color: var(--wa-text);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: var(--wa-fs-base);
+  font-weight: 500;
+  gap: 0.375rem;
+  justify-content: center;
+  line-height: 1.25;
+  padding: 0.4375rem 0.875rem;
+  text-decoration: none;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  white-space: nowrap;
+}
+
+.wa-btn:hover:not(:disabled) {
+  background: var(--wa-surface-3);
+}
+
+.wa-btn:disabled,
+.wa-btn[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.wa-btn--primary {
+  background: var(--wa-accent);
+  border-color: var(--wa-accent);
+  color: var(--wa-on-accent);
+}
+
+.wa-btn--primary:hover:not(:disabled) {
+  background: var(--wa-accent-hover);
+  border-color: var(--wa-accent-hover);
+}
+
+.wa-btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--wa-text-muted);
+}
+
+.wa-btn--ghost:hover:not(:disabled) {
+  background: var(--wa-surface-3);
+  color: var(--wa-text);
+}
+
+.wa-btn--danger {
+  border-color: var(--wa-bad-border);
+  color: var(--wa-bad-text);
+}
+
+.wa-btn--danger:hover:not(:disabled) {
+  background: var(--wa-bad-bg);
+}
+
+.wa-btn--sm {
+  font-size: var(--wa-fs-sm);
+  padding: 0.25rem 0.625rem;
+}
+
+.wa-btn--icon {
+  padding: 0.375rem;
+  width: 2rem;
+}
+
+.wa-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.wa-label {
+  color: var(--wa-text-muted);
+  font-size: var(--wa-fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.wa-hint {
+  color: var(--wa-text-faint);
+  font-size: var(--wa-fs-xs);
+}
+
+.wa-input,
+.wa-select,
+.wa-textarea {
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border-strong);
+  border-radius: var(--wa-radius-sm);
+  color: var(--wa-text);
+  font-size: var(--wa-fs-base);
+  min-width: 0;
+  padding: 0.375rem 0.5rem;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  width: 100%;
+}
+
+.wa-input:hover,
+.wa-select:hover,
+.wa-textarea:hover {
+  border-color: var(--wa-text-faint);
+}
+
+.wa-input:focus,
+.wa-select:focus,
+.wa-textarea:focus {
+  border-color: var(--wa-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--wa-accent) 22%, transparent);
+  outline: none;
+}
+
+.wa-textarea {
+  resize: vertical;
+}
+
+/*
+ * The chevron is drawn rather than left to the platform, because a native
+ * select on a dark surface keeps its light-mode arrow on several platforms.
+ * `color-scheme` fixes the popup list; this fixes the closed control.
+ */
+.wa-select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right 0.85rem center, right 0.6rem center;
+  background-repeat: no-repeat;
+  background-size: 0.3rem 0.3rem, 0.3rem 0.3rem;
+  padding-right: 1.75rem;
+}
+
+.wa-select--sm,
+.wa-input--sm {
+  font-size: var(--wa-fs-sm);
+  padding-block: 0.25rem;
+}
+
+.wa-checkbox {
+  accent-color: var(--wa-accent);
+  height: 0.9375rem;
+  margin: 0;
+  width: 0.9375rem;
+}
+
+.wa-card {
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-radius-lg);
+  box-shadow: var(--wa-shadow-1);
+}
+
+.wa-card__head {
+  align-items: baseline;
+  border-bottom: 1px solid var(--wa-border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  padding: 0.75rem 1rem;
+}
+
+.wa-card__title {
+  font-size: var(--wa-fs-md);
+  font-weight: 600;
+  margin: 0;
+}
+
+.wa-card__sub {
+  color: var(--wa-text-muted);
+  font-size: var(--wa-fs-sm);
+  margin: 0;
+}
+
+.wa-card__body {
+  padding: 1rem;
+}
+
+.wa-card__body--flush {
+  padding: 0;
+}
+
+.wa-toolbar {
+  align-items: flex-end;
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-radius-lg);
+  box-shadow: var(--wa-shadow-1);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.625rem 0.75rem;
+  padding: 0.75rem 1rem;
+}
+
+.wa-badge {
+  align-items: center;
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-radius-pill);
+  background: var(--wa-surface-2);
+  color: var(--wa-text-muted);
+  display: inline-flex;
+  font-size: var(--wa-fs-xs);
+  font-weight: 550;
+  gap: 0.3125rem;
+  line-height: 1.4;
+  padding: 0.0625rem 0.5rem;
+  white-space: nowrap;
+}
+
+.wa-badge--good {
+  background: var(--wa-good-bg);
+  border-color: var(--wa-good-border);
+  color: var(--wa-good-text);
+}
+
+.wa-badge--warn {
+  background: var(--wa-warn-bg);
+  border-color: var(--wa-warn-border);
+  color: var(--wa-warn-text);
+}
+
+.wa-badge--bad {
+  background: var(--wa-bad-bg);
+  border-color: var(--wa-bad-border);
+  color: var(--wa-bad-text);
+}
+
+.wa-badge--info {
+  background: var(--wa-info-bg);
+  border-color: var(--wa-info-border);
+  color: var(--wa-info-text);
+}
+
+.wa-badge__dot {
+  background: currentColor;
+  border-radius: 999px;
+  flex: none;
+  height: 0.375rem;
+  width: 0.375rem;
+}
+
+.wa-banner {
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-radius);
+  display: flex;
+  font-size: var(--wa-fs-base);
+  gap: 0.625rem;
+  margin: 0;
+  padding: 0.6875rem 0.875rem;
+}
+
+.wa-banner--good {
+  background: var(--wa-good-bg);
+  border-color: var(--wa-good-border);
+  color: var(--wa-good-text);
+}
+
+.wa-banner--warn {
+  background: var(--wa-warn-bg);
+  border-color: var(--wa-warn-border);
+  color: var(--wa-warn-text);
+}
+
+.wa-banner--bad {
+  background: var(--wa-bad-bg);
+  border-color: var(--wa-bad-border);
+  color: var(--wa-bad-text);
+}
+
+.wa-banner--info {
+  background: var(--wa-info-bg);
+  border-color: var(--wa-info-border);
+  color: var(--wa-info-text);
+}
+
+.wa-tabs {
+  border-bottom: 1px solid var(--wa-border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+}
+
+.wa-tab {
+  border-bottom: 2px solid transparent;
+  color: var(--wa-text-muted);
+  display: inline-block;
+  font-size: var(--wa-fs-base);
+  margin-bottom: -1px;
+  padding: 0.4375rem 0.625rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.wa-tab:hover {
+  color: var(--wa-text);
+}
+
+.wa-tab[aria-current='page'] {
+  border-bottom-color: var(--wa-accent);
+  color: var(--wa-text);
+  font-weight: 600;
+}
+
+.wa-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--wa-fs-sm);
+  width: 100%;
+}
+
+.wa-table th {
+  background: var(--wa-surface-2);
+  border-bottom: 1px solid var(--wa-border);
+  color: var(--wa-text-muted);
+  font-size: var(--wa-fs-xs);
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  padding: 0.5rem 0.75rem;
+  position: sticky;
+  text-align: left;
+  text-transform: uppercase;
+  top: 0;
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.wa-table td {
+  border-bottom: 1px solid var(--wa-border);
+  padding: 0.5rem 0.75rem;
+  vertical-align: middle;
+}
+
+.wa-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.wa-table tbody tr:hover td {
+  background: var(--wa-surface-2);
+}
+
+.wa-table--numeric td,
+.wa-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.wa-tablewrap {
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-radius-lg);
+  background: var(--wa-surface);
+  box-shadow: var(--wa-shadow-1);
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.wa-empty {
+  align-items: center;
+  border: 1px dashed var(--wa-border-strong);
+  border-radius: var(--wa-radius-lg);
+  color: var(--wa-text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 2.25rem 1.5rem;
+  text-align: center;
+}
+
+.wa-empty__title {
+  color: var(--wa-text);
+  font-size: var(--wa-fs-md);
+  font-weight: 600;
+  margin: 0;
+}
+
+.wa-empty__body {
+  font-size: var(--wa-fs-base);
+  margin: 0;
+  max-width: 34rem;
+}
+
+/* ------------------------------------------------------------------ kpi --- */
+
+.wa-kpis {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+}
+
+.wa-kpi {
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-radius-lg);
+  box-shadow: var(--wa-shadow-1);
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 0.875rem 1rem;
+}
+
+.wa-kpi__label {
+  color: var(--wa-text-muted);
+  font-size: var(--wa-fs-2xs);
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.wa-kpi__value {
+  font-size: var(--wa-fs-2xl);
+  font-weight: 620;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.wa-kpi__deltas {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.wa-kpi__delta {
+  align-items: baseline;
+  display: flex;
+  font-size: var(--wa-fs-xs);
+  gap: 0.375rem;
+}
+
+.wa-kpi__delta strong {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.wa-delta--good {
+  color: var(--wa-good-text);
+}
+
+.wa-delta--bad {
+  color: var(--wa-bad-text);
+}
+
+.wa-delta--flat {
+  color: var(--wa-text-faint);
+}
+
+/* ----------------------------------------------------------------- viz ---- */
+
+.wa-chart {
+  display: block;
+  height: auto;
+  width: 100%;
+}
+
+.wa-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.875rem;
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+}
+
+.wa-chart-legend li {
+  align-items: center;
+  color: var(--wa-text-muted);
+  display: flex;
+  font-size: var(--wa-fs-xs);
+  gap: 0.375rem;
+}
+
+.wa-chart-key {
+  border-radius: 999px;
+  display: inline-block;
+  height: 0.1875rem;
+  width: 0.875rem;
+}
+
+/* --------------------------------------------------------------- toasts --- */
+
+.wa-toasts {
+  bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  left: 50%;
+  position: fixed;
+  transform: translateX(-50%);
+  width: min(26rem, calc(100vw - 2rem));
+  z-index: 90;
+}
+
+.wa-toast {
+  align-items: flex-start;
+  animation: wa-toast-in 0.16s ease-out;
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border-strong);
+  border-radius: var(--wa-radius);
+  box-shadow: var(--wa-shadow-3);
+  display: flex;
+  font-size: var(--wa-fs-base);
+  gap: 0.625rem;
+  padding: 0.625rem 0.75rem;
+}
+
+.wa-toast--good {
+  border-color: var(--wa-good-border);
+}
+
+.wa-toast--bad {
+  border-color: var(--wa-bad-border);
+}
+
+.wa-toast__mark {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  flex: none;
+  font-size: var(--wa-fs-xs);
+  height: 1.125rem;
+  justify-content: center;
+  margin-top: 0.0625rem;
+  width: 1.125rem;
+}
+
+.wa-toast--good .wa-toast__mark {
+  background: var(--wa-good-bg);
+  color: var(--wa-good-text);
+}
+
+.wa-toast--bad .wa-toast__mark {
+  background: var(--wa-bad-bg);
+  color: var(--wa-bad-text);
+}
+
+.wa-toast--info .wa-toast__mark {
+  background: var(--wa-info-bg);
+  color: var(--wa-info-text);
+}
+
+.wa-toast__text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+@keyframes wa-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.375rem);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wa-toast {
+    animation: none;
+  }
+}
+
+/* --------------------------------------------------------------- modal ---- */
+
+.wa-modal {
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border-strong);
+  border-radius: var(--wa-radius-lg);
+  box-shadow: var(--wa-shadow-3);
+  color: var(--wa-text);
+  max-width: min(34rem, calc(100vw - 2rem));
+  padding: 0;
+  width: 100%;
+}
+
+.wa-modal::backdrop {
+  background: rgba(9, 13, 20, 0.45);
+}
+
+.wa-modal__head {
+  align-items: center;
+  border-bottom: 1px solid var(--wa-border);
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+}
+
+.wa-modal__title {
+  font-size: var(--wa-fs-md);
+  font-weight: 620;
+  margin: 0;
+}
+
+.wa-modal__body {
+  padding: 1rem;
+}
+
+.wa-modal__foot {
+  border-top: 1px solid var(--wa-border);
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  padding: 0.75rem 1rem;
+}
+
+/* ------------------------------------------------------------- feedback --- */
+
+.wa-feedback-entry {
+  align-items: center;
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border-strong);
+  border-radius: var(--wa-radius-pill);
+  bottom: 1rem;
+  box-shadow: var(--wa-shadow-2);
+  color: var(--wa-text);
+  display: inline-flex;
+  font-size: var(--wa-fs-sm);
+  gap: 0.375rem;
+  padding: 0.375rem 0.875rem;
+  position: fixed;
+  right: 1rem;
+  text-decoration: none;
+  z-index: 40;
+}
+
+.wa-feedback-entry:hover {
+  background: var(--wa-surface-3);
+}
+
+/* ---------------------------------------------------- page-level helpers -- */
+
+.wa-page-head {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
+}
+
+.wa-page-title {
+  font-size: var(--wa-fs-xl);
+  font-weight: 640;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.wa-page-sub {
+  color: var(--wa-text-muted);
+  font-size: var(--wa-fs-base);
+  margin: 0.25rem 0 0;
+}
+
+.wa-section-title {
+  font-size: var(--wa-fs-md);
+  font-weight: 620;
+  margin: 1.75rem 0 0.625rem;
+}
+
+.wa-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.wa-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.wa-grid-2 {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+}
+
+/* ------------------------------------------------- legacy embed bridge ---- */
+
+/*
+ * `packages/ui` writes its palette straight into `style` attributes, so a
+ * stylesheet can only reach it through those literals. Every rule below pairs a
+ * WP-06 literal with the token that replaces it; in light mode the token holds
+ * the identical value, so this whole block is inert. Delete it the day WP-06
+ * moves `theme.ts` onto custom properties.
+ */
+.wa-embed {
+  color: var(--wa-legacy-text);
+}
+
+.wa-embed [style*='background:#ffffff'] {
+  background-color: var(--wa-legacy-surface) !important;
+}
+
+.wa-embed [style*='background:#f9fafb'] {
+  background-color: var(--wa-legacy-surface-alt) !important;
+}
+
+.wa-embed [style*='background:#f3f4f6'] {
+  background-color: var(--wa-legacy-surface-hover) !important;
+}
+
+.wa-embed [style*='background:#eff6ff'] {
+  background-color: var(--wa-legacy-accent-soft) !important;
+}
+
+.wa-embed [style*='background:#ecfdf5'] {
+  background-color: var(--wa-legacy-good-soft) !important;
+}
+
+.wa-embed [style*='background:#fffbeb'] {
+  background-color: var(--wa-legacy-warn-soft) !important;
+}
+
+.wa-embed [style*='background:#fef2f2'] {
+  background-color: var(--wa-legacy-bad-soft) !important;
+}
+
+.wa-embed [style*='color:#111827'] {
+  color: var(--wa-legacy-text) !important;
+}
+
+.wa-embed [style*='color:#6b7280'] {
+  color: var(--wa-legacy-text-muted) !important;
+}
+
+.wa-embed [style*='color:#9ca3af'] {
+  color: var(--wa-legacy-text-faint) !important;
+}
+
+.wa-embed [style*='color:#1d4ed8'] {
+  color: var(--wa-legacy-accent) !important;
+}
+
+.wa-embed [style*='color:#065f46'] {
+  color: var(--wa-legacy-good) !important;
+}
+
+.wa-embed [style*='color:#92400e'] {
+  color: var(--wa-legacy-warn) !important;
+}
+
+.wa-embed [style*='color:#991b1b'] {
+  color: var(--wa-legacy-bad) !important;
+}
+
+.wa-embed [style*='#e5e7eb'] {
+  border-color: var(--wa-legacy-border) !important;
+}
+
+.wa-embed [style*='#d1d5db'] {
+  border-color: var(--wa-legacy-border-strong) !important;
+}
+
+.wa-embed [style*='#a7f3d0'] {
+  border-color: var(--wa-good-border) !important;
+}
+
+.wa-embed [style*='#fde68a'] {
+  border-color: var(--wa-warn-border) !important;
+}
+
+.wa-embed [style*='#fecaca'] {
+  border-color: var(--wa-bad-border) !important;
+}
+
+/* WP-06's own controls, which carry no inline palette at all. */
+.wa-embed input,
+.wa-embed select,
+.wa-embed textarea {
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border-strong);
+  border-radius: var(--wa-radius-sm);
+  color: var(--wa-text);
+  padding: 0.1875rem 0.375rem;
+}
+
+.wa-embed button {
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border-strong);
+  border-radius: var(--wa-radius-sm);
+  color: var(--wa-text);
+  cursor: pointer;
+  padding: 0.1875rem 0.5rem;
+}
+
+.wa-embed button:hover {
+  background: var(--wa-surface-3);
+}
+
+/* The pin and resize affordances inside the grid header are not buttons in the
+   toolbar sense; leave them unchromed. */
+.wa-embed [role='columnheader'] button {
+  background: none;
+  border: 0;
+  padding: 0;
+}

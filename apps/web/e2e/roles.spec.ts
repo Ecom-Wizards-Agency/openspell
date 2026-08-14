@@ -68,14 +68,23 @@ test('an admin toggles sync and the change survives a reload', async ({ page }) 
   await signIn(page, 'admin');
   await page.goto('/settings/profiles?sync=off');
 
+  // WP-21 made the sync control a Select (On/Off) with a toast on save,
+  // replacing the click-toggle button whose label was its own state. The
+  // assertions are the same behaviour — off flips to on, it persists, the
+  // sync-status page agrees — expressed against the dropdown, plus the toast the
+  // redesign added as the confirmation the button never gave.
   const row = page.getByTestId('profile-row').first();
   const profileId = await row.getAttribute('data-profile-id');
-  await expect(row.getByTestId('toggle-sync')).toHaveText('off');
-  await row.getByTestId('toggle-sync').click();
+  const control = row.getByTestId('toggle-sync');
+  await expect(control).toHaveValue('0');
+  await control.selectOption('On');
+  // Wait for the save to confirm before navigating: the write is an optimistic
+  // transition, and leaving before it resolves would race the revalidation.
+  await expect(page.getByTestId('toast')).toContainText('Sync on');
 
   await page.goto('/settings/profiles?sync=on');
   const enabled = page.locator(`[data-profile-id="${profileId}"]`);
-  await expect(enabled.getByTestId('toggle-sync')).toHaveText('on');
+  await expect(enabled.getByTestId('toggle-sync')).toHaveValue('1');
 
   // And the sync-status page sees the same profile as enabled.
   await page.goto('/sync-status');
@@ -83,7 +92,9 @@ test('an admin toggles sync and the change survives a reload', async ({ page }) 
 
   // Put it back, so the ordering of later runs is not affected.
   await page.goto('/settings/profiles?sync=on');
-  await page.locator(`[data-profile-id="${profileId}"]`).getByTestId('toggle-sync').click();
+  const back = page.locator(`[data-profile-id="${profileId}"]`).getByTestId('toggle-sync');
+  await back.selectOption('Off');
+  await expect(page.getByTestId('toast')).toContainText('Sync off');
 });
 
 test('the analyst edit persisted for every role that can read it', async ({ page }) => {

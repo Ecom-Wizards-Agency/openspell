@@ -1,5 +1,5 @@
 /**
- * `/settings/profiles` — the roster, filtered, with the two editable things.
+ * `/settings/profiles` — the roster, filtered, with the editable things.
  *
  * Filters are a GET form, so a filtered roster is a URL somebody can send to a
  * colleague. Edits are one small form per row rather than one giant form,
@@ -7,8 +7,12 @@
  * change one bid target and makes every save a full-table write.
  *
  * Roles show up twice, and the second time is the one that matters: controls a
- * role cannot use are not rendered, and the server actions behind them check
- * the same capability table anyway.
+ * role cannot use are not rendered, and the server actions behind them check the
+ * same capability table anyway.
+ *
+ * Layout follows the recon's admin screens (`09-settings-and-admin.md`): a
+ * result count you can trust above a filter bar, then one table with a sticky
+ * header, then an empty state that names the next action rather than shrugging.
  */
 import type { ReactNode } from 'react';
 import { GOAL_LENSES } from '@wizard-ads/core';
@@ -19,18 +23,20 @@ import { loadRoster } from '../../../src/data/profiles';
 import type { ProfileRow } from '../../../src/data/profiles';
 import { Shell } from '../../../src/ui/shell';
 import {
-  banner,
-  button,
-  colors,
-  heading,
-  input,
-  muted,
-  page,
-  table,
-  td,
-  th,
-} from '../../../src/ui/tokens';
-import { saveTargets, toggleSync } from './actions';
+  Badge,
+  Banner,
+  Button,
+  EmptyState,
+  Field,
+  Input,
+  PageHeader,
+  Select,
+  TableFrame,
+  Toolbar,
+} from '../../../src/ui/primitives';
+import { page } from '../../../src/ui/tokens';
+import { SyncControl } from './sync-control';
+import { saveTargets } from './actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,12 +51,12 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
   if (result.state !== 'ok') {
     return (
       <main style={page}>
-        <h1 style={heading}>Profiles</h1>
-        <p style={banner('warn')}>
+        <PageHeader title="Profiles" />
+        <Banner tone="warn">
           {result.state === 'no-database'
             ? 'DATABASE_URL is not set, so this instance cannot read its own database.'
             : 'Your account is not a member of any organisation yet.'}
-        </p>
+        </Banner>
       </main>
     );
   }
@@ -68,92 +74,159 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
 
   const mayEditTargets = can(org.role, 'editTargets');
   const mayToggleSync = can(org.role, 'toggleSync');
+  const filtered = roster.rows.length !== roster.total;
 
   return (
     <main style={page}>
       <Shell context={context} current="profiles">
-        <h1 style={heading}>Profiles</h1>
-        <p style={muted} data-testid="roster-count">
-          Showing {roster.rows.length} of {roster.total}
-          {roster.total > 0
-            ? ` · ${Object.entries(roster.regionCounts)
-                .map(([region, count]) => `${region} ${count}`)
-                .join(' · ')}`
-            : ''}
-        </p>
+        <PageHeader
+          title="Profiles"
+          subtitle="One row per Amazon advertising profile. Sync decides whether the worker fetches it at all; the targets below are what the engine optimises against."
+          meta={
+            <>
+              <Badge data-testid="roster-count">
+                Showing {roster.rows.length} of {roster.total}
+                {roster.total > 0
+                  ? ` · ${Object.entries(roster.regionCounts)
+                      .map(([region, count]) => `${region} ${count}`)
+                      .join(' · ')}`
+                  : ''}
+              </Badge>
+              {filtered ? <Badge tone="info">filtered</Badge> : null}
+            </>
+          }
+        />
 
-        <form method="get" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', margin: '1rem 0' }}>
-          <input
-            type="search"
-            name="q"
-            placeholder="name or profile id"
-            defaultValue={query.q ?? ''}
-            aria-label="Search profiles"
-            style={{ ...input, width: '14rem' }}
-          />
-          <select name="region" defaultValue={query.region ?? ''} aria-label="Region" style={input}>
-            <option value="">All regions</option>
-            {Region.options.map((region) => (
-              <option key={region} value={region}>
-                {region}
-              </option>
-            ))}
-          </select>
-          <select name="country" defaultValue={query.country ?? ''} aria-label="Country" style={input}>
-            <option value="">All countries</option>
-            {roster.countries.map((country) => (
-              <option key={country} value={country}>
-                {country}
-              </option>
-            ))}
-          </select>
-          <select name="sync" defaultValue={query.sync ?? ''} aria-label="Sync state" style={input}>
-            <option value="">Any sync state</option>
-            <option value="on">Sync on</option>
-            <option value="off">Sync off</option>
-          </select>
-          <button type="submit" style={button}>
-            Filter
-          </button>
+        <form method="get">
+          <Toolbar>
+            <Field label="Search" htmlFor="roster-q">
+              <Input
+                id="roster-q"
+                type="search"
+                name="q"
+                placeholder="name or profile id"
+                defaultValue={query.q ?? ''}
+                aria-label="Search profiles"
+                style={{ width: '15rem' }}
+              />
+            </Field>
+            <Field label="Region" htmlFor="roster-region">
+              <Select
+                id="roster-region"
+                name="region"
+                defaultValue={query.region ?? ''}
+                aria-label="Region"
+                style={{ width: '9rem' }}
+              >
+                <option value="">All regions</option>
+                {Region.options.map((region) => (
+                  <option key={region} value={region}>
+                    {region}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Country" htmlFor="roster-country">
+              <Select
+                id="roster-country"
+                name="country"
+                defaultValue={query.country ?? ''}
+                aria-label="Country"
+                style={{ width: '9rem' }}
+              >
+                <option value="">All countries</option>
+                {roster.countries.map((country) => (
+                  <option key={country} value={country}>
+                    {country}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Sync state" htmlFor="roster-sync">
+              <Select
+                id="roster-sync"
+                name="sync"
+                defaultValue={query.sync ?? ''}
+                aria-label="Sync state"
+                style={{ width: '10rem' }}
+              >
+                <option value="">Any sync state</option>
+                <option value="on">Sync on</option>
+                <option value="off">Sync off</option>
+              </Select>
+            </Field>
+            <Button type="submit" variant="primary">
+              Filter
+            </Button>
+            {/* A link, not a reset: the filter lives in the URL, so clearing it
+                means going to the unfiltered URL, not blanking the inputs. */}
+            <a className="wa-btn wa-btn--ghost" href="/settings/profiles">
+              Clear
+            </a>
+          </Toolbar>
         </form>
 
         {!mayEditTargets ? (
-          <p style={banner('warn')} data-testid="read-only-notice">
+          <Banner tone="warn" data-testid="read-only-notice">
             Your role is <strong>{org.role}</strong>: this roster is read-only for you.
-          </p>
+          </Banner>
         ) : null}
 
-        <table style={table}>
-          <thead>
-            <tr>
-              <th style={th}>Profile</th>
-              <th style={th}>Region</th>
-              <th style={th}>Country</th>
-              <th style={th}>Currency</th>
-              <th style={th}>Sync</th>
-              <th style={th}>Target ACOS %</th>
-              <th style={th}>Target TACOS %</th>
-              <th style={th}>Goal lens</th>
-              <th style={th}>Monthly budget</th>
-              <th style={th} />
-            </tr>
-          </thead>
-          <tbody>
-            {roster.rows.map((profile) => (
-              <ProfileTableRow
-                key={profile.id}
-                profile={profile}
-                mayEditTargets={mayEditTargets}
-                mayToggleSync={mayToggleSync}
-              />
-            ))}
-          </tbody>
-        </table>
+        <TableFrame data-testid="roster-table">
+          <table className="wa-table wa-table--numeric">
+            <thead>
+              <tr>
+                <th scope="col">Profile</th>
+                <th scope="col">Region</th>
+                <th scope="col">Country</th>
+                <th scope="col">Currency</th>
+                <th scope="col">Sync</th>
+                <th scope="col">Target ACOS %</th>
+                <th scope="col">Target TACOS %</th>
+                <th scope="col">Goal lens</th>
+                <th scope="col">Monthly budget</th>
+                <th scope="col">
+                  <span className="wa-sr-only">Save</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {roster.rows.map((profile) => (
+                <ProfileTableRow
+                  key={profile.id}
+                  profile={profile}
+                  mayEditTargets={mayEditTargets}
+                  mayToggleSync={mayToggleSync}
+                />
+              ))}
+            </tbody>
+          </table>
+        </TableFrame>
 
         {roster.rows.length === 0 ? (
-          <p style={muted} data-testid="roster-empty">
-            No profiles match. Connect Amazon Ads, or widen the filter.
-          </p>
+          <div style={{ marginTop: '1rem' }}>
+            <EmptyState
+              data-testid="roster-empty"
+              title="No profiles match"
+              body={
+                roster.total === 0
+                  ? 'Nothing has been synced into this organisation yet. Connect Amazon Ads and the OAuth callback lands the roster, one row per profile per region.'
+                  : 'Every profile is filtered out by the current search. Widen it, or clear the filter to see all ' +
+                    `${roster.total}.`
+              }
+              action={
+                roster.total === 0 ? (
+                  <a className="wa-btn wa-btn--primary wa-btn--sm" href="/settings/connections">
+                    Connect Amazon Ads
+                  </a>
+                ) : (
+                  <a className="wa-btn wa-btn--sm" href="/settings/profiles">
+                    Clear the filter
+                  </a>
+                )
+              }
+            />
+          </div>
         ) : null}
       </Shell>
     </main>
@@ -170,36 +243,26 @@ function ProfileTableRow({
   mayToggleSync: boolean;
 }): ReactNode {
   const formId = `targets-${profile.id}`;
+  const label = profile.accountName ?? profile.amazonProfileId;
   return (
     <tr data-testid="profile-row" data-profile-id={profile.id}>
-      <td style={td}>
-        <div>{profile.accountName ?? profile.amazonProfileId}</div>
-        <div style={{ ...muted, fontSize: '0.75rem' }}>{profile.amazonProfileId}</div>
+      <td>
+        <div style={{ fontWeight: 550 }}>{label}</div>
+        <div className="wa-hint">{profile.amazonProfileId}</div>
       </td>
-      <td style={td}>{profile.region}</td>
-      <td style={td}>{profile.countryCode}</td>
-      <td style={td}>{profile.currencyCode}</td>
-      <td style={td} data-testid="sync-state">
+      <td>{profile.region}</td>
+      <td>{profile.countryCode}</td>
+      <td>{profile.currencyCode}</td>
+      <td data-testid="sync-state">
         {mayToggleSync ? (
-          <form action={toggleSync}>
-            <input type="hidden" name="profileId" value={profile.id} />
-            <input type="hidden" name="enabled" value={profile.syncEnabled ? '0' : '1'} />
-            <button
-              type="submit"
-              style={{
-                ...button,
-                color: profile.syncEnabled ? colors.good : colors.muted,
-              }}
-              data-testid="toggle-sync"
-            >
-              {profile.syncEnabled ? 'on' : 'off'}
-            </button>
-          </form>
+          <SyncControl profileId={profile.id} profileLabel={label} enabled={profile.syncEnabled} />
         ) : (
-          <span data-testid="sync-readonly">{profile.syncEnabled ? 'on' : 'off'}</span>
+          <Badge tone={profile.syncEnabled ? 'good' : 'neutral'} dot data-testid="sync-readonly">
+            {profile.syncEnabled ? 'on' : 'off'}
+          </Badge>
         )}
       </td>
-      <td style={td}>
+      <td>
         <Cell
           formId={formId}
           name="targetAcos"
@@ -207,7 +270,7 @@ function ProfileTableRow({
           editable={mayEditTargets}
         />
       </td>
-      <td style={td}>
+      <td>
         <Cell
           formId={formId}
           name="targetTotalAcos"
@@ -215,14 +278,15 @@ function ProfileTableRow({
           editable={mayEditTargets}
         />
       </td>
-      <td style={td}>
+      <td>
         {mayEditTargets ? (
-          <select
+          <Select
+            compact
             form={formId}
             name="goalLens"
             defaultValue={profile.goalLens ?? ''}
             aria-label="Goal lens"
-            style={{ ...input, width: '9rem' }}
+            style={{ width: '9rem' }}
             data-testid="field-goalLens"
           >
             <option value="">—</option>
@@ -231,12 +295,12 @@ function ProfileTableRow({
                 {lens.label}
               </option>
             ))}
-          </select>
+          </Select>
         ) : (
           <span data-testid="field-goalLens">{profile.goalLens ?? '—'}</span>
         )}
       </td>
-      <td style={td}>
+      <td>
         <Cell
           formId={formId}
           name="monthlyBudget"
@@ -244,13 +308,13 @@ function ProfileTableRow({
           editable={mayEditTargets}
         />
       </td>
-      <td style={td}>
+      <td>
         {mayEditTargets ? (
           <form action={saveTargets} id={formId}>
             <input type="hidden" name="profileId" value={profile.id} />
-            <button type="submit" style={button} data-testid="save-targets">
+            <Button type="submit" size="sm" data-testid="save-targets">
               Save
-            </button>
+            </Button>
           </form>
         ) : null}
       </td>
@@ -281,7 +345,7 @@ function Cell({
     return <span data-testid={`field-${name}`}>{value === '' ? '—' : value}</span>;
   }
   return (
-    <input
+    <Input
       form={formId}
       name={name}
       type="number"
@@ -289,7 +353,7 @@ function Cell({
       min="0"
       defaultValue={value}
       aria-label={name}
-      style={input}
+      style={{ width: '6.5rem' }}
       data-testid={`field-${name}`}
     />
   );

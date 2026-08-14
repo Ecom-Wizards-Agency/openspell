@@ -48,7 +48,7 @@ export default function AppError({
 }
 
 const main: CSSProperties = {
-  color: '#111827',
+  color: 'var(--wa-text)',
   fontFamily: 'ui-sans-serif, system-ui, sans-serif',
   margin: '0 auto',
   maxWidth: '36rem',
@@ -56,11 +56,11 @@ const main: CSSProperties = {
 };
 
 const heading: CSSProperties = { fontSize: '1.5rem', margin: '0 0 0.75rem' };
-const body: CSSProperties = { color: '#6b7280', fontSize: '0.875rem', margin: '0 0 0.75rem' };
-const link: CSSProperties = { color: '#111827' };
+const body: CSSProperties = { color: 'var(--wa-text-muted)', fontSize: '0.875rem', margin: '0 0 0.75rem' };
+const link: CSSProperties = { color: 'var(--wa-text)' };
 const button: CSSProperties = {
-  background: '#f9fafb',
-  border: '1px solid #e5e7eb',
+  background: 'var(--wa-surface-2)',
+  border: '1px solid var(--wa-border)',
   borderRadius: '0.25rem',
   cursor: 'pointer',
   fontSize: '0.8125rem',

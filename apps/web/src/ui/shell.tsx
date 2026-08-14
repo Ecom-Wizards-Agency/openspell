@@ -1,5 +1,12 @@
 /**
- * The header every WP-04 screen shares: who you are, which org, where to go.
+ * The settings sub-frame: which admin screen you are on, and which tenant it is
+ * about.
+ *
+ * It used to be a second header carrying its own navigation *and* its own sign
+ * out button, competing with the application frame directly above it. The frame
+ * now owns identity, so this owns exactly what the frame cannot: the tenant this
+ * particular screen is reading, the role that decides what it will let you do,
+ * and the tabs between the admin screens.
  *
  * A server component. The org switcher is a plain form posting to a server
  * action rather than a client-side select, because a page that already renders
@@ -8,7 +15,23 @@
 import type { ReactNode } from 'react';
 import type { OrgContext } from '../data/orgs';
 import { selectOrg } from './actions';
-import { colors, muted } from './tokens';
+import { Badge, Button, Select, Tabs } from './primitives';
+
+const TABS = [
+  { href: '/settings/connections', label: 'Connections' },
+  { href: '/settings/profiles', label: 'Profiles' },
+  { href: '/sync-status', label: 'Sync status' },
+  { href: '/feedback', label: 'Feedback' },
+  { href: '/roadmap', label: 'Roadmap' },
+] as const;
+
+const HREF_FOR = {
+  connections: '/settings/connections',
+  profiles: '/settings/profiles',
+  sync: '/sync-status',
+  feedback: '/feedback',
+  roadmap: '/roadmap',
+} as const;
 
 export function Shell({
   context,
@@ -16,100 +39,52 @@ export function Shell({
   children,
 }: {
   context: OrgContext;
-  current: 'connections' | 'profiles' | 'sync' | 'feedback' | 'roadmap';
+  current: keyof typeof HREF_FOR;
   children: ReactNode;
 }): ReactNode {
+  const role = context.active?.role ?? null;
   return (
     <>
-      <header
-        style={{
-          alignItems: 'center',
-          borderBottom: `1px solid ${colors.border}`,
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '1rem',
-          justifyContent: 'space-between',
-          marginBottom: '1.5rem',
-          paddingBottom: '0.75rem',
-        }}
+      <div
+        className="wa-row"
+        style={{ justifyContent: 'space-between', marginBottom: '0.75rem' }}
       >
-        <nav style={{ display: 'flex', gap: '1rem' }}>
-          <NavLink href="/settings/connections" active={current === 'connections'}>
-            Connections
-          </NavLink>
-          <NavLink href="/settings/profiles" active={current === 'profiles'}>
-            Profiles
-          </NavLink>
-          <NavLink href="/sync-status" active={current === 'sync'}>
-            Sync status
-          </NavLink>
-          <NavLink href="/feedback" active={current === 'feedback'}>
-            Feedback
-          </NavLink>
-          <NavLink href="/roadmap" active={current === 'roadmap'}>
-            Roadmap
-          </NavLink>
-        </nav>
+        <Tabs items={TABS} current={HREF_FOR[current]} ariaLabel="Settings" />
 
-        <div style={{ alignItems: 'center', display: 'flex', gap: '0.75rem' }}>
+        <div className="wa-row" style={{ gap: '0.5rem' }}>
           {context.memberships.length > 1 ? (
-            <form action={selectOrg} style={{ display: 'flex', gap: '0.375rem' }}>
-              <select
+            <form action={selectOrg} className="wa-row" style={{ gap: '0.375rem' }}>
+              <Select
+                compact
                 name="orgId"
                 aria-label="Organisation"
                 defaultValue={context.active?.orgId ?? ''}
-                style={{ fontSize: '0.8125rem', padding: '0.25rem' }}
+                style={{ width: 'auto' }}
               >
                 {context.memberships.map((membership) => (
                   <option key={membership.orgId} value={membership.orgId}>
                     {membership.name}
                   </option>
                 ))}
-              </select>
-              <button type="submit" style={{ fontSize: '0.8125rem' }}>
+              </Select>
+              <Button type="submit" size="sm">
                 Switch
-              </button>
+              </Button>
             </form>
           ) : (
-            <span style={muted} data-testid="org-name">
-              {context.active?.name ?? 'no organisation'}
-            </span>
+            <Badge data-testid="org-name">{context.active?.name ?? 'no organisation'}</Badge>
           )}
-          <span style={muted} data-testid="org-role">
+          {/*
+            The exact string the role matrix asserts on. It is also the honest
+            phrasing: a role is a fact about this session, not a label on a
+            person, and every control on the screens below is decided by it.
+          */}
+          <Badge tone={role === null ? 'warn' : 'info'} dot data-testid="org-role">
             {context.active ? `role: ${context.active.role}` : 'no role'}
-          </span>
-          <form action="/auth/signout" method="post">
-            <button type="submit" style={{ fontSize: '0.8125rem' }}>
-              Sign out
-            </button>
-          </form>
+          </Badge>
         </div>
-      </header>
+      </div>
       {children}
     </>
-  );
-}
-
-function NavLink({
-  href,
-  active,
-  children,
-}: {
-  href: string;
-  active: boolean;
-  children: ReactNode;
-}): ReactNode {
-  return (
-    <a
-      href={href}
-      style={{
-        color: active ? colors.text : colors.muted,
-        fontSize: '0.875rem',
-        fontWeight: active ? 600 : 400,
-        textDecoration: 'none',
-      }}
-    >
-      {children}
-    </a>
   );
 }

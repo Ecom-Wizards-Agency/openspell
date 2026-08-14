@@ -170,11 +170,11 @@ const main: CSSProperties = {
 };
 
 const heading: CSSProperties = { fontSize: '1.5rem', margin: 0 };
-const muted: CSSProperties = { color: '#6b7280', fontSize: '0.875rem', margin: 0 };
+const muted: CSSProperties = { color: 'var(--wa-text-muted)', fontSize: '0.875rem', margin: 0 };
 const pill: CSSProperties = {
-  border: '1px solid #d1d5db',
+  border: '1px solid var(--wa-border-strong)',
   borderRadius: '999px',
-  color: '#111827',
+  color: 'var(--wa-text)',
   fontSize: '0.8125rem',
   padding: '0.125rem 0.625rem',
   textDecoration: 'none',

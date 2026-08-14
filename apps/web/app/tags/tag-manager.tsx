@@ -22,10 +22,10 @@ interface TagManagerProps {
 }
 
 const panel = {
-  border: '1px solid #d7dce2',
+  border: '1px solid var(--wa-border)',
   borderRadius: 10,
   padding: 18,
-  background: '#fff',
+  background: 'var(--wa-surface)',
 } as const;
 
 function flattenTags(tags: readonly UiTag[]): UiTag[] {
@@ -166,7 +166,7 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
         aria-hidden="true"
         style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 10, marginRight: 7, background: tag.color ?? '#94a3b8' }}
       />
-      <strong>{tag.name}</strong> <small style={{ color: '#64748b' }}>{tag.id}</small>{' '}
+      <strong>{tag.name}</strong> <small style={{ color: 'var(--wa-text-faint)' }}>{tag.id}</small>{' '}
       <button type="button" onClick={() => rename(tag)}>Rename</button>{' '}
       <button type="button" onClick={() => move(tag)}>Move</button>{' '}
       <button type="button" onClick={() => remove(tag)}>Delete…</button>
@@ -176,14 +176,15 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
 
   return (
     <main
+      className="wa-embed"
       data-interactive={ready ? 'true' : 'false'}
-      style={{ maxWidth: 1100, margin: '40px auto', padding: '0 20px', fontFamily: 'system-ui', color: '#172033' }}
+      style={{ maxWidth: 1100, margin: '0 auto', fontFamily: 'var(--wa-font)', color: 'var(--wa-text)' }}
     >
       <header style={{ marginBottom: 24 }}>
         <h1 style={{ marginBottom: 4 }}>Nested tags</h1>
-        <p style={{ marginTop: 0, color: '#526071' }}>Classify profiles and advertising entities, then reuse one filter across lists and dashboards.</p>
+        <p style={{ marginTop: 0, color: 'var(--wa-text-muted)' }}>Classify profiles and advertising entities, then reuse one filter across lists and dashboards.</p>
       </header>
-      {message && <p role="status" style={{ padding: 10, background: '#eef6ff', borderRadius: 6 }}>{message}</p>}
+      {message && <p role="status" style={{ padding: 10, background: 'var(--wa-accent-soft)', color: 'var(--wa-accent-text)', borderRadius: 6 }}>{message}</p>}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1fr) minmax(420px, 2fr)', gap: 20 }}>
         <section style={panel} aria-labelledby="taxonomy-title">
           <h2 id="taxonomy-title">Taxonomy</h2>
@@ -222,7 +223,7 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
             <label><input type="checkbox" checked={filter.includeDescendants !== false} onChange={(event) => setFilter({ ...filter, includeDescendants: event.target.checked })} /> Include child tags</label>
             <button type="button" onClick={() => void createGoto()}>Copyable goto link</button>
           </div>
-          <aside aria-label="Dashboard tag summary" style={{ padding: 12, background: '#f6f8fa', borderRadius: 8, marginBottom: 14 }}>
+          <aside aria-label="Dashboard tag summary" style={{ padding: 12, background: 'var(--wa-surface-2)', borderRadius: 8, marginBottom: 14 }}>
             Dashboard count using the same tag filter: <strong>{filteredCampaigns.length}</strong>
           </aside>
           <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
