@@ -36,6 +36,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
+import type { TestDatabase } from '@wizard-ads/db/testing';
 import { createGotoLink } from '@wizard-ads/db';
 import { ROADMAP_ITEMS, seedRoadmap } from '../../../supabase/seed/seed-roadmap.js';
 
@@ -73,6 +74,100 @@ function run(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<n
   return new Promise<number>((resolve) => {
     child.on('exit', (code) => resolve(code ?? 1));
   });
+}
+
+/**
+ * WP-07: a finished recommendation run and the search terms behind it.
+ *
+ * The dates matter. The review screen reads a run, but the n-gram explorer
+ * defaults to the window ending *yesterday* — today's numbers are still
+ * attributing and would read as a collapse — so seeding facts on `current_date`
+ * would leave the explorer legitimately empty and the spec chasing a bug that
+ * is not there.
+ */
+async function seedRecommendations(
+  database: TestDatabase,
+  orgId: string,
+  profileId: string,
+): Promise<{ runId: string; proposals: number; searchTerms: number }> {
+  const strategy = {
+    schema: 'wizard-ads.tenant-strategy.v1',
+    // Synthetic shape, not doctrine: the point is that a snapshot exists and
+    // the objective column resolves off it.
+    opt_groups: { Rank: { goal_lens: 'rank-launch', target_acos: 0.4, max_increase: 0.2, max_decrease: 0.3 } },
+  };
+
+  await database.sql`
+    update public.campaigns
+       set name = 'E2E | SKW | blue widget', portfolio_amazon_id = 'pf-1'
+     where org_id = ${orgId} and amazon_id = 'c-1'
+  `;
+
+  const [run] = await database.sql<{ id: string }[]>`
+    insert into public.recommendation_runs
+      (org_id, profile_id, status, lookback_days, window_start, window_end, engine_version,
+       proposals_count, finished_at, strategy_snapshot)
+    values (${orgId}, ${profileId}, 'succeeded', 28,
+            (current_date - 28), (current_date - 1), 'core@e2e', 3, now(),
+            ${JSON.stringify(strategy)}::text::jsonb)
+    returning id
+  `;
+  const runId = run?.id ?? '';
+
+  const inputs = (ceiling: string | null, capped: boolean) =>
+    JSON.stringify({
+      rpc: 1.8,
+      clicks: 42,
+      cvrSourceLevel: 'ad_group',
+      ceilingApplied: ceiling,
+      capClamped: capped,
+      window: { start: '2026-07-01', end: '2026-07-28' },
+    });
+
+  const proposals = [
+    { reason: 'high_acos', type: 'keyword', id: 'kw-1', name: 'blue widget', field: 'bid', old: 0.9, next: 0.72, ag: 'ag-1', ceiling: 'data_based_ad_group', capped: true },
+    { reason: 'low_visibility', type: 'target', id: 'tg-1', name: 'B0TEST0002', field: 'bid', old: 0.6, next: 0.66, ag: 'ag-1', ceiling: null, capped: false },
+    { reason: 'pacing', type: 'campaign', id: 'c-1', name: 'E2E | SKW | blue widget', field: 'budget', old: 10, next: 12, ag: null, ceiling: null, capped: false },
+  ];
+  let written = 0;
+  for (const proposal of proposals) {
+    const rows = await database.sql<{ id: string }[]>`
+      insert into public.recommendations
+        (run_id, org_id, profile_id, reason, entity_type, entity_id, ad_product, campaign_id,
+         ad_group_id, entity_name, field, current_value, proposed_value, inputs)
+      values (${runId}, ${orgId}, ${profileId}, ${proposal.reason}::public.recommendation_reason,
+              ${proposal.type}::public.entity_type, ${proposal.id}, 'SP', 'c-1', ${proposal.ag},
+              ${proposal.name}, ${proposal.field},
+              ${JSON.stringify(proposal.old)}::text::jsonb,
+              ${JSON.stringify(proposal.next)}::text::jsonb,
+              ${inputs(proposal.ceiling, proposal.capped)}::text::jsonb)
+      returning id
+    `;
+    written += rows.length;
+  }
+  if (written !== proposals.length) {
+    throw new Error(`Seeded ${proposals.length} proposals, wrote ${written}`);
+  }
+
+  const terms = ['blue widget online', 'blue widget set', 'cheap blue widget'];
+  let termRows = 0;
+  for (const [index, term] of terms.entries()) {
+    const rows = await database.sql<{ search_term: string }[]>`
+      insert into public.fact_search_term_daily
+        (org_id, profile_id, date, ad_product, campaign_id, ad_group_id, target_id, search_term,
+         match_type, impressions, clicks, cost, purchases_7d, sales_7d, units_sold_7d)
+      values (${orgId}, ${profileId}, (current_date - 1), 'SP', 'c-1', 'ag-1', 'kw-1', ${term},
+              'exact', ${100 + index * 10}, ${5 + index}, ${2.5 + index}, ${index === 0 ? 1 : 0},
+              ${index === 0 ? 25 : 0}, ${index === 0 ? 1 : 0})
+      returning search_term
+    `;
+    termRows += rows.length;
+  }
+  if (termRows !== terms.length) {
+    throw new Error(`Seeded ${terms.length} search terms, wrote ${termRows}`);
+  }
+
+  return { runId, proposals: written, searchTerms: termRows };
 }
 
 /**
@@ -138,6 +233,9 @@ async function tagsGoto(playwrightArgs: string[]): Promise<number> {
       select id from public.feedback_items where org_id = ${orgB} limit 1
     `;
 
+    // WP-07: a run to review, and the search terms its explorer aggregates.
+    const recommendations = await seedRecommendations(database, orgA, profileA);
+
     const expired = await createGotoLink(database, {
       orgId: orgA,
       route: '/tags',
@@ -180,6 +278,10 @@ async function tagsGoto(playwrightArgs: string[]): Promise<number> {
         WIZARD_ADS_E2E_ORG_B: orgB,
         WIZARD_ADS_E2E_FOREIGN_ITEM: foreignItem?.id ?? '',
         WIZARD_ADS_E2E_ROADMAP_SEEDED: String(roadmap.created),
+        WIZARD_ADS_E2E_PROFILE_A: profileA,
+        WIZARD_ADS_E2E_REC_RUN: recommendations.runId,
+        WIZARD_ADS_E2E_REC_PROPOSALS: String(recommendations.proposals),
+        WIZARD_ADS_E2E_REC_SEARCH_TERMS: String(recommendations.searchTerms),
       },
     );
   } finally {
