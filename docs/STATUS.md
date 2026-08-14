@@ -31,6 +31,8 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 24 | AdLabs-fidelity UI | Opus | merged | merged+DEPLOYED 2026-08-14: /optimizer campaign-level view, dense tables, top-right profile switcher, /connect-claude MCP-key page, AMC/SVC connect stubs, sidebar icons+collapse, chart D/W/M + KPI tiles, Feedback/Roadmap de-duped from Settings. Roadmap card SHIPPED. Opt-Group column deferred (packages/ui owned by WP-06) |
 | 27 | ads-api suggested-bid + SB v4 | Codex | merged | merged 2026-08-14: SP keyword+target bid-recommendation reads + SB v4 media/creative endpoints; 182 tests. Codex bundle-recovered. Unblocks corridor charts (WP-28) + Creative Hub |
 | 19 | Experiments (A/B tracking) | Opus | merged | merged+DEPLOYED 2026-08-14: /experiments CRUD, chart-window overlay, before/during/after comparison, entity-changes-in-window, MCP list/get, RLS both layers. Migration 0019 applied hosted. Roadmap card SHIPPED |
+| 28 | Bid corridor charts | Opus | merged | merged+DEPLOYED 2026-08-14: bid_series_daily table (migration 0020, applied hosted), worker sync pass, corridor band chart on /optimizer, + Connect AI (MCP) rename w/ Claude+Codex snippets. Roadmap card SHIPPED |
+| 29 | Live sync SB/SD fixes | Opus | in-progress | first live run 2026-08-14: SP works (profile facts landed), SB v4 list + SB/SD reports 400, entity.sync aborts on SB. Fixing request bodies + per-product isolation |
 | 16 | AMC lane | Opus | gated | brief ready 2026-08-14 (docs/workpackages/WP-16-amc.md); opens at first provisioned AMC instance + AWS bucket. Visible on the in-app roadmap via WP-15 seed |
 
 ## Milestone gates
@@ -54,6 +56,12 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 - [x] Smoke config placed 2026-08-14 (allfemme-us / NA); live smoke launched.
 - [x] Supabase Pro upgraded 2026-08-14 (org-level; auto-pause risk gone, storage headroom for
       backfill). Fly.io worker (~$5/mo) still pending at WP-03 deploy.
+
+## Live sync status (2026-08-14)
+
+- 18 profiles sync-enabled (operator's ~15 + 3 pilot). First live run: SP reporting WORKS
+  (fact_profile_daily populated); SB v4 + SB/SD reports return 400 (WP-29 fixing). Cron
+  maxDuration raised 60->300s. CRON_SECRET rotated (value in operator's session only).
 
 ## Manager follow-ups (post-wave)
 
