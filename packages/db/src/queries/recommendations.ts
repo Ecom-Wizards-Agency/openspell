@@ -432,13 +432,17 @@ export async function decideRecommendations(
              and id = any (${ids.filter((id) => !changed.has(id))}::uuid[])
         `;
 
-  for (const row of updated) {
+  // One statement, not one per row: a bulk decision over a filtered preview is
+  // the interaction this surface exists for, and four thousand round trips is
+  // not an audit trail, it is a timeout.
+  if (updated.length > 0) {
     await handle.sql`
       insert into public.audit_log
         (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
-      values (${options.orgId}, 'user', ${options.actorId ?? null},
-              ${`recommendation.${options.decision}`}, 'recommendation', ${row.id},
-              ${serializeJson({ note })}::text::jsonb, 'web')
+      select ${options.orgId}, 'user', ${options.actorId ?? null},
+             ${`recommendation.${options.decision}`}, 'recommendation', target,
+             ${serializeJson({ note })}::text::jsonb, 'web'
+        from unnest(${updated.map((row) => row.id)}::text[]) as target
     `;
   }
 
@@ -612,24 +616,35 @@ export async function exportAcceptedRecommendations(
     const batchId = batch?.id;
     if (batchId === undefined) throw new Error('Failed to create the export batch.');
 
-    let written = 0;
-    for (const row of rows) {
-      const inserted = await sql<{ id: string }[]>`
-        insert into public.apply_rows
-          (batch_id, org_id, entity_type, entity_id, entity_name, field, old_value, new_value,
-           lever, clicks, revenue)
-        values (${batchId}, ${options.orgId}, ${row.entityType}::public.apply_entity_type,
-                ${row.entityId}, ${row.name ?? null}, ${row.field},
-                ${serializeJson(row.old)}::text::jsonb, ${serializeJson(row.new)}::text::jsonb,
-                ${options.lever}, ${row.clicks ?? null}, ${row.revenue ?? null})
-        returning id
-      `;
-      written += inserted.length;
-    }
+    // One statement for the whole batch: a four-thousand-row export is the case
+    // this has to survive, and `unnest` keeps the order the rows were built in.
+    const inserted =
+      rows.length === 0
+        ? []
+        : await sql<{ id: string }[]>`
+            insert into public.apply_rows
+              (batch_id, org_id, entity_type, entity_id, entity_name, field, old_value, new_value,
+               lever, clicks, revenue)
+            select ${batchId}, ${options.orgId}, r.entity_type::public.apply_entity_type,
+                   r.entity_id, r.entity_name, r.field, r.old_value::jsonb, r.new_value::jsonb,
+                   ${options.lever}, r.clicks::bigint, r.revenue::numeric
+              from unnest(
+                     ${rows.map((row) => row.entityType)}::text[],
+                     ${rows.map((row) => row.entityId)}::text[],
+                     ${rows.map((row) => row.name ?? null)}::text[],
+                     ${rows.map((row) => row.field)}::text[],
+                     ${rows.map((row) => serializeJson(row.old))}::text[],
+                     ${rows.map((row) => serializeJson(row.new))}::text[],
+                     ${rows.map((row) => (row.clicks === undefined ? null : String(row.clicks)))}::text[],
+                     ${rows.map((row) => (row.revenue === undefined ? null : String(row.revenue)))}::text[]
+                   ) as r(entity_type, entity_id, entity_name, field, old_value, new_value,
+                          clicks, revenue)
+            returning id
+          `;
     // Program rule 4: count outputs against inputs rather than trusting the
     // absence of an exception.
-    if (written !== rows.length) {
-      throw new Error(`Offered ${rows.length} apply rows, wrote ${written}`);
+    if (inserted.length !== rows.length) {
+      throw new Error(`Offered ${rows.length} apply rows, wrote ${inserted.length}`);
     }
 
     const stamped = await sql<{ id: string }[]>`
@@ -812,6 +827,9 @@ export async function createNegativeProposals(
     const runId = run?.id;
     if (runId === undefined) throw new Error('Failed to create the proposal run.');
 
+    // A row at a time here, unlike the export: this set is bounded by what a
+    // human selected in one panel, and the per-row insert keeps the column list
+    // readable at the place the proposal's shape is decided.
     let created = 0;
     for (const proposal of options.proposals) {
       const inserted = await sql<{ id: string }[]>`
