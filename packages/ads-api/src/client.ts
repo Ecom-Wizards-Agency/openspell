@@ -18,6 +18,7 @@
 import type {
   AdGroupRow,
   AdProduct,
+  AmazonId,
   CampaignRow,
   KeywordRow,
   NegativeRow,
@@ -37,8 +38,21 @@ import {
   type BudgetUsageResult,
 } from './budgets.js';
 import { createHttpContext, type EffectOptions } from './context.js';
-import { DEFAULT_PAGE_SIZE, LIST_ENDPOINTS, buildListBody, buildOffsetQuery, type EntityKind } from './endpoints.js';
-import { AdsApiParseError, DuplicateReportError } from './errors.js';
+import {
+  DEFAULT_PAGE_SIZE,
+  LIST_ENDPOINTS,
+  SP_WRITE_ENDPOINTS,
+  buildListBody,
+  buildOffsetQuery,
+  type EntityKind,
+  type SpWriteKind,
+} from './endpoints.js';
+import {
+  AdsApiNotImplementedError,
+  AdsApiParseError,
+  DuplicateReportError,
+  DuplicateWriteError,
+} from './errors.js';
 import {
   EXPORT_ENDPOINTS,
   type ExportKind,
@@ -70,7 +84,41 @@ import {
   type CreateReportInput,
   type ReportMetadata,
 } from './reports.js';
+import type {
+  SbCreative,
+  SbCreativeCreateInput,
+  SbCreativeUpdateInput,
+  SbMediaAsset,
+  SbMediaUploadInput,
+  SbV4MediaCreativeApi,
+} from './sb-media.js';
 import type { AdsApiClientOptions, ListOptions, ListResult, ThrottleState } from './types.js';
+import {
+  batchSpWrites,
+  buildSpArchiveBody,
+  buildSpWriteBody,
+  parseSpWriteResponse,
+  type SpAdGroupCreateInput,
+  type SpAdGroupUpdateInput,
+  type SpBatchWriteResult,
+  type SpCampaignCreateInput,
+  type SpCampaignNegativeKeywordCreateInput,
+  type SpCampaignNegativeKeywordUpdateInput,
+  type SpCampaignNegativeTargetCreateInput,
+  type SpCampaignNegativeTargetUpdateInput,
+  type SpCampaignPlacementUpdateInput,
+  type SpCampaignUpdateInput,
+  type SpKeywordCreateInput,
+  type SpKeywordUpdateInput,
+  type SpNegativeKeywordCreateInput,
+  type SpNegativeKeywordUpdateInput,
+  type SpNegativeTargetCreateInput,
+  type SpNegativeTargetUpdateInput,
+  type SpProductAdCreateInput,
+  type SpProductAdUpdateInput,
+  type SpTargetCreateInput,
+  type SpTargetUpdateInput,
+} from './writes.js';
 
 /** A page walk plus what mapping made of it. The two counts are the Rule 4 assertion. */
 export interface MappedListResult<T> extends ListResult<T> {
@@ -98,7 +146,7 @@ export function amazonAdProduct(adProduct: AdProduct): string {
   return AD_PRODUCT_NAMES[adProduct];
 }
 
-export class AdsApiClient {
+export class AdsApiClient implements SbV4MediaCreativeApi {
   readonly region: Region;
 
   private readonly ctx: HttpContext;
@@ -361,6 +409,251 @@ export class AdsApiClient {
 
   listSdAdGroups(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<AdGroupRow>>> {
     return this.listMapped(profileId, 'sd.adGroups', options, (raw) => mapAdGroups('SD', raw));
+  }
+
+  // -- Sponsored Products v3 writes -----------------------------------
+
+  private async mutateSp<K extends SpWriteKind>(
+    profileId: string,
+    kind: K,
+    operation: 'create' | 'update' | 'archive',
+    values: readonly unknown[],
+  ): Promise<SpBatchWriteResult<K>> {
+    const endpoint = SP_WRITE_ENDPOINTS[kind];
+    const items: SpBatchWriteResult<K>['items'] = [];
+    const errors: SpBatchWriteResult<K>['errors'] = [];
+    const batches = batchSpWrites(values);
+    let indexOffset = 0;
+
+    for (const batch of batches) {
+      const path = operation === 'archive' ? `${endpoint.path}/delete` : endpoint.path;
+      const method = operation === 'update' ? 'PUT' : 'POST';
+      const body =
+        operation === 'archive'
+          ? buildSpArchiveBody(endpoint, batch as readonly AmazonId[])
+          : buildSpWriteBody(endpoint, batch);
+      const result = await httpRequest(this.ctx, {
+        method,
+        url: `${hostFor(this.region)}${path}`,
+        path,
+        headers: this.headers({
+          profileId,
+          contentType: endpoint.mediaType,
+          accept: endpoint.mediaType,
+        }),
+        body: JSON.stringify(body),
+        // An explicit 429 means Amazon rejected the request before mutation.
+        // Ambiguous transport and 5xx failures are never re-sent.
+        idempotent: false,
+        expectedStatuses: [425],
+      });
+
+      if (result.status === 425) {
+        throw new DuplicateWriteError(
+          `Amazon identified ${operation} ${endpoint.path} as a duplicate write`,
+          result.status,
+          decodeText(result.body),
+          result.attempts,
+          operation,
+          endpoint.path,
+        );
+      }
+
+      const parsed = parseSpWriteResponse(
+        this.json(result, `${method} ${path}`),
+        kind,
+        endpoint,
+        batch.length,
+        indexOffset,
+      );
+      items.push(...parsed.items);
+      errors.push(...parsed.errors);
+      indexOffset += batch.length;
+    }
+
+    if (items.length + errors.length !== values.length) {
+      throw new AdsApiParseError(
+        `${operation} ${endpoint.path} accounted for ${items.length + errors.length} of ${values.length} submitted items`,
+      );
+    }
+    return { items, errors, submitted: values.length, batches: batches.length };
+  }
+
+  createSpCampaigns(profileId: string, items: readonly SpCampaignCreateInput[]): Promise<SpBatchWriteResult<'campaigns'>> {
+    return this.mutateSp(profileId, 'campaigns', 'create', items);
+  }
+
+  updateSpCampaigns(profileId: string, items: readonly SpCampaignUpdateInput[]): Promise<SpBatchWriteResult<'campaigns'>> {
+    return this.mutateSp(profileId, 'campaigns', 'update', items);
+  }
+
+  archiveSpCampaigns(profileId: string, campaignIds: readonly AmazonId[]): Promise<SpBatchWriteResult<'campaigns'>> {
+    return this.mutateSp(profileId, 'campaigns', 'archive', campaignIds);
+  }
+
+  updateSpCampaignPlacementBidding(
+    profileId: string,
+    items: readonly SpCampaignPlacementUpdateInput[],
+  ): Promise<SpBatchWriteResult<'campaigns'>> {
+    return this.updateSpCampaigns(
+      profileId,
+      items.map((item) => ({
+        campaignId: item.campaignId,
+        dynamicBidding: {
+          strategy: item.strategy,
+          placementBidding: item.placementBidding,
+        },
+        ...(item.offAmazonSettings === undefined ? {} : { offAmazonSettings: item.offAmazonSettings }),
+      })),
+    );
+  }
+
+  createSpAdGroups(profileId: string, items: readonly SpAdGroupCreateInput[]): Promise<SpBatchWriteResult<'adGroups'>> {
+    return this.mutateSp(profileId, 'adGroups', 'create', items);
+  }
+
+  updateSpAdGroups(profileId: string, items: readonly SpAdGroupUpdateInput[]): Promise<SpBatchWriteResult<'adGroups'>> {
+    return this.mutateSp(profileId, 'adGroups', 'update', items);
+  }
+
+  archiveSpAdGroups(profileId: string, ids: readonly AmazonId[]): Promise<SpBatchWriteResult<'adGroups'>> {
+    return this.mutateSp(profileId, 'adGroups', 'archive', ids);
+  }
+
+  createSpKeywords(profileId: string, items: readonly SpKeywordCreateInput[]): Promise<SpBatchWriteResult<'keywords'>> {
+    return this.mutateSp(profileId, 'keywords', 'create', items);
+  }
+
+  updateSpKeywords(profileId: string, items: readonly SpKeywordUpdateInput[]): Promise<SpBatchWriteResult<'keywords'>> {
+    return this.mutateSp(profileId, 'keywords', 'update', items);
+  }
+
+  archiveSpKeywords(profileId: string, ids: readonly AmazonId[]): Promise<SpBatchWriteResult<'keywords'>> {
+    return this.mutateSp(profileId, 'keywords', 'archive', ids);
+  }
+
+  createSpTargets(profileId: string, items: readonly SpTargetCreateInput[]): Promise<SpBatchWriteResult<'targets'>> {
+    return this.mutateSp(profileId, 'targets', 'create', items);
+  }
+
+  updateSpTargets(profileId: string, items: readonly SpTargetUpdateInput[]): Promise<SpBatchWriteResult<'targets'>> {
+    return this.mutateSp(profileId, 'targets', 'update', items);
+  }
+
+  archiveSpTargets(profileId: string, ids: readonly AmazonId[]): Promise<SpBatchWriteResult<'targets'>> {
+    return this.mutateSp(profileId, 'targets', 'archive', ids);
+  }
+
+  createSpNegativeKeywords(
+    profileId: string,
+    items: readonly SpNegativeKeywordCreateInput[],
+  ): Promise<SpBatchWriteResult<'negativeKeywords'>> {
+    return this.mutateSp(profileId, 'negativeKeywords', 'create', items);
+  }
+
+  updateSpNegativeKeywords(
+    profileId: string,
+    items: readonly SpNegativeKeywordUpdateInput[],
+  ): Promise<SpBatchWriteResult<'negativeKeywords'>> {
+    return this.mutateSp(profileId, 'negativeKeywords', 'update', items);
+  }
+
+  archiveSpNegativeKeywords(profileId: string, ids: readonly AmazonId[]): Promise<SpBatchWriteResult<'negativeKeywords'>> {
+    return this.mutateSp(profileId, 'negativeKeywords', 'archive', ids);
+  }
+
+  createSpCampaignNegativeKeywords(
+    profileId: string,
+    items: readonly SpCampaignNegativeKeywordCreateInput[],
+  ): Promise<SpBatchWriteResult<'campaignNegativeKeywords'>> {
+    return this.mutateSp(profileId, 'campaignNegativeKeywords', 'create', items);
+  }
+
+  updateSpCampaignNegativeKeywords(
+    profileId: string,
+    items: readonly SpCampaignNegativeKeywordUpdateInput[],
+  ): Promise<SpBatchWriteResult<'campaignNegativeKeywords'>> {
+    return this.mutateSp(profileId, 'campaignNegativeKeywords', 'update', items);
+  }
+
+  archiveSpCampaignNegativeKeywords(
+    profileId: string,
+    ids: readonly AmazonId[],
+  ): Promise<SpBatchWriteResult<'campaignNegativeKeywords'>> {
+    return this.mutateSp(profileId, 'campaignNegativeKeywords', 'archive', ids);
+  }
+
+  createSpNegativeTargets(
+    profileId: string,
+    items: readonly SpNegativeTargetCreateInput[],
+  ): Promise<SpBatchWriteResult<'negativeTargets'>> {
+    return this.mutateSp(profileId, 'negativeTargets', 'create', items);
+  }
+
+  updateSpNegativeTargets(
+    profileId: string,
+    items: readonly SpNegativeTargetUpdateInput[],
+  ): Promise<SpBatchWriteResult<'negativeTargets'>> {
+    return this.mutateSp(profileId, 'negativeTargets', 'update', items);
+  }
+
+  archiveSpNegativeTargets(profileId: string, ids: readonly AmazonId[]): Promise<SpBatchWriteResult<'negativeTargets'>> {
+    return this.mutateSp(profileId, 'negativeTargets', 'archive', ids);
+  }
+
+  createSpCampaignNegativeTargets(
+    profileId: string,
+    items: readonly SpCampaignNegativeTargetCreateInput[],
+  ): Promise<SpBatchWriteResult<'campaignNegativeTargets'>> {
+    return this.mutateSp(profileId, 'campaignNegativeTargets', 'create', items);
+  }
+
+  updateSpCampaignNegativeTargets(
+    profileId: string,
+    items: readonly SpCampaignNegativeTargetUpdateInput[],
+  ): Promise<SpBatchWriteResult<'campaignNegativeTargets'>> {
+    return this.mutateSp(profileId, 'campaignNegativeTargets', 'update', items);
+  }
+
+  archiveSpCampaignNegativeTargets(
+    profileId: string,
+    ids: readonly AmazonId[],
+  ): Promise<SpBatchWriteResult<'campaignNegativeTargets'>> {
+    return this.mutateSp(profileId, 'campaignNegativeTargets', 'archive', ids);
+  }
+
+  createSpProductAds(profileId: string, items: readonly SpProductAdCreateInput[]): Promise<SpBatchWriteResult<'productAds'>> {
+    return this.mutateSp(profileId, 'productAds', 'create', items);
+  }
+
+  updateSpProductAds(profileId: string, items: readonly SpProductAdUpdateInput[]): Promise<SpBatchWriteResult<'productAds'>> {
+    return this.mutateSp(profileId, 'productAds', 'update', items);
+  }
+
+  archiveSpProductAds(profileId: string, ids: readonly AmazonId[]): Promise<SpBatchWriteResult<'productAds'>> {
+    return this.mutateSp(profileId, 'productAds', 'archive', ids);
+  }
+
+  // -- Sponsored Brands v4 media/creative stubs -----------------------
+
+  uploadSbMedia(_profileId: string, _input: SbMediaUploadInput): Promise<SbMediaAsset> {
+    throw new AdsApiNotImplementedError('Sponsored Brands v4 media upload is not implemented');
+  }
+
+  getSbMedia(_profileId: string, _mediaId: AmazonId): Promise<SbMediaAsset> {
+    throw new AdsApiNotImplementedError('Sponsored Brands v4 media lookup is not implemented');
+  }
+
+  createSbCreative(_profileId: string, _input: SbCreativeCreateInput): Promise<SbCreative> {
+    throw new AdsApiNotImplementedError('Sponsored Brands v4 creative create is not implemented');
+  }
+
+  updateSbCreative(_profileId: string, _input: SbCreativeUpdateInput): Promise<SbCreative> {
+    throw new AdsApiNotImplementedError('Sponsored Brands v4 creative update is not implemented');
+  }
+
+  archiveSbCreative(_profileId: string, _creativeId: AmazonId): Promise<void> {
+    throw new AdsApiNotImplementedError('Sponsored Brands v4 creative archive is not implemented');
   }
 
   // -- reporting v3 -----------------------------------------------------

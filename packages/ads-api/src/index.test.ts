@@ -44,6 +44,39 @@ describe('@wizard-ads/ads-api', () => {
       'getExport',
       'downloadExport',
       'getBudgetUsage',
+      'createSpCampaigns',
+      'updateSpCampaigns',
+      'archiveSpCampaigns',
+      'updateSpCampaignPlacementBidding',
+      'createSpAdGroups',
+      'updateSpAdGroups',
+      'archiveSpAdGroups',
+      'createSpKeywords',
+      'updateSpKeywords',
+      'archiveSpKeywords',
+      'createSpTargets',
+      'updateSpTargets',
+      'archiveSpTargets',
+      'createSpNegativeKeywords',
+      'updateSpNegativeKeywords',
+      'archiveSpNegativeKeywords',
+      'createSpCampaignNegativeKeywords',
+      'updateSpCampaignNegativeKeywords',
+      'archiveSpCampaignNegativeKeywords',
+      'createSpNegativeTargets',
+      'updateSpNegativeTargets',
+      'archiveSpNegativeTargets',
+      'createSpCampaignNegativeTargets',
+      'updateSpCampaignNegativeTargets',
+      'archiveSpCampaignNegativeTargets',
+      'createSpProductAds',
+      'updateSpProductAds',
+      'archiveSpProductAds',
+      'uploadSbMedia',
+      'getSbMedia',
+      'createSbCreative',
+      'updateSbCreative',
+      'archiveSbCreative',
     ]) {
       const prototype = api.AdsApiClient.prototype as unknown as Record<string, unknown>;
       expect(typeof prototype[method], method).toBe('function');
@@ -74,6 +107,9 @@ describe('@wizard-ads/ads-api', () => {
   it('exports the error types a caller has to branch on', () => {
     expect(new api.AdsThrottleError('x', 429, '', 1, null)).toBeInstanceOf(api.AdsApiError);
     expect(new api.DuplicateReportError('x', 425, '', 1, null)).toBeInstanceOf(api.AdsApiHttpError);
+    expect(new api.DuplicateWriteError('x', 425, '', 1, 'create', '/sp/campaigns')).toBeInstanceOf(
+      api.AdsApiHttpError,
+    );
     expect(new api.AdsAuthError('x', 401, '', 1)).toBeInstanceOf(api.AdsApiHttpError);
   });
 });

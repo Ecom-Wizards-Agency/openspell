@@ -91,6 +91,28 @@ export class DuplicateReportError extends AdsApiHttpError {
   }
 }
 
+/** HTTP 425 for a write request Amazon identifies as a duplicate. */
+export class DuplicateWriteError extends AdsApiHttpError {
+  override readonly name = 'DuplicateWriteError';
+
+  constructor(
+    message: string,
+    status: number,
+    body: string,
+    attempts: number,
+    readonly operation: string,
+    readonly path: string,
+    detail?: unknown,
+  ) {
+    super(message, status, body, attempts, detail);
+  }
+}
+
+/** A deliberately unavailable interface seam, distinct from a remote failure. */
+export class AdsApiNotImplementedError extends AdsApiError {
+  override readonly name = 'AdsApiNotImplementedError';
+}
+
 /** Amazon generated the report and declared it FAILURE or CANCELLED. */
 export class ReportFailedError extends AdsApiError {
   override readonly name = 'ReportFailedError';

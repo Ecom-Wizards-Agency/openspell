@@ -2,8 +2,8 @@
  * `@wizard-ads/ads-api` (owned by WP-02).
  *
  * The Amazon Ads API, typed: LWA token handling, profiles, entity lists,
- * Exports, Reporting v3, budget usage, with regional hosts, throttle-aware
- * retry and one parser per report schema.
+ * Exports, Reporting v3, budget usage and Sponsored Products v3 writes, with
+ * regional hosts, throttle-aware retry and one parser per report schema.
  *
  * A pure client. It never touches the database, never schedules anything, and
  * never waits for a report — Reporting v3 takes up to three hours, so polling
@@ -51,8 +51,14 @@ export type {
 export { ALL_REGIONS, LWA_AUTHORIZE_URL, LWA_TOKEN_URL, REGION_HOSTS, assertRegion, hostFor } from './regions.js';
 
 // Entity endpoints and mirror mapping
-export { DEFAULT_PAGE_SIZE, LIST_ENDPOINTS, buildListBody, buildOffsetQuery } from './endpoints.js';
-export type { EntityKind, ListEndpoint } from './endpoints.js';
+export {
+  DEFAULT_PAGE_SIZE,
+  LIST_ENDPOINTS,
+  SP_WRITE_ENDPOINTS,
+  buildListBody,
+  buildOffsetQuery,
+} from './endpoints.js';
+export type { EntityKind, ListEndpoint, SpWriteEndpoint, SpWriteKind } from './endpoints.js';
 export {
   mapAdGroups,
   mapCampaigns,
@@ -117,6 +123,64 @@ export {
 } from './budgets.js';
 export type { BudgetUsage, BudgetUsageFailure, BudgetUsageResult } from './budgets.js';
 
+// Sponsored Products v3 writes
+export {
+  SP_WRITE_BATCH_SIZE,
+  batchSpWrites,
+  buildSpArchiveBody,
+  buildSpWriteBody,
+  parseSpWriteResponse,
+} from './writes.js';
+export type {
+  SpAdGroupCreateInput,
+  SpAdGroupUpdateInput,
+  SpBatchWriteResult,
+  SpBudget,
+  SpCampaignCreateInput,
+  SpCampaignNegativeKeywordCreateInput,
+  SpCampaignNegativeKeywordUpdateInput,
+  SpCampaignNegativeTargetCreateInput,
+  SpCampaignNegativeTargetUpdateInput,
+  SpCampaignPlacementUpdateInput,
+  SpCampaignUpdateInput,
+  SpDynamicBidding,
+  SpEntityState,
+  SpKeywordCreateInput,
+  SpKeywordMatchType,
+  SpKeywordUpdateInput,
+  SpNegativeKeywordCreateInput,
+  SpNegativeKeywordMatchType,
+  SpNegativeKeywordUpdateInput,
+  SpNegativeTargetCreateInput,
+  SpNegativeTargetUpdateInput,
+  SpOffAmazonSettings,
+  SpPlacementBidAdjustment,
+  SpProductAdCreateInput,
+  SpProductAdUpdateInput,
+  SpShopperCohortBidAdjustment,
+  SpSiteRestriction,
+  SpTargetCreateInput,
+  SpTargetExpression,
+  SpTargetExpressionType,
+  SpTargetUpdateInput,
+  SpWriteError,
+  SpWriteErrorDetail,
+  SpWriteItem,
+} from './writes.js';
+
+// Sponsored Brands v4 media/creative interface (runtime stubs only).
+export type {
+  SbCreative,
+  SbCreativeAssetRef,
+  SbCreativeCreateInput,
+  SbCreativeType,
+  SbCreativeUpdateInput,
+  SbMediaAsset,
+  SbMediaType,
+  SbMediaUploadInput,
+  SbV4MediaCreativeApi,
+} from './sb-media.js';
+
 // Payload decoding
 export { decodeJsonArray, decodePayload, looksGzipped } from './gzip.js';
 export type { DecodedPayload } from './gzip.js';
@@ -142,11 +206,13 @@ export {
   AdsApiConfigError,
   AdsApiError,
   AdsApiHttpError,
+  AdsApiNotImplementedError,
   AdsApiParseError,
   AdsApiTimeoutError,
   AdsAuthError,
   AdsThrottleError,
   DuplicateReportError,
+  DuplicateWriteError,
   ExportFailedError,
   ReportFailedError,
 } from './errors.js';
