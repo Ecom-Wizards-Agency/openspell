@@ -20,7 +20,11 @@ import { BASE_URL } from './e2e/support/fixture';
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /(oauth|roles)\.spec\.ts$/,
+  // `guards.spec.ts` rides this config because it needs the same thing the
+  // other two do and one thing only this suite has: a session that can be
+  // absent. The WP-08 config arms the header bridge, so every request there is
+  // authenticated before it is routed and "anonymous" cannot be expressed.
+  testMatch: /(oauth|roles|guards)\.spec\.ts$/,
   globalSetup: './e2e/global-setup.ts',
   globalTeardown: './e2e/global-teardown.ts',
   outputDir: './node_modules/.cache/playwright/auth',
