@@ -6,7 +6,8 @@
  * `apps/web` carries two end-to-end suites that need mutually exclusive
  * servers, so they run one after the other rather than under a single config:
  *
- *  - **tags-goto** (WP-08) serves a **production** build. `next dev`'s client
+ *  - **tags-goto** (WP-08, and WP-15's feedback surfaces) serves a
+ *    **production** build. `next dev`'s client
  *    bootstraps through an HMR websocket that never completes behind
  *    Playwright's extra request headers, so the page never hydrates and every
  *    interaction test fails for a reason unrelated to the code under test.
@@ -36,12 +37,15 @@ import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import { createGotoLink } from '@wizard-ads/db';
+import { ROADMAP_ITEMS, seedRoadmap } from '../../../supabase/seed/seed-roadmap.js';
 
 const SUITES = ['tags-goto', 'auth'] as const;
 type Suite = (typeof SUITES)[number];
 
 const USER_A = '8a8a8a8a-8a8a-4a8a-8a8a-8a8a8a8a8a8a';
 const USER_B = '8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b';
+/** A second member of org A, so WP-15's role matrix has a role to refuse. */
+const USER_VIEWER = '8e8e8e8e-8e8e-4e8e-8e8e-8e8e8e8e8e8e';
 const BRIDGE_SECRET = ['synthetic', 'e2e', 'auth', 'bridge', 'value'].join('-');
 const SIGNING_SECRET = ['synthetic', 'e2e', 'goto', 'signing', 'material', 'value'].join('-');
 
@@ -118,6 +122,22 @@ async function tagsGoto(playwrightArgs: string[]): Promise<number> {
       throw new Error(`Seeded ${expectedCampaigns} campaigns, found ${campaignCount?.count ?? 0}`);
     }
 
+    // WP-15: a viewer in org A, the seeded roadmap, and org B's own feedback
+    // item — the three things the feedback suite needs that the tag fixture
+    // does not already provide.
+    await database.sql`select public.auth_user_stub(${USER_VIEWER})`;
+    await database.sql`
+      insert into public.org_members (org_id, user_id, role)
+      values (${orgA}, ${USER_VIEWER}, 'viewer')
+    `;
+    const roadmap = await seedRoadmap(database, { orgId: orgA });
+    if (roadmap.created !== ROADMAP_ITEMS.length) {
+      throw new Error(`Seeded ${ROADMAP_ITEMS.length} roadmap items, wrote ${roadmap.created}`);
+    }
+    const [foreignItem] = await database.sql<{ id: string }[]>`
+      select id from public.feedback_items where org_id = ${orgB} limit 1
+    `;
+
     const expired = await createGotoLink(database, {
       orgId: orgA,
       route: '/tags',
@@ -155,6 +175,11 @@ async function tagsGoto(playwrightArgs: string[]): Promise<number> {
         WIZARD_ADS_E2E_EXPIRED_TOKEN: expired.token,
         WIZARD_ADS_E2E_FOREIGN_TOKEN: foreign.token,
         WIZARD_ADS_E2E_CAMPAIGN_TOTAL: String(expectedCampaigns),
+        WIZARD_ADS_E2E_USER_VIEWER: USER_VIEWER,
+        WIZARD_ADS_E2E_USER_B: USER_B,
+        WIZARD_ADS_E2E_ORG_B: orgB,
+        WIZARD_ADS_E2E_FOREIGN_ITEM: foreignItem?.id ?? '',
+        WIZARD_ADS_E2E_ROADMAP_SEEDED: String(roadmap.created),
       },
     );
   } finally {

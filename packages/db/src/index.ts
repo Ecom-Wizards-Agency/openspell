@@ -22,6 +22,7 @@ export * from './client.js';
 export * from './schema/index.js';
 export * from './queries/entities.js';
 export * from './queries/facts.js';
+export * from './queries/feedback.js';
 export * from './queries/goto.js';
 export * from './queries/jobs.js';
 export * from './queries/partitions.js';

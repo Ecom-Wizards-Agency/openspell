@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
+import { FeedbackEntry } from '../src/ui/feedback-entry';
 
 export const metadata: Metadata = {
   title: 'wizard-ads',
@@ -14,7 +15,11 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        {children}
+        {/* WP-15: the feedback widget belongs to the frame, not to a screen. */}
+        <FeedbackEntry />
+      </body>
     </html>
   );
 }
