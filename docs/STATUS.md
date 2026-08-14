@@ -24,6 +24,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 15 | Feedback & roadmap | Opus | merged | merged 2026-08-14: form w/ page context, tracker, voting, roadmap columns + declined-with-note, column-level guard trigger, MCP submit_feedback; 12-item roadmap seeder (idempotent). Migration applied hosted, advisors clean |
 | 17 | AI skills library | Opus | todo | brief ready 2026-08-14 (WP-17): public-safe skill pack against our MCP + /connect-claude key page; amazon-agent skills as spec sources. Launches in v1.x |
 | 18 | AdLabs history backfill | Opus | in-progress | launched 2026-08-14: Phases 0+1 (profile depth + monthly rollups, crosscheck-poisoning fix first). Phase 2 (daily walk) gated on operator ToS decision + attribution resolution |
+| 19 | Experiments (A/B tracking) | Opus | todo | brief ready 2026-08-14 (WP-19); queued behind WP-07 (shares apps/web); on the in-app roadmap seed |
 | 16 | AMC lane | Opus | gated | brief ready 2026-08-14 (docs/workpackages/WP-16-amc.md); opens at first provisioned AMC instance + AWS bucket. Visible on the in-app roadmap via WP-15 seed |
 
 ## Milestone gates

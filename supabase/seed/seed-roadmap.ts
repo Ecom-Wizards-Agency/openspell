@@ -79,6 +79,10 @@ export const ROADMAP_ITEMS: readonly RoadmapSeedItem[] = [
     body: 'Build campaigns from a brief in the tool; nothing starts spending without a human enabling it.',
   },
   {
+    title: 'Experiment tracking (A/B tests: spend pushes, creatives, listings, price)',
+    body: 'First-class experiment records with chart-window overlays and before/during/after comparison. See docs/workpackages/WP-19-experiments.md.',
+  },
+  {
     title: 'Daily headless AI analyst with Slack digest',
     body: 'A read-only analyst pass every morning, posting what changed and what it means.',
   },
