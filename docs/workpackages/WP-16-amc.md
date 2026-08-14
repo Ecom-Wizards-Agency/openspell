@@ -29,6 +29,22 @@ pre-loaded.
    Writes go through the apply-batch audit path like every other write (WP-12 machinery).
 5. **MCP**: `amc_query` (read) + audit-logged audience creation (write-gated) tools.
 
+## UX intel from AdLabs' AMC walkthrough video (operator-shared, notes in _local/)
+
+- Two-pillar IA worth mirroring: **Analytics** (query + dashboards) vs **Audiences**
+  (build + deploy).
+- Connection UX: auto-discovered instance dropdown + manual entity-ID fallback + an
+  advertiser→profile mapping step.
+- **Design around the opt-in gotcha**: AMC tables can require subscription inside the AMC
+  console; unsubscribed tables make queries silently unavailable — surface this state
+  explicitly instead of a generic error.
+- **Audience pre-check**: builds take up to 48h and fail on too-small populations — run a
+  sizing query first and warn before submitting the build.
+- Audience deployment = bulk-assign to campaigns + **audience-level bid modifiers** (a
+  distinct lever from base bids; the apply-batch model must represent it).
+- Two-tier querying validated: prebuilt library + raw/AI-written SQL (their "AMC SQL Writer"
+  skill is the WP-17 competitor to match).
+
 ## Explicitly out of scope until gate-open
 
 DSP anything (needs a seat), Marketing Stream (separate lane), building the S3 plumbing
