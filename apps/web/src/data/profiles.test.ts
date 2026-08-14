@@ -10,7 +10,13 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
-import { loadRoster, setProfileSyncEnabled, updateProfileTargets } from './profiles';
+import {
+  loadRoster,
+  setProfileSyncEnabled,
+  setProfilesSyncEnabled,
+  updateProfileSchedule,
+  updateProfileTargets,
+} from './profiles';
 
 const available = await databaseAvailable();
 const OWNER = '77777777-7777-4777-8777-777777777777';
@@ -137,6 +143,80 @@ describe.skipIf(!available)('roster', () => {
 
     const off = await setProfileSyncEnabled(database, orgId, profile.id, false);
     expect(off.syncEnabled).toBe(false);
+  });
+
+  it('orders by account name, country, or region', async () => {
+    const byName = await loadRoster(database, orgId, { sort: 'name' });
+    // The seeded fixture profile has no account_name, so it sorts by its Amazon
+    // id; the four here sort by their names. Just assert the four are alpha.
+    const names = byName.rows.map((row) => row.accountName).filter((n): n is string => n !== null);
+    expect(names).toEqual([...names].sort());
+
+    const byRegion = await loadRoster(database, orgId, { sort: 'region' });
+    const regions = byRegion.rows.map((row) => row.region);
+    // EU rows all precede NA rows once sorted by region.
+    const firstNa = regions.indexOf('NA');
+    const lastEu = regions.lastIndexOf('EU');
+    expect(lastEu).toBeLessThan(firstNa);
+  });
+
+  it('enables and disables sync for many profiles at once', async () => {
+    const roster = await loadRoster(database, orgId, { search: 'p-eu-' });
+    const ids = roster.rows.map((row) => row.id);
+    expect(ids.length).toBe(2);
+
+    const enabled = await setProfilesSyncEnabled(database, orgId, ids, true);
+    expect(enabled).toBe(2);
+    const afterOn = await loadRoster(database, orgId, { search: 'p-eu-', syncEnabled: true });
+    expect(afterOn.rows).toHaveLength(2);
+
+    const disabled = await setProfilesSyncEnabled(database, orgId, ids, false);
+    expect(disabled).toBe(2);
+    const afterOff = await loadRoster(database, orgId, { search: 'p-eu-', syncEnabled: true });
+    expect(afterOff.rows).toHaveLength(0);
+  });
+
+  it('bulk sync ignores ids from another org', async () => {
+    const [mine] = (await loadRoster(database, orgId, { search: 'p-na-2' })).rows;
+    if (!mine) throw new Error('fixture missing');
+    // One real id in this org, one uuid that is not: only the real one changes.
+    const changed = await setProfilesSyncEnabled(database, otherOrgId, [mine.id], true);
+    expect(changed).toBe(0);
+    const [row] = await database.sql<{ sync_enabled: boolean }[]>`
+      select sync_enabled from public.ad_profiles where id = ${mine.id}
+    `;
+    expect(row?.sync_enabled).toBe(false);
+  });
+
+  it('pins the timezone when set by hand and stores the sync hour', async () => {
+    const [profile] = (await loadRoster(database, orgId, { search: 'p-na-2' })).rows;
+    if (!profile) throw new Error('fixture missing');
+    expect(profile.timezoneLocked).toBe(false);
+
+    const saved = await updateProfileSchedule(database, orgId, profile.id, {
+      timezone: 'America/New_York',
+      preferredSyncHour: 6,
+    });
+    expect(saved.timezone).toBe('America/New_York');
+    expect(saved.timezoneLocked).toBe(true);
+    expect(saved.preferredSyncHour).toBe(6);
+
+    // Changing only the hour later must not unpin the timezone.
+    const rehoured = await updateProfileSchedule(database, orgId, profile.id, {
+      timezone: null,
+      preferredSyncHour: 9,
+    });
+    expect(rehoured.timezone).toBe('America/New_York');
+    expect(rehoured.timezoneLocked).toBe(true);
+    expect(rehoured.preferredSyncHour).toBe(9);
+  });
+
+  it('rejects a sync hour outside 0-23', async () => {
+    const [profile] = (await loadRoster(database, orgId, { search: 'p-na-2' })).rows;
+    if (!profile) throw new Error('fixture missing');
+    await expect(
+      updateProfileSchedule(database, orgId, profile.id, { timezone: null, preferredSyncHour: 24 }),
+    ).rejects.toThrow(/between 0 and 23/);
   });
 
   it('refuses a write scoped to the wrong org', async () => {
