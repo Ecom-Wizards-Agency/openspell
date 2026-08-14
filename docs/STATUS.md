@@ -21,6 +21,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 14a | Campaign generation engine | Opus | merged | merged 2026-08-14: 101 parity tests byte-equal to Python, 542 property tests, XLSX passes the reference toolkit's own --validate 11/11; BMM dropped with live diagnostic. UI surface lands with WP-07 |
 | 14b | Campaign creation via API | Opus | gated | opens after OAuth + entity sync live; paused-by-default, apply-batch audited |
 | 13 | Headless analyst | Opus | gated | opens when WP-09 stable |
+| 15 | Feedback & roadmap | Opus | todo | brief ready (operator request 2026-08-14); launches after the wp-04 apps/web integration merges |
 
 ## Milestone gates
 

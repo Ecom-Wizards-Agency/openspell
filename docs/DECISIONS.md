@@ -48,3 +48,6 @@ One line per decision the manager (Fable) or operator makes between work package
   the OAuth consent context, not just the callback. OAuth redirect URI:
   https://ads.ecomwizards.agency/api/amazon/oauth/callback (same-domain callback, the WP-04
   architecture). Public-launch brand comes later and will not contain "amazon".
+- **2026-08-14 · Feedback & roadmap added as WP-15** (operator request) — in-tool bug/feature
+  form with page context, org-scoped tracker, voting, roadmap columns from the same items,
+  plus a submit_feedback MCP tool (AdLabs submit_bug_report parity, but with statuses/votes).
