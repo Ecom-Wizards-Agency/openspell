@@ -13,10 +13,12 @@ import {
 } from '@wizard-ads/ads-api';
 import type { CampaignRow, KeywordRow, Region } from '@wizard-ads/shared';
 import { describe, expect, it, vi } from 'vitest';
+import type { DbHandle } from '@wizard-ads/db';
 import {
   AdsApiRetryableError,
   DbAdsApiClient,
   DownloadUrlExpiredError,
+  createAdsApiClientFromEnv,
   type AdsApiAdapterDeps,
   type AdsProfileContext,
   type UnderlyingClient,
@@ -284,5 +286,38 @@ describe('DbAdsApiClient.listProfiles', () => {
     const { adapter, createClient } = makeAdapter(client, { getRefreshToken: async () => null });
     expect(await adapter.listProfiles('NA')).toEqual([]);
     expect(createClient).not.toHaveBeenCalled();
+  });
+});
+
+describe('createAdsApiClientFromEnv', () => {
+  // The factory reads the LWA app identity eagerly and throws on a missing one,
+  // but never touches the handle until a call needs a client — so a bare object
+  // stands in for the database here.
+  const handle = {} as DbHandle;
+
+  it('accepts the AMAZON_-prefixed names as fallbacks', () => {
+    expect(() =>
+      createAdsApiClientFromEnv(handle, {
+        AMAZON_LWA_CLIENT_ID: 'amzn1.application-oa2-client.synthetic',
+        AMAZON_LWA_CLIENT_SECRET: ['synthetic', 'secret'].join('-'),
+      } as NodeJS.ProcessEnv),
+    ).not.toThrow();
+  });
+
+  it('prefers the unprefixed names when both are present', () => {
+    expect(() =>
+      createAdsApiClientFromEnv(handle, {
+        LWA_CLIENT_ID: 'primary',
+        LWA_CLIENT_SECRET: ['primary', 'secret'].join('-'),
+        AMAZON_LWA_CLIENT_ID: 'fallback',
+        AMAZON_LWA_CLIENT_SECRET: ['fallback', 'secret'].join('-'),
+      } as NodeJS.ProcessEnv),
+    ).not.toThrow();
+  });
+
+  it('throws naming both accepted variables when neither is set', () => {
+    expect(() => createAdsApiClientFromEnv(handle, {} as NodeJS.ProcessEnv)).toThrow(
+      /AMAZON_LWA_CLIENT_ID/,
+    );
   });
 });

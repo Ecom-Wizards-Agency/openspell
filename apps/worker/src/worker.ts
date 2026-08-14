@@ -90,10 +90,21 @@ export class SyncWorker {
     await Promise.allSettled(this.running.values());
   }
 
-  /** Claim one batch and wait until this batch finishes. Used by tests and one-shot operations. */
-  async drainOnce(): Promise<number> {
+  /**
+   * Claim one batch and wait until this batch finishes. Used by tests and by
+   * the one-shot drivers (the Vercel-cron route) that run the worker without its
+   * always-on `start()` loop.
+   *
+   * `maxJobs` caps how many this batch claims (defaults to the configured claim
+   * batch size). `deadlineMs` is an absolute `Date.now()` budget: past it this
+   * returns 0 without claiming, so a caller looping `drainOnce` under a wall
+   * clock stops taking new work rather than starting a job it cannot see
+   * through before the platform kills the request.
+   */
+  async drainOnce(maxJobs?: number, deadlineMs?: number): Promise<number> {
+    if (deadlineMs !== undefined && Date.now() >= deadlineMs) return 0;
     const before = new Set(this.running.keys());
-    const claimed = await this.claimAvailable();
+    const claimed = await this.claimAvailable(maxJobs);
     const batch = [...this.running.entries()]
       .filter(([id]) => !before.has(id))
       .map(([, promise]) => promise);
@@ -133,11 +144,12 @@ export class SyncWorker {
     return { ok, failed };
   }
 
-  private async claimAvailable(): Promise<number> {
+  private async claimAvailable(maxJobs?: number): Promise<number> {
     if (this.stopping) return 0;
     const capacity = this.maxConcurrentJobs - this.running.size;
     if (capacity <= 0) return 0;
-    const jobs = await this.store.claim(this.workerId, Math.min(this.claimBatchSize, capacity));
+    const batchSize = Math.min(maxJobs ?? this.claimBatchSize, capacity);
+    const jobs = await this.store.claim(this.workerId, batchSize);
     for (const job of jobs) {
       const task = this.runClaimed(job).finally(() => this.running.delete(job.id));
       this.running.set(job.id, task);

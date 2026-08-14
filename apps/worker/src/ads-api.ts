@@ -330,10 +330,13 @@ export function createAdsApiClientFromEnv(
   handle: DbHandle,
   env: NodeJS.ProcessEnv = process.env,
 ): AdsApiClient {
-  const clientId = env['LWA_CLIENT_ID'];
-  const clientSecret = env['LWA_CLIENT_SECRET'];
-  if (!clientId) throw new Error('LWA_CLIENT_ID is not set');
-  if (!clientSecret) throw new Error('LWA_CLIENT_SECRET is not set');
+  // The web app (and therefore the Vercel-cron drain) already carries these as
+  // AMAZON_-prefixed names for the OAuth flow; accept them as fallbacks so the
+  // worker needs no second copy of the same LWA app identity.
+  const clientId = env['LWA_CLIENT_ID'] ?? env['AMAZON_LWA_CLIENT_ID'];
+  const clientSecret = env['LWA_CLIENT_SECRET'] ?? env['AMAZON_LWA_CLIENT_SECRET'];
+  if (!clientId) throw new Error('LWA_CLIENT_ID (or AMAZON_LWA_CLIENT_ID) is not set');
+  if (!clientSecret) throw new Error('LWA_CLIENT_SECRET (or AMAZON_LWA_CLIENT_SECRET) is not set');
   const userAgent = env['AMAZON_ADS_USER_AGENT'];
 
   return new DbAdsApiClient({
