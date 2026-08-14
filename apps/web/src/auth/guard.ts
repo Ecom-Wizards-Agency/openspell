@@ -2,13 +2,19 @@
  * The one entry gate every WP-04 page and server action goes through.
  *
  * Returns the org context or sends the visitor to `/login`. Two failures are
- * *not* redirects, because a redirect would hide them: a missing database and a
- * user who belongs to no org both render a page that says so. There is no
+ * *not* redirects, because a redirect would hide them: an unusable database and
+ * a user who belongs to no org both render a page that says so. There is no
  * public signup, so "no org" is a real state an invited-but-unseeded user lands
  * in, and it deserves an explanation rather than a loop.
+ *
+ * "Unusable" covers both an absent `DATABASE_URL` and one that points at a
+ * Postgres this instance cannot reach. The second is the state a real
+ * deployment lands in, and it used to arrive as a stack trace on every guarded
+ * page; it is the same operator fix as the first, so it gets the same answer.
  */
 import { redirect } from 'next/navigation';
 import type { DbHandle } from '@wizard-ads/db';
+import { isDatabaseUnreachable } from '../db-unreachable';
 import { database, requireDatabase } from '../data/db';
 import { resolveOrgContext } from '../data/orgs';
 import type { Membership, OrgContext } from '../data/orgs';
@@ -26,7 +32,13 @@ export async function gate(): Promise<Gate> {
   const handle = database();
   if (handle === null) return { state: 'no-database' };
 
-  const context = await resolveOrgContext(handle, user);
+  let context: OrgContext;
+  try {
+    context = await resolveOrgContext(handle, user);
+  } catch (error) {
+    if (isDatabaseUnreachable(error)) return { state: 'no-database' };
+    throw error;
+  }
   if (!context.active) return { state: 'no-org', context };
   return { state: 'ok', handle, context };
 }
