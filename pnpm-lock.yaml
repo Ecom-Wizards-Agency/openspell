@@ -112,6 +112,10 @@ importers:
       '@wizard-ads/shared':
         specifier: workspace:*
         version: link:../shared
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
 
   packages/campaigns:
     dependencies:
