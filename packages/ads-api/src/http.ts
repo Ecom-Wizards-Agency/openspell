@@ -27,7 +27,8 @@ export interface HttpRequestSpec {
   /** Path (or a short label) used in retry events; never carries a token. */
   path: string;
   headers: HeaderFactory;
-  body?: string;
+  /** JSON strings for most calls; media upload also needs an exact multipart byte body. */
+  body?: string | ArrayBuffer;
   /**
    * True when re-sending the request cannot change server state. List
    * endpoints are POSTs and are still reads, hence a flag rather than a verb

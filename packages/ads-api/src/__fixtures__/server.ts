@@ -44,6 +44,8 @@ export interface RecordedRequest {
   pathname: string;
   headers: Record<string, string>;
   body: string | null;
+  /** Exact request bytes for binary/multipart calls. Null for JSON/string bodies. */
+  bodyBytes: Uint8Array | null;
   /** Parsed body for JSON requests, so assertions read normally. */
   json: unknown;
 }
@@ -83,6 +85,12 @@ export function createMockServer(routes: RecordedRoute[]): MockServer {
     const method = (init?.method ?? 'GET').toUpperCase();
     const url = new URL(input);
     const body = typeof init?.body === 'string' ? init.body : null;
+    let bodyBytes: Uint8Array | null = null;
+    if (init?.body instanceof Uint8Array) {
+      bodyBytes = new Uint8Array(init.body);
+    } else if (init?.body instanceof ArrayBuffer) {
+      bodyBytes = new Uint8Array(init.body.slice(0));
+    }
     let json: unknown = null;
     if (body !== null) {
       try {
@@ -95,7 +103,7 @@ export function createMockServer(routes: RecordedRoute[]): MockServer {
     for (const [key, value] of Object.entries((init?.headers ?? {}) as Record<string, string>)) {
       headers[key.toLowerCase()] = value;
     }
-    requests.push({ method, url: url.toString(), pathname: url.pathname, headers, body, json });
+    requests.push({ method, url: url.toString(), pathname: url.pathname, headers, body, bodyBytes, json });
 
     const route = routes.find((candidate) => matches(candidate, url, method));
     if (route === undefined) {

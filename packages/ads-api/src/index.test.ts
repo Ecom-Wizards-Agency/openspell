@@ -72,10 +72,16 @@ describe('@wizard-ads/ads-api', () => {
       'createSpProductAds',
       'updateSpProductAds',
       'archiveSpProductAds',
+      'getSpKeywordBidRecommendations',
+      'getSpProductTargetBidRecommendations',
+      'getSpTargetBidRecommendations',
       'uploadSbMedia',
       'getSbMedia',
       'createSbCreative',
       'updateSbCreative',
+      'createSbCreatives',
+      'updateSbCreatives',
+      'listSbCreatives',
       'archiveSbCreative',
     ]) {
       const prototype = api.AdsApiClient.prototype as unknown as Record<string, unknown>;
