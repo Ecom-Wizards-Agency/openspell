@@ -32,8 +32,13 @@ export const EXPORT_ENDPOINTS: Readonly<Record<ExportKind, ExportEndpoint>> = {
   ads: { path: '/ads/export', mediaType: 'application/vnd.adsexport.v1+json' },
 };
 
-/** `GET /exports/{exportId}` is versioned separately from the create calls. */
-export const EXPORT_STATUS_ACCEPT = 'application/vnd.export.v1+json';
+/**
+ * `GET /exports/{exportId}` is NOT versioned separately: live-verified
+ * 2026-08-14, the status endpoint 406s on a generic
+ * `application/vnd.export.v1+json` and demands the same per-entity media type
+ * the create call used (its 406 body enumerates exactly the four
+ * `EXPORT_ENDPOINTS` media types). So status polls must know their kind.
+ */
 
 export type ExportStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 

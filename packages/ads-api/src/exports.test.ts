@@ -90,14 +90,16 @@ describe('export polling', () => {
       },
     ]);
 
-    const processing = await client.getExport(PROFILE_ID, EXPORT_ID);
-    const completed = await client.getExport(PROFILE_ID, EXPORT_ID);
+    const processing = await client.getExport(PROFILE_ID, EXPORT_ID, 'campaigns');
+    const completed = await client.getExport(PROFILE_ID, EXPORT_ID, 'campaigns');
 
     expect(isExportComplete(processing.status)).toBe(false);
     expect(isExportComplete(completed.status)).toBe(true);
     expect(completed.url).toBe(DOWNLOAD_URL);
+    // Live-verified 2026-08-14: the status endpoint 406s on a generic accept
+    // and requires the creating entity's media type.
     expect(server.requestsFor(`/exports/${EXPORT_ID}`)[0]?.headers['accept']).toBe(
-      'application/vnd.export.v1+json',
+      'application/vnd.campaignsexport.v1+json',
     );
   });
 
@@ -110,7 +112,7 @@ describe('export polling', () => {
       },
     ]);
 
-    const failed = await client.getExport(PROFILE_ID, EXPORT_ID);
+    const failed = await client.getExport(PROFILE_ID, EXPORT_ID, 'campaigns');
     expect(isExportFailed(failed.status)).toBe(true);
     expect(failed.error).toBe('TOO_LARGE');
   });
@@ -120,7 +122,7 @@ describe('export polling', () => {
       { method: 'GET', match: `/exports/${EXPORT_ID}`, responses: [{ status: 200, json: { status: 'PENDING' } }] },
     ]);
 
-    await expect(client.getExport(PROFILE_ID, EXPORT_ID)).rejects.toBeInstanceOf(AdsApiParseError);
+    await expect(client.getExport(PROFILE_ID, EXPORT_ID, 'campaigns')).rejects.toBeInstanceOf(AdsApiParseError);
   });
 });
 

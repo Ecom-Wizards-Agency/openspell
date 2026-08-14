@@ -98,7 +98,6 @@ export type {
 // Exports API
 export {
   EXPORT_ENDPOINTS,
-  EXPORT_STATUS_ACCEPT,
   adGroupNameIndex,
   buildExportBody,
   campaignNameIndex,

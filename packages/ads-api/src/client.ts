@@ -41,7 +41,7 @@ import { DEFAULT_PAGE_SIZE, LIST_ENDPOINTS, buildListBody, buildOffsetQuery, typ
 import { AdsApiParseError, DuplicateReportError } from './errors.js';
 import {
   EXPORT_ENDPOINTS,
-  EXPORT_STATUS_ACCEPT,
+  type ExportKind,
   buildExportBody,
   type CreateExportInput,
   type ExportMetadata,
@@ -495,12 +495,16 @@ export class AdsApiClient {
     return this.exportMetadata(this.json(result, `POST ${endpoint.path}`), `POST ${endpoint.path}`);
   }
 
-  async getExport(profileId: string, exportId: string): Promise<ExportMetadata> {
+  async getExport(
+    profileId: string,
+    exportId: string,
+    kind: ExportKind,
+  ): Promise<ExportMetadata> {
     const result = await httpRequest(this.ctx, {
       method: 'GET',
       url: `${hostFor(this.region)}/exports/${encodeURIComponent(exportId)}`,
       path: '/exports/{exportId}',
-      headers: this.headers({ profileId, accept: EXPORT_STATUS_ACCEPT }),
+      headers: this.headers({ profileId, accept: EXPORT_ENDPOINTS[kind].mediaType }),
       idempotent: true,
     });
     return this.exportMetadata(this.json(result, 'GET /exports/{exportId}'), 'GET /exports/{exportId}');

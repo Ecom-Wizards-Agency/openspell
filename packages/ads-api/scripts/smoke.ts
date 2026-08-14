@@ -219,12 +219,12 @@ async function main(): Promise<void> {
     adProducts: [spec.adProduct],
   });
   console.log(`  exportId ${created.exportId} status ${created.status}`);
-  let exportMeta = await client.getExport(config.profileId, created.exportId);
+  let exportMeta = await client.getExport(config.profileId, created.exportId, 'campaigns');
   while (!isExportComplete(exportMeta.status) && !isExportFailed(exportMeta.status)) {
     if (Date.now() > deadline) die(`export ${created.exportId} still ${exportMeta.status}; giving up`);
     console.log(`  ${new Date().toISOString()} ${exportMeta.status}`);
     await sleep(pollIntervalMs);
-    exportMeta = await client.getExport(config.profileId, created.exportId);
+    exportMeta = await client.getExport(config.profileId, created.exportId, 'campaigns');
   }
   if (isExportFailed(exportMeta.status)) {
     die(`export ${created.exportId} ended ${exportMeta.status}: ${exportMeta.error ?? 'no reason given'}`);
