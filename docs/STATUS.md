@@ -25,6 +25,9 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 17 | AI skills library | Opus | todo | brief ready 2026-08-14 (WP-17): public-safe skill pack against our MCP + /connect-claude key page; amazon-agent skills as spec sources. Launches in v1.x |
 | 18 | AdLabs history backfill | Opus | merged | merged 2026-08-14: source-tagged loader + crosscheck isolation proven (backfilled rows unreadable by crosscheck, cent-exact 2-month verification). Local load done (4,453 profile-days, 14 profiles, up to ~25mo). HOSTED load pending DATABASE_URL; remaining ~1,790 Phase 1 pulls on demand |
 | 19 | Experiments (A/B tracking) | Opus | todo | brief ready 2026-08-14 (WP-19); queued behind WP-07 (shares apps/web); on the in-app roadmap seed |
+| 23 | Cron sync + profile UX | Opus | merged | merged+DEPLOYED 2026-08-14: Vercel cron /api/cron/sync (5-min pump, CRON_SECRET-gated, 401 verified live), profile roster sort-by-name/search/bulk-select/editable tz+hour, sticky timezone, active-profile default. Migration applied hosted. Cron live; awaits operator enabling ~15 profiles |
+| 25 | Ads API write endpoints | Codex | merged | merged 2026-08-14: SP create/update/archive + placement/off-Amazon + SB v4 stubs; 167 tests. Codex built it but couldn't commit (sandbox git RO) — recovered from working tree/bundle. Unblocks WP-12/14b/off-Amazon/Creative-Hub |
+| 26 | Bidding corridor engine slice | Opus | in-progress | Codex refused (sandbox git lock); redone on Opus 2026-08-14 |
 | 16 | AMC lane | Opus | gated | brief ready 2026-08-14 (docs/workpackages/WP-16-amc.md); opens at first provisioned AMC instance + AWS bucket. Visible on the in-app roadmap via WP-15 seed |
 
 ## Milestone gates
