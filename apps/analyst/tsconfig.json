@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // A scheduled Node program: an MCP client, a database handle, a process
+    // environment. Node types end to end.
+    "types": ["node"]
+  },
+  "include": [
+    "src/**/*.ts"
+  ]
+}
