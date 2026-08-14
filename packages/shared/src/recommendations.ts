@@ -48,14 +48,23 @@ export const RecommendationInputs = z.object({
   cvrSourceLevel: CvrSourceLevel,
   /**
    * Name of the ceiling that bound the value (manual max bid, max-affordable
-   * CPC, data-based level ceiling, budget ceiling), or null when the formula
-   * result stood unbound. The engine's actual set is `CeilingName` in
-   * @wizard-ads/core — a suggested-bid ceiling is NOT among them today (the
-   * suggested-bid corridor is planned as synced history, not engine math).
+   * CPC, data-based level ceiling, suggested-bid ceiling, budget ceiling), or
+   * null when the formula result stood unbound. The engine's actual set is
+   * `CeilingName` in @wizard-ads/core, which now includes `suggested_bid` — the
+   * engine emits it whenever an Amazon suggested bid is supplied and binds.
    * Deliberately a string: the ceiling set is doctrine and doctrine lives in tenant config,
    * never in this repo.
    */
   ceilingApplied: z.string().nullable(),
+  /**
+   * Mirror of `ceilingApplied` for the lower bound: the name of the floor that
+   * lifted the value (Amazon minimum, manual minimum, suggested-bid low edge, or
+   * a dynamic data-based floor), or null when the value stood above every floor.
+   * The engine's set is `FloorName` in @wizard-ads/core. Optional so a
+   * recommendation emitted before the corridor floors existed stays valid; a
+   * string for the same doctrine-lives-in-tenant-config reason as the ceiling.
+   */
+  floorApplied: z.string().nullable().optional(),
   /** True when a change cap clamped the step. A cap is a ceiling, not a step. */
   capClamped: z.boolean(),
   window: z

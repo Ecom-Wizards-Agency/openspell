@@ -115,3 +115,64 @@ export function proposePlacementAdjustment(request: PlacementRequest): Placement
 
   return { kind: 'proposal', recommendation, adjustment };
 }
+
+/** One modifier that lifts a base bid: a placement, dayparting, an audience, ... */
+export interface ModifierComponent {
+  /** A label such as 'top_of_search', 'dayparting', 'audience'. */
+  name: string;
+  /** Percentage uplift as Amazon stores it (0 to 900). */
+  pct: number;
+}
+
+export interface MaxPotentialCpcRequest {
+  baseBid: number;
+  /**
+   * Mutually-exclusive placement modifiers: a click is served at exactly one
+   * placement, so only the largest can bind the max potential. Empty means no
+   * placement uplift applies.
+   */
+  placementModifiers?: ModifierComponent[];
+  /** Modifiers that stack on top of the placement: dayparting, audience, ... */
+  otherModifiers?: ModifierComponent[];
+}
+
+export interface MaxPotentialCpc {
+  /** base bid x combined multiplier: the most a single click can cost. */
+  value: number;
+  /** The product of every applied modifier's `1 + pct/100`. */
+  multiplier: number;
+  /** The modifiers that composed the multiplier, in application order. */
+  components: ModifierComponent[];
+}
+
+/**
+ * Compose the plottable max-potential CPC: the most a single click can cost.
+ *
+ * The corridor chart (`tools/recon/04-optimizer.md` §3) draws this as `Max CPC`,
+ * with the placement and dayparting/audience modifiers nested underneath as its
+ * components. A click lands on one placement, so the placement modifiers are
+ * mutually exclusive and the maximum of them binds; the remaining modifiers
+ * stack on top multiplicatively. Amazon stores every modifier as a percentage
+ * uplift, so each contributes a `1 + pct/100` multiplier.
+ *
+ * Pure: a bid plus a modifier set in, the figure and its decomposition out, so
+ * the chart plots it without recomputing anything.
+ */
+export function maxPotentialCpc(request: MaxPotentialCpcRequest): MaxPotentialCpc {
+  const placements = request.placementModifiers ?? [];
+  const others = request.otherModifiers ?? [];
+
+  let topPlacement: ModifierComponent | null = null;
+  for (const p of placements) {
+    if (topPlacement === null || p.pct > topPlacement.pct) topPlacement = p;
+  }
+
+  const components: ModifierComponent[] = [];
+  if (topPlacement !== null) components.push(topPlacement);
+  for (const o of others) components.push(o);
+
+  let multiplier = 1;
+  for (const c of components) multiplier *= 1 + c.pct / 100;
+
+  return { value: request.baseBid * multiplier, multiplier, components };
+}

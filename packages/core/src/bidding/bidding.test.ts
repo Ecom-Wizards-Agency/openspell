@@ -13,10 +13,18 @@ import { describe, expect, it } from 'vitest';
 import type { EntityRef } from '@wizard-ads/shared';
 
 import { proposeBid, type BidOutcome } from './bid.js';
-import { applyCeilings, applyChangeCap, budgetShareCeilingFor, ceilingCandidates } from './ceilings.js';
+import {
+  applyCeilings,
+  applyChangeCap,
+  applyFloors,
+  budgetShareCeilingFor,
+  ceilingCandidates,
+  floorCandidates,
+  roundBid,
+} from './ceilings.js';
 import { resolveConfidence } from './confidence.js';
 import { breakEvenAcos, targetCpa } from './economics.js';
-import { proposePlacementAdjustment } from './placement.js';
+import { maxPotentialCpc, proposePlacementAdjustment } from './placement.js';
 import type { BidRequest, ChangeCaps, ConfidenceLevels } from './types.js';
 import { CATEGORY_PROFIT, CATEGORY_RANK } from '../types.js';
 
@@ -425,6 +433,138 @@ describe('ceilings, caps and provenance', () => {
   });
 });
 
+describe('suggested-bid ceiling', () => {
+  it('a supplied Amazon suggested bid becomes a suggested_bid candidate', () => {
+    const confidence = resolveConfidence({ profile: { clicks: 1000, orders: 100, sales: 4000 } });
+    const candidates = ceilingCandidates({
+      targetAcos: 0.3,
+      entityRpc: 10,
+      confidence,
+      adProduct: 'SP',
+      config: { suggestedBid: 1.75 },
+    });
+    expect(candidates.find((c) => c.name === 'suggested_bid')?.value).toBe(1.75);
+  });
+
+  it('no suggested bid means no suggested_bid candidate — today\'s behaviour', () => {
+    const confidence = resolveConfidence({ profile: { clicks: 1000, orders: 100, sales: 4000 } });
+    const candidates = ceilingCandidates({ targetAcos: 0.3, entityRpc: 10, confidence, adProduct: 'SP' });
+    expect(candidates.some((c) => c.name === 'suggested_bid')).toBe(false);
+  });
+
+  it('the engine produces ceilingApplied "suggested_bid" when it is the lowest ceiling', () => {
+    const outcome = proposeBid(
+      request({
+        currentBid: 3.0,
+        // RPC $5 at 30% wants $1.50; a $1.00 suggested bid is lower and binds.
+        metrics: { clicks: 100, orders: 20, sales: 500, cost: 200 },
+        levels: { profile: { clicks: 1000, orders: 100, sales: 4000 } },
+        targetAcos: 0.3,
+        ceilings: { suggestedBid: 1.0 },
+      }),
+    );
+    const rec = proposal(outcome);
+    expect(rec.reason).toBe('high_acos');
+    expect(rec.proposedValue).toBe(1.0);
+    expect(rec.inputs.ceilingApplied).toBe('suggested_bid');
+  });
+});
+
+describe('symmetric floor', () => {
+  it('applyFloors lifts to the highest floor and names it', () => {
+    const out = applyFloors(0.15, [
+      { name: 'amazon_min_bid', value: 0.02 },
+      { name: 'suggested_bid_low', value: 0.2 },
+      { name: 'manual_min_bid', value: 0.25 },
+    ]);
+    expect(out.value).toBe(0.25);
+    expect(out.floorApplied).toBe('manual_min_bid');
+  });
+
+  it('applyFloors leaves a value above every floor untouched', () => {
+    const out = applyFloors(0.9, [
+      { name: 'amazon_min_bid', value: 0.02 },
+      { name: 'manual_min_bid', value: 0.25 },
+    ]);
+    expect(out.floorApplied).toBeNull();
+    expect(out.value).toBe(0.9);
+  });
+
+  it('a dynamic floor share applies to the affordable CPC, over the same hierarchy', () => {
+    const confidence = resolveConfidence({ profile: { clicks: 1000, orders: 100, sales: 4000 } });
+    const floors = floorCandidates({
+      minBid: 0.02,
+      targetAcos: 0.3,
+      entityRpc: 10, // affordable CPC = 10 x 0.3 = 3.0
+      confidence,
+      config: { dynamicFloorShare: 0.2, suggestedBidLow: 0.4 },
+    });
+    expect(floors.find((f) => f.name === 'amazon_min_bid')?.value).toBe(0.02);
+    expect(floors.find((f) => f.name === 'suggested_bid_low')?.value).toBe(0.4);
+    expect(floors.find((f) => f.name === 'data_based_floor')?.value).toBeCloseTo(0.6, 10);
+  });
+
+  it('a manual floor lifts the proposal and reports floorApplied', () => {
+    const outcome = proposeBid(
+      request({
+        currentBid: 2.0,
+        // RPC $1 at 30% wants $0.30; a $0.50 manual floor lifts it.
+        metrics: { clicks: 100, orders: 20, sales: 100, cost: 200 },
+        levels: { profile: { clicks: 1000, orders: 100, sales: 1000 } },
+        targetAcos: 0.3,
+        floors: { manualMinBid: 0.5 },
+      }),
+    );
+    const rec = proposal(outcome);
+    expect(rec.reason).toBe('high_acos');
+    expect(rec.proposedValue).toBe(0.5);
+    expect(rec.inputs.floorApplied).toBe('manual_min_bid');
+    // The floor lifting the bid is not a ceiling binding it.
+    expect(rec.inputs.ceilingApplied).toBeNull();
+  });
+
+  it('a proposal that clears every floor reports floorApplied null', () => {
+    const outcome = proposeBid(
+      request({
+        currentBid: 2.0,
+        metrics: { clicks: 100, orders: 20, sales: 500, cost: 200 },
+        levels: { profile: { clicks: 1000, orders: 100, sales: 4000 } },
+        targetAcos: 0.3,
+      }),
+    );
+    const rec = proposal(outcome);
+    expect(rec.proposedValue).toBe(1.5);
+    expect(rec.inputs.floorApplied).toBeNull();
+  });
+});
+
+describe('worked examples: max potential CPC', () => {
+  it('composes base bid x binding placement x stacked modifiers', () => {
+    const result = maxPotentialCpc({
+      baseBid: 1.0,
+      placementModifiers: [
+        { name: 'top_of_search', pct: 50 },
+        { name: 'product_pages', pct: 20 },
+      ],
+      otherModifiers: [
+        { name: 'dayparting', pct: 10 },
+        { name: 'audience', pct: 25 },
+      ],
+    });
+    // top_of_search (50%) is the binding placement; 1.5 x 1.10 x 1.25 = 2.0625.
+    expect(result.multiplier).toBeCloseTo(2.0625, 10);
+    expect(result.value).toBeCloseTo(2.0625, 10);
+    expect(result.components.map((c) => c.name)).toEqual(['top_of_search', 'dayparting', 'audience']);
+  });
+
+  it('a bid with no modifiers has a max potential CPC equal to itself', () => {
+    const result = maxPotentialCpc({ baseBid: 0.75 });
+    expect(result.value).toBe(0.75);
+    expect(result.multiplier).toBe(1);
+    expect(result.components).toEqual([]);
+  });
+});
+
 describe('doctrine overlays', () => {
   it('a Rank target is never proposed for an ACOS-driven cut', () => {
     const outcome = proposeBid(
@@ -573,6 +713,58 @@ describe('properties', () => {
       );
       if (outcome.kind === 'none') continue;
       expect(outcome.recommendation.proposedValue as number).toBeGreaterThanOrEqual(0.02);
+    }
+  });
+
+  it('floor <= value <= ceiling for a well-formed corridor (primitive composition)', () => {
+    const rand = mulberry32(20260814);
+    for (let i = 0; i < 2000; i += 1) {
+      // A well-formed corridor: floor never exceeds ceiling.
+      const floorMax = 0.02 + rand() * 5;
+      const ceilMin = floorMax + rand() * 5;
+      const ceilings = [
+        { name: 'manual_max_bid' as const, value: ceilMin + rand() * 3 },
+        { name: 'budget' as const, value: ceilMin },
+      ];
+      const floors = [
+        { name: 'amazon_min_bid' as const, value: 0.02 },
+        { name: 'manual_min_bid' as const, value: floorMax },
+      ];
+      const raw = rand() * 12 - 1;
+      const afterCeiling = applyCeilings(raw, ceilings);
+      const afterFloor = applyFloors(afterCeiling.value, floors);
+      expect(afterFloor.value).toBeGreaterThanOrEqual(floorMax - 1e-9);
+      expect(afterFloor.value).toBeLessThanOrEqual(ceilMin + 1e-9);
+    }
+  });
+
+  it('proposeBid keeps a proposal inside a configured floor/ceiling corridor', () => {
+    const rand = mulberry32(31337);
+    // A rounded bid can sit up to half a cent outside a bound; allow it.
+    const CENT = 0.005 + 1e-9;
+    for (let i = 0; i < 1000; i += 1) {
+      const floor = roundBid(0.05 + rand() * 1.5, 2);
+      const ceiling = roundBid(floor + 0.1 + rand() * 3, 2);
+      const outcome = proposeBid(
+        request({
+          currentBid: rand() * 5,
+          metrics: {
+            clicks: 1 + Math.floor(rand() * 200),
+            orders: Math.floor(rand() * 20),
+            sales: rand() * 400,
+            cost: rand() * 400,
+          },
+          levels: { profile: { clicks: 5000, orders: 300, sales: 9000 } },
+          targetAcos: 0.05 + rand() * 0.5,
+          ceilings: { manualMaxBid: ceiling },
+          floors: { manualMinBid: floor },
+          caps: WIDE_CAPS,
+        }),
+      );
+      if (outcome.kind === 'none') continue;
+      const proposed = outcome.recommendation.proposedValue as number;
+      expect(proposed).toBeGreaterThanOrEqual(floor - CENT);
+      expect(proposed).toBeLessThanOrEqual(ceiling + CENT);
     }
   });
 });

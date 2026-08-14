@@ -56,6 +56,13 @@ export interface CeilingConfig {
    * Sponsored Display, whose budget is consumed differently.
    */
   budgetShareCeiling?: number | null;
+  /**
+   * Amazon's suggested bid for the target, when the sync supplies one. It is a
+   * ceiling candidate: Amazon's own upper suggestion is a defensible cap on a
+   * bid the formula would push higher. Absent → no suggested-bid ceiling is
+   * considered, so today's behaviour is unchanged.
+   */
+  suggestedBid?: number | null;
 }
 
 /** Which ceiling bound a value, named so the UI can say it. */
@@ -66,7 +73,36 @@ export type CeilingName =
   | 'data_based_ad_group'
   | 'data_based_campaign'
   | 'data_based_profile'
+  | 'suggested_bid'
   | 'budget';
+
+/**
+ * Floor inputs — the mirror of `CeilingConfig`. Every one is optional; Amazon's
+ * absolute minimum is always in play regardless, so a proposal is always
+ * two-sided even when the tenant sets no floors.
+ */
+export interface FloorConfig {
+  /** An operator-set minimum bid, if the tenant sets one. */
+  manualMinBid?: number | null;
+  /**
+   * Amazon's suggested-bid LOW edge — the bottom of the auction corridor. A bid
+   * below it is unlikely to clear the auction, so it is a defensible floor.
+   */
+  suggestedBidLow?: number | null;
+  /**
+   * A dynamic floor as a fraction of the affordable CPC (AdLabs' TIMES_CPC bid
+   * floor, 0.2–1). Applied to the target's own affordable CPC, or the benchmark
+   * level's when the target is too thin — the same hierarchy the ceiling uses.
+   */
+  dynamicFloorShare?: number | null;
+}
+
+/** Which floor bound a value, named so the UI can say it — mirrors `CeilingName`. */
+export type FloorName =
+  | 'amazon_min_bid'
+  | 'manual_min_bid'
+  | 'suggested_bid_low'
+  | 'data_based_floor';
 
 /**
  * Change caps. Ceilings on the step, never targets to aim at: a proposal that
@@ -149,6 +185,7 @@ export interface BidRequest {
   targetAcos: number;
   caps: ChangeCaps;
   ceilings?: CeilingConfig;
+  floors?: FloorConfig;
   /** Strategy category; `Rank` is protected from ACOS-only cuts. */
   category?: string;
   /** Brand goal/stage, resolved through the same lens table the flags use. */
