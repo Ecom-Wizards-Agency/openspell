@@ -31,6 +31,27 @@ export type EntityKind =
   | 'sd.campaigns'
   | 'sd.adGroups';
 
+export type SpWriteKind =
+  | 'campaigns'
+  | 'adGroups'
+  | 'keywords'
+  | 'targets'
+  | 'negativeKeywords'
+  | 'campaignNegativeKeywords'
+  | 'negativeTargets'
+  | 'campaignNegativeTargets'
+  | 'productAds';
+
+export interface SpWriteEndpoint {
+  path: string;
+  mediaType: string;
+  requestKey: string;
+  responseKey: string;
+  idKey: string;
+  entityKey: string;
+  idFilterKey: string;
+}
+
 export interface ListEndpoint {
   method: 'POST' | 'GET';
   path: string;
@@ -149,6 +170,95 @@ export const LIST_ENDPOINTS: Readonly<Record<EntityKind, ListEndpoint>> = {
     responseKey: '',
     paging: 'offset',
     filters: { state: 'stateFilter', campaignId: 'campaignIdFilter' },
+  },
+};
+
+/**
+ * SP v3 uses POST for create, PUT for sparse update, and POST to `/delete` for
+ * batch archive. The resource-specific nouns and media types are shared by all
+ * three operations and live here beside the read endpoint table.
+ */
+export const SP_WRITE_ENDPOINTS: Readonly<Record<SpWriteKind, SpWriteEndpoint>> = {
+  campaigns: {
+    path: '/sp/campaigns',
+    mediaType: 'application/vnd.spCampaign.v3+json',
+    requestKey: 'campaigns',
+    responseKey: 'campaigns',
+    idKey: 'campaignId',
+    entityKey: 'campaign',
+    idFilterKey: 'campaignIdFilter',
+  },
+  adGroups: {
+    path: '/sp/adGroups',
+    mediaType: 'application/vnd.spAdGroup.v3+json',
+    requestKey: 'adGroups',
+    responseKey: 'adGroups',
+    idKey: 'adGroupId',
+    entityKey: 'adGroup',
+    idFilterKey: 'adGroupIdFilter',
+  },
+  keywords: {
+    path: '/sp/keywords',
+    mediaType: 'application/vnd.spKeyword.v3+json',
+    requestKey: 'keywords',
+    responseKey: 'keywords',
+    idKey: 'keywordId',
+    entityKey: 'keyword',
+    idFilterKey: 'keywordIdFilter',
+  },
+  targets: {
+    path: '/sp/targets',
+    mediaType: 'application/vnd.spTargetingClause.v3+json',
+    requestKey: 'targetingClauses',
+    responseKey: 'targetingClauses',
+    idKey: 'targetId',
+    entityKey: 'targetingClause',
+    idFilterKey: 'targetIdFilter',
+  },
+  negativeKeywords: {
+    path: '/sp/negativeKeywords',
+    mediaType: 'application/vnd.spNegativeKeyword.v3+json',
+    requestKey: 'negativeKeywords',
+    responseKey: 'negativeKeywords',
+    idKey: 'negativeKeywordId',
+    entityKey: 'negativeKeyword',
+    idFilterKey: 'negativeKeywordIdFilter',
+  },
+  campaignNegativeKeywords: {
+    path: '/sp/campaignNegativeKeywords',
+    mediaType: 'application/vnd.spCampaignNegativeKeyword.v3+json',
+    requestKey: 'campaignNegativeKeywords',
+    responseKey: 'campaignNegativeKeywords',
+    idKey: 'campaignNegativeKeywordId',
+    entityKey: 'campaignNegativeKeyword',
+    idFilterKey: 'campaignNegativeKeywordIdFilter',
+  },
+  negativeTargets: {
+    path: '/sp/negativeTargets',
+    mediaType: 'application/vnd.spNegativeTargetingClause.v3+json',
+    requestKey: 'negativeTargetingClauses',
+    responseKey: 'negativeTargetingClauses',
+    idKey: 'targetId',
+    entityKey: 'negativeTargetingClause',
+    idFilterKey: 'negativeTargetIdFilter',
+  },
+  campaignNegativeTargets: {
+    path: '/sp/campaignNegativeTargets',
+    mediaType: 'application/vnd.spCampaignNegativeTargetingClause.v3+json',
+    requestKey: 'campaignNegativeTargetingClauses',
+    responseKey: 'campaignNegativeTargetingClauses',
+    idKey: 'campaignNegativeTargetingClauseId',
+    entityKey: 'campaignNegativeTargetingClauses',
+    idFilterKey: 'campaignNegativeTargetIdFilter',
+  },
+  productAds: {
+    path: '/sp/productAds',
+    mediaType: 'application/vnd.spProductAd.v3+json',
+    requestKey: 'productAds',
+    responseKey: 'productAds',
+    idKey: 'adId',
+    entityKey: 'productAd',
+    idFilterKey: 'adIdFilter',
   },
 };
 

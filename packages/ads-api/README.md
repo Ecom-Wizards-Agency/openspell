@@ -1,8 +1,8 @@
 # @wizard-ads/ads-api
 
 The Amazon Ads API, typed. LWA tokens, profiles, entity lists, Exports,
-Reporting v3, budget usage — with regional hosts, throttle-aware retry, and one
-parser per report schema.
+Reporting v3, budget usage, and Sponsored Products v3 writes — with regional
+hosts, throttle-aware retry, and one parser per report schema.
 
 A pure client: no database, no filesystem, no scheduling. Every Amazon call in
 the system happens in `apps/worker`, which is the only package allowed to import
@@ -32,14 +32,36 @@ const download = await client.downloadReport(meta.url!);            // gunzip + 
 const parsed = parseSpTargetingReport(download.rows);               // rows + skipped + input
 ```
 
-Three deliberate absences:
+Two deliberate absences:
 
 - **No polling.** Reporting v3 takes up to three hours. `createReport`,
   `getReport` and `downloadReport` are three calls so a killed worker resumes
   from a report id instead of losing the report.
 - **No `profileId` on the rows.** The contract's `profileId` is our database
   uuid; this package only knows Amazon's. The worker holds both halves.
-- **No writes.** v1 is read-only: it proposes, the operator applies.
+
+## Sponsored Products writes
+
+The client exposes batch create, sparse update, and archive operations for SP
+campaigns, ad groups, keywords, product targets, ad-group and campaign negative
+keywords/targets, and product ads. Campaign updates also carry placement bid
+adjustments and `offAmazonSettings.offAmazonBudgetControlStrategy` for the
+off-Amazon serving-control seam.
+
+Amazon returns HTTP 207 for mixed batches. Every result keeps both halves:
+
+```ts
+const result = await client.updateSpKeywords(profileId, updates);
+// result.items.length + result.errors.length === result.submitted
+```
+
+The client enforces that equality and throws on an unaccounted or duplicate
+response index. It automatically splits lists at 100 items. It retries writes
+only when Amazon explicitly returns 429; transport failures and 5xx responses
+are ambiguous and are never resent. HTTP 425 becomes `DuplicateWriteError`.
+
+Sponsored Brands v4 media/creative methods are typed interface stubs only and
+throw `AdsApiNotImplementedError` without making an HTTP request.
 
 ## Retry, and who owns what
 
@@ -77,3 +99,22 @@ campaign-name join coverage. It never prints a credential.
 The fixture suite proves the client agrees with what Amazon documents; the smoke
 test proves Amazon agrees with the client. Report completion, report download
 and the whole Exports contract have never been confirmed against a live account.
+
+### Operator-only write smoke
+
+Writes are OFF by default. Only an operator working against a disposable
+sandbox campaign may add a `writes` object to the gitignored config and pass the
+explicit flag:
+
+```bash
+pnpm smoke --writes
+pnpm smoke path/to/sandbox-config.json --writes
+```
+
+The `writes` object uses resource keys `campaigns`, `adGroups`, `keywords`,
+`targets`, `negativeKeywords`, `campaignNegativeKeywords`, `negativeTargets`,
+`campaignNegativeTargets`, and `productAds`. Each may contain `create`,
+`update`, and `archive` arrays; `campaigns` may additionally contain a
+`placement` array. Omitted or empty arrays make no call. Passing `--writes`
+with no configured mutation fails closed. Never point this mode at a live
+serving campaign. CI and the default `pnpm smoke` command cannot enter it.

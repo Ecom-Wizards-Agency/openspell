@@ -12,14 +12,16 @@
  *
  *     pnpm smoke                       # uses _local/ads-api.config.json
  *     pnpm smoke path/to/config.json   # or an explicit path
+ *     pnpm smoke --writes              # DANGEROUS: configured sandbox writes
  *
  * The configuration is gitignored; only `_local/ads-api.config.TEMPLATE.json`
  * is tracked. Copy the template, fill it in locally, and never paste a
  * credential anywhere else. This script prints ids, counts and byte sizes; it
- * never prints a token, and it makes no write call of any kind.
+ * never prints a token. Amazon mutation calls are unreachable unless the
+ * operator passes `--writes` and supplies explicit batches under `writes`.
  *
- * It is read-only against Amazon, but it is not free: creating a report
- * consumes quota, so it creates exactly one.
+ * Default mode is read-only against Amazon, but it is not free: creating a
+ * report consumes quota, so it creates exactly one.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -38,6 +40,28 @@ import {
 import { assertRegion, type ReportMetadata } from '../src/index.js';
 import { isReportComplete, isTerminalFailure, type ReportSpec, REPORT_SPECS } from '../src/reports.js';
 import type { ReportType } from '@wizard-ads/shared';
+import type {
+  SpAdGroupCreateInput,
+  SpAdGroupUpdateInput,
+  SpBatchWriteResult,
+  SpCampaignCreateInput,
+  SpCampaignNegativeKeywordCreateInput,
+  SpCampaignNegativeKeywordUpdateInput,
+  SpCampaignNegativeTargetCreateInput,
+  SpCampaignNegativeTargetUpdateInput,
+  SpCampaignPlacementUpdateInput,
+  SpCampaignUpdateInput,
+  SpKeywordCreateInput,
+  SpKeywordUpdateInput,
+  SpNegativeKeywordCreateInput,
+  SpNegativeKeywordUpdateInput,
+  SpNegativeTargetCreateInput,
+  SpNegativeTargetUpdateInput,
+  SpProductAdCreateInput,
+  SpProductAdUpdateInput,
+  SpTargetCreateInput,
+  SpTargetUpdateInput,
+} from '../src/writes.js';
 
 const DEFAULT_CONFIG = fileURLToPath(new URL('../../../_local/ads-api.config.json', import.meta.url));
 
@@ -52,6 +76,34 @@ interface SmokeConfig {
   /** Give up on polling after this many minutes. Amazon allows up to three hours. */
   maxWaitMinutes?: number;
   pollIntervalSeconds?: number;
+  /** Explicit operator-authored sandbox batches; ignored unless `--writes` is passed. */
+  writes?: WriteSmokeConfig;
+}
+
+interface WriteOperations<Create, Update> {
+  create?: readonly Create[];
+  update?: readonly Update[];
+  archive?: readonly string[];
+}
+
+interface WriteSmokeConfig {
+  campaigns?: WriteOperations<SpCampaignCreateInput, SpCampaignUpdateInput> & {
+    placement?: readonly SpCampaignPlacementUpdateInput[];
+  };
+  adGroups?: WriteOperations<SpAdGroupCreateInput, SpAdGroupUpdateInput>;
+  keywords?: WriteOperations<SpKeywordCreateInput, SpKeywordUpdateInput>;
+  targets?: WriteOperations<SpTargetCreateInput, SpTargetUpdateInput>;
+  negativeKeywords?: WriteOperations<SpNegativeKeywordCreateInput, SpNegativeKeywordUpdateInput>;
+  campaignNegativeKeywords?: WriteOperations<
+    SpCampaignNegativeKeywordCreateInput,
+    SpCampaignNegativeKeywordUpdateInput
+  >;
+  negativeTargets?: WriteOperations<SpNegativeTargetCreateInput, SpNegativeTargetUpdateInput>;
+  campaignNegativeTargets?: WriteOperations<
+    SpCampaignNegativeTargetCreateInput,
+    SpCampaignNegativeTargetUpdateInput
+  >;
+  productAds?: WriteOperations<SpProductAdCreateInput, SpProductAdUpdateInput>;
 }
 
 function die(message: string): never {
@@ -83,6 +135,7 @@ function loadConfig(path: string): SmokeConfig {
     ...(parsed.reportType === undefined ? {} : { reportType: parsed.reportType }),
     ...(parsed.maxWaitMinutes === undefined ? {} : { maxWaitMinutes: parsed.maxWaitMinutes }),
     ...(parsed.pollIntervalSeconds === undefined ? {} : { pollIntervalSeconds: parsed.pollIntervalSeconds }),
+    ...(parsed.writes === undefined ? {} : { writes: parsed.writes }),
   };
 }
 
@@ -115,8 +168,68 @@ const sleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
+function printWriteResult(label: string, result: SpBatchWriteResult): void {
+  console.log(
+    `  ${label}: ${result.items.length} ok, ${result.errors.length} errors, ` +
+      `${result.submitted} submitted across ${result.batches} batches`,
+  );
+  if (result.items.length + result.errors.length !== result.submitted) {
+    die(`${label}: items + errors does not equal submitted`);
+  }
+  for (const error of result.errors) {
+    console.log(`    index ${error.index}: ${error.code ?? 'UNKNOWN'} ${error.details ?? ''}`.trimEnd());
+  }
+}
+
+async function runConfiguredWrites(
+  client: AdsApiClient,
+  profileId: string,
+  writes: WriteSmokeConfig,
+): Promise<void> {
+  console.log('\n[WRITES] OPERATOR-ONLY sandbox mutations');
+  const calls: Array<{ label: string; count: number; run: () => Promise<SpBatchWriteResult> }> = [
+    { label: 'campaigns.create', count: writes.campaigns?.create?.length ?? 0, run: () => client.createSpCampaigns(profileId, writes.campaigns?.create ?? []) },
+    { label: 'campaigns.update', count: writes.campaigns?.update?.length ?? 0, run: () => client.updateSpCampaigns(profileId, writes.campaigns?.update ?? []) },
+    { label: 'campaigns.placement', count: writes.campaigns?.placement?.length ?? 0, run: () => client.updateSpCampaignPlacementBidding(profileId, writes.campaigns?.placement ?? []) },
+    { label: 'campaigns.archive', count: writes.campaigns?.archive?.length ?? 0, run: () => client.archiveSpCampaigns(profileId, writes.campaigns?.archive ?? []) },
+    { label: 'adGroups.create', count: writes.adGroups?.create?.length ?? 0, run: () => client.createSpAdGroups(profileId, writes.adGroups?.create ?? []) },
+    { label: 'adGroups.update', count: writes.adGroups?.update?.length ?? 0, run: () => client.updateSpAdGroups(profileId, writes.adGroups?.update ?? []) },
+    { label: 'adGroups.archive', count: writes.adGroups?.archive?.length ?? 0, run: () => client.archiveSpAdGroups(profileId, writes.adGroups?.archive ?? []) },
+    { label: 'keywords.create', count: writes.keywords?.create?.length ?? 0, run: () => client.createSpKeywords(profileId, writes.keywords?.create ?? []) },
+    { label: 'keywords.update', count: writes.keywords?.update?.length ?? 0, run: () => client.updateSpKeywords(profileId, writes.keywords?.update ?? []) },
+    { label: 'keywords.archive', count: writes.keywords?.archive?.length ?? 0, run: () => client.archiveSpKeywords(profileId, writes.keywords?.archive ?? []) },
+    { label: 'targets.create', count: writes.targets?.create?.length ?? 0, run: () => client.createSpTargets(profileId, writes.targets?.create ?? []) },
+    { label: 'targets.update', count: writes.targets?.update?.length ?? 0, run: () => client.updateSpTargets(profileId, writes.targets?.update ?? []) },
+    { label: 'targets.archive', count: writes.targets?.archive?.length ?? 0, run: () => client.archiveSpTargets(profileId, writes.targets?.archive ?? []) },
+    { label: 'negativeKeywords.create', count: writes.negativeKeywords?.create?.length ?? 0, run: () => client.createSpNegativeKeywords(profileId, writes.negativeKeywords?.create ?? []) },
+    { label: 'negativeKeywords.update', count: writes.negativeKeywords?.update?.length ?? 0, run: () => client.updateSpNegativeKeywords(profileId, writes.negativeKeywords?.update ?? []) },
+    { label: 'negativeKeywords.archive', count: writes.negativeKeywords?.archive?.length ?? 0, run: () => client.archiveSpNegativeKeywords(profileId, writes.negativeKeywords?.archive ?? []) },
+    { label: 'campaignNegativeKeywords.create', count: writes.campaignNegativeKeywords?.create?.length ?? 0, run: () => client.createSpCampaignNegativeKeywords(profileId, writes.campaignNegativeKeywords?.create ?? []) },
+    { label: 'campaignNegativeKeywords.update', count: writes.campaignNegativeKeywords?.update?.length ?? 0, run: () => client.updateSpCampaignNegativeKeywords(profileId, writes.campaignNegativeKeywords?.update ?? []) },
+    { label: 'campaignNegativeKeywords.archive', count: writes.campaignNegativeKeywords?.archive?.length ?? 0, run: () => client.archiveSpCampaignNegativeKeywords(profileId, writes.campaignNegativeKeywords?.archive ?? []) },
+    { label: 'negativeTargets.create', count: writes.negativeTargets?.create?.length ?? 0, run: () => client.createSpNegativeTargets(profileId, writes.negativeTargets?.create ?? []) },
+    { label: 'negativeTargets.update', count: writes.negativeTargets?.update?.length ?? 0, run: () => client.updateSpNegativeTargets(profileId, writes.negativeTargets?.update ?? []) },
+    { label: 'negativeTargets.archive', count: writes.negativeTargets?.archive?.length ?? 0, run: () => client.archiveSpNegativeTargets(profileId, writes.negativeTargets?.archive ?? []) },
+    { label: 'campaignNegativeTargets.create', count: writes.campaignNegativeTargets?.create?.length ?? 0, run: () => client.createSpCampaignNegativeTargets(profileId, writes.campaignNegativeTargets?.create ?? []) },
+    { label: 'campaignNegativeTargets.update', count: writes.campaignNegativeTargets?.update?.length ?? 0, run: () => client.updateSpCampaignNegativeTargets(profileId, writes.campaignNegativeTargets?.update ?? []) },
+    { label: 'campaignNegativeTargets.archive', count: writes.campaignNegativeTargets?.archive?.length ?? 0, run: () => client.archiveSpCampaignNegativeTargets(profileId, writes.campaignNegativeTargets?.archive ?? []) },
+    { label: 'productAds.create', count: writes.productAds?.create?.length ?? 0, run: () => client.createSpProductAds(profileId, writes.productAds?.create ?? []) },
+    { label: 'productAds.update', count: writes.productAds?.update?.length ?? 0, run: () => client.updateSpProductAds(profileId, writes.productAds?.update ?? []) },
+    { label: 'productAds.archive', count: writes.productAds?.archive?.length ?? 0, run: () => client.archiveSpProductAds(profileId, writes.productAds?.archive ?? []) },
+  ];
+  const configured = calls.filter((call) => call.count > 0);
+  if (configured.length === 0) die('--writes was passed, but config.writes contains no mutation items');
+  for (const call of configured) printWriteResult(call.label, await call.run());
+}
+
 async function main(): Promise<void> {
-  const configPath = process.argv[2] ?? DEFAULT_CONFIG;
+  const args = process.argv.slice(2);
+  const writesEnabled = args.includes('--writes');
+  const unknownFlags = args.filter((arg) => arg.startsWith('--') && arg !== '--writes');
+  if (unknownFlags.length > 0) die(`unknown option(s): ${unknownFlags.join(', ')}`);
+  const positional = args.filter((arg) => !arg.startsWith('--'));
+  if (positional.length > 1) die('pass at most one config path');
+  const configPath = positional[0] ?? DEFAULT_CONFIG;
   const config = loadConfig(configPath);
   const region = assertRegion(config.region);
   const reportType = reportTypeOf(config.reportType);
@@ -254,6 +367,11 @@ async function main(): Promise<void> {
   console.log(
     `  join coverage: ${joined}/${reportCampaignIds.size} campaign ids in the report have a name`,
   );
+
+  if (writesEnabled) {
+    if (config.writes === undefined) die('--writes requires an explicit writes object in the config');
+    await runConfiguredWrites(client, config.profileId, config.writes);
+  }
 
   console.log(`\nthrottle: ${JSON.stringify(client.throttleState)}`);
   console.log('done');
