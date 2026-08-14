@@ -65,27 +65,85 @@ Three structural facts that shape the nav:
 - **DSP and PPC are parallel branches that must never be mixed in one query.** `MCP` This
   argues for DSP as a separate top-level nav branch rather than an ad-type filter.
 
-## Top-level sections
+## The real nav — `UI-verified`, session 3
 
-| # | Section | Evidence | What it holds | Spec file |
-|---|---|---|---|---|
-| 1 | Dashboards | `MCP` | Org-scoped custom dashboards: sections → tabs → widgets, per-tab overrides, public share links, dark mode | `03-dashboards.md` |
-| 2 | Optimizer | `VID` `MCP` | Date-range picker + trend chart (daily/weekly toggle), campaign multi-select, "Optimize bids" → settings modal → preview table → apply | `04-optimizer.md` |
-| 3 | Optimization Groups | `VID` `MCP` | Named campaign groups carrying target ACOS, prioritization, and all bid/placement limits | `04-optimizer.md` |
-| 4 | Campaign Mapping | `URL` `MCP` | Source ad group → destination ad group routing for harvested search terms, with per-match-type bid settings and negation flags | `05-harvesting-and-campaign-maps.md` |
-| 5 | Harvesting | `MCP` | Search-term promotion: preview (per search term × mapping) → apply | `05-harvesting-and-campaign-maps.md` |
-| 6 | Data grids (Campaigns / Ad Groups / Targeting / Search Terms / Placements / Products / Advertised Products / Negatives / Audiences) | `MCP` `VID` | The entity tables. Infinite scroll, no pagination, drag-reorder + pinnable columns, persisted per-user presets | `02-data-grid.md` |
-| 7 | Analyze | `MCP` + operator's own AdLabs-derived reporting standard, which cites "AdLabs Analyze > Placements" | Placement analysis, n-grams, brand-leak detection, audit summary scorecard | `07-sqp-ngrams-negatives.md`, `04-optimizer.md` |
-| 8 | Search Query Performance (SQP) | `MCP` | Weekly Sunday–Saturday query data, per-ASIN share vs market total | `07-sqp-ngrams-negatives.md` |
-| 9 | AMC (Amazon Marketing Cloud) | `MCP` | PRO-plan only. Query library (Q1a–Q8), custom SQL, schedules, audience library. Per-profile connection ("Profiles → Connect AMC") | `08-alerts-automations-dayparting.md` |
-| 10 | Automations | `MCP` | Team-scoped bid rules and scheduling rules; status ON / PAUSED / DELETED | `08-alerts-automations-dayparting.md` |
-| 11 | Dayparting | `MCP` | Named schedules, 7×24 bid-adjustment grid, assigned to campaigns | `08-alerts-automations-dayparting.md` |
-| 12 | Data Groups (Tags) | `MCP` | Custom labels per entity type with coloured values, org-visible, profile-scoped | `06-tags.md` |
-| 13 | Time Machine / Logs | `VID` `MCP` | Every job (manual + optimizer) with success/fail counts, note, author, and a one-click revert. Stored permanently | `04-optimizer.md` |
-| 14 | Profiles | `MCP` | Per-profile Target ACOS / Target Total ACOS / target spend / target sales, sync status, AMC connect | `09-settings-and-admin.md` |
-| 15 | Context Manager | `MCP` | Stored AI instructions at USER / ORGANIZATION / TEAM / BRAND / PROFILE scope, one "core context" per entity, 5000 char cap | `09-settings-and-admin.md` |
-| 16 | Help / Messages | `VID` | "I need help" → Help (documentation incl. the "white box bidding algorithm" article) and Messages (live chat to the AdLabs team) | not specced — see skips |
-| 17 | Goto links | `MCP` | `create_goto_link` produces a deep link that restores a result set in the UI | `10-goto-links.md` |
+The nav is a **collapsed icon rail that expands on hover**, with six collapsible groups plus a
+pinned footer. Screenshot references: the rail was read live; no capture is stored because the
+expanded rail is clean but the pages behind it are not (see `README.md`'s public-repo rule).
+
+```
+Search                              ⌘K
+Getting Started                     /getting-started
+
+Insights            ▾
+  Profiles Overview                 /profiles-overview
+  Products Overview
+  Custom Dashboards                 /dashboards/overview
+
+Optimize            ▾
+  Campaign Optimizer                /optimizer          (page title: "Bid Optimizer")
+  Optimization Groups
+  Time Machine
+  Dayparting
+
+Search Terms & Targeting  ▾
+  Search Terms
+  SQP Reports
+  Targeting
+  Negative Targeting
+  KW Harvesting Map
+
+Analyze             ▾
+  Advertised Products
+  Placements
+  Ad Groups
+  Audiences
+  Tags
+  Change Logs
+
+AI                  ▾
+  MCP                               [BETA]
+  Context Manager                   [BETA]
+
+— footer —
+Report a Bug
+Become an Affiliate
+Amazon Ads Masterclass
+AdLabs Roadmap
+Manage Profiles                     /profiles
+Manage Teams                        /configuration/settings/teams
+Settings                            → popover: Settings / Subscription & Billing / Dark Mode / <user> / sign out
+```
+
+### Corrections this forces on the session-1 list
+
+| Session-1 claim | Reality (`UI-verified`) |
+|---|---|
+| 17 flat top-level sections | **6 collapsible groups** (Insights, Optimize, Search Terms & Targeting, Analyze, AI) + Getting Started + a footer block. Grouping and naming were both wrong. |
+| "Dashboards" is a top-level section | It is **Insights → Custom Dashboards**. |
+| "Optimizer" | It is **Optimize → Campaign Optimizer**; the page's own H1 is **"Bid Optimizer"**. Three names for one screen. |
+| "Campaign Mapping" and "Harvesting" are two sections | One nav item: **Search Terms & Targeting → KW Harvesting Map**. |
+| "Data grids" is one section | The grids are **split across two groups**: Search Terms / Targeting / Negative Targeting under *Search Terms & Targeting*; Advertised Products / Placements / Ad Groups / Audiences under *Analyze*. There is **no "Campaigns" nav item at all** — the campaign grid *is* the Campaign Optimizer page. |
+| "Analyze" holds n-grams, brand leak, audit scorecard | Analyze holds **entity grids** (Advertised Products, Placements, Ad Groups, Audiences, Tags, Change Logs). No n-gram, brand-leak or audit-scorecard nav item exists. |
+| "Time Machine / Logs" | Two separate items in two groups: **Optimize → Time Machine** and **Analyze → Change Logs**. |
+| "Data Groups (Tags)" | Named simply **Tags**, under Analyze. |
+| "AMC" is a top-level section | **No AMC nav item exists** on this org. AMC surfaces only as a `Connect AMC` button on `/profiles`. |
+| **"Automations" is a top-level section** | **There is no Automations item in the nav.** The page exists and is fully functional at **`/automations`**, but it is unlinked from the navigation and does not appear in ⌘K search results either (searching "automation" returns only "Search help docs for…"). See `08-alerts-automations-dayparting.md`. |
+| "Profiles" is a nav section | **Two different screens**: `Manage Profiles` (`/profiles`, the admin list) in the footer, and `Insights → Profiles Overview` (`/profiles-overview`, the cross-profile performance grid). |
+| "Context Manager" is top-level | It is **AI → Context Manager**, tagged `[BETA]`, alongside **AI → MCP** `[BETA]`. |
+| Billing "never surfaced" | **Subscription & Billing** is in the Settings popover, and each team carries a `Plan` badge. |
+
+### Newly discovered surfaces not in any prior spec
+
+| Surface | Note |
+|---|---|
+| **Getting Started** (`/getting-started`) | Landing page. Global search box ("Search pages, profiles, actions…", ⌘K), three quick-launch chips (Campaign Optimizer / Products Overview / AdLabs Academy), and a tutorial-video wall. |
+| **Global ⌘K search** | Searches pages, profiles and actions. Notable negative result: it does **not** index the Automations page. |
+| **Insights → Profiles Overview** | The cross-profile portfolio grid. Carries Target ACOS, Target TACOS, ACOS, TACOS, Ad Sales % of Total, Last 30d Total Sales, Last 30d Ad Sales **and a currency selector that normalises across profiles**. Materially weakens the session-1 "cross-profile work has no home" verdict — see Verdicts below. |
+| **Insights → Products Overview** | Product-level rollup; also a Getting-Started quick-launch chip. |
+| **AI → MCP** `[BETA]` | In-app surface for the MCP integration. Key generation itself lives in Settings → Personal → MCP API Key. |
+| **Dark Mode** | Global app-level toggle in the Settings popover (not just a dashboard-share flag). |
+| **Sync clock in the top bar** | Every profile-scoped page shows `Sync · <time> <GMT offset>` in the header, plus a manual refresh button next to the profile switcher. Partially answers the session-1 "nav does not expose the sync clock" beat. |
 
 ## Sections deliberately NOT specced, with reason
 
@@ -115,16 +173,22 @@ Three structural facts that shape the nav:
   data the operator has already got open.
 
 **Beat.**
+- **The nav has an orphan.** A complete, working, cross-profile Automations product sits at
+  `/automations` with no nav entry and no search-index entry. Two prior recon sessions and the
+  MCP contract both failed to locate it. Whatever we build, every surface gets a nav home.
+- **Three names for one screen** (`Optimize → Campaign Optimizer` / URL `/optimizer` / H1
+  "Bid Optimizer"), and two screens called some form of "Profiles". Pick one noun per surface.
 - **Two ID spaces for "profile" is a defect, not a feature.** AdLabs' own MCP docs have to warn
   twice that dashboard `profile_ids` are "internal AdLabs IDs, not Amazon profile IDs" and that
   the internal ID is not even in the resource URI — you must read the resource body to find it.
   We should carry exactly one profile identifier through routes, links, and API.
-- **Cross-profile work has no home.** Every screen is scoped to one `profileId`. An agency
-  managing 15 profiles across 4 countries and 3 currencies (the operator's actual shape) has to
-  visit 15 screens to answer "which accounts are off target this week". The profile-level
-  entity exists in the API (`entity_type="profile"` returns metrics for *all* profiles) but the
-  nav gives it no first-class surface. A portfolio-of-accounts home screen is the single
-  clearest gap.
+- ~~**Cross-profile work has no home.**~~ **CORRECTED, session 3.** `Insights → Profiles
+  Overview` *is* a portfolio-of-accounts home screen, and it normalises currency across
+  profiles via a `$ USD` selector. Automations are cross-profile too (multi-select profile
+  picker). The narrower and still-true version of this beat: **cross-profile stops at
+  read-only overview and rule scope.** Grids, the optimizer, campaign maps, dayparting and tags
+  are all still single-profile, and there is no cross-profile *saved view*. Aim at those, not
+  at "they have no portfolio screen" — they do.
 - **Nav does not expose the sync clock.** Profile freshness (`Sync status: completed / Last
   synced: <UTC timestamp>` — `MCP`) is buried in the profile resource. Every number on every
   screen is only as good as that timestamp, and the known behavior that same-day totals read

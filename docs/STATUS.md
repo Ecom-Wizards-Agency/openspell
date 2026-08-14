@@ -13,7 +13,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 05 | core doctrine port | Opus | merged | merged 2026-08-13; 122 parity cases byte-equal to Python, bidding worked-examples green. Spawned WP-00.1 contract extension (merged 2026-08-13, 154/154 live-doc leaf coverage) |
 | 06 | Grid + dashboard | Opus | in-progress | Codex session never started; relaunched fresh on Opus 2026-08-14 |
 | 07 | Recs UI + export bridge | Codex | todo | GATE OPEN (WP-05 merged) — after WP-06 grid shell |
-| 08 | Tags + goto links | Codex+Opus | in-progress | Codex implemented (bundle salvaged, f0cf4ec) but DB/RLS tests skipped in its sandbox; Opus completing: run tests + Playwright |
+| 08 | Tags + goto links | Codex+Opus | merged | merged 2026-08-14: nested tags, goto links, RLS negatives at DB+HTTP layers, 4 Playwright e2e green. Fixed the repo-wide web workspace-import blocker (webpack extensionAlias) + 2 db binding bugs. EntityTagFilter promotion to shared deferred |
 | 09 | MCP server | Opus | merged | merged 2026-08-14: 10 read tools, scoped/hashed API keys (per-key profile allowlist — the AdLabs gap), full audit log, write stubs gated; 48 tests. mcp.api_keys migration applied hosted, advisors clean. Live Claude-client session vs staging = operator step |
 | 10 | Crosscheck harness | Opus | merged | merged 2026-08-14: CLI, ingest handler (docs/handoffs-to-wp03.md), standalone /crosscheck route, export contract, exit-report generator; 59 tests green. Live-pilot verdict PENDING until real facts. KNOWN ISSUE found: repo-wide `next build` Turbopack blocker (.js specifiers) — manager fixes once, post-wave, before v0 close |
 | 11 | AdLabs recon | Opus + Victor | review | MCP half done (13 specs, exact contracts). UI pass blocked twice: extension installed/enabled/permissioned but NOT PAIRED to the claude.ai account — operator pairing check needed, then session 3 (automations first). See tools/recon/BLOCKED.md |
@@ -44,3 +44,10 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
       Return URLs, and point the `ads` subdomain at the Vercel deployment (before WP-04 live test).
 - [ ] Place `_local/ads-api.config.json` for the WP-02 live smoke (copy shape from template).
 - [ ] Approve Supabase Pro (~$25/mo) at v0 close; Fly.io worker (~$5/mo) at WP-03 deploy.
+
+## Manager follow-ups (post-wave)
+
+- [ ] CI: add a Postgres service to ci.yml so DB/RLS suites run there (today they skip), and wire test:e2e.
+- [ ] Decide Turbopack return path (extensionless imports) vs staying on webpack for apps/web.
+- [ ] Close the worker INTEGRATE(WP-02) seam (one function) + operator runs the ads-api live smoke.
+- [ ] Promote EntityTagFilter (and SB/SD fact rows when needed) into packages/shared in one batch.

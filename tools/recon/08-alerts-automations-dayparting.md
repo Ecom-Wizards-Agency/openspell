@@ -3,18 +3,263 @@
 **WP-11 recon · read-only.** No automation was created, paused, or deleted. No dayparting
 schedule was created or assigned. No AMC workflow was executed. Live reads made:
 `get_entity_data(entity_type="automation")` and `get_entity_data(entity_type="dayparting_schedule")`.
-No UI seen — see `BLOCKED.md`.
+
+> **Session 3 — this file's largest hole is now closed.** The automation rule builder was opened
+> in the live UI and walked to the final step of both wizards; **both were cancelled without
+> saving** and the automations grid remained empty throughout. §1 and §2 below are rewritten from
+> what was actually on screen and are tagged `UI-verified`. §3–§5 are unchanged (still `MCP`).
+>
+> **The single biggest correction in the whole recon is in §2: alerting DOES exist.**
 
 ---
 
-## 1. Automations
+## 1. Automations — `UI-verified`
 
-### What exists
+### Where it lives
+
+**`https://dashboard.adlabs.app/automations`** — org-scoped (no profile in scope), and
+**absent from the navigation and from ⌘K search**. It is reachable only by typing the URL or by
+following the in-page "Bid Optimizer" link from elsewhere. Two prior recon sessions and the MCP
+contract all failed to locate it for this reason.
+
+Screenshot: `screenshots/01-automations-list.jpg`.
+
+### The list screen
+
+Header strip: `Team time: <weekday> <time>` · `Next sync in <h>h <m>m` ·
+*"Automations run on scheduled days after data sync finishes — team timezone decides which day."*
+plus a **`Change Team Timezone`** button.
+
+A dismissible info callout, verbatim and worth keeping:
+
+> **Automating Bids** — AdLabs recommends using the **Bid Optimizer** for regular bid
+> optimizations. Automations apply fixed rules without considering the full picture, which often
+> leads to suboptimal results. Use them only for specific, rule-based tasks.
+
+That is the vendor telling you their own rules engine is the worse tool. Note it: they built a
+rules engine and then argue against using it for the main job.
+
+Two create buttons — **`+ New Alert`** and **`+ New Automated Action`** — so there are **two
+automation kinds**, not one.
+
+Grid columns (`UI-verified`, left to right):
+
+```
+☐  Name  Status  Type  Entity Type  Trigger Conditions  Actions
+   Cooldown  Frequency  Trigger Time  Last Triggered
+```
+
+Grouped by **Profiles** by default (a group-by chip, removable), with a name search box, the
+standard **Filters** button, CSV download and a **Columns** panel. Empty state: *"No Rows to
+Show"*.
+
+`Trigger Conditions` and `Actions` being **columns** is the right call — the rule body is legible
+from the list without opening anything.
+
+### The builder — a three-step wizard
+
+Both kinds share one wizard. The left rail shows the three steps as cards that **fill in with
+summary chips as you complete them** (e.g. `<profile>` `Last 30d` `Monday` `Cooldown: 1d`, then
+`⚡ ACOS > 40.0%`, then `Send Email`). Clone this: the rail is a live summary, not a progress bar.
+
+| Kind | Steps |
+|---|---|
+| **Alert** | Configuration → Trigger Conditions → **Alerts** |
+| **Automated Action** | Configuration → Trigger Conditions → **Actions & Alerts** |
+
+Footer is always `Cancel` · `Back: <prev>` · `Next: <next>` / `Save`. Validation is inline **and**
+summarised: an invalid step gets a red border plus a red "Please fix the following errors:" block
+listing `<Step>: <message>` (observed: *"Configuration: At least one profile must be selected"*).
+
+#### Step 1 — Configuration (`screenshots/02`, `03`)
+
+| Field | Detail |
+|---|---|
+| **Assign to Profiles** | Radio **Sellers** / **Vendors**, then a multi-select `Profile(s)` combobox with **Select All** and one checkbox row per profile (`<name>` + `Seller` badge + `SC` badge). **Cross-profile by construction** — at least one required. |
+| **Name** | Free text, "Enter automation name". |
+| **Lookback Window** | Preset dropdown (default `Last 30 days`) that also renders the resolved range and length: `Jul 15 - Aug 13, 2026 (30 days)`. Underneath, two explicit controls: **Lookback** `30 days` and **End Date** `Ignore Last` `1 day`. |
+| **Trigger Time** | Time-of-day picker (default `13:45`), in **team timezone**. |
+| **Cooldown** | `1 day`. |
+| **Frequency** | `Daily` / `Weekly` / `Bi-weekly` / `Monthly`, with a live hint ("Runs every day"). Choosing **Weekly** reveals a `Mo Tu We Th Fr Sa Su` toggle row (default `Mo`) and the hint becomes "Runs once a week (Monday)". |
+
+Four standing help bullets, verbatim — all four are real semantics we must reproduce:
+
+- *"For day-over-day automations, use a 1-day lookback window."*
+- *"Filters like Current Availability, State, Budget, and Bid, use the current value and are not affected by the lookback window."*
+- *"Cooldown applies only to entities that have triggered within this automation."*
+- *"Frequency controls which days of the week the automation is eligible to run."*
+
+The second bullet is the load-bearing one: **the filter vocabulary is split into
+window-evaluated metrics and current-state attributes**, and the UI does not mark which is which
+outside this sentence. We should mark it per filter.
+
+#### Step 2 — Trigger Conditions (`screenshots/04`, `05`)
+
+| Control | Detail |
+|---|---|
+| **Entities** | The scope selector. Exactly ten values: **Profiles, Optimization Groups, Campaigns, Ad Groups, Targets, Audiences, Products, Advertised Products, Search Terms, Placements**. (Note: no Negative Targeting, no Search Query/SQP, no DSP.) |
+| **Minimum Match Count** | A toggle; when on, a numeric input (default `1`) with the live sentence *"Alert triggers when at least N entity matches the filters"*. Tooltip: *"Minimum number of entities that must meet the filter criteria to trigger this automation."* |
+| **Trigger Conditions** | Opens **the same `Filters` modal used by every data grid** — same "Filter / Operator / Value" rows, same `+ Add New Filter`, `Clear All`, `Cancel` / `Apply N Filter(s)`. This is direct UI confirmation of the "one filter vocabulary everywhere" clone verdict. |
+| **Test Trigger** | *"Check how many entities currently match these conditions."* → a green result panel. |
+
+Two more standing notes, both `UI-verified` and both material:
+
+- *"Archived and ended Campaigns are excluded from automations."*
+- *"To trigger on data changes, enable **Delta filters** in Advanced settings. You must refresh
+  the page after enabling the setting to see delta filters in the filter list."*
+  → **Delta filters are an off-by-default feature flag**, not part of the base grammar. See
+  `09-settings-and-admin.md` §Advanced.
+
+##### Trigger Filters vs scope filters — the key concept
+
+In the filter list, some entries carry a **lightning-bolt badge whose accessible label is
+literally `Trigger Filter`**. The rest do not. So the grammar has two classes:
+
+- **Trigger filters** — may fire the rule.
+- **Plain filters** — narrow *which* entities are in scope, but cannot themselves trigger.
+
+Complete filter list for **Entities = Campaigns** (`UI-verified`, ⚡ = Trigger Filter):
+
+| Group | Filters |
+|---|---|
+| **Campaigns** | Avg Daily Spend vs Budget · Budget · Campaign Ad Type · Campaign End Date · Campaign ID · Campaign Is Global · Campaign Last Optimized · ⚡Campaign Name (contains) · ⚡Campaign Name (doesn't contain) · ⚡Campaign Start Date · Campaign State · ⚡Campaign Targeting Type · Dayparting Schedule · Exclude Campaigns · Optimization Groups · Select Campaigns · Total Products · Total Targets |
+| **Portfolio** | Select Portfolios |
+| **Tags** | Tag (Campaigns) |
+| **General** | Cost Type · Creative Type |
+| **Bid Management** | Bid Strategy |
+| **Ad Groups** | SB Campaign Version |
+| **Performance Metrics** (⚡ **all of them**) | ACOS (Ad Cost of Sales) · ACOS vs Target ACOS · aCTC (Average Clicks to Conversion) · AOV · Clicks · CPA · CPC · CPM · CTR · CVR · Impressions · Orders · ROAS · RPC · Sales · Spend · Units |
+| **Product** | Contains ASINs · Contains SKUs |
+
+`ACOS vs Target ACOS` carries a tooltip: *"Target ACOS is sourced from the Opt Group assigned to
+the campaign. If the campaign has no Opt Group…"* — i.e. the target-relative filter resolves its
+denominator from optimization-group membership.
+
+**Note for `06-tags.md`:** `Tag (Campaigns)` is available here, so **tags CAN scope an
+automation**. That partially refutes the "tags classify but nothing acts on the classification"
+verdict — tags drive automation scope, just not optimization groups, campaign maps or dayparting.
+
+**Operators** (`screenshots/05`), for a numeric metric filter — six, no more:
+`Less than` · `Less than or equal` · `Equal to` · `Between` · `Greater than` · `Greater than or equal`.
+The value input is unit-aware (a `%` suffix for ACOS). A completed condition renders as a chip:
+`⚡ ACOS > 40.0%`.
+
+##### Test Trigger is a real dry run
+
+With `ACOS > 40%` on Campaigns, `Test Trigger` returned:
+
+> **8 campaigns currently match**
+> Requires 1 match • Trigger would run • 30 days of data • starting 1 day ago
+> **`View Matching ↗`**
+
+That is a genuine pre-commit preview: the match count, whether the rule *would* fire against the
+minimum-match threshold, the resolved window, and a **drill-through link into the filtered grid**.
+It is the "preview as a diff" primitive we wanted — for automations they already built it. Clone
+the whole panel, including the one-line restatement of the resolved window.
+
+#### Step 3a — Alerts (Alert kind) (`screenshots/06`)
+
+| Field | Detail |
+|---|---|
+| **Alert Type** | Dropdown with **exactly one option: `Send Email`**. No Slack, no webhook, no in-app, no SMS. |
+| **Email Recipients** | Text input + `Add` button → a recipient list. Arbitrary addresses, not limited to team members. |
+| **Subject** *(optional)* | Placeholder `e.g. High ACOS Alert`. Hint: *"If left empty, the subject will be generated based on the name and the entities triggered, e.g. 'Alert: High ACOS Alert triggered for X Campaigns'."* |
+
+`Save` commits. **Not clicked.**
+
+What the email body contains could not be established without firing a rule, and firing one is a
+write. Recorded as the one remaining unknown in this area.
+
+#### Step 3b — Actions & Alerts (Automated Action kind) (`screenshots/07`, `08`, `09`)
+
+Header note: *"Automated Actions will only apply to the filtered entities defined in the Trigger
+section."* Below the action row: **`+ Add New Action`** and **`+ Add New Alert`** — so one
+automation can carry **multiple actions and alerts together**. An alert is therefore a *kind of
+action*, and "New Alert" is just the action-less shortcut.
+
+**Action Type vocabulary — five values** (for Entities = Campaigns):
+
+| Action | Parameters (`UI-verified`) |
+|---|---|
+| **Change State** | `State`: `Enabled` (default; the enum is the campaign-state enum) |
+| **Change Budget** | `Budget` mode: **No change · Set budget to ($) · Increase budget by ($) · Decrease budget by ($) · Decrease budget by (%) · Increase budget by (%)** (default *Increase budget by (%)*), `Adjust (%)`: `10`, plus **`Budget Floor` ($) and `Budget Ceiling` ($) — both default to "No limit"** |
+| **Add Tag** | Tag assignment |
+| **Assign Opt Group** | Optimization-group assignment |
+| **AdLabs Bid Optimizer** | Runs the full bid optimizer as an unattended action — see below |
+
+**`AdLabs Bid Optimizer` as an automation action is the most significant single finding here.**
+Selecting it:
+
+- collapses the row to a settings chip: **`⚙ Settings · Target ACOS 30% · Balanced`**
+- shows *"No other actions can be added alongside the optimizer action"* — it is **exclusive**
+- shows a warning: *"We recommend running bid optimization no more than once per week to allow
+  bids time to take effect before the next run."*
+- still permits `+ Add New Alert`
+
+So AdLabs **does** ship fully unattended, scheduled, cross-profile bid optimization with **no
+human approval step** — while simultaneously telling you on the same page not to automate bids.
+That is a direct and important input to WP-12: the staged-apply engine is not us inventing
+something they lack; it is us adding the approval gate they chose to omit.
+
+The settings chip opens the **Optimization Settings** modal — the same modal as the interactive
+optimizer. Its full field set and *defaults* are recorded in `04-optimizer.md` §Optimization
+Settings modal (screenshot `screenshots/09-optimization-settings-modal.png`).
+
+### Corrections to the `MCP`-derived model above
+
+| Session-1 claim (`MCP`) | Session-3 reality (`UI-verified`) |
+|---|---|
+| "Automations are bid rules and scheduling rules" | Two named kinds in the UI: **Alerts** and **Automated Actions**, sharing one wizard and one row model. |
+| Rule definition is "not documented on any evidence path" | **Fully captured** — condition vocabulary, operator set, trigger-vs-scope filter classes, action vocabulary, schedule model, scope selector. |
+| `entity_type` — "what the rule acts on" | Confirmed, and the enum is the ten values listed above. |
+| `profiles` plural / team-scoped | **Confirmed visually**: multi-select profile picker, Sellers/Vendors split, and the list grid groups by Profiles. |
+| `action_count` — "a rule is a container of actions" | **Confirmed**: `+ Add New Action` / `+ Add New Alert` on one automation. |
+| Schedule model unknown | `Frequency` (Daily/Weekly/Bi-weekly/Monthly + weekday picker) × `Trigger Time` × `Cooldown` × `Lookback Window` (+ `Ignore Last N days`), all in **team timezone**, all running **after data sync completes**. |
+
+---
+
+## 2. Alerts — **CORRECTED: they exist**
+
+> **This section previously said "No alerting capability was found on any evidence path."
+> That was wrong.** It was an artefact of the MCP contract exposing no alert object and the
+> Automations page being unreachable from the nav. Alerting is a first-class, shipped feature.
+
+### What actually exists
+
+- A dedicated **`+ New Alert`** builder (§1 above).
+- Cross-profile scope, ten entity types, the full grid filter grammar as conditions.
+- A schedule (frequency + weekday + time-of-day + cooldown + lookback).
+- A **minimum match count** threshold.
+- A **dry-run** (`Test Trigger`) with a match count and a drill-through to the matching rows.
+- Delivery to **an arbitrary list of email recipients**, with an auto-generated or custom subject.
+
+So the "every ingredient exists but the delivery half is absent" framing is **retired**. The
+delivery half exists.
+
+### What is genuinely still missing — the narrowed beat
+
+| Gap | Detail |
+|---|---|
+| **One channel only** | `Send Email`. No Slack, no webhook, no Teams, no in-app inbox, no digest. For an agency running its morning routine in Slack this is the whole ballgame — and it is exactly why our operating context already rebuilds this outside the tool. |
+| **No rows in the notification (unconfirmed but strongly implied)** | The subject template is *"Alert: X triggered for N Campaigns"* — a **count**, not a row set. Whether the body carries the breaching rows could not be verified without firing a rule. `Test Trigger` proves they can produce the rows; the alert appears to send the number. |
+| **No digest / no rollup** | One rule fires one email. Fifteen profiles × six checks is ninety emails, not one Monday brief. The grid groups by profile; the delivery does not. |
+| **No escalation, ack, or state** | Nothing to say "still breaching", "resolved", or "someone is on it". `Last Triggered` is the entire memory. |
+| **Buried** | Not in the nav, not in search, and the page's own banner argues against using the feature. Discoverability is a product decision and they made it badly. |
+
+**Beat, restated.** Not "build alerting" — **build the delivery layer they stopped short of**:
+multi-channel (Slack first), row-level payloads, one scheduled cross-profile digest instead of
+N emails, and alert state that survives between runs. The rule engine underneath is genuinely
+good and should be cloned closely, including `Test Trigger`.
+
+Adjacent surfaces, unchanged and still not alerts: `analyze(audit_summary)` is a pull scorecard;
+filters like `DAILY_SPEND_TO_BUDGET > 0.8` are the conditions such a rule would test.
+
+---
+
+## 2b. The MCP-side automation surface (`MCP`, unchanged)
 
 `MCP`, verbatim: *"Automations are bid rules and scheduling rules — each row represents one
-rule."*
-
-Row shape:
+rule."* Row shape:
 
 ```
 id  name  status  entity_type  profiles  action_count  created_by  last_triggered_at
@@ -50,13 +295,12 @@ Exactly one write: `update_entities(entity_type="automation", action="update_sta
 — set `ON` / `PAUSED` / `DELETED` over a reference of automation rows, with a mandatory note.
 
 **Creation and rule-body editing are UI-only.** There is no create action, no condition schema,
-no action schema anywhere in the MCP contract. So the rule *definition* language — what
-conditions a rule can test, what actions it can take, what schedule it runs on — is not
-documented on any evidence path available to this recon, and the UI walkthrough that would have
-captured it did not run.
+no action schema anywhere in the MCP contract.
 
-**This is the largest genuine hole in this recon.** Recorded as such rather than guessed at. See
-`00-INDEX.md` §coverage.
+**Session 3: the rule definition language is now fully captured from the UI (§1) — but the
+asymmetry stands and is itself the finding.** A rules engine that an agent can pause but cannot
+author is half a product, in a tool explicitly marketed as agent-drivable. Our automation object
+must be creatable and editable through the API on day one. Keep this in the Skip list.
 
 ### Live state
 
