@@ -40,14 +40,12 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 - [ ] Before the GitHub push: rewrite commit authors (early commits carry a machine-derived
       email; repo-local identity fixed 2026-08-13 for new commits).
 
-- [ ] Fix Claude-in-Chrome connection for the recon UI follow-up (see tools/recon/BLOCKED.md):
-      extension enabled + Chrome restarted, same claude.ai account as Claude Code, site
-      permission for `dashboard.adlabs.app`, then open it logged in.
+- [x] Claude-in-Chrome pairing fixed; recon session 3 completed 2026-08-14.
 - [x] Supabase project created 2026-08-13 (free tier, eu-central-1; ref recorded in the
       operator's private project note — infra identifiers stay out of this repo).
-- [ ] Add `https://ads.ecomwizards.agency/api/amazon/oauth/callback` to the LWA app Allowed
-      Return URLs, and point the `ads` subdomain at the Vercel deployment (before WP-04 live test).
-- [ ] Place `_local/ads-api.config.json` for the WP-02 live smoke (copy shape from template).
+- [x] LWA Allowed Return URL added 2026-08-14 (ads.ecomwizards.agency callback). DNS →
+      Vercel still pending at deploy time.
+- [x] Smoke config placed 2026-08-14 (allfemme-us / NA); live smoke launched.
 - [x] Supabase Pro upgraded 2026-08-14 (org-level; auto-pause risk gone, storage headroom for
       backfill). Fly.io worker (~$5/mo) still pending at WP-03 deploy.
 
