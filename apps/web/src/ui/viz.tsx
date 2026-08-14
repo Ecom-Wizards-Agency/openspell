@@ -40,6 +40,21 @@ export interface TrendSeries {
   points: readonly TrendPoint[];
 }
 
+/**
+ * A shaded window drawn behind the lines — WP-19's experiment overlay.
+ *
+ * A decoration layer, nothing more: it reads the same x-scale the series use and
+ * paints a band from `start` to `end` (or to the right edge while `end` is
+ * null). It never changes the data, the axis or the series, so a chart with no
+ * windows renders exactly as it did before the prop existed.
+ */
+export interface ChartWindow {
+  id?: string;
+  label: string;
+  start: string;
+  end: string | null;
+}
+
 export type ValueScale = 'money' | 'percent' | 'ratio' | 'integer';
 
 export type Granularity = 'D' | 'W' | 'M';
@@ -63,6 +78,11 @@ export interface TrendChartProps {
    * group-by follows (`tools/recon/02-data-grid.md` §4).
    */
   aggregatable?: boolean;
+  /**
+   * Experiment windows to shade behind the series (WP-19). Additive: omitted or
+   * empty means an unchanged chart.
+   */
+  windows?: readonly ChartWindow[];
 }
 
 const GRANULARITIES: readonly Granularity[] = ['D', 'W', 'M'];
@@ -132,6 +152,7 @@ export function TrendChart({
   currencyCode,
   caption,
   aggregatable = false,
+  windows = [],
 }: TrendChartProps): ReactNode {
   const [hover, setHover] = useState<number | null>(null);
   const [gran, setGran] = useState<Granularity>('D');
@@ -200,6 +221,28 @@ export function TrendChart({
             setHover(Math.round(ratio * (dates.length - 1)));
           }}
         >
+          {/* Experiment windows, painted first so they sit behind everything. */}
+          {windows.map((window, index) => {
+            const band = windowBand(window, dates, x, PLOT_W);
+            if (band === null) return null;
+            return (
+              <rect
+                key={window.id ?? `${window.label}-${index}`}
+                data-testid="experiment-window"
+                data-window-label={window.label}
+                x={band.x}
+                y={PAD.top}
+                width={band.width}
+                height={PLOT_H}
+                fill="var(--wa-accent-soft)"
+                stroke="var(--wa-accent-border)"
+                strokeWidth={1}
+              >
+                <title>{window.label}</title>
+              </rect>
+            );
+          })}
+
           {ticks.map((tick) => (
             <g key={tick}>
               <line
@@ -459,6 +502,43 @@ function GranularityToggle({
       ))}
     </div>
   );
+}
+
+/**
+ * Where an experiment window sits on the x-axis, or null when it falls entirely
+ * outside the plotted date domain. Clamped to the plot and padded by half a step
+ * so a single-day window is still a visible band rather than a hairline.
+ */
+function windowBand(
+  window: ChartWindow,
+  dates: readonly string[],
+  x: (index: number) => number,
+  plotWidth: number,
+): { x: number; width: number } | null {
+  if (dates.length === 0) return null;
+  const first = dates[0] as string;
+  const last = dates[dates.length - 1] as string;
+  const startKey = window.start;
+  const endKey = window.end ?? last;
+  if (endKey < first || startKey > last) return null;
+
+  let startIndex = dates.findIndex((date) => date >= startKey);
+  if (startIndex < 0) startIndex = 0;
+  let endIndex = -1;
+  for (let index = dates.length - 1; index >= 0; index -= 1) {
+    if ((dates[index] as string) <= endKey) {
+      endIndex = index;
+      break;
+    }
+  }
+  if (endIndex < 0) endIndex = dates.length - 1;
+  if (endIndex < startIndex) return null;
+
+  const step = dates.length > 1 ? plotWidth / (dates.length - 1) : plotWidth;
+  const pad = step / 2;
+  const left = Math.max(PAD.left, x(startIndex) - pad);
+  const right = Math.min(PAD.left + plotWidth, x(endIndex) + pad);
+  return { x: left, width: Math.max(2, right - left) };
 }
 
 /** A gap in the data is a gap in the line, never a straight segment across it. */

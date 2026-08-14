@@ -11,7 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { addDays } from '@wizard-ads/core';
-import type { DbHandle } from '@wizard-ads/db';
+import type { DbHandle, ExperimentStatus } from '@wizard-ads/db';
 import { writeAuditEntry } from './audit.js';
 import { ENTITY_LEVELS, LEVELS } from './catalog.js';
 import type { EntityLevel } from './catalog.js';
@@ -36,6 +36,16 @@ import {
   submitFeedbackInputSchema,
 } from './feedback.js';
 import type { SubmitFeedbackArgs } from './feedback.js';
+import {
+  GET_EXPERIMENT_DESCRIPTION,
+  GET_EXPERIMENT_TITLE,
+  LIST_EXPERIMENTS_DESCRIPTION,
+  LIST_EXPERIMENTS_TITLE,
+  getExperimentInputSchema,
+  getExperimentTool,
+  listExperimentsInputSchema,
+  listExperimentsTool,
+} from './experiments.js';
 import { GatedError, ToolError } from './errors.js';
 import { instructionsDocument } from './instructions.js';
 import { ALL_METRICS } from './metrics.js';
@@ -240,10 +250,45 @@ export function createMcpServer(context: ServerContext): McpServer {
   );
 
   registerReadTools(server, context);
+  registerExperimentTools(server, context);
   registerFeedbackTool(server, context);
   registerWriteStubs(server, context);
   registerResources(server, context);
   return server;
+}
+
+/**
+ * The two experiment read tools (WP-19).
+ *
+ * Registered from their own module so `apps/mcp` gains tools rather than a
+ * rewrite; both go through the same audit wrapper every other tool does.
+ */
+function registerExperimentTools(server: McpServer, context: ServerContext): void {
+  server.registerTool(
+    'list_experiments',
+    {
+      title: LIST_EXPERIMENTS_TITLE,
+      description: LIST_EXPERIMENTS_DESCRIPTION,
+      inputSchema: listExperimentsInputSchema,
+      annotations: { readOnlyHint: true },
+    },
+    audited(context, 'list_experiments', (args: { profile_id?: string; status?: ExperimentStatus }) =>
+      listExperimentsTool(context, args),
+    ),
+  );
+
+  server.registerTool(
+    'get_experiment',
+    {
+      title: GET_EXPERIMENT_TITLE,
+      description: GET_EXPERIMENT_DESCRIPTION,
+      inputSchema: getExperimentInputSchema,
+      annotations: { readOnlyHint: true },
+    },
+    audited(context, 'get_experiment', (args: { experiment_id: string }) =>
+      getExperimentTool(context, args),
+    ),
+  );
 }
 
 function registerReadTools(server: McpServer, context: ServerContext): void {

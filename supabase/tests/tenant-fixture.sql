@@ -28,6 +28,7 @@ declare
   v_batch uuid;
   v_tag uuid;
   v_feedback uuid;
+  v_experiment uuid;
   v_asset uuid;
   v_report uuid;
   v_strategy jsonb := jsonb_build_object(
@@ -167,6 +168,18 @@ begin
           jsonb_build_object('route', '/settings/profiles', 'actorType', 'fixture'))
   returning id into v_feedback;
   insert into public.feedback_votes (item_id, org_id, user_id) values (v_feedback, v_org, p_user_id);
+
+  -- Experiments: one running experiment scoped to the seeded campaign, and its
+  -- creation event, so the RLS walk has a row in both experiment tables for
+  -- every org it seeds.
+  insert into public.experiments
+    (org_id, profile_id, name, hypothesis, type, scope, metric_focus, start_at, status, created_by)
+  values (v_org, v_profile, 'Fixture bid push', 'Pushing bids should lift sales.', 'bid_push',
+          jsonb_build_object('campaignIds', jsonb_build_array('c-1'), 'targetIds', jsonb_build_array('kw-1')),
+          'sales', now() - interval '7 days', 'running', p_user_id)
+  returning id into v_experiment;
+  insert into public.experiment_events (experiment_id, org_id, from_status, to_status, note, actor_id)
+  values (v_experiment, v_org, null, 'running', 'Seeded by the tenant fixture.', p_user_id);
 
   -- Reserved seams
   insert into public.spapi_connections (org_id, label) values (v_org, p_slug || '-spapi');

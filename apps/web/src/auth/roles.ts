@@ -22,12 +22,14 @@ export type Capability =
   | 'editTargets'
   | 'toggleSync'
   | 'manageConnection'
-  | 'triageFeedback';
+  | 'triageFeedback'
+  // WP-19: file and edit your own experiments (analyst+); an admin edits any.
+  | 'manageExperiments';
 
 const CAPABILITIES: Record<OrgRole, readonly Capability[]> = {
-  owner: ['read', 'editTargets', 'toggleSync', 'manageConnection', 'triageFeedback'],
-  admin: ['read', 'editTargets', 'toggleSync', 'manageConnection', 'triageFeedback'],
-  analyst: ['read', 'editTargets'],
+  owner: ['read', 'editTargets', 'toggleSync', 'manageConnection', 'triageFeedback', 'manageExperiments'],
+  admin: ['read', 'editTargets', 'toggleSync', 'manageConnection', 'triageFeedback', 'manageExperiments'],
+  analyst: ['read', 'editTargets', 'manageExperiments'],
   viewer: ['read'],
 };
 
