@@ -209,6 +209,19 @@ importers:
         specifier: ^19.2.8
         version: 19.2.8(react@19.2.8)
 
+  tools/adlabs-backfill:
+    dependencies:
+      '@wizard-ads/crosscheck-cli':
+        specifier: workspace:*
+        version: link:../crosscheck-cli
+      '@wizard-ads/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
+
   tools/crosscheck-cli:
     dependencies:
       '@wizard-ads/core':
