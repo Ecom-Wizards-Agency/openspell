@@ -168,15 +168,54 @@ export type {
   SpWriteItem,
 } from './writes.js';
 
-// Sponsored Brands v4 media/creative interface (runtime stubs only).
+// Sponsored Products suggested bids
+export {
+  SP_BID_RECOMMENDATION_BATCH_SIZE,
+  SP_BID_RECOMMENDATION_ENDPOINTS,
+  batchSpBidRecommendationIds,
+  buildSpBidRecommendationBody,
+  parseSpBidRecommendationResponse,
+} from './suggested-bids.js';
+export type {
+  SpBidRecommendationEndpoint,
+  SpBidRecommendationError,
+  SpBidRecommendationKind,
+  SpBidRecommendationResult,
+  SpSuggestedBid,
+} from './suggested-bids.js';
+
+// Sponsored Brands v4 media/creative
+export {
+  SB_CREATIVE_BATCH_SIZE,
+  SB_CREATIVE_LIST_PATH,
+  SB_CREATIVE_MEDIA_TYPE,
+  SB_CREATIVE_PATH,
+  SB_MEDIA_DESCRIBE_PATH,
+  SB_MEDIA_MULTIPART_BOUNDARY,
+  SB_MEDIA_UPLOAD_PATH,
+  batchSbCreatives,
+  buildSbCreativeListBody,
+  buildSbCreativeMutationBody,
+  buildSbMediaUploadBody,
+  parseSbCreative,
+  parseSbCreativeListPage,
+  parseSbCreativeMutationResponse,
+  parseSbMediaAsset,
+} from './sb-media.js';
 export type {
   SbCreative,
   SbCreativeAssetRef,
+  SbCreativeBatchResult,
   SbCreativeCreateInput,
+  SbCreativeListOptions,
+  SbCreativeListResult,
+  SbCreativeMutationError,
+  SbCreativeMutationItem,
   SbCreativeType,
   SbCreativeUpdateInput,
   SbMediaAsset,
   SbMediaType,
+  SbMediaUploadBody,
   SbMediaUploadInput,
   SbV4MediaCreativeApi,
 } from './sb-media.js';

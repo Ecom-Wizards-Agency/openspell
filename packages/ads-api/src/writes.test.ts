@@ -338,20 +338,12 @@ describe('batching and write failure mapping', () => {
   });
 });
 
-describe('Sponsored Brands v4 media/creative stubs', () => {
-  it('exposes typed methods that all throw not implemented without making HTTP calls', async () => {
+describe('Sponsored Brands v4 documented stub', () => {
+  it('keeps only generic creative archive unavailable without making an HTTP call', async () => {
     const { server, client } = clientFor([]);
-    const calls: Array<() => Promise<unknown>> = [
-      () => client.uploadSbMedia(PROFILE_ID, { name: 'Synthetic', mediaType: 'IMAGE', contentType: 'image/png', fileName: 'synthetic.png', bytes: new Uint8Array() }),
-      () => client.getSbMedia(PROFILE_ID, ID_1),
-      () => client.createSbCreative(PROFILE_ID, { adGroupId: ID_1, creativeType: 'VIDEO', assets: [{ assetId: ID_1, role: 'VIDEO' }] }),
-      () => client.updateSbCreative(PROFILE_ID, { creativeId: ID_1, state: 'PAUSED' }),
-      () => client.archiveSbCreative(PROFILE_ID, ID_1),
-    ];
-
-    for (const call of calls) {
-      await expect(Promise.resolve().then(call)).rejects.toBeInstanceOf(AdsApiNotImplementedError);
-    }
+    await expect(
+      Promise.resolve().then(() => client.archiveSbCreative(PROFILE_ID, ID_1)),
+    ).rejects.toBeInstanceOf(AdsApiNotImplementedError);
     expect(server.requests).toHaveLength(0);
   });
 });

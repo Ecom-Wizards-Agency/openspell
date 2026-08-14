@@ -84,14 +84,37 @@ import {
   type CreateReportInput,
   type ReportMetadata,
 } from './reports.js';
-import type {
-  SbCreative,
-  SbCreativeCreateInput,
-  SbCreativeUpdateInput,
-  SbMediaAsset,
-  SbMediaUploadInput,
-  SbV4MediaCreativeApi,
+import {
+  SB_CREATIVE_LIST_PATH,
+  SB_CREATIVE_MEDIA_TYPE,
+  SB_CREATIVE_PATH,
+  SB_MEDIA_DESCRIBE_PATH,
+  SB_MEDIA_UPLOAD_PATH,
+  batchSbCreatives,
+  buildSbCreativeListBody,
+  buildSbCreativeMutationBody,
+  buildSbMediaUploadBody,
+  parseSbCreativeListPage,
+  parseSbCreativeMutationResponse,
+  parseSbMediaAsset,
+  type SbCreativeBatchResult,
+  type SbCreativeListOptions,
+  type SbCreativeListResult,
+  type SbCreative,
+  type SbCreativeCreateInput,
+  type SbCreativeUpdateInput,
+  type SbMediaAsset,
+  type SbMediaUploadInput,
+  type SbV4MediaCreativeApi,
 } from './sb-media.js';
+import {
+  SP_BID_RECOMMENDATION_ENDPOINTS,
+  batchSpBidRecommendationIds,
+  buildSpBidRecommendationBody,
+  parseSpBidRecommendationResponse,
+  type SpBidRecommendationKind,
+  type SpBidRecommendationResult,
+} from './suggested-bids.js';
 import type { AdsApiClientOptions, ListOptions, ListResult, ThrottleState } from './types.js';
 import {
   batchSpWrites,
@@ -634,26 +657,250 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
     return this.mutateSp(profileId, 'productAds', 'archive', ids);
   }
 
-  // -- Sponsored Brands v4 media/creative stubs -----------------------
+  // -- Sponsored Products suggested bids ------------------------------
 
-  uploadSbMedia(_profileId: string, _input: SbMediaUploadInput): Promise<SbMediaAsset> {
-    throw new AdsApiNotImplementedError('Sponsored Brands v4 media upload is not implemented');
+  private async getSpBidRecommendations(
+    profileId: string,
+    kind: SpBidRecommendationKind,
+    ids: readonly AmazonId[],
+  ): Promise<SpBidRecommendationResult> {
+    const endpoint = SP_BID_RECOMMENDATION_ENDPOINTS[kind];
+    const items: SpBidRecommendationResult['items'] = [];
+    const errors: SpBidRecommendationResult['errors'] = [];
+    const batches = batchSpBidRecommendationIds(ids);
+    let indexOffset = 0;
+
+    for (const batch of batches) {
+      const result = await httpRequest(this.ctx, {
+        method: 'POST',
+        url: `${hostFor(this.region)}${endpoint.path}`,
+        path: endpoint.path,
+        headers: this.headers({
+          profileId,
+          contentType: endpoint.mediaType,
+          accept: endpoint.mediaType,
+        }),
+        body: JSON.stringify(buildSpBidRecommendationBody(endpoint, batch)),
+        // This POST only reads Amazon's current daily recommendation.
+        idempotent: true,
+      });
+      const parsed = parseSpBidRecommendationResponse(
+        this.json(result, `POST ${endpoint.path}`),
+        kind,
+        endpoint,
+        batch,
+        indexOffset,
+      );
+      items.push(...parsed.items);
+      errors.push(...parsed.errors);
+      indexOffset += batch.length;
+    }
+
+    if (items.length + errors.length !== ids.length) {
+      throw new AdsApiParseError(
+        `${endpoint.path} accounted for ${items.length + errors.length} of ${ids.length} submitted ids`,
+      );
+    }
+    return { items, errors, submitted: ids.length, batches: batches.length };
   }
 
-  getSbMedia(_profileId: string, _mediaId: AmazonId): Promise<SbMediaAsset> {
-    throw new AdsApiNotImplementedError('Sponsored Brands v4 media lookup is not implemented');
+  getSpKeywordBidRecommendations(
+    profileId: string,
+    keywordIds: readonly AmazonId[],
+  ): Promise<SpBidRecommendationResult> {
+    return this.getSpBidRecommendations(profileId, 'keywords', keywordIds);
   }
 
-  createSbCreative(_profileId: string, _input: SbCreativeCreateInput): Promise<SbCreative> {
-    throw new AdsApiNotImplementedError('Sponsored Brands v4 creative create is not implemented');
+  getSpProductTargetBidRecommendations(
+    profileId: string,
+    targetIds: readonly AmazonId[],
+  ): Promise<SpBidRecommendationResult> {
+    return this.getSpBidRecommendations(profileId, 'targets', targetIds);
   }
 
-  updateSbCreative(_profileId: string, _input: SbCreativeUpdateInput): Promise<SbCreative> {
-    throw new AdsApiNotImplementedError('Sponsored Brands v4 creative update is not implemented');
+  /** Short alias for callers whose SP target mirror already implies product targeting. */
+  getSpTargetBidRecommendations(
+    profileId: string,
+    targetIds: readonly AmazonId[],
+  ): Promise<SpBidRecommendationResult> {
+    return this.getSpProductTargetBidRecommendations(profileId, targetIds);
   }
 
+  // -- Sponsored Brands v4 media/creative -----------------------------
+
+  async uploadSbMedia(profileId: string, input: SbMediaUploadInput): Promise<SbMediaAsset> {
+    const multipart = buildSbMediaUploadBody(input);
+    const result = await httpRequest(this.ctx, {
+      method: 'POST',
+      url: `${hostFor(this.region)}${SB_MEDIA_UPLOAD_PATH}`,
+      path: SB_MEDIA_UPLOAD_PATH,
+      headers: this.headers({ profileId, contentType: multipart.contentType, accept: 'application/json' }),
+      body: multipart.body,
+      // A 429 explicitly means the upload was rejected before mutation. Other
+      // ambiguous failures are not re-sent by the HTTP layer.
+      idempotent: false,
+      expectedStatuses: [425],
+    });
+    if (result.status === 425) {
+      throw new DuplicateWriteError(
+        'Amazon identified the media upload as a duplicate write',
+        result.status,
+        decodeText(result.body),
+        result.attempts,
+        'upload',
+        SB_MEDIA_UPLOAD_PATH,
+      );
+    }
+    return parseSbMediaAsset(this.json(result, `POST ${SB_MEDIA_UPLOAD_PATH}`), `POST ${SB_MEDIA_UPLOAD_PATH}`, input.mediaType);
+  }
+
+  async getSbMedia(profileId: string, mediaId: AmazonId): Promise<SbMediaAsset> {
+    const query = new URLSearchParams({ mediaId }).toString();
+    const result = await httpRequest(this.ctx, {
+      method: 'GET',
+      url: `${hostFor(this.region)}${SB_MEDIA_DESCRIBE_PATH}?${query}`,
+      path: SB_MEDIA_DESCRIBE_PATH,
+      headers: this.headers({ profileId, accept: 'application/json' }),
+      idempotent: true,
+    });
+    return parseSbMediaAsset(this.json(result, `GET ${SB_MEDIA_DESCRIBE_PATH}`), `GET ${SB_MEDIA_DESCRIBE_PATH}`);
+  }
+
+  private async mutateSbCreatives(
+    profileId: string,
+    operation: 'create' | 'update',
+    inputs: readonly (SbCreativeCreateInput | SbCreativeUpdateInput)[],
+  ): Promise<SbCreativeBatchResult> {
+    const items: SbCreativeBatchResult['items'] = [];
+    const errors: SbCreativeBatchResult['errors'] = [];
+    const batches = batchSbCreatives(inputs);
+    let indexOffset = 0;
+
+    for (const batch of batches) {
+      const method = operation === 'create' ? 'POST' : 'PUT';
+      const result = await httpRequest(this.ctx, {
+        method,
+        url: `${hostFor(this.region)}${SB_CREATIVE_PATH}`,
+        path: SB_CREATIVE_PATH,
+        headers: this.headers({
+          profileId,
+          contentType: SB_CREATIVE_MEDIA_TYPE,
+          accept: SB_CREATIVE_MEDIA_TYPE,
+        }),
+        body: JSON.stringify(buildSbCreativeMutationBody(batch)),
+        idempotent: false,
+        expectedStatuses: [425],
+      });
+      if (result.status === 425) {
+        throw new DuplicateWriteError(
+          `Amazon identified SB creative ${operation} as a duplicate write`,
+          result.status,
+          decodeText(result.body),
+          result.attempts,
+          operation,
+          SB_CREATIVE_PATH,
+        );
+      }
+      const parsed = parseSbCreativeMutationResponse(
+        this.json(result, `${method} ${SB_CREATIVE_PATH}`),
+        batch.length,
+        indexOffset,
+      );
+      items.push(...parsed.items);
+      errors.push(...parsed.errors);
+      indexOffset += batch.length;
+    }
+
+    if (items.length + errors.length !== inputs.length) {
+      throw new AdsApiParseError(
+        `${operation} ${SB_CREATIVE_PATH} accounted for ${items.length + errors.length} of ${inputs.length} submitted items`,
+      );
+    }
+    return { items, errors, submitted: inputs.length, batches: batches.length };
+  }
+
+  createSbCreatives(
+    profileId: string,
+    inputs: readonly SbCreativeCreateInput[],
+  ): Promise<SbCreativeBatchResult> {
+    return this.mutateSbCreatives(profileId, 'create', inputs);
+  }
+
+  updateSbCreatives(
+    profileId: string,
+    inputs: readonly SbCreativeUpdateInput[],
+  ): Promise<SbCreativeBatchResult> {
+    return this.mutateSbCreatives(profileId, 'update', inputs);
+  }
+
+  async createSbCreative(profileId: string, input: SbCreativeCreateInput): Promise<SbCreative> {
+    const result = await this.createSbCreatives(profileId, [input]);
+    const item = result.items[0];
+    if (item?.creative === null || item?.creative === undefined) {
+      throw new AdsApiParseError(`${SB_CREATIVE_PATH} create response did not return the creative representation`);
+    }
+    return item.creative;
+  }
+
+  async updateSbCreative(profileId: string, input: SbCreativeUpdateInput): Promise<SbCreative> {
+    const result = await this.updateSbCreatives(profileId, [input]);
+    const item = result.items[0];
+    if (item?.creative === null || item?.creative === undefined) {
+      throw new AdsApiParseError(`${SB_CREATIVE_PATH} update response did not return the creative representation`);
+    }
+    return item.creative;
+  }
+
+  async listSbCreatives(
+    profileId: string,
+    options: SbCreativeListOptions = {},
+  ): Promise<SbCreativeListResult> {
+    const items: SbCreative[] = [];
+    const seenTokens = new Set<string>();
+    const maxResults = options.maxResults ?? DEFAULT_PAGE_SIZE;
+    let nextToken = options.nextToken ?? null;
+    let pages = 0;
+
+    for (;;) {
+      if (options.maxPages !== undefined && pages >= options.maxPages) {
+        return { items, pages, truncated: true, nextToken };
+      }
+      const result = await httpRequest(this.ctx, {
+        method: 'POST',
+        url: `${hostFor(this.region)}${SB_CREATIVE_LIST_PATH}`,
+        path: SB_CREATIVE_LIST_PATH,
+        headers: this.headers({
+          profileId,
+          contentType: SB_CREATIVE_MEDIA_TYPE,
+          accept: SB_CREATIVE_MEDIA_TYPE,
+        }),
+        body: JSON.stringify(buildSbCreativeListBody(maxResults, nextToken, options)),
+        idempotent: true,
+      });
+      pages += 1;
+      const page = parseSbCreativeListPage(this.json(result, `POST ${SB_CREATIVE_LIST_PATH}`));
+      items.push(...page.items);
+      nextToken = page.nextToken;
+      if (nextToken === null || page.items.length === 0) {
+        return { items, pages, truncated: false, nextToken: null };
+      }
+      if (seenTokens.has(nextToken)) {
+        throw new AdsApiParseError(`${SB_CREATIVE_LIST_PATH} returned the same nextToken twice after ${pages} pages`);
+      }
+      seenTokens.add(nextToken);
+    }
+  }
+
+  /**
+   * Deliberate stub: WP-27 covers SB creative create/update/list. Amazon's
+   * archive/delete route is ad-type-specific and the generic v4 creative
+   * contract does not define one, so choosing a path here would be a write to
+   * an unverified endpoint rather than a safe model.
+   */
   archiveSbCreative(_profileId: string, _creativeId: AmazonId): Promise<void> {
-    throw new AdsApiNotImplementedError('Sponsored Brands v4 creative archive is not implemented');
+    throw new AdsApiNotImplementedError(
+      'Sponsored Brands v4 creative archive remains unavailable: no generic archive endpoint is defined',
+    );
   }
 
   // -- reporting v3 -----------------------------------------------------
