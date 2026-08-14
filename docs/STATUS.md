@@ -7,7 +7,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 |---|---|---|---|---|
 | 00 | Scaffold + contracts | Opus | merged | merged 2026-08-13; contracts frozen (incl. Next 16, TS 6, ApplyRow wire serializer) |
 | 01 | DB schema + RLS | Opus | merged | merged 2026-08-13 (44 tables, RLS on all tenant tables, partition automation, queue, Vault RPCs). Hosted-Supabase verification DONE 2026-08-14: all 13 migrations applied to the hosted project, counts match local, cron jobs live, security advisors clean after RPC grant hardening (migration 0013) |
-| 02 | ads-api client | Opus | in-progress | Codex run failed on env (worktree lifecycle + sandbox); relaunched fresh on Opus 2026-08-14 |
+| 02 | ads-api client | Opus | merged | merged 2026-08-14: full client (LWA, profiles, entities, exports, reporting v3, 429/Retry-After budget), 130 fixture tests, purity gate. Live smoke = operator step: fill _local/ads-api.config.json then `pnpm --filter @wizard-ads/ads-api smoke` |
 | 03 | Worker + queue | Codex+Opus | merged | merged 2026-08-14. Live tests exposed and fixed 2 product bugs (timestamptz boundary; multi-campaign fact aggregation) + tombstone gating + in-process stale-claim reaper. Schedule-variant migration 0017 (applied hosted). crosscheck.ingest wired. INTEGRATE(WP-02) seam remains (1 function) |
 | 04 | Web auth + OAuth | Opus | in-progress | Codex stopped at real gaps (target_total_acos missing, lint conflict) — both fixed on main (migration 0016 + OAuth-route lint carve-out); relaunched fresh on Opus |
 | 05 | core doctrine port | Opus | merged | merged 2026-08-13; 122 parity cases byte-equal to Python, bidding worked-examples green. Spawned WP-00.1 contract extension (merged 2026-08-13, 154/154 live-doc leaf coverage) |

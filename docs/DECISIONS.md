@@ -35,3 +35,9 @@ One line per decision the manager (Fable) or operator makes between work package
   recovered via git bundles; WP-02/WP-06 lost. All five relaunched/completed on Opus.
   Rule going forward: DB-heavy or e2e-heavy packages run on Opus; Codex is fine for pure-logic
   packages or when run attended in the Codex app with full permissions.
+- **2026-08-14 · SB/SD fact contracts stay package-local for now** (WP-02 finding) — shared has
+  no SB/SD fact schema; parsers return package-local rows shaped to the db tables; WP-03
+  hand-maps. Promote to shared when SB/SD analytics land in the UI.
+- **2026-08-14 · SB/SD attribution window** — Amazon reports one 14-day window for SB/SD while
+  fact columns are named *_7d. Parsers carry attributionWindowDays=14 explicitly instead of
+  silently writing 14d numbers into 7d columns. Decide the landing column at SB/SD UI time.

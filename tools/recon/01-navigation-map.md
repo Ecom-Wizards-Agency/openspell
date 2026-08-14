@@ -4,12 +4,16 @@
 
 ## Evidence legend
 
-Every row carries how it was established. This matters because the UI walkthrough half of
-this recon could not run (see `BLOCKED.md`): the Chrome extension never connected, so nothing
-here is confirmed by looking at a rendered page except where marked `UI`.
+Every row carries how it was established.
+
+**Session 3 (UI-verified).** The Chrome extension connected and the rendered nav was read
+directly. The section list below has been **corrected against the real nav** — the session-1/2
+list was assembled from capabilities and URL shape and got the grouping, the naming and the
+section count wrong. Rows now marked `UI-verified` were read off the rendered page.
 
 | Tag | Meaning |
 |---|---|
+| `UI-verified` | Read directly off the rendered AdLabs UI in session 3. Authoritative. |
 | `MCP` | Proven by a live read-only call against the AdLabs MCP server on the operator's own org. The capability demonstrably exists and its parameters are exact. |
 | `URL` | An absolute AdLabs UI URL returned verbatim by the MCP server. |
 | `VID` | Described in AdLabs' own tutorial videos (their walkthroughs of the bid optimizer). Labels are as spoken, so treat wording as approximate. |
@@ -17,12 +21,17 @@ here is confirmed by looking at a rendered page except where marked `UI`.
 
 ## Host and URL shape
 
-- Marketing / login host: `app.adlabs.app` (the host the operator was asked to log into).
-- Application host: `dashboard.adlabs.app` — `URL`. The MCP server returned
-  `https://dashboard.adlabs.app/campaign-mapping/?teamId=<team>&profileId=<profile>` as its
-  "View in AdLabs" deep link.
-- Route shape: `https://dashboard.adlabs.app/<section>/?teamId=<int>&profileId=<amazon_profile_id>`
-  — `URL`. Two things follow and both are load-bearing for our clone:
+- Application host: `dashboard.adlabs.app` — `UI-verified`. Hitting the bare host redirects to
+  `/getting-started`. (`app.adlabs.app` is the marketing/login host only.)
+- **Routes are plain paths with no tenancy in the query string** — `UI-verified`. Observed:
+  `/getting-started`, `/profiles`, `/profiles-overview`, `/optimizer`, `/automations`,
+  `/dashboards/overview`, `/configuration/settings/{user,teams,advanced,dashboards}`.
+  The active profile is held in app state and shown in a **top-right profile switcher**, not in
+  the URL. **This corrects the session-1 claim** that every route carries
+  `?teamId=&profileId=`; that shape appears only on MCP-generated deep links.
+- Legacy/deep-link shape: `https://dashboard.adlabs.app/<section>/?teamId=<int>&profileId=<amazon_profile_id>`
+  — `URL`. Still emitted by the MCP server's "View in AdLabs" links. Two things follow and both
+  are load-bearing for our clone:
   1. **Tenancy is in the query string, not the path.** Team and profile are switchable
      parameters on every screen rather than a path prefix. Any screen can therefore be
      re-pointed at another profile without changing route.
