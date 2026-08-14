@@ -19,7 +19,16 @@
 import type { CvrSourceLevel, Recommendation, RecommendationInputs, RecommendationReason } from '@wizard-ads/shared';
 import { safeDiv } from '../num.js';
 import { CATEGORY_RANK } from '../types.js';
-import { applyCeilings, applyChangeCap, ceilingCandidates, floorToPrecision, roundBid } from './ceilings.js';
+import {
+  applyCeilings,
+  applyChangeCap,
+  applyFloors,
+  ceilToPrecision,
+  ceilingCandidates,
+  floorCandidates,
+  floorToPrecision,
+  roundBid,
+} from './ceilings.js';
 import { resolveConfidence } from './confidence.js';
 import {
   DEFAULT_BID_SETTINGS,
@@ -178,7 +187,19 @@ export function proposeBid(request: BidRequest): BidOutcome {
   const rounded = bound
     ? floorToPrecision(capped.value, settings.bidPrecision)
     : roundBid(capped.value, settings.bidPrecision);
-  const proposed = Math.max(rounded, settings.minBid);
+  // The lower bound mirrors the ceiling: take the highest applicable floor
+  // (Amazon's minimum is always one) and, when a floor lifts the value, round UP
+  // so a cent of rounding cannot drop it back under the floor that just held it.
+  const floors = floorCandidates({
+    minBid: settings.minBid,
+    targetAcos: request.targetAcos,
+    entityRpc,
+    confidence,
+    config: request.floors,
+  });
+  const floored = applyFloors(rounded, floors);
+  const proposed =
+    floored.floorApplied !== null ? ceilToPrecision(floored.value, settings.bidPrecision) : floored.value;
 
   if (request.currentBid !== null && proposed === roundBid(request.currentBid, settings.bidPrecision)) {
     return { kind: 'none', reason: 'no_change' };
@@ -189,6 +210,7 @@ export function proposeBid(request: BidRequest): BidOutcome {
     clicks: request.metrics.clicks,
     cvrSourceLevel: confidence.level as CvrSourceLevel,
     ceilingApplied: ceiling.ceilingApplied,
+    floorApplied: floored.floorApplied,
     capClamped: capped.capClamped,
     window: { start: request.window.start, end: request.window.end },
   };

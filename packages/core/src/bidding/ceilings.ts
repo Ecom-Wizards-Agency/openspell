@@ -9,7 +9,14 @@
  * therefore be cap-clamped and still above its ceiling, and it reports both.
  */
 import type { AdProduct } from '@wizard-ads/shared';
-import type { CeilingConfig, CeilingName, ChangeCaps, ResolvedConfidence } from './types.js';
+import type {
+  CeilingConfig,
+  CeilingName,
+  ChangeCaps,
+  FloorConfig,
+  FloorName,
+  ResolvedConfidence,
+} from './types.js';
 
 /** Sponsored Display consumes budget differently, so its bid ceiling is half. */
 export const SD_BUDGET_SHARE_CEILING = 0.5;
@@ -71,6 +78,11 @@ export function ceilingCandidates(inputs: CeilingInputs): CeilingCandidate[] {
     const share = budgetShareCeilingFor(inputs.adProduct, config.budgetShareCeiling);
     out.push({ name: 'budget', value: config.dailyBudget * share });
   }
+  // Amazon's own suggested bid, when synced, is an upper suggestion the formula
+  // should not blow past. Absent → no candidate, so behaviour is unchanged.
+  if (config?.suggestedBid !== null && config?.suggestedBid !== undefined) {
+    out.push({ name: 'suggested_bid', value: config.suggestedBid });
+  }
   return out;
 }
 
@@ -92,6 +104,73 @@ export function applyCeilings(value: number, candidates: CeilingCandidate[]): Ce
   }
   if (binding === null || value <= binding.value) return { value, ceilingApplied: null };
   return { value: binding.value, ceilingApplied: binding.name };
+}
+
+export interface FloorCandidate {
+  name: FloorName;
+  value: number;
+}
+
+export interface FloorInputs {
+  /** Amazon's absolute minimum for the ad product; always a candidate. */
+  minBid: number;
+  targetAcos: number;
+  /** The target's own RPC over the window, when it has one. */
+  entityRpc: number | null;
+  /** The benchmark level the confidence hierarchy resolved to. */
+  confidence: ResolvedConfidence;
+  config?: FloorConfig;
+}
+
+/**
+ * Every floor that applies. The mirror of `ceilingCandidates`: the caller takes
+ * the MAXIMUM rather than the minimum. Amazon's absolute minimum is always
+ * present, so the list is never empty and a proposal is always two-sided.
+ */
+export function floorCandidates(inputs: FloorInputs): FloorCandidate[] {
+  const out: FloorCandidate[] = [{ name: 'amazon_min_bid', value: inputs.minBid }];
+  const { config } = inputs;
+
+  if (config?.manualMinBid !== null && config?.manualMinBid !== undefined) {
+    out.push({ name: 'manual_min_bid', value: config.manualMinBid });
+  }
+  if (config?.suggestedBidLow !== null && config?.suggestedBidLow !== undefined) {
+    out.push({ name: 'suggested_bid_low', value: config.suggestedBidLow });
+  }
+  // The dynamic floor uses the same affordable-CPC hierarchy the ceiling does:
+  // the target's own RPC when it has one, else the benchmark level's. A zero RPC
+  // is real data but a meaningless floor, so it is skipped like the ceiling's is.
+  if (config?.dynamicFloorShare !== null && config?.dynamicFloorShare !== undefined) {
+    let affordable: number | null = null;
+    if (inputs.entityRpc !== null && inputs.entityRpc > 0) {
+      affordable = inputs.entityRpc * inputs.targetAcos;
+    } else if (inputs.confidence.rpc !== null && inputs.confidence.rpc > 0) {
+      affordable = inputs.confidence.rpc * inputs.targetAcos;
+    }
+    if (affordable !== null) {
+      out.push({ name: 'data_based_floor', value: config.dynamicFloorShare * affordable });
+    }
+  }
+  return out;
+}
+
+export interface FloorOutcome {
+  value: number;
+  floorApplied: FloorName | null;
+}
+
+/**
+ * Clamp a value UP to the highest applicable floor — the mirror of
+ * `applyCeilings`. Ties resolve to the first candidate in `floorCandidates`
+ * order, so the reported name is stable rather than dependent on iteration luck.
+ */
+export function applyFloors(value: number, candidates: FloorCandidate[]): FloorOutcome {
+  let binding: FloorCandidate | null = null;
+  for (const candidate of candidates) {
+    if (binding === null || candidate.value > binding.value) binding = candidate;
+  }
+  if (binding === null || value >= binding.value) return { value, floorApplied: null };
+  return { value: binding.value, floorApplied: binding.name };
 }
 
 export interface CapOutcome {
@@ -140,4 +219,14 @@ export function roundBid(value: number, precision: number): number {
 export function floorToPrecision(value: number, precision: number): number {
   const factor = 10 ** precision;
   return Math.floor(Number((value * factor).toFixed(6))) / factor;
+}
+
+/**
+ * Round UP to a precision. The mirror of `floorToPrecision`, for a value a FLOOR
+ * just lifted: ordinary rounding could drop it a cent back under the floor, the
+ * same quiet violation `floorToPrecision` prevents on the ceiling side.
+ */
+export function ceilToPrecision(value: number, precision: number): number {
+  const factor = 10 ** precision;
+  return Math.ceil(Number((value * factor).toFixed(6))) / factor;
 }
