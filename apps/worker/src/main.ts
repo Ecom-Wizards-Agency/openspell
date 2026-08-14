@@ -12,7 +12,7 @@ const store = new PostgresWorkerStore(handle);
 const worker = new SyncWorker({
   workerId: config.workerId,
   store,
-  adsApi: createAdsApiClientFromEnv(),
+  adsApi: createAdsApiClientFromEnv(handle),
   crosscheckIngest: createCrosscheckIngest(handle, { inboxDir: config.crosscheckInboxDir }),
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,
