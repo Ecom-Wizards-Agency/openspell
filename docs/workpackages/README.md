@@ -46,6 +46,7 @@ self-contained handover brief: read it, implement it, report against its accepta
 | 11 | `tools/recon/` (specs only, no code) |
 | 12 | staged-apply engine (v1.x — gated) |
 | 13 | headless analyst (v1.x — gated) |
+| 14 | `packages/campaigns` (+ its goldens in `fixtures/`) |
 
 ## Key facts every implementer should know
 

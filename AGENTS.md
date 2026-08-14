@@ -33,6 +33,7 @@ never need the same file.
 | `packages/ads-api` | Amazon Ads API client. Pure client, no database. | WP-02 |
 | `packages/core` | Doctrine engine. Pure functions, zero I/O. | WP-05 |
 | `packages/strategy` | Tenant config resolution. Template only, no values. | WP-05 |
+| `packages/campaigns` | Campaign generation engine (SKW/Halo/Phrase/Auto/PAT; BMM dropped 2026-08-14). Pure, plus its own XLSX writer. | WP-14 |
 | `packages/ui` | DataGrid, charts, tiles. | WP-06 |
 | `apps/web` | Next.js App Router: auth, OAuth, dashboard, grid, settings. | WP-04, 06, 07, 08 |
 | `apps/worker` | Job worker. Every Amazon API call in the system happens here. | WP-03 |
