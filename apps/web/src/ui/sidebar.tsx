@@ -1,7 +1,8 @@
 'use client';
 
 /**
- * The sidebar's navigation: six collapsible groups, not a flat list.
+ * The sidebar's navigation: collapsible groups, not a flat list, plus an
+ * icon-rail collapse toggle.
  *
  * The shape is the recon's (`tools/recon/01-navigation-map.md`): the incumbent's
  * nav is a projection of the entity hierarchy into named groups, which is why an
@@ -14,29 +15,34 @@
  * operable and it is announced correctly with no code from us, and — the reason
  * that matters here — the links inside are present in the server-rendered markup
  * whether or not the group is open, so nothing about navigation waits on
- * hydration.
+ * hydration. When the rail is collapsed to icons the labels stay in the DOM and
+ * are hidden with CSS, so the same server markup carries both states and the
+ * unit test sees every label.
  *
- * A client component for exactly one reason: marking the current page. Next
- * gives a server component no pathname, and `usePathname` would tie this file to
- * a router context that the pure unit test does not have. Reading
- * `window.location` after mount costs one effect and keeps the component
- * renderable anywhere.
+ * A client component for two reasons: marking the current page (Next gives a
+ * server component no pathname), and remembering the collapse/open state in
+ * `localStorage`. Both read `window` after mount, so the component still renders
+ * anywhere the pure unit test needs it.
  */
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { NAV_GROUPS } from './nav-links';
+import { NavIcon } from './nav-icons';
 
 const CLOSED_KEY = 'wizard-ads.nav.closed';
+const COLLAPSED_KEY = 'wizard-ads.nav.collapsed';
 
 export function SidebarNav(): ReactNode {
   const [pathname, setPathname] = useState<string | null>(null);
   const [closed, setClosed] = useState<readonly string[]>([]);
+  const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
     setPathname(window.location.pathname);
     try {
       const stored = window.localStorage.getItem(CLOSED_KEY);
       if (stored !== null) setClosed(JSON.parse(stored) as string[]);
+      applyCollapsed(window.localStorage.getItem(COLLAPSED_KEY) === 'true', setCollapsed);
     } catch {
       // A corrupt or unavailable store is not a reason to lose the nav.
     }
@@ -54,46 +60,96 @@ export function SidebarNav(): ReactNode {
     });
   };
 
+  const toggleCollapsed = (): void => {
+    const next = !collapsed;
+    applyCollapsed(next, setCollapsed);
+    try {
+      window.localStorage.setItem(COLLAPSED_KEY, String(next));
+    } catch {
+      // Same courtesy as above.
+    }
+  };
+
   return (
-    <nav aria-label="Primary" style={{ display: 'contents' }}>
-      {NAV_GROUPS.map((group) => {
-        const holdsCurrent =
-          pathname !== null && group.links.some((link) => isCurrent(link.href, pathname));
-        return (
-          <details
-            key={group.id}
-            className="wa-navgroup"
-            open={holdsCurrent || !closed.includes(group.id)}
-            onToggle={(event) => remember(group.id, event.currentTarget.open)}
-          >
-            <summary>
-              <svg aria-hidden="true" className="wa-navgroup-caret" viewBox="0 0 8 8">
-                <path d="M1 2.5 4 5.5 7 2.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-              </svg>
-              {group.label}
-            </summary>
-            <ul className="wa-navlist">
-              {group.links.map((link) => {
-                const current = pathname !== null && isCurrent(link.href, pathname);
-                return (
-                  <li key={link.href}>
-                    <a
-                      href={link.href}
-                      className="wa-navlink"
-                      {...(current ? { 'aria-current': 'page' as const } : {})}
-                    >
-                      <span aria-hidden="true" className="wa-navlink-dot" />
-                      {link.label}
-                    </a>
-                  </li>
-                );
-              })}
-            </ul>
-          </details>
-        );
-      })}
-    </nav>
+    <>
+      <nav aria-label="Primary" style={{ display: 'contents' }}>
+        {NAV_GROUPS.map((group) => {
+          const holdsCurrent =
+            pathname !== null && group.links.some((link) => isCurrent(link.href, pathname));
+          return (
+            <details
+              key={group.id}
+              className="wa-navgroup"
+              open={holdsCurrent || !closed.includes(group.id)}
+              onToggle={(event) => remember(group.id, event.currentTarget.open)}
+            >
+              <summary title={group.label}>
+                <svg aria-hidden="true" className="wa-navgroup-caret" viewBox="0 0 8 8">
+                  <path d="M1 2.5 4 5.5 7 2.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                </svg>
+                <span aria-hidden="true" className="wa-navgroup-icon">
+                  <NavIcon icon={group.icon} />
+                </span>
+                <span className="wa-navgroup-label">{group.label}</span>
+              </summary>
+              <ul className="wa-navlist">
+                {group.links.map((link) => {
+                  const current = pathname !== null && isCurrent(link.href, pathname);
+                  return (
+                    <li key={link.href}>
+                      <a
+                        href={link.href}
+                        className="wa-navlink"
+                        title={link.label}
+                        {...(current ? { 'aria-current': 'page' as const } : {})}
+                      >
+                        <span aria-hidden="true" className="wa-navlink-icon">
+                          <NavIcon icon={link.icon} />
+                        </span>
+                        <span className="wa-navlink-label">{link.label}</span>
+                        {link.tag === undefined ? null : (
+                          <span className="wa-navlink-tag">{link.tag}</span>
+                        )}
+                      </a>
+                    </li>
+                  );
+                })}
+              </ul>
+            </details>
+          );
+        })}
+      </nav>
+
+      <button
+        type="button"
+        className="wa-nav-collapse"
+        data-testid="nav-collapse"
+        aria-pressed={collapsed}
+        aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
+        title={collapsed ? 'Expand navigation' : 'Collapse navigation'}
+        onClick={toggleCollapsed}
+      >
+        <svg aria-hidden="true" viewBox="0 0 16 16" className="wa-nav-collapse-icon">
+          <path
+            d="M10 3.5 5.5 8l4.5 4.5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span className="wa-navlink-label">Collapse</span>
+      </button>
+    </>
   );
+}
+
+/** Reflect the collapse state onto the root so CSS can resize the whole frame. */
+function applyCollapsed(value: boolean, set: (value: boolean) => void): void {
+  set(value);
+  if (value) document.documentElement.setAttribute('data-nav-collapsed', 'true');
+  else document.documentElement.removeAttribute('data-nav-collapsed');
 }
 
 /**

@@ -57,7 +57,7 @@ export function NavBar({ user, profiles = [], orgName = null }: NavBarProps): Re
           <span aria-hidden="true" className="wa-brand-mark">
             w
           </span>
-          wizard-ads
+          <span className="wa-brand-label">wizard-ads</span>
         </a>
 
         <SidebarNav />
