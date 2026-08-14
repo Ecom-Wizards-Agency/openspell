@@ -1,5 +1,9 @@
 {
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "typeRoots": ["../../packages/db/node_modules/@types"]
+  },
   "include": [
     "src/**/*.ts"
   ]

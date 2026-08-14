@@ -9,6 +9,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "start": "tsx src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },
