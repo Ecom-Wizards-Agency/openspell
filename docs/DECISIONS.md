@@ -56,3 +56,8 @@ One line per decision the manager (Fable) or operator makes between work package
   opportunity engine ("where we can win"), doctrine knowledge pack as per-tenant data (never
   repo code), always-on Mac mini analyst. Constraint on WP-07/12: recommendation surfaces
   must carry a strategy/objective dimension so assignment can be added without rework.
+- **2026-08-14 · AMC planned as WP-16** (operator request) — full lane brief (instance admin,
+  S3 delivery via a single worker module, SQL workbench + curated library, AMC audiences to
+  SD through apply batches, MCP tools). Gated on first provisioned instance + AWS bucket;
+  sponsored-ads AMC eligibility verified per account at gate-open. Seeded onto the in-app
+  roadmap so it stays visible.
