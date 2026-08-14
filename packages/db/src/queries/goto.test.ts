@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { asUser } from '../testing/rls.js';
 import { createTestDatabase, databaseAvailable } from '../testing/harness.js';
 import type { TestDatabase } from '../testing/harness.js';
+import { createRequestDatabase } from './request-client.js';
 import {
   createGotoLink,
   createSignedGotoToken,
@@ -74,6 +75,55 @@ describe.skipIf(!available)('WP-08 goto links', () => {
     expect(stateFromGotoRedirect(gotoRedirectLocation(link.route, resolved?.state ?? null))).toEqual(
       state,
     );
+  });
+
+  /**
+   * The web routes open a plain postgres.js client; the worker and the tests
+   * open one with Drizzle attached, which replaces the jsonb and timestamp
+   * serializers on the client it is given. A query layer that behaves
+   * differently on the two is a bug that only production sees, so the same
+   * round trip runs on both handles and the results must be identical.
+   */
+  it('round-trips state and timestamps identically without Drizzle attached', async () => {
+    const state = { tagFilter: { tagIds: ['a', 'b'], mode: 'all' }, page: 2, deep: { n: null } };
+    const expiresAt = new Date('2030-06-01T12:00:00.000Z');
+    const web = createRequestDatabase(database.connectionString);
+    try {
+      const created = await createGotoLink(web, {
+        orgId: orgA,
+        route: '/tags?view=campaigns',
+        state,
+        signingSecret: SECRET,
+        expiresAt,
+      });
+      const viaPlainClient = await resolveGotoLink(web, {
+        orgId: orgA,
+        token: created.token,
+        signingSecret: SECRET,
+      });
+      const viaDrizzleClient = await resolveGotoLink(database, {
+        orgId: orgA,
+        token: created.token,
+        signingSecret: SECRET,
+      });
+
+      // The stored document, not a JSON string of it.
+      expect(viaPlainClient?.state).toEqual(state);
+      expect(viaDrizzleClient?.state).toEqual(state);
+      expect(typeof viaPlainClient?.state).toBe('object');
+      // Declared as Date, so it has to be one on both handles.
+      expect(viaPlainClient?.expiresAt).toBeInstanceOf(Date);
+      expect(viaDrizzleClient?.expiresAt).toBeInstanceOf(Date);
+      expect(viaPlainClient?.expiresAt?.toISOString()).toBe(expiresAt.toISOString());
+      expect(viaDrizzleClient?.expiresAt?.toISOString()).toBe(expiresAt.toISOString());
+      expect(viaPlainClient?.createdAt).toBeInstanceOf(Date);
+      expect(viaDrizzleClient?.createdAt).toBeInstanceOf(Date);
+      expect(viaPlainClient?.lastUsedAt).toBeInstanceOf(Date);
+      // Two resolves, counted.
+      expect(viaDrizzleClient?.uses).toBe(2);
+    } finally {
+      await web.close();
+    }
   });
 
   it('returns no link for expired or tampered tokens', async () => {

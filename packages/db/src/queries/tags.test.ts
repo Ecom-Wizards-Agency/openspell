@@ -2,12 +2,16 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { asUser } from '../testing/rls.js';
 import { createTestDatabase, databaseAvailable } from '../testing/harness.js';
 import type { TestDatabase } from '../testing/harness.js';
+import { createRequestDatabase } from './request-client.js';
 import {
   assignTagToEntities,
   bulkAssignTagByFilter,
+  bulkUnassignTagByFilter,
   createTag,
   deleteTag,
   listCampaignsByTagFilter,
+  listTags,
+  resolveTagEntityFilter,
   updateTag,
 } from './tags.js';
 
@@ -20,6 +24,7 @@ describe.skipIf(!available)('WP-08 tag queries', () => {
   let orgA: string;
   let orgB: string;
   let profileA: string;
+  let profileB: string;
 
   beforeAll(async () => {
     database = await createTestDatabase('wp08_tags');
@@ -35,6 +40,10 @@ describe.skipIf(!available)('WP-08 tag queries', () => {
       select id from public.ad_profiles where org_id = ${orgA} limit 1
     `;
     profileA = profile?.id ?? '';
+    const [otherProfile] = await database.sql<{ id: string }[]>`
+      select id from public.ad_profiles where org_id = ${orgB} limit 1
+    `;
+    profileB = otherProfile?.id ?? '';
   }, 60_000);
 
   afterAll(async () => {
@@ -156,6 +165,20 @@ describe.skipIf(!available)('WP-08 tag queries', () => {
       skipped: 0,
     });
     expect((await bulkAssignTagByFilter(database, input)).newlyAssigned).toBe(0);
+
+    // And the inverse: removing the assignment is counted the same way, and a
+    // second removal is a no-op rather than an error.
+    const untag = { orgId: orgA, tagId: tag.id, filter: input.filter };
+    expect(await bulkUnassignTagByFilter(database, untag)).toEqual({
+      matchedByFilter: 1,
+      requested: 1,
+      unique: 1,
+      removed: 1,
+    });
+    expect((await bulkUnassignTagByFilter(database, untag)).removed).toBe(0);
+    expect(
+      await listCampaignsByTagFilter(database, orgA, { tagIds: [tag.id], mode: 'any' }),
+    ).toHaveLength(0);
   });
 
   it('uses the same descendant-aware filter semantics for list and dashboard consumers', async () => {
@@ -182,6 +205,87 @@ describe.skipIf(!available)('WP-08 tag queries', () => {
     });
     expect(withDescendants.map((row) => row.entityId)).toContain('c-1');
     expect(exactParent.map((row) => row.entityId)).not.toContain('c-1');
+  });
+
+  /**
+   * Every branch of the filter the grid hands over: each entity type against
+   * its own table, the state enum array, the name search, and the profile
+   * case, which addresses `ad_profiles` rather than the entity mirror. These
+   * are separate SQL shapes, so exercising only `entityIds` proves only one.
+   */
+  it('resolves every branch of the grid filter against the real tables', async () => {
+    const byType = await Promise.all(
+      (['portfolio', 'campaign', 'ad_group', 'product_ad', 'keyword', 'target', 'negative'] as const)
+        .map(async (entityType) => [
+          entityType,
+          await resolveTagEntityFilter(database, orgA, { entityType }),
+        ] as const),
+    );
+    // The tenant fixture seeds exactly one row of each type for one profile.
+    for (const [entityType, references] of byType) {
+      expect(references, entityType).toHaveLength(1);
+      expect(references[0]).toMatchObject({ profileId: profileA, entityType });
+    }
+
+    expect(
+      await resolveTagEntityFilter(database, orgA, { entityType: 'campaign', states: ['enabled'] }),
+    ).toHaveLength(1);
+    expect(
+      await resolveTagEntityFilter(database, orgA, {
+        entityType: 'campaign',
+        states: ['paused', 'archived'],
+      }),
+    ).toHaveLength(0);
+    expect(
+      await resolveTagEntityFilter(database, orgA, { entityType: 'campaign', search: 'CAMP' }),
+    ).toHaveLength(1);
+    expect(
+      await resolveTagEntityFilter(database, orgA, { entityType: 'campaign', search: 'nothing' }),
+    ).toHaveLength(0);
+    expect(
+      await resolveTagEntityFilter(database, orgA, {
+        entityType: 'campaign',
+        profileIds: [profileA],
+      }),
+    ).toHaveLength(1);
+
+    const profiles = await resolveTagEntityFilter(database, orgA, { entityType: 'profile' });
+    expect(profiles).toEqual([{ profileId: profileA, entityType: null, entityId: null }]);
+    // A profile-scoped tag is the client grouping, so it has to assign too.
+    const clientTag = await createTag(database, { orgId: orgA, name: 'Client grouping' });
+    expect(
+      await assignTagToEntities(database, {
+        orgId: orgA,
+        tagId: clientTag.id,
+        references: profiles,
+      }),
+    ).toMatchObject({ processed: 1, newlyAssigned: 1, skipped: 0 });
+
+    // The filter never reaches across tenants, whichever branch runs.
+    expect(await resolveTagEntityFilter(database, orgB, { entityType: 'campaign' })).toHaveLength(1);
+    expect(
+      await resolveTagEntityFilter(database, orgA, {
+        entityType: 'campaign',
+        profileIds: [profileB],
+      }),
+    ).toHaveLength(0);
+  });
+
+  it('returns tag timestamps as Dates on a handle without Drizzle attached', async () => {
+    const web = createRequestDatabase(database.connectionString);
+    try {
+      const created = await createTag(web, { orgId: orgA, name: 'Timestamp shape' });
+      expect(created.createdAt).toBeInstanceOf(Date);
+      expect(created.updatedAt).toBeInstanceOf(Date);
+      const listed = (await listTags(web, orgA)).find((tag) => tag.id === created.id);
+      expect(listed?.createdAt).toBeInstanceOf(Date);
+      // And the same on the Drizzle-attached handle the worker uses.
+      const viaDrizzle = (await listTags(database, orgA)).find((tag) => tag.id === created.id);
+      expect(viaDrizzle?.createdAt).toBeInstanceOf(Date);
+      expect(viaDrizzle?.createdAt.toISOString()).toBe(listed?.createdAt.toISOString());
+    } finally {
+      await web.close();
+    }
   });
 
   it('RLS denies org A reads and writes for org B tags and entity_tags', async () => {

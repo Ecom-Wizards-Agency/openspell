@@ -6,6 +6,7 @@
  */
 import type { EntityState, EntityType } from '@wizard-ads/shared';
 import type { DbHandle, Sql } from '../client.js';
+import { toDate } from './pg-time.js';
 
 export type TagQueryHandle = Pick<DbHandle, 'sql'>;
 
@@ -29,8 +30,9 @@ interface TagRow {
   slug: string;
   color: string | null;
   created_by: string | null;
-  created_at: Date;
-  updated_at: Date;
+  // `Date` or `string` depending on the handle's parsers; see `pg-time.ts`.
+  created_at: Date | string;
+  updated_at: Date | string;
 }
 
 export interface TagTreeNode extends TagRecord {
@@ -126,8 +128,8 @@ const toTag = (row: TagRow): TagRecord => ({
   slug: row.slug,
   color: row.color,
   createdBy: row.created_by,
-  createdAt: row.created_at,
-  updatedAt: row.updated_at,
+  createdAt: toDate(row.created_at),
+  updatedAt: toDate(row.updated_at),
 });
 
 export function slugifyTagName(name: string): string {
@@ -346,6 +348,40 @@ export async function assignTagToEntities(
     newlyAssigned,
     skipped: unique.length - processed,
   };
+}
+
+export async function unassignTagFromEntities(
+  handle: TagQueryHandle,
+  input: { orgId: string; tagId: string; references: readonly TagEntityReference[] },
+): Promise<{ requested: number; unique: number; removed: number }> {
+  await requireTag(handle.sql, input.orgId, input.tagId);
+  const unique = [...new Map(input.references.map((row) => [referenceKey(row), row])).values()];
+  let removed = 0;
+  for (const reference of unique) {
+    const deleted = await handle.sql<{ tag_id: string }[]>`
+      delete from public.entity_tags
+       where org_id = ${input.orgId}
+         and tag_id = ${input.tagId}
+         and profile_id is not distinct from ${reference.profileId}
+         and entity_type is not distinct from ${reference.entityType}::public.entity_type
+         and entity_id is not distinct from ${reference.entityId}
+      returning tag_id
+    `;
+    removed += deleted.length;
+  }
+  return { requested: input.references.length, unique: unique.length, removed };
+}
+
+export async function bulkUnassignTagByFilter(
+  handle: TagQueryHandle,
+  input: { orgId: string; tagId: string; filter: TagEntityFilter },
+): Promise<{ matchedByFilter: number; requested: number; unique: number; removed: number }> {
+  const references = await resolveTagEntityFilter(handle, input.orgId, input.filter);
+  const result = await unassignTagFromEntities(handle, { ...input, references });
+  if (result.removed > result.unique) {
+    throw new Error('Untagging removed more rows than it addressed');
+  }
+  return { matchedByFilter: references.length, ...result };
 }
 
 export async function bulkAssignTagByFilter(
