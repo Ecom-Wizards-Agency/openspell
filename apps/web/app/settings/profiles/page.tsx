@@ -19,8 +19,8 @@ import { GOAL_LENSES } from '@wizard-ads/core';
 import { Region } from '@wizard-ads/shared';
 import { can } from '../../../src/auth/roles';
 import { gate } from '../../../src/auth/guard';
-import { loadRoster } from '../../../src/data/profiles';
-import type { ProfileRow } from '../../../src/data/profiles';
+import { isRosterSort, loadRoster } from '../../../src/data/profiles';
+import type { ProfileRow, RosterSort } from '../../../src/data/profiles';
 import { Shell } from '../../../src/ui/shell';
 import {
   Badge,
@@ -36,12 +36,19 @@ import {
 } from '../../../src/ui/primitives';
 import { page } from '../../../src/ui/tokens';
 import { SyncControl } from './sync-control';
-import { saveTargets } from './actions';
+import { bulkSetSync, saveSchedule, saveTargets } from './actions';
+import { BulkSyncBar, RosterSelectionProvider, RowCheckbox, SelectAllCheckbox } from './roster-bulk';
 
 export const dynamic = 'force-dynamic';
 
 interface Props {
-  searchParams: Promise<{ region?: string; country?: string; q?: string; sync?: string }>;
+  searchParams: Promise<{
+    region?: string;
+    country?: string;
+    q?: string;
+    sync?: string;
+    sort?: string;
+  }>;
 }
 
 export default async function ProfilesPage({ searchParams }: Props): Promise<ReactNode> {
@@ -65,16 +72,19 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
   const org = context.active;
   if (!org) return null;
 
+  const sort: RosterSort = isRosterSort(query.sort) ? query.sort : 'name';
   const roster = await loadRoster(handle, org.orgId, {
     region: query.region ?? null,
     country: query.country ?? null,
     search: query.q ?? null,
     syncEnabled: query.sync === 'on' ? true : query.sync === 'off' ? false : null,
+    sort,
   });
 
   const mayEditTargets = can(org.role, 'editTargets');
   const mayToggleSync = can(org.role, 'toggleSync');
   const filtered = roster.rows.length !== roster.total;
+  const rowIds = roster.rows.map((profile) => profile.id);
 
   return (
     <main style={page}>
@@ -155,6 +165,20 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
                 <option value="off">Sync off</option>
               </Select>
             </Field>
+            <Field label="Sort by" htmlFor="roster-sort">
+              <Select
+                id="roster-sort"
+                name="sort"
+                defaultValue={sort}
+                aria-label="Sort by"
+                style={{ width: '10rem' }}
+                data-testid="roster-sort"
+              >
+                <option value="name">Account name</option>
+                <option value="country">Country</option>
+                <option value="region">Region</option>
+              </Select>
+            </Field>
             <Button type="submit" variant="primary">
               Filter
             </Button>
@@ -172,36 +196,47 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
           </Banner>
         ) : null}
 
-        <TableFrame data-testid="roster-table">
-          <table className="wa-table wa-table--numeric">
-            <thead>
-              <tr>
-                <th scope="col">Profile</th>
-                <th scope="col">Region</th>
-                <th scope="col">Country</th>
-                <th scope="col">Currency</th>
-                <th scope="col">Sync</th>
-                <th scope="col">Target ACOS %</th>
-                <th scope="col">Target TACOS %</th>
-                <th scope="col">Goal lens</th>
-                <th scope="col">Monthly budget</th>
-                <th scope="col">
-                  <span className="wa-sr-only">Save</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {roster.rows.map((profile) => (
-                <ProfileTableRow
-                  key={profile.id}
-                  profile={profile}
-                  mayEditTargets={mayEditTargets}
-                  mayToggleSync={mayToggleSync}
-                />
-              ))}
-            </tbody>
-          </table>
-        </TableFrame>
+        <RosterSelectionProvider>
+          {mayToggleSync ? <BulkSyncBar action={bulkSetSync} /> : null}
+
+          <TableFrame data-testid="roster-table">
+            <table className="wa-table wa-table--numeric">
+              <thead>
+                <tr>
+                  {mayToggleSync ? (
+                    <th scope="col">
+                      <SelectAllCheckbox profileIds={rowIds} />
+                    </th>
+                  ) : null}
+                  <th scope="col">Profile</th>
+                  <th scope="col">Region</th>
+                  <th scope="col">Country</th>
+                  <th scope="col">Currency</th>
+                  <th scope="col">Sync</th>
+                  <th scope="col">Timezone</th>
+                  <th scope="col">Sync hour</th>
+                  <th scope="col">Target ACOS %</th>
+                  <th scope="col">Target TACOS %</th>
+                  <th scope="col">Goal lens</th>
+                  <th scope="col">Monthly budget</th>
+                  <th scope="col">
+                    <span className="wa-sr-only">Save</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {roster.rows.map((profile) => (
+                  <ProfileTableRow
+                    key={profile.id}
+                    profile={profile}
+                    mayEditTargets={mayEditTargets}
+                    mayToggleSync={mayToggleSync}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </TableFrame>
+        </RosterSelectionProvider>
 
         {roster.rows.length === 0 ? (
           <div style={{ marginTop: '1rem' }}>
@@ -243,9 +278,15 @@ function ProfileTableRow({
   mayToggleSync: boolean;
 }): ReactNode {
   const formId = `targets-${profile.id}`;
+  const scheduleFormId = `schedule-${profile.id}`;
   const label = profile.accountName ?? profile.amazonProfileId;
   return (
     <tr data-testid="profile-row" data-profile-id={profile.id}>
+      {mayToggleSync ? (
+        <td>
+          <RowCheckbox profileId={profile.id} label={label} />
+        </td>
+      ) : null}
       <td>
         <div style={{ fontWeight: 550 }}>{label}</div>
         <div className="wa-hint">{profile.amazonProfileId}</div>
@@ -260,6 +301,54 @@ function ProfileTableRow({
           <Badge tone={profile.syncEnabled ? 'good' : 'neutral'} dot data-testid="sync-readonly">
             {profile.syncEnabled ? 'on' : 'off'}
           </Badge>
+        )}
+      </td>
+      <td>
+        {mayToggleSync ? (
+          <Input
+            form={scheduleFormId}
+            name="timezone"
+            defaultValue={profile.timezone}
+            aria-label={`Timezone for ${label}`}
+            style={{ width: '11rem' }}
+            data-testid="field-timezone"
+          />
+        ) : (
+          <span data-testid="field-timezone">{profile.timezone}</span>
+        )}
+        {profile.timezoneLocked ? (
+          <div className="wa-hint" data-testid="timezone-locked">
+            pinned
+          </div>
+        ) : null}
+      </td>
+      <td>
+        {mayToggleSync ? (
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <Input
+              form={scheduleFormId}
+              name="preferredSyncHour"
+              type="number"
+              min="0"
+              max="23"
+              step="1"
+              placeholder="—"
+              defaultValue={profile.preferredSyncHour === null ? '' : String(profile.preferredSyncHour)}
+              aria-label={`Preferred sync hour for ${label}`}
+              style={{ width: '4.5rem' }}
+              data-testid="field-syncHour"
+            />
+            <form action={saveSchedule} id={scheduleFormId}>
+              <input type="hidden" name="profileId" value={profile.id} />
+              <Button type="submit" size="sm" data-testid="save-schedule">
+                Save
+              </Button>
+            </form>
+          </div>
+        ) : (
+          <span data-testid="field-syncHour">
+            {profile.preferredSyncHour === null ? '—' : String(profile.preferredSyncHour)}
+          </span>
         )}
       </td>
       <td>

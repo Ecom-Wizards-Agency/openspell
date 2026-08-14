@@ -11,7 +11,7 @@
  * to actually be written down: `orgId` comes from `gate()` and travels into the
  * SQL.
  */
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import { adProfiles } from '@wizard-ads/db';
 import type { DbHandle } from '@wizard-ads/db';
 import type { ProfileOption } from '@wizard-ads/ui';
@@ -30,7 +30,9 @@ export async function listProfiles(handle: DbHandle, orgId: string): Promise<Pro
     .select()
     .from(adProfiles)
     .where(eq(adProfiles.orgId, orgId))
-    .orderBy(asc(adProfiles.countryCode), asc(adProfiles.amazonProfileId));
+    // Lead with the human name, falling back to the Amazon id when a profile has
+    // none, so the switcher reads the way the roster does.
+    .orderBy(asc(sql`coalesce(${adProfiles.accountName}, ${adProfiles.amazonProfileId})`));
 
   return rows.map((row) => ({
     id: row.id,
@@ -51,8 +53,12 @@ export async function listProfiles(handle: DbHandle, orgId: string): Promise<Pro
  * Which profile a page is about.
  *
  * A requested profile that does not exist (or is not visible to this member)
- * falls back to the first one rather than rendering an empty page against an id
- * nobody can see.
+ * falls back to a default rather than rendering an empty page against an id
+ * nobody can see. When nothing is requested the default is the first
+ * *sync-enabled* profile: an org of two hundred profiles with three switched on
+ * should open on one that actually has data, not on whichever profile happens to
+ * sort first — that was the "All profiles" foot-gun from the video. If none is
+ * sync-enabled, the first profile stands in so the page still renders.
  */
 export function selectProfile(
   profiles: readonly ProfileRecord[],
@@ -60,5 +66,7 @@ export function selectProfile(
 ): ProfileRecord | null {
   if (profiles.length === 0) return null;
   const match = requested === undefined ? undefined : profiles.find((p) => p.id === requested);
-  return match ?? (profiles[0] as ProfileRecord);
+  if (match) return match;
+  const firstSynced = profiles.find((p) => p.syncEnabled);
+  return firstSynced ?? (profiles[0] as ProfileRecord);
 }

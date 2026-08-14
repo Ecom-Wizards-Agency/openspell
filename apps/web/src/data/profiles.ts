@@ -21,6 +21,8 @@ export interface ProfileRow {
   countryCode: string;
   currencyCode: string;
   timezone: string;
+  timezoneLocked: boolean;
+  preferredSyncHour: number | null;
   accountType: string | null;
   accountName: string | null;
   syncEnabled: boolean;
@@ -31,12 +33,23 @@ export interface ProfileRow {
   syncedAt: string | null;
 }
 
+/** How the roster is ordered. `name` leads with the human account name. */
+export type RosterSort = 'name' | 'country' | 'region';
+
+export const ROSTER_SORTS: readonly RosterSort[] = ['name', 'country', 'region'];
+
+export function isRosterSort(value: unknown): value is RosterSort {
+  return typeof value === 'string' && (ROSTER_SORTS as readonly string[]).includes(value);
+}
+
 export interface RosterFilter {
   region?: string | null;
   country?: string | null;
   /** Matches account name or Amazon profile id, case-insensitively. */
   search?: string | null;
   syncEnabled?: boolean | null;
+  /** Defaults to `name`. */
+  sort?: RosterSort | null;
 }
 
 export interface Roster {
@@ -58,6 +71,18 @@ export async function loadRoster(
   const region = filter.region?.trim() || null;
   const country = filter.country?.trim() || null;
   const syncEnabled = filter.syncEnabled ?? null;
+  const sort: RosterSort = filter.sort ?? 'name';
+
+  // The sort is a validated enum, never user text, so composing it as a SQL
+  // fragment is safe. Name is the default; the other two keep name as the
+  // within-group tiebreak so the order is always fully determined.
+  const nameKey = handle.sql`coalesce(account_name, amazon_profile_id)`;
+  const orderBy =
+    sort === 'region'
+      ? handle.sql`order by region, country_code, ${nameKey}`
+      : sort === 'country'
+        ? handle.sql`order by country_code, ${nameKey}`
+        : handle.sql`order by ${nameKey}`;
 
   const rows = await handle.sql<ProfileRecord[]>`
     select id,
@@ -66,6 +91,8 @@ export async function loadRoster(
            country_code,
            currency_code,
            timezone,
+           timezone_locked,
+           preferred_sync_hour,
            account_type::text as account_type,
            account_name,
            sync_enabled,
@@ -84,7 +111,7 @@ export async function loadRoster(
          or account_name ilike ${search}
          or amazon_profile_id ilike ${search}
        )
-     order by region, country_code, coalesce(account_name, amazon_profile_id)
+     ${orderBy}
   `;
 
   const summary = await handle.sql<{ region: string; n: string }[]>`
@@ -136,7 +163,8 @@ export async function updateProfileTargets(
            monthly_budget = ${edit.monthlyBudget}
      where id = ${profileId} and org_id = ${orgId}
     returning id, amazon_profile_id, region::text as region, country_code, currency_code,
-              timezone, account_type::text as account_type, account_name, sync_enabled,
+              timezone, timezone_locked, preferred_sync_hour,
+              account_type::text as account_type, account_name, sync_enabled,
               target_acos, target_total_acos, goal_lens, monthly_budget, synced_at::text as synced_at
   `;
   const row = rows[0];
@@ -156,7 +184,75 @@ export async function setProfileSyncEnabled(
        set sync_enabled = ${enabled}
      where id = ${profileId} and org_id = ${orgId}
     returning id, amazon_profile_id, region::text as region, country_code, currency_code,
-              timezone, account_type::text as account_type, account_name, sync_enabled,
+              timezone, timezone_locked, preferred_sync_hour,
+              account_type::text as account_type, account_name, sync_enabled,
+              target_acos, target_total_acos, goal_lens, monthly_budget, synced_at::text as synced_at
+  `;
+  const row = rows[0];
+  if (!row) throw new Error(`no profile ${profileId} in this org`);
+  return toProfileRow(row);
+}
+
+/**
+ * Admin and above: turn sync on or off for many profiles at once.
+ *
+ * One statement over an id array rather than a loop, and scoped by `org_id` as
+ * well as the ids, so a guessed uuid from another tenant is silently a no-op.
+ * Returns the number of rows actually changed, which the caller checks against
+ * the number requested: a bulk action that quietly touched fewer rows than it
+ * was asked to is a bug, not a success (program rule 4).
+ */
+export async function setProfilesSyncEnabled(
+  handle: DbHandle,
+  orgId: string,
+  profileIds: readonly string[],
+  enabled: boolean,
+): Promise<number> {
+  if (profileIds.length === 0) return 0;
+  const rows = await handle.sql<{ id: string }[]>`
+    update public.ad_profiles
+       set sync_enabled = ${enabled}
+     where org_id = ${orgId}
+       and id = any(${profileIds as string[]}::uuid[])
+    returning id
+  `;
+  return rows.length;
+}
+
+export interface ScheduleEdit {
+  /** IANA timezone. Setting it pins the profile's timezone against Amazon re-sync. */
+  timezone: string | null;
+  /** 0–23 in the profile's own timezone, or null to clear the preference. */
+  preferredSyncHour: number | null;
+}
+
+/**
+ * Admin and above: the per-profile scheduling knobs.
+ *
+ * Setting a timezone by hand sets `timezone_locked`, which is what stops the
+ * next OAuth upsert from overwriting it — the "sticky timezone" the operator
+ * asked for. A null timezone leaves both the timezone and the lock untouched, so
+ * clearing only the hour does not silently unpin a calendar someone chose.
+ */
+export async function updateProfileSchedule(
+  handle: DbHandle,
+  orgId: string,
+  profileId: string,
+  edit: ScheduleEdit,
+): Promise<ProfileRow> {
+  if (edit.preferredSyncHour !== null && (edit.preferredSyncHour < 0 || edit.preferredSyncHour > 23)) {
+    throw new Error('a preferred sync hour must be between 0 and 23');
+  }
+  const timezone = edit.timezone?.trim() ? edit.timezone.trim() : null;
+  const rows = await handle.sql<ProfileRecord[]>`
+    update public.ad_profiles
+       set preferred_sync_hour = ${edit.preferredSyncHour},
+           timezone = coalesce(${timezone}, timezone),
+           timezone_locked = case when ${timezone}::text is null then timezone_locked else true end
+     where id = ${profileId} and org_id = ${orgId}
+    returning id, amazon_profile_id, region::text as region, country_code, currency_code,
+              timezone, timezone_locked, preferred_sync_hour,
+              account_type::text as account_type, account_name, sync_enabled,
               target_acos, target_total_acos, goal_lens, monthly_budget, synced_at::text as synced_at
   `;
   const row = rows[0];
@@ -171,6 +267,8 @@ interface ProfileRecord {
   country_code: string;
   currency_code: string;
   timezone: string;
+  timezone_locked: boolean;
+  preferred_sync_hour: number | null;
   account_type: string | null;
   account_name: string | null;
   sync_enabled: boolean;
@@ -189,6 +287,8 @@ function toProfileRow(row: ProfileRecord): ProfileRow {
     countryCode: row.country_code,
     currencyCode: row.currency_code,
     timezone: row.timezone,
+    timezoneLocked: row.timezone_locked,
+    preferredSyncHour: row.preferred_sync_hour === null ? null : Number(row.preferred_sync_hour),
     accountType: row.account_type,
     accountName: row.account_name,
     syncEnabled: row.sync_enabled,

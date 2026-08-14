@@ -22,6 +22,7 @@
     "@wizard-ads/db": "workspace:*",
     "@wizard-ads/shared": "workspace:*",
     "@wizard-ads/ui": "workspace:*",
+    "@wizard-ads/worker": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "next": "^16.3.0",
     "react": "^19.2.8",

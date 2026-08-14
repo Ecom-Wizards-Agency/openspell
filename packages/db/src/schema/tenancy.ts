@@ -15,6 +15,7 @@ import {
   pgSchema,
   pgTable,
   primaryKey,
+  smallint,
   text,
   uniqueIndex,
   uuid,
@@ -102,6 +103,10 @@ export const adProfiles = pgTable(
     amazonAccountId: text('amazon_account_id'),
     /** The cost gate: nothing syncs until somebody turns it on. */
     syncEnabled: boolean('sync_enabled').notNull().default(false),
+    /** Hour (0-23) in the profile's own timezone the daily pull anchors to; null uses the scheduler default. */
+    preferredSyncHour: smallint('preferred_sync_hour'),
+    /** Set true when an operator pins the timezone by hand; the OAuth upsert then leaves it alone. */
+    timezoneLocked: boolean('timezone_locked').notNull().default(false),
     targetAcos: money('target_acos', 6, 4),
     targetTotalAcos: money('target_total_acos', 6, 4),
     goalLens: text('goal_lens'),
