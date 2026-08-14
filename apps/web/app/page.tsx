@@ -19,6 +19,16 @@ const ROUTES = [
     body: 'Campaigns, ad groups, targets, search terms and placements. No pagination: the whole set, virtualized, with filters, group-by and CSV export.',
   },
   {
+    href: '/recommendations',
+    title: 'Recommendations',
+    body: 'Engine proposals with the numbers that produced them: current to proposed, the reason, the ceiling that bound it, the strategy it was computed under. Accept, dismiss, export.',
+  },
+  {
+    href: '/ngrams',
+    title: 'N-gram explorer',
+    body: 'Uni, bi and trigrams over the search-term report, scoped by campaign or tag. Pool the evidence a one-click term cannot carry, then propose negatives.',
+  },
+  {
     href: '/crosscheck',
     title: 'Crosscheck',
     body: 'Our synced facts against the incumbent’s export, per day and per campaign-week.',

@@ -66,6 +66,9 @@ importers:
       '@supabase/supabase-js':
         specifier: ^2.60.0
         version: 2.112.3
+      '@wizard-ads/campaigns':
+        specifier: workspace:*
+        version: link:../../packages/campaigns
       '@wizard-ads/core':
         specifier: workspace:*
         version: link:../../packages/core
