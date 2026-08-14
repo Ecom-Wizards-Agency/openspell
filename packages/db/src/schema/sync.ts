@@ -35,6 +35,13 @@ export const syncSchedules = pgTable(
       .references(() => adProfiles.id, { onDelete: 'cascade' }),
     jobType: syncJobType('job_type').notNull(),
     reportType: reportType('report_type'),
+    /**
+     * Which of this profile's schedules for one report type this row is.
+     * `default` is the daily recent-window pass; `restatement` the slower
+     * long-lookback re-pull. Part of the uniqueness key, because a profile
+     * needs both and they differ only in cadence and lookback.
+     */
+    variant: text('variant').notNull().default('default'),
     /** Postgres interval, read and written as a string ('1 day', '05:00:00'). */
     cadence: interval('cadence').notNull(),
     nextRunAt: ts('next_run_at').notNull().defaultNow(),

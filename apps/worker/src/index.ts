@@ -1,11 +1,11 @@
-/**
- * @wizard-ads/worker (owned by WP-03).
- *
- * The sync worker (Fly.io). Claims jobs with FOR UPDATE SKIP LOCKED, runs the
- * three-pass report pipeline, holds the per-region token buckets. Every Amazon
- * API call in the system happens here.
- *
- * Scaffold stub: WP-03 replaces this file. WP-00 owns only the manifest,
- * the tsconfig and the dependency wiring.
- */
+export * from './ads-api.js';
+export * from './config.js';
+export * from './crosscheck.js';
+export * from './health.js';
+export * from './parsers.js';
+export * from './region-token-buckets.js';
+export * from './schedules.js';
+export * from './store.js';
+export * from './worker.js';
+
 export const PACKAGE_NAME = '@wizard-ads/worker' as const;

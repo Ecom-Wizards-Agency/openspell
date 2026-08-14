@@ -9,6 +9,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "start": "tsx src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },
@@ -17,6 +18,7 @@
     "@wizard-ads/db": "workspace:*",
     "@wizard-ads/ads-api": "workspace:*",
     "@wizard-ads/core": "workspace:*",
+    "@wizard-ads/crosscheck-cli": "workspace:*",
     "@wizard-ads/strategy": "workspace:*"
   }
 }
