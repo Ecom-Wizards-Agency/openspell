@@ -29,6 +29,13 @@ import {
 } from './data.js';
 import type { KeyScopeContext, ProfileRecord } from './data.js';
 import { buildFlags, buildPacing } from './analysis.js';
+import {
+  SUBMIT_FEEDBACK_DESCRIPTION,
+  SUBMIT_FEEDBACK_TITLE,
+  submitFeedback,
+  submitFeedbackInputSchema,
+} from './feedback.js';
+import type { SubmitFeedbackArgs } from './feedback.js';
 import { GatedError, ToolError } from './errors.js';
 import { instructionsDocument } from './instructions.js';
 import { ALL_METRICS } from './metrics.js';
@@ -113,7 +120,7 @@ const asSort = (sort?: z.infer<typeof sortSchema>[]): SortSpec[] | undefined =>
 // The audit wrapper
 // ---------------------------------------------------------------------------
 
-interface ToolOutcome {
+export interface ToolOutcome {
   payload: unknown;
   /** What lands in `audit_log.payload.summary`: enough to reconstruct the call. */
   summary: Record<string, unknown>;
@@ -233,6 +240,7 @@ export function createMcpServer(context: ServerContext): McpServer {
   );
 
   registerReadTools(server, context);
+  registerFeedbackTool(server, context);
   registerWriteStubs(server, context);
   registerResources(server, context);
   return server;
@@ -787,6 +795,29 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
           profileId: profile.id,
         };
       },
+    ),
+  );
+}
+
+/**
+ * The one write that is not gated (WP-15).
+ *
+ * Registered from its own module so `apps/mcp` gains a tool rather than a
+ * rewrite; the schema, the description and the handler all live in
+ * `feedback.ts`, and the audit wrapper here is the same one every other tool
+ * goes through.
+ */
+function registerFeedbackTool(server: McpServer, context: ServerContext): void {
+  server.registerTool(
+    'submit_feedback',
+    {
+      title: SUBMIT_FEEDBACK_TITLE,
+      description: SUBMIT_FEEDBACK_DESCRIPTION,
+      inputSchema: submitFeedbackInputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    audited(context, 'submit_feedback', (args: SubmitFeedbackArgs) =>
+      submitFeedback(context, args),
     ),
   );
 }

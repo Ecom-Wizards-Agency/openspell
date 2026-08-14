@@ -145,6 +145,9 @@ describe.skipIf(!available)('the MCP server', () => {
           'list_profiles',
           'query',
           'set_context',
+          // WP-15's one write that is not gated: it files feedback about the
+          // tool itself and touches no advertising data.
+          'submit_feedback',
           'update_entities',
         ].sort(),
       );
@@ -639,6 +642,71 @@ describe.skipIf(!available)('the MCP server', () => {
     const entries = await readAuditEntries(database, orgAId, 500);
     const failure = entries.find((entry) => entry.payload['outcome'] === 'error');
     expect(failure?.action).toBe('mcp.get_entity_data');
+  });
+
+  it('files feedback into the tracker, and logs the call like every other', async () => {
+    const client = await connect(server, tokenA);
+    let itemId = '';
+    try {
+      const result = await call(client, 'submit_feedback', {
+        type: 'bug',
+        title: 'group_by returned an ACOS that cannot be right',
+        body: 'Spend and sales agree with SQL; the ratio does not.',
+        severity: 'high',
+      });
+      expect(result.isError).toBe(false);
+      itemId = String(result.payload['id']);
+      expect(result.payload['status']).toBe('new');
+
+      // A severity on a feature request is refused with its reason, not a 500.
+      const refused = await call(client, 'submit_feedback', {
+        type: 'feature',
+        title: 'Severity does not apply here',
+        severity: 'critical',
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.payload['error']).toBe('invalid_argument');
+    } finally {
+      await client.close();
+    }
+
+    // The row is in the org that filed it, marked as coming from MCP, with no
+    // human author to attribute it to.
+    const [row] = await database.sql<
+      {
+        org_id: string;
+        author_id: string | null;
+        type: string;
+        severity: string;
+        page_context: Record<string, unknown>;
+      }[]
+    >`
+      select org_id, author_id, type::text as type, severity::text as severity, page_context
+        from public.feedback_items where id = ${itemId}
+    `;
+    expect(row?.org_id).toBe(orgAId);
+    expect(row?.author_id).toBeNull();
+    expect(row?.type).toBe('bug');
+    expect(row?.severity).toBe('high');
+    expect(row?.page_context['actorType']).toBe('mcp');
+    expect(row?.page_context['keyId']).toBe(keyAId);
+
+    // And org B cannot see it, which is the whole point of scoping the key.
+    const [foreign] = await database.sql<{ count: string }[]>`
+      select count(*) as count from public.feedback_items
+       where org_id = ${orgBId} and id = ${itemId}
+    `;
+    expect(Number(foreign?.count)).toBe(0);
+
+    const entries = await readAuditEntries(database, orgAId, 500);
+    const logged = entries.find(
+      (entry) =>
+        entry.action === 'mcp.submit_feedback' &&
+        (entry.payload['summary'] as Record<string, unknown>)['id'] === itemId,
+    );
+    expect(logged?.actorType).toBe('mcp');
+    expect(logged?.actorId).toBe(keyAId);
+    expect(logged?.payload['outcome']).toBe('ok');
   });
 
   it('accepts a profile by its Amazon id as well as its internal id', async () => {
