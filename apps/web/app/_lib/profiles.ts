@@ -1,12 +1,17 @@
 /**
  * The profile roster the switcher renders and every read scopes to.
  *
- * Reads go through the ordinary client, so RLS decides which org's profiles a
- * signed-in member can see. Nothing here uses a service-role key: the web tier
- * has no business holding one, and a read surface that can see every tenant is
- * one bug away from showing one tenant another's numbers.
+ * The org predicate is not optional and not a convenience. This module's own
+ * header used to claim RLS decided which profiles a member could see — but the
+ * web tier connects as the service role (`src/data/db.ts` says so in as many
+ * words), which means RLS is *not* what constrains these reads. Until the
+ * predicate below existed, `/dashboard` and `/grid` listed every profile in the
+ * database and defaulted to the first one, whoever owned it. Authorization for
+ * everything the web tier renders is enforced above the connection, so it has
+ * to actually be written down: `orgId` comes from `gate()` and travels into the
+ * SQL.
  */
-import { asc } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 import { adProfiles } from '@wizard-ads/db';
 import type { DbHandle } from '@wizard-ads/db';
 import type { ProfileOption } from '@wizard-ads/ui';
@@ -20,10 +25,11 @@ export interface ProfileRecord extends ProfileOption {
   timezone: string;
 }
 
-export async function listProfiles(handle: DbHandle): Promise<ProfileRecord[]> {
+export async function listProfiles(handle: DbHandle, orgId: string): Promise<ProfileRecord[]> {
   const rows = await handle.db
     .select()
     .from(adProfiles)
+    .where(eq(adProfiles.orgId, orgId))
     .orderBy(asc(adProfiles.countryCode), asc(adProfiles.amazonProfileId));
 
   return rows.map((row) => ({

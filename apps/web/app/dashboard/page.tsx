@@ -12,6 +12,11 @@
  * purpose — the banner says whether our numbers are current, the chip says
  * whether they agree with the incumbent's. A profile can be fresh and wrong, or
  * stale and verified, and an operator needs to see which.
+ *
+ * Entry goes through `gate()`, the same guard `/settings` and `/sync-status`
+ * use: anonymous visitors are sent to `/login`, and every read below is scoped
+ * by the org the gate resolved. This page shipped without either, which meant a
+ * public URL rendering the first profile in the database — whoever owned it.
  */
 import type { CSSProperties } from 'react';
 import { analyzeAccount, classifyCampaignCategory, computePacing, evaluate, pacingFlag } from '@wizard-ads/core';
@@ -30,6 +35,8 @@ import {
 } from '@wizard-ads/ui';
 import type { FlagView, PacingView, TrendPoint } from '@wizard-ads/ui';
 import { CrosscheckChip } from '../crosscheck/panel';
+import { gate } from '../../src/auth/guard';
+import { gateMessage } from '../../src/ui/gate-message';
 import { loadCampaignDailyRows, loadProfileDailyRows, loadProvisionalDates, loadReportLedger } from '../_lib/dashboard-data';
 import { withDatabase } from '../_lib/db';
 import { addDays, periodFromParams, precedingPeriod, todayIso } from '../_lib/periods';
@@ -42,13 +49,26 @@ interface PageProps {
 }
 
 export default async function DashboardPage({ searchParams }: PageProps) {
+  // Authorization before anything else: `gate()` redirects an anonymous
+  // visitor to `/login` and hands back the org every read below is scoped to.
+  const entry = await gate();
+  if (entry.state !== 'ok') {
+    return (
+      <Shell>
+        <h1 style={heading}>Dashboard</h1>
+        <p style={muted}>{gateMessage(entry.state)}</p>
+      </Shell>
+    );
+  }
+  const orgId = entry.context.active?.orgId ?? '';
+
   const params = await searchParams;
   const today = todayIso();
   const period = periodFromParams(params, today);
   const comparison = precedingPeriod(period);
 
   const data = await withDatabase(async (handle) => {
-    const profiles = await listProfiles(handle);
+    const profiles = await listProfiles(handle, orgId);
     const profile = selectProfile(profiles, params.profile);
     if (profile === null) return { profiles, profile: null };
 
@@ -57,10 +77,10 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     // both the trend charts and the deltas from one query.
     const window = { start: addDays(period.start, -8), end: period.end };
     const [ledger, accountRows, campaignRows, provisional, crosscheck] = await Promise.all([
-      loadReportLedger(handle, profile.id),
-      loadProfileDailyRows(handle, profile.id, profile.label, window),
-      loadCampaignDailyRows(handle, profile.id, profile.label, window),
-      loadProvisionalDates(handle, profile.id, window),
+      loadReportLedger(handle, orgId, profile.id),
+      loadProfileDailyRows(handle, orgId, profile.id, profile.label, window),
+      loadCampaignDailyRows(handle, orgId, profile.id, profile.label, window),
+      loadProvisionalDates(handle, orgId, profile.id, window),
       loadCrosscheckPanel(handle, { profileId: profile.id }).catch(() => null),
     ]);
 
@@ -71,9 +91,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     return (
       <Shell>
         <h1 style={heading}>Dashboard</h1>
-        <p style={muted}>
-          No database is configured. Set <code>DATABASE_URL</code> and reload.
-        </p>
+        <p style={muted}>{gateMessage('no-database')}</p>
       </Shell>
     );
   }

@@ -72,6 +72,12 @@ function comparisonOf(row: AggregateRow): GridRow['comparison'] {
 }
 
 export interface LoadGridOptions {
+  /**
+   * The actor's org. Required, and in the predicate of every statement below:
+   * the web tier connects as the service role, so a query scoped only by a
+   * profile id is scoped only by a uuid nobody checked.
+   */
+  orgId: string;
   profileId: string;
   currencyCode: string;
   period: Period;
@@ -134,13 +140,14 @@ async function loadCampaigns(
   options: LoadGridOptions,
   limit: number,
 ): Promise<GridRow[]> {
-  const { profileId, period, comparison } = options;
+  const { orgId, profileId, period, comparison } = options;
   const rows = await handle.sql<CampaignRow[]>`
     with facts as (
       select campaign_id, ad_product,
              ${windowSums(handle, period, comparison)}
       from public.fact_sp_target_daily
-      where profile_id = ${profileId} and date between ${comparison.start} and ${period.end}
+      where org_id = ${orgId} and profile_id = ${profileId}
+        and date between ${comparison.start} and ${period.end}
       group by campaign_id, ad_product
     )
     select f.*,
@@ -158,10 +165,11 @@ async function loadCampaigns(
            (c.end_date is not null and c.end_date < (now() at time zone coalesce(pr.timezone, 'UTC'))::date) as is_ended
       from facts f
       left join public.campaigns c
-        on c.profile_id = ${profileId} and c.amazon_id = f.campaign_id
+        on c.org_id = ${orgId} and c.profile_id = ${profileId} and c.amazon_id = f.campaign_id
       left join public.portfolios p
-        on p.profile_id = ${profileId} and p.amazon_id = c.portfolio_amazon_id
-      left join public.ad_profiles pr on pr.id = ${profileId}
+        on p.org_id = ${orgId} and p.profile_id = ${profileId}
+       and p.amazon_id = c.portfolio_amazon_id
+      left join public.ad_profiles pr on pr.id = ${profileId} and pr.org_id = ${orgId}
      limit ${limit}
   `;
 
@@ -206,13 +214,14 @@ async function loadAdGroups(
   options: LoadGridOptions,
   limit: number,
 ): Promise<GridRow[]> {
-  const { profileId, period, comparison } = options;
+  const { orgId, profileId, period, comparison } = options;
   const rows = await handle.sql<AdGroupRow[]>`
     with facts as (
       select campaign_id, ad_group_id, ad_product,
              ${windowSums(handle, period, comparison)}
       from public.fact_sp_target_daily
-      where profile_id = ${profileId} and date between ${comparison.start} and ${period.end}
+      where org_id = ${orgId} and profile_id = ${profileId}
+        and date between ${comparison.start} and ${period.end}
       group by campaign_id, ad_group_id, ad_product
     )
     select f.*,
@@ -222,9 +231,9 @@ async function loadAdGroups(
            c.name as campaign_name
       from facts f
       left join public.ad_groups g
-        on g.profile_id = ${profileId} and g.amazon_id = f.ad_group_id
+        on g.org_id = ${orgId} and g.profile_id = ${profileId} and g.amazon_id = f.ad_group_id
       left join public.campaigns c
-        on c.profile_id = ${profileId} and c.amazon_id = f.campaign_id
+        on c.org_id = ${orgId} and c.profile_id = ${profileId} and c.amazon_id = f.campaign_id
      limit ${limit}
   `;
 
@@ -268,14 +277,15 @@ async function loadTargets(
   options: LoadGridOptions,
   limit: number,
 ): Promise<GridRow[]> {
-  const { profileId, period, comparison } = options;
+  const { orgId, profileId, period, comparison } = options;
   const rows = await handle.sql<TargetRow[]>`
     with facts as (
       select campaign_id, ad_group_id, target_id, target_kind::text as target_kind,
              max(match_type::text) as match_type, ad_product,
              ${windowSums(handle, period, comparison)}
       from public.fact_sp_target_daily
-      where profile_id = ${profileId} and date between ${comparison.start} and ${period.end}
+      where org_id = ${orgId} and profile_id = ${profileId}
+        and date between ${comparison.start} and ${period.end}
       group by campaign_id, ad_group_id, target_id, target_kind, ad_product
     )
     select f.*,
@@ -289,13 +299,13 @@ async function loadTargets(
            c.name as campaign_name
       from facts f
       left join public.keywords k
-        on k.profile_id = ${profileId} and k.amazon_id = f.target_id
+        on k.org_id = ${orgId} and k.profile_id = ${profileId} and k.amazon_id = f.target_id
       left join public.targets t
-        on t.profile_id = ${profileId} and t.amazon_id = f.target_id
+        on t.org_id = ${orgId} and t.profile_id = ${profileId} and t.amazon_id = f.target_id
       left join public.ad_groups g
-        on g.profile_id = ${profileId} and g.amazon_id = f.ad_group_id
+        on g.org_id = ${orgId} and g.profile_id = ${profileId} and g.amazon_id = f.ad_group_id
       left join public.campaigns c
-        on c.profile_id = ${profileId} and c.amazon_id = f.campaign_id
+        on c.org_id = ${orgId} and c.profile_id = ${profileId} and c.amazon_id = f.campaign_id
      limit ${limit}
   `;
 
@@ -340,14 +350,15 @@ async function loadSearchTerms(
   options: LoadGridOptions,
   limit: number,
 ): Promise<GridRow[]> {
-  const { profileId, period, comparison } = options;
+  const { orgId, profileId, period, comparison } = options;
   const rows = await handle.sql<SearchTermRow[]>`
     with facts as (
       select search_term, campaign_id, ad_group_id, target_id,
              max(match_type::text) as match_type, ad_product,
              ${windowSums(handle, period, comparison)}
       from public.fact_search_term_daily
-      where profile_id = ${profileId} and date between ${comparison.start} and ${period.end}
+      where org_id = ${orgId} and profile_id = ${profileId}
+        and date between ${comparison.start} and ${period.end}
       group by search_term, campaign_id, ad_group_id, target_id, ad_product
     )
     select f.*,
@@ -358,17 +369,18 @@ async function loadSearchTerms(
            -- re-harvests the same winners every week.
            exists (
              select 1 from public.keywords h
-              where h.profile_id = ${profileId}
+              where h.org_id = ${orgId}
+                and h.profile_id = ${profileId}
                 and h.deleted_at is null
                 and lower(h.keyword_text) = lower(f.search_term)
            ) as harvested
       from facts f
       left join public.keywords k
-        on k.profile_id = ${profileId} and k.amazon_id = f.target_id
+        on k.org_id = ${orgId} and k.profile_id = ${profileId} and k.amazon_id = f.target_id
       left join public.ad_groups g
-        on g.profile_id = ${profileId} and g.amazon_id = f.ad_group_id
+        on g.org_id = ${orgId} and g.profile_id = ${profileId} and g.amazon_id = f.ad_group_id
       left join public.campaigns c
-        on c.profile_id = ${profileId} and c.amazon_id = f.campaign_id
+        on c.org_id = ${orgId} and c.profile_id = ${profileId} and c.amazon_id = f.campaign_id
      limit ${limit}
   `;
 
@@ -412,7 +424,7 @@ async function loadPlacements(
   options: LoadGridOptions,
   limit: number,
 ): Promise<GridRow[]> {
-  const { profileId, period, comparison } = options;
+  const { orgId, profileId, period, comparison } = options;
   const rows = await handle.sql<PlacementRow[]>`
     with facts as (
       select campaign_id, placement::text as placement, ad_product,
@@ -430,13 +442,14 @@ async function loadPlacements(
              sum(purchases_7d) filter (where date between ${comparison.start} and ${comparison.end}) as c_orders,
              0 as c_units
       from public.fact_placement_daily
-      where profile_id = ${profileId} and date between ${comparison.start} and ${period.end}
+      where org_id = ${orgId} and profile_id = ${profileId}
+        and date between ${comparison.start} and ${period.end}
       group by campaign_id, placement, ad_product
     )
     select f.*, c.name as campaign_name, c.placement_bidding
       from facts f
       left join public.campaigns c
-        on c.profile_id = ${profileId} and c.amazon_id = f.campaign_id
+        on c.org_id = ${orgId} and c.profile_id = ${profileId} and c.amazon_id = f.campaign_id
      limit ${limit}
   `;
 

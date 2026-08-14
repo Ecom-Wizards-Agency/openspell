@@ -20,6 +20,7 @@ import { ensureFactPartitions } from '@wizard-ads/db';
 import { buildGridModel, groupRows, resolveField } from '@wizard-ads/ui';
 import type { GridRow } from '@wizard-ads/ui';
 import { loadGridRows } from '../app/_lib/grid-data.js';
+import { listProfiles } from '../app/_lib/profiles.js';
 import type { Period } from '../app/_lib/periods.js';
 
 const available = await databaseAvailable();
@@ -34,7 +35,7 @@ const CAMPAIGNS = [
   { id: 'c-skew-b', name: 'Dev | SP | Profit | Widget', spendPerDay: 10, salesPerDay: 500, clicks: 200, orders: 20 },
 ];
 
-suite('grid data against SQL aggregates', () => {
+suite('grid and roster reads against SQL aggregates', () => {
   let database: TestDatabase;
   let orgId: string;
   let profileId: string;
@@ -96,6 +97,7 @@ suite('grid data against SQL aggregates', () => {
 
   it('returns one row per target, matching the distinct grain count in SQL', async () => {
     const { rows, truncated } = await loadGridRows(database, 'targets', {
+      orgId,
       profileId,
       currencyCode: 'USD',
       period: PERIOD,
@@ -116,6 +118,7 @@ suite('grid data against SQL aggregates', () => {
 
   it('computes a grouped ACOS equal to sum(cost)/sum(sales) in Postgres', async () => {
     const { rows } = await loadGridRows(database, 'targets', {
+      orgId,
       profileId,
       currencyCode: 'USD',
       period: PERIOD,
@@ -160,6 +163,7 @@ suite('grid data against SQL aggregates', () => {
 
   it('is measurably different from averaging the ratios, on this fixture', async () => {
     const { rows } = await loadGridRows(database, 'targets', {
+      orgId,
       profileId,
       currencyCode: 'USD',
       period: PERIOD,
@@ -185,6 +189,7 @@ suite('grid data against SQL aggregates', () => {
 
   it('totals the whole filtered set, not the grouped rows', async () => {
     const { rows } = await loadGridRows(database, 'targets', {
+      orgId,
       profileId,
       currencyCode: 'USD',
       period: PERIOD,
@@ -208,6 +213,7 @@ suite('grid data against SQL aggregates', () => {
 
   it('reads the comparison window separately, and nulls it where nothing reported', async () => {
     const { rows } = await loadGridRows(database, 'targets', {
+      orgId,
       profileId,
       currencyCode: 'USD',
       period: PERIOD,
@@ -217,6 +223,7 @@ suite('grid data against SQL aggregates', () => {
 
     // A comparison window with no facts in it must produce null deltas, not zeroes.
     const empty = await loadGridRows(database, 'targets', {
+      orgId,
       profileId,
       currencyCode: 'USD',
       period: PERIOD,
@@ -229,6 +236,7 @@ suite('grid data against SQL aggregates', () => {
 
   it('never mixes the two windows: the selected period sums exclude comparison days', async () => {
     const { rows } = await loadGridRows(database, 'targets', {
+      orgId,
       profileId,
       currencyCode: 'USD',
       period: PERIOD,
@@ -264,6 +272,7 @@ suite('grid data against SQL aggregates', () => {
     `;
 
     const { rows } = await loadGridRows(database, 'search_terms', {
+      orgId,
       profileId,
       currencyCode: 'USD',
       period: PERIOD,
@@ -279,6 +288,7 @@ suite('grid data against SQL aggregates', () => {
 
   it('renders one profile in one currency, and refuses to aggregate across two', async () => {
     const { rows } = await loadGridRows(database, 'targets', {
+      orgId,
       profileId,
       currencyCode: 'USD',
       period: PERIOD,
@@ -288,6 +298,60 @@ suite('grid data against SQL aggregates', () => {
 
     const mixed = [...rows, { ...(rows[0] as GridRow), id: 'eur', currencyCode: 'EUR' }];
     expect(() => groupRows(mixed, ['campaign_name'])).toThrow(/refusing to aggregate across currencies/);
+  });
+
+  /**
+   * The org predicate, checked the only way that means anything: a profile id
+   * that really exists, asked for by an org that does not own it. Before the
+   * predicate this returned the whole profile, because the web tier connects as
+   * the service role and nothing else was standing between the two tenants.
+   */
+  it('returns nothing for a profile another org owns, at every entity level', async () => {
+    const [other] = await database.sql<{ id: string }[]>`
+      select app.seed_tenant_fixture('wp06-other', '00000000-0000-4000-8000-0000000006b2'::uuid) as id
+    `;
+    const otherOrgId = (other as { id: string }).id;
+    expect(otherOrgId).not.toBe(orgId);
+
+    for (const level of ['campaigns', 'ad_groups', 'targets', 'search_terms', 'placements'] as const) {
+      const own = await loadGridRows(database, level, {
+        orgId,
+        profileId,
+        currencyCode: 'USD',
+        period: PERIOD,
+        comparison: COMPARISON,
+      });
+      const stolen = await loadGridRows(database, level, {
+        orgId: otherOrgId,
+        profileId,
+        currencyCode: 'USD',
+        period: PERIOD,
+        comparison: COMPARISON,
+      });
+      expect(stolen.rows).toEqual([]);
+      // And the level is one that actually has rows to leak, or the assertion
+      // above proves nothing.
+      if (level !== 'placements') expect(own.rows.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('lists only the asking org’s profiles', async () => {
+    const [other] = await database.sql<{ id: string }[]>`
+      select app.seed_tenant_fixture('wp06-roster', '00000000-0000-4000-8000-0000000006c3'::uuid) as id
+    `;
+    const otherOrgId = (other as { id: string }).id;
+
+    const mine = await listProfiles(database, orgId);
+    const theirs = await listProfiles(database, otherOrgId);
+    const [total] = await database.sql<{ n: string }[]>`
+      select count(*)::text as n from public.ad_profiles
+    `;
+
+    expect(mine.map((row) => row.id)).toContain(profileId);
+    expect(theirs.map((row) => row.id)).not.toContain(profileId);
+    // Counted against the input, as rule 4 asks: neither roster is the table.
+    expect(mine.length).toBeLessThan(Number((total as { n: string }).n));
+    expect(theirs.length).toBeGreaterThan(0);
   });
 });
 
