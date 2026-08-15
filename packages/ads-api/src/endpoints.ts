@@ -60,6 +60,15 @@ export interface ListEndpoint {
   /** Property of the response object holding the page. Unused when `paging` is `offset`. */
   responseKey: string;
   paging: 'token' | 'offset';
+  /**
+   * Largest page this endpoint accepts. Sponsored Products lets a list ask for
+   * far more than {@link DEFAULT_PAGE_SIZE}, but Sponsored Brands v4 caps
+   * `maxResults` at 100 and answers a larger value with HTTP 400
+   * `LIST_REQUEST_MAX_RESULTS_OUT_OF_RANGE` — the exact failure that aborted the
+   * first live entity sync. A caller's page size is clamped to this. Absent
+   * means the shared default is already within range.
+   */
+  maxPageSize?: number;
   /** Which `{include: [...]}` filters this endpoint accepts. */
   filters: {
     state?: string;
@@ -73,6 +82,15 @@ const spFilters = {
   campaignId: 'campaignIdFilter',
   adGroupId: 'adGroupIdFilter',
 } as const;
+
+/**
+ * The largest page every Sponsored Brands v4 list endpoint accepts.
+ *
+ * Live-verified 2026-08-14: `POST /sb/v4/campaigns/list` and `/sb/v4/adGroups/list`
+ * answer HTTP 400 `LIST_REQUEST_MAX_RESULTS_OUT_OF_RANGE` (`upperLimit: 100`) for
+ * anything larger. The SB creative list shares the same v4 pagination contract.
+ */
+export const SB_LIST_MAX_PAGE_SIZE = 100;
 
 export const LIST_ENDPOINTS: Readonly<Record<EntityKind, ListEndpoint>> = {
   'sp.campaigns': {
@@ -145,6 +163,8 @@ export const LIST_ENDPOINTS: Readonly<Record<EntityKind, ListEndpoint>> = {
     mediaType: 'application/vnd.sbcampaignresource.v4+json',
     responseKey: 'campaigns',
     paging: 'token',
+    // SB v4 list rejects maxResults > 100 (live-verified 2026-08-14).
+    maxPageSize: SB_LIST_MAX_PAGE_SIZE,
     filters: { state: spFilters.state, campaignId: spFilters.campaignId },
   },
   'sb.adGroups': {
@@ -153,6 +173,8 @@ export const LIST_ENDPOINTS: Readonly<Record<EntityKind, ListEndpoint>> = {
     mediaType: 'application/vnd.sbadgroupresource.v4+json',
     responseKey: 'adGroups',
     paging: 'token',
+    // SB v4 list rejects maxResults > 100 (live-verified 2026-08-14).
+    maxPageSize: SB_LIST_MAX_PAGE_SIZE,
     filters: spFilters,
   },
   'sd.campaigns': {

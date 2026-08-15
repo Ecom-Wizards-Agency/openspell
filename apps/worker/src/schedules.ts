@@ -2,7 +2,8 @@
  * The default sync cadences, as rows rather than as a comment.
  *
  * WP-03's brief: entity sync daily per enabled profile; reports daily over the
- * trailing 3 days; a weekly re-pull over the trailing 35 days. The third one is
+ * trailing 3 days; a weekly re-pull over the widest window Amazon will generate
+ * (32 days; the brief said 35, which Amazon refuses). The third one is
  * the only one that needs explaining — Amazon restates sales for 14+ days after
  * the fact, so a report pulled the morning after is not the report that will be
  * true a fortnight later, and the slow re-pull is what makes the facts converge
@@ -16,6 +17,7 @@
  * enqueues its first pass on the next five-minute cron tick rather than a day
  * later.
  */
+import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
 import type { ReportType } from '@wizard-ads/shared';
 
 export type ScheduleVariant = 'default' | 'restatement';
@@ -44,8 +46,17 @@ export const DEFAULT_CADENCES = {
   entity: { cadence: '1 day', full: true },
   /** Yesterday plus the two before it, in the profile's own calendar. */
   reportRecent: { cadence: '1 day', lookbackDays: 3 },
-  /** Long enough to cover the 14+ day restatement window twice over. */
-  reportRestatement: { cadence: '7 days', lookbackDays: 35 },
+  /**
+   * The widest window Amazon will actually generate, which still covers the
+   * 14+ day restatement window twice over.
+   *
+   * This was 35, and 35 is why every weekly restatement job 400'd in the first
+   * live sync: the enqueue SQL derives `start = end - (lookback_days - 1)`, so
+   * 35 asks for a 34-day span and Reporting v3 refuses anything over 31
+   * (`MAX_REPORT_RANGE_DAYS`, live-verified for SP, SB and SD alike). 32 is the
+   * largest lookback that yields a legal 31-day span.
+   */
+  reportRestatement: { cadence: '7 days', lookbackDays: MAX_REPORT_RANGE_DAYS + 1 },
 } as const;
 
 export function defaultSchedules(

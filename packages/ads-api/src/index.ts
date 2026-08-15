@@ -76,11 +76,13 @@ export type { MapResult, MirrorRow, SkippedEntity } from './mappers.js';
 // Reporting v3
 export {
   CREATE_REPORT_CONTENT_TYPE,
+  MAX_REPORT_RANGE_DAYS,
   REPORT_SPECS,
   buildReportRequestBody,
   defaultReportName,
   isReportComplete,
   isTerminalFailure,
+  reportRangeDays,
 } from './reports.js';
 export type { AmazonAdProduct, CreateReportInput, ReportMetadata, ReportSpec, ReportStatus } from './reports.js';
 export {

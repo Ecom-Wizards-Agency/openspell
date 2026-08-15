@@ -4,6 +4,7 @@ import { isPermanentCrosscheckError, type CrosscheckIngest } from './crosscheck.
 import {
   AdsApiRetryableError,
   DownloadUrlExpiredError,
+  type AdProductCode,
   type AdsApiClient,
   type AdsProfileContext,
 } from './ads-api.js';
@@ -189,19 +190,8 @@ export class SyncWorker {
     if (profile.orgId !== payload.orgId) throw new Error(`job ${job.id} profile belongs to another org`);
 
     switch (payload.type) {
-      case 'entity.sync': {
-        const entities = await this.buckets.run(profile.region, () => this.adsApi.listEntities(profile, payload.full));
-        const counts = await this.store.syncEntities(profile, entities, {
-          adProduct: payload.adProduct,
-          full: payload.full,
-        });
-        // Program rule 4: the artifact, not the exit code. A listing that
-        // upserted fewer rows than it listed lost some, and a sync that lost
-        // rows must fail loudly rather than report success.
-        if (counts.listed !== counts.upserted) throw new Error(`listed ${counts.listed}, upserted ${counts.upserted}`);
-        this.logger.info('entity sync', { profileId: profile.id, ...counts });
-        return { ...counts };
-      }
+      case 'entity.sync':
+        return this.syncEntities(profile, payload);
       case 'report.request':
         return this.requestReport(job.id, profile, payload);
       case 'report.poll':
@@ -213,6 +203,72 @@ export class SyncWorker {
       case 'crosscheck.ingest':
         return this.ingestCrosscheck(payload);
     }
+  }
+
+  /**
+   * List and mirror entities with per-ad-product isolation.
+   *
+   * The first live sync lost every product's campaigns to a single Sponsored
+   * Brands 400: one throw aborted the whole job before anything was committed.
+   * Now each ad product is listed and mirrored on its own. A product that
+   * listed cleanly is committed regardless of what the others did; a product
+   * that failed is recorded on the result and its mirror is left untouched (so
+   * a `full` pass never tombstones a product it could not see). The job fails
+   * only when every product it was asked for failed — and then it re-throws the
+   * original error so a 429/5xx still requeues with the right backoff.
+   */
+  private async syncEntities(
+    profile: AdsProfileContext,
+    payload: Extract<JobPayload, { type: 'entity.sync' }>,
+  ): Promise<Record<string, unknown>> {
+    const listing = await this.buckets.run(profile.region, () => this.adsApi.listEntities(profile, payload.full));
+
+    // A product-scoped job cares only about its own product; an unscoped job
+    // covers all three.
+    const requested: readonly AdProductCode[] = payload.adProduct
+      ? [payload.adProduct]
+      : ['SP', 'SB', 'SD'];
+    const succeeded = requested.filter((product) => listing.succeeded.includes(product));
+    const failures = listing.failures.filter((failure) => requested.includes(failure.adProduct));
+
+    // Everything asked for failed: nothing to commit, so fail loudly and let
+    // the retry policy see the real error type.
+    if (succeeded.length === 0) {
+      const first = failures[0];
+      if (first) throw first.error instanceof Error ? first.error : new Error(first.message);
+      throw new Error(`entity sync listed nothing for ${requested.join(', ')}`);
+    }
+
+    const totals = { listed: 0, upserted: 0, changes: 0, tombstoned: 0 };
+    for (const product of succeeded) {
+      const productRows = listing.rows.filter((row) => row.adProduct === product);
+      // Scope the mirror to this product so tombstoning stays within it and a
+      // sibling product that failed to list is never touched.
+      const counts = await this.store.syncEntities(profile, productRows, {
+        adProduct: product,
+        full: payload.full,
+      });
+      // Program rule 4: the artifact, not the exit code. A listing that
+      // upserted fewer rows than it listed lost some.
+      if (counts.listed !== counts.upserted) {
+        throw new Error(`${product}: listed ${counts.listed}, upserted ${counts.upserted}`);
+      }
+      totals.listed += counts.listed;
+      totals.upserted += counts.upserted;
+      totals.changes += counts.changes;
+      totals.tombstoned += counts.tombstoned;
+    }
+
+    const failureSummary = failures.map((failure) => ({ adProduct: failure.adProduct, error: failure.message }));
+    if (failureSummary.length > 0) {
+      this.logger.error('entity sync partial failure', {
+        profileId: profile.id,
+        succeeded,
+        failed: failureSummary,
+      });
+    }
+    this.logger.info('entity sync', { profileId: profile.id, succeeded, ...totals });
+    return { ...totals, succeeded, failures: failureSummary };
   }
 
   /**

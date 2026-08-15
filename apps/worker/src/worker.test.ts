@@ -187,7 +187,7 @@ function stubStore(): WorkerStore {
 }
 
 class OneRowApi implements AdsApiClient {
-  async listEntities() { return []; }
+  async listEntities() { return { rows: [], succeeded: ['SP', 'SB', 'SD'] as const, failures: [] }; }
   async createReport(_input: CreateReportInput) { return { reportId: 'unused' }; }
   async getReport(_profile: AdsProfileContext, _reportId: string): Promise<AdsReportStatus> { return { status: 'PENDING' }; }
   async downloadReport(): Promise<AsyncIterable<Uint8Array>> {

@@ -21,13 +21,17 @@ import {
   type TestDatabase,
 } from '@wizard-ads/db/testing';
 import { enqueueDueSchedules } from '@wizard-ads/db';
+import { AdsApiHttpError, MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
 import type { EntityRow, Region } from '@wizard-ads/shared';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type {
+  AdProductCode,
   AdsApiClient,
   AdsProfileContext,
   AdsReportStatus,
   CreateReportInput,
+  EntityListFailure,
+  EntityListing,
 } from './ads-api.js';
 import { createCrosscheckIngest } from './crosscheck.js';
 import type { ParsedFactBatch } from './parsers.js';
@@ -44,13 +48,23 @@ const quietLogger: WorkerLogger = process.env['WORKER_TEST_VERBOSE']
 
 class FakeAdsApi implements AdsApiClient {
   entities: EntityRow[] = [];
+  /** Ad products whose listing should fail; their rows are still in `entities`. */
+  listFailures: EntityListFailure[] = [];
   reportRows: Record<string, unknown>[] = [];
   createCalls = 0;
   activeCreates = 0;
   maxActiveCreates = 0;
   private readonly polls = new Map<string, number>();
 
-  async listEntities(): Promise<readonly EntityRow[]> { return this.entities; }
+  async listEntities(): Promise<EntityListing> {
+    const failed = new Set(this.listFailures.map((failure) => failure.adProduct));
+    const all: readonly AdProductCode[] = ['SP', 'SB', 'SD'];
+    const succeeded = all.filter((product) => !failed.has(product));
+    // A failed product contributes no rows, exactly as the real adapter drops a
+    // product it could not fully list.
+    const rows = this.entities.filter((entity) => !failed.has(entity.adProduct as AdProductCode));
+    return { rows, succeeded, failures: this.listFailures };
+  }
   async createReport(_input: CreateReportInput): Promise<{ reportId: string }> {
     this.createCalls += 1;
     this.activeCreates += 1;
@@ -127,6 +141,57 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       select name from public.campaigns where profile_id = ${profileId} and amazon_id = 'c-1'
     `;
     expect(entity?.name).toBe('updated campaign');
+  });
+
+  it('commits Sponsored Products even when Sponsored Brands listing 400s', async () => {
+    const api = new FakeAdsApi();
+    api.entities = [campaign(profileId, 'sp survives')];
+    // The exact production failure: SB's list throws, the whole SB product is
+    // dropped, and the job must still commit the SP rows that listed fine.
+    api.listFailures = [{
+      adProduct: 'SB',
+      message: 'POST /sb/v4/campaigns/list failed with 400',
+      error: new AdsApiHttpError('POST /sb/v4/campaigns/list failed with 400', 400, 'bad', 1),
+    }];
+    const worker = makeWorker('entities-isolated', new PostgresWorkerStore(database), api);
+
+    await queueEntity(database, orgId, profileId, 'entity-sb-400', false);
+    expect(await worker.drainOnce()).toBe(1);
+    // The job SUCCEEDS despite the SB failure, because SP committed.
+    await expectAllSucceeded(database, orgId);
+
+    const [entity] = await database.sql<{ name: string }[]>`
+      select name from public.campaigns where profile_id = ${profileId} and amazon_id = 'c-1'
+    `;
+    expect(entity?.name).toBe('sp survives');
+
+    const [job] = await database.sql<{ result: { failures: { adProduct: string }[]; succeeded: string[] } }[]>`
+      select result from public.sync_jobs where dedupe_key = 'entity-sb-400'
+    `;
+    expect(job?.result.succeeded).toContain('SP');
+    expect(job?.result.failures).toEqual([{ adProduct: 'SB', error: 'POST /sb/v4/campaigns/list failed with 400' }]);
+  });
+
+  it('fails the job only when every requested ad product fails', async () => {
+    const api = new FakeAdsApi();
+    api.entities = [];
+    const all = ['SP', 'SB', 'SD'] as const;
+    api.listFailures = all.map((adProduct) => ({
+      adProduct,
+      message: `${adProduct} exploded`,
+      error: new AdsApiHttpError(`${adProduct} exploded`, 400, 'bad', 1),
+    }));
+    const worker = makeWorker('entities-all-fail', new PostgresWorkerStore(database), api);
+
+    await queueEntity(database, orgId, profileId, 'entity-all-fail', false);
+    expect(await worker.drainOnce()).toBe(1);
+
+    const [job] = await database.sql<{ status: string; last_error: string | null }[]>`
+      select status, last_error from public.sync_jobs where dedupe_key = 'entity-all-fail'
+    `;
+    // A failed job with attempts left is requeued, carrying the real error.
+    expect(job?.status).toBe('queued');
+    expect(job?.last_error ?? '').toContain('SP exploded');
   });
 
   it('tombstones missing entities only on a full pass', async () => {
@@ -329,10 +394,10 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     `;
     expect(rows.map((r) => ({ variant: r.variant, lookback: Number(r.lookback_days) }))).toEqual([
       { variant: 'default', lookback: 3 },
-      { variant: 'restatement', lookback: 35 },
+      { variant: 'restatement', lookback: 32 },
     ]);
 
-    // Both are due, so one tick mints both windows: 3 days and 35 days.
+    // Both are due, so one tick mints both windows: 3 days and 32 days.
     const enqueued = await enqueueDueSchedules(database);
     expect(enqueued.filter((row) => row.enqueued)).toHaveLength(3);
     const windows = await database.sql<{ start_date: string; end_date: string }[]>`
@@ -342,7 +407,50 @@ describe.skipIf(!available)('worker + real Postgres', () => {
        order by payload ->> 'startDate'
     `;
     const spans = windows.map((w) => days(w.start_date, w.end_date));
-    expect(spans).toEqual([35, 3]);
+    expect(spans).toEqual([32, 3]);
+    // The restatement window must be one Amazon will actually generate: it
+    // refuses a difference over MAX_REPORT_RANGE_DAYS, and 35 (a 34-day
+    // difference) is what 400'd every restatement job in the first live sync.
+    for (const span of spans) expect(span - 1).toBeLessThanOrEqual(MAX_REPORT_RANGE_DAYS);
+  });
+
+  it('repairs a schedule already provisioned with the illegal 35-day lookback', async () => {
+    await database.sql`delete from public.sync_schedules where profile_id = ${profileId}`;
+    const store = new PostgresWorkerStore(database);
+    await store.provisionSchedules(orgId, profileId, defaultSchedules(['spCampaigns']));
+    // Simulate a profile provisioned before the bug was found.
+    await database.sql`
+      update public.sync_schedules set lookback_days = 35
+       where profile_id = ${profileId} and variant = 'restatement'
+    `;
+
+    // Re-provisioning is `do nothing` on conflict, so the repair is what has to
+    // fix the row.
+    await store.provisionSchedules(orgId, profileId, defaultSchedules(['spCampaigns']));
+
+    const [row] = await database.sql<{ lookback_days: number }[]>`
+      select lookback_days from public.sync_schedules
+       where profile_id = ${profileId} and variant = 'restatement'
+    `;
+    expect(Number(row?.lookback_days)).toBe(32);
+  });
+
+  it('leaves a legal operator-chosen lookback alone', async () => {
+    await database.sql`delete from public.sync_schedules where profile_id = ${profileId}`;
+    const store = new PostgresWorkerStore(database);
+    await store.provisionSchedules(orgId, profileId, defaultSchedules(['spCampaigns']));
+    await database.sql`
+      update public.sync_schedules set lookback_days = 14
+       where profile_id = ${profileId} and variant = 'restatement'
+    `;
+
+    await store.provisionSchedules(orgId, profileId, defaultSchedules(['spCampaigns']));
+
+    const [row] = await database.sql<{ lookback_days: number }[]>`
+      select lookback_days from public.sync_schedules
+       where profile_id = ${profileId} and variant = 'restatement'
+    `;
+    expect(Number(row?.lookback_days)).toBe(14);
   });
 
   it('gives an unscheduled profile the defaults, once', async () => {

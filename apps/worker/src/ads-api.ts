@@ -38,12 +38,39 @@ export interface AdsReportStatus {
   failureReason?: string;
 }
 
+/** The three ad products, each listed and mirrored independently. */
+export type AdProductCode = 'SP' | 'SB' | 'SD';
+
+/** One ad product's listing failed. The others are unaffected. */
+export interface EntityListFailure {
+  adProduct: AdProductCode;
+  message: string;
+  /** The original (already error-mapped) throwable, kept so the caller can
+   * preserve retry typing when it decides the whole job failed. */
+  error: unknown;
+}
+
+/**
+ * The outcome of an entity listing, isolated per ad product.
+ *
+ * A 400 from Sponsored Brands must not cost the Sponsored Products rows that
+ * listed cleanly — the first live sync lost all 3 products to one SB 400. So
+ * the listing reports which products succeeded (their rows are in `rows`,
+ * tagged by `EntityRow.adProduct`) and which failed, and the caller commits the
+ * winners and records the losers rather than throwing everything away.
+ */
+export interface EntityListing {
+  rows: readonly EntityRow[];
+  succeeded: readonly AdProductCode[];
+  failures: readonly EntityListFailure[];
+}
+
 /**
  * Narrow worker-owned boundary for WP-02. Tests implement this interface; the
  * production adapter will be a mechanical mapping onto the final client.
  */
 export interface AdsApiClient {
-  listEntities(profile: AdsProfileContext, full: boolean): Promise<readonly EntityRow[]>;
+  listEntities(profile: AdsProfileContext, full: boolean): Promise<EntityListing>;
   createReport(input: CreateReportInput): Promise<{ reportId: string }>;
   getReport(profile: AdsProfileContext, reportId: string): Promise<AdsReportStatus>;
   downloadReport(url: string): Promise<AsyncIterable<Uint8Array>>;
@@ -135,37 +162,56 @@ export class DbAdsApiClient implements AdsApiClient {
     this.fetch = deps.fetch ?? ((input, init) => fetch(input, init));
   }
 
-  async listEntities(profile: AdsProfileContext, _full: boolean): Promise<readonly EntityRow[]> {
+  async listEntities(profile: AdsProfileContext, _full: boolean): Promise<EntityListing> {
     const client = await this.clientForProfile(profile);
-    const amazonProfileId = profile.amazonProfileId;
-    // Sequential, not parallel: a single profile firing a dozen simultaneous
-    // requests would defeat the region concurrency cap the worker wraps this
-    // call in, and Amazon throttles a whole grant at once.
-    const steps: Array<() => Promise<{ items: readonly unknown[] }>> = [
-      () => client.listSpCampaigns(amazonProfileId),
-      () => client.listSpAdGroups(amazonProfileId),
-      () => client.listSpKeywords(amazonProfileId),
-      () => client.listSpTargets(amazonProfileId),
-      () => client.listSpProductAds(amazonProfileId),
-      () => client.listSpNegativeKeywords(amazonProfileId),
-      () => client.listSpCampaignNegativeKeywords(amazonProfileId),
-      () => client.listSpNegativeTargets(amazonProfileId),
-      () => client.listSbCampaigns(amazonProfileId),
-      () => client.listSbAdGroups(amazonProfileId),
-      () => client.listSdCampaigns(amazonProfileId),
-      () => client.listSdAdGroups(amazonProfileId),
+    const p = profile.amazonProfileId;
+    // Grouped by ad product so one product's failure is contained to that
+    // product. Within a group the steps stay sequential: a single profile
+    // firing a dozen simultaneous requests would defeat the region concurrency
+    // cap the worker wraps this call in, and Amazon throttles a whole grant at
+    // once.
+    const groups: Array<{ product: AdProductCode; steps: Array<() => Promise<{ items: readonly unknown[] }>> }> = [
+      {
+        product: 'SP',
+        steps: [
+          () => client.listSpCampaigns(p),
+          () => client.listSpAdGroups(p),
+          () => client.listSpKeywords(p),
+          () => client.listSpTargets(p),
+          () => client.listSpProductAds(p),
+          () => client.listSpNegativeKeywords(p),
+          () => client.listSpCampaignNegativeKeywords(p),
+          () => client.listSpNegativeTargets(p),
+        ],
+      },
+      { product: 'SB', steps: [() => client.listSbCampaigns(p), () => client.listSbAdGroups(p)] },
+      { product: 'SD', steps: [() => client.listSdCampaigns(p), () => client.listSdAdGroups(p)] },
     ];
 
     const rows: EntityRow[] = [];
-    for (const step of steps) {
-      const listed = await this.guard(profile.region, step);
-      for (const item of listed.items) {
-        // The mapper drops `profileId` (its own value is Amazon's id, not our
-        // uuid); the worker owns the join, so we add ours back here.
-        rows.push({ ...(item as object), profileId: profile.id } as EntityRow);
+    const succeeded: AdProductCode[] = [];
+    const failures: EntityListFailure[] = [];
+    for (const group of groups) {
+      // Collect this product's rows into a scratch list first: if any step in
+      // the group fails, the whole product is dropped, so a half-listed product
+      // never reaches the mirror (where a `full` sync would tombstone the rest).
+      const productRows: EntityRow[] = [];
+      try {
+        for (const step of group.steps) {
+          const listed = await this.guard(profile.region, step);
+          for (const item of listed.items) {
+            // The mapper drops `profileId` (its own value is Amazon's id, not
+            // our uuid); the worker owns the join, so we add ours back here.
+            productRows.push({ ...(item as object), profileId: profile.id } as EntityRow);
+          }
+        }
+        rows.push(...productRows);
+        succeeded.push(group.product);
+      } catch (error) {
+        failures.push({ adProduct: group.product, message: errorText(error), error });
       }
     }
-    return rows;
+    return { rows, succeeded, failures };
   }
 
   async createReport(input: CreateReportInput): Promise<{ reportId: string }> {

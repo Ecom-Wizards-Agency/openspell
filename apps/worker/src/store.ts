@@ -24,6 +24,7 @@ import {
   type JobOutcome,
   type NewEntityChange,
 } from '@wizard-ads/db';
+import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
 import type { EntityRow, JobPayload, ReportType } from '@wizard-ads/shared';
 import type { AdsProfileContext } from './ads-api.js';
 import type { CampaignFactRow, ParsedFactBatch } from './parsers.js';
@@ -381,7 +382,30 @@ export class PostgresWorkerStore implements WorkerStore {
       `;
       written += rows.length;
     }
+    await this.repairOverlongLookbacks(profileId);
     return written;
+  }
+
+  /**
+   * Clamp any already-provisioned schedule whose window Amazon will not accept.
+   *
+   * `provisionSchedules` is `do nothing` on conflict, so a profile provisioned
+   * before the 35-day restatement bug was found keeps asking for a 34-day span
+   * and keeps getting HTTP 400 forever. Only rows that exceed Amazon's hard
+   * maximum are touched, so a deliberate operator preference within the legal
+   * range is never overwritten.
+   */
+  private async repairOverlongLookbacks(profileId: string): Promise<number> {
+    const maxLookback = MAX_REPORT_RANGE_DAYS + 1;
+    const rows = await this.handle.sql<{ id: string }[]>`
+      update public.sync_schedules
+         set lookback_days = ${maxLookback}
+       where profile_id = ${profileId}
+         and job_type = 'report.request'
+         and lookback_days > ${maxLookback}
+      returning id
+    `;
+    return rows.length;
   }
 
   async unscheduledProfiles(): Promise<{ orgId: string; profileId: string }[]> {
