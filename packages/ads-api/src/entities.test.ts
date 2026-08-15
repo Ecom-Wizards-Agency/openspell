@@ -92,6 +92,9 @@ describe('Sponsored Products campaigns', () => {
     expect(request?.headers['content-type']).toBe('application/vnd.spCampaign.v3+json');
     expect(request?.headers['accept']).toBe('application/vnd.spCampaign.v3+json');
     expect(request?.headers['amazon-advertising-api-scope']).toBe(PROFILE_ID);
+    // SP has no page ceiling: the default 500 must survive unclamped, or the SB
+    // fix would have silently throttled SP paging.
+    expect((request?.json as { maxResults: number }).maxResults).toBe(500);
   });
 
   it('maps budget, placement modifiers and the transient enabling state', async () => {
@@ -262,6 +265,34 @@ describe('Sponsored Brands v4', () => {
     expect(server.requestsFor('/sb/v4/campaigns/list')[0]?.headers['accept']).toBe(
       'application/vnd.sbcampaignresource.v4+json',
     );
+  });
+
+  it('caps maxResults at 100 by default: SB v4 400s on the shared 500-row page', async () => {
+    const { server, client } = clientFor([
+      { method: 'POST', match: '/sb/v4/campaigns/list', responses: [{ status: 200, json: SB_CAMPAIGNS }] },
+      { method: 'POST', match: '/sb/v4/adGroups/list', responses: [{ status: 200, json: SB_AD_GROUPS }] },
+    ]);
+
+    // No options -> the client would otherwise send DEFAULT_PAGE_SIZE (500),
+    // which is the exact request that aborted the first live entity sync.
+    await client.listSbCampaigns(PROFILE_ID);
+    await client.listSbAdGroups(PROFILE_ID);
+
+    const campaignBody = server.requestsFor('/sb/v4/campaigns/list')[0]?.json as { maxResults: number };
+    const adGroupBody = server.requestsFor('/sb/v4/adGroups/list')[0]?.json as { maxResults: number };
+    expect(campaignBody.maxResults).toBe(100);
+    expect(adGroupBody.maxResults).toBe(100);
+  });
+
+  it('clamps an over-large explicit maxResults down to the SB ceiling', async () => {
+    const { server, client } = clientFor([
+      { method: 'POST', match: '/sb/v4/campaigns/list', responses: [{ status: 200, json: SB_CAMPAIGNS }] },
+    ]);
+
+    await client.listSbCampaigns(PROFILE_ID, { maxResults: 500 });
+
+    const body = server.requestsFor('/sb/v4/campaigns/list')[0]?.json as { maxResults: number };
+    expect(body.maxResults).toBe(100);
   });
 });
 

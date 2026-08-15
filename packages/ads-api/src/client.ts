@@ -41,6 +41,7 @@ import { createHttpContext, type EffectOptions } from './context.js';
 import {
   DEFAULT_PAGE_SIZE,
   LIST_ENDPOINTS,
+  SB_LIST_MAX_PAGE_SIZE,
   SP_WRITE_ENDPOINTS,
   buildListBody,
   buildOffsetQuery,
@@ -252,7 +253,10 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
     options: ListOptions = {},
   ): Promise<ListResult<Record<string, unknown>>> {
     const endpoint = LIST_ENDPOINTS[kind];
-    const pageSize = options.maxResults ?? DEFAULT_PAGE_SIZE;
+    // Clamp to the endpoint's own ceiling: SB v4 list 400s on maxResults > 100,
+    // and the shared DEFAULT_PAGE_SIZE (500) is what aborted the first live sync.
+    const requested = options.maxResults ?? DEFAULT_PAGE_SIZE;
+    const pageSize = endpoint.maxPageSize === undefined ? requested : Math.min(requested, endpoint.maxPageSize);
     const items: Record<string, unknown>[] = [];
     const seenTokens = new Set<string>();
     let pages = 0;
@@ -857,7 +861,9 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
   ): Promise<SbCreativeListResult> {
     const items: SbCreative[] = [];
     const seenTokens = new Set<string>();
-    const maxResults = options.maxResults ?? DEFAULT_PAGE_SIZE;
+    // SB v4 list endpoints cap maxResults at 100 (see SB_LIST_MAX_PAGE_SIZE);
+    // DEFAULT_PAGE_SIZE (500) would 400 exactly as the campaign list did.
+    const maxResults = Math.min(options.maxResults ?? DEFAULT_PAGE_SIZE, SB_LIST_MAX_PAGE_SIZE);
     let nextToken = options.nextToken ?? null;
     let pages = 0;
 

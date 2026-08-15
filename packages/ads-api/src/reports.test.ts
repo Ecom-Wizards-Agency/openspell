@@ -12,12 +12,15 @@ import { AdsApiClient } from './client.js';
 import { AdsApiParseError, DuplicateReportError } from './errors.js';
 import { parseSpTargetingReport } from './parsers.js';
 import {
+  MAX_REPORT_RANGE_DAYS,
   REPORT_SPECS,
   buildReportRequestBody,
   defaultReportName,
   isReportComplete,
   isTerminalFailure,
+  reportRangeDays,
 } from './reports.js';
+import { AdsApiConfigError } from './errors.js';
 import { createMockServer, lwaRoute } from './__fixtures__/server.js';
 import { PROFILE_ID, REPORT_SP_TARGETING } from './__fixtures__/payloads.js';
 
@@ -89,6 +92,33 @@ describe('report request bodies', () => {
       'campaignId',
       'impressions',
     ]);
+  });
+
+  it('measures the window as a difference in days, not an inclusive count', () => {
+    expect(reportRangeDays('2026-08-13', '2026-08-13')).toBe(0);
+    expect(reportRangeDays('2026-07-13', '2026-08-13')).toBe(31);
+    // The exact span the 35-day restatement schedule was asking for.
+    expect(reportRangeDays('2026-07-10', '2026-08-13')).toBe(34);
+  });
+
+  it('refuses a window wider than Amazon will generate, for every ad product', () => {
+    // Live-verified: Amazon answers this exact 34-day span with HTTP 400 for
+    // SP, SB and SD alike. Catching it here spends no quota.
+    for (const reportType of ['spCampaigns', 'sbCampaigns', 'sdCampaigns'] as const) {
+      expect(() =>
+        buildReportRequestBody({ reportType, startDate: '2026-07-10', endDate: '2026-08-13' }),
+      ).toThrow(AdsApiConfigError);
+    }
+  });
+
+  it('accepts the widest window Amazon does accept', () => {
+    expect(MAX_REPORT_RANGE_DAYS).toBe(31);
+    const body = buildReportRequestBody({
+      reportType: 'sbCampaigns',
+      startDate: '2026-07-13',
+      endDate: '2026-08-13',
+    });
+    expect(body['startDate']).toBe('2026-07-13');
   });
 });
 

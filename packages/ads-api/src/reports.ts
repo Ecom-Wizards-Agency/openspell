@@ -23,6 +23,7 @@
  * a code change.
  */
 import type { ReportType } from '@wizard-ads/shared';
+import { AdsApiConfigError } from './errors.js';
 
 export type AmazonAdProduct = 'SPONSORED_PRODUCTS' | 'SPONSORED_BRANDS' | 'SPONSORED_DISPLAY';
 
@@ -164,6 +165,28 @@ export const REPORT_SPECS: Readonly<Record<ReportType, ReportSpec>> = {
   },
 };
 
+/**
+ * The widest `startDate`..`endDate` span Reporting v3 accepts, in days of
+ * difference (so an inclusive window of 32 calendar days).
+ *
+ * Live-verified 2026-08-14 against all three ad products: a 34-day difference
+ * is refused with HTTP 400 `startDate to endDate range (34 days) must not
+ * exceed maximum range (31 days)`, while 31 is accepted. This is the limit that
+ * failed every weekly restatement job in the first live sync — for Sponsored
+ * Products exactly as much as for Brands and Display.
+ */
+export const MAX_REPORT_RANGE_DAYS = 31;
+
+const MS_PER_DAY = 86_400_000;
+
+/** Difference in days between two `YYYY-MM-DD` dates, or null if either is unparseable. */
+export function reportRangeDays(startDate: string, endDate: string): number | null {
+  const start = Date.parse(`${startDate}T00:00:00Z`);
+  const end = Date.parse(`${endDate}T00:00:00Z`);
+  if (Number.isNaN(start) || Number.isNaN(end)) return null;
+  return Math.round((end - start) / MS_PER_DAY);
+}
+
 /** Amazon's own status vocabulary. `CANCELLED` is terminal like `FAILURE`. */
 export type ReportStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILURE' | 'CANCELLED';
 
@@ -216,6 +239,16 @@ export function defaultReportName(input: CreateReportInput): string {
 
 export function buildReportRequestBody(input: CreateReportInput): Record<string, unknown> {
   const spec = REPORT_SPECS[input.reportType];
+  // Refuse an over-wide window here rather than spending an Amazon round trip
+  // to be told the same thing in a 400. This is a caller/config error, so it is
+  // named as one instead of surfacing as an opaque HTTP failure.
+  const days = reportRangeDays(input.startDate, input.endDate);
+  if (days !== null && days > MAX_REPORT_RANGE_DAYS) {
+    throw new AdsApiConfigError(
+      `report window ${input.startDate}..${input.endDate} spans ${days} days; ` +
+        `Amazon Reporting v3 allows at most ${MAX_REPORT_RANGE_DAYS}`,
+    );
+  }
   const configuration: Record<string, unknown> = {
     adProduct: spec.adProduct,
     groupBy: [...spec.groupBy],

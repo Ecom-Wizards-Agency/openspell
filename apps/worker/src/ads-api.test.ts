@@ -114,11 +114,44 @@ describe('DbAdsApiClient.listEntities', () => {
     });
     const { adapter } = makeAdapter(client);
 
-    const rows = await adapter.listEntities(profile, true);
+    const listing = await adapter.listEntities(profile, true);
 
-    expect(rows).toHaveLength(2);
-    expect(rows.every((row) => row.profileId === profile.id)).toBe(true);
-    expect(rows.map((row) => row.amazonId).sort()).toEqual(['c-1', 'k-1']);
+    expect(listing.rows).toHaveLength(2);
+    expect(listing.rows.every((row) => row.profileId === profile.id)).toBe(true);
+    expect(listing.rows.map((row) => row.amazonId).sort()).toEqual(['c-1', 'k-1']);
+    expect(listing.succeeded).toEqual(['SP', 'SB', 'SD']);
+    expect(listing.failures).toEqual([]);
+  });
+
+  it('isolates a failing ad product: an SB 400 keeps SP rows and records the failure', async () => {
+    const spCampaign: MirrorRow<CampaignRow> = {
+      entityType: 'campaign', amazonId: 'sp-c', adProduct: 'SP', name: 'SP', state: 'enabled',
+      portfolioId: null, budgetAmount: 10, budgetType: 'daily', targetingType: 'manual',
+      biddingStrategy: null, placementBidding: null, startDate: null, endDate: null,
+    };
+    const sdCampaign: MirrorRow<CampaignRow> = {
+      entityType: 'campaign', amazonId: 'sd-c', adProduct: 'SD', name: 'SD', state: 'enabled',
+      portfolioId: null, budgetAmount: 5, budgetType: 'daily', targetingType: 'auto',
+      biddingStrategy: null, placementBidding: null, startDate: null, endDate: null,
+    };
+    const client = underlying({
+      listSpCampaigns: async () => ({ ...emptyList(), items: [spCampaign] }),
+      // The exact failure that aborted the first live sync.
+      listSbCampaigns: async () => {
+        throw new AdsApiHttpError('POST /sb/v4/campaigns/list failed with 400', 400, 'bad', 1);
+      },
+      listSdCampaigns: async () => ({ ...emptyList(), items: [sdCampaign] }),
+    });
+    const { adapter } = makeAdapter(client);
+
+    const listing = await adapter.listEntities(profile, true);
+
+    // SP and SD survived; SB was dropped whole and recorded.
+    expect(listing.rows.map((row) => row.amazonId).sort()).toEqual(['sd-c', 'sp-c']);
+    expect(listing.succeeded).toEqual(['SP', 'SD']);
+    expect(listing.failures).toHaveLength(1);
+    expect(listing.failures[0]?.adProduct).toBe('SB');
+    expect(listing.failures[0]?.error).toBeInstanceOf(AdsApiHttpError);
   });
 
   it('builds one client per connection+region and reuses it across calls', async () => {
