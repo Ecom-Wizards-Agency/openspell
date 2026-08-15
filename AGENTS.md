@@ -97,6 +97,11 @@ and it still goes through the same door.
    Playwright for end-to-end. Every package lands with its tests green.
 7. **Work on a branch** named `wp-XX-short-name`, commit in logical units, and report
    against the brief's acceptance checks before merge.
+8. **Blast radius.** Never run migrations, seeds, or destructive statements against a
+   production or shared Supabase project, and never point a local run at production
+   credentials, unless the operator authorizes that exact action in the current task.
+   Branch databases and local stacks are the default target; say which one you are on
+   before any schema or data change.
 
 ## Public-repo hygiene
 
