@@ -32,5 +32,6 @@ export * from './queries/partitions.js';
 export * from './queries/profiles.js';
 export * from './queries/recommendations.js';
 export * from './queries/tags.js';
+export * from './queries/time-machine.js';
 export * from './queries/tokens.js';
 export * from './queries/request-client.js';

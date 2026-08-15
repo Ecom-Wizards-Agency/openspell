@@ -68,6 +68,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     icon: 'shield',
     links: [
       { href: '/crosscheck', label: 'Crosscheck', icon: 'shield' },
+      { href: '/time-machine', label: 'Time Machine', icon: 'history' },
       { href: '/sync-status', label: 'Sync status', icon: 'clock' },
     ],
   },

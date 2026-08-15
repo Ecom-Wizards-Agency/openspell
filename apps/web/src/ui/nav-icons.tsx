@@ -104,6 +104,13 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M5.5 2.5h5M5.6 9.5h4.8" />
     </>
   ),
+  history: (
+    <>
+      <path d="M2.8 6.2A5.5 5.5 0 1 1 2.5 9" />
+      <path d="M2.5 3v3.2h3.2" />
+      <path d="M8 5.2v3l2 1.2" />
+    </>
+  ),
 };
 
 export function NavIcon({ icon }: { icon: string }): ReactNode {
