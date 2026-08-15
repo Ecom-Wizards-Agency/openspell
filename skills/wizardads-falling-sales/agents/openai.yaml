@@ -1,0 +1,4 @@
+interface:
+  display_name: "WizardAds Falling Sales"
+  short_description: "Diagnose falling attributed ad sales step by step"
+  default_prompt: "Use $wizardads-falling-sales to diagnose why attributed ad sales fell for the selected profile."
