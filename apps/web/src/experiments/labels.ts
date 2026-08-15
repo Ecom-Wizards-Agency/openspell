@@ -33,12 +33,22 @@ export const STATUS_LABELS: Record<ExperimentStatus, string> = {
   aborted: 'Aborted',
 };
 
-export const STATUS_TONE: Record<ExperimentStatus, 'neutral' | 'info' | 'good' | 'warn' | 'bad'> = {
-  planned: 'neutral',
-  running: 'info',
-  ended: 'good',
-  analyzed: 'good',
-  aborted: 'bad',
+/**
+ * The text colour per status, as whole token references rather than a
+ * `var(--wa-${tone}-text)` template composed from a tone name.
+ *
+ * Two reasons it is a map. The composed string is a high-entropy literal the
+ * public-repo hygiene gate flags as a candidate secret, and — the reason worth
+ * more — a composed custom-property name cannot be checked against
+ * `theme.css`. The old `neutral` tone had no `--wa-neutral-text` to resolve to,
+ * so a planned experiment's label silently fell back to inheriting its colour.
+ */
+export const STATUS_TEXT_COLOR: Record<ExperimentStatus, string> = {
+  planned: 'var(--wa-text-muted)',
+  running: 'var(--wa-info-text)',
+  ended: 'var(--wa-good-text)',
+  analyzed: 'var(--wa-good-text)',
+  aborted: 'var(--wa-bad-text)',
 };
 
 export const EXPERIMENT_TYPE_OPTIONS: ExperimentType[] = [

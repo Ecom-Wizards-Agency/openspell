@@ -28,7 +28,12 @@
  * mismatch throws rather than reporting a success it did not verify.
  */
 import { maxPotentialCpc, type ModifierComponent } from '@wizard-ads/core';
-import { upsertBidSeries, type DbHandle, type NewBidSeriesRow } from '@wizard-ads/db';
+import {
+  hasBidSeriesForDate,
+  upsertBidSeries,
+  type DbHandle,
+  type NewBidSeriesRow,
+} from '@wizard-ads/db';
 import type { AdsProfileContext, SuggestedBidClient } from './ads-api.js';
 import { defaultRegionTokenBuckets, type RegionTokenBuckets } from './region-token-buckets.js';
 import type { WorkerLogger } from './worker.js';
@@ -58,6 +63,12 @@ export interface BidSeriesStore {
   listBidSeriesTargets(profile: AdsProfileContext, referenceDate: string): Promise<BidSeriesTargetInput[]>;
   /** Upsert the day's rows; returns the count the database reports as written. */
   upsertBidSeries(rows: readonly NewBidSeriesRow[]): Promise<number>;
+  /**
+   * Has this profile's corridor already been written for that profile-local
+   * day? The daily gate: the pass is safe to invoke on every worker tick and on
+   * every cron tick because this answers "already done" without an Amazon call.
+   */
+  hasSeriesForDate(profile: AdsProfileContext, date: string): Promise<boolean>;
 }
 
 export interface BidSeriesSyncDeps {
@@ -66,6 +77,13 @@ export interface BidSeriesSyncDeps {
   buckets?: RegionTokenBuckets;
   logger?: WorkerLogger;
   now?: () => Date;
+  /**
+   * An absolute `Date.now()` budget. Past it the pass stops before starting
+   * another profile rather than being cut off mid-request by the platform;
+   * the profiles it did not reach are counted, and the day's gate means the
+   * next tick picks up exactly those.
+   */
+  deadlineMs?: number;
 }
 
 export interface BidSeriesSyncCounts {
@@ -73,6 +91,12 @@ export interface BidSeriesSyncCounts {
   targets: number;
   corridors: number;
   written: number;
+  /** Profiles whose corridor was already written for their local day. */
+  skipped: number;
+  /** Profiles whose sync threw. The pass fails only when every one did. */
+  failed: number;
+  /** Profiles the pass never reached because its time budget ran out. */
+  unvisited: number;
 }
 
 /** The day, in a profile's own timezone, that a corridor row is stamped with. */
@@ -151,24 +175,71 @@ export async function syncBidSeriesForProfile(
   return { targets: targets.length, corridors, written };
 }
 
-/** Sync the corridor for every sync-enabled profile. One in-process daily pass. */
+/**
+ * Sync the corridor for every sync-enabled profile.
+ *
+ * Two properties this pass earns rather than assumes:
+ *
+ *  - **Once per profile-local day.** The gate is the data itself — a profile
+ *    that already has rows stamped with its local today is skipped — so the
+ *    pass can be invoked on every worker tick or every five-minute cron tick
+ *    without spending Amazon quota twice. It is per profile rather than global
+ *    because "today" is a different day in Los Angeles and in Tokyo.
+ *  - **Per-profile isolation.** One profile's throw used to end the pass, so a
+ *    single 429 on the first profile starved every profile after it of a whole
+ *    day's corridor. Each is now caught, logged and counted; the pass fails
+ *    only when every profile it attempted failed, which is the case that means
+ *    something systemic rather than something local.
+ */
 export async function runBidSeriesSync(deps: BidSeriesSyncDeps): Promise<BidSeriesSyncCounts> {
   const logger = deps.logger;
+  const now = deps.now ?? (() => new Date());
   const profiles = await deps.store.listSyncEnabledProfiles();
-  const counts: BidSeriesSyncCounts = { profiles: 0, targets: 0, corridors: 0, written: 0 };
+  const counts: BidSeriesSyncCounts = {
+    profiles: 0, targets: 0, corridors: 0, written: 0, skipped: 0, failed: 0, unvisited: 0,
+  };
+  const failures: unknown[] = [];
 
-  for (const profile of profiles) {
-    const result = await syncBidSeriesForProfile(profile, deps);
-    counts.profiles += 1;
-    counts.targets += result.targets;
-    counts.corridors += result.corridors;
-    counts.written += result.written;
-    logger?.info('bid series synced', {
-      profileId: profile.id,
-      targets: result.targets,
-      corridors: result.corridors,
-      written: result.written,
-    });
+  for (const [index, profile] of profiles.entries()) {
+    if (deps.deadlineMs !== undefined && now().getTime() >= deps.deadlineMs) {
+      counts.unvisited = profiles.length - index;
+      logger?.info('bid series sync stopped on its time budget', { unvisited: counts.unvisited });
+      break;
+    }
+    try {
+      const date = profileToday(profile.timezone, now());
+      if (await deps.store.hasSeriesForDate(profile, date)) {
+        counts.skipped += 1;
+        continue;
+      }
+      const result = await syncBidSeriesForProfile(profile, deps);
+      counts.profiles += 1;
+      counts.targets += result.targets;
+      counts.corridors += result.corridors;
+      counts.written += result.written;
+      logger?.info('bid series synced', {
+        profileId: profile.id,
+        targets: result.targets,
+        corridors: result.corridors,
+        written: result.written,
+      });
+    } catch (error) {
+      counts.failed += 1;
+      failures.push(error);
+      logger?.error('bid series sync failed for a profile', {
+        profileId: profile.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  // Every profile that was attempted failed: that is the pass failing, not one
+  // profile failing, and the caller should see it.
+  const attempted = counts.profiles + counts.failed;
+  if (attempted > 0 && counts.failed === attempted) {
+    throw failures[0] instanceof Error
+      ? failures[0]
+      : new Error(`bid series sync failed for all ${counts.failed} profiles`);
   }
   return counts;
 }
@@ -207,6 +278,16 @@ export class PostgresBidSeriesStore implements BidSeriesStore {
     }));
   }
 
+  hasSeriesForDate(profile: AdsProfileContext, date: string): Promise<boolean> {
+    return hasBidSeriesForDate(this.handle, { profileId: profile.id, date });
+  }
+
+  /**
+   * The targets a corridor is worth reading for: live SP keywords and product
+   * targets. Paused and archived ones are excluded as well as deleted ones —
+   * Amazon still answers a suggested bid for a paused keyword, and paying for
+   * that answer (and storing it) buys a band under a line that cannot move.
+   */
   async listBidSeriesTargets(
     profile: AdsProfileContext,
     referenceDate: string,
@@ -237,6 +318,7 @@ export class PostgresBidSeriesStore implements BidSeriesStore {
           on c.profile_id = k.profile_id and c.amazon_id = k.campaign_id
         left join facts f on f.target_id = k.amazon_id
        where k.profile_id = ${profile.id} and k.deleted_at is null and k.ad_product = 'SP'
+         and k.state = 'enabled'
       union all
       select t.amazon_id as target_id, false as is_keyword,
              t.campaign_id, t.ad_group_id, t.bid,
@@ -246,6 +328,7 @@ export class PostgresBidSeriesStore implements BidSeriesStore {
           on c.profile_id = t.profile_id and c.amazon_id = t.campaign_id
         left join facts f on f.target_id = t.amazon_id
        where t.profile_id = ${profile.id} and t.deleted_at is null and t.ad_product = 'SP'
+         and t.state = 'enabled'
     `;
 
     return rows.map((row) => {

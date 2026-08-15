@@ -15,7 +15,10 @@ import { asUser } from '../testing/rls.js';
 import type { TestDatabase } from '../testing/harness.js';
 import {
   ExperimentNotFound,
+  ExperimentProfileNotFound,
   InvalidExperimentTransition,
+  InvalidExperimentWindow,
+  profileBelongsToOrg,
   canTransition,
   computeComparison,
   createExperiment,
@@ -351,5 +354,109 @@ describe.skipIf(!available)('WP-19 experiment queries', () => {
     expect(edited.status).toBe('planned');
     const listed = await listExperiments(database, { orgId: orgA, profileId: profileA });
     expect(listed.some((experiment) => experiment.id === created.id)).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // Tenancy of the named profile, and the window rules
+  // -------------------------------------------------------------------------
+
+  it('refuses to create an experiment on another org\'s profile', async () => {
+    const [foreign] = await database.sql<{ id: string }[]>`
+      select id from public.ad_profiles where org_id = ${orgB} limit 1
+    `;
+    const profileB = foreign?.id ?? '';
+    expect(profileB).not.toBe('');
+
+    // The only fence below this is a foreign key to ad_profiles (id), which
+    // org B's profile satisfies perfectly well.
+    expect(await profileBelongsToOrg(database, { orgId: orgA, profileId: profileB })).toBe(false);
+    expect(await profileBelongsToOrg(database, { orgId: orgA, profileId: profileA })).toBe(true);
+    // An id that is not even a uuid answers "no" rather than raising a cast error.
+    expect(await profileBelongsToOrg(database, { orgId: orgA, profileId: 'not-a-uuid' })).toBe(false);
+
+    await expect(
+      createExperiment(database, {
+        orgId: orgA,
+        profileId: profileB,
+        createdBy: OWNER_A,
+        name: 'Cross-tenant profile',
+        type: 'other',
+        metricFocus: 'ctr',
+      }),
+    ).rejects.toBeInstanceOf(ExperimentProfileNotFound);
+
+    // Nothing of org A's now points at org B's profile (org B's own
+    // experiments on it, from the read tests above, are untouched).
+    const [leaked] = await database.sql<{ n: string }[]>`
+      select count(*) as n from public.experiments
+       where profile_id = ${profileB} and org_id = ${orgA}
+    `;
+    expect(Number(leaked?.n)).toBe(0);
+  });
+
+  it('refuses a window that ends before it starts, in words rather than a constraint name', async () => {
+    await expect(
+      createExperiment(database, {
+        orgId: orgA,
+        profileId: profileA,
+        createdBy: OWNER_A,
+        name: 'Backwards window',
+        type: 'other',
+        metricFocus: 'ctr',
+        startAt: '2026-08-10T00:00:00Z',
+        endAt: '2026-08-01T00:00:00Z',
+      }),
+    ).rejects.toBeInstanceOf(InvalidExperimentWindow);
+
+    const created = await createExperiment(database, {
+      orgId: orgA,
+      profileId: profileA,
+      createdBy: OWNER_A,
+      name: 'Editable window',
+      type: 'other',
+      metricFocus: 'ctr',
+      startAt: '2026-08-01T00:00:00Z',
+    });
+    await transitionExperiment(database, { orgId: orgA, experimentId: created.id, to: 'running' });
+    const ended = await transitionExperiment(database, { orgId: orgA, experimentId: created.id, to: 'ended' });
+    expect(ended.endAt).not.toBeNull();
+
+    // Moving the start past the recorded end is the edit that used to reach the
+    // check constraint and surface as a raw Postgres error.
+    await expect(
+      updateExperiment(database, {
+        orgId: orgA,
+        experimentId: created.id,
+        startAt: '2099-01-01T00:00:00Z',
+      }),
+    ).rejects.toBeInstanceOf(InvalidExperimentWindow);
+    // …and the row is untouched.
+    const after = await getExperiment(database, { orgId: orgA, experimentId: created.id });
+    expect(after?.startAt.toISOString()).toBe('2026-08-01T00:00:00.000Z');
+  });
+
+  it('can end a future-dated experiment, stamping the end at its own start', async () => {
+    const startAt = new Date(Date.now() + 7 * 86_400_000);
+    const created = await createExperiment(database, {
+      orgId: orgA,
+      profileId: profileA,
+      createdBy: OWNER_A,
+      name: 'Starts next week',
+      type: 'other',
+      metricFocus: 'ctr',
+      startAt,
+      status: 'running',
+    });
+
+    // `now()` is before the start, so a plain now() stamp would end the test
+    // before it began and the window constraint would refuse the whole move.
+    const ended = await transitionExperiment(database, {
+      orgId: orgA,
+      experimentId: created.id,
+      to: 'ended',
+      actorId: OWNER_A,
+    });
+    expect(ended.status).toBe('ended');
+    expect(ended.endAt?.getTime()).toBe(created.startAt.getTime());
   });
 });

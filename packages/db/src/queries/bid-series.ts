@@ -37,9 +37,32 @@ export class BidSeriesLoadCountMismatch extends Error {
 }
 
 /**
+ * How many rows go into one INSERT.
+ *
+ * postgres.js binds every column of every row as a parameter and the wire
+ * protocol caps a statement at 65535 of them. This table has 15 insertable
+ * columns, so a single statement runs out at roughly 4300 rows — which a real
+ * profile passes the moment it has a few thousand targets, and the failure is
+ * the whole day's corridor, not a slow query. 1000 rows is ~15k parameters:
+ * comfortably inside the cap with room for the table to gain columns.
+ */
+const INSERT_CHUNK_ROWS = 1_000;
+
+export function chunkRows<T>(rows: readonly T[], size = INSERT_CHUNK_ROWS): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < rows.length; index += size) {
+    chunks.push(rows.slice(index, index + size));
+  }
+  return chunks;
+}
+
+/**
  * Upsert one profile's bid-series rows for a day. Idempotent on the grain key
  * `(profile, date, campaign, ad group, target)`, so a re-sync of today's
  * corridor overwrites the row rather than duplicating it.
+ *
+ * Chunked, and counted across the chunks: the offered-versus-written assertion
+ * covers the whole load, so a chunk that silently dropped rows still fails.
  */
 export async function upsertBidSeries(
   handle: DbHandle,
@@ -47,34 +70,59 @@ export async function upsertBidSeries(
 ): Promise<BidSeriesLoadCounts> {
   if (rows.length === 0) return { offered: 0, written: 0 };
 
-  const written = await handle.db
-    .insert(bidSeriesDaily)
-    .values([...rows])
-    .onConflictDoUpdate({
-      target: [
-        bidSeriesDaily.profileId,
-        bidSeriesDaily.date,
-        bidSeriesDaily.campaignId,
-        bidSeriesDaily.adGroupId,
-        bidSeriesDaily.targetId,
-      ],
-      set: conflictSet(bidSeriesDaily, [
-        'isKeyword',
-        'suggestedBidLow',
-        'suggestedBidMedian',
-        'suggestedBidHigh',
-        'bid',
-        'cpc',
-        'maxPotentialCpc',
-        'modifierComponents',
-        'loadedAt',
-      ]),
-    })
-    .returning({ profileId: bidSeriesDaily.profileId });
+  let written = 0;
+  for (const chunk of chunkRows(rows)) {
+    const returned = await handle.db
+      .insert(bidSeriesDaily)
+      .values(chunk)
+      .onConflictDoUpdate({
+        target: [
+          bidSeriesDaily.profileId,
+          bidSeriesDaily.date,
+          bidSeriesDaily.campaignId,
+          bidSeriesDaily.adGroupId,
+          bidSeriesDaily.targetId,
+        ],
+        set: conflictSet(bidSeriesDaily, [
+          'isKeyword',
+          'suggestedBidLow',
+          'suggestedBidMedian',
+          'suggestedBidHigh',
+          'bid',
+          'cpc',
+          'maxPotentialCpc',
+          'modifierComponents',
+          'loadedAt',
+        ]),
+      })
+      .returning({ profileId: bidSeriesDaily.profileId });
+    written += returned.length;
+  }
 
-  const counts = { offered: rows.length, written: written.length };
+  const counts = { offered: rows.length, written };
   if (counts.offered !== counts.written) throw new BidSeriesLoadCountMismatch(counts);
   return counts;
+}
+
+/**
+ * Does this profile already carry a corridor for that (profile-local) day?
+ *
+ * The daily sync's gate: the corridor is one row per target per day, so a pass
+ * that has already written the day has nothing to add, and asking Amazon again
+ * spends quota for an identical answer. Indexed on `(profile_id, date)` and
+ * partition-pruned by `date`, so it costs one index probe.
+ */
+export async function hasBidSeriesForDate(
+  handle: Pick<DbHandle, 'sql'>,
+  args: { profileId: string; date: string },
+): Promise<boolean> {
+  const rows = await handle.sql<{ present: boolean }[]>`
+    select exists (
+      select 1 from public.bid_series_daily
+       where profile_id = ${args.profileId} and date = ${args.date}
+    ) as present
+  `;
+  return rows[0]?.present ?? false;
 }
 
 /** One target's corridor over a window, oldest first: the drill-down's series. */

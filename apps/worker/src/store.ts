@@ -128,6 +128,14 @@ export interface WorkerStore {
    * pruned, and only one that has never been provisioned gets the defaults.
    */
   unscheduledProfiles(): Promise<{ orgId: string; profileId: string }[]>;
+  /**
+   * Clamp report schedules whose lookback exceeds what Amazon will generate.
+   * Every profile when none is named. Idempotent, and cheap enough to run on
+   * every tick — which is the point: the profiles that need it are exactly the
+   * ones already provisioned, and those are the ones no provisioning pass
+   * visits.
+   */
+  repairOverlongLookbacks(profileId?: string): Promise<number>;
   loadFacts(batch: ParsedFactBatch): Promise<number>;
   completeReport(
     reportRequestId: string,
@@ -394,13 +402,19 @@ export class PostgresWorkerStore implements WorkerStore {
    * and keeps getting HTTP 400 forever. Only rows that exceed Amazon's hard
    * maximum are touched, so a deliberate operator preference within the legal
    * range is never overwritten.
+   *
+   * Called with no profile it repairs every one. That is how the periodic
+   * passes call it, because the profiles that need repairing are precisely the
+   * already-provisioned ones — running it only inside `provisionSchedules`, on
+   * the profiles that have no schedules at all, meant it never repaired
+   * anything in a deployment that had already provisioned.
    */
-  private async repairOverlongLookbacks(profileId: string): Promise<number> {
+  async repairOverlongLookbacks(profileId?: string): Promise<number> {
     const maxLookback = MAX_REPORT_RANGE_DAYS + 1;
     const rows = await this.handle.sql<{ id: string }[]>`
       update public.sync_schedules
          set lookback_days = ${maxLookback}
-       where profile_id = ${profileId}
+       where (${profileId ?? null}::uuid is null or profile_id = ${profileId ?? null}::uuid)
          and job_type = 'report.request'
          and lookback_days > ${maxLookback}
       returning id

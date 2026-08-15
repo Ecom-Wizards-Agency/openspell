@@ -4,20 +4,9 @@
  * There is no always-on worker process in this deployment: no Fly machine, no
  * laptop left running. Instead Vercel Cron hits this route every five minutes,
  * and one tick does exactly what the old always-on worker's timers did, in one
- * request under a wall-clock budget:
- *
- *  1. **Provision** default schedules for any newly enabled profile (what
- *     `ScheduleProvisioner` did), so a profile switched on in the UI starts
- *     syncing this tick rather than after someone remembers to seed it.
- *  2. **Enqueue** every due schedule into `sync_jobs` (`enqueue_due_schedules`).
- *  3. **Requeue** jobs a previous tick claimed but a killed request never
- *     finished (`requeue_stale_sync_jobs`, what `StaleClaimReaper` did).
- *  4. **Drain** the queue by looping the worker's own `drainOnce()` until it
- *     comes up empty or the ~50s budget runs out — the same claim/execute/retry
- *     path the process worker runs, just pumped by a request instead of a loop.
- *  5. **Release** anything still running back to `queued` and close the handle,
- *     so a job this tick started but could not finish is picked up next tick
- *     rather than stranded as `running`.
+ * request under a wall-clock budget. The tick itself — the lock, the repair,
+ * the provision/enqueue/requeue/drain/bid-series/release sequence and what each
+ * step is for — lives in `src/server/sync-tick.ts`; this file is the door.
  *
  * Auth is the shared secret Vercel Cron sends in the `Authorization` header
  * (`Bearer $CRON_SECRET`). Without a configured secret, or with the wrong one,
@@ -32,17 +21,22 @@ import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { connectionStringFromEnv, createDb } from '@wizard-ads/db';
 import {
+  PostgresBidSeriesStore,
   PostgresWorkerStore,
   SyncWorker,
   createAdsApiClientFromEnv,
+  runBidSeriesSync,
 } from '@wizard-ads/worker';
+import { runSyncTick } from '../../../../src/server/sync-tick';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-// The drain runs to a ~50s budget; give the platform function room past it.
+// The tick spends up to DRAIN_BUDGET_MS (240s) before it releases and returns;
+// the platform function gets 300s, so the release and the unlock still happen
+// inside the request rather than being cut off with jobs left `running`.
 export const maxDuration = 300;
 
-/** How long one tick spends draining before it releases and returns. */
+/** How long one tick spends working before it releases and returns. */
 const DRAIN_BUDGET_MS = 240_000;
 
 export async function GET(request: Request): Promise<Response> {
@@ -68,89 +62,36 @@ export async function GET(request: Request): Promise<Response> {
     );
   }
 
-  // A few connections: the worker claims a batch and runs it concurrently.
-  const handle = createDb({ connectionString, max: 6 });
+  // A few connections: the worker claims a batch and runs it concurrently, and
+  // one of them is reserved for the tick lock.
+  const handle = createDb({ connectionString, max: 7 });
   const store = new PostgresWorkerStore(handle);
+  const adsApi = createAdsApiClientFromEnv(handle);
   const worker = new SyncWorker({
     workerId: `vercel-cron-${randomUUID()}`,
     store,
-    adsApi: createAdsApiClientFromEnv(handle),
+    adsApi,
   });
-
-  const startedAt = Date.now();
-  const deadline = startedAt + DRAIN_BUDGET_MS;
-  let provisioned = 0;
-  let enqueued = 0;
-  let requeued = 0;
-  let drained = 0;
-  let budgetHit = false;
 
   try {
-    // 1. Provision before enqueue, so a profile enabled since the last tick gets
-    //    its default schedules and they are enqueued and drained this same tick.
-    const unscheduled = await store.unscheduledProfiles();
-    for (const profile of unscheduled) {
-      provisioned += await store.provisionSchedules(profile.orgId, profile.profileId);
-    }
-
-    // 2 + 3. Both idempotent service-role RPCs.
-    const enqueuedRows = await handle.sql<{ enqueued: boolean }[]>`
-      select enqueued from public.enqueue_due_schedules()
-    `;
-    enqueued = enqueuedRows.filter((row) => row.enqueued).length;
-    const [requeuedRow] = await handle.sql<{ requeue_stale_sync_jobs: number }[]>`
-      select public.requeue_stale_sync_jobs() as requeue_stale_sync_jobs
-    `;
-    requeued = Number(requeuedRow?.requeue_stale_sync_jobs ?? 0);
-
-    // 4. Drain until empty or out of budget.
-    for (;;) {
-      if (Date.now() >= deadline) {
-        budgetHit = true;
-        break;
-      }
-      const claimed = await worker.drainOnce(undefined, deadline);
-      if (claimed === 0) break;
-      drained += claimed;
-    }
-  } catch (error) {
-    // 5. Release whatever this worker still holds even on failure, then report.
-    const released = await store.release(worker.workerId).catch(() => 0);
-    await handle.close();
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : 'sync tick failed',
-        provisioned,
-        enqueued,
-        requeued,
-        drained,
-        released,
-      },
-      { status: 500 },
-    );
-  }
-
-  // 5. Anything still running (a job started but not finished within budget)
-  //    goes back to queued for the next tick, then the handle is closed.
-  const released = await store.release(worker.workerId);
-  await handle.close();
-
-  if (budgetHit) {
-    console.info('cron sync hit the drain budget with work possibly still queued', {
-      drained,
-      released,
-      ms: Date.now() - startedAt,
+    const result = await runSyncTick({
+      sql: handle.sql,
+      store,
+      worker,
+      budgetMs: DRAIN_BUDGET_MS,
+      // One client serves both roles: DbAdsApiClient is an AdsApiClient for the
+      // queue and a SuggestedBidClient for the corridor.
+      bidSeries: async (deadlineMs) => ({
+        ...(await runBidSeriesSync({
+          store: new PostgresBidSeriesStore(handle),
+          client: adsApi,
+          deadlineMs,
+        })),
+      }),
+      logger: console,
     });
+    return NextResponse.json(result, { status: result.ok ? 200 : 500 });
+  } finally {
+    await handle.close();
   }
-
-  return NextResponse.json({
-    ok: true,
-    provisioned,
-    enqueued,
-    requeued,
-    drained,
-    released,
-    budgetHit,
-    ms: Date.now() - startedAt,
-  });
 }

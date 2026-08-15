@@ -12,6 +12,7 @@ import { createTestDatabase, databaseAvailable } from '../testing/harness.js';
 import type { TestDatabase } from '../testing/harness.js';
 import {
   BidSeriesLoadCountMismatch,
+  hasBidSeriesForDate,
   listBidSeriesTargets,
   readBidSeries,
   upsertBidSeries,
@@ -128,6 +129,40 @@ describe.skipIf(!available)('WP-28 bid series queries', () => {
       to: TODAY,
     });
     expect(series).toHaveLength(0);
+  });
+
+  it('loads more rows than one statement can bind, and counts them all', async () => {
+    // postgres.js binds every column of every row: 15 columns x 5000 rows is
+    // 75000 parameters against a 65534 cap, so this exact load used to fail
+    // outright — and the profiles that reach it are the big ones. The
+    // offered-versus-written assertion still spans the whole load, chunks and
+    // all, so a chunk that dropped rows would fail here rather than pass
+    // quietly.
+    const many = Array.from({ length: 5_000 }, (_value, index) =>
+      row({ targetId: `bulk-${index}`, campaignId: 'c-bulk' }),
+    );
+    const counts = await upsertBidSeries(database, many);
+    expect(counts).toEqual({ offered: 5_000, written: 5_000 });
+
+    const [stored] = await database.sql<{ n: string }[]>`
+      select count(*) as n from public.bid_series_daily
+       where profile_id = ${profileId} and campaign_id = 'c-bulk' and date = ${TODAY}
+    `;
+    expect(Number(stored?.n)).toBe(5_000);
+
+    // And a re-load of the same grain overwrites across chunk boundaries.
+    const again = await upsertBidSeries(database, many.map((r) => ({ ...r, bid: 3.33 })));
+    expect(again).toEqual({ offered: 5_000, written: 5_000 });
+    const [rewritten] = await database.sql<{ n: string }[]>`
+      select count(*) as n from public.bid_series_daily
+       where profile_id = ${profileId} and campaign_id = 'c-bulk' and bid = 3.33
+    `;
+    expect(Number(rewritten?.n)).toBe(5_000);
+  }, 60_000);
+
+  it('answers whether a profile already carries the day', async () => {
+    expect(await hasBidSeriesForDate(database, { profileId, date: TODAY })).toBe(true);
+    expect(await hasBidSeriesForDate(database, { profileId, date: '2001-01-01' })).toBe(false);
   });
 
   it('throws when the store reports fewer written rows than offered', () => {

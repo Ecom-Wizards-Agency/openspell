@@ -22,6 +22,7 @@ import {
 } from '@wizard-ads/db/testing';
 import { enqueueDueSchedules } from '@wizard-ads/db';
 import { AdsApiHttpError, MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
+import { AdsApiRetryableError } from './ads-api.js';
 import type { EntityRow, Region } from '@wizard-ads/shared';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type {
@@ -33,6 +34,7 @@ import type {
   EntityListFailure,
   EntityListing,
 } from './ads-api.js';
+import { PostgresBidSeriesStore } from './bid-series.js';
 import { createCrosscheckIngest } from './crosscheck.js';
 import type { ParsedFactBatch } from './parsers.js';
 import { RegionTokenBuckets } from './region-token-buckets.js';
@@ -143,7 +145,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     expect(entity?.name).toBe('updated campaign');
   });
 
-  it('commits Sponsored Products even when Sponsored Brands listing 400s', async () => {
+  it('commits Sponsored Products when Sponsored Brands 400s, and still requeues the job', async () => {
     const api = new FakeAdsApi();
     api.entities = [campaign(profileId, 'sp survives')];
     // The exact production failure: SB's list throws, the whole SB product is
@@ -157,19 +159,58 @@ describe.skipIf(!available)('worker + real Postgres', () => {
 
     await queueEntity(database, orgId, profileId, 'entity-sb-400', false);
     expect(await worker.drainOnce()).toBe(1);
-    // The job SUCCEEDS despite the SB failure, because SP committed.
-    await expectAllSucceeded(database, orgId);
 
+    // Committed: the products that listed are in the mirror.
     const [entity] = await database.sql<{ name: string }[]>`
       select name from public.campaigns where profile_id = ${profileId} and amazon_id = 'c-1'
     `;
     expect(entity?.name).toBe('sp survives');
 
-    const [job] = await database.sql<{ result: { failures: { adProduct: string }[]; succeeded: string[] } }[]>`
-      select result from public.sync_jobs where dedupe_key = 'entity-sb-400'
+    // And requeued: reporting success here would leave the SB mirror silently
+    // stale, with the grid showing yesterday's campaigns and nothing saying so.
+    const [job] = await database.sql<{ status: string; last_error: string | null }[]>`
+      select status, last_error from public.sync_jobs where dedupe_key = 'entity-sb-400'
     `;
-    expect(job?.result.succeeded).toContain('SP');
-    expect(job?.result.failures).toEqual([{ adProduct: 'SB', error: 'POST /sb/v4/campaigns/list failed with 400' }]);
+    expect(job?.status).toBe('queued');
+    expect(job?.last_error ?? '').toContain('committed SP+SD');
+    expect(job?.last_error ?? '').toContain('/sb/v4/campaigns/list failed with 400');
+  });
+
+  it('requeues a partial failure on the retryable failure\'s own backoff', async () => {
+    const api = new FakeAdsApi();
+    api.entities = [campaign(profileId, 'sp survives the throttle')];
+    // A 400 next to a 429: the retry must be scheduled off the 429's
+    // Retry-After, not off the 400's flat backoff.
+    api.listFailures = [
+      {
+        adProduct: 'SB',
+        message: 'SB rejected the request',
+        error: new AdsApiHttpError('SB rejected the request', 400, 'bad', 1),
+      },
+      {
+        adProduct: 'SD',
+        message: 'SD throttled',
+        error: new AdsApiRetryableError('SD throttled', 900),
+      },
+    ];
+    const worker = makeWorker('entities-throttled', new PostgresWorkerStore(database), api);
+
+    await queueEntity(database, orgId, profileId, 'entity-partial-429', false);
+    expect(await worker.drainOnce()).toBe(1);
+
+    const [entity] = await database.sql<{ name: string }[]>`
+      select name from public.campaigns where profile_id = ${profileId} and amazon_id = 'c-1'
+    `;
+    expect(entity?.name).toBe('sp survives the throttle');
+
+    const [job] = await database.sql<{ status: string; last_error: string; wait_seconds: number }[]>`
+      select status, last_error, extract(epoch from (run_after - now())) as wait_seconds
+        from public.sync_jobs where dedupe_key = 'entity-partial-429'
+    `;
+    expect(job?.status).toBe('queued');
+    expect(job?.last_error).toContain('SD throttled');
+    // 900s from Amazon, not the 60s the attempt count would have produced.
+    expect(Number(job?.wait_seconds)).toBeGreaterThan(600);
   });
 
   it('fails the job only when every requested ad product fails', async () => {
@@ -435,6 +476,35 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     expect(Number(row?.lookback_days)).toBe(32);
   });
 
+  it('repairs an already-provisioned profile on a plain provisioning pass', async () => {
+    await database.sql`delete from public.sync_schedules where profile_id = ${profileId}`;
+    const store = new PostgresWorkerStore(database);
+    await store.provisionSchedules(orgId, profileId, defaultSchedules(['spCampaigns']));
+    await database.sql`
+      update public.sync_schedules set lookback_days = 35
+       where profile_id = ${profileId} and variant = 'restatement'
+    `;
+
+    // The profile has schedules, so `unscheduledProfiles()` does not return it
+    // and `provisionSchedules` is never called for it. The repair used to live
+    // inside that call, which is why it never reached a deployed profile.
+    expect(await store.unscheduledProfiles()).not.toContainEqual({ orgId, profileId });
+
+    const provisioner = new ScheduleProvisioner(store, 60_000, quietLogger);
+    provisioner.start();
+    await waitFor(async () => {
+      const [row] = await database.sql<{ lookback_days: number }[]>`
+        select lookback_days from public.sync_schedules
+         where profile_id = ${profileId} and variant = 'restatement'
+      `;
+      return Number(row?.lookback_days) === 32;
+    });
+    provisioner.stop();
+
+    // Idempotent: a second sweep finds nothing left to clamp.
+    expect(await store.repairOverlongLookbacks()).toBe(0);
+  });
+
   it('leaves a legal operator-chosen lookback alone', async () => {
     await database.sql`delete from public.sync_schedules where profile_id = ${profileId}`;
     const store = new PostgresWorkerStore(database);
@@ -478,6 +548,65 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       select count(*) as n from public.sync_schedules where profile_id = ${profileId}
     `;
     expect(Number(after?.n)).toBe(1 + 2 * DEFAULT_REPORT_TYPES.length);
+  });
+
+  // -------------------------------------------------------------------------
+  // The bid corridor's own store (WP-28)
+  // -------------------------------------------------------------------------
+
+  describe('PostgresBidSeriesStore', () => {
+    it('reads only live targets, and answers whether the day is already written', async () => {
+      const store = new PostgresBidSeriesStore(database);
+      const profile = await new PostgresWorkerStore(database).profile(profileId);
+      // An earlier `full` pass in this file tombstones the mirror; this case is
+      // about state, not tombstones, so start from the fixture's live rows.
+      await database.sql`
+        update public.keywords set deleted_at = null, state = 'enabled' where profile_id = ${profileId}
+      `;
+      await database.sql`
+        update public.targets set deleted_at = null, state = 'enabled' where profile_id = ${profileId}
+      `;
+      const [yesterdayRow] = await database.sql<{ d: string }[]>`
+        select (current_date - 1)::text as d
+      `;
+      const reference = yesterdayRow?.d ?? '';
+
+      const live = await store.listBidSeriesTargets(profile, reference);
+      expect(live.map((target) => target.targetId).sort()).toEqual(['kw-1', 'tg-1']);
+
+      // Amazon still answers a suggested bid for a paused keyword. Paying for
+      // that answer, and storing a band under a line that cannot move, is the
+      // waste this excludes.
+      await database.sql`
+        update public.keywords set state = 'paused'
+         where profile_id = ${profileId} and amazon_id = 'kw-1'
+      `;
+      await database.sql`
+        update public.targets set state = 'archived'
+         where profile_id = ${profileId} and amazon_id = 'tg-1'
+      `;
+      expect(await store.listBidSeriesTargets(profile, reference)).toEqual([]);
+      await database.sql`
+        update public.keywords set state = 'enabled' where profile_id = ${profileId}
+      `;
+      await database.sql`
+        update public.targets set state = 'enabled' where profile_id = ${profileId}
+      `;
+
+      // The daily gate: false until the day is written, true after.
+      const [todayRow] = await database.sql<{ d: string }[]>`select current_date::text as d`;
+      const day = todayRow?.d ?? '';
+      await database.sql`
+        delete from public.bid_series_daily where profile_id = ${profileId} and date = ${day}
+      `;
+      expect(await store.hasSeriesForDate(profile, day)).toBe(false);
+      expect(await store.upsertBidSeries([{
+        orgId, profileId, date: day, campaignId: 'c-1', adGroupId: 'ag-1', targetId: 'kw-1',
+        isKeyword: true, suggestedBidLow: 0.4, suggestedBidMedian: 0.7, suggestedBidHigh: 1.1,
+        bid: 0.9, cpc: 0.9, maxPotentialCpc: 1.35, modifierComponents: [],
+      }])).toBe(1);
+      expect(await store.hasSeriesForDate(profile, day)).toBe(true);
+    });
   });
 
   // -------------------------------------------------------------------------
