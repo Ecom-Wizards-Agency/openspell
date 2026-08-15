@@ -1,0 +1,4 @@
+interface:
+  display_name: "WizardAds PPC Audit"
+  short_description: "Audit Amazon PPC with read-only wizard-ads MCP evidence"
+  default_prompt: "Use $wizardads-ppc-audit to audit the selected profile and produce a structured HTML report."

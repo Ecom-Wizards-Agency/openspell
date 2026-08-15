@@ -1,0 +1,4 @@
+interface:
+  display_name: "WizardAds Rising ACOS"
+  short_description: "Diagnose rising PPC ACOS in a fixed evidence order"
+  default_prompt: "Use $wizardads-rising-acos to diagnose why ACOS rose for the selected profile."

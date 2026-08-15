@@ -1,0 +1,4 @@
+interface:
+  display_name: "WizardAds Weekly Brief"
+  short_description: "Create a read-only weekly Amazon PPC performance brief"
+  default_prompt: "Use $wizardads-weekly-brief to create a completed-week performance brief for the selected profile."

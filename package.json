@@ -13,7 +13,8 @@
     "lint": "eslint .",
     "test": "turbo run test",
     "hygiene": "tsx tools/hygiene-lint/src/cli.ts",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run hygiene"
+    "skill-lint": "node tools/skill-lint/index.mjs",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run hygiene && pnpm run skill-lint"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
