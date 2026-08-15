@@ -25,7 +25,7 @@ import {
   EXPERIMENT_STATUS_OPTIONS,
   METRIC_LABELS,
   STATUS_LABELS,
-  STATUS_TONE,
+  STATUS_TEXT_COLOR,
   TYPE_LABELS,
 } from '../../../src/experiments/labels';
 import { banner, colors, heading, muted, page } from '../../../src/ui/tokens';
@@ -235,7 +235,7 @@ export function ExperimentDetail({
       <p style={muted}>
         <span
           data-testid="experiment-status"
-          style={{ color: `var(--wa-${STATUS_TONE[experiment.status]}-text)`, fontWeight: 600 }}
+          style={{ color: STATUS_TEXT_COLOR[experiment.status], fontWeight: 600 }}
         >
           {STATUS_LABELS[experiment.status]}
         </span>{' '}

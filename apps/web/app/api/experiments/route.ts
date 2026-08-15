@@ -13,6 +13,7 @@ import {
   createExperiment,
   listExperiments,
   normalizeScope,
+  profileBelongsToOrg,
 } from '@wizard-ads/db';
 import type { ExperimentMetric, ExperimentStatus, ExperimentType } from '@wizard-ads/db';
 import { openWebDatabase, requestActor } from '../../../src/server/request-context';
@@ -67,6 +68,13 @@ export async function POST(request: Request): Promise<Response> {
     };
 
     if (typeof body.profileId !== 'string') throw new Error('profileId is required');
+    // The table's only fence on `profile_id` is a foreign key to
+    // `ad_profiles (id)`, which another tenant's profile satisfies. Unknown and
+    // foreign are the same 404 from outside, so the answer cannot be used to
+    // probe which profile ids exist.
+    if (!(await profileBelongsToOrg(database, { orgId: actor.orgId, profileId: body.profileId }))) {
+      return Response.json({ error: 'Profile not found' }, { status: 404 });
+    }
     if (typeof body.name !== 'string') throw new Error('name is required');
     if (typeof body.type !== 'string' || !(EXPERIMENT_TYPES as readonly string[]).includes(body.type)) {
       throw new Error(`type must be one of: ${EXPERIMENT_TYPES.join(', ')}`);

@@ -146,6 +146,50 @@ export class InvalidExperimentTransition extends Error {
   }
 }
 
+/**
+ * A window the database's `experiments_window_order` check would refuse.
+ *
+ * The constraint is the last fence, and the error it raises is a Postgres
+ * string with a constraint name in it. This one is raised first, in the
+ * caller's vocabulary, so the operator reads "the start cannot be after the
+ * end" rather than `23514`.
+ */
+export class InvalidExperimentWindow extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidExperimentWindow';
+  }
+}
+
+/**
+ * The named profile is not this org's. Raised before the insert, because the
+ * only fence below it is a foreign key to `ad_profiles (id)` — which any
+ * profile id in the system satisfies, including another tenant's.
+ */
+export class ExperimentProfileNotFound extends Error {
+  constructor(message = 'Profile not found in this organization') {
+    super(message);
+    this.name = 'ExperimentProfileNotFound';
+  }
+}
+
+/**
+ * Is that profile this org's? Takes the id as text so a malformed id is a
+ * clean "no" rather than a driver-level cast error.
+ */
+export async function profileBelongsToOrg(
+  handle: ExperimentQueryHandle,
+  input: { orgId: string; profileId: string },
+): Promise<boolean> {
+  const rows = await handle.sql<{ present: boolean }[]>`
+    select exists (
+      select 1 from public.ad_profiles
+       where org_id = ${input.orgId} and id::text = ${input.profileId}
+    ) as present
+  `;
+  return rows[0]?.present ?? false;
+}
+
 // ---------------------------------------------------------------------------
 // Normalisation
 // ---------------------------------------------------------------------------
@@ -228,6 +272,13 @@ export async function createExperiment(
   const name = normalizeExperimentName(input.name);
   const hypothesis = normalizeExperimentText(input.hypothesis, 'hypothesis');
   const scope = normalizeScope(input.scope);
+  // Tenancy, before anything is written: the table's only fence on
+  // `profile_id` is a foreign key to `ad_profiles (id)`, which another org's
+  // profile satisfies just as well as this one's.
+  if (!(await profileBelongsToOrg(handle, { orgId: input.orgId, profileId: input.profileId }))) {
+    throw new ExperimentProfileNotFound();
+  }
+  assertWindowOrder(input.startAt ?? null, input.endAt ?? null);
 
   const rows = await handle.sql<{ id: string }[]>`
     insert into public.experiments
@@ -364,6 +415,9 @@ export async function updateExperiment(
   if (!EXPERIMENT_METRICS.includes(metricFocus)) throw new Error(`Unknown experiment metric: ${metricFocus}`);
   const scope = input.scope === undefined ? current.scope : normalizeScope(input.scope);
   const startAt = input.startAt === undefined ? null : toTimestampParam(input.startAt);
+  // Moving the start past an already-recorded end is the one edit that can trip
+  // the window constraint. Refuse it here, in words the operator can act on.
+  if (startAt !== null) assertWindowOrder(startAt, current.endAt);
 
   const rows = await handle.sql<{ id: string }[]>`
     update public.experiments
@@ -386,6 +440,11 @@ export async function updateExperiment(
  * Move the status, recording the transition and honouring the window rules:
  * moving to `ended` stamps `end_at` if it is not already set; moving back to
  * `running` clears it so the band re-opens.
+ *
+ * The stamp is `greatest(now(), start_at)`, not `now()`. A test scheduled to
+ * start tomorrow and abandoned today would otherwise end before it began, which
+ * `experiments_window_order` refuses — so ending it failed with a constraint
+ * error and the operator was stuck with a test they could not close.
  */
 export async function transitionExperiment(
   handle: ExperimentQueryHandle,
@@ -412,7 +471,7 @@ export async function transitionExperiment(
     update public.experiments
        set status = ${input.to}::public.experiment_status,
            end_at = case
-                      when ${input.to} = 'ended' then coalesce(end_at, now())
+                      when ${input.to} = 'ended' then coalesce(end_at, greatest(now(), start_at))
                       when ${input.to} = 'running' then null
                       else end_at
                     end,
@@ -744,4 +803,33 @@ function toTimestampParam(value: Date | string | null | undefined): string | nul
   if (value === null || value === undefined) return null;
   if (value instanceof Date) return value.toISOString();
   return value;
+}
+
+function timestampMs(value: Date | string): number | null {
+  const ms = value instanceof Date ? value.getTime() : Date.parse(value);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/**
+ * Refuse a window that ends before it starts, before the database does.
+ *
+ * `experiments_window_order` would catch it anyway, but as a Postgres check
+ * violation six frames down; the route would answer 400 with a constraint name
+ * in it. `fallbackStart` is what the insert's `coalesce(..., now())` will use
+ * when no start was given.
+ */
+export function assertWindowOrder(
+  startAt: Date | string | null | undefined,
+  endAt: Date | string | null | undefined,
+  fallbackStart: Date = new Date(),
+): void {
+  if (endAt === null || endAt === undefined) return;
+  const end = timestampMs(endAt);
+  const start = startAt === null || startAt === undefined ? fallbackStart.getTime() : timestampMs(startAt);
+  if (end === null || start === null) {
+    throw new InvalidExperimentWindow('An experiment window needs a valid start and end');
+  }
+  if (end < start) {
+    throw new InvalidExperimentWindow('An experiment cannot end before it starts');
+  }
 }

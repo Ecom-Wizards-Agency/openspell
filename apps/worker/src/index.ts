@@ -1,4 +1,5 @@
 export * from './ads-api.js';
+export * from './bid-series.js';
 export * from './config.js';
 export * from './crosscheck.js';
 export * from './health.js';

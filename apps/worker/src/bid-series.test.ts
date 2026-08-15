@@ -30,16 +30,28 @@ const PROFILE: AdsProfileContext = {
 
 class FakeStore implements BidSeriesStore {
   written: NewBidSeriesRow[] = [];
+  /** Profile ids whose corridor is already written for the day. */
+  alreadySynced = new Set<string>();
+  /** Profile ids whose target read throws, to prove per-profile isolation. */
+  failing = new Set<string>();
+  readCalls: string[] = [];
   constructor(
     private readonly profiles: AdsProfileContext[],
     private readonly targets: BidSeriesTargetInput[],
     private readonly writeCount?: (rows: readonly NewBidSeriesRow[]) => number,
   ) {}
   async listSyncEnabledProfiles(): Promise<AdsProfileContext[]> { return this.profiles; }
-  async listBidSeriesTargets(): Promise<BidSeriesTargetInput[]> { return this.targets; }
+  async listBidSeriesTargets(profile: AdsProfileContext): Promise<BidSeriesTargetInput[]> {
+    this.readCalls.push(profile.id);
+    if (this.failing.has(profile.id)) throw new Error(`${profile.id} exploded`);
+    return this.targets;
+  }
   async upsertBidSeries(rows: readonly NewBidSeriesRow[]): Promise<number> {
     this.written.push(...rows);
     return this.writeCount ? this.writeCount(rows) : rows.length;
+  }
+  async hasSeriesForDate(profile: AdsProfileContext): Promise<boolean> {
+    return this.alreadySynced.has(profile.id);
   }
 }
 
@@ -120,10 +132,66 @@ describe('syncBidSeriesForProfile', () => {
 });
 
 describe('runBidSeriesSync', () => {
+  const SECOND: AdsProfileContext = { ...PROFILE, id: 'other' };
+
   it('sums the corridor across every sync-enabled profile', async () => {
-    const store = new FakeStore([PROFILE, { ...PROFILE, id: 'other' }], [kw()]);
+    const store = new FakeStore([PROFILE, SECOND], [kw()]);
     const client = fakeClient({ 'kw-1': { low: 0.5, median: 0.8, high: 1.2 } });
     const counts = await runBidSeriesSync({ store, client });
-    expect(counts).toEqual({ profiles: 2, targets: 2, corridors: 2, written: 2 });
+    expect(counts).toEqual({ profiles: 2, targets: 2, corridors: 2, written: 2, skipped: 0, failed: 0, unvisited: 0 });
+  });
+
+  it('skips a profile that already carries the day, without an Amazon call', async () => {
+    const store = new FakeStore([PROFILE, SECOND], [kw()]);
+    store.alreadySynced.add(PROFILE.id);
+    const client = fakeClient({ 'kw-1': { low: 0.5, median: 0.8, high: 1.2 } });
+
+    const counts = await runBidSeriesSync({ store, client });
+
+    expect(counts).toEqual({ profiles: 1, targets: 1, corridors: 1, written: 1, skipped: 1, failed: 0, unvisited: 0 });
+    // The gated profile was never even read, let alone asked about.
+    expect(store.readCalls).toEqual([SECOND.id]);
+    expect(client.getSpSuggestedBids).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps syncing after one profile throws, and reports the failure', async () => {
+    const store = new FakeStore([PROFILE, SECOND], [kw()]);
+    store.failing.add(PROFILE.id);
+    const client = fakeClient({ 'kw-1': { low: 0.5, median: 0.8, high: 1.2 } });
+    const errors: string[] = [];
+
+    const counts = await runBidSeriesSync({
+      store,
+      client,
+      logger: { info: () => {}, error: (message) => errors.push(message) },
+    });
+
+    // The profile after the throwing one still got its day.
+    expect(counts).toMatchObject({ profiles: 1, written: 1, failed: 1, skipped: 0 });
+    expect(store.readCalls).toEqual([PROFILE.id, SECOND.id]);
+    expect(errors).toHaveLength(1);
+  });
+
+  it('stops between profiles when the tick\'s budget is gone', async () => {
+    const store = new FakeStore([PROFILE, SECOND], [kw()]);
+    const client = fakeClient({ 'kw-1': { low: 0.5, median: 0.8, high: 1.2 } });
+
+    // A deadline already in the past: the pass is called, reaches nobody, and
+    // says so rather than starting a request the platform would cut off.
+    const counts = await runBidSeriesSync({ store, client, deadlineMs: Date.now() - 1 });
+
+    expect(counts).toMatchObject({ profiles: 0, written: 0, unvisited: 2 });
+    expect(store.readCalls).toEqual([]);
+    expect(client.getSpSuggestedBids).not.toHaveBeenCalled();
+  });
+
+  it('fails the pass only when every profile failed', async () => {
+    const store = new FakeStore([PROFILE, SECOND], [kw()]);
+    store.failing.add(PROFILE.id);
+    store.failing.add(SECOND.id);
+    const client = fakeClient({});
+    await expect(
+      runBidSeriesSync({ store, client, logger: { info: () => {}, error: () => {} } }),
+    ).rejects.toThrow(/exploded/);
   });
 });

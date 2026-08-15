@@ -13,7 +13,7 @@ import type { ExperimentRecord } from '@wizard-ads/db';
 import type { ProfileOption } from '../../src/experiments/data';
 import { toUiExperiment } from '../../src/experiments/ui';
 import type { UiExperiment } from '../../src/experiments/ui';
-import { STATUS_LABELS, STATUS_TONE, TYPE_LABELS, METRIC_LABELS, EXPERIMENT_STATUS_OPTIONS } from '../../src/experiments/labels';
+import { STATUS_LABELS, STATUS_TEXT_COLOR, TYPE_LABELS, METRIC_LABELS, EXPERIMENT_STATUS_OPTIONS } from '../../src/experiments/labels';
 import { banner, colors, heading, muted, page } from '../../src/ui/tokens';
 
 const card = {
@@ -138,7 +138,7 @@ export function ExperimentsList({
               </a>
               <span
                 data-testid="experiment-status"
-                style={{ ...muted, color: `var(--wa-${STATUS_TONE[item.status]}-text)` }}
+                style={{ ...muted, color: STATUS_TEXT_COLOR[item.status] }}
               >
                 {STATUS_LABELS[item.status]}
               </span>

@@ -7,6 +7,7 @@ import {
   type AdProductCode,
   type AdsApiClient,
   type AdsProfileContext,
+  type EntityListFailure,
 } from './ads-api.js';
 import { runBidSeriesSync, type BidSeriesSyncDeps } from './bid-series.js';
 import { gunzipJson, parseReportRows } from './parsers.js';
@@ -213,10 +214,16 @@ export class SyncWorker {
    * Brands 400: one throw aborted the whole job before anything was committed.
    * Now each ad product is listed and mirrored on its own. A product that
    * listed cleanly is committed regardless of what the others did; a product
-   * that failed is recorded on the result and its mirror is left untouched (so
-   * a `full` pass never tombstones a product it could not see). The job fails
-   * only when every product it was asked for failed — and then it re-throws the
-   * original error so a 429/5xx still requeues with the right backoff.
+   * that failed leaves its mirror untouched (so a `full` pass never tombstones
+   * a product it could not see).
+   *
+   * **A partial failure still fails the job**, after the winners are committed.
+   * Reporting success would leave one product's mirror silently stale — the
+   * grid would show yesterday's Sponsored Brands campaigns with nothing saying
+   * so, which is worse than a retry. The re-thrown error is the most retryable
+   * of the failures, so a 429 requeues on Amazon's own `Retry-After` rather
+   * than on a sibling 400's flat backoff, and the re-run redoing the products
+   * that already committed is harmless: every write here is an upsert.
    */
   private async syncEntities(
     profile: AdsProfileContext,
@@ -235,8 +242,8 @@ export class SyncWorker {
     // Everything asked for failed: nothing to commit, so fail loudly and let
     // the retry policy see the real error type.
     if (succeeded.length === 0) {
-      const first = failures[0];
-      if (first) throw first.error instanceof Error ? first.error : new Error(first.message);
+      const worst = mostRetryable(failures);
+      if (worst) throw worst.error instanceof Error ? worst.error : new Error(worst.message);
       throw new Error(`entity sync listed nothing for ${requested.join(', ')}`);
     }
 
@@ -266,7 +273,11 @@ export class SyncWorker {
         profileId: profile.id,
         succeeded,
         failed: failureSummary,
+        ...totals,
       });
+      // Committed above, thrown here: the products that listed are in the
+      // mirror, and the job goes back on the queue because one is not.
+      throw partialSyncError(succeeded, failures);
     }
     this.logger.info('entity sync', { profileId: profile.id, succeeded, ...totals });
     return { ...totals, succeeded, failures: failureSummary };
@@ -456,11 +467,17 @@ export class AuthHealthMonitor extends PeriodicPass {
 }
 
 /**
- * Gives a newly connected profile the default cadences.
+ * Gives a newly connected profile the default cadences, and repairs the ones
+ * every profile already has.
  *
  * A profile with no schedules syncs nothing, and an always-on worker noticing
  * that is better than an onboarding step somebody forgets. It only ever fills
  * an empty set — a profile whose schedules an operator pruned stays pruned.
+ *
+ * The lookback repair runs unconditionally, on every profile, every tick. It
+ * used to run inside `provisionSchedules`, which only ever visits profiles that
+ * have no schedules — so the profiles carrying an illegal lookback, all of
+ * which are provisioned by definition, were the exact set it never reached.
  */
 export class ScheduleProvisioner extends PeriodicPass {
   constructor(
@@ -477,10 +494,14 @@ export class ScheduleProvisioner extends PeriodicPass {
     for (const profile of profiles) {
       written += await this.store.provisionSchedules(profile.orgId, profile.profileId);
     }
+    const repaired = await this.store.repairOverlongLookbacks();
     if (written > 0) {
       this.provisionLogger.info('provisioned default schedules', { profiles: profiles.length, schedules: written });
     }
-    return written;
+    if (repaired > 0) {
+      this.provisionLogger.info('clamped overlong report lookbacks', { schedules: repaired });
+    }
+    return { written, repaired };
   }
 }
 
@@ -531,6 +552,37 @@ export class BidSeriesSyncPass extends PeriodicPass {
     }
     return counts;
   }
+}
+
+/**
+ * The failure a retry should be scheduled from: a throttle or 5xx if one is
+ * there, otherwise the first. A 429 next to a 400 must not be retried on the
+ * 400's flat backoff — Amazon told us when to come back.
+ */
+function mostRetryable(
+  failures: readonly EntityListFailure[],
+): EntityListFailure | undefined {
+  return failures.find((failure) => failure.error instanceof AdsApiRetryableError) ?? failures[0];
+}
+
+/**
+ * The error a partially-failed entity sync throws, once the products that did
+ * list are committed. Retryable typing is preserved so `runClaimed` still backs
+ * off on Amazon's own interval.
+ */
+function partialSyncError(
+  succeeded: readonly AdProductCode[],
+  failures: readonly EntityListFailure[],
+): Error {
+  const worst = mostRetryable(failures);
+  const detail =
+    `entity sync committed ${succeeded.join('+')} but ` +
+    `${failures.map((failure) => failure.adProduct).join('+')} failed: ` +
+    `${worst?.message ?? 'unknown error'}`;
+  if (worst?.error instanceof AdsApiRetryableError) {
+    return new AdsApiRetryableError(detail, worst.error.retryAfterSeconds);
+  }
+  return new Error(detail, worst?.error instanceof Error ? { cause: worst.error } : undefined);
 }
 
 function addMinutes(date: Date, minutes: number): Date {

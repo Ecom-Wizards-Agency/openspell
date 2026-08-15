@@ -508,8 +508,15 @@ function GranularityToggle({
  * Where an experiment window sits on the x-axis, or null when it falls entirely
  * outside the plotted date domain. Clamped to the plot and padded by half a step
  * so a single-day window is still a visible band rather than a hairline.
+ *
+ * At weekly or monthly granularity the axis carries one label per bucket, and a
+ * window can fall between two of them — a three-day test inside one week, with
+ * the week's own label before it and the next week's after it. The band is then
+ * clamped to the bucket the window sits in rather than dropped: a test that ran
+ * is a test the chart has to show, and vanishing when the operator switches to
+ * W is exactly the case where the eye is looking for it.
  */
-function windowBand(
+export function windowBand(
   window: ChartWindow,
   dates: readonly string[],
   x: (index: number) => number,
@@ -520,19 +527,32 @@ function windowBand(
   const last = dates[dates.length - 1] as string;
   const startKey = window.start;
   const endKey = window.end ?? last;
-  if (endKey < first || startKey > last) return null;
 
-  let startIndex = dates.findIndex((date) => date >= startKey);
-  if (startIndex < 0) startIndex = 0;
-  let endIndex = -1;
-  for (let index = dates.length - 1; index >= 0; index -= 1) {
-    if ((dates[index] as string) <= endKey) {
-      endIndex = index;
-      break;
+  // A label is a bucket *start*, and a weekly or monthly one is shorter than
+  // the YYYY-MM-DD a window carries ('2026-08' against '2026-08-17'). Compare
+  // each label against the window date truncated to that label's own length, so
+  // "the bucket beginning 2026-08 starts before 2026-08-17" is true rather than
+  // a string comparison that says the opposite.
+  const startsAtOrBefore = (label: string, date: string): boolean =>
+    label <= date.slice(0, label.length);
+
+  // Entirely before the first bucket, or entirely after the last one.
+  if (!startsAtOrBefore(first, endKey)) return null;
+  if (last < startKey.slice(0, last.length)) return null;
+
+  // The bucket the window begins in: the last one starting at or before it.
+  // Zero when the window began before the plotted range.
+  const lastBucketStartingBefore = (date: string): number => {
+    for (let index = dates.length - 1; index >= 0; index -= 1) {
+      if (startsAtOrBefore(dates[index] as string, date)) return index;
     }
-  }
-  if (endIndex < 0) endIndex = dates.length - 1;
-  if (endIndex < startIndex) return null;
+    return 0;
+  };
+
+  const startIndex = lastBucketStartingBefore(startKey);
+  // …and the bucket it ends in. Never before the start bucket, so a window that
+  // opens and closes between two labels is still one bucket wide.
+  const endIndex = Math.max(startIndex, lastBucketStartingBefore(endKey));
 
   const step = dates.length > 1 ? plotWidth / (dates.length - 1) : plotWidth;
   const pad = step / 2;

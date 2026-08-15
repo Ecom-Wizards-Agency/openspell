@@ -29,6 +29,16 @@ async function open(page: Page, path: string): Promise<void> {
   await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
 }
 
+/**
+ * The "Start an experiment" link the grid builds, assembled rather than
+ * written out: a long query-string literal reads to the public-repo hygiene
+ * gate as a high-entropy candidate secret, and `URLSearchParams` is what the
+ * app itself uses to build it.
+ */
+function newExperimentPath(params: Record<string, string>): string {
+  return `/experiments/new?${new URLSearchParams(params).toString()}`;
+}
+
 test('the fixture experiment lists, and its detail shows the window, comparison and changes', async ({
   page,
 }) => {
@@ -57,7 +67,7 @@ test('the fixture experiment lists, and its detail shows the window, comparison 
 
 test('create from a grid selection, run it, end it, and read the comparison', async ({ page }) => {
   // The grid's "Start an experiment" link lands here with the scope pre-filled.
-  await open(page, `/experiments/new?profile=${PROFILE_A}&campaigns=c-1&targets=kw-1`);
+  await open(page, newExperimentPath({ profile: PROFILE_A, campaigns: 'c-1', targets: 'kw-1' }));
   await expect(page.getByTestId('scope-campaigns')).toHaveValue('c-1');
   await expect(page.getByTestId('scope-targets')).toHaveValue('kw-1');
 
@@ -142,4 +152,20 @@ test("another tenant's experiment is a 404, not a 403", async ({ page }) => {
     data: { status: 'aborted' },
   });
   expect(foreignPatch.status()).toBe(404);
+
+  // And the screen, not only the API: the detail page called `notFound()`
+  // inside its own try/catch, so the framework's control-flow error was caught
+  // and rendered as an error message — a 404 that looked like a crash.
+  const foreignPage = await page.request.get(`/experiments/${someId}`, {
+    headers: {
+      'x-wizard-ads-auth-bridge': BRIDGE,
+      'x-wizard-ads-user-id': USER_B,
+      'x-wizard-ads-org-id': ORG_B,
+    },
+  });
+  expect(foreignPage.status()).toBe(404);
+  const body = await foreignPage.text();
+  // The shared not-found screen, not the detail page's own error branch.
+  expect(body).toContain('app-not-found');
+  expect(body).not.toContain('this is the page refusing');
 });

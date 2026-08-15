@@ -6,7 +6,12 @@
  * that the lifecycle forbids: that is a conflict with the resource's current
  * state, not a malformed request, so it answers 409 rather than 400.
  */
-import { ExperimentNotFound, InvalidExperimentTransition } from '@wizard-ads/db';
+import {
+  ExperimentNotFound,
+  ExperimentProfileNotFound,
+  InvalidExperimentTransition,
+  InvalidExperimentWindow,
+} from '@wizard-ads/db';
 import { errorResponse } from '../server/request-context';
 
 export function experimentErrorResponse(error: unknown): Response {
@@ -15,6 +20,15 @@ export function experimentErrorResponse(error: unknown): Response {
   }
   if (error instanceof ExperimentNotFound) {
     return Response.json({ error: error.message }, { status: 404 });
+  }
+  // A profile that is not this org's is indistinguishable from one that does
+  // not exist: both are 404, so the answer cannot be used to enumerate ids.
+  if (error instanceof ExperimentProfileNotFound) {
+    return Response.json({ error: 'Profile not found' }, { status: 404 });
+  }
+  // A window that ends before it starts is a bad request, not a conflict.
+  if (error instanceof InvalidExperimentWindow) {
+    return Response.json({ error: error.message }, { status: 400 });
   }
   return errorResponse(error);
 }
