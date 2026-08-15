@@ -26,6 +26,7 @@ const GUARDED = [
   '/dashboard',
   '/grid',
   '/crosscheck',
+  '/time-machine',
   '/recommendations',
   '/ngrams',
   '/tags',

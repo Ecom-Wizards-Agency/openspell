@@ -171,6 +171,31 @@ async function seedRecommendations(
 }
 
 /**
+ * WP-30: Time Machine. The tenant fixture already seeds one sync-detected
+ * `entity_changes` row and one operator `apply_batch`/`apply_row` per org, which
+ * is the two-source timeline the page renders. This adds one change that only
+ * org A has — a distinctive campaign-budget edit — so the cross-tenant assertion
+ * can prove org B never sees it rather than merely seeing a different count of
+ * identical fixture rows.
+ */
+export const TIME_MACHINE_MARKER = 'ZZ Time Machine Marker';
+
+async function seedTimeMachine(
+  database: TestDatabase,
+  orgId: string,
+  profileId: string,
+): Promise<void> {
+  const rows = await database.sql<{ id: string }[]>`
+    insert into public.entity_changes
+      (org_id, profile_id, entity_type, amazon_id, entity_name, field, old_value, new_value, source)
+    values (${orgId}, ${profileId}, 'campaign', 'c-1', ${TIME_MACHINE_MARKER}, 'budget',
+            '10'::jsonb, '15'::jsonb, 'sync')
+    returning id
+  `;
+  if (rows.length !== 1) throw new Error(`Seeded 1 Time Machine change, wrote ${rows.length}`);
+}
+
+/**
  * WP-08: tags and `/go/[token]`, against a production build.
  *
  * `WIZARD_ADS_E2E_AUTH_BRIDGE=1` is what arms the header bridge in
@@ -236,6 +261,13 @@ async function tagsGoto(playwrightArgs: string[]): Promise<number> {
     // WP-07: a run to review, and the search terms its explorer aggregates.
     const recommendations = await seedRecommendations(database, orgA, profileA);
 
+    // WP-30: the org-A-only change the Time Machine cross-tenant test looks for.
+    await seedTimeMachine(database, orgA, profileA);
+    const [profileBRow] = await database.sql<{ id: string }[]>`
+      select id from public.ad_profiles where org_id = ${orgB} limit 1
+    `;
+    const profileB = profileBRow?.id ?? '';
+
     const expired = await createGotoLink(database, {
       orgId: orgA,
       route: '/tags',
@@ -279,6 +311,7 @@ async function tagsGoto(playwrightArgs: string[]): Promise<number> {
         WIZARD_ADS_E2E_FOREIGN_ITEM: foreignItem?.id ?? '',
         WIZARD_ADS_E2E_ROADMAP_SEEDED: String(roadmap.created),
         WIZARD_ADS_E2E_PROFILE_A: profileA,
+        WIZARD_ADS_E2E_PROFILE_B: profileB,
         WIZARD_ADS_E2E_REC_RUN: recommendations.runId,
         WIZARD_ADS_E2E_REC_PROPOSALS: String(recommendations.proposals),
         WIZARD_ADS_E2E_REC_SEARCH_TERMS: String(recommendations.searchTerms),
