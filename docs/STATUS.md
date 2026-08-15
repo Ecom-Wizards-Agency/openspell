@@ -53,7 +53,7 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
       operator's private project note — infra identifiers stay out of this repo).
 - [x] LWA Allowed Return URL added 2026-08-14 (ads.ecomwizards.agency callback). DNS →
       Vercel still pending at deploy time.
-- [x] Smoke config placed 2026-08-14 (allfemme-us / NA); live smoke launched.
+- [x] Smoke config placed 2026-08-14 (first NA pilot profile); live smoke launched.
 - [x] Supabase Pro upgraded 2026-08-14 (org-level; auto-pause risk gone, storage headroom for
       backfill). Fly.io worker (~$5/mo) still pending at WP-03 deploy.
 
