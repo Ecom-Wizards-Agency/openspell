@@ -182,7 +182,7 @@ export function ConnectClaudeManager({
                 id="mcp-key-label"
                 data-testid="key-label-input"
                 value={label}
-                placeholder="e.g. Victor's laptop"
+                placeholder="e.g. Laptop — Claude Desktop"
                 onChange={(event) => setLabel(event.target.value)}
                 disabled={busy}
               />

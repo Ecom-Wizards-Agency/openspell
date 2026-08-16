@@ -608,7 +608,12 @@ export interface BidCorridorPoint {
 }
 
 export interface BidCorridorChartProps {
-  title: string;
+  /**
+   * Omit when the surrounding card header already names the chart. Passing the
+   * card's own heading through renders it twice, which is what the optimizer
+   * did with "Bid corridor" whenever no target was selected.
+   */
+  title?: string;
   ariaLabel: string;
   currencyCode: string;
   points: readonly BidCorridorPoint[];
@@ -675,11 +680,13 @@ export function BidCorridorChart({
 
   const head = (
     <>
-      <div className="wa-row" style={{ alignItems: 'baseline', gap: '0.75rem', justifyContent: 'space-between' }}>
-        <h3 className="wa-card__title" style={{ fontSize: 'var(--wa-fs-base)' }}>
-          {title}
-        </h3>
-      </div>
+      {title === undefined ? null : (
+        <div className="wa-row" style={{ alignItems: 'baseline', gap: '0.75rem', justifyContent: 'space-between' }}>
+          <h3 className="wa-card__title" style={{ fontSize: 'var(--wa-fs-base)' }}>
+            {title}
+          </h3>
+        </div>
+      )}
       {legend}
     </>
   );

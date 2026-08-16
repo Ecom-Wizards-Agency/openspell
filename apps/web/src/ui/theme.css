@@ -35,7 +35,11 @@
   /* Ink */
   --wa-text: #0f172a;
   --wa-text-muted: #5b6b7f;
-  --wa-text-faint: #8b9bad;
+  /* 4.63:1 on --wa-surface. The previous #8b9bad measured 2.84:1, which failed
+     WCAG AA on every page: the sidebar section labels are the widest user of
+     this token and they are small uppercase text, so 4.5 is the bar. The dark
+     palette already passes and is unchanged. */
+  --wa-text-faint: #67768a;
   --wa-text-invert: #ffffff;
 
   /* Lines */
@@ -638,6 +642,20 @@ button {
   background: var(--wa-accent);
   border-color: var(--wa-accent);
   color: var(--wa-on-accent);
+}
+
+/*
+ * A disabled primary at 55% opacity is still the loudest control on the row. On
+ * the profiles bulk bar it sits beside "No profiles selected" and reads as the
+ * obvious next click while doing nothing. Drop it to a neutral surface so the
+ * state is legible without reading the label beside it.
+ */
+.wa-btn--primary:disabled,
+.wa-btn--primary[aria-disabled='true'] {
+  background: var(--wa-surface-3);
+  border-color: var(--wa-border);
+  color: var(--wa-text-faint);
+  opacity: 1;
 }
 
 .wa-btn--primary:hover:not(:disabled) {

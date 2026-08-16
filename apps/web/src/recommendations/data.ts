@@ -21,6 +21,8 @@ export interface OrgProfile {
   timezone: string;
   targetAcos: number | null;
   goalLens: string | null;
+  /** Whether the sync is paying for this profile's reports. Drives the default. */
+  syncEnabled: boolean;
 }
 
 export async function listOrgProfiles(
@@ -37,10 +39,11 @@ export async function listOrgProfiles(
       timezone: string;
       target_acos: string | number | null;
       goal_lens: string | null;
+      sync_enabled: boolean;
     }[]
   >`
     select id, amazon_profile_id, account_name, currency_code, country_code, timezone,
-           target_acos, goal_lens
+           target_acos, goal_lens, sync_enabled
       from public.ad_profiles
      where org_id = ${orgId}
      order by country_code, amazon_profile_id
@@ -54,15 +57,24 @@ export async function listOrgProfiles(
     timezone: row.timezone,
     targetAcos: row.target_acos === null ? null : Number(row.target_acos),
     goalLens: row.goal_lens,
+    syncEnabled: row.sync_enabled,
   }));
 }
 
-/** The requested profile, or the first one. Never an id nobody can see. */
+/**
+ * The requested profile, or a sensible default. Never an id nobody can see.
+ *
+ * The default prefers a profile the sync is actually maintaining. Ordering is
+ * by country, so on a real roster the plain first row is whichever unsynced
+ * account happens to sort first — the screen then opens on an account with no
+ * facts and reads as broken before the operator has done anything.
+ */
 export function selectOrgProfile(
   profiles: readonly OrgProfile[],
   requested: string | undefined,
 ): OrgProfile | null {
   if (profiles.length === 0) return null;
   const match = requested === undefined ? undefined : profiles.find((p) => p.id === requested);
-  return match ?? (profiles[0] as OrgProfile);
+  if (match) return match;
+  return profiles.find((p) => p.syncEnabled) ?? (profiles[0] as OrgProfile);
 }

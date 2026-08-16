@@ -20,7 +20,7 @@ import { gate } from '../../src/auth/guard';
 import { gateMessage } from '../../src/ui/gate-message';
 import { PageHeader } from '../../src/ui/primitives';
 import { page } from '../../src/ui/tokens';
-import { optional } from '../../src/env';
+import { mcpEndpoint } from '../../src/env';
 import { listMcpKeys } from '../../src/data/mcp-keys';
 import { ConnectClaudeManager } from './manager';
 
@@ -42,7 +42,7 @@ export default async function ConnectClaudePage(): Promise<ReactNode> {
 
   const keys = await listMcpKeys(handle, org.orgId);
   const canManage = can(org.role, 'manageConnection');
-  const endpoint = optional('NEXT_PUBLIC_MCP_URL', 'https://<your-wizard-ads-host>/mcp');
+  const endpoint = mcpEndpoint();
 
   return (
     <main style={page}>

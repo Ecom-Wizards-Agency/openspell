@@ -73,7 +73,7 @@ export function CorridorSection({
 
       <div style={{ padding: '0 1rem 1rem' }}>
         <BidCorridorChart
-          title={selected === null ? 'Bid corridor' : `${selected.isKeyword ? 'Keyword' : 'Target'} ${selected.targetId}`}
+          title={selected === null ? undefined : `${selected.isKeyword ? 'Keyword' : 'Target'} ${selected.targetId}`}
           ariaLabel="Amazon suggested-bid corridor with bid, CPC and max potential CPC"
           currencyCode={currencyCode}
           points={points}

@@ -145,7 +145,10 @@ export default async function GridPage({ searchParams }: PageProps) {
       />
 
       <p style={muted}>
-        <a href={`/dashboard?profile=${profile.id}`} style={{ color: tokens.color.accent }}>
+        {/* The app's own accent, not the WP-06 literal: this link sits outside
+            `.wa-embed`, so the legacy bridge in theme.css cannot retheme it and
+            it rendered at 2.98:1 against the dark background. */}
+        <a href={`/dashboard?profile=${profile.id}`} style={{ color: 'var(--wa-accent)' }}>
           ← Back to the dashboard
         </a>
       </p>
