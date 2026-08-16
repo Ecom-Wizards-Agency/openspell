@@ -250,7 +250,10 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient {
             productRows.push({ ...(item as object), profileId: profile.id } as EntityRow);
           }
         }
-        rows.push(...productRows);
+        // A loop, not `push(...productRows)`: spreading a whole profile's SP
+        // rows passes them as call arguments, and past ~65k that overflows the
+        // stack — which is exactly how large profiles failed to sync at all.
+        for (const row of productRows) rows.push(row);
         succeeded.push(group.product);
       } catch (error) {
         failures.push({ adProduct: group.product, message: errorText(error), error });
