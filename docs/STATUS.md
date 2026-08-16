@@ -35,6 +35,8 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 | 30 | Time Machine | Opus | merged | merged 2026-08-15: /time-machine change timeline (sync vs applied, filters, day grouping, grid deep-links), dedup across entity_changes/apply_rows, RLS both layers. Roadmap card SHIPPED |
 | 31 | Audit fixes | Opus | merged | merged 2026-08-15 from the /code-review high audit (10 confirmed findings + 2 cut): reachable lookback repair, corridor sync wired into cron, honest partial-failure retry, chunked inserts, per-profile isolation, cross-org experiment guard, cron overlap lock, hygiene green, windowBand clamp, window validation |
 | 16 | AMC lane | Opus | gated | brief ready 2026-08-14 (docs/workpackages/WP-16-amc.md); opens at first provisioned AMC instance + AWS bucket. Visible on the in-app roadmap via WP-15 seed |
+| 32 | Sync pipeline fixes | Opus+Codex | merged | merged 2026-08-16 (wp-03-sync-pipeline-fixes): spTargeting/spSearchTerm parsing delegated to the ads-api parsers (worker parser demanded a targetId column the report never carries + raw MatchType.parse — every non-empty report died, fact_sp_target_daily/fact_search_term_daily were empty since launch); entity-listing spread-push stack overflow fixed (large profiles); mirror/fact upserts chunked under the 65535-bind-param cap; negatives deduped by (profile,amazonId) last-wins with counted duplicates; duplicate fact grains fail loudly across chunk boundaries; schema-drift reports dead-letter with failed ledger instead of stuck processing. + profile selection survives sidebar navigation (?profile= carried, write-only cookie) |
+| 06b | Design audit fixes | Opus | merged | merged 2026-08-16 (wp-06-design-audit-fixes): packages/ui palette → var(--wa-*, fallback) custom properties (dark-mode contrast fixed at the root, bridge retired), roster paged at 50 rows w/ page-scoped select-all, MCP endpoint now explicit WIZARD_ADS_MCP_URL (shared w/ analyst) instead of a derived URL that 404s, recommendations default profile prefers sync-enabled |
 
 ## Milestone gates
 
@@ -58,11 +60,16 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 - [x] Supabase Pro upgraded 2026-08-14 (org-level; auto-pause risk gone, storage headroom for
       backfill). Fly.io worker (~$5/mo) still pending at WP-03 deploy.
 
-## Live sync status (2026-08-14)
+## Live sync status (2026-08-16)
 
 - 18 profiles sync-enabled (operator's ~15 + 3 pilot). First live run: SP reporting WORKS
   (fact_profile_daily populated); SB v4 + SB/SD reports return 400 (WP-29 fixing). Cron
   maxDuration raised 60->300s. CRON_SECRET rotated (value in operator's session only).
+- 2026-08-16: WP-32 diagnosed why target-grain data never landed (see row 32). After deploy,
+  recovery = operator-authorized: retire the ~81 stuck-processing spTargeting/spSearchTerm
+  report_requests, pull the restatement schedules' next_run_at to now (31-day re-pull), pull
+  entity.sync schedules to now. Dead jobs stay as audit trail. History >31 days is a separate
+  backfill decision (Amazon serves ~95 days).
 
 ## Manager follow-ups (post-wave)
 
@@ -75,3 +82,14 @@ States: `todo` · `in-progress` · `review` · `merged` · `gated`
 - [ ] Flake hardening: auth e2e admin-toggle spec + worker schedule integration test both fail
       under parallel DB load only (each green in isolation). Serialize DB-heavy suites or
       per-suite databases.
+- [ ] WP-32 review follow-ups (accepted, not blocking): (a) negatives mirror key is
+      (profile, amazon_id) but merges three Amazon endpoints — an id collision across scopes
+      is collapsed last-wins and counted/logged; if post-deploy logs show real cross-scope
+      collisions, widen the key (schema migration, WP-01). (b) ads-api parser classifies an
+      unknown matchType spelling as targetKind 'target' with matchType null instead of
+      skipping (pre-existing WP-02 behavior). (c) entity_changes writes are not
+      retry-convergent when a later chunk fails after the mirror committed (pre-existing;
+      would need change-recording inside the mirror transaction). (d) brand/logo link still
+      drops ?profile= (needs a small client component). (e) server-side PROFILE_COOKIE read
+      fallback for direct visits. (f) declare jsdom in apps/web devDependencies (resolves via
+      hoisting today). (g) SB/SD facts sync but have no UI surface — product decision.
