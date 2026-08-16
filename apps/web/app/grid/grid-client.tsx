@@ -223,9 +223,10 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
   }, [model.rows, props.entity, props.profileId]);
 
   return (
-    // `wa-embed` re-points WP-06's inline palette at the design-system tokens so
-    // the DataGrid and its toolbar follow dark mode; WP-21 does not own
-    // `packages/ui`, so this bridge stands in until that package moves to tokens.
+    // `wa-embed` sets the inherited text colour and chromes the bare controls
+    // WP-06 ships without an inline palette (inputs, selects, toolbar buttons).
+    // The grid's own cells need nothing here: `packages/ui` writes
+    // `var(--wa-*, <literal>)` and reads the tokens directly.
     <div className="wa-embed" style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(3) }}>
       <FreshnessBanner assessment={props.freshness}>
         {props.chip === null ? null : <CrosscheckChip chip={props.chip} />}

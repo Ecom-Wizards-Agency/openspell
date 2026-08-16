@@ -98,7 +98,9 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
   const filtered = roster.rows.length !== roster.total;
 
   const pageCount = Math.max(1, Math.ceil(roster.rows.length / ROSTER_PAGE_SIZE));
-  const currentPage = Math.min(Math.max(1, Number(query.page ?? '1') || 1), pageCount);
+  // `Math.trunc` before the clamp: `?page=2.5` otherwise survives it and renders
+  // "Page 2.5 of 4" with a Previous link to page 1.5.
+  const currentPage = Math.min(Math.max(1, Math.trunc(Number(query.page ?? '1')) || 1), pageCount);
   const firstIndex = (currentPage - 1) * ROSTER_PAGE_SIZE;
   const visibleRows = roster.rows.slice(firstIndex, firstIndex + ROSTER_PAGE_SIZE);
 

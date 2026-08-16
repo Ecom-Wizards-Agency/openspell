@@ -33,20 +33,20 @@ export function optional(
 /**
  * The MCP endpoint an operator pastes into their client.
  *
- * `NEXT_PUBLIC_MCP_URL` is not set in any deployment, so reading it with a
- * literal placeholder as the fallback shipped `https://<your-wizard-ads-host>/mcp`
- * to production — on the one panel whose entire purpose is to be copied. The app
- * already knows its own origin, so derive from it and keep the placeholder for
- * the case where neither is configured.
+ * Never derive this from `WIZARD_ADS_APP_URL`. The MCP server is a separate
+ * deploy target — `apps/mcp`, Streamable HTTP on its own port on the worker's
+ * Fly app — while the web app runs on Vercel and serves no `/mcp` route at all.
+ * Appending `/mcp` to the app origin therefore produces a URL that looks right,
+ * copies cleanly off `/connect-claude`, and 404s. A visible placeholder is the
+ * better failure: it cannot be mistaken for a working endpoint.
+ *
+ * `WIZARD_ADS_MCP_URL` is the same name `apps/analyst` already reads, so one
+ * value configures both consumers.
  */
+export const MCP_ENDPOINT_PLACEHOLDER = 'https://<your-wizard-ads-host>/mcp';
+
 export function mcpEndpoint(env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = env['NEXT_PUBLIC_MCP_URL'];
-  if (explicit) return explicit;
-
-  const appUrl = env['WIZARD_ADS_APP_URL'];
-  if (appUrl) return `${appUrl.replace(/\/+$/, '')}/mcp`;
-
-  return 'https://<your-wizard-ads-host>/mcp';
+  return env['NEXT_PUBLIC_MCP_URL'] || env['WIZARD_ADS_MCP_URL'] || MCP_ENDPOINT_PLACEHOLDER;
 }
 
 /** Amazon's LWA endpoints, and the hosts the profile fetch talks to. */
