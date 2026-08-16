@@ -379,14 +379,14 @@ const segment: CSSProperties = {
 
 const segmentActive: CSSProperties = {
   background: tokens.color.accent,
-  color: '#ffffff',
+  color: 'var(--wa-on-accent, #ffffff)',
   fontWeight: 600,
 };
 
 const chip: CSSProperties = {
   alignItems: 'center',
   background: tokens.color.accentSoft,
-  border: '1px solid #bfdbfe',
+  border: '1px solid var(--wa-accent-border, #bfdbfe)',
   borderRadius: tokens.radius.pill,
   color: tokens.color.accent,
   display: 'inline-flex',

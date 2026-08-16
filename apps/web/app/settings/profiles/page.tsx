@@ -48,8 +48,20 @@ interface Props {
     q?: string;
     sync?: string;
     sort?: string;
+    page?: string;
   }>;
 }
+
+/**
+ * Rows per page.
+ *
+ * The roster renders one editable row per profile, and a real one runs to a few
+ * hundred: unpaged, the page measured 17,614px — about twenty screens — and the
+ * filters above it were the only way to reach anything. Fifty keeps the whole
+ * page within a few screens while staying above the size of any test fixture,
+ * so the counts the end-to-end suite asserts are unaffected.
+ */
+const ROSTER_PAGE_SIZE = 50;
 
 export default async function ProfilesPage({ searchParams }: Props): Promise<ReactNode> {
   const query = await searchParams;
@@ -84,7 +96,43 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
   const mayEditTargets = can(org.role, 'editTargets');
   const mayToggleSync = can(org.role, 'toggleSync');
   const filtered = roster.rows.length !== roster.total;
-  const rowIds = roster.rows.map((profile) => profile.id);
+
+  const pageCount = Math.max(1, Math.ceil(roster.rows.length / ROSTER_PAGE_SIZE));
+  const currentPage = Math.min(Math.max(1, Number(query.page ?? '1') || 1), pageCount);
+  const firstIndex = (currentPage - 1) * ROSTER_PAGE_SIZE;
+  const visibleRows = roster.rows.slice(firstIndex, firstIndex + ROSTER_PAGE_SIZE);
+
+  /** The current filters, minus the page, so a page link keeps the roster it was built from. */
+  const pageHref = (target: number): string => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries({
+      region: query.region,
+      country: query.country,
+      q: query.q,
+      sync: query.sync,
+      sort: query.sort,
+    })) {
+      if (value) params.set(key, value);
+    }
+    if (target > 1) params.set('page', String(target));
+    const search = params.toString();
+    return search === '' ? '/settings/profiles' : `/settings/profiles?${search}`;
+  };
+
+  // Select-all covers what the operator can see, not the rows a filter left on
+  // another page.
+  const rowIds = visibleRows.map((profile) => profile.id);
+
+  /**
+   * On a single page the count is unchanged: "Showing 6 of 6". Once it pages,
+   * the window is what needs naming, and the unfiltered total only earns its
+   * place when a filter has actually removed something.
+   */
+  const countLabel =
+    pageCount === 1
+      ? `Showing ${roster.rows.length} of ${roster.total}`
+      : `Showing ${firstIndex + 1}–${firstIndex + visibleRows.length} of ${roster.rows.length}` +
+        (filtered ? ` matching · ${roster.total} total` : '');
 
   return (
     <main style={page}>
@@ -95,7 +143,7 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
           meta={
             <>
               <Badge data-testid="roster-count">
-                Showing {roster.rows.length} of {roster.total}
+                {countLabel}
                 {roster.total > 0
                   ? ` · ${Object.entries(roster.regionCounts)
                       .map(([region, count]) => `${region} ${count}`)
@@ -225,7 +273,7 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
                 </tr>
               </thead>
               <tbody>
-                {roster.rows.map((profile) => (
+                {visibleRows.map((profile) => (
                   <ProfileTableRow
                     key={profile.id}
                     profile={profile}
@@ -237,6 +285,29 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
             </table>
           </TableFrame>
         </RosterSelectionProvider>
+
+        {pageCount > 1 ? (
+          <nav
+            className="wa-row"
+            aria-label="Roster pages"
+            data-testid="roster-pager"
+            style={{ alignItems: 'center', gap: '0.75rem', marginTop: '0.75rem' }}
+          >
+            {currentPage > 1 ? (
+              <a className="wa-btn wa-btn--sm" href={pageHref(currentPage - 1)} rel="prev">
+                ← Previous
+              </a>
+            ) : null}
+            <span className="wa-hint">
+              Page {currentPage} of {pageCount}
+            </span>
+            {currentPage < pageCount ? (
+              <a className="wa-btn wa-btn--sm" href={pageHref(currentPage + 1)} rel="next">
+                Next →
+              </a>
+            ) : null}
+          </nav>
+        ) : null}
 
         {roster.rows.length === 0 ? (
           <div style={{ marginTop: '1rem' }}>
@@ -287,7 +358,9 @@ function ProfileTableRow({
           <RowCheckbox profileId={profile.id} label={label} />
         </td>
       ) : null}
-      <td>
+      {/* `min-width` rather than a wrap: an account name wrapping onto three
+          lines tripled the row height and, at roster scale, most of the page. */}
+      <td style={{ minWidth: '16rem' }}>
         <div style={{ fontWeight: 550 }}>{label}</div>
         <div className="wa-hint">{profile.amazonProfileId}</div>
       </td>

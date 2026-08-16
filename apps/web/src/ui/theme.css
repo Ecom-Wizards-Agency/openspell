@@ -35,10 +35,10 @@
   /* Ink */
   --wa-text: #0f172a;
   --wa-text-muted: #5b6b7f;
-  /* 4.63:1 on --wa-surface. The previous #8b9bad measured 2.84:1, which failed
-     WCAG AA on every page: the sidebar section labels are the widest user of
-     this token and they are small uppercase text, so 4.5 is the bar. The dark
-     palette already passes and is unchanged. */
+  /* 4.63:1 on --wa-surface, up from #8b9bad's 2.84:1. The sidebar section
+     labels are this token's widest user and they are small uppercase text, so
+     4.5 is the bar, not 3. The dark scopes carry the same fix: #6d7d8f measured
+     4.31:1 on --wa-sidebar-bg, a near miss that still fails. */
   --wa-text-faint: #67768a;
   --wa-text-invert: #ffffff;
 
@@ -110,31 +110,6 @@
   --wa-sidebar-w: 15rem;
   --wa-topbar-h: 3.5rem;
 
-  /*
-   * Legacy bridge.
-   *
-   * `packages/ui` (WP-06) styles the DataGrid and its toolbar with inline hex
-   * literals, and WP-21 does not own that package. These properties hold the
-   * *same* literals in light mode, so the rules at the bottom of this file are
-   * a no-op; the dark scopes below re-point them. When WP-06 moves its theme to
-   * custom properties, delete both this block and the `.wa-embed` rules.
-   */
-  --wa-legacy-surface: #ffffff;
-  --wa-legacy-surface-alt: #f9fafb;
-  --wa-legacy-surface-hover: #f3f4f6;
-  --wa-legacy-accent-soft: #eff6ff;
-  --wa-legacy-text: #111827;
-  --wa-legacy-text-muted: #6b7280;
-  --wa-legacy-text-faint: #9ca3af;
-  --wa-legacy-accent: #1d4ed8;
-  --wa-legacy-good: #065f46;
-  --wa-legacy-warn: #92400e;
-  --wa-legacy-bad: #991b1b;
-  --wa-legacy-border: #e5e7eb;
-  --wa-legacy-border-strong: #d1d5db;
-  --wa-legacy-good-soft: #ecfdf5;
-  --wa-legacy-warn-soft: #fffbeb;
-  --wa-legacy-bad-soft: #fef2f2;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -151,7 +126,7 @@
 
     --wa-text: #e6edf3;
     --wa-text-muted: #9aa8b8;
-    --wa-text-faint: #6d7d8f;
+    --wa-text-faint: #77879a;
     --wa-text-invert: #0b0f16;
 
     --wa-border: #253040;
@@ -193,23 +168,6 @@
     --wa-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
     --wa-shadow-2: 0 4px 14px rgba(0, 0, 0, 0.55);
     --wa-shadow-3: 0 14px 36px rgba(0, 0, 0, 0.65);
-
-    --wa-legacy-surface: #141a23;
-    --wa-legacy-surface-alt: #19202b;
-    --wa-legacy-surface-hover: #212a37;
-    --wa-legacy-accent-soft: #16273c;
-    --wa-legacy-text: #e6edf3;
-    --wa-legacy-text-muted: #9aa8b8;
-    --wa-legacy-text-faint: #6d7d8f;
-    --wa-legacy-accent: #8dbcf3;
-    --wa-legacy-good: #5fd39a;
-    --wa-legacy-warn: #f0be5c;
-    --wa-legacy-bad: #f79a92;
-    --wa-legacy-border: #253040;
-    --wa-legacy-border-strong: #354356;
-    --wa-legacy-good-soft: #0f2a1e;
-    --wa-legacy-warn-soft: #2b2211;
-    --wa-legacy-bad-soft: #2c1719;
   }
 }
 
@@ -226,7 +184,7 @@
 
   --wa-text: #e6edf3;
   --wa-text-muted: #9aa8b8;
-  --wa-text-faint: #6d7d8f;
+  --wa-text-faint: #77879a;
   --wa-text-invert: #0b0f16;
 
   --wa-border: #253040;
@@ -265,23 +223,6 @@
   --wa-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
   --wa-shadow-2: 0 4px 14px rgba(0, 0, 0, 0.55);
   --wa-shadow-3: 0 14px 36px rgba(0, 0, 0, 0.65);
-
-  --wa-legacy-surface: #141a23;
-  --wa-legacy-surface-alt: #19202b;
-  --wa-legacy-surface-hover: #212a37;
-  --wa-legacy-accent-soft: #16273c;
-  --wa-legacy-text: #e6edf3;
-  --wa-legacy-text-muted: #9aa8b8;
-  --wa-legacy-text-faint: #6d7d8f;
-  --wa-legacy-accent: #8dbcf3;
-  --wa-legacy-good: #5fd39a;
-  --wa-legacy-warn: #f0be5c;
-  --wa-legacy-bad: #f79a92;
-  --wa-legacy-border: #253040;
-  --wa-legacy-border-strong: #354356;
-  --wa-legacy-good-soft: #0f2a1e;
-  --wa-legacy-warn-soft: #2b2211;
-  --wa-legacy-bad-soft: #2c1719;
 }
 
 /* ------------------------------------------------------------------ base -- */
@@ -1299,93 +1240,25 @@ button {
   grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
 }
 
-/* ------------------------------------------------- legacy embed bridge ---- */
+/* -------------------------------------------------------- packages/ui ----- */
 
 /*
- * `packages/ui` writes its palette straight into `style` attributes, so a
- * stylesheet can only reach it through those literals. Every rule below pairs a
- * WP-06 literal with the token that replaces it; in light mode the token holds
- * the identical value, so this whole block is inert. Delete it the day WP-06
- * moves `theme.ts` onto custom properties.
+ * `packages/ui` now writes `var(--wa-*, <literal>)` into its inline styles, so
+ * it reads these tokens directly and needs no translation layer.
+ *
+ * What used to live here was that layer: a rule per WP-06 literal, matching on
+ * `[style*='background:#ffffff']`. It never worked. React sets inline styles
+ * through the CSSOM and the browser re-serialises the attribute to
+ * `background: rgb(255, 255, 255)`, so no hex-substring selector ever matched —
+ * while `.wa-embed`'s own `color` did apply. The result was the host's
+ * light-on-dark text over this package's white grid rows: unreadable, and
+ * invisible to any check that only sampled `td`/`span` on a div-based grid.
+ *
+ * The lesson is the general one: do not style across a package boundary by
+ * pattern-matching the other side's serialised output.
  */
 .wa-embed {
-  color: var(--wa-legacy-text);
-}
-
-.wa-embed [style*='background:#ffffff'] {
-  background-color: var(--wa-legacy-surface) !important;
-}
-
-.wa-embed [style*='background:#f9fafb'] {
-  background-color: var(--wa-legacy-surface-alt) !important;
-}
-
-.wa-embed [style*='background:#f3f4f6'] {
-  background-color: var(--wa-legacy-surface-hover) !important;
-}
-
-.wa-embed [style*='background:#eff6ff'] {
-  background-color: var(--wa-legacy-accent-soft) !important;
-}
-
-.wa-embed [style*='background:#ecfdf5'] {
-  background-color: var(--wa-legacy-good-soft) !important;
-}
-
-.wa-embed [style*='background:#fffbeb'] {
-  background-color: var(--wa-legacy-warn-soft) !important;
-}
-
-.wa-embed [style*='background:#fef2f2'] {
-  background-color: var(--wa-legacy-bad-soft) !important;
-}
-
-.wa-embed [style*='color:#111827'] {
-  color: var(--wa-legacy-text) !important;
-}
-
-.wa-embed [style*='color:#6b7280'] {
-  color: var(--wa-legacy-text-muted) !important;
-}
-
-.wa-embed [style*='color:#9ca3af'] {
-  color: var(--wa-legacy-text-faint) !important;
-}
-
-.wa-embed [style*='color:#1d4ed8'] {
-  color: var(--wa-legacy-accent) !important;
-}
-
-.wa-embed [style*='color:#065f46'] {
-  color: var(--wa-legacy-good) !important;
-}
-
-.wa-embed [style*='color:#92400e'] {
-  color: var(--wa-legacy-warn) !important;
-}
-
-.wa-embed [style*='color:#991b1b'] {
-  color: var(--wa-legacy-bad) !important;
-}
-
-.wa-embed [style*='#e5e7eb'] {
-  border-color: var(--wa-legacy-border) !important;
-}
-
-.wa-embed [style*='#d1d5db'] {
-  border-color: var(--wa-legacy-border-strong) !important;
-}
-
-.wa-embed [style*='#a7f3d0'] {
-  border-color: var(--wa-good-border) !important;
-}
-
-.wa-embed [style*='#fde68a'] {
-  border-color: var(--wa-warn-border) !important;
-}
-
-.wa-embed [style*='#fecaca'] {
-  border-color: var(--wa-bad-border) !important;
+  color: var(--wa-text);
 }
 
 /* WP-06's own controls, which carry no inline palette at all. */

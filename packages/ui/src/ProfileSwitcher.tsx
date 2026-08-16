@@ -92,7 +92,7 @@ const tab: CSSProperties = {
 
 const tabSelected: CSSProperties = {
   background: tokens.color.accentSoft,
-  borderColor: '#bfdbfe',
+  borderColor: 'var(--wa-accent-border, #bfdbfe)',
 };
 
 const meta: CSSProperties = { color: tokens.color.textMuted, fontSize: tokens.font.size.xs };

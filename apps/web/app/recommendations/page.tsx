@@ -88,22 +88,6 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
               ? 'no runs yet'
               : `run ${run.engineVersion ?? 'unversioned'} over ${run.windowStart ?? '?'} to ${run.windowEnd ?? '?'}`}
           </p>
-          {profiles.length > 1 ? (
-            <nav style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }} aria-label="Profiles">
-              {profiles.map((option) => (
-                <a
-                  key={option.id}
-                  href={`/recommendations?profile=${option.id}`}
-                  style={{
-                    ...pill,
-                    fontWeight: option.id === profile.id ? 600 : 400,
-                  }}
-                >
-                  {option.label}
-                </a>
-              ))}
-            </nav>
-          ) : null}
           {runs.length > 1 ? (
             <nav style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }} aria-label="Runs">
               {runs.map((option) => (

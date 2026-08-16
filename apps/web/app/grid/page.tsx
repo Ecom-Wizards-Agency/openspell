@@ -21,7 +21,6 @@ import type { CSSProperties } from 'react';
 import {
   ENTITY_LABELS,
   ENTITY_LEVELS,
-  ProfileSwitcher,
   assessFreshness,
   formatInteger,
   tokens,
@@ -97,7 +96,11 @@ export default async function GridPage({ searchParams }: PageProps) {
     return (
       <main style={main}>
         <h1 style={heading}>Grid</h1>
-        <ProfileSwitcher profiles={data.profiles} selectedId={null} hrefFor={() => '/grid'} />
+        <p className="wa-page-sub">
+          {data.profiles.length === 0
+            ? 'No advertising profiles yet. Connect an account and enable sync on a profile to see one here.'
+            : 'Choose an advertising profile from the switcher in the top bar to load the grid.'}
+        </p>
       </main>
     );
   }
@@ -116,13 +119,6 @@ export default async function GridPage({ searchParams }: PageProps) {
           </p>
         </div>
 
-        <div className="wa-embed">
-          <ProfileSwitcher
-            profiles={data.profiles}
-            selectedId={profile.id}
-            hrefFor={(id) => `/grid?profile=${id}&entity=${entity}&from=${period.start}&to=${period.end}`}
-          />
-        </div>
       </header>
 
       {payload?.truncated ? (

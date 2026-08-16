@@ -17,26 +17,40 @@ export const tokens = {
     mono: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace',
     size: { xs: '0.75rem', sm: '0.8125rem', base: '0.875rem', lg: '1rem', xl: '1.5rem' },
   },
+  /*
+   * Custom properties with the original literal as the fallback.
+   *
+   * These are written into `style` attributes, and a host that themes itself
+   * cannot reach them there: the browser re-serialises an inline `#ffffff` to
+   * `rgb(255, 255, 255)` through the CSSOM, so the attribute-substring bridge
+   * `apps/web` used to retheme this palette never matched a single element. The
+   * grid rendered the host's light-on-dark text over this package's white rows.
+   *
+   * A `var()` inverts that: the host supplies the value when it defines one, and
+   * the fallback keeps this package standalone — Storybook, a test renderer, or
+   * any consumer without the wizard-ads stylesheet still gets the light palette
+   * these literals always were. Light mode resolves to identical values.
+   */
   color: {
-    text: '#111827',
-    textMuted: '#6b7280',
-    textFaint: '#9ca3af',
-    border: '#e5e7eb',
-    borderStrong: '#d1d5db',
-    surface: '#ffffff',
-    surfaceAlt: '#f9fafb',
-    surfaceHover: '#f3f4f6',
-    accent: '#1d4ed8',
-    accentSoft: '#eff6ff',
-    good: '#065f46',
-    goodSoft: '#ecfdf5',
-    goodBorder: '#a7f3d0',
-    warn: '#92400e',
-    warnSoft: '#fffbeb',
-    warnBorder: '#fde68a',
-    bad: '#991b1b',
-    badSoft: '#fef2f2',
-    badBorder: '#fecaca',
+    text: 'var(--wa-text, #111827)',
+    textMuted: 'var(--wa-text-muted, #6b7280)',
+    textFaint: 'var(--wa-text-faint, #9ca3af)',
+    border: 'var(--wa-border, #e5e7eb)',
+    borderStrong: 'var(--wa-border-strong, #d1d5db)',
+    surface: 'var(--wa-surface, #ffffff)',
+    surfaceAlt: 'var(--wa-surface-2, #f9fafb)',
+    surfaceHover: 'var(--wa-surface-3, #f3f4f6)',
+    accent: 'var(--wa-accent, #1d4ed8)',
+    accentSoft: 'var(--wa-accent-soft, #eff6ff)',
+    good: 'var(--wa-good-text, #065f46)',
+    goodSoft: 'var(--wa-good-bg, #ecfdf5)',
+    goodBorder: 'var(--wa-good-border, #a7f3d0)',
+    warn: 'var(--wa-warn-text, #92400e)',
+    warnSoft: 'var(--wa-warn-bg, #fffbeb)',
+    warnBorder: 'var(--wa-warn-border, #fde68a)',
+    bad: 'var(--wa-bad-text, #991b1b)',
+    badSoft: 'var(--wa-bad-bg, #fef2f2)',
+    badBorder: 'var(--wa-bad-border, #fecaca)',
   },
   radius: { sm: '0.25rem', md: '0.375rem', pill: '999px' },
   space: (n: number) => `${n * 0.25}rem`,
@@ -49,7 +63,7 @@ export const toneStyle: Record<Tone, { background: string; border: string; color
   warn: { background: tokens.color.warnSoft, border: tokens.color.warnBorder, color: tokens.color.warn },
   bad: { background: tokens.color.badSoft, border: tokens.color.badBorder, color: tokens.color.bad },
   muted: { background: tokens.color.surfaceAlt, border: tokens.color.border, color: tokens.color.textMuted },
-  neutral: { background: tokens.color.accentSoft, border: '#bfdbfe', color: tokens.color.accent },
+  neutral: { background: tokens.color.accentSoft, border: 'var(--wa-accent-border, #bfdbfe)', color: tokens.color.accent },
 };
 
 /**
