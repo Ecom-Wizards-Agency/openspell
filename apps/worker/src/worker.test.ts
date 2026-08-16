@@ -39,7 +39,7 @@ describe('fetch handler count assertion', () => {
       release: async () => 0,
       requeueStale: async () => 0,
       profile: async () => profile(),
-      syncEntities: async () => ({ listed: 0, upserted: 0, changes: 0, tombstoned: 0 }),
+      syncEntities: async () => ({ listed: 0, upserted: 0, duplicates: 0, changes: 0, tombstoned: 0 }),
       provisionSchedules: async () => 0,
       unscheduledProfiles: async () => [],
       repairOverlongLookbacks: async () => 0,
@@ -62,6 +62,100 @@ describe('fetch handler count assertion', () => {
     expect(await worker.drainOnce()).toBe(1);
     expect(completedCounts).toMatchObject({ parsed: 1, loaded: 0 });
     expect(outcome).toBe('failed');
+  });
+});
+
+/**
+ * A parser that refuses rows is the honest answer to a report that changed
+ * shape. What must not happen is the refusal passing silently, or a
+ * deterministic drift burning five attempts and leaving five stuck-processing
+ * ledger rows behind it.
+ */
+describe('fetch handler skip accounting', () => {
+  const payload: Extract<JobPayload, { type: 'report.fetch' }> = {
+    type: 'report.fetch', orgId, profileId, reportRequestId,
+    amazonReportId: 'amazon-report', downloadUrl: 'https://reports.invalid/report',
+  };
+
+  function run(reportRows: unknown[]) {
+    const job: ClaimedJob = {
+      id: jobId, orgId, profileId, jobType: payload.type, payload,
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+    };
+    const report: ReportRequestState = {
+      id: reportRequestId, reportType: 'spTargeting', amazonReportId: 'amazon-report',
+      requestedAt: new Date(), pollAttempts: 0,
+    };
+    const calls: {
+      finish: { outcome: JobOutcome; result?: unknown }[];
+      dead: string[];
+      polls: { status: string; error?: string | null }[];
+      completed: { parsed: number; loaded: number }[];
+    } = { finish: [], dead: [], polls: [], completed: [] };
+    let claimed = false;
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      finish: async (_id, outcome, options) => { calls.finish.push({ outcome, result: options?.result }); },
+      deadLetter: async (_id, error) => { calls.dead.push(error); },
+      getReportRequest: async () => report,
+      updateReportPoll: async (_id, values) => { calls.polls.push({ status: values.status, error: values.error }); },
+      loadFacts: async (batch: ParsedFactBatch) => batch.rows.length,
+      completeReport: async (_id, counts) => { calls.completed.push({ parsed: counts.parsed, loaded: counts.loaded }); },
+    };
+    const worker = new SyncWorker({
+      workerId: 'unit-worker', store, adsApi: new PayloadApi(reportRows),
+      buckets: new RegionTokenBuckets(2), logger: { info: () => {}, error: () => {} },
+    });
+    return { worker, calls };
+  }
+
+  it('succeeds, and reports what it refused, when the refusals are under the threshold', async () => {
+    const rows: unknown[] = [];
+    for (let index = 0; index < 200; index += 1) rows.push(targetingRow(`kw-${index}`));
+    const { campaignId: _dropped, ...noCampaign } = targetingRow('kw-bad');
+    rows.push(noCampaign);
+    const { worker, calls } = run(rows);
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(calls.finish.map((call) => call.outcome)).toEqual(['succeeded']);
+    expect(calls.completed).toEqual([{ parsed: 200, loaded: 200 }]);
+    expect(calls.finish[0]?.result).toMatchObject({
+      reportRows: 201, parsed: 200, loaded: 200, skipped: 1,
+      skipReasons: { 'no campaignId': 1 },
+    });
+    // Nothing was marked failed on the way through.
+    expect(calls.polls).toEqual([]);
+  });
+
+  it('fails the ledger and dead-letters when the parser refuses everything', async () => {
+    const { campaignId: _dropped, ...noCampaign } = targetingRow('kw-1');
+    const { worker, calls } = run([noCampaign, { ...noCampaign, keywordId: 'kw-2' }]);
+
+    expect(await worker.drainOnce()).toBe(1);
+    // No fact write was attempted, and the ledger says why rather than sitting
+    // in `processing` until somebody notices.
+    expect(calls.completed).toEqual([]);
+    expect(calls.polls).toEqual([
+      { status: 'failed', error: 'parser refused 2 of 2 rows: no campaignId (2)' },
+    ]);
+    // Dead, not retried: five attempts would refuse the same two rows.
+    expect(calls.finish).toEqual([]);
+    expect(calls.dead[0]).toContain('spTargeting parser refused 2 of 2 rows');
+  });
+
+  it('dead-letters when the refused share exceeds the threshold', async () => {
+    const rows: unknown[] = [];
+    for (let index = 0; index < 90; index += 1) rows.push(targetingRow(`kw-${index}`));
+    for (let index = 0; index < 10; index += 1) {
+      const { campaignId: _dropped, ...noCampaign } = targetingRow(`bad-${index}`);
+      rows.push(noCampaign);
+    }
+    const { worker, calls } = run(rows);
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(calls.finish).toEqual([]);
+    expect(calls.dead[0]).toContain('refused 10 of 100 rows');
   });
 });
 
@@ -174,7 +268,7 @@ function stubStore(): WorkerStore {
     release: async () => 0,
     requeueStale: async () => 0,
     profile: async () => profile(),
-    syncEntities: async () => ({ listed: 0, upserted: 0, changes: 0, tombstoned: 0 }),
+    syncEntities: async () => ({ listed: 0, upserted: 0, duplicates: 0, changes: 0, tombstoned: 0 }),
     provisionSchedules: async () => 0,
     unscheduledProfiles: async () => [],
     repairOverlongLookbacks: async () => 0,
@@ -186,6 +280,28 @@ function stubStore(): WorkerStore {
     loadFacts: async () => 0,
     completeReport: async () => {},
   };
+}
+
+/** A synthetic `spTargeting` row in the shape Amazon sends: `keywordId`, no `targetId`. */
+function targetingRow(keywordId: string): Record<string, unknown> {
+  return {
+    date: '2026-08-14', campaignId: 'c-1', adGroupId: 'ag-1', keywordId,
+    matchType: 'EXACT', impressions: 10, clicks: 1, cost: 0.5,
+    purchases7d: 0, sales7d: 0, unitsSoldClicks7d: 0,
+  };
+}
+
+/** Serves whatever report payload a case hands it. */
+class PayloadApi implements AdsApiClient {
+  constructor(private readonly rows: unknown[]) {}
+  async listEntities() { return { rows: [], succeeded: ['SP', 'SB', 'SD'] as const, failures: [] }; }
+  async createReport(_input: CreateReportInput) { return { reportId: 'unused' }; }
+  async getReport(_profile: AdsProfileContext, _reportId: string): Promise<AdsReportStatus> { return { status: 'PENDING' }; }
+  async downloadReport(): Promise<AsyncIterable<Uint8Array>> {
+    const bytes = gzipSync(JSON.stringify(this.rows));
+    return (async function* stream() { yield bytes; })();
+  }
+  async listProfiles(_region: Region) { return []; }
 }
 
 class OneRowApi implements AdsApiClient {

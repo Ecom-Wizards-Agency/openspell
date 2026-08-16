@@ -1,5 +1,7 @@
 import { createGunzip } from 'node:zlib';
 import { Readable } from 'node:stream';
+import { parseSpSearchTermReport, parseSpTargetingReport } from '@wizard-ads/ads-api';
+import type { SkippedReportRow } from '@wizard-ads/ads-api';
 import type {
   NewPlacementFact,
   NewProfileFact,
@@ -7,23 +9,22 @@ import type {
   NewSpTargetFact,
 } from '@wizard-ads/db';
 import {
-  MatchType,
   Placement,
-  type MatchType as MatchTypeValue,
   type Placement as PlacementValue,
   type ReportType,
 } from '@wizard-ads/shared';
 import type { AdsProfileContext } from './ads-api.js';
 
+/**
+ * How much of a report may be refused before the load is treated as schema
+ * drift rather than a handful of odd rows. One percent: Amazon's own reports
+ * occasionally carry a row with a dimension it never filled, and losing those
+ * silently is acceptable where losing a whole grain is not.
+ */
+export const SKIP_FAILURE_RATIO = 0.01;
+
 interface CommonRow { date: string; impressions: number; clicks: number; cost: number }
 interface SpCampaignRow extends CommonRow { campaignId: string; purchases7d: number; sales7d: number; unitsSoldClicks7d: number }
-interface SpTargetRow extends SpCampaignRow {
-  adGroupId: string; targetId: string; targetKind: 'keyword' | 'target';
-  matchType: ReturnType<typeof parseMatchType>; purchases1d: number; purchases14d: number;
-  purchases30d: number; sales1d: number; sales14d: number; sales30d: number;
-  topOfSearchImpressionShare: number | null;
-}
-interface SearchTermRow extends SpCampaignRow { adGroupId: string; targetId: string | null; searchTerm: string; matchType: ReturnType<typeof parseMatchType> }
 interface PlacementRow extends CommonRow { campaignId: string; placementClassification: string; purchases7d: number; sales7d: number }
 interface CampaignRow extends SpCampaignRow { adGroupId: string | null }
 
@@ -45,12 +46,20 @@ export interface CampaignFactRow {
 
 /**
  * `sourceRows` is how many rows Amazon sent; `rows` is how many fact rows they
- * became. The two differ only for `spCampaigns`, which arrives per campaign and
- * lands on a per-profile grain. Keeping both means the fetch handler can assert
- * fact rows offered against fact rows written (the invariant the ledger
- * records) without losing the number an operator compares to the Amazon UI.
+ * became; `skipped` is what a parser refused and why.
+ *
+ * The three differ in two ways. `spCampaigns` arrives per campaign and lands on
+ * a per-profile grain, so it aggregates and `rows` is smaller by design.
+ * `spTargeting` and `spSearchTerm` are parsed by `@wizard-ads/ads-api`, which
+ * refuses a row missing a dimension its grain is keyed by rather than throwing
+ * the whole report away — for those, `rows.length + skipped.length` equals
+ * `sourceRows` exactly, and the fetch handler asserts it.
+ *
+ * Keeping all three means the fetch handler can assert fact rows offered
+ * against fact rows written (the invariant the ledger records) without losing
+ * the number an operator compares to the Amazon UI.
  */
-export type ParsedFactBatch = { sourceRows: number } & (
+export type ParsedFactBatch = { sourceRows: number; skipped: SkippedReportRow[] } & (
   | { kind: 'sp_target'; rows: NewSpTargetFact[] }
   | { kind: 'search_term'; rows: NewSearchTermFact[] }
   | { kind: 'placement'; rows: NewPlacementFact[] }
@@ -122,31 +131,9 @@ function parseCommon(value: unknown): [Record<string, unknown>, CommonRow] {
   return [row, { date, impressions: numberField(row, 'impressions', true), clicks: numberField(row, 'clicks', true), cost: numberField(row, 'cost') }];
 }
 
-function parseMatchType(value: unknown): MatchTypeValue | null {
-  if (value === null || value === undefined) return null;
-  return MatchType.parse(value);
-}
-
 function parseSpCampaign(value: unknown): SpCampaignRow {
   const [row, commonRow] = parseCommon(value);
   return { ...commonRow, campaignId: stringField(row, 'campaignId') as string, purchases7d: numberField(row, 'purchases7d', true), sales7d: numberField(row, 'sales7d'), unitsSoldClicks7d: numberField(row, 'unitsSoldClicks7d', true) };
-}
-
-function parseSpTarget(value: unknown): SpTargetRow {
-  const [row] = parseCommon(value);
-  const base = parseSpCampaign(value);
-  const share = row['topOfSearchImpressionShare'];
-  const parsedShare = share === null || share === undefined ? null : Number(share);
-  if (parsedShare !== null && (!Number.isFinite(parsedShare) || parsedShare < 0 || parsedShare > 1)) throw new Error('topOfSearchImpressionShare must be between 0 and 1');
-  const kind = row['targetKind'] ?? 'target';
-  if (kind !== 'keyword' && kind !== 'target') throw new Error('targetKind must be keyword or target');
-  return { ...base, adGroupId: stringField(row, 'adGroupId') as string, targetId: stringField(row, 'targetId') as string, targetKind: kind, matchType: parseMatchType(row['matchType']), purchases1d: numberField(row, 'purchases1d', true), purchases14d: numberField(row, 'purchases14d', true), purchases30d: numberField(row, 'purchases30d', true), sales1d: numberField(row, 'sales1d'), sales14d: numberField(row, 'sales14d'), sales30d: numberField(row, 'sales30d'), topOfSearchImpressionShare: parsedShare };
-}
-
-function parseSearchTerm(value: unknown): SearchTermRow {
-  const [row] = parseCommon(value);
-  const base = parseSpCampaign(value);
-  return { ...base, adGroupId: stringField(row, 'adGroupId') as string, targetId: stringField(row, 'targetId', true), searchTerm: stringField(row, 'searchTerm', true) ?? '', matchType: parseMatchType(row['matchType']) };
 }
 
 function parsePlacement(value: unknown): PlacementRow {
@@ -174,64 +161,38 @@ export function parseReportRows(
   const base = { orgId: profile.orgId, profileId: profile.id, reportRequestId };
 
   switch (reportType) {
-    case 'spTargeting':
+    // `spTargeting` and `spSearchTerm` are parsed by `@wizard-ads/ads-api`,
+    // which is the parser that has met the live report. Amazon sends
+    // `keywordId` (not `targetId`) on the target grain and its own match-type
+    // spellings (`EXACT`, `TARGETING_EXPRESSION`); a strict local parser
+    // rejected every non-empty report of both types. The tenant join is all the
+    // worker adds: the report knows Amazon's profile, we know our uuid.
+    case 'spTargeting': {
+      const result = parseSpTargetingReport(raw);
       return {
-        sourceRows: raw.length,
+        sourceRows: result.input,
+        skipped: result.skipped,
         kind: 'sp_target',
-        rows: raw.map((item) => {
-          const row = parseSpTarget(item);
-          return {
-            ...base,
-            date: row.date,
-            adProduct: 'SP' as const,
-            campaignId: row.campaignId,
-            adGroupId: row.adGroupId,
-            targetId: row.targetId,
-            targetKind: row.targetKind,
-            matchType: row.matchType,
-            impressions: row.impressions,
-            clicks: row.clicks,
-            cost: row.cost,
-            purchases1d: row.purchases1d,
-            purchases7d: row.purchases7d,
-            purchases14d: row.purchases14d,
-            purchases30d: row.purchases30d,
-            sales1d: row.sales1d,
-            sales7d: row.sales7d,
-            sales14d: row.sales14d,
-            sales30d: row.sales30d,
-            unitsSold7d: row.unitsSoldClicks7d,
-            topOfSearchImpressionShare: row.topOfSearchImpressionShare ?? null,
-          };
-        }),
+        rows: result.rows.map((row): NewSpTargetFact => ({
+          ...row,
+          topOfSearchImpressionShare: row.topOfSearchImpressionShare ?? null,
+          ...base,
+        })),
       };
-    case 'spSearchTerm':
+    }
+    case 'spSearchTerm': {
+      const result = parseSpSearchTermReport(raw);
       return {
-        sourceRows: raw.length,
+        sourceRows: result.input,
+        skipped: result.skipped,
         kind: 'search_term',
-        rows: raw.map((item) => {
-          const row = parseSearchTerm(item);
-          return {
-            ...base,
-            date: row.date,
-            adProduct: 'SP' as const,
-            campaignId: row.campaignId,
-            adGroupId: row.adGroupId,
-            targetId: row.targetId,
-            searchTerm: row.searchTerm,
-            matchType: row.matchType,
-            impressions: row.impressions,
-            clicks: row.clicks,
-            cost: row.cost,
-            purchases7d: row.purchases7d,
-            sales7d: row.sales7d,
-            unitsSold7d: row.unitsSoldClicks7d,
-          };
-        }),
+        rows: result.rows.map((row): NewSearchTermFact => ({ ...row, ...base })),
       };
+    }
     case 'spPlacement':
       return {
         sourceRows: raw.length,
+        skipped: [],
         kind: 'placement',
         rows: raw.map((item) => {
           const row = parsePlacement(item);
@@ -286,7 +247,7 @@ export function parseReportRows(
         provisional: false,
         ...totals,
       }));
-      return { sourceRows: raw.length, kind: 'profile', rows };
+      return { sourceRows: raw.length, skipped: [], kind: 'profile', rows };
     }
     case 'sbCampaigns':
     case 'sdCampaigns': {
@@ -306,7 +267,7 @@ export function parseReportRows(
           metrics: item as Record<string, unknown>,
         };
       });
-      return { sourceRows: raw.length, kind: reportType === 'sbCampaigns' ? 'sb' : 'sd', rows };
+      return { sourceRows: raw.length, skipped: [], kind: reportType === 'sbCampaigns' ? 'sb' : 'sd', rows };
     }
   }
 }

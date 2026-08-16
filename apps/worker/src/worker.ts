@@ -1,3 +1,4 @@
+import type { SkippedReportRow } from '@wizard-ads/ads-api';
 import type { ClaimedJob } from '@wizard-ads/db';
 import { JobPayload, type Region } from '@wizard-ads/shared';
 import { isPermanentCrosscheckError, type CrosscheckIngest } from './crosscheck.js';
@@ -10,7 +11,7 @@ import {
   type EntityListFailure,
 } from './ads-api.js';
 import { runBidSeriesSync, type BidSeriesSyncDeps } from './bid-series.js';
-import { gunzipJson, parseReportRows } from './parsers.js';
+import { SKIP_FAILURE_RATIO, gunzipJson, parseReportRows } from './parsers.js';
 import {
   defaultRegionTokenBuckets,
   type RegionTokenBuckets,
@@ -247,7 +248,7 @@ export class SyncWorker {
       throw new Error(`entity sync listed nothing for ${requested.join(', ')}`);
     }
 
-    const totals = { listed: 0, upserted: 0, changes: 0, tombstoned: 0 };
+    const totals = { listed: 0, upserted: 0, duplicates: 0, changes: 0, tombstoned: 0 };
     for (const product of succeeded) {
       const productRows = listing.rows.filter((row) => row.adProduct === product);
       // Scope the mirror to this product so tombstoning stays within it and a
@@ -257,12 +258,17 @@ export class SyncWorker {
         full: payload.full,
       });
       // Program rule 4: the artifact, not the exit code. A listing that
-      // upserted fewer rows than it listed lost some.
-      if (counts.listed !== counts.upserted) {
-        throw new Error(`${product}: listed ${counts.listed}, upserted ${counts.upserted}`);
+      // upserted fewer rows than it listed lost some — unless the shortfall is
+      // exactly the rows another row in the same listing already carried (the
+      // negatives mirror merges three Amazon endpoints onto one key).
+      if (counts.listed !== counts.upserted + counts.duplicates) {
+        throw new Error(
+          `${product}: listed ${counts.listed}, upserted ${counts.upserted}, duplicates ${counts.duplicates}`,
+        );
       }
       totals.listed += counts.listed;
       totals.upserted += counts.upserted;
+      totals.duplicates += counts.duplicates;
       totals.changes += counts.changes;
       totals.tombstoned += counts.tombstoned;
     }
@@ -405,15 +411,39 @@ export class SyncWorker {
     }
     const batch = parseReportRows(ledger.reportType, downloaded.value, profile, ledger.id);
     const parsed = batch.rows.length;
+    const skipped = batch.skipped.length;
+    const reasons = skipReasons(batch.skipped);
+    // Rows Amazon sent must be accounted for: kept plus refused. Asserted for
+    // the two delegated grains, where the parser reports both numbers and the
+    // fact row grain is the report row grain. `spCampaigns` aggregates onto the
+    // profile grain by design, so the identity does not hold there.
+    const accounted = batch.kind === 'sp_target' || batch.kind === 'search_term';
+    if (accounted && batch.sourceRows !== parsed + skipped) {
+      throw new Error(
+        `report ${ledger.id}: ${batch.sourceRows} source rows but ${parsed} parsed + ${skipped} skipped`,
+      );
+    }
+    // Deterministic schema drift, not bad luck: a parser that refused
+    // everything (or nearly everything) will refuse it again on all five
+    // attempts, and each retry leaves another stuck-processing ledger row. Fail
+    // the ledger honestly and dead-letter instead.
+    if (batch.sourceRows > 0 && (parsed === 0 || skipped / batch.sourceRows > SKIP_FAILURE_RATIO)) {
+      const detail = `parser refused ${skipped} of ${batch.sourceRows} rows: ${formatReasons(reasons)}`;
+      await this.store.updateReportPoll(ledger.id, { status: 'failed', error: detail });
+      throw new PermanentJobError(`${ledger.reportType} ${detail}`);
+    }
     const loaded = await this.store.loadFacts(batch);
     // Program rule 4 again: `completeReport` throws on a mismatch, so a fetch
     // that silently dropped rows fails the job instead of reporting success.
     await this.store.completeReport(ledger.id, { parsed, loaded, bytesDownloaded: downloaded.bytesDownloaded });
     this.logger.info('report fetched', {
       reportRequestId: ledger.id, reportType: ledger.reportType,
-      reportRows: batch.sourceRows, parsed, loaded,
+      reportRows: batch.sourceRows, parsed, loaded, skipped, skipReasons: reasons,
     });
-    return { reportRows: batch.sourceRows, parsed, loaded, bytesDownloaded: downloaded.bytesDownloaded };
+    return {
+      reportRows: batch.sourceRows, parsed, loaded, skipped, skipReasons: reasons,
+      bytesDownloaded: downloaded.bytesDownloaded,
+    };
   }
 }
 
@@ -583,6 +613,30 @@ function partialSyncError(
     return new AdsApiRetryableError(detail, worst.error.retryAfterSeconds);
   }
   return new Error(detail, worst?.error instanceof Error ? { cause: worst.error } : undefined);
+}
+
+/** How many distinct skip reasons a log line or job result carries. */
+const MAX_SKIP_REASONS = 5;
+
+/**
+ * A bounded histogram of why rows were refused.
+ *
+ * Bounded because this lands in `sync_jobs.result` and in a log line: a report
+ * that refused sixty thousand rows must not write sixty thousand reasons, and
+ * the first few distinct ones already say which column Amazon stopped sending.
+ */
+function skipReasons(skipped: readonly SkippedReportRow[]): Record<string, number> {
+  const counts = new Map<string, number>();
+  for (const row of skipped) counts.set(row.reason, (counts.get(row.reason) ?? 0) + 1);
+  return Object.fromEntries(
+    [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAX_SKIP_REASONS),
+  );
+}
+
+function formatReasons(reasons: Record<string, number>): string {
+  const entries = Object.entries(reasons);
+  if (entries.length === 0) return 'no reason recorded';
+  return entries.map(([reason, count]) => `${reason} (${count})`).join(', ');
 }
 
 function addMinutes(date: Date, minutes: number): Date {

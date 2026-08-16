@@ -11,6 +11,7 @@ import type { IndexColumn, PgTable, PgUpdateSetSource } from 'drizzle-orm/pg-cor
 import type { DbHandle } from '../client.js';
 import { entityChanges } from '../schema/entities.js';
 import type { NewEntityChange } from '../schema/entities.js';
+import { chunkForInsert } from './chunk.js';
 
 export interface MirrorCounts {
   /** Rows the sync pass listed from Amazon. */
@@ -38,6 +39,23 @@ export class MirrorCountMismatch extends Error {
  * Every column present on the table except the key, `id` and `first_seen_at` is
  * overwritten from the incoming row: the mirror is a snapshot of what Amazon
  * currently says, and a half-updated snapshot is worse than a stale one.
+ *
+ * Written in bind-parameter-sized chunks rather than one statement. A profile
+ * with more negative keywords than Postgres has parameters for is not an edge
+ * case — it is what the first large live profile did, and the error it produced
+ * was the truncated statement itself.
+ *
+ * The chunking gives up single-statement atomicity, deliberately: a failure
+ * mid-batch leaves the earlier chunks committed. That is safe here for the same
+ * reason the worker's partial entity sync is — every write is an upsert keyed
+ * on `(profile_id, amazon_id)`, and the count assertion below still fails the
+ * pass, so the retry redoes the whole listing and converges. A stale mirror
+ * that reports success is the outcome worth avoiding; a mirror half-refreshed
+ * by a job that failed loudly is not.
+ *
+ * The caller must hand over rows already deduplicated on the key: Postgres
+ * refuses to let one `ON CONFLICT DO UPDATE` touch a row twice, and chunking
+ * cannot make an intra-batch duplicate legal.
  */
 export async function upsertMirrorRows<T extends PgTable>(
   handle: DbHandle,
@@ -60,16 +78,20 @@ export async function upsertMirrorRows<T extends PgTable>(
     throw new Error(`${getTableName(table)} is not a mirror table`);
   }
 
-  const written = await handle.db
-    .insert(table)
-    .values([...rows] as T['$inferInsert'][])
-    .onConflictDoUpdate({
-      target: [profileColumn, amazonColumn],
-      set: set as PgUpdateSetSource<T>,
-    })
-    .returning({ amazonId: sql<string>`${sql.identifier(amazonColumn.name)}` });
+  let upserted = 0;
+  for (const chunk of chunkForInsert(rows, Object.keys(columns).length)) {
+    const written = await handle.db
+      .insert(table)
+      .values(chunk as T['$inferInsert'][])
+      .onConflictDoUpdate({
+        target: [profileColumn, amazonColumn],
+        set: set as PgUpdateSetSource<T>,
+      })
+      .returning({ amazonId: sql<string>`${sql.identifier(amazonColumn.name)}` });
+    upserted += written.length;
+  }
 
-  const counts: MirrorCounts = { listed: rows.length, upserted: written.length };
+  const counts: MirrorCounts = { listed: rows.length, upserted };
   if (counts.listed !== counts.upserted) {
     throw new MirrorCountMismatch(getTableName(table), counts);
   }
@@ -79,20 +101,29 @@ export async function upsertMirrorRows<T extends PgTable>(
 /**
  * Record diffs. `source: 'sync'` means somebody changed this outside
  * wizard-ads, which is the question the table exists to answer.
+ *
+ * Chunked for the same reason as the mirror upsert, and with the same
+ * tradeoff: a first sync of a large profile writes one change row per entity,
+ * which is by far the biggest insert this system does.
  */
 export async function recordEntityChanges(
   handle: DbHandle,
   changes: readonly NewEntityChange[],
 ): Promise<number> {
   if (changes.length === 0) return 0;
-  const written = await handle.db
-    .insert(entityChanges)
-    .values([...changes])
-    .returning({ id: entityChanges.id });
-  if (written.length !== changes.length) {
+  const columnCount = Object.keys(getTableColumns(entityChanges)).length;
+  let total = 0;
+  for (const chunk of chunkForInsert(changes, columnCount)) {
+    const written = await handle.db
+      .insert(entityChanges)
+      .values(chunk)
+      .returning({ id: entityChanges.id });
+    total += written.length;
+  }
+  if (total !== changes.length) {
     throw new Error(
-      `entity_changes: offered ${changes.length} rows, wrote ${written.length}`,
+      `entity_changes: offered ${changes.length} rows, wrote ${total}`,
     );
   }
-  return written.length;
+  return total;
 }

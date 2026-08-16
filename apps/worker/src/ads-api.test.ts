@@ -154,6 +154,35 @@ describe('DbAdsApiClient.listEntities', () => {
     expect(listing.failures[0]?.error).toBeInstanceOf(AdsApiHttpError);
   });
 
+  /**
+   * A large profile's Sponsored Products listing used to end in "Maximum call
+   * stack size exceeded": the per-product rows were appended with
+   * `rows.push(...productRows)`, which passes every row as a call argument.
+   *
+   * The count is well past the spread limit on purpose. Seventy thousand rows
+   * — the size that failed in production, inside a deep async stack — still
+   * spreads fine from a shallow one, so a test at that size would pass against
+   * the unfixed code and prove nothing.
+   */
+  it('lists a profile whose rows exceed the argument-spread limit', async () => {
+    const keyword = (index: number): MirrorRow<KeywordRow> => ({
+      entityType: 'keyword', amazonId: `k-${index}`, adProduct: 'SP', name: 'kw', state: 'enabled',
+      campaignId: 'c-1', adGroupId: 'ag-1', keywordText: 'kw', matchType: 'exact', bid: 1,
+    });
+    const items = Array.from({ length: 160_000 }, (_unused, index) => keyword(index));
+    const client = underlying({
+      listSpKeywords: async () => ({ ...emptyList(), items }),
+    });
+    const { adapter } = makeAdapter(client);
+
+    const listing = await adapter.listEntities(profile, true);
+
+    expect(listing.rows).toHaveLength(160_000);
+    expect(listing.succeeded).toEqual(['SP', 'SB', 'SD']);
+    expect(listing.failures).toEqual([]);
+    expect(listing.rows[159_999]).toMatchObject({ amazonId: 'k-159999', profileId: profile.id });
+  });
+
   it('builds one client per connection+region and reuses it across calls', async () => {
     const client = underlying();
     const { adapter, createClient } = makeAdapter(client);

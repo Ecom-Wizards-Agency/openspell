@@ -14,9 +14,15 @@
  * profile, a popover with a search box, the profile list, and a "Manage
  * Profiles" link. Switching is still a navigation, so the resulting URL stays
  * the shareable thing it always should have been.
+ *
+ * The choice is also mirrored into `PROFILE_COOKIE` on the way out. The URL
+ * remains the source of truth — nothing reads the cookie yet — and it exists so
+ * a later server-side default can land a fresh visit on the profile the
+ * operator last worked, rather than on "All profiles".
  */
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { PROFILE_COOKIE } from '../cookies';
 import { THEME_KEY } from './theme-script';
 
 export interface NavProfile {
@@ -65,8 +71,15 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
 
   const go = (profileId: string): void => {
     const url = new URL(window.location.href);
-    if (profileId === '') url.searchParams.delete('profile');
-    else url.searchParams.set('profile', profileId);
+    if (profileId === '') {
+      url.searchParams.delete('profile');
+      // Chosen "All profiles" is a choice too; leaving a stale cookie behind
+      // would quietly re-narrow the next visit.
+      document.cookie = `${PROFILE_COOKIE}=; path=/; max-age=0; SameSite=Lax`;
+    } else {
+      url.searchParams.set('profile', profileId);
+      document.cookie = `${PROFILE_COOKIE}=${encodeURIComponent(profileId)}; path=/; max-age=31536000; SameSite=Lax`;
+    }
     window.location.href = `${url.pathname}${url.search}`;
   };
 
@@ -142,7 +155,16 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
               <li className="wa-profile-empty">No profile matches “{query}”.</li>
             ) : null}
           </ul>
-          <a href="/settings/profiles" className="wa-profile-manage">
+          {/* Leaves the popover for another screen; it should not also leave
+              the profile behind. */}
+          <a
+            href={
+              selected === ''
+                ? '/settings/profiles'
+                : `/settings/profiles?profile=${encodeURIComponent(selected)}`
+            }
+            className="wa-profile-manage"
+          >
             Manage Profiles
           </a>
         </div>

@@ -19,10 +19,12 @@
  * are hidden with CSS, so the same server markup carries both states and the
  * unit test sees every label.
  *
- * A client component for two reasons: marking the current page (Next gives a
- * server component no pathname), and remembering the collapse/open state in
- * `localStorage`. Both read `window` after mount, so the component still renders
- * anywhere the pure unit test needs it.
+ * A client component for three reasons: marking the current page (Next gives a
+ * server component no pathname), remembering the collapse/open state in
+ * `localStorage`, and carrying the active `?profile=` across a navigation. All
+ * three read `window` after mount rather than during render, so the server
+ * markup and the first client render agree and nothing here can cause a
+ * hydration mismatch.
  */
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -34,11 +36,13 @@ const COLLAPSED_KEY = 'wizard-ads.nav.collapsed';
 
 export function SidebarNav(): ReactNode {
   const [pathname, setPathname] = useState<string | null>(null);
+  const [profile, setProfile] = useState<string | null>(null);
   const [closed, setClosed] = useState<readonly string[]>([]);
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
     setPathname(window.location.pathname);
+    setProfile(new URLSearchParams(window.location.search).get('profile'));
     try {
       const stored = window.localStorage.getItem(CLOSED_KEY);
       if (stored !== null) setClosed(JSON.parse(stored) as string[]);
@@ -98,7 +102,7 @@ export function SidebarNav(): ReactNode {
                   return (
                     <li key={link.href}>
                       <a
-                        href={link.href}
+                        href={withProfile(link.href, profile)}
                         className="wa-navlink"
                         title={link.label}
                         {...(current ? { 'aria-current': 'page' as const } : {})}
@@ -150,6 +154,23 @@ function applyCollapsed(value: boolean, set: (value: boolean) => void): void {
   set(value);
   if (value) document.documentElement.setAttribute('data-nav-collapsed', 'true');
   else document.documentElement.removeAttribute('data-nav-collapsed');
+}
+
+/**
+ * Carry the chosen advertising profile through the navigation.
+ *
+ * Tenancy in this product is a parameter on the route, not a path prefix (see
+ * `topbar-controls.tsx`), and these are plain anchors doing full-page
+ * navigations — so a bare `href` is an instruction to forget which profile the
+ * operator is looking at. Every link therefore re-states it. The `href` the
+ * active-link check compares is still the bare one: the profile decides what a
+ * screen shows, never which screen you are on.
+ *
+ * The links have no query of their own, so appending is the whole job.
+ */
+function withProfile(href: string, profile: string | null): string {
+  if (profile === null || profile === '') return href;
+  return `${href}?profile=${encodeURIComponent(profile)}`;
 }
 
 /**

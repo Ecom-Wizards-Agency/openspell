@@ -72,9 +72,24 @@ export interface EntitySyncOptions {
 export interface EntitySyncCounts {
   listed: number;
   upserted: number;
+  /**
+   * Listed rows collapsed away because another row in the same listing carried
+   * the same `(profileId, amazonId)`. Real, not defensive: the negatives mirror
+   * merges three Amazon endpoints (ad-group negative keywords, campaign
+   * negative keywords, negative targets) into one table.
+   */
+  duplicates: number;
   changes: number;
   tombstoned: number;
 }
+
+/** The store's own narrow logging surface. `console` unless a caller says otherwise. */
+export interface StoreLogger {
+  info(message: string, details?: Record<string, unknown>): void;
+}
+
+/** How many colliding ids one log line carries. Ids only, never row contents. */
+const MAX_LOGGED_DUPLICATE_IDS = 20;
 
 export interface WorkerStore {
   claim(workerId: string, limit: number): Promise<ClaimedJob[]>;
@@ -154,7 +169,11 @@ export class ParsedLoadedMismatch extends Error {
 type ExistingEntity = { amazonId: string; deletedAt: Date | string | null; snapshot: Record<string, unknown> };
 
 export class PostgresWorkerStore implements WorkerStore {
-  constructor(readonly handle: DbHandle) {}
+  private readonly logger: StoreLogger;
+
+  constructor(readonly handle: DbHandle, logger?: StoreLogger) {
+    this.logger = logger ?? { info: (message, details) => console.info(message, details ?? {}) };
+  }
 
   claim(workerId: string, limit: number): Promise<ClaimedJob[]> {
     return claimSyncJobs(this.handle, workerId, limit);
@@ -232,11 +251,28 @@ export class PostgresWorkerStore implements WorkerStore {
     const now = new Date();
     let upserted = 0;
     let tombstoned = 0;
+    let duplicates = 0;
     const changes: NewEntityChange[] = [];
     const entityTypes = ['portfolio', 'campaign', 'ad_group', 'product_ad', 'keyword', 'target', 'negative'] as const;
 
     for (const entityType of entityTypes) {
-      const incoming = entities.filter((entity) => entity.entityType === entityType);
+      // Collapse before diffing or writing. The negatives mirror merges three
+      // Amazon endpoints into one `(profile_id, amazon_id)` key, so a listing
+      // can legitimately carry the same id twice — and Postgres refuses to let
+      // one `ON CONFLICT DO UPDATE` touch a row a second time. Last wins,
+      // deterministically by listing order, and the collision is counted rather
+      // than hidden: `listed` still means rows Amazon sent.
+      const collapsed = collapseByAmazonId(entities.filter((entity) => entity.entityType === entityType));
+      const incoming = collapsed.rows;
+      if (collapsed.duplicateIds.length > 0) {
+        duplicates += collapsed.duplicateIds.length;
+        this.logger.info('entity listing carried duplicate amazon ids', {
+          profileId: profile.id,
+          entityType,
+          duplicates: collapsed.duplicateIds.length,
+          ids: collapsed.duplicateIds.slice(0, MAX_LOGGED_DUPLICATE_IDS),
+        });
+      }
       const existing = await this.existingEntities(profile.id, entityType, adProduct);
       const byId = new Map(existing.map((row) => [row.amazonId, row]));
       const seen = new Set<string>();
@@ -284,10 +320,14 @@ export class PostgresWorkerStore implements WorkerStore {
     }
 
     const writtenChanges = await recordEntityChanges(this.handle, changes);
-    if (entities.length !== upserted) {
-      throw new Error(`entity sync listed ${entities.length} rows but upserted ${upserted}`);
+    // Program rule 4: every listed row is accounted for, as a write or as a
+    // collision with a row that was written.
+    if (entities.length !== upserted + duplicates) {
+      throw new Error(
+        `entity sync listed ${entities.length} rows but upserted ${upserted} (${duplicates} duplicates)`,
+      );
     }
-    return { listed: entities.length, upserted, changes: writtenChanges, tombstoned };
+    return { listed: entities.length, upserted, duplicates, changes: writtenChanges, tombstoned };
   }
 
   async ensureReportRequest(
@@ -518,6 +558,23 @@ export class PostgresWorkerStore implements WorkerStore {
       case 'negative': return (await upsertMirrorRows(this.handle, negatives, rows.filter(isType('negative')).map((row) => ({ ...baseMirror(profile, row, syncedAt), campaignId: row.campaignId, adGroupId: row.adGroupId, scope: row.scope, keywordText: row.keywordText, expression: row.expression, matchType: row.matchType })))).upserted;
     }
   }
+}
+
+/**
+ * One row per `amazonId`, last occurrence winning, in first-appearance order.
+ *
+ * Last wins because the endpoints are listed in a fixed order and the later one
+ * is the more specific scope; first-appearance order because a stable output
+ * order is what makes the same listing produce the same statement twice.
+ */
+function collapseByAmazonId(rows: readonly EntityRow[]): { rows: EntityRow[]; duplicateIds: string[] } {
+  const byId = new Map<string, EntityRow>();
+  const duplicateIds: string[] = [];
+  for (const row of rows) {
+    if (byId.has(row.amazonId)) duplicateIds.push(row.amazonId);
+    byId.set(row.amazonId, row);
+  }
+  return { rows: [...byId.values()], duplicateIds };
 }
 
 function tableName(entityType: EntityRow['entityType']): string {
