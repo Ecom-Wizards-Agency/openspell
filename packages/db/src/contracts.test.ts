@@ -9,27 +9,215 @@
  * character, fails here rather than in a grid three packages away.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { getTableColumns } from 'drizzle-orm';
 import { DailyFact, ProfileFact, SearchTermFact } from '@wizard-ads/shared';
 import {
+  DuplicateFactGrain,
   FactLoadCountMismatch,
+  assertUniqueFactGrain,
   readSpTargetFacts,
   toDailyFact,
   toProfileFact,
   toSearchTermFact,
+  upsertPlacementFacts,
   upsertProfileFacts,
   upsertSearchTermFacts,
   upsertSpTargetFacts,
 } from './queries/facts.js';
+import { chunkForInsert } from './queries/chunk.js';
 import { upsertMirrorRows } from './queries/entities.js';
 import { keywords, negatives } from './schema/entities.js';
 import * as enums from './schema/enums.js';
-import { factProfileDaily, factSearchTermDaily } from './schema/facts.js';
+import { factProfileDaily, factSearchTermDaily, factSpTargetDaily } from './schema/facts.js';
 import { expectRejection } from './testing/errors.js';
 import { createTestDatabase, databaseAvailable } from './testing/harness.js';
+import type { DbHandle } from './client.js';
+import type { NewSpTargetFact } from './schema/facts.js';
 import type { TestDatabase } from './testing/harness.js';
 
 const available = await databaseAvailable();
 const USER = '66666666-6666-4666-8666-666666666666';
+const PROFILE = '77777777-7777-4777-8777-777777777777';
+const ORG = '88888888-8888-4888-8888-888888888888';
+
+/**
+ * The conflict-key check is pure, so it runs whether or not a database is
+ * reachable — which is the point of it. Before chunking, two rows sharing a
+ * grain met one `ON CONFLICT DO UPDATE` statement and Postgres refused them.
+ * After chunking, two copies in different chunks are two statements: both
+ * succeed, the summed count still matches, and the later one quietly overwrites
+ * the earlier. The loaders therefore check the whole batch themselves, before
+ * they touch the handle.
+ */
+describe('duplicate conflict keys, independent of chunk boundaries', () => {
+  /** A handle that fails the test if a loader reaches for it. */
+  const unusableHandle = {
+    get db(): never {
+      throw new Error('the loader reached the database before checking the batch');
+    },
+    get sql(): never {
+      throw new Error('the loader reached the database before checking the batch');
+    },
+  } as unknown as DbHandle;
+
+  const targetRow = (targetId: string): NewSpTargetFact => ({
+    orgId: ORG,
+    profileId: PROFILE,
+    date: '2026-08-01',
+    adProduct: 'SP',
+    campaignId: 'c-1',
+    adGroupId: 'ag-1',
+    targetId,
+    targetKind: 'keyword',
+    impressions: 1,
+    clicks: 0,
+    cost: 0,
+  });
+
+  it('passes a batch whose keys are all distinct', () => {
+    expect(() =>
+      assertUniqueFactGrain('fact_profile_daily', [{ p: 'a' }, { p: 'b' }], (row) => [row.p]),
+    ).not.toThrow();
+  });
+
+  it('names the table, the number of repeated keys, and the keys themselves', () => {
+    const rows = [{ p: 'a' }, { p: 'b' }, { p: 'a' }, { p: 'b' }, { p: 'c' }];
+    try {
+      assertUniqueFactGrain('fact_profile_daily', rows, (row) => [row.p]);
+      expect.unreachable('a repeated key must throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(DuplicateFactGrain);
+      const failure = error as DuplicateFactGrain;
+      expect(failure.table).toBe('fact_profile_daily');
+      expect(failure.duplicateKeys).toBe(2);
+      expect(failure.samples).toEqual(['["a"]', '["b"]']);
+      expect(failure.message).toContain('fact_profile_daily');
+      expect(failure.message).toContain('2 conflict keys appear more than once');
+    }
+  });
+
+  it('lists at most five offending keys however many there are', () => {
+    const rows = Array.from({ length: 24 }, (_unused, index) => ({ p: `k-${index % 12}` }));
+    try {
+      assertUniqueFactGrain('fact_search_term_daily', rows, (row) => [row.p]);
+      expect.unreachable('a repeated key must throw');
+    } catch (error) {
+      const failure = error as DuplicateFactGrain;
+      expect(failure.duplicateKeys).toBe(12);
+      expect(failure.samples).toHaveLength(5);
+      expect(failure.message).toContain('first 5');
+    }
+  });
+
+  it('reports key columns only, never a metric value', () => {
+    const rows = [
+      { targetId: 'kw-1', cost: 41.37 },
+      { targetId: 'kw-1', cost: 99.99 },
+    ];
+    try {
+      assertUniqueFactGrain('fact_sp_target_daily', rows, (row) => [row.targetId]);
+      expect.unreachable('a repeated key must throw');
+    } catch (error) {
+      expect((error as DuplicateFactGrain).message).not.toContain('41.37');
+      expect((error as DuplicateFactGrain).message).not.toContain('99.99');
+    }
+  });
+
+  it('treats null and undefined as one value, as `nulls not distinct` does', () => {
+    // fact_search_term_daily's grain index is declared `nulls not distinct`, so
+    // two auto-target rows with no target id are the same grain to Postgres.
+    expect(() =>
+      assertUniqueFactGrain(
+        'fact_search_term_daily',
+        [{ targetId: null }, { targetId: undefined }],
+        (row) => [row.targetId],
+      ),
+    ).toThrow(DuplicateFactGrain);
+  });
+
+  it('does not confuse a null component with a row that differs elsewhere', () => {
+    expect(() =>
+      assertUniqueFactGrain(
+        'fact_search_term_daily',
+        [
+          { targetId: null, term: 'widget' },
+          { targetId: null, term: 'widget set' },
+        ],
+        (row) => [row.targetId, row.term],
+      ),
+    ).not.toThrow();
+  });
+
+  it('catches a duplicate pair split across chunks, before any statement runs', async () => {
+    // 26 columns puts the chunk cap around 2 500 rows; a pair at the two ends of
+    // a 3 000-row batch therefore lands in different statements, where the old
+    // single-statement behaviour saw nothing.
+    const rows: NewSpTargetFact[] = Array.from({ length: 3_000 }, (_unused, index) =>
+      targetRow(`kw-split-${index}`),
+    );
+    rows[rows.length - 1] = targetRow('kw-split-0');
+
+    const width = Object.keys(getTableColumns(factSpTargetDaily)).length;
+    const chunks = chunkForInsert(rows, width);
+    expect(chunks.length, 'the duplicate pair must straddle a chunk boundary').toBeGreaterThan(1);
+    expect(chunks[0]).toContain(rows[0]);
+    expect(chunks[0]).not.toContain(rows.at(-1));
+
+    await expect(upsertSpTargetFacts(unusableHandle, rows)).rejects.toBeInstanceOf(
+      DuplicateFactGrain,
+    );
+  });
+
+  it('checks every loader, each against its own conflict target', async () => {
+    await expect(
+      upsertSpTargetFacts(unusableHandle, [targetRow('kw-1'), targetRow('kw-1')]),
+    ).rejects.toThrow(/fact_sp_target_daily/);
+
+    const searchTerm = {
+      orgId: ORG,
+      profileId: PROFILE,
+      date: '2026-08-01',
+      adProduct: 'SP' as const,
+      campaignId: 'c-1',
+      adGroupId: 'ag-1',
+      targetId: null,
+      searchTerm: 'widget',
+    };
+    await expect(
+      upsertSearchTermFacts(unusableHandle, [searchTerm, searchTerm]),
+    ).rejects.toThrow(/fact_search_term_daily/);
+
+    const placement = {
+      orgId: ORG,
+      profileId: PROFILE,
+      date: '2026-08-01',
+      adProduct: 'SP' as const,
+      campaignId: 'c-1',
+      placement: 'top_of_search' as const,
+    };
+    await expect(upsertPlacementFacts(unusableHandle, [placement, placement])).rejects.toThrow(
+      /fact_placement_daily/,
+    );
+
+    const profile = {
+      orgId: ORG,
+      profileId: PROFILE,
+      date: '2026-08-01',
+      currencyCode: 'USD',
+    };
+    await expect(upsertProfileFacts(unusableHandle, [profile, profile])).rejects.toThrow(
+      /fact_profile_daily/,
+    );
+  });
+
+  it('lets through rows that differ only in a column the conflict target names', async () => {
+    // Same everything but the target id: two grains, not a duplicate. The check
+    // must not fire, so the loader gets as far as the handle it cannot use.
+    await expect(
+      upsertSpTargetFacts(unusableHandle, [targetRow('kw-1'), targetRow('kw-2')]),
+    ).rejects.toThrow(/reached the database/);
+  });
+});
 
 describe.skipIf(!available)('schema and contracts', () => {
   let database: TestDatabase;
@@ -220,12 +408,20 @@ describe.skipIf(!available)('schema and contracts', () => {
         clicks: 0,
         cost: 0,
       };
-      // Two rows for one grain in one statement is a parse bug upstream. It must
-      // fail, not silently collapse into one row and report two written.
+      // Two rows for one grain is a parse bug upstream. It must fail, not
+      // silently collapse into one row and report two written. The loader now
+      // catches it itself rather than leaving it to Postgres, so the same batch
+      // fails the same way whether or not the pair shares a chunk.
       await expectRejection(
         upsertSpTargetFacts(database, [row, row]),
-        /cannot affect row a second time/i,
+        /fact_sp_target_daily: 1 conflict key appears more than once/i,
       );
+
+      const [stored] = await database.sql<{ n: string }[]>`
+        select count(*) as n from public.fact_sp_target_daily
+         where profile_id = ${profileId} and target_id = 'kw-duplicate'
+      `;
+      expect(Number(stored?.n), 'a refused batch writes nothing').toBe(0);
     });
 
     it('reports the counts it wrote', async () => {
