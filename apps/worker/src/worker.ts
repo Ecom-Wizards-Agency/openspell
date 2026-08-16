@@ -248,7 +248,7 @@ export class SyncWorker {
       throw new Error(`entity sync listed nothing for ${requested.join(', ')}`);
     }
 
-    const totals = { listed: 0, upserted: 0, changes: 0, tombstoned: 0 };
+    const totals = { listed: 0, upserted: 0, duplicates: 0, changes: 0, tombstoned: 0 };
     for (const product of succeeded) {
       const productRows = listing.rows.filter((row) => row.adProduct === product);
       // Scope the mirror to this product so tombstoning stays within it and a
@@ -258,12 +258,17 @@ export class SyncWorker {
         full: payload.full,
       });
       // Program rule 4: the artifact, not the exit code. A listing that
-      // upserted fewer rows than it listed lost some.
-      if (counts.listed !== counts.upserted) {
-        throw new Error(`${product}: listed ${counts.listed}, upserted ${counts.upserted}`);
+      // upserted fewer rows than it listed lost some — unless the shortfall is
+      // exactly the rows another row in the same listing already carried (the
+      // negatives mirror merges three Amazon endpoints onto one key).
+      if (counts.listed !== counts.upserted + counts.duplicates) {
+        throw new Error(
+          `${product}: listed ${counts.listed}, upserted ${counts.upserted}, duplicates ${counts.duplicates}`,
+        );
       }
       totals.listed += counts.listed;
       totals.upserted += counts.upserted;
+      totals.duplicates += counts.duplicates;
       totals.changes += counts.changes;
       totals.tombstoned += counts.tombstoned;
     }

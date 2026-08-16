@@ -17,6 +17,7 @@ import type { SQL } from 'drizzle-orm';
 import type { PgTable, PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import type { DailyFact, PlacementFact, ProfileFact, SearchTermFact } from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
+import { chunkForInsert } from './chunk.js';
 import {
   factPlacementDaily,
   factProfileDaily,
@@ -60,6 +61,20 @@ function assertCounts(table: string, counts: LoadCounts): LoadCounts {
 }
 
 /**
+ * Bind parameters one row of a table spends. A report day on a large profile
+ * runs to tens of thousands of target rows, and Postgres caps a statement at
+ * 65535 parameters, so every loader below writes in chunks this sizes.
+ *
+ * A duplicate *within* a chunk is still an error and stays one: these grains
+ * are keyed by exactly the columns the report is grouped by, so two rows with
+ * the same key mean the report is not what we asked for. Only the mirror, which
+ * merges three Amazon endpoints into one table, deduplicates.
+ */
+function columnCount(table: PgTable): number {
+  return Object.keys(getTableColumns(table)).length;
+}
+
+/**
  * Upsert target-grain facts. The conflict target is the grain key, so a
  * re-pull of a restated day overwrites rather than duplicating: reports restate
  * for 14+ days and the trailing re-pull is a normal Tuesday, not an exception.
@@ -70,43 +85,44 @@ export async function upsertSpTargetFacts(
 ): Promise<LoadCounts> {
   if (rows.length === 0) return { offered: 0, written: 0 };
 
-  const written = await handle.db
-    .insert(factSpTargetDaily)
-    .values([...rows])
-    .onConflictDoUpdate({
-      target: [
-        factSpTargetDaily.profileId,
-        factSpTargetDaily.date,
-        factSpTargetDaily.adProduct,
-        factSpTargetDaily.campaignId,
-        factSpTargetDaily.adGroupId,
-        factSpTargetDaily.targetId,
-      ],
-      set: conflictSet(factSpTargetDaily, [
-        'impressions',
-        'clicks',
-        'cost',
-        'purchases1d',
-        'purchases7d',
-        'purchases14d',
-        'purchases30d',
-        'sales1d',
-        'sales7d',
-        'sales14d',
-        'sales30d',
-        'unitsSold7d',
-        'topOfSearchImpressionShare',
-        'matchType',
-        'reportRequestId',
-        'loadedAt',
-      ]),
-    })
-    .returning({ profileId: factSpTargetDaily.profileId });
+  let written = 0;
+  for (const chunk of chunkForInsert(rows, columnCount(factSpTargetDaily))) {
+    const result = await handle.db
+      .insert(factSpTargetDaily)
+      .values(chunk)
+      .onConflictDoUpdate({
+        target: [
+          factSpTargetDaily.profileId,
+          factSpTargetDaily.date,
+          factSpTargetDaily.adProduct,
+          factSpTargetDaily.campaignId,
+          factSpTargetDaily.adGroupId,
+          factSpTargetDaily.targetId,
+        ],
+        set: conflictSet(factSpTargetDaily, [
+          'impressions',
+          'clicks',
+          'cost',
+          'purchases1d',
+          'purchases7d',
+          'purchases14d',
+          'purchases30d',
+          'sales1d',
+          'sales7d',
+          'sales14d',
+          'sales30d',
+          'unitsSold7d',
+          'topOfSearchImpressionShare',
+          'matchType',
+          'reportRequestId',
+          'loadedAt',
+        ]),
+      })
+      .returning({ profileId: factSpTargetDaily.profileId });
+    written += result.length;
+  }
 
-  return assertCounts('fact_sp_target_daily', {
-    offered: rows.length,
-    written: written.length,
-  });
+  return assertCounts('fact_sp_target_daily', { offered: rows.length, written });
 }
 
 export async function upsertSearchTermFacts(
@@ -115,36 +131,37 @@ export async function upsertSearchTermFacts(
 ): Promise<LoadCounts> {
   if (rows.length === 0) return { offered: 0, written: 0 };
 
-  const written = await handle.db
-    .insert(factSearchTermDaily)
-    .values([...rows])
-    .onConflictDoUpdate({
-      target: [
-        factSearchTermDaily.profileId,
-        factSearchTermDaily.date,
-        factSearchTermDaily.campaignId,
-        factSearchTermDaily.adGroupId,
-        factSearchTermDaily.targetId,
-        factSearchTermDaily.searchTerm,
-      ],
-      set: conflictSet(factSearchTermDaily, [
-        'impressions',
-        'clicks',
-        'cost',
-        'purchases7d',
-        'sales7d',
-        'unitsSold7d',
-        'matchType',
-        'reportRequestId',
-        'loadedAt',
-      ]),
-    })
-    .returning({ profileId: factSearchTermDaily.profileId });
+  let written = 0;
+  for (const chunk of chunkForInsert(rows, columnCount(factSearchTermDaily))) {
+    const result = await handle.db
+      .insert(factSearchTermDaily)
+      .values(chunk)
+      .onConflictDoUpdate({
+        target: [
+          factSearchTermDaily.profileId,
+          factSearchTermDaily.date,
+          factSearchTermDaily.campaignId,
+          factSearchTermDaily.adGroupId,
+          factSearchTermDaily.targetId,
+          factSearchTermDaily.searchTerm,
+        ],
+        set: conflictSet(factSearchTermDaily, [
+          'impressions',
+          'clicks',
+          'cost',
+          'purchases7d',
+          'sales7d',
+          'unitsSold7d',
+          'matchType',
+          'reportRequestId',
+          'loadedAt',
+        ]),
+      })
+      .returning({ profileId: factSearchTermDaily.profileId });
+    written += result.length;
+  }
 
-  return assertCounts('fact_search_term_daily', {
-    offered: rows.length,
-    written: written.length,
-  });
+  return assertCounts('fact_search_term_daily', { offered: rows.length, written });
 }
 
 export async function upsertPlacementFacts(
@@ -153,30 +170,34 @@ export async function upsertPlacementFacts(
 ): Promise<LoadCounts> {
   if (rows.length === 0) return { offered: 0, written: 0 };
 
-  const written = await handle.db
-    .insert(factPlacementDaily)
-    .values([...rows])
-    .onConflictDoUpdate({
-      target: [
-        factPlacementDaily.profileId,
-        factPlacementDaily.date,
-        factPlacementDaily.adProduct,
-        factPlacementDaily.campaignId,
-        factPlacementDaily.placement,
-      ],
-      set: conflictSet(factPlacementDaily, [
-        'impressions',
-        'clicks',
-        'cost',
-        'purchases7d',
-        'sales7d',
-        'reportRequestId',
-        'loadedAt',
-      ]),
-    })
-    .returning({ profileId: factPlacementDaily.profileId });
+  let written = 0;
+  for (const chunk of chunkForInsert(rows, columnCount(factPlacementDaily))) {
+    const result = await handle.db
+      .insert(factPlacementDaily)
+      .values(chunk)
+      .onConflictDoUpdate({
+        target: [
+          factPlacementDaily.profileId,
+          factPlacementDaily.date,
+          factPlacementDaily.adProduct,
+          factPlacementDaily.campaignId,
+          factPlacementDaily.placement,
+        ],
+        set: conflictSet(factPlacementDaily, [
+          'impressions',
+          'clicks',
+          'cost',
+          'purchases7d',
+          'sales7d',
+          'reportRequestId',
+          'loadedAt',
+        ]),
+      })
+      .returning({ profileId: factPlacementDaily.profileId });
+    written += result.length;
+  }
 
-  return assertCounts('fact_placement_daily', { offered: rows.length, written: written.length });
+  return assertCounts('fact_placement_daily', { offered: rows.length, written });
 }
 
 export async function upsertProfileFacts(
@@ -185,27 +206,31 @@ export async function upsertProfileFacts(
 ): Promise<LoadCounts> {
   if (rows.length === 0) return { offered: 0, written: 0 };
 
-  const written = await handle.db
-    .insert(factProfileDaily)
-    .values([...rows])
-    .onConflictDoUpdate({
-      target: [factProfileDaily.profileId, factProfileDaily.date],
-      set: conflictSet(factProfileDaily, [
-        'impressions',
-        'clicks',
-        'cost',
-        'purchases7d',
-        'sales7d',
-        'unitsSold7d',
-        'provisional',
-        'currencyCode',
-        'reportRequestId',
-        'loadedAt',
-      ]),
-    })
-    .returning({ profileId: factProfileDaily.profileId });
+  let written = 0;
+  for (const chunk of chunkForInsert(rows, columnCount(factProfileDaily))) {
+    const result = await handle.db
+      .insert(factProfileDaily)
+      .values(chunk)
+      .onConflictDoUpdate({
+        target: [factProfileDaily.profileId, factProfileDaily.date],
+        set: conflictSet(factProfileDaily, [
+          'impressions',
+          'clicks',
+          'cost',
+          'purchases7d',
+          'sales7d',
+          'unitsSold7d',
+          'provisional',
+          'currencyCode',
+          'reportRequestId',
+          'loadedAt',
+        ]),
+      })
+      .returning({ profileId: factProfileDaily.profileId });
+    written += result.length;
+  }
 
-  return assertCounts('fact_profile_daily', { offered: rows.length, written: written.length });
+  return assertCounts('fact_profile_daily', { offered: rows.length, written });
 }
 
 /**

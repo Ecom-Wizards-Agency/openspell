@@ -21,7 +21,7 @@ import {
   upsertSpTargetFacts,
 } from './queries/facts.js';
 import { upsertMirrorRows } from './queries/entities.js';
-import { keywords } from './schema/entities.js';
+import { keywords, negatives } from './schema/entities.js';
 import * as enums from './schema/enums.js';
 import { factProfileDaily, factSearchTermDaily } from './schema/facts.js';
 import { expectRejection } from './testing/errors.js';
@@ -286,5 +286,66 @@ describe.skipIf(!available)('schema and contracts', () => {
       select state from public.keywords where profile_id = ${profileId} and amazon_id = 'kw-mirror-1'
     `;
     expect(row?.state).toBe('archived');
+  });
+
+  /**
+   * Postgres binds at most 65535 parameters per statement, so a single
+   * multi-row insert caps out at a few thousand rows. Both batches below are
+   * past that cap: one statement each and they fail with a protocol error
+   * carrying the whole truncated SQL, which is what the mirror did on the
+   * first large live profile.
+   */
+  describe('batches larger than one statement can bind', () => {
+    it('upserts more negatives than a sixteen-column statement can hold', async () => {
+      const rows = Array.from({ length: 4_200 }, (_unused, index) => ({
+        orgId,
+        profileId,
+        amazonId: `neg-bulk-${index}`,
+        adProduct: 'SP' as const,
+        name: `negative ${index}`,
+        state: 'enabled' as const,
+        campaignId: 'c-1',
+        adGroupId: 'ag-1',
+        scope: 'ad_group' as const,
+        keywordText: `negative ${index}`,
+        expression: null,
+        matchType: 'negative_exact' as const,
+      }));
+
+      const counts = await upsertMirrorRows(database, negatives, rows);
+      expect(counts).toEqual({ listed: 4_200, upserted: 4_200 });
+
+      const [stored] = await database.sql<{ n: string }[]>`
+        select count(*) as n from public.negatives
+         where profile_id = ${profileId} and amazon_id like 'neg-bulk-%'
+      `;
+      expect(Number(stored?.n)).toBe(4_200);
+    });
+
+    it('loads more target facts than a twenty-six-column statement can hold', async () => {
+      const rows = Array.from({ length: 3_000 }, (_unused, index) => ({
+        orgId,
+        profileId,
+        date: today,
+        adProduct: 'SP' as const,
+        campaignId: 'c-bulk',
+        adGroupId: 'ag-bulk',
+        targetId: `kw-bulk-${index}`,
+        targetKind: 'keyword' as const,
+        matchType: 'exact' as const,
+        impressions: index,
+        clicks: 1,
+        cost: 0.25,
+      }));
+
+      const counts = await upsertSpTargetFacts(database, rows);
+      expect(counts).toEqual({ offered: 3_000, written: 3_000 });
+
+      const [stored] = await database.sql<{ n: string }[]>`
+        select count(*) as n from public.fact_sp_target_daily
+         where profile_id = ${profileId} and campaign_id = 'c-bulk'
+      `;
+      expect(Number(stored?.n)).toBe(3_000);
+    });
   });
 });

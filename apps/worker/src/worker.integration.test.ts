@@ -263,6 +263,44 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     `;
   });
 
+  /**
+   * The negatives mirror is one table fed by three Amazon endpoints — ad-group
+   * negative keywords, campaign negative keywords and negative targets — so one
+   * `(profile_id, amazon_id)` can arrive twice in a single listing. Postgres
+   * refuses to let one `ON CONFLICT DO UPDATE` touch a row a second time, and
+   * that error killed the sync for the profile it happened on.
+   */
+  it('collapses a listing that carries one negative id from two endpoints', async () => {
+    const store = new PostgresWorkerStore(database, quietLogger);
+    const profile = await store.profile(profileId);
+
+    const counts = await store.syncEntities(
+      profile,
+      [negative(profileId, 'neg-dup', 'ad_group'), negative(profileId, 'neg-dup', 'campaign')],
+      { adProduct: 'SP', full: false },
+    );
+
+    // Listed rows are still listed rows: the collision is counted, not hidden.
+    expect(counts).toMatchObject({ listed: 2, upserted: 1, duplicates: 1 });
+    expect(counts.listed).toBe(counts.upserted + counts.duplicates);
+
+    const stored = await database.sql<{ scope: string }[]>`
+      select scope from public.negatives
+       where profile_id = ${profileId} and amazon_id = 'neg-dup'
+    `;
+    // One mirror row, carrying the last occurrence in listing order.
+    expect(stored.map((row) => row.scope)).toEqual(['campaign']);
+
+    const [changes] = await database.sql<{ n: string }[]>`
+      select count(*) as n from public.entity_changes
+       where profile_id = ${profileId} and amazon_id = 'neg-dup'
+    `;
+    expect(Number(changes?.n)).toBe(1);
+
+    await database.sql`delete from public.entity_changes where profile_id = ${profileId} and amazon_id = 'neg-dup'`;
+    await database.sql`delete from public.negatives where profile_id = ${profileId} and amazon_id = 'neg-dup'`;
+  });
+
   // -------------------------------------------------------------------------
   // report.request → poll → fetch
   // -------------------------------------------------------------------------
@@ -720,6 +758,15 @@ function makeWorker(
 
 function campaign(profileId: string, name: string): EntityRow {
   return { entityType: 'campaign', profileId, amazonId: 'c-1', adProduct: 'SP', name, state: 'enabled', portfolioId: null, budgetAmount: 15, budgetType: 'daily', targetingType: 'manual', biddingStrategy: 'manual', placementBidding: null, startDate: null, endDate: null };
+}
+
+/** One negative, as either of the two endpoints that feed the same mirror row. */
+function negative(profileId: string, amazonId: string, scope: 'campaign' | 'ad_group'): EntityRow {
+  return {
+    entityType: 'negative', profileId, amazonId, adProduct: 'SP', name: 'blocked term',
+    state: 'enabled', campaignId: 'c-1', adGroupId: scope === 'ad_group' ? 'ag-1' : null,
+    scope, keywordText: 'blocked term', expression: null, matchType: 'negative_exact',
+  };
 }
 
 function reportRow(date: string, campaignId: string, cost: number): Record<string, unknown> {
