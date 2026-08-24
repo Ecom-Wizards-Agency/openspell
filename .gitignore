@@ -29,6 +29,7 @@ fixtures/golden/**/*.local.*
 # OS noise
 .DS_Store
 
-# agent worktrees
-.claude/
+# agent worktrees and local agent config, except project-scoped skills
+.claude/*
+!.claude/skills/
 .vercel/
