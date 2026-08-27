@@ -23,12 +23,16 @@ import { Badge, Button, Select, Tabs } from './primitives';
 const TABS = [
   { href: '/settings/connections', label: 'Connections' },
   { href: '/settings/profiles', label: 'Profiles' },
+  { href: '/settings/members', label: 'Members' },
+  { href: '/settings/account', label: 'Account' },
   { href: '/sync-status', label: 'Sync status' },
 ] as const;
 
 const HREF_FOR = {
   connections: '/settings/connections',
   profiles: '/settings/profiles',
+  members: '/settings/members',
+  account: '/settings/account',
   sync: '/sync-status',
 } as const;
 
