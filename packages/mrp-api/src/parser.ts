@@ -60,7 +60,13 @@ function optionalDate(value: unknown): string | null {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string') throw new MrpParseError('MRP product capture date is not text');
   const match = /^(\d{4}-\d{2}-\d{2})/.exec(value.trim());
-  if (!match?.[1] || Number.isNaN(Date.parse(`${match[1]}T00:00:00Z`))) {
+  const parsed = match?.[1] === undefined ? null : new Date(`${match[1]}T00:00:00Z`);
+  if (
+    !match?.[1] ||
+    parsed === null ||
+    Number.isNaN(parsed.valueOf()) ||
+    parsed.toISOString().slice(0, 10) !== match[1]
+  ) {
     throw new MrpParseError('MRP product capture date is not an ISO date');
   }
   return match[1];

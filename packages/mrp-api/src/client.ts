@@ -210,7 +210,7 @@ export class MrpClient {
   }
 
   async fetchProductEconomics(): Promise<MrpEconomicsResult> {
-    await this.initialize();
+    if (this.negotiatedProtocol === null) await this.initialize();
     const tool = selectEconomicsTool(await this.listTools());
     const payload = await this.callTool(tool.name);
     return { toolName: tool.name, products: parseProductEconomics(payload) };

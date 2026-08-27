@@ -32,7 +32,9 @@ const client = new MrpClient({ endpoint, token, fetch });
 await client.initialize();
 const tools = await client.listTools();
 const raw = await client.callTool(tools[0].name);
-const sync = await client.fetchProductEconomics();
+
+const syncClient = new MrpClient({ endpoint, token, fetch });
+const sync = await syncClient.fetchProductEconomics();
 // sync.toolName records the runtime-discovered tool; sync.products are domain rows.
 ```
 

@@ -126,7 +126,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     await database.sql`delete from public.fact_profile_daily where profile_id = ${profileId}`;
   });
 
-  afterAll(async () => { await database?.drop(); });
+  afterAll(async () => { await database?.drop(); }, 30_000);
 
   // -------------------------------------------------------------------------
   // recommendations.run
@@ -779,22 +779,14 @@ describe.skipIf(!available)('worker + real Postgres', () => {
 
   it('reconciles active integration schedules and disables them after revocation', async () => {
     await database.sql`delete from public.sync_schedules where profile_id = ${profileId}`;
+    await database.sql`delete from public.integration_connections where org_id = ${orgId}`;
     await database.sql`
-      create table public.integration_connections (
-        id uuid primary key default gen_random_uuid(),
-        org_id uuid not null references public.orgs(id),
-        provider text not null,
-        config jsonb not null default '{}'::jsonb,
-        status public.connection_status not null default 'pending'
-      )
+      insert into public.integration_connections (org_id, provider, label, status)
+      values (${orgId}, 'keepa', 'schedule-test', 'active'),
+             (${orgId}, 'datadive', 'schedule-test', 'active'),
+             (${orgId}, 'mrp', 'schedule-test', 'active')
     `;
     try {
-      await database.sql`
-        insert into public.integration_connections (org_id, provider, status)
-        values (${orgId}, 'keepa', 'active'),
-               (${orgId}, 'datadive', 'active'),
-               (${orgId}, 'mrp', 'active')
-      `;
       const store = new PostgresWorkerStore(database);
       expect(await store.ensureIntegrationSchedules()).toBe(4);
       expect(await store.ensureIntegrationSchedules()).toBe(0);
@@ -837,7 +829,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       `;
       expect(keepa?.enabled).toBe(false);
     } finally {
-      await database.sql`drop table public.integration_connections`;
+      await database.sql`delete from public.integration_connections where org_id = ${orgId}`;
     }
   });
 
