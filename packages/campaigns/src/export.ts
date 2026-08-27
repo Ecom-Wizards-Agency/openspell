@@ -8,6 +8,7 @@
  * generated campaign is safe to hand over: **campaigns default to paused**, so
  * a file uploaded by accident spends nothing.
  */
+import { SHEET_NAME_SP, SP_COLUMNS } from './constants.js';
 import { planToRows, planToSheet } from './plan.js';
 import type { BulkRow, CampaignPlan, SheetModel } from './types.js';
 import { writeWorkbook } from './xlsx/index.js';
@@ -18,6 +19,13 @@ export interface WorkbookExport {
   bytes: Uint8Array;
   /** The same content as a grid, for a diff that does not go through a file. */
   sheet: SheetModel;
+}
+
+export interface UpdateWorkbookOptions {
+  client: string;
+  marketplace: string;
+  /** `YYYY-MM-DD`, passed by the caller so export remains deterministic. */
+  today: string;
 }
 
 function slug(value: string): string {
@@ -31,10 +39,40 @@ export function bulkFilename(plan: CampaignPlan): string {
   return `${plan.today}_${brand}_${marketplace}_SP_bulk_campaigns.xlsx`;
 }
 
+/** The reference UPDATE-mode filename, kept distinct from a create file. */
+export function updateBulkFilename(options: UpdateWorkbookOptions): string {
+  const brand = slug(options.client) || 'campaigns';
+  const marketplace = options.marketplace || 'US';
+  return `${options.today}_${brand}_${marketplace}_SP_bulk_UPDATE.xlsx`;
+}
+
 /** A plan to bulk-upload workbook bytes. */
 export function toBulkWorkbook(plan: CampaignPlan): WorkbookExport {
   const sheet = planToSheet(plan);
   return { filename: bulkFilename(plan), bytes: writeWorkbook(sheet), sheet };
+}
+
+/**
+ * Sparse UPDATE rows to the same Amazon Bulksheets 2.0 workbook CREATE mode uses.
+ *
+ * The caller must refuse when preflight errors exist. Keeping this projection
+ * ignorant of the change-set makes it impossible for export to silently
+ * recompute a different diff than the rows the operator reviewed.
+ */
+export function toUpdateBulkWorkbook(
+  rows: readonly BulkRow[],
+  options: UpdateWorkbookOptions,
+): WorkbookExport {
+  const sheet: SheetModel = {
+    sheetName: SHEET_NAME_SP,
+    header: [...SP_COLUMNS],
+    rows: rows.map((row) => SP_COLUMNS.map((column) => row[column])),
+  };
+  return {
+    filename: updateBulkFilename(options),
+    bytes: writeWorkbook(sheet),
+    sheet,
+  };
 }
 
 /** A plan to its bulk rows, keyed by Amazon column name. */

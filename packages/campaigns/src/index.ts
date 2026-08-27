@@ -29,5 +29,6 @@ export * from './validate.js';
 export * from './keywords.js';
 export * from './strategy.js';
 export * from './export.js';
+export * from './update.js';
 export * from './util.js';
 export { columnIndex, columnName, readWorkbook, writeWorkbook } from './xlsx/index.js';

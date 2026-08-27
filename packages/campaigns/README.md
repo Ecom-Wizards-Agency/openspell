@@ -1,8 +1,8 @@
 # @wizard-ads/campaigns
 
-Generate complete Sponsored Products campaign structures from keyword research or a brief:
-a typed plan, a bulk-upload workbook, and the QA gates that refuse to hand over a file
-Amazon would reject.
+Generate complete Sponsored Products campaign structures from keyword research or a brief,
+or diff an UPDATE change-set against synced entities: typed rows, bulk-upload workbooks, and
+the QA gates that refuse to hand over a file Amazon would reject.
 
 This is WP-14a: the **engine and its exports**. Creating campaigns through the Ads API is
 WP-14b, behind its own gate.
@@ -59,6 +59,27 @@ const workbook = toBulkWorkbook(plan);   // { filename, bytes, sheet }
 const json = toPlanJson(plan);
 ```
 
+UPDATE mode takes the shared synced-entity contract directly. A database loader belongs in
+`@wizard-ads/db`; this engine remains pure:
+
+```ts
+import { buildCampaignUpdate, toUpdateBulkWorkbook } from '@wizard-ads/campaigns';
+
+const result = buildCampaignUpdate(changes, syncedEntities, {
+  allowEndDateClear: false,
+});
+if (result.errors.length > 0) throw new Error(result.errors.join('\n'));
+if (result.rows.length === 0) throw new Error('Nothing changed');
+
+const workbook = toUpdateBulkWorkbook(result.rows, {
+  client: 'Profile label', marketplace: 'US', today: '2026-08-28',
+});
+```
+
+UPDATE rows are sparse and carry real synced Amazon ids. Campaign updates re-send the
+current portfolio and End Date, keyword text or match-type changes become Archive + Create,
+and campaign/ad-group archives suppress redundant child archives. Nothing uploads the file.
+
 From keyword research instead of a hand-written config:
 
 ```ts
@@ -96,7 +117,8 @@ because Amazon rejects the file.
 ported; nothing was imported or copied.
 
 `fixtures/generate/generate_campaign_goldens.py` runs the reference's own create-mode
-scenarios plus the edge cases this port needs pinned, and writes four goldens:
+scenarios plus the edge cases this port needs pinned. The UPDATE generator runs the separate
+reference model against a synthetic synced state. Together they write five goldens:
 
 | Golden | Pins |
 |---|---|
@@ -104,6 +126,7 @@ scenarios plus the edge cases this port needs pinned, and writes four goldens:
 | `campaign-preflight.json` | every preflight issue and note string |
 | `campaign-validate.json` | every QA-gate string, from hand-built row sets |
 | `campaign-keywords.json` | bucketed keyword sections to campaign specs |
+| `campaign-update.json` | UPDATE rows, review lines, blocking errors, and XLSX round trips |
 
 `src/parity.test.ts` replays all four. Regenerating is an operator step; CI replays the
 committed goldens with no Python and no network:
@@ -111,6 +134,8 @@ committed goldens with no Python and no network:
 ```bash
 WIZARD_ADS_CAMPAIGN_REFERENCE_TOOLS=<path to amazon-campaign-builder> \
   python3 fixtures/generate/generate_campaign_goldens.py
+WIZARD_ADS_CAMPAIGN_REFERENCE_TOOLS=<path to amazon-campaign-builder> \
+  python3 fixtures/generate/generate_campaign_update_goldens.py
 ```
 
 The goldens carry a `today`, because the reference reads the clock in three places (the

@@ -1,0 +1,2885 @@
+{
+  "schema": "wizard-ads.parity.v1",
+  "module": "campaign-update",
+  "source": "amazon-agent/tools/amazon-campaign-builder/update_model.py",
+  "columns": [
+    "Product",
+    "Entity",
+    "Operation",
+    "Campaign ID",
+    "Ad Group ID",
+    "Portfolio ID",
+    "Ad ID",
+    "Keyword ID",
+    "Product Targeting ID",
+    "Campaign Name",
+    "Ad Group Name",
+    "Start Date",
+    "End Date",
+    "Targeting Type",
+    "State",
+    "Daily Budget",
+    "SKU",
+    "ASIN",
+    "Ad Group Default Bid",
+    "Bid",
+    "Keyword Text",
+    "Match Type",
+    "Bidding Strategy",
+    "Placement",
+    "Percentage",
+    "Product Targeting Expression",
+    "Sites"
+  ],
+  "cases": [
+    {
+      "name": "comprehensive",
+      "input": {
+        "entities": [
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1001",
+            "adProduct": "SP",
+            "name": "Campaign Alpha",
+            "state": "enabled",
+            "portfolioId": "9001",
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": "20261231"
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1002",
+            "adProduct": "SP",
+            "name": "Campaign Cascade",
+            "state": "enabled",
+            "portfolioId": null,
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1003",
+            "adProduct": "SP",
+            "name": "Campaign With Archived Group",
+            "state": "enabled",
+            "portfolioId": null,
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1004",
+            "adProduct": "SP",
+            "name": "Campaign No-op",
+            "state": "paused",
+            "portfolioId": null,
+            "budgetAmount": 10.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2001",
+            "adProduct": "SP",
+            "name": "Alpha ad group",
+            "state": "enabled",
+            "campaignId": "1001",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2002",
+            "adProduct": "SP",
+            "name": "Cascade ad group",
+            "state": "enabled",
+            "campaignId": "1002",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2003",
+            "adProduct": "SP",
+            "name": "Archived ad group",
+            "state": "enabled",
+            "campaignId": "1003",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2004",
+            "adProduct": "SP",
+            "name": "Second live ad group",
+            "state": "paused",
+            "campaignId": "1001",
+            "defaultBid": 0.75
+          },
+          {
+            "entityType": "product_ad",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "3001",
+            "adProduct": "SP",
+            "name": null,
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "asin": "B000000001",
+            "sku": "SKU-3001"
+          },
+          {
+            "entityType": "product_ad",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "3002",
+            "adProduct": "SP",
+            "name": null,
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "asin": "B000000001",
+            "sku": "SKU-3002"
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4001",
+            "adProduct": "SP",
+            "name": "red widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "red widget",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4002",
+            "adProduct": "SP",
+            "name": "blue widget",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "blue widget",
+            "matchType": "phrase",
+            "bid": 1.25
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4003",
+            "adProduct": "SP",
+            "name": "old widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "old widget",
+            "matchType": "broad",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4004",
+            "adProduct": "SP",
+            "name": "already paused",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2004",
+            "keywordText": "already paused",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4005",
+            "adProduct": "SP",
+            "name": "cascade keyword",
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "keywordText": "cascade keyword",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4006",
+            "adProduct": "SP",
+            "name": "group cascade keyword",
+            "state": "enabled",
+            "campaignId": "1003",
+            "adGroupId": "2003",
+            "keywordText": "group cascade keyword",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5001",
+            "adProduct": "SP",
+            "name": "free widget",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "scope": "ad_group",
+            "keywordText": "free widget",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5002",
+            "adProduct": "SP",
+            "name": "used widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": null,
+            "scope": "campaign",
+            "keywordText": "used widget",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5003",
+            "adProduct": "SP",
+            "name": "cascade negative",
+            "state": "paused",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "scope": "ad_group",
+            "keywordText": "cascade negative",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5004",
+            "adProduct": "SP",
+            "name": "campaign negative",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": null,
+            "scope": "campaign",
+            "keywordText": "campaign negative",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6001",
+            "adProduct": "SP",
+            "name": "asin=\"B000000011\"",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000011"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000011\"",
+            "bid": 0.9
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6002",
+            "adProduct": "SP",
+            "name": "asin=\"B000000012\"",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000012"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000012\"",
+            "bid": 0.9
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6003",
+            "adProduct": "SP",
+            "name": "asin=\"B000000013\"",
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000013"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000013\"",
+            "bid": 0.9
+          }
+        ],
+        "changes": {
+          "campaigns": [
+            {
+              "campaignId": "1001",
+              "name": "Campaign Alpha Updated",
+              "dailyBudget": 25.5,
+              "biddingStrategy": "Up and down",
+              "state": "paused",
+              "endDate": "2027-01-31",
+              "placements": {
+                "topOfSearchPlacement": 50,
+                "restOfSearchPlacement": 0
+              }
+            }
+          ],
+          "adGroups": [
+            {
+              "adGroupId": "2001",
+              "name": "Alpha ad group updated",
+              "defaultBid": 1.25,
+              "state": "paused"
+            }
+          ],
+          "productAds": {
+            "pause": [
+              "3001"
+            ]
+          },
+          "keywords": {
+            "pause": [
+              "4001",
+              "4004"
+            ],
+            "archive": [
+              "4003"
+            ],
+            "replace": [
+              {
+                "oldKeywordId": "4002",
+                "newText": "blue widget set",
+                "newMatchType": "BROAD",
+                "state": "enabled"
+              }
+            ],
+            "add": [
+              {
+                "campaignId": "1001",
+                "adGroupId": "2001",
+                "text": "green widget",
+                "matchType": "EXACT",
+                "bid": 0.66
+              }
+            ]
+          },
+          "negatives": {
+            "enable": [
+              "5001"
+            ],
+            "archive": [
+              "5002"
+            ],
+            "add": [
+              {
+                "campaignId": "1001",
+                "text": "cheap widget",
+                "matchType": "NEGATIVE_PHRASE"
+              },
+              {
+                "campaignId": "1001",
+                "adGroupId": "2001",
+                "level": "ad_group",
+                "text": "repair widget",
+                "matchType": "NEGATIVE_EXACT"
+              }
+            ]
+          },
+          "targets": {
+            "pause": [
+              "6001"
+            ],
+            "archive": [
+              "6002"
+            ],
+            "add": [
+              {
+                "campaignId": "1001",
+                "adGroupId": "2001",
+                "asin": "b000000099",
+                "expanded": true,
+                "bid": 0.77,
+                "state": "paused"
+              }
+            ]
+          }
+        },
+        "allowEndDateClear": false
+      },
+      "expected": {
+        "rows": [
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Campaign",
+            "Operation": "Update",
+            "Campaign ID": "1001",
+            "Ad Group ID": "",
+            "Portfolio ID": "9001",
+            "Ad ID": "",
+            "Keyword ID": "",
+            "Product Targeting ID": "",
+            "Campaign Name": "Campaign Alpha Updated",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "20270131",
+            "Targeting Type": "",
+            "State": "paused",
+            "Daily Budget": 25.5,
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "Dynamic bids - up and down",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Bidding Adjustment",
+            "Operation": "Update",
+            "Campaign ID": "1001",
+            "Ad Group ID": "",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "",
+            "Product Targeting ID": "",
+            "Campaign Name": "Campaign Alpha",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "Placement Top",
+            "Percentage": 50,
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Bidding Adjustment",
+            "Operation": "Update",
+            "Campaign ID": "1001",
+            "Ad Group ID": "",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "",
+            "Product Targeting ID": "",
+            "Campaign Name": "Campaign Alpha",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "Placement Rest Of Search",
+            "Percentage": 0,
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Ad Group",
+            "Operation": "Update",
+            "Campaign ID": "1001",
+            "Ad Group ID": "2001",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "",
+            "Product Targeting ID": "",
+            "Campaign Name": "",
+            "Ad Group Name": "Alpha ad group updated",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "paused",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": 1.25,
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Product Ad",
+            "Operation": "Update",
+            "Campaign ID": "1001",
+            "Ad Group ID": "2001",
+            "Portfolio ID": "",
+            "Ad ID": "3001",
+            "Keyword ID": "",
+            "Product Targeting ID": "",
+            "Campaign Name": "",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "paused",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Keyword",
+            "Operation": "Update",
+            "Campaign ID": "1001",
+            "Ad Group ID": "2001",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "4001",
+            "Product Targeting ID": "",
+            "Campaign Name": "",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "paused",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Keyword",
+            "Operation": "Archive",
+            "Campaign ID": "1001",
+            "Ad Group ID": "2001",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "4003",
+            "Product Targeting ID": "",
+            "Campaign Name": "",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Keyword",
+            "Operation": "Archive",
+            "Campaign ID": "1001",
+            "Ad Group ID": "2001",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "4002",
+            "Product Targeting ID": "",
+            "Campaign Name": "",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Keyword",
+            "Operation": "Create",
+            "Campaign ID": "1001",
+            "Ad Group ID": "2001",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "new_1",
+            "Product Targeting ID": "",
+            "Campaign Name": "",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "enabled",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": 1.25,
+            "Keyword Text": "blue widget set",
+            "Match Type": "broad",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Keyword",
+            "Operation": "Create",
+            "Campaign ID": "1001",
+            "Ad Group ID": "2001",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "new_2",
+            "Product Targeting ID": "",
+            "Campaign Name": "",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "enabled",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": 0.66,
+            "Keyword Text": "green widget",
+            "Match Type": "exact",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Negative Keyword",
+            "Operation": "Update",
+            "Campaign ID": "1001",
+            "Ad Group ID": "2001",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "5001",
+            "Product Targeting ID": "",
+            "Campaign Name": "",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "enabled",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Campaign Negative Keyword",
+            "Operation": "Archive",
+            "Campaign ID": "1001",
+            "Ad Group ID": "",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "5002",
+            "Product Targeting ID": "",
+            "Campaign Name": "",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Campaign Negative Keyword",
+            "Operation": "Create",
+            "Campaign ID": "1001",
+            "Ad Group ID": "",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "new_3",
+            "Product Targeting ID": "",
+            "Campaign Name": "",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "enabled",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "cheap widget",
+            "Match Type": "negativePhrase",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Negative Keyword",
+            "Operation": "Create",
+            "Campaign ID": "1001",
+            "Ad Group ID": "2001",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "new_4",
+            "Product Targeting ID": "",
+            "Campaign Name": "",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "enabled",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "repair widget",
+            "Match Type": "negativeExact",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Product Targeting",
+            "Operation": "Update",
+            "Campaign ID": "1001",
+            "Ad Group ID": "2001",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "",
+            "Product Targeting ID": "6001",
+            "Campaign Name": "",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "paused",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Product Targeting",
+            "Operation": "Archive",
+            "Campaign ID": "1001",
+            "Ad Group ID": "2001",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "",
+            "Product Targeting ID": "6002",
+            "Campaign Name": "",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Product Targeting",
+            "Operation": "Create",
+            "Campaign ID": "1001",
+            "Ad Group ID": "2001",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "",
+            "Product Targeting ID": "new_5",
+            "Campaign Name": "",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "paused",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": 0.77,
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "asin-expanded=\"B000000099\"",
+            "Sites": ""
+          }
+        ],
+        "review": [
+          "UPDATE Campaign 1001 (Campaign Alpha): Campaign Name 'Campaign Alpha' -> 'Campaign Alpha Updated'",
+          "UPDATE Campaign 1001 (Campaign Alpha): Daily Budget '20.0' -> '25.5'",
+          "UPDATE Campaign 1001 (Campaign Alpha): Bidding Strategy 'Dynamic bids - down only' -> 'Dynamic bids - up and down'",
+          "UPDATE Campaign 1001 (Campaign Alpha): State 'enabled' -> 'paused'",
+          "UPDATE Campaign 1001 (Campaign Alpha): End Date '20261231' -> '20270131'",
+          "UPDATE Campaign 1001 (Campaign Alpha): Placement Placement Top '?' -> '50'",
+          "UPDATE Campaign 1001 (Campaign Alpha): Placement Placement Rest Of Search '?' -> '0'",
+          "UPDATE Ad Group 2001 (Alpha ad group): Ad Group Name 'Alpha ad group' -> 'Alpha ad group updated'",
+          "UPDATE Ad Group 2001 (Alpha ad group): Ad Group Default Bid '1.0' -> '1.25'",
+          "UPDATE Ad Group 2001 (Alpha ad group): State 'enabled' -> 'paused'",
+          "UPDATE Product Ad 3001: State 'enabled' -> 'paused'",
+          "UPDATE Keyword 4001 (red widget): State 'enabled' -> 'paused'",
+          "SKIPPED (no-op): Keyword 4004 (already paused) is already paused",
+          "ARCHIVE Keyword 4003 (old widget, broad)",
+          "REPLACE Keyword 4002 (blue widget, phrase) -> new Keyword 'blue widget set' (broad); Keyword Text/Match Type are immutable, so this is Archive-old + Create-new, never an Update",
+          "ADD Keyword 'green widget' (exact) to Ad Group 2001 (Campaign 1001)",
+          "UPDATE Negative Keyword 5001 (free widget): State 'paused' -> 'enabled'",
+          "ARCHIVE Negative 5002 (used widget); negatives can only be archived, never paused (reference 4.7)",
+          "ADD Negative 'cheap widget' (negativePhrase) at campaign level (Campaign 1001)",
+          "ADD Negative 'repair widget' (negativeExact) at ad_group level (Campaign 1001, Ad Group 2001)",
+          "UPDATE Product Targeting 6001 (asin=\"B000000011\"): State 'enabled' -> 'paused'",
+          "ARCHIVE Product Targeting 6002 (asin=\"B000000012\")",
+          "ADD Product Targeting asin-expanded=\"B000000099\" to Ad Group 2001 (Campaign 1001)"
+        ],
+        "errors": []
+      }
+    },
+    {
+      "name": "cascade_dedup",
+      "input": {
+        "entities": [
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1001",
+            "adProduct": "SP",
+            "name": "Campaign Alpha",
+            "state": "enabled",
+            "portfolioId": "9001",
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": "20261231"
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1002",
+            "adProduct": "SP",
+            "name": "Campaign Cascade",
+            "state": "enabled",
+            "portfolioId": null,
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1003",
+            "adProduct": "SP",
+            "name": "Campaign With Archived Group",
+            "state": "enabled",
+            "portfolioId": null,
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1004",
+            "adProduct": "SP",
+            "name": "Campaign No-op",
+            "state": "paused",
+            "portfolioId": null,
+            "budgetAmount": 10.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2001",
+            "adProduct": "SP",
+            "name": "Alpha ad group",
+            "state": "enabled",
+            "campaignId": "1001",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2002",
+            "adProduct": "SP",
+            "name": "Cascade ad group",
+            "state": "enabled",
+            "campaignId": "1002",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2003",
+            "adProduct": "SP",
+            "name": "Archived ad group",
+            "state": "enabled",
+            "campaignId": "1003",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2004",
+            "adProduct": "SP",
+            "name": "Second live ad group",
+            "state": "paused",
+            "campaignId": "1001",
+            "defaultBid": 0.75
+          },
+          {
+            "entityType": "product_ad",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "3001",
+            "adProduct": "SP",
+            "name": null,
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "asin": "B000000001",
+            "sku": "SKU-3001"
+          },
+          {
+            "entityType": "product_ad",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "3002",
+            "adProduct": "SP",
+            "name": null,
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "asin": "B000000001",
+            "sku": "SKU-3002"
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4001",
+            "adProduct": "SP",
+            "name": "red widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "red widget",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4002",
+            "adProduct": "SP",
+            "name": "blue widget",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "blue widget",
+            "matchType": "phrase",
+            "bid": 1.25
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4003",
+            "adProduct": "SP",
+            "name": "old widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "old widget",
+            "matchType": "broad",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4004",
+            "adProduct": "SP",
+            "name": "already paused",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2004",
+            "keywordText": "already paused",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4005",
+            "adProduct": "SP",
+            "name": "cascade keyword",
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "keywordText": "cascade keyword",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4006",
+            "adProduct": "SP",
+            "name": "group cascade keyword",
+            "state": "enabled",
+            "campaignId": "1003",
+            "adGroupId": "2003",
+            "keywordText": "group cascade keyword",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5001",
+            "adProduct": "SP",
+            "name": "free widget",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "scope": "ad_group",
+            "keywordText": "free widget",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5002",
+            "adProduct": "SP",
+            "name": "used widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": null,
+            "scope": "campaign",
+            "keywordText": "used widget",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5003",
+            "adProduct": "SP",
+            "name": "cascade negative",
+            "state": "paused",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "scope": "ad_group",
+            "keywordText": "cascade negative",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5004",
+            "adProduct": "SP",
+            "name": "campaign negative",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": null,
+            "scope": "campaign",
+            "keywordText": "campaign negative",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6001",
+            "adProduct": "SP",
+            "name": "asin=\"B000000011\"",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000011"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000011\"",
+            "bid": 0.9
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6002",
+            "adProduct": "SP",
+            "name": "asin=\"B000000012\"",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000012"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000012\"",
+            "bid": 0.9
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6003",
+            "adProduct": "SP",
+            "name": "asin=\"B000000013\"",
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000013"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000013\"",
+            "bid": 0.9
+          }
+        ],
+        "changes": {
+          "archiveCampaigns": [
+            "1002"
+          ],
+          "archiveAdGroups": [
+            "2002",
+            "2003"
+          ],
+          "campaigns": [
+            {
+              "campaignId": "1002",
+              "dailyBudget": 99
+            }
+          ],
+          "adGroups": [
+            {
+              "adGroupId": "2002",
+              "defaultBid": 9
+            },
+            {
+              "adGroupId": "2003",
+              "defaultBid": 9
+            }
+          ],
+          "productAds": {
+            "pause": [
+              "3002"
+            ]
+          },
+          "keywords": {
+            "archive": [
+              "4005",
+              "4006"
+            ],
+            "add": [
+              {
+                "campaignId": "1002",
+                "adGroupId": "2002",
+                "text": "blocked",
+                "matchType": "EXACT"
+              }
+            ]
+          },
+          "negatives": {
+            "archive": [
+              "5003"
+            ]
+          },
+          "targets": {
+            "archive": [
+              "6003"
+            ]
+          }
+        },
+        "allowEndDateClear": false
+      },
+      "expected": {
+        "rows": [
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Campaign",
+            "Operation": "Archive",
+            "Campaign ID": "1002",
+            "Ad Group ID": "",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "",
+            "Product Targeting ID": "",
+            "Campaign Name": "Campaign Cascade",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          },
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Ad Group",
+            "Operation": "Archive",
+            "Campaign ID": "1003",
+            "Ad Group ID": "2003",
+            "Portfolio ID": "",
+            "Ad ID": "",
+            "Keyword ID": "",
+            "Product Targeting ID": "",
+            "Campaign Name": "",
+            "Ad Group Name": "Archived ad group",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          }
+        ],
+        "review": [
+          "SKIPPED (parent+child archive): Ad Group 2002, because Campaign 1002 is already archived in this file; archiving a campaign cascades to its ad groups, so a separate Archive row for the child is redundant",
+          "SKIPPED: Campaign 1002 update (also archived in this file; the archive supersedes the update)",
+          "ARCHIVE Campaign 1002 (Campaign Cascade); cascades to all of its Ad Groups, Keywords, Product Targeting, and Negatives",
+          "SKIPPED (parent archived): Ad Group 2002 update, because its Campaign 1002 is archived in this file",
+          "SKIPPED (parent archived): Ad Group 2003 update, because its Ad Group 2003 is archived in this file",
+          "ARCHIVE Ad Group 2003 (Archived ad group); cascades to its Keywords, Product Targeting, and Negatives",
+          "SKIPPED (parent archived): Product Ad 3002 pause, because its Campaign 1002 is archived in this file",
+          "SKIPPED (parent archived): Keyword 4006 archive, because its Ad Group 2003 is already archived in this file",
+          "SKIPPED (parent archived): Keyword 4005 archive, because its Campaign 1002 is already archived in this file",
+          "SKIPPED (parent archived): new keyword 'blocked', because Campaign 1002 is archived in this file",
+          "SKIPPED (parent archived): Negative 5003 archive, because its Campaign 1002 is already archived in this file",
+          "SKIPPED (parent archived): Target 6003 archive, because its Campaign 1002 is already archived in this file"
+        ],
+        "errors": []
+      }
+    },
+    {
+      "name": "blocking_errors",
+      "input": {
+        "entities": [
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1001",
+            "adProduct": "SP",
+            "name": "Campaign Alpha",
+            "state": "enabled",
+            "portfolioId": "9001",
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": "20261231"
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1002",
+            "adProduct": "SP",
+            "name": "Campaign Cascade",
+            "state": "enabled",
+            "portfolioId": null,
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1003",
+            "adProduct": "SP",
+            "name": "Campaign With Archived Group",
+            "state": "enabled",
+            "portfolioId": null,
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1004",
+            "adProduct": "SP",
+            "name": "Campaign No-op",
+            "state": "paused",
+            "portfolioId": null,
+            "budgetAmount": 10.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2001",
+            "adProduct": "SP",
+            "name": "Alpha ad group",
+            "state": "enabled",
+            "campaignId": "1001",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2002",
+            "adProduct": "SP",
+            "name": "Cascade ad group",
+            "state": "enabled",
+            "campaignId": "1002",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2003",
+            "adProduct": "SP",
+            "name": "Archived ad group",
+            "state": "enabled",
+            "campaignId": "1003",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2004",
+            "adProduct": "SP",
+            "name": "Second live ad group",
+            "state": "paused",
+            "campaignId": "1001",
+            "defaultBid": 0.75
+          },
+          {
+            "entityType": "product_ad",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "3001",
+            "adProduct": "SP",
+            "name": null,
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "asin": "B000000001",
+            "sku": "SKU-3001"
+          },
+          {
+            "entityType": "product_ad",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "3002",
+            "adProduct": "SP",
+            "name": null,
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "asin": "B000000001",
+            "sku": "SKU-3002"
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4001",
+            "adProduct": "SP",
+            "name": "red widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "red widget",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4002",
+            "adProduct": "SP",
+            "name": "blue widget",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "blue widget",
+            "matchType": "phrase",
+            "bid": 1.25
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4003",
+            "adProduct": "SP",
+            "name": "old widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "old widget",
+            "matchType": "broad",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4004",
+            "adProduct": "SP",
+            "name": "already paused",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2004",
+            "keywordText": "already paused",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4005",
+            "adProduct": "SP",
+            "name": "cascade keyword",
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "keywordText": "cascade keyword",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4006",
+            "adProduct": "SP",
+            "name": "group cascade keyword",
+            "state": "enabled",
+            "campaignId": "1003",
+            "adGroupId": "2003",
+            "keywordText": "group cascade keyword",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5001",
+            "adProduct": "SP",
+            "name": "free widget",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "scope": "ad_group",
+            "keywordText": "free widget",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5002",
+            "adProduct": "SP",
+            "name": "used widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": null,
+            "scope": "campaign",
+            "keywordText": "used widget",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5003",
+            "adProduct": "SP",
+            "name": "cascade negative",
+            "state": "paused",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "scope": "ad_group",
+            "keywordText": "cascade negative",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5004",
+            "adProduct": "SP",
+            "name": "campaign negative",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": null,
+            "scope": "campaign",
+            "keywordText": "campaign negative",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6001",
+            "adProduct": "SP",
+            "name": "asin=\"B000000011\"",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000011"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000011\"",
+            "bid": 0.9
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6002",
+            "adProduct": "SP",
+            "name": "asin=\"B000000012\"",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000012"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000012\"",
+            "bid": 0.9
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6003",
+            "adProduct": "SP",
+            "name": "asin=\"B000000013\"",
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000013"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000013\"",
+            "bid": 0.9
+          }
+        ],
+        "changes": {
+          "archiveCampaigns": [
+            "9999"
+          ],
+          "campaigns": [
+            {
+              "campaignId": "tmp-1",
+              "dailyBudget": 1
+            },
+            {
+              "campaignId": "9998",
+              "dailyBudget": 1
+            },
+            {
+              "campaignId": "1001",
+              "state": "deleted"
+            }
+          ],
+          "adGroups": [
+            {
+              "adGroupId": "not-real",
+              "defaultBid": 1
+            }
+          ],
+          "productAds": {
+            "pause": [
+              "3999"
+            ]
+          },
+          "keywords": {
+            "archive": [
+              "4999"
+            ],
+            "add": [
+              {
+                "campaignId": "1001",
+                "adGroupId": "2999",
+                "text": "bad"
+              }
+            ]
+          },
+          "negatives": {
+            "enable": [
+              "5004"
+            ]
+          },
+          "targets": {
+            "pause": [
+              "6999"
+            ]
+          }
+        },
+        "allowEndDateClear": false
+      },
+      "expected": {
+        "rows": [],
+        "review": [
+          "SKIPPED (no-op): Campaign 1001 (Campaign Alpha) has no fields that differ from the export"
+        ],
+        "errors": [
+          "archive_campaigns: Campaign ID '9999' not found in the export",
+          "changes.campaigns: campaign_id 'tmp-1' is not a real bulksheets ID; Update/Archive rows must use IDs sourced from a bulksheets download, never a temp ID",
+          "changes.campaigns: campaign_id '9998' not found in the loaded export",
+          "changes.campaigns/1001: state must be one of enabled/paused",
+          "changes.ad_groups: ad_group_id 'not-real' is not a real ID",
+          "product_ads.pause: Ad ID '3999' not found in the export",
+          "keywords.archive: Keyword ID '4999' not found in the export",
+          "keywords.add: ad_group_id '2999' not found in the export",
+          "negatives.enable: Campaign Negative Keyword 5004 cannot be state-updated; campaign-level negatives are archive-only",
+          "targets.pause: Product Targeting ID '6999' not found in the export"
+        ]
+      }
+    },
+    {
+      "name": "clear_end_date_allowed",
+      "input": {
+        "entities": [
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1001",
+            "adProduct": "SP",
+            "name": "Campaign Alpha",
+            "state": "enabled",
+            "portfolioId": "9001",
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": "20261231"
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1002",
+            "adProduct": "SP",
+            "name": "Campaign Cascade",
+            "state": "enabled",
+            "portfolioId": null,
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1003",
+            "adProduct": "SP",
+            "name": "Campaign With Archived Group",
+            "state": "enabled",
+            "portfolioId": null,
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1004",
+            "adProduct": "SP",
+            "name": "Campaign No-op",
+            "state": "paused",
+            "portfolioId": null,
+            "budgetAmount": 10.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2001",
+            "adProduct": "SP",
+            "name": "Alpha ad group",
+            "state": "enabled",
+            "campaignId": "1001",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2002",
+            "adProduct": "SP",
+            "name": "Cascade ad group",
+            "state": "enabled",
+            "campaignId": "1002",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2003",
+            "adProduct": "SP",
+            "name": "Archived ad group",
+            "state": "enabled",
+            "campaignId": "1003",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2004",
+            "adProduct": "SP",
+            "name": "Second live ad group",
+            "state": "paused",
+            "campaignId": "1001",
+            "defaultBid": 0.75
+          },
+          {
+            "entityType": "product_ad",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "3001",
+            "adProduct": "SP",
+            "name": null,
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "asin": "B000000001",
+            "sku": "SKU-3001"
+          },
+          {
+            "entityType": "product_ad",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "3002",
+            "adProduct": "SP",
+            "name": null,
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "asin": "B000000001",
+            "sku": "SKU-3002"
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4001",
+            "adProduct": "SP",
+            "name": "red widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "red widget",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4002",
+            "adProduct": "SP",
+            "name": "blue widget",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "blue widget",
+            "matchType": "phrase",
+            "bid": 1.25
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4003",
+            "adProduct": "SP",
+            "name": "old widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "old widget",
+            "matchType": "broad",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4004",
+            "adProduct": "SP",
+            "name": "already paused",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2004",
+            "keywordText": "already paused",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4005",
+            "adProduct": "SP",
+            "name": "cascade keyword",
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "keywordText": "cascade keyword",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4006",
+            "adProduct": "SP",
+            "name": "group cascade keyword",
+            "state": "enabled",
+            "campaignId": "1003",
+            "adGroupId": "2003",
+            "keywordText": "group cascade keyword",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5001",
+            "adProduct": "SP",
+            "name": "free widget",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "scope": "ad_group",
+            "keywordText": "free widget",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5002",
+            "adProduct": "SP",
+            "name": "used widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": null,
+            "scope": "campaign",
+            "keywordText": "used widget",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5003",
+            "adProduct": "SP",
+            "name": "cascade negative",
+            "state": "paused",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "scope": "ad_group",
+            "keywordText": "cascade negative",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5004",
+            "adProduct": "SP",
+            "name": "campaign negative",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": null,
+            "scope": "campaign",
+            "keywordText": "campaign negative",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6001",
+            "adProduct": "SP",
+            "name": "asin=\"B000000011\"",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000011"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000011\"",
+            "bid": 0.9
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6002",
+            "adProduct": "SP",
+            "name": "asin=\"B000000012\"",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000012"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000012\"",
+            "bid": 0.9
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6003",
+            "adProduct": "SP",
+            "name": "asin=\"B000000013\"",
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000013"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000013\"",
+            "bid": 0.9
+          }
+        ],
+        "changes": {
+          "campaigns": [
+            {
+              "campaignId": "1001",
+              "clearEndDate": true
+            }
+          ]
+        },
+        "allowEndDateClear": true
+      },
+      "expected": {
+        "rows": [
+          {
+            "Product": "Sponsored Products",
+            "Entity": "Campaign",
+            "Operation": "Update",
+            "Campaign ID": "1001",
+            "Ad Group ID": "",
+            "Portfolio ID": "9001",
+            "Ad ID": "",
+            "Keyword ID": "",
+            "Product Targeting ID": "",
+            "Campaign Name": "Campaign Alpha",
+            "Ad Group Name": "",
+            "Start Date": "",
+            "End Date": "",
+            "Targeting Type": "",
+            "State": "",
+            "Daily Budget": "",
+            "SKU": "",
+            "ASIN": "",
+            "Ad Group Default Bid": "",
+            "Bid": "",
+            "Keyword Text": "",
+            "Match Type": "",
+            "Bidding Strategy": "",
+            "Placement": "",
+            "Percentage": "",
+            "Product Targeting Expression": "",
+            "Sites": ""
+          }
+        ],
+        "review": [
+          "UPDATE Campaign 1001 (Campaign Alpha): End Date '20261231' -> '(cleared, runs indefinitely)'"
+        ],
+        "errors": []
+      }
+    },
+    {
+      "name": "clear_end_date_refused",
+      "input": {
+        "entities": [
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1001",
+            "adProduct": "SP",
+            "name": "Campaign Alpha",
+            "state": "enabled",
+            "portfolioId": "9001",
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": "20261231"
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1002",
+            "adProduct": "SP",
+            "name": "Campaign Cascade",
+            "state": "enabled",
+            "portfolioId": null,
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1003",
+            "adProduct": "SP",
+            "name": "Campaign With Archived Group",
+            "state": "enabled",
+            "portfolioId": null,
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1004",
+            "adProduct": "SP",
+            "name": "Campaign No-op",
+            "state": "paused",
+            "portfolioId": null,
+            "budgetAmount": 10.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2001",
+            "adProduct": "SP",
+            "name": "Alpha ad group",
+            "state": "enabled",
+            "campaignId": "1001",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2002",
+            "adProduct": "SP",
+            "name": "Cascade ad group",
+            "state": "enabled",
+            "campaignId": "1002",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2003",
+            "adProduct": "SP",
+            "name": "Archived ad group",
+            "state": "enabled",
+            "campaignId": "1003",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2004",
+            "adProduct": "SP",
+            "name": "Second live ad group",
+            "state": "paused",
+            "campaignId": "1001",
+            "defaultBid": 0.75
+          },
+          {
+            "entityType": "product_ad",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "3001",
+            "adProduct": "SP",
+            "name": null,
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "asin": "B000000001",
+            "sku": "SKU-3001"
+          },
+          {
+            "entityType": "product_ad",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "3002",
+            "adProduct": "SP",
+            "name": null,
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "asin": "B000000001",
+            "sku": "SKU-3002"
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4001",
+            "adProduct": "SP",
+            "name": "red widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "red widget",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4002",
+            "adProduct": "SP",
+            "name": "blue widget",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "blue widget",
+            "matchType": "phrase",
+            "bid": 1.25
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4003",
+            "adProduct": "SP",
+            "name": "old widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "old widget",
+            "matchType": "broad",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4004",
+            "adProduct": "SP",
+            "name": "already paused",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2004",
+            "keywordText": "already paused",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4005",
+            "adProduct": "SP",
+            "name": "cascade keyword",
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "keywordText": "cascade keyword",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4006",
+            "adProduct": "SP",
+            "name": "group cascade keyword",
+            "state": "enabled",
+            "campaignId": "1003",
+            "adGroupId": "2003",
+            "keywordText": "group cascade keyword",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5001",
+            "adProduct": "SP",
+            "name": "free widget",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "scope": "ad_group",
+            "keywordText": "free widget",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5002",
+            "adProduct": "SP",
+            "name": "used widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": null,
+            "scope": "campaign",
+            "keywordText": "used widget",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5003",
+            "adProduct": "SP",
+            "name": "cascade negative",
+            "state": "paused",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "scope": "ad_group",
+            "keywordText": "cascade negative",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5004",
+            "adProduct": "SP",
+            "name": "campaign negative",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": null,
+            "scope": "campaign",
+            "keywordText": "campaign negative",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6001",
+            "adProduct": "SP",
+            "name": "asin=\"B000000011\"",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000011"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000011\"",
+            "bid": 0.9
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6002",
+            "adProduct": "SP",
+            "name": "asin=\"B000000012\"",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000012"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000012\"",
+            "bid": 0.9
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6003",
+            "adProduct": "SP",
+            "name": "asin=\"B000000013\"",
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000013"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000013\"",
+            "bid": 0.9
+          }
+        ],
+        "changes": {
+          "campaigns": [
+            {
+              "campaignId": "1001",
+              "clearEndDate": true
+            }
+          ]
+        },
+        "allowEndDateClear": false
+      },
+      "expected": {
+        "rows": [],
+        "review": [
+          "SKIPPED (no-op): Campaign 1001 (Campaign Alpha) has no fields that differ from the export"
+        ],
+        "errors": [
+          "changes.campaigns/1001: clear_end_date is set but the change-set's top-level allow_end_date_clear is false; blank End Date clears an existing end date, so clearing must be opted into explicitly"
+        ]
+      }
+    },
+    {
+      "name": "no_op",
+      "input": {
+        "entities": [
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1001",
+            "adProduct": "SP",
+            "name": "Campaign Alpha",
+            "state": "enabled",
+            "portfolioId": "9001",
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": "20261231"
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1002",
+            "adProduct": "SP",
+            "name": "Campaign Cascade",
+            "state": "enabled",
+            "portfolioId": null,
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1003",
+            "adProduct": "SP",
+            "name": "Campaign With Archived Group",
+            "state": "enabled",
+            "portfolioId": null,
+            "budgetAmount": 20.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "campaign",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "1004",
+            "adProduct": "SP",
+            "name": "Campaign No-op",
+            "state": "paused",
+            "portfolioId": null,
+            "budgetAmount": 10.0,
+            "budgetType": "daily",
+            "targetingType": "manual",
+            "biddingStrategy": "legacy_for_sales",
+            "placementBidding": null,
+            "startDate": null,
+            "endDate": null
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2001",
+            "adProduct": "SP",
+            "name": "Alpha ad group",
+            "state": "enabled",
+            "campaignId": "1001",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2002",
+            "adProduct": "SP",
+            "name": "Cascade ad group",
+            "state": "enabled",
+            "campaignId": "1002",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2003",
+            "adProduct": "SP",
+            "name": "Archived ad group",
+            "state": "enabled",
+            "campaignId": "1003",
+            "defaultBid": 1.0
+          },
+          {
+            "entityType": "ad_group",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "2004",
+            "adProduct": "SP",
+            "name": "Second live ad group",
+            "state": "paused",
+            "campaignId": "1001",
+            "defaultBid": 0.75
+          },
+          {
+            "entityType": "product_ad",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "3001",
+            "adProduct": "SP",
+            "name": null,
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "asin": "B000000001",
+            "sku": "SKU-3001"
+          },
+          {
+            "entityType": "product_ad",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "3002",
+            "adProduct": "SP",
+            "name": null,
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "asin": "B000000001",
+            "sku": "SKU-3002"
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4001",
+            "adProduct": "SP",
+            "name": "red widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "red widget",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4002",
+            "adProduct": "SP",
+            "name": "blue widget",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "blue widget",
+            "matchType": "phrase",
+            "bid": 1.25
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4003",
+            "adProduct": "SP",
+            "name": "old widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "keywordText": "old widget",
+            "matchType": "broad",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4004",
+            "adProduct": "SP",
+            "name": "already paused",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2004",
+            "keywordText": "already paused",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4005",
+            "adProduct": "SP",
+            "name": "cascade keyword",
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "keywordText": "cascade keyword",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "keyword",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "4006",
+            "adProduct": "SP",
+            "name": "group cascade keyword",
+            "state": "enabled",
+            "campaignId": "1003",
+            "adGroupId": "2003",
+            "keywordText": "group cascade keyword",
+            "matchType": "exact",
+            "bid": 0.8
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5001",
+            "adProduct": "SP",
+            "name": "free widget",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "scope": "ad_group",
+            "keywordText": "free widget",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5002",
+            "adProduct": "SP",
+            "name": "used widget",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": null,
+            "scope": "campaign",
+            "keywordText": "used widget",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5003",
+            "adProduct": "SP",
+            "name": "cascade negative",
+            "state": "paused",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "scope": "ad_group",
+            "keywordText": "cascade negative",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "negative",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "5004",
+            "adProduct": "SP",
+            "name": "campaign negative",
+            "state": "paused",
+            "campaignId": "1001",
+            "adGroupId": null,
+            "scope": "campaign",
+            "keywordText": "campaign negative",
+            "expression": null,
+            "matchType": "negative_exact"
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6001",
+            "adProduct": "SP",
+            "name": "asin=\"B000000011\"",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000011"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000011\"",
+            "bid": 0.9
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6002",
+            "adProduct": "SP",
+            "name": "asin=\"B000000012\"",
+            "state": "enabled",
+            "campaignId": "1001",
+            "adGroupId": "2001",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000012"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000012\"",
+            "bid": 0.9
+          },
+          {
+            "entityType": "target",
+            "profileId": "50505050-5050-4050-8050-505050505050",
+            "amazonId": "6003",
+            "adProduct": "SP",
+            "name": "asin=\"B000000013\"",
+            "state": "enabled",
+            "campaignId": "1002",
+            "adGroupId": "2002",
+            "expression": [
+              {
+                "type": "asin_same_as",
+                "value": "B000000013"
+              }
+            ],
+            "resolvedExpression": "asin=\"B000000013\"",
+            "bid": 0.9
+          }
+        ],
+        "changes": {
+          "campaigns": [
+            {
+              "campaignId": "1004",
+              "dailyBudget": 10,
+              "state": "paused"
+            }
+          ],
+          "adGroups": [
+            {
+              "adGroupId": "2004",
+              "defaultBid": 0.75,
+              "state": "paused"
+            }
+          ]
+        },
+        "allowEndDateClear": false
+      },
+      "expected": {
+        "rows": [],
+        "review": [
+          "SKIPPED (no-op): Campaign 1004 (Campaign No-op) has no fields that differ from the export",
+          "SKIPPED (no-op): Ad Group 2004 (Second live ad group) has no fields that differ from the export"
+        ],
+        "errors": []
+      }
+    }
+  ]
+}

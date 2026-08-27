@@ -23,6 +23,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import type { EntityRow } from '@wizard-ads/shared';
 
 import { SP_COLUMNS } from './constants.js';
 import { specsFromSections, type KeywordSection } from './keywords.js';
@@ -34,6 +35,8 @@ import { resolveSpecs } from './resolve.js';
 import type { BulkRow, CampaignBuildConfig, CampaignSpec } from './types.js';
 import { planToRows } from './plan.js';
 import { validateRows } from './validate.js';
+import { buildCampaignUpdate, type CampaignUpdateChanges } from './update.js';
+import { toUpdateBulkWorkbook } from './export.js';
 import { readWorkbook, writeWorkbook } from './xlsx/index.js';
 
 const GOLDEN_DIR = fileURLToPath(new URL('../../../fixtures/golden/', import.meta.url));
@@ -203,4 +206,68 @@ describe('parity: keyword sections to specs', () => {
       expectParity(specs, testCase.expected);
     });
   }
+});
+
+interface UpdateCase {
+  name: string;
+  input: {
+    entities: EntityRow[];
+    changes: CampaignUpdateChanges;
+    allowEndDateClear: boolean;
+  };
+  expected: {
+    rows: BulkRow[];
+    review: string[];
+    errors: string[];
+  };
+}
+
+describe('parity: campaign UPDATE mode', () => {
+  const golden = loadGolden<UpdateCase>('campaign-update');
+
+  it('pins the same Sponsored Products column contract as CREATE mode', () => {
+    expect(golden.columns).toEqual([...SP_COLUMNS]);
+  });
+
+  for (const testCase of golden.cases) {
+    it(`${testCase.name}: rows, review, and errors`, () => {
+      const actual = buildCampaignUpdate(testCase.input.changes, testCase.input.entities, {
+        allowEndDateClear: testCase.input.allowEndDateClear,
+      });
+      expectParity(actual.rows, testCase.expected.rows);
+      // Several reference loops intentionally deduplicate through Python sets;
+      // their order is hash-seed-dependent, while their contents are the
+      // contract. Row order remains exact because Amazon consumes the sheet.
+      expect([...actual.review].sort()).toEqual([...testCase.expected.review].sort());
+      expect([...actual.errors].sort()).toEqual([...testCase.expected.errors].sort());
+      expect(actual.rows).toHaveLength(testCase.expected.rows.length);
+      expect(actual.review).toHaveLength(testCase.expected.review.length);
+      expect(actual.errors).toHaveLength(testCase.expected.errors.length);
+    });
+
+    it(`${testCase.name}: workbook contains every reviewed output row`, () => {
+      const actual = buildCampaignUpdate(testCase.input.changes, testCase.input.entities, {
+        allowEndDateClear: testCase.input.allowEndDateClear,
+      });
+      const workbook = toUpdateBulkWorkbook(actual.rows, {
+        client: 'Synthetic',
+        marketplace: 'US',
+        today: '2026-08-27',
+      });
+      const written = readWorkbook(workbook.bytes);
+      expect(written.header).toEqual([...SP_COLUMNS]);
+      expect(written.rows).toHaveLength(actual.rows.length);
+      expectParity(
+        written.rows,
+        actual.rows.map((row) => SP_COLUMNS.map((column) => row[column])),
+      );
+    });
+  }
+
+  it('covers all three legal UPDATE-file operations', () => {
+    const operations = new Set(
+      golden.cases.flatMap((testCase) => testCase.expected.rows.map((row) => row.Operation)),
+    );
+    expect([...operations].sort()).toEqual(['Archive', 'Create', 'Update']);
+  });
 });
