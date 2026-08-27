@@ -360,8 +360,8 @@ const control: CSSProperties = {
 const submitButton: CSSProperties = {
   border: '1px solid var(--wa-border-strong)',
   borderRadius: '0.375rem',
-  background: 'var(--wa-accent, #2563eb)',
-  color: '#fff',
+  background: 'var(--wa-accent-grad)',
+  color: 'var(--wa-on-accent)',
   fontSize: '0.8125rem',
   fontWeight: 600,
   padding: '0.375rem 0.875rem',
@@ -411,13 +411,13 @@ const badgeBase: CSSProperties = {
 };
 const syncBadge: CSSProperties = {
   ...badgeBase,
-  background: 'var(--wa-info-bg, #e0edff)',
-  color: 'var(--wa-info-text, #1e40af)',
+  background: 'var(--wa-info-bg)',
+  color: 'var(--wa-info-text)',
 };
 const applyBadge: CSSProperties = {
   ...badgeBase,
-  background: 'var(--wa-success-bg, #dcfce7)',
-  color: 'var(--wa-success-text, #166534)',
+  background: 'var(--wa-good-bg)',
+  color: 'var(--wa-good-text)',
 };
 const chipBase: CSSProperties = {
   fontFamily: 'ui-monospace, SFMono-Regular, monospace',
@@ -430,7 +430,7 @@ const oldChip: CSSProperties = { ...chipBase, color: 'var(--wa-text-muted)' };
 const newChip: CSSProperties = { ...chipBase, color: 'var(--wa-text)', fontWeight: 600 };
 const timeText: CSSProperties = { ...muted, fontVariantNumeric: 'tabular-nums' };
 const gotoLink: CSSProperties = {
-  color: 'var(--wa-accent, #2563eb)',
+  color: 'var(--wa-accent-text)',
   fontSize: '0.8125rem',
   textDecoration: 'none',
   marginLeft: 'auto',

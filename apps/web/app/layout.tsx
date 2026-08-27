@@ -1,10 +1,16 @@
 import type { Metadata, Viewport } from 'next';
+import { Inter } from 'next/font/google';
 import type { ReactNode } from 'react';
 import '../src/ui/theme.css';
 import { AppNav } from '../src/ui/nav';
 import { BugWidget } from '../src/ui/bug-widget';
 import { ToastProvider } from '../src/ui/toast';
 import { THEME_SCRIPT } from '../src/ui/theme-script';
+
+const inter = Inter({
+  subsets: ['latin'],
+  variable: '--font-inter',
+});
 
 export const metadata: Metadata = {
   title: 'wizard-ads',
@@ -15,8 +21,8 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#f5f7fa' },
-    { media: '(prefers-color-scheme: dark)', color: '#0b0f16' },
+    { media: '(prefers-color-scheme: light)', color: '#FFFFFF' },
+    { media: '(prefers-color-scheme: dark)', color: '#0F1318' },
   ],
 };
 
@@ -27,7 +33,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   return (
     // The theme stamp below rewrites `data-theme` before React sees the
     // document, which is exactly the mismatch this attribute exists for.
-    <html lang="en" data-theme="light" suppressHydrationWarning>
+    <html lang="en" data-theme="light" className={inter.variable} suppressHydrationWarning>
       <head>
         {/*
           Before first paint, not after hydration: a dark-mode user who watches

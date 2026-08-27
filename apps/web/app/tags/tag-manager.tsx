@@ -61,7 +61,7 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
   const [filter, setFilter] = useState<TagFilter>(() => tagFilterFromState(initialState));
   const [name, setName] = useState('');
   const [parentId, setParentId] = useState('');
-  const [color, setColor] = useState('#2563eb');
+  const [color, setColor] = useState('#FD4807');
   const [bulkTagId, setBulkTagId] = useState('');
   const [message, setMessage] = useState('');
   const filteredCampaigns = useTagFilter(campaigns, filter, descendants);
@@ -164,7 +164,7 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
     <li key={tag.id} style={{ marginLeft: depth * 18, marginBottom: 8 }}>
       <span
         aria-hidden="true"
-        style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 10, marginRight: 7, background: tag.color ?? '#94a3b8' }}
+        style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 10, marginRight: 7, background: tag.color ?? 'var(--wa-series-3)' }}
       />
       <strong>{tag.name}</strong> <small style={{ color: 'var(--wa-text-faint)' }}>{tag.id}</small>{' '}
       <button type="button" onClick={() => rename(tag)}>Rename</button>{' '}

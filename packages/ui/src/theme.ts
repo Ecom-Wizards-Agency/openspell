@@ -13,9 +13,9 @@
  */
 export const tokens = {
   font: {
-    sans: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
+    sans: 'var(--wa-font, Inter, sans-serif)',
     mono: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace',
-    size: { xs: '0.75rem', sm: '0.8125rem', base: '0.875rem', lg: '1rem', xl: '1.5rem' },
+    size: { eyebrow: '0.6875rem', xs: '0.75rem', sm: '0.8125rem', base: '0.875rem', lg: '1rem', xl: '1.5rem', kpi: '1.75rem' },
   },
   /*
    * Custom properties with the original literal as the fallback.
@@ -32,25 +32,29 @@ export const tokens = {
    * these literals always were. Light mode resolves to identical values.
    */
   color: {
-    text: 'var(--wa-text, #111827)',
-    textMuted: 'var(--wa-text-muted, #6b7280)',
-    textFaint: 'var(--wa-text-faint, #9ca3af)',
-    border: 'var(--wa-border, #e5e7eb)',
-    borderStrong: 'var(--wa-border-strong, #d1d5db)',
-    surface: 'var(--wa-surface, #ffffff)',
-    surfaceAlt: 'var(--wa-surface-2, #f9fafb)',
-    surfaceHover: 'var(--wa-surface-3, #f3f4f6)',
-    accent: 'var(--wa-accent, #1d4ed8)',
-    accentSoft: 'var(--wa-accent-soft, #eff6ff)',
-    good: 'var(--wa-good-text, #065f46)',
-    goodSoft: 'var(--wa-good-bg, #ecfdf5)',
-    goodBorder: 'var(--wa-good-border, #a7f3d0)',
-    warn: 'var(--wa-warn-text, #92400e)',
-    warnSoft: 'var(--wa-warn-bg, #fffbeb)',
-    warnBorder: 'var(--wa-warn-border, #fde68a)',
-    bad: 'var(--wa-bad-text, #991b1b)',
-    badSoft: 'var(--wa-bad-bg, #fef2f2)',
-    badBorder: 'var(--wa-bad-border, #fecaca)',
+    text: 'var(--wa-text, #11151C)',
+    textMuted: 'var(--wa-text-muted, #5B6573)',
+    textFaint: 'var(--wa-text-faint, #5B6573)',
+    border: 'var(--wa-border, #DADCE0)',
+    borderStrong: 'var(--wa-border-strong, #C6C8CD)',
+    surface: 'var(--wa-surface, #F5F6F8)',
+    surfaceAlt: 'var(--wa-surface-2, #FFFFFF)',
+    surfaceHover: 'var(--wa-surface-3, #E5E7EA)',
+    accent: 'var(--wa-accent, #FD4807)',
+    accentGradient: 'var(--wa-accent-grad, linear-gradient(#FF8A2B, #E2120A))',
+    accentSoft: 'var(--wa-accent-soft, rgba(253, 72, 7, 0.12))',
+    indigo: 'var(--wa-indigo, #3322E0)',
+    indigoSoft: 'var(--wa-indigo-soft, rgba(51, 34, 224, 0.12))',
+    onAccent: 'var(--wa-on-accent, #11151C)',
+    good: 'var(--wa-good-text, #1B7F44)',
+    goodSoft: 'var(--wa-good-bg, #DCEFE4)',
+    goodBorder: 'var(--wa-good-border, #86CFA1)',
+    warn: 'var(--wa-warn-text, #C23B0C)',
+    warnSoft: 'var(--wa-warn-bg, #FBE8E1)',
+    warnBorder: 'var(--wa-warn-border, #E7A084)',
+    bad: 'var(--wa-bad-text, #C33B3C)',
+    badSoft: 'var(--wa-bad-bg, #F8E4E5)',
+    badBorder: 'var(--wa-bad-border, #E89A9A)',
   },
   radius: { sm: '0.25rem', md: '0.375rem', pill: '999px' },
   space: (n: number) => `${n * 0.25}rem`,
@@ -63,7 +67,7 @@ export const toneStyle: Record<Tone, { background: string; border: string; color
   warn: { background: tokens.color.warnSoft, border: tokens.color.warnBorder, color: tokens.color.warn },
   bad: { background: tokens.color.badSoft, border: tokens.color.badBorder, color: tokens.color.bad },
   muted: { background: tokens.color.surfaceAlt, border: tokens.color.border, color: tokens.color.textMuted },
-  neutral: { background: tokens.color.accentSoft, border: 'var(--wa-accent-border, #bfdbfe)', color: tokens.color.accent },
+  neutral: { background: tokens.color.indigoSoft, border: 'var(--wa-info-border, #938BEF)', color: tokens.color.indigo },
 };
 
 /**

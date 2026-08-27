@@ -378,17 +378,17 @@ const segment: CSSProperties = {
 };
 
 const segmentActive: CSSProperties = {
-  background: tokens.color.accent,
-  color: 'var(--wa-on-accent, #ffffff)',
+  background: tokens.color.indigoSoft,
+  color: tokens.color.text,
   fontWeight: 600,
 };
 
 const chip: CSSProperties = {
   alignItems: 'center',
-  background: tokens.color.accentSoft,
-  border: '1px solid var(--wa-accent-border, #bfdbfe)',
+  background: tokens.color.indigoSoft,
+  border: `1px solid ${tokens.color.indigo}`,
   borderRadius: tokens.radius.pill,
-  color: tokens.color.accent,
+  color: tokens.color.text,
   display: 'inline-flex',
   fontSize: tokens.font.size.xs,
   gap: tokens.space(1),
