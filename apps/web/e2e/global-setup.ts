@@ -23,6 +23,7 @@ import {
   APP_PORT,
   BASE_URL,
   DATABASE_NAME,
+  EMAILS,
   GRANT,
   MOCK_PORT,
   STATE_KEY,
@@ -118,6 +119,18 @@ async function seed(connectionString: string): Promise<{
         insert into public.org_members (org_id, user_id, role)
         values (${orgId}, ${userId}, ${role}::public.org_role)
       `;
+    }
+
+    const identities = Object.entries(USERS) as Array<[keyof typeof USERS, string]>;
+    let emailsWritten = 0;
+    for (const [key, userId] of identities) {
+      const rows = await handle.sql<{ id: string }[]>`
+        update auth.users set email = ${EMAILS[key]} where id = ${userId} returning id
+      `;
+      emailsWritten += rows.length;
+    }
+    if (emailsWritten !== identities.length) {
+      throw new Error(`Seeded ${identities.length} Auth emails, wrote ${emailsWritten}`);
     }
 
     // The tenant fixture ships a connection row so the RLS suite has one in

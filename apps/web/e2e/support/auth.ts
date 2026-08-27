@@ -6,13 +6,14 @@
  * the same guard, the same org resolution, the same role table.
  */
 import type { Page } from '@playwright/test';
-import { E2E_USER_COOKIE } from '../../src/cookies';
-import { BASE_URL, USERS } from './fixture';
+import { E2E_USER_COOKIE, E2E_USER_EMAIL_COOKIE } from '../../src/cookies';
+import { BASE_URL, EMAILS, USERS } from './fixture';
 import type { UserKey } from './fixture';
 
 export async function signIn(page: Page, who: UserKey): Promise<void> {
   await page.context().addCookies([
     { name: E2E_USER_COOKIE, value: USERS[who], url: BASE_URL, sameSite: 'Lax' },
+    { name: E2E_USER_EMAIL_COOKIE, value: EMAILS[who], url: BASE_URL, sameSite: 'Lax' },
   ]);
 }
 

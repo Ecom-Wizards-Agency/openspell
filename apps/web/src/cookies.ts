@@ -21,3 +21,6 @@ export const PROFILE_COOKIE = 'wizard_ads_profile';
 
 /** Test-only session. Honoured only when `WIZARD_ADS_E2E_AUTH=1`. */
 export const E2E_USER_COOKIE = 'wizard_ads_e2e_user';
+
+/** Test-only email paired with `E2E_USER_COOKIE` for invitation acceptance. */
+export const E2E_USER_EMAIL_COOKIE = 'wizard_ads_e2e_user_email';

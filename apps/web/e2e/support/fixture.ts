@@ -34,6 +34,14 @@ export const USERS = {
 
 export type UserKey = keyof typeof USERS;
 
+/** The matching Auth identity carried by the test-only session seam. */
+export const EMAILS: Record<UserKey, string> = {
+  admin: 'admin@example.test',
+  analyst: 'analyst@example.test',
+  viewer: 'viewer@example.test',
+  outsider: 'outsider@example.test',
+};
+
 /** Profiles the mock Amazon grant returns, per region. FE is deliberately absent. */
 export const GRANT = { na: 2, eu: 3 } as const;
 export const GRANT_TOTAL = GRANT.na + GRANT.eu;
