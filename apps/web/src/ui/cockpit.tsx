@@ -36,7 +36,7 @@ export interface CockpitProps {
 }
 
 const SERIES_COLORS = ['var(--wa-indigo)', 'var(--wa-accent)'] as const;
-type Granularity = 'D' | 'W' | 'M';
+export type Granularity = 'D' | 'W' | 'M';
 
 function formatValue(value: number | null, scale: KpiTileModel['scale'], currency: string): string {
   if (value === null) return '—';
@@ -46,7 +46,7 @@ function formatValue(value: number | null, scale: KpiTileModel['scale'], currenc
   return value.toLocaleString('en-US', { style: 'currency', currency, maximumFractionDigits: value >= 100 ? 0 : 2 });
 }
 
-function bucketKey(date: string, gran: Granularity): string {
+export function bucketKey(date: string, gran: Granularity): string {
   if (gran === 'D') return date;
   if (gran === 'M') return date.slice(0, 7);
   const d = new Date(`${date}T00:00:00Z`);
@@ -55,7 +55,7 @@ function bucketKey(date: string, gran: Granularity): string {
   return monday.toISOString().slice(0, 10);
 }
 
-function seriesFor(
+export function seriesFor(
   days: readonly CockpitDay[],
   metric: string,
   gran: Granularity,
