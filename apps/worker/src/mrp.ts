@@ -692,7 +692,7 @@ class PostgresMrpEconomicsSyncStore implements MrpEconomicsSyncStore {
   }): Promise<void> {
     const rows = await this.handle.sql<{ id: string }[]>`
       update public.integration_connections
-         set status = 'active', last_synced_at = ${args.syncedAt}, last_error = ${args.note}
+         set status = 'active', last_synced_at = ${args.syncedAt.toISOString()}, last_error = ${args.note}
        where org_id = ${args.orgId} and id = ${args.connectionId} and provider = 'mrp'
       returning id
     `;
