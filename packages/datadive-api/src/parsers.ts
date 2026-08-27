@@ -114,7 +114,18 @@ export interface ParsedRankRadarPage {
 }
 
 export function parseRankRadarPage(value: unknown): ParsedRankRadarPage {
-  const body = parse(RankRadarPageSchema, value, 'rank radar list');
+  // Live smoke 2026-08-27 (second pass): the endpoint double-wraps — the outer
+  // `data` holds the pagination object whose own `data` is the radar array.
+  const unwrapped =
+    typeof value === 'object' &&
+    value !== null &&
+    'data' in value &&
+    typeof (value as { data: unknown }).data === 'object' &&
+    (value as { data: unknown }).data !== null &&
+    !Array.isArray((value as { data: unknown }).data)
+      ? (value as { data: unknown }).data
+      : value;
+  const body = parse(RankRadarPageSchema, unwrapped, 'rank radar list');
   return {
     currentPage: body.currentPage ?? 1,
     pageSize: body.pageSize ?? body.data.length,
