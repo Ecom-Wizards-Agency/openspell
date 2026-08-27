@@ -367,6 +367,33 @@ describe('MRP economics.sync handler', () => {
     expect(store.loaded).toEqual([]);
   });
 
+  it('defaults config.max_asins to 25 and records an empty mirror as a skip', async () => {
+    const store = new FakeStore();
+    if (!store.resolved) throw new Error('test scope missing');
+    store.resolved.connection.config = { url: ENDPOINT };
+    store.selection = { asins: [], total: 0 };
+    const handler = createMrpEconomicsHandler(store, {
+      now: () => NOW,
+      clientFactory: () => ({
+        fetchSellers: async () => ({
+          toolName: 'get_sellers',
+          sellers: [SELLER],
+          ignoredLines: 0,
+        }),
+        fetchProductMetrics: async () => {
+          throw new Error('must not fetch a product');
+        },
+      }),
+    });
+    await expect(handler(PAYLOAD)).resolves.toMatchObject({
+      asinsAvailable: 0,
+      asinsSelected: 0,
+      rowsLoaded: 0,
+      notes: [expect.stringContaining('no active advertised ASINs')],
+    });
+    expect(store.advertisedRequests[0]?.limit).toBe(25);
+  });
+
   it('records an unmatched profile note and skips enumeration without failing the job', async () => {
     const store = new FakeStore();
     if (!store.resolved) throw new Error('test scope missing');
