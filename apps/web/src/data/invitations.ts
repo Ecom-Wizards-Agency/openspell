@@ -135,7 +135,10 @@ export async function createInvitation(
   const invitation = await handle.sql.begin(async (sql) => {
     // Serialise create checks per org/email so two tabs cannot both pass the
     // "no live invitation" read before either inserts.
-    await sql`select pg_advisory_xact_lock(hashtextextended(${`${input.orgId}\0${email}`}, 0))`;
+    // PostgreSQL text cannot carry a NUL byte. JSON keeps the two key parts
+    // unambiguous while remaining valid text for hashtextextended.
+    const lockKey = JSON.stringify([input.orgId, email]);
+    await sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
 
     const members = await sql<{ exists: boolean }[]>`
       select exists (
@@ -184,7 +187,7 @@ export async function createInvitation(
       values
         (${input.orgId}, 'user', ${input.invitedBy}, 'invitation.created',
          'org_invitation', ${row.id},
-         jsonb_build_object('email', ${email}, 'role', ${input.role}), 'web')
+         jsonb_build_object('email', ${email}::text, 'role', ${input.role}::text), 'web')
     `;
     return toInvitation(row);
   });

@@ -40,7 +40,8 @@ const GUARDED = [
   '/roadmap',
   '/settings/connections',
   '/settings/profiles',
-  // WP-39: add `/settings/members` when that route lands.
+  '/settings/members',
+  '/settings/account',
   '/sync-status',
 ] as const;
 

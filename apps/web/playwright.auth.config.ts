@@ -24,7 +24,7 @@ export default defineConfig({
   // other two do and one thing only this suite has: a session that can be
   // absent. The WP-08 config arms the header bridge, so every request there is
   // authenticated before it is routed and "anonymous" cannot be expressed.
-  testMatch: /(oauth|roles|guards|smoke)\.spec\.ts$/,
+  testMatch: /(oauth|roles|guards|members|smoke)\.spec\.ts$/,
   globalSetup: './e2e/global-setup.ts',
   globalTeardown: './e2e/global-teardown.ts',
   outputDir: './node_modules/.cache/playwright/auth',

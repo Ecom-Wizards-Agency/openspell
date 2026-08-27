@@ -20,10 +20,10 @@
  * resembling the thing it stands in for.
  */
 import { cookies } from 'next/headers';
-import { E2E_USER_COOKIE } from '../cookies';
+import { E2E_USER_COOKIE, E2E_USER_EMAIL_COOKIE } from '../cookies';
 import { supabaseConfigured, supabaseServerClient } from './supabase';
 
-export { E2E_USER_COOKIE };
+export { E2E_USER_COOKIE, E2E_USER_EMAIL_COOKIE };
 
 export interface SessionUser {
   id: string;
@@ -46,7 +46,8 @@ export async function currentUser(): Promise<SessionUser | null> {
   if (e2eAuthEnabled()) {
     const store = await cookies();
     const id = store.get(E2E_USER_COOKIE)?.value;
-    if (id) return { id, email: null };
+    const email = store.get(E2E_USER_EMAIL_COOKIE)?.value ?? null;
+    if (id) return { id, email };
   }
 
   if (!supabaseConfigured()) return null;

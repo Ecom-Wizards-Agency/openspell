@@ -85,7 +85,7 @@ export async function addMember(handle: SqlHandle, input: AddMemberInput): Promi
       values
         (${input.orgId}, 'user', ${input.userId}, 'invitation.accepted',
          'org_invitation', ${input.invitationId},
-         jsonb_build_object('role', ${input.role}), 'web')
+         jsonb_build_object('role', ${input.role}::text), 'web')
     `;
     return inserted.length;
   });
@@ -99,7 +99,7 @@ export async function updateMemberRole(
   if (!isOrgRole(input.role)) throw new Error('Unknown organisation role.');
   return handle.sql.begin(async (sql) => {
     await sql`
-      select pg_advisory_xact_lock(hashtextextended(${`org-members\0${input.orgId}`}, 0))
+      select pg_advisory_xact_lock(hashtextextended(${`org-members:${input.orgId}`}, 0))
     `;
     const current = await sql<{ role: string }[]>`
       select role::text as role from public.org_members
@@ -131,7 +131,7 @@ export async function updateMemberRole(
       values
         (${input.orgId}, 'user', ${input.actorId}, 'member.role_changed',
          'org_member', ${input.userId},
-         jsonb_build_object('from', ${oldRole}, 'to', ${input.role}), 'web')
+         jsonb_build_object('from', ${oldRole}::text, 'to', ${input.role}::text), 'web')
     `;
     return 1;
   });
@@ -141,7 +141,7 @@ export async function updateMemberRole(
 export async function removeMember(handle: SqlHandle, input: MemberChangeInput): Promise<number> {
   return handle.sql.begin(async (sql) => {
     await sql`
-      select pg_advisory_xact_lock(hashtextextended(${`org-members\0${input.orgId}`}, 0))
+      select pg_advisory_xact_lock(hashtextextended(${`org-members:${input.orgId}`}, 0))
     `;
     const current = await sql<{ role: string }[]>`
       select role::text as role from public.org_members
@@ -171,7 +171,7 @@ export async function removeMember(handle: SqlHandle, input: MemberChangeInput):
         (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
       values
         (${input.orgId}, 'user', ${input.actorId}, 'member.removed',
-         'org_member', ${input.userId}, jsonb_build_object('role', ${oldRole}), 'web')
+         'org_member', ${input.userId}, jsonb_build_object('role', ${oldRole}::text), 'web')
     `;
     return 1;
   });
