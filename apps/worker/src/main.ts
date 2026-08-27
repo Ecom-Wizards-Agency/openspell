@@ -4,6 +4,7 @@ import { configFromEnv } from './config.js';
 import { createCrosscheckIngest } from './crosscheck.js';
 import { closeServer, startHealthServer } from './health.js';
 import { PostgresBidSeriesStore } from './bid-series.js';
+import { createKeepaSyncHandler } from './keepa.js';
 import {
   PostgresRecommendationRunStore,
   createRecommendationsRunner,
@@ -42,6 +43,7 @@ const worker = new SyncWorker({
   jobTypes: config.jobTypes,
   crosscheckIngest: createCrosscheckIngest(handle, { inboxDir: config.crosscheckInboxDir }),
   recommendationsRun: createRecommendationsRunner(recommendationRuns),
+  integrations: { keepaSync: createKeepaSyncHandler(handle) },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,
   pollIntervalMs: config.pollIntervalMs,

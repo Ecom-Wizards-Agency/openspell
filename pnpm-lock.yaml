@@ -149,6 +149,9 @@ importers:
       '@wizard-ads/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@wizard-ads/keepa-api':
+        specifier: workspace:*
+        version: link:../../packages/keepa-api
       '@wizard-ads/shared':
         specifier: workspace:*
         version: link:../../packages/shared

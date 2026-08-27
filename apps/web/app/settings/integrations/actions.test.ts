@@ -6,8 +6,10 @@ const mocks = vi.hoisted(() => ({
   gateAction: vi.fn(),
   currentUser: vi.fn(),
   create: vi.fn(),
+  createLink: vi.fn(),
   list: vi.fn(),
   revoke: vi.fn(),
+  removeLink: vi.fn(),
   setStatus: vi.fn(),
   store: vi.fn(),
 }));
@@ -18,13 +20,20 @@ vi.mock('../../../src/auth/session', () => ({ currentUser: mocks.currentUser }))
 vi.mock('@wizard-ads/db', () => ({
   INTEGRATION_PROVIDERS: ['keepa', 'datadive', 'mrp'],
   createIntegrationConnection: mocks.create,
+  createCompetitorLink: mocks.createLink,
   listIntegrationConnections: mocks.list,
   revokeIntegrationSecret: mocks.revoke,
+  removeCompetitorLink: mocks.removeLink,
   setIntegrationConnectionStatus: mocks.setStatus,
   storeIntegrationSecret: mocks.store,
 }));
 
-import { connectIntegration, revokeIntegration } from './actions';
+import {
+  addCompetitorLink,
+  connectIntegration,
+  deleteCompetitorLink,
+  revokeIntegration,
+} from './actions';
 
 const handle = {};
 const orgId = '11111111-1111-4111-8111-111111111111';
@@ -46,6 +55,8 @@ describe('integration settings actions', () => {
     mocks.setStatus.mockResolvedValue({ id: connectionId, status: 'error' });
     mocks.list.mockResolvedValue([{ id: connectionId }]);
     mocks.revoke.mockResolvedValue(true);
+    mocks.createLink.mockResolvedValue({ id: 'link-1' });
+    mocks.removeLink.mockResolvedValue(undefined);
   });
 
   it.each(['analyst', 'viewer'] as const)('refuses a %s before touching metadata', async (role) => {
@@ -84,5 +95,33 @@ describe('integration settings actions', () => {
       revokeIntegration(form({ connectionId })),
     ).rejects.toThrow(/not found/i);
     expect(mocks.revoke).not.toHaveBeenCalled();
+  });
+
+  it('lets an analyst add and remove tenant-scoped competitor pairs', async () => {
+    mocks.gateAction.mockResolvedValue({ handle, active: { orgId, role: 'analyst' } });
+    await addCompetitorLink(form({
+      profileId: '33333333-3333-4333-8333-333333333333',
+      ourAsin: 'b0test0001',
+      competitorAsin: 'b0test0002',
+    }));
+    expect(mocks.createLink).toHaveBeenCalledWith(handle, {
+      orgId,
+      profileId: '33333333-3333-4333-8333-333333333333',
+      ourAsin: 'B0TEST0001',
+      competitorAsin: 'B0TEST0002',
+    });
+
+    await deleteCompetitorLink(form({ linkId: 'link-1' }));
+    expect(mocks.removeLink).toHaveBeenCalledWith(handle, { orgId, id: 'link-1' });
+  });
+
+  it('refuses a viewer editing competitor pairs', async () => {
+    mocks.gateAction.mockResolvedValue({ handle, active: { orgId, role: 'viewer' } });
+    await expect(addCompetitorLink(form({
+      profileId: '33333333-3333-4333-8333-333333333333',
+      ourAsin: 'B0TEST0001',
+      competitorAsin: 'B0TEST0002',
+    }))).rejects.toBeInstanceOf(Forbidden);
+    expect(mocks.createLink).not.toHaveBeenCalled();
   });
 });

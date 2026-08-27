@@ -1,7 +1,8 @@
 /** `/settings/integrations` — generic external API credential custody. */
 import type { ReactNode } from 'react';
-import { listIntegrationConnections } from '@wizard-ads/db';
+import { listCompetitorLinks, listIntegrationConnections } from '@wizard-ads/db';
 import type {
+  CompetitorLinkRecord,
   IntegrationConnectionRecord,
   IntegrationConnectionStatus,
   IntegrationProvider,
@@ -16,10 +17,18 @@ import {
   Card,
   Field,
   Input,
+  Select,
   TableFrame,
 } from '../../../src/ui/primitives';
 import { heading, muted, page } from '../../../src/ui/tokens';
-import { connectIntegration, revokeIntegration } from './actions';
+import { listProfiles } from '../../_lib/profiles';
+import type { ProfileRecord } from '../../_lib/profiles';
+import {
+  addCompetitorLink,
+  connectIntegration,
+  deleteCompetitorLink,
+  revokeIntegration,
+} from './actions';
 import { IntegrationSubmitButton } from './submit-button';
 
 export const dynamic = 'force-dynamic';
@@ -64,7 +73,12 @@ export default async function IntegrationsPage(): Promise<ReactNode> {
   if (!org) return null;
 
   const connections = await listIntegrationConnections(handle, org.orgId);
+  const [competitorLinks, profiles] = await Promise.all([
+    listCompetitorLinks(handle, org.orgId),
+    listProfiles(handle, org.orgId),
+  ]);
   const mayManage = can(org.role, 'manageConnection');
+  const mayEditCompetitors = can(org.role, 'editTargets');
 
   return (
     <main style={page}>
@@ -88,7 +102,15 @@ export default async function IntegrationsPage(): Promise<ReactNode> {
               provider={provider}
               connections={connections.filter((connection) => connection.provider === provider.id)}
               mayManage={mayManage}
-            />
+            >
+              {provider.id === 'keepa' ? (
+                <CompetitorLinksSection
+                  links={competitorLinks}
+                  profiles={profiles}
+                  mayEdit={mayEditCompetitors}
+                />
+              ) : null}
+            </ProviderCard>
           ))}
         </div>
       </Shell>
@@ -100,10 +122,12 @@ function ProviderCard({
   provider,
   connections,
   mayManage,
+  children,
 }: {
   provider: (typeof PROVIDERS)[number];
   connections: readonly IntegrationConnectionRecord[];
   mayManage: boolean;
+  children?: ReactNode;
 }): ReactNode {
   return (
     <Card
@@ -197,7 +221,71 @@ function ProviderCard({
           <IntegrationSubmitButton providerId={provider.id} providerName={provider.name} />
         </form>
       ) : null}
+      {children}
     </Card>
+  );
+}
+
+function CompetitorLinksSection({
+  links,
+  profiles,
+  mayEdit,
+}: {
+  links: readonly CompetitorLinkRecord[];
+  profiles: readonly ProfileRecord[];
+  mayEdit: boolean;
+}): ReactNode {
+  return (
+    <section style={{ borderTop: '1px solid var(--wa-border)', marginTop: '1.25rem', paddingTop: '1rem' }}>
+      <h3 style={{ margin: 0 }}>Competitor ASINs</h3>
+      <p className="wa-hint">
+        Link each advertised ASIN to a competitor in the same marketplace. Analysts may edit these pairs.
+      </p>
+      {links.length > 0 ? (
+        <TableFrame>
+          <table className="wa-table">
+            <thead><tr><th>Profile</th><th>Our ASIN</th><th>Competitor ASIN</th>{mayEdit ? <th>Action</th> : null}</tr></thead>
+            <tbody>
+              {links.map((link) => (
+                <tr key={link.id} data-testid="competitor-link-row">
+                  <td>{link.profileLabel ?? 'Unscoped'}{link.marketplace ? ` · ${link.marketplace}` : ''}</td>
+                  <td><code>{link.ourAsin}</code></td>
+                  <td><code>{link.competitorAsin}</code></td>
+                  {mayEdit ? (
+                    <td>
+                      <form action={deleteCompetitorLink}>
+                        <input type="hidden" name="linkId" value={link.id} />
+                        <Button type="submit" variant="danger" size="sm">Remove</Button>
+                      </form>
+                    </td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableFrame>
+      ) : <p className="wa-hint" data-testid="competitor-links-empty">No competitor pairs yet.</p>}
+
+      {mayEdit && profiles.length > 0 ? (
+        <form action={addCompetitorLink} className="wa-row" style={{ alignItems: 'end', gap: '0.75rem', marginTop: '1rem' }}>
+          <Field label="Profile / marketplace" htmlFor="competitor-profile">
+            <Select id="competitor-profile" name="profileId" required defaultValue="">
+              <option value="" disabled>Select a profile</option>
+              {profiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>{profile.label} · {profile.countryCode}</option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Our ASIN" htmlFor="our-asin">
+            <Input id="our-asin" name="ourAsin" required minLength={10} maxLength={10} autoCapitalize="characters" />
+          </Field>
+          <Field label="Competitor ASIN" htmlFor="competitor-asin">
+            <Input id="competitor-asin" name="competitorAsin" required minLength={10} maxLength={10} autoCapitalize="characters" />
+          </Field>
+          <Button type="submit" variant="primary">Add pair</Button>
+        </form>
+      ) : null}
+    </section>
   );
 }
 
