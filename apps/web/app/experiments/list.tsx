@@ -14,6 +14,7 @@ import type { ProfileOption } from '../../src/experiments/data';
 import { toUiExperiment } from '../../src/experiments/ui';
 import type { UiExperiment } from '../../src/experiments/ui';
 import { STATUS_LABELS, STATUS_TEXT_COLOR, TYPE_LABELS, METRIC_LABELS, EXPERIMENT_STATUS_OPTIONS } from '../../src/experiments/labels';
+import { EmptyState } from '../../src/ui/primitives';
 import { banner, colors, heading, muted, page } from '../../src/ui/tokens';
 
 const card = {
@@ -122,7 +123,7 @@ export function ExperimentsList({
             ))}
           </select>
         </label>
-        {canManage && (
+        {canManage && items.length > 0 && (
           <a href={newHref} data-testid="new-experiment" className="wa-btn wa-btn--primary wa-btn--sm">
             New experiment
           </a>
@@ -154,9 +155,46 @@ export function ExperimentsList({
         ))}
       </ul>
       {items.length === 0 && (
-        <p data-testid="experiments-empty" style={muted}>
-          No experiments for this profile yet. Start one from the grid, or with “New experiment”.
-        </p>
+        <div data-testid="experiments-empty">
+          <EmptyState
+            title={
+              profileId === ''
+                ? 'No profiles yet'
+                : status === ''
+                  ? 'No experiments yet'
+                  : 'No matching experiments'
+            }
+            body={
+              profileId === ''
+                ? 'This organisation has no advertising profiles, so an experiment cannot be scoped yet. Connect Amazon Ads to create the roster.'
+                : status === ''
+                  ? 'No experiment has been created for this profile. Start one here or from a selected grid scope.'
+                  : 'No experiment has this status for the selected profile. Clear the filter to see the full list.'
+            }
+            action={
+              profileId === '' ? (
+                <a href="/settings/connections" className="wa-btn wa-btn--sm">
+                  Connect Amazon Ads
+                </a>
+              ) : status !== '' ? (
+                <button type="button" className="wa-btn wa-btn--sm" onClick={() => apply({ status: '' })}>
+                  Clear status
+                </button>
+              ) : canManage ? (
+                <a href={newHref} className="wa-btn wa-btn--primary wa-btn--sm">
+                  New experiment
+                </a>
+              ) : (
+                <a
+                  href={profileId === '' ? '/grid' : `/grid?profile=${encodeURIComponent(profileId)}`}
+                  className="wa-btn wa-btn--sm"
+                >
+                  Open the grid
+                </a>
+              )
+            }
+          />
+        </div>
       )}
     </main>
   );

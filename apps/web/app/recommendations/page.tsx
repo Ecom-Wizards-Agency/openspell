@@ -31,6 +31,7 @@ import {
 import { requireOrgRole } from '../../src/server/org-role';
 import { listOrgProfiles, selectOrgProfile } from '../../src/recommendations/data';
 import { toProposalView } from '../../src/recommendations/view';
+import { EmptyState } from '../../src/ui/primitives';
 import { ReviewWorkspace } from './review';
 
 export const runtime = 'nodejs';
@@ -56,7 +57,15 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
       return (
         <main style={main}>
           <h1 style={heading}>Recommendations</h1>
-          <p style={muted}>This organisation has no advertising profiles yet.</p>
+          <EmptyState
+            title="No profiles yet"
+            body="This organisation has no advertising profiles, so there can be no recommendation run to review. Connect Amazon Ads to create the roster."
+            action={
+              <a className="wa-btn wa-btn--sm" href="/settings/connections">
+                Connect Amazon Ads
+              </a>
+            }
+          />
         </main>
       );
     }
@@ -83,7 +92,7 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
         <header style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
           <div style={{ alignItems: 'center', display: 'flex', justifyContent: 'space-between' }}>
             <h1 style={heading}>Recommendations</h1>
-            {run === null ? null : (
+            {run === null || proposals.length === 0 ? null : (
               <a className="wa-btn wa-btn--primary wa-btn--sm" href="#recommendation-review">
                 Open review
               </a>
@@ -111,10 +120,30 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
         </header>
 
         {run === null ? (
-          <p style={muted}>
-            No recommendation run has finished for this profile. The weekly engine writes one; until
-            then there is nothing to review, which is not the same as nothing to do.
-          </p>
+          <EmptyState
+            title="No recommendation run yet"
+            body="The weekly engine has not finished a run for this profile, so there is nothing to review yet. The optimizer shows the current facts and when the next run can start."
+            action={
+              <a className="wa-btn wa-btn--sm" href={`/optimizer?profile=${profile.id}`}>
+                Open optimizer
+              </a>
+            }
+          />
+        ) : proposals.length === 0 ? (
+          <EmptyState
+            title="This run proposed nothing"
+            body="The engine found no change worth proposing for this profile in this window. On a healthy account that can be the expected result."
+            meta={
+              <time dateTime={run.createdAt.toISOString()}>
+                Run created {run.createdAt.toISOString().replace('T', ' ').slice(0, 16)} UTC
+              </time>
+            }
+            action={
+              <a className="wa-btn wa-btn--sm" href={`/optimizer?profile=${profile.id}`}>
+                Open optimizer
+              </a>
+            }
+          />
         ) : (
           <div id="recommendation-review">
             <ReviewWorkspace
