@@ -8,7 +8,7 @@ import { resolveSourcePath } from './crosscheck.js';
 import type { ParsedFactBatch } from './parsers.js';
 import { RegionTokenBuckets } from './region-token-buckets.js';
 import { ParsedLoadedMismatch, type ReportRequestState, type WorkerStore } from './store.js';
-import { SyncWorker } from './worker.js';
+import { RetryableJobError, SyncWorker } from './worker.js';
 
 const orgId = '11111111-1111-4111-8111-111111111111';
 const profileId = '22222222-2222-4222-8222-222222222222';
@@ -359,6 +359,33 @@ describe('integration handler wiring', () => {
 
     expect(await worker.drainOnce()).toBe(1);
     expect(dead).toEqual(['keepa.sync handler not deployed in this runtime']);
+  });
+
+  it('uses an integration handler retry delay in the queue ledger', async () => {
+    const payload = payloads[1];
+    if (!payload || payload.type !== 'rank.sync') throw new Error('missing rank payload');
+    let claimed = false;
+    const finishes: { outcome: JobOutcome; retryIn: string | undefined }[] = [];
+    const worker = new SyncWorker({
+      workerId: 'integration-worker',
+      store: {
+        ...stubStore(),
+        claim: async () => claimed ? [] : (claimed = true, [{
+          id: jobId, orgId, profileId, jobType: payload.type, payload,
+          attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'integration-worker',
+        }]),
+        finish: async (_id, outcome, options) => {
+          finishes.push({ outcome, retryIn: options?.retryIn });
+        },
+      },
+      integrations: {
+        rankSync: async () => { throw new RetryableJobError('quota exhausted', 3_600); },
+      },
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(finishes).toEqual([{ outcome: 'failed', retryIn: '3600 seconds' }]);
   });
 
   it('passes the configured job-type allowlist into every claim', async () => {

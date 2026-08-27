@@ -42,6 +42,14 @@ export class PermanentJobError extends Error {
   }
 }
 
+/** A provider failure that should return to the queue after a known delay. */
+export class RetryableJobError extends Error {
+  constructor(message: string, readonly retryAfterSeconds?: number) {
+    super(message);
+    this.name = 'RetryableJobError';
+  }
+}
+
 export interface WorkerLogger {
   info(message: string, details?: Record<string, unknown>): void;
   error(message: string, details?: Record<string, unknown>): void;
@@ -206,8 +214,11 @@ export class SyncWorker {
         });
         return;
       }
-      const retrySeconds = error instanceof AdsApiRetryableError && error.retryAfterSeconds !== undefined
+      const explicitRetry = error instanceof AdsApiRetryableError || error instanceof RetryableJobError
         ? error.retryAfterSeconds
+        : undefined;
+      const retrySeconds = explicitRetry !== undefined
+        ? explicitRetry
         : Math.min(60 * 2 ** Math.max(job.attempts - 1, 0), 30 * 60);
       await this.store.finish(job.id, 'failed', {
         error: errorMessage(error).slice(0, 4_000),

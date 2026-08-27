@@ -20,8 +20,13 @@ import {
   databaseAvailable,
   type TestDatabase,
 } from '@wizard-ads/db/testing';
-import { enqueueDueSchedules } from '@wizard-ads/db';
+import {
+  enqueueDueSchedules,
+  revokeIntegrationSecret,
+  storeIntegrationSecret,
+} from '@wizard-ads/db';
 import { AdsApiHttpError, MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
+import type { DataDiveQuota, RankRadarData, RankRadarList } from '@wizard-ads/datadive-api';
 import { AdsApiRetryableError } from './ads-api.js';
 import type { EntityRow, Region } from '@wizard-ads/shared';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -36,6 +41,7 @@ import type {
 } from './ads-api.js';
 import { PostgresBidSeriesStore } from './bid-series.js';
 import { createCrosscheckIngest } from './crosscheck.js';
+import { createDataDiveRankSyncHandler, type DataDiveRankClient } from './datadive.js';
 import type { ParsedFactBatch } from './parsers.js';
 import { RegionTokenBuckets } from './region-token-buckets.js';
 import {
@@ -779,21 +785,12 @@ describe.skipIf(!available)('worker + real Postgres', () => {
 
   it('reconciles active integration schedules and disables them after revocation', async () => {
     await database.sql`delete from public.sync_schedules where profile_id = ${profileId}`;
-    await database.sql`
-      create table public.integration_connections (
-        id uuid primary key default gen_random_uuid(),
-        org_id uuid not null references public.orgs(id),
-        provider text not null,
-        config jsonb not null default '{}'::jsonb,
-        status public.connection_status not null default 'pending'
-      )
-    `;
     try {
       await database.sql`
-        insert into public.integration_connections (org_id, provider, status)
-        values (${orgId}, 'keepa', 'active'),
-               (${orgId}, 'datadive', 'active'),
-               (${orgId}, 'mrp', 'active')
+        insert into public.integration_connections (org_id, provider, label, status)
+        values (${orgId}, 'keepa', 'schedule-test-keepa', 'active'),
+               (${orgId}, 'datadive', 'schedule-test-datadive', 'active'),
+               (${orgId}, 'mrp', 'schedule-test-mrp', 'active')
       `;
       const store = new PostgresWorkerStore(database);
       expect(await store.ensureIntegrationSchedules()).toBe(4);
@@ -828,7 +825,9 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       });
 
       await database.sql`
-        update public.integration_connections set status = 'revoked' where provider = 'keepa'
+        update public.integration_connections
+           set status = 'revoked'
+         where org_id = ${orgId} and label = 'schedule-test-keepa'
       `;
       expect(await store.ensureIntegrationSchedules()).toBe(1);
       const [keepa] = await database.sql<{ enabled: boolean }[]>`
@@ -837,7 +836,134 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       `;
       expect(keepa?.enabled).toBe(false);
     } finally {
-      await database.sql`drop table public.integration_connections`;
+      await database.sql`
+        delete from public.integration_connections
+         where org_id = ${orgId} and label like 'schedule-test-%'
+      `;
+    }
+  });
+
+  it('claims rank.sync, resolves Vault custody, and upserts the rank-observation grain', async () => {
+    const [connection] = await database.sql<{ id: string }[]>`
+      insert into public.integration_connections (org_id, provider, label, config)
+      values (
+        ${orgId}, 'datadive', 'worker rank integration',
+        ${JSON.stringify({ profile_id: profileId, radar_ids: ['radar-integration-1'] })}::jsonb
+      )
+      returning id
+    `;
+    const connectionId = connection?.id;
+    if (!connectionId) throw new Error('DataDive integration fixture returned no connection id');
+    const credential = ['fake', 'datadive', 'worker', 'credential'].join('-');
+    await storeIntegrationSecret(database, connectionId, credential);
+
+    const quota: DataDiveQuota = {
+      nextRefreshDate: null,
+      features: {
+        RANK_RADAR_KEYWORDS: { used: 1, capacity: 100, details: {} },
+      },
+      details: {},
+    };
+    const radars: RankRadarList = {
+      pages: 1,
+      total: 1,
+      items: [{
+        id: 'radar-integration-1',
+        asin: 'B000QUEUE01',
+        marketplace: 'US',
+        keywordCount: 1,
+        title: 'Queue integration fixture',
+        imageUrl: 'https://images.invalid/queue.jpg',
+        details: {},
+      }],
+    };
+    const ranks: RankRadarData = {
+      keywords: [{
+        id: 'keyword-integration-1',
+        keyword: 'queue integration keyword',
+        searchVolume: 10,
+        ranks: [{ date: today, organicRank: 7, details: {} }],
+        details: {},
+      }],
+      details: {},
+    };
+    const client: DataDiveRankClient = {
+      getQuota: async () => quota,
+      listRankRadars: async () => radars,
+      getRankRadarData: async () => ranks,
+    };
+
+    try {
+      await database.sql`
+        insert into public.sync_jobs (org_id, profile_id, job_type, payload, dedupe_key)
+        values (
+          ${orgId}, ${profileId}, 'rank.sync',
+          ${JSON.stringify({
+            type: 'rank.sync', orgId, profileId, radarIds: ['radar-integration-1'],
+          })}::jsonb,
+          'datadive-rank-sync'
+        )
+      `;
+      const handler = createDataDiveRankSyncHandler({
+        handle: database,
+        clientFactory: (value) => {
+          expect(value).toBe(credential);
+          return client;
+        },
+        now: () => new Date(`${today}T12:00:00Z`),
+      });
+      const worker = new SyncWorker({
+        workerId: 'datadive-integration-worker',
+        store: new PostgresWorkerStore(database),
+        integrations: { rankSync: handler },
+        logger: quietLogger,
+      });
+
+      expect(await worker.drainOnce()).toBe(1);
+      const [job] = await database.sql<{
+        status: string;
+        result: Record<string, unknown> | null;
+      }[]>`
+        select status::text as status, result
+          from public.sync_jobs
+         where org_id = ${orgId} and dedupe_key = 'datadive-rank-sync'
+      `;
+      expect(job?.status).toBe('succeeded');
+      expect(job?.result).toMatchObject({ observations: 1, uniqueObservations: 1, loaded: 1 });
+
+      const rows = await database.sql<{
+        profile_id: string;
+        organic_rank: number | null;
+        marketplace: string | null;
+        source: string;
+      }[]>`
+        select profile_id, organic_rank, marketplace, source
+          from public.rank_observations
+         where org_id = ${orgId}
+           and asin = 'B000QUEUE01'
+           and keyword = 'queue integration keyword'
+           and observed_on = ${today}::date
+      `;
+      expect(rows).toEqual([{
+        profile_id: profileId,
+        organic_rank: 7,
+        marketplace: 'US',
+        source: 'rank_radar',
+      }]);
+
+      const [health] = await database.sql<{ status: string; synced: boolean; last_error: string | null }[]>`
+        select status::text as status, (last_synced_at is not null) as synced, last_error
+          from public.integration_connections
+         where id = ${connectionId}
+      `;
+      expect(health).toEqual({ status: 'active', synced: true, last_error: null });
+    } finally {
+      await revokeIntegrationSecret(database, connectionId);
+      await database.sql`delete from public.integration_connections where id = ${connectionId}`;
+      await database.sql`
+        delete from public.rank_observations
+         where org_id = ${orgId} and asin = 'B000QUEUE01'
+      `;
     }
   });
 

@@ -146,6 +146,9 @@ importers:
       '@wizard-ads/crosscheck-cli':
         specifier: workspace:*
         version: link:../../tools/crosscheck-cli
+      '@wizard-ads/datadive-api':
+        specifier: workspace:*
+        version: link:../../packages/datadive-api
       '@wizard-ads/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -177,6 +180,19 @@ importers:
       '@wizard-ads/shared':
         specifier: workspace:*
         version: link:../shared
+
+  packages/datadive-api:
+    dependencies:
+      '@wizard-ads/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
   packages/db:
     dependencies:

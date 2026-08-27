@@ -2,6 +2,7 @@ import { createDb } from '@wizard-ads/db';
 import { createAdsApiClientFromEnv } from './ads-api.js';
 import { configFromEnv } from './config.js';
 import { createCrosscheckIngest } from './crosscheck.js';
+import { createDataDiveRankSyncHandler } from './datadive.js';
 import { closeServer, startHealthServer } from './health.js';
 import { PostgresBidSeriesStore } from './bid-series.js';
 import {
@@ -42,6 +43,9 @@ const worker = new SyncWorker({
   jobTypes: config.jobTypes,
   crosscheckIngest: createCrosscheckIngest(handle, { inboxDir: config.crosscheckInboxDir }),
   recommendationsRun: createRecommendationsRunner(recommendationRuns),
+  integrations: {
+    rankSync: createDataDiveRankSyncHandler({ handle }),
+  },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,
   pollIntervalMs: config.pollIntervalMs,
