@@ -583,7 +583,7 @@ describe('doctrine overlays', () => {
     expect(outcome.suppressedReason).toContain('never cut on ACOS alone');
   });
 
-  it('the same target is cut when the opt group permits cutting on ACOS alone', () => {
+  it('tenant config cannot opt a Rank target into ACOS-only cuts', () => {
     const outcome = proposeBid(
       request({
         category: CATEGORY_RANK,
@@ -594,7 +594,45 @@ describe('doctrine overlays', () => {
         targetAcos: 0.3,
       }),
     );
+    expect(outcome.kind).toBe('suppressed');
+    if (outcome.kind !== 'suppressed') return;
+    expect(outcome.suppressedReason).toContain('never cut on ACOS alone');
+  });
+
+  it('never cuts a keyword whose organic rank is improving', () => {
+    const outcome = proposeBid(
+      request({
+        category: CATEGORY_PROFIT,
+        currentBid: 2.0,
+        metrics: { clicks: 100, orders: 5, sales: 200, cost: 300 },
+        levels: { profile: { clicks: 1000, orders: 60, sales: 3000 } },
+        targetAcos: 0.3,
+        organicRank: { status: 'known', currentRank: 8, previousRank: 12, asin: 'B0TEST5101' },
+      }),
+    );
+    expect(outcome.kind).toBe('suppressed');
+    if (outcome.kind !== 'suppressed') return;
+    expect(outcome.suppressedReason).toContain('Organic rank is improving (12 -> 8');
+  });
+
+  it('marks a keyword proposal made without rank visibility', () => {
+    const outcome = proposeBid(
+      request({
+        category: CATEGORY_PROFIT,
+        stock: { status: 'in_stock', asins: ['B0TEST5101'] },
+        organicRank: { status: 'unknown' },
+        currentBid: 1.0,
+        metrics: { clicks: 100, orders: 20, sales: 1000, cost: 150 },
+        levels: { profile: { clicks: 1000, orders: 100, sales: 8000 } },
+        targetAcos: 0.3,
+      }),
+    );
     expect(outcome.kind).toBe('proposal');
+    if (outcome.kind !== 'proposal') return;
+    expect(outcome.notes).toContainEqual(expect.objectContaining({ code: 'rank_unknown' }));
+    expect(outcome.notes.find((note) => note.code === 'rank_unknown')?.message).toContain(
+      'without rank visibility',
+    );
   });
 
   it('a Rank increase is not suppressed: only cuts are', () => {
@@ -624,6 +662,48 @@ describe('doctrine overlays', () => {
     const launch = proposal(proposeBid(request({ ...base, goal: 'rank-launch' })));
     expect(neutral.proposedValue).toBe(1.1);
     expect(launch.proposedValue).toBe(1.25);
+  });
+});
+
+describe('stock gate', () => {
+  const proposable = {
+    category: CATEGORY_PROFIT,
+    currentBid: 1.0,
+    metrics: { clicks: 100, orders: 20, sales: 1000, cost: 150 },
+    levels: { profile: { clicks: 1000, orders: 100, sales: 8000 } },
+    targetAcos: 0.3,
+    organicRank: { status: 'not_applicable' } as const,
+  };
+
+  it('allows an in-stock target through to bid optimization', () => {
+    const outcome = proposeBid(
+      request({ ...proposable, stock: { status: 'in_stock', asins: ['B0TEST5101'], source: 'fixture' } }),
+    );
+    expect(outcome.kind).toBe('proposal');
+    if (outcome.kind !== 'proposal') return;
+    expect(outcome.notes.some((note) => note.code === 'stock_unknown')).toBe(false);
+  });
+
+  it('blocks an out-of-stock target before bid optimization', () => {
+    const outcome = proposeBid(
+      request({ ...proposable, stock: { status: 'out_of_stock', asins: ['B0TEST5101'], source: 'fixture' } }),
+    );
+    expect(outcome).toEqual({
+      kind: 'blocked',
+      blockedReason: 'out_of_stock',
+      note: 'B0TEST5101 is out of stock per fixture; bid optimization was blocked.',
+    });
+  });
+
+  it('fails open for unknown stock and emits the required note', () => {
+    const outcome = proposeBid(
+      request({ ...proposable, stock: { status: 'unknown', asins: ['B0TEST5101'] } }),
+    );
+    expect(outcome.kind).toBe('proposal');
+    if (outcome.kind !== 'proposal') return;
+    const note = outcome.notes.find((candidate) => candidate.code === 'stock_unknown');
+    expect(note?.message).toContain('stock unknown');
+    expect(note?.message).toContain('failed open');
   });
 });
 
@@ -694,7 +774,7 @@ describe('properties', () => {
           caps: WIDE_CAPS,
         }),
       );
-      if (outcome.kind === 'none') continue;
+      if (outcome.kind === 'none' || outcome.kind === 'blocked') continue;
       const proposed = outcome.recommendation.proposedValue as number;
       expect(proposed).toBeLessThanOrEqual(dailyBudget * 0.5 + 1e-9);
     }
@@ -711,7 +791,7 @@ describe('properties', () => {
           targetAcos: 0.05 + rand() * 0.4,
         }),
       );
-      if (outcome.kind === 'none') continue;
+      if (outcome.kind === 'none' || outcome.kind === 'blocked') continue;
       expect(outcome.recommendation.proposedValue as number).toBeGreaterThanOrEqual(0.02);
     }
   });
@@ -761,7 +841,7 @@ describe('properties', () => {
           caps: WIDE_CAPS,
         }),
       );
-      if (outcome.kind === 'none') continue;
+      if (outcome.kind === 'none' || outcome.kind === 'blocked') continue;
       const proposed = outcome.recommendation.proposedValue as number;
       expect(proposed).toBeGreaterThanOrEqual(floor - CENT);
       expect(proposed).toBeLessThanOrEqual(ceiling + CENT);

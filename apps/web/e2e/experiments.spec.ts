@@ -44,6 +44,7 @@ test('the fixture experiment lists, and its detail shows the window, comparison 
 }) => {
   await open(page, '/experiments');
   await expect(page.getByTestId('experiments-role')).toHaveText('owner');
+  await expect(page.getByTestId('proposed-tests')).toBeVisible();
 
   const fixture = page.getByTestId('experiment-item').filter({ hasText: 'Fixture bid push' });
   await expect(fixture).toHaveCount(1);

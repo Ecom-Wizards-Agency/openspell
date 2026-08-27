@@ -19,6 +19,7 @@ import type { ExperimentMetric, ExperimentStatus, ExperimentType } from '@wizard
 import { openWebDatabase, requestActor } from '../../../src/server/request-context';
 import { requireCapability, requireOrgRole } from '../../../src/server/org-role';
 import { experimentErrorResponse } from '../../../src/experiments/http';
+import { listProposedTests } from '../../../src/experiments/data';
 import { can } from '../../../src/auth/roles';
 
 export const runtime = 'nodejs';
@@ -34,13 +35,20 @@ export async function GET(request: Request): Promise<Response> {
     const actor = await requestActor(request.headers);
     const role = await requireOrgRole(database, actor);
     const query = new URL(request.url).searchParams;
-    const items = await listExperiments(database, {
-      orgId: actor.orgId,
-      profileId: query.get('profile'),
-      status: asStatus(query.get('status')),
-    });
+    const profileId = query.get('profile');
+    const [items, proposedTests] = await Promise.all([
+      listExperiments(database, {
+        orgId: actor.orgId,
+        profileId,
+        status: asStatus(query.get('status')),
+      }),
+      profileId === null
+        ? Promise.resolve([])
+        : listProposedTests(database, { orgId: actor.orgId, profileId }),
+    ]);
     return Response.json({
       items,
+      proposedTests,
       role,
       canManage: can(role, 'manageExperiments'),
     });

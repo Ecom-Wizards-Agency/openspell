@@ -14,7 +14,7 @@ import { listExperiments } from '@wizard-ads/db';
 import { isUnauthenticated, openWebDatabase, requestActor } from '../../src/server/request-context';
 import { requireOrgRole } from '../../src/server/org-role';
 import { can } from '../../src/auth/roles';
-import { listProfileOptions, selectProfileId } from '../../src/experiments/data';
+import { listProfileOptions, listProposedTests, selectProfileId } from '../../src/experiments/data';
 import { heading, muted, page } from '../../src/ui/tokens';
 import { toUiExperiment } from '../../src/experiments/ui';
 import { ExperimentsList } from './list';
@@ -35,15 +35,19 @@ export default async function ExperimentsPage({ searchParams }: { searchParams: 
     const query = await searchParams;
     const profiles = await listProfileOptions(database, actor.orgId);
     const selectedProfileId = selectProfileId(profiles, single(query['profile']));
-    const items = selectedProfileId
-      ? await listExperiments(database, { orgId: actor.orgId, profileId: selectedProfileId })
-      : [];
+    const [items, proposedTests] = selectedProfileId
+      ? await Promise.all([
+          listExperiments(database, { orgId: actor.orgId, profileId: selectedProfileId }),
+          listProposedTests(database, { orgId: actor.orgId, profileId: selectedProfileId }),
+        ])
+      : [[], []];
 
     return (
       <ExperimentsList
         items={items.map(toUiExperiment)}
         profiles={profiles}
         selectedProfileId={selectedProfileId}
+        proposedTests={proposedTests}
         canManage={can(role, 'manageExperiments')}
         role={role}
       />

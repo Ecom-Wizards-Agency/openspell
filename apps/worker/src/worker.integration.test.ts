@@ -260,6 +260,18 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       inputs: { clicks: 10, cvrSourceLevel: 'keyword' },
     });
 
+    const [preconditionNote] = await database.sql<{ payload: { note?: string; codes?: string[] } }[]>`
+      select payload from public.audit_log
+       where org_id = ${orgId}
+         and action = 'recommendation.preconditions.noted'
+         and target_id = (
+           select id::text from public.recommendations where run_id = ${queued.runId} limit 1
+         )
+    `;
+    expect(preconditionNote?.payload.note).toContain('stock unknown');
+    expect(preconditionNote?.payload.note).toContain('without rank visibility');
+    expect(preconditionNote?.payload.codes).toEqual(['stock_unknown', 'rank_unknown']);
+
     const [audit] = await database.sql<{ payload: Record<string, unknown> }[]>`
       select payload from public.audit_log
        where org_id = ${orgId}

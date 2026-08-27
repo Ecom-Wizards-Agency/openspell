@@ -40,6 +40,7 @@ because the suite is red.
 | `pacing.json` | 11 | Run-rate governor, lens layering, coverage honesty, flag severities |
 | `crosscheck.json` | 9 | verified / mismatch / no_data, tolerances, zero-base handling |
 | `recommendations.json` | 16 | Push / Pause-Optimize / Test / Graduate, rank protection, notes |
+| `test-backlog.json` | 9 | Vetted test selection, AND/OR tag gating, no-filler empty results |
 
 Rendered message strings are compared exactly, which is why the port carries its own
 Python-compatible number formatter: `format()` rounds ties to even and `toFixed`

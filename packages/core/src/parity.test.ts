@@ -27,8 +27,8 @@ import {
   type RawEntity,
   type RawRadarRow,
   type RecConfig,
-  type TestCandidate,
 } from './recommendations.js';
+import { selectTests, type TestCandidate } from './experiments/backlog.js';
 import type { DailyRow } from './types.js';
 
 const GOLDEN_DIR = fileURLToPath(new URL('../../../fixtures/golden/', import.meta.url));
@@ -273,6 +273,27 @@ describe('parity: recommendations', () => {
         pacing: build.input.pacing as never,
       });
       expectParity(result, build.expected);
+    });
+  }
+});
+
+describe('parity: select_tests', () => {
+  const golden = loadGolden<{
+    name: string;
+    input: {
+      brandTags: string[];
+      candidates: TestCandidate[] | null;
+      signalItems: TestCandidate[] | null;
+    };
+    expected: unknown;
+  }>('test-backlog');
+
+  for (const c of golden.cases) {
+    it(c.name, () => {
+      expectParity(
+        selectTests(new Set(c.input.brandTags), c.input.candidates, c.input.signalItems),
+        c.expected,
+      );
     });
   }
 });

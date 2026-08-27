@@ -237,3 +237,16 @@ def signal_candidate(item: dict) -> dict:
         "confidence": item.get("confidence"),
         "requires": [sorted(tags) for tags in item.get("requires", [])],
     }
+
+
+def test_candidate(item: dict) -> dict:
+    """A select_tests input candidate with deterministic requirement tags."""
+    return {
+        "id": item.get("id"),
+        "hypothesis": item["hypothesis"],
+        "method": item.get("method"),
+        "success_metric": item.get("success_metric"),
+        "source": item.get("source"),
+        "priority": item.get("priority"),
+        "requires": [sorted(tags) for tags in item.get("requires", [])],
+    }
