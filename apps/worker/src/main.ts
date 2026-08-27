@@ -5,6 +5,7 @@ import { createCrosscheckIngest } from './crosscheck.js';
 import { createDataDiveRankSyncHandler } from './datadive.js';
 import { closeServer, startHealthServer } from './health.js';
 import { PostgresBidSeriesStore } from './bid-series.js';
+import { createKeepaSyncHandler } from './keepa.js';
 import {
   PostgresRecommendationRunStore,
   createRecommendationsRunner,
@@ -47,6 +48,7 @@ const worker = new SyncWorker({
   integrations: {
     economicsSync: createMrpEconomicsSync(handle),
     rankSync: createDataDiveRankSyncHandler({ handle }),
+    keepaSync: createKeepaSyncHandler(handle),
   },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,

@@ -10,9 +10,11 @@
 import { revalidatePath } from 'next/cache';
 import {
   INTEGRATION_PROVIDERS,
+  createCompetitorLink,
   createIntegrationConnection,
   listIntegrationConnections,
   revokeIntegrationSecret,
+  removeCompetitorLink,
   setIntegrationConnectionStatus,
   storeIntegrationSecret,
 } from '@wizard-ads/db';
@@ -70,6 +72,28 @@ export async function revokeIntegration(formData: FormData): Promise<void> {
   revalidatePath(SETTINGS_PATH);
 }
 
+export async function addCompetitorLink(formData: FormData): Promise<void> {
+  const { handle, active } = await gateAction();
+  authorize(active.role, 'editTargets');
+  await createCompetitorLink(handle, {
+    orgId: active.orgId,
+    profileId: requireId(formData.get('profileId')),
+    ourAsin: requireAsin(formData.get('ourAsin')),
+    competitorAsin: requireAsin(formData.get('competitorAsin')),
+  });
+  revalidatePath(SETTINGS_PATH);
+}
+
+export async function deleteCompetitorLink(formData: FormData): Promise<void> {
+  const { handle, active } = await gateAction();
+  authorize(active.role, 'editTargets');
+  await removeCompetitorLink(handle, {
+    orgId: active.orgId,
+    id: requireId(formData.get('linkId')),
+  });
+  revalidatePath(SETTINGS_PATH);
+}
+
 function requireProvider(value: FormDataEntryValue | null): IntegrationProvider {
   if (
     typeof value !== 'string' ||
@@ -98,4 +122,11 @@ function requireSecret(value: FormDataEntryValue | null): string {
     throw new Error('Enter an API credential');
   }
   return value;
+}
+
+function requireAsin(value: FormDataEntryValue | null): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9]{10}$/.test(value.trim())) {
+    throw new Error('Enter a 10-character ASIN');
+  }
+  return value.trim().toUpperCase();
 }

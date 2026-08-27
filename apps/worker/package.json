@@ -20,6 +20,7 @@
     "@wizard-ads/ads-api": "workspace:*",
     "@wizard-ads/datadive-api": "workspace:*",
     "@wizard-ads/core": "workspace:*",
+    "@wizard-ads/keepa-api": "workspace:*",
     "@wizard-ads/crosscheck-cli": "workspace:*",
     "@wizard-ads/strategy": "workspace:*"
   }

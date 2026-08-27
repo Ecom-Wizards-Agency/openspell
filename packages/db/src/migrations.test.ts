@@ -89,10 +89,37 @@ describe.skipIf(!available)('migrations', () => {
       // reserved seams
       'spapi_connections', 'fact_sales_traffic_daily', 'fact_sqp_weekly', 'supa_flags',
       'rank_observations', 'keepa_bsr_observations', 'competitor_links',
+      'competitor_price_events',
       'creative_assets', 'creative_placements',
     ]) {
       expect(tables, `missing table ${expected}`).toContain(expected);
     }
+  });
+
+  it('keeps Keepa observation identity non-null and creates constrained event grain', async () => {
+    const columns = await database.sql<{ column_name: string; is_nullable: string; column_default: string | null }[]>`
+      select column_name, is_nullable, column_default
+        from information_schema.columns
+       where table_schema = 'public' and table_name = 'keepa_bsr_observations'
+         and column_name in ('category', 'buy_box_price', 'lightning_deal', 'coupon')
+       order by column_name
+    `;
+    expect(columns.map((row) => row.column_name)).toEqual([
+      'buy_box_price', 'category', 'coupon', 'lightning_deal',
+    ]);
+    expect(columns.find((row) => row.column_name === 'category')).toMatchObject({
+      is_nullable: 'NO',
+      column_default: "''::text",
+    });
+
+    const indexes = await database.sql<{ indexdef: string }[]>`
+      select indexdef from pg_catalog.pg_indexes
+       where schemaname = 'public'
+         and tablename in ('keepa_bsr_observations', 'competitor_price_events')
+    `;
+    const definitions = indexes.map((row) => row.indexdef).join('\n');
+    expect(definitions).toContain('(org_id, asin, category, observed_at)');
+    expect(definitions).toContain('(org_id, asin, event_kind, detected_at)');
   });
 
   it('enables row level security on every tenant table', async () => {

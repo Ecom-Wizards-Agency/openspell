@@ -220,6 +220,9 @@ begin
   values (v_org, 'B0TEST0001', now(), 'Widgets', 4200);
   insert into public.competitor_links (org_id, profile_id, our_asin, competitor_asin)
   values (v_org, v_profile, 'B0TEST0001', 'B0TEST0002');
+  insert into public.competitor_price_events
+    (org_id, asin, event_kind, detected_at, price, baseline_price)
+  values (v_org, 'B0TEST0002', 'deal_start', now(), 19.99, 24.99);
   insert into public.creative_assets (org_id, profile_id, kind, content_hash)
   values (v_org, v_profile, 'video', p_slug || '-hash-1') returning id into v_asset;
   insert into public.creative_placements (org_id, asset_id, profile_id, campaign_id)

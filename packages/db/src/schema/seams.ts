@@ -9,6 +9,7 @@
 import {
   bigint,
   boolean,
+  check,
   date,
   index,
   integer,
@@ -18,6 +19,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { count, money, ts } from './columns.js';
 import { connectionStatus, entityState, supaRule } from './enums.js';
 import { adProfiles, orgs } from './tenancy.js';
@@ -142,14 +144,58 @@ export const keepaBsrObservations = pgTable(
       .references(() => orgs.id, { onDelete: 'cascade' }),
     asin: text('asin').notNull(),
     observedAt: ts('observed_at').notNull(),
-    category: text('category'),
+    category: text('category').notNull().default(''),
     bsr: integer('bsr'),
     price: money('price'),
+    buyBoxPrice: money('buy_box_price'),
     rating: money('rating', 4, 2),
     reviewCount: integer('review_count'),
+    lightningDeal: boolean('lightning_deal'),
+    coupon: jsonb('coupon').$type<readonly [number, number] | null>(),
     createdAt: ts('created_at').notNull().defaultNow(),
   },
   (t) => [uniqueIndex('keepa_bsr_observations_key').on(t.orgId, t.asin, t.category, t.observedAt)],
+);
+
+export const COMPETITOR_PRICE_EVENT_KINDS = [
+  'deal_start',
+  'deal_end',
+  'price_drop',
+  'price_restore',
+  'coupon_start',
+  'coupon_end',
+] as const;
+
+export type CompetitorPriceEventKind = (typeof COMPETITOR_PRICE_EVENT_KINDS)[number];
+
+export const competitorPriceEvents = pgTable(
+  'competitor_price_events',
+  {
+    id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id, { onDelete: 'cascade' }),
+    asin: text('asin').notNull(),
+    eventKind: text('event_kind').$type<CompetitorPriceEventKind>().notNull(),
+    detectedAt: ts('detected_at').notNull(),
+    price: money('price'),
+    baselinePrice: money('baseline_price'),
+    details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      'competitor_price_events_event_kind_check',
+      sql`${t.eventKind} in ('deal_start', 'deal_end', 'price_drop', 'price_restore', 'coupon_start', 'coupon_end')`,
+    ),
+    uniqueIndex('competitor_price_events_org_id_asin_event_kind_detected_at_key').on(
+      t.orgId,
+      t.asin,
+      t.eventKind,
+      t.detectedAt,
+    ),
+    index('competitor_price_events_org_asin_time_idx').on(t.orgId, t.asin, t.detectedAt),
+  ],
 );
 
 export const competitorLinks = pgTable(
@@ -212,3 +258,9 @@ export const creativePlacements = pgTable(
   },
   (t) => [index('creative_placements_asset_idx').on(t.assetId)],
 );
+
+export type KeepaBsrObservation = typeof keepaBsrObservations.$inferSelect;
+export type NewKeepaBsrObservation = typeof keepaBsrObservations.$inferInsert;
+export type CompetitorPriceEventRow = typeof competitorPriceEvents.$inferSelect;
+export type NewCompetitorPriceEvent = typeof competitorPriceEvents.$inferInsert;
+export type CompetitorLinkRow = typeof competitorLinks.$inferSelect;
