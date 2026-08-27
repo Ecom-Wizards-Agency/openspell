@@ -35,7 +35,7 @@ export default defineConfig({
   // WP-15's feedback specs and WP-07's recommendation specs ride this config:
   // they need the same header bridge against the same production build, and
   // standing up another server per work package would buy nothing.
-  testMatch: /(tags-goto|feedback|recommendations|experiments|time-machine)\.spec\.ts$/,
+  testMatch: /(tags-goto|feedback|recommendations|experiments|time-machine|smoke)\.spec\.ts$/,
   outputDir: './node_modules/.cache/playwright/tags-goto',
   fullyParallel: false,
   workers: 1,
@@ -43,7 +43,18 @@ export default defineConfig({
   retries: 0,
   timeout: 60_000,
   expect: { timeout: 15_000 },
-  reporter: [['list']],
+  reporter: process.env['CI']
+    ? [
+        ['list'],
+        [
+          'html',
+          {
+            outputFolder: './node_modules/.cache/playwright/reports/tags-goto',
+            open: 'never',
+          },
+        ],
+      ]
+    : [['list']],
   use: {
     baseURL,
     trace: 'retain-on-failure',

@@ -36,7 +36,18 @@ export default defineConfig({
   // can genuinely take a while.
   timeout: 90_000,
   expect: { timeout: 15_000 },
-  reporter: [['list']],
+  reporter: process.env['CI']
+    ? [
+        ['list'],
+        [
+          'html',
+          {
+            outputFolder: './node_modules/.cache/playwright/reports/auth',
+            open: 'never',
+          },
+        ],
+      ]
+    : [['list']],
   use: {
     baseURL: BASE_URL,
     trace: 'retain-on-failure',
