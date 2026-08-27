@@ -25,10 +25,9 @@ import { assessFreshness } from '@wizard-ads/ui';
 import { gate } from '../../src/auth/guard';
 import { can } from '../../src/auth/roles';
 import { gateMessage } from '../../src/ui/gate-message';
-import { Button, Card, EmptyState, PageHeader } from '../../src/ui/primitives';
-import { KpiTile, FreshnessBar } from '../../src/ui/dashboard';
-import { TrendChart } from '../../src/ui/viz';
-import type { TrendPoint } from '../../src/ui/viz';
+import { Button, EmptyState, PageHeader } from '../../src/ui/primitives';
+import { FreshnessBar } from '../../src/ui/dashboard';
+import { Cockpit } from '../../src/ui/cockpit';
 import { page } from '../../src/ui/tokens';
 import { toProposalView } from '../../src/recommendations/view';
 import { reasonCoverage } from '../../src/recommendations/view';
@@ -107,33 +106,44 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
     loadReportLedger(handle, orgId, profile.id),
   ]);
 
-  const currentWindow = settled.current;
+  // Same clamp the dashboard applies: never claim settled days that have no
+  // synced facts behind them.
+  const coverageStart = periodRows[0]?.date ?? null;
+  const currentWindow =
+    settled.current !== null && coverageStart !== null && coverageStart > settled.current.start
+      ? { start: coverageStart, end: settled.current.end }
+      : settled.current;
+  const coverageClamped =
+    settled.current !== null && currentWindow !== null && currentWindow.start !== settled.current.start;
   const settledRows =
     currentWindow === null
       ? []
       : periodRows.filter(
           (row) => row.date >= currentWindow.start && row.date <= currentWindow.end,
         );
-  const tiles = kpiTiles(totalsOf(settledRows), totalsOf(comparisonRows));
+  const tiles = kpiTiles(
+    settledRows.length === 0 ? null : totalsOf(settledRows),
+    comparisonRows.length === 0 ? null : totalsOf(comparisonRows),
+  );
   const groups = optimizationGroups(proposals);
   const coverage = reasonCoverage(proposals);
   const summary = settingsSummary(proposals);
   const freshness = assessFreshness(ledger, { now: new Date() });
-  const context2 = { currencyCode: profile.currencyCode };
 
-  const spend: TrendPoint[] = periodRows.map((row) => ({ date: row.date, value: row.spend }));
-  const sales: TrendPoint[] = periodRows.map((row) => ({ date: row.date, value: row.sales }));
-  const settlingWindow = {
-    label: 'Settling · 14-day attribution window',
-    start: settled.settling.start,
-    end: settled.settling.end,
-  };
+  const cockpitDays = periodRows.map((row) => ({
+    date: row.date,
+    impressions: row.impressions,
+    clicks: row.clicks,
+    spend: row.spend,
+    sales: row.sales,
+    orders: row.orders,
+  }));
 
   return (
     <main style={page}>
       <PageHeader
         title="Campaign Optimizer"
-        subtitle={`${profile.label} · ${period.start} to ${period.end} · ${settled.current === null || settled.comparison === null ? 'no settled KPI comparison yet' : `settled KPI window ${settled.current.start} to ${settled.current.end} compared against ${settled.comparison.start} to ${settled.comparison.end}`} · all figures in ${profile.currencyCode}`}
+        subtitle={`${profile.label} · ${period.start} to ${period.end} · ${currentWindow === null || settled.comparison === null ? 'no settled KPI comparison yet' : `settled KPIs ${currentWindow.start} to ${currentWindow.end}${coverageClamped ? ' (first synced day)' : ''} vs ${settled.comparison.start} to ${settled.comparison.end}`} · all figures in ${profile.currencyCode}`}
         actions={
           <div className="wa-row" style={{ gap: '0.5rem' }}>
             {mayRunOptimizer ? (
@@ -164,6 +174,14 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
       <div className="wa-stack">
         <FreshnessBar assessment={freshness} />
 
+        <Cockpit
+          days={cockpitDays}
+          tiles={tiles}
+          currencyCode={profile.currencyCode}
+          settlingStart={settled.settling.start}
+          coverageStart={coverageStart}
+        />
+
         {run === null ? (
           <EmptyState
             title="No recommendations run yet"
@@ -193,36 +211,6 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
           />
         ) : (
           <>
-            <section aria-label="Headline metrics" className="wa-kpis wa-kpis--dense">
-              {tiles.map((tile) => (
-                <KpiTile
-                  key={tile.metric}
-                  label={`${tile.label} (settled)`}
-                  value={tile.value}
-                  scale={tile.scale}
-                  better={tile.better}
-                  context={context2}
-                  delta={{ caption: 'vs prior period', pct: tile.deltaPct, reference: tile.prev }}
-                />
-              ))}
-            </section>
-
-            <Card>
-              <TrendChart
-                title="Spend and sales"
-                ariaLabel="Daily spend and sales for the optimizer window"
-                scale="money"
-                aggregatable
-                currencyCode={profile.currencyCode}
-                settlingWindow={settlingWindow}
-                caption={`Additive metrics, so weekly and monthly roll up by sum. In ${profile.currencyCode}.`}
-                series={[
-                  { label: 'Spend', points: spend },
-                  { label: 'Sales', points: sales },
-                ]}
-              />
-            </Card>
-
             <ReasonCoverageRow coverage={coverage} total={proposals.length} />
 
             {groups.length === 0 ? (
