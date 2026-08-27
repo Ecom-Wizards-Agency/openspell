@@ -17,14 +17,17 @@ export default async function LoginPage({
   const { error, sent, next: requestedNext } = await searchParams;
   const next = safeNextPath(requestedNext, '/dashboard');
   const user = await currentUser();
+  // Password sign-in stays parked until the operator opts in: the form only
+  // renders once invited-account creation is actually configured.
+  const passwordLoginEnabled = process.env['WIZARD_ADS_PASSWORD_LOGIN'] === '1';
 
   return (
     <main style={{ ...page, maxWidth: '28rem' }}>
       <h1 style={heading}>wizard-ads</h1>
       <p style={muted}>
-        Sign in with your work address. Invited accounts can use their password; magic link and
-        Google remain available. There is no public signup—accounts are created only while
-        accepting an invitation.
+        {passwordLoginEnabled
+          ? 'Sign in with your work address. Invited accounts can use their password; magic link and Google remain available. There is no public signup—accounts are created only while accepting an invitation.'
+          : 'Sign in with your work address. There is no public signup: accounts are created by invitation, so an address that is not already a member will not receive a link.'}
       </p>
 
       {error ? <p style={banner('bad')}>{error}</p> : null}
@@ -41,26 +44,36 @@ export default async function LoginPage({
 
       {supabaseConfigured() ? (
         <>
-          <form action={signInWithPassword} style={{ display: 'grid', gap: '0.5rem' }}>
-            <input type="hidden" name="next" value={next} />
-            <Field label="Email" htmlFor="password-email">
-              <Input id="password-email" name="email" type="email" autoComplete="email" required />
-            </Field>
-            <Field label="Password" htmlFor="password">
-              <Input
-                id="password"
-                name="password"
-                type="password"
-                autoComplete="current-password"
-                required
-              />
-            </Field>
-            <Button type="submit" variant="primary">
-              Sign in with password
-            </Button>
-          </form>
+          {passwordLoginEnabled ? (
+            <>
+              <form action={signInWithPassword} style={{ display: 'grid', gap: '0.5rem' }}>
+                <input type="hidden" name="next" value={next} />
+                <Field label="Email" htmlFor="password-email">
+                  <Input
+                    id="password-email"
+                    name="email"
+                    type="email"
+                    autoComplete="email"
+                    required
+                  />
+                </Field>
+                <Field label="Password" htmlFor="password">
+                  <Input
+                    id="password"
+                    name="password"
+                    type="password"
+                    autoComplete="current-password"
+                    required
+                  />
+                </Field>
+                <Button type="submit" variant="primary">
+                  Sign in with password
+                </Button>
+              </form>
 
-          <div style={{ borderTop: '1px solid var(--wa-border)', margin: '1.25rem 0' }} />
+              <div style={{ borderTop: '1px solid var(--wa-border)', margin: '1.25rem 0' }} />
+            </>
+          ) : null}
 
           <form action={sendMagicLink} style={{ display: 'grid', gap: '0.5rem' }}>
             <input type="hidden" name="next" value={next} />
