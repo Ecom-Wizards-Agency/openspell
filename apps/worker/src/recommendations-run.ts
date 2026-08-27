@@ -24,10 +24,14 @@ import {
   proposeBid,
   resolveGoalLens,
   type LevelMetrics,
+  type BidPreconditionNote,
+  type OrganicRankSignal,
   type PacingCondition,
   type PacingResult,
   type RawEntity,
+  type RawRadarRow,
   type RecommendationsResult,
+  type StockSignal,
 } from '@wizard-ads/core';
 import type {
   AdProduct,
@@ -39,7 +43,6 @@ import type {
 } from '@wizard-ads/shared';
 import {
   changeCapsFor,
-  cutOnAcosAlone,
   optGroup,
   resolveStrategy,
   targetAcosFor,
@@ -117,6 +120,8 @@ export interface TargetPerformance {
   adGroupState: string | null;
   currentBid: number | null;
   dailyBudget: number | null;
+  stock: StockSignal;
+  organicRank: OrganicRankSignal;
   metrics: PerformanceMetrics;
   corridor: SuggestedBidCorridor | null;
 }
@@ -154,10 +159,12 @@ export interface ProposalDiagnostics {
   proposed: number;
   suppressed: number;
   declined: number;
+  blockedOutOfStock: number;
   skippedInactive: number;
   skippedMissingStrategy: number;
   corridorsAvailable: number;
   corridorsMissing: number;
+  preconditionNotes: number;
   declinedReasons: Record<string, number>;
   /** Bounded examples for operator diagnosis; counts above remain complete. */
   examples: Array<{ entity: string; outcome: string; detail: string }>;
@@ -170,11 +177,16 @@ export interface RecommendationRunNarrative {
   diagnostics: ProposalDiagnostics;
 }
 
+/** Shared recommendation plus core-only notes persisted through audit_log. */
+export type AnnotatedRecommendation = Recommendation & {
+  preconditionNotes: BidPreconditionNote[];
+};
+
 export interface RunCompletion extends RunScope {
   lookbackDays: number;
   window: DateWindow;
   strategySnapshot: TenantStrategy;
-  proposals: readonly Recommendation[];
+  proposals: readonly AnnotatedRecommendation[];
   narrative: RecommendationRunNarrative;
 }
 
@@ -281,7 +293,7 @@ export async function runRecommendations(
     const qualitative = buildRecommendations(rawEntities, {
       goal: resolved.goal,
       pacing,
-      rankRadar: null,
+      rankRadar: rankRadarFrom(inputs),
     });
     const { proposals, diagnostics } = bidProposals({
       scope,
@@ -327,24 +339,26 @@ interface BidProposalInput {
 }
 
 function bidProposals(input: BidProposalInput): {
-  proposals: Recommendation[];
+  proposals: AnnotatedRecommendation[];
   diagnostics: ProposalDiagnostics;
 } {
   const { scope, window, inputs, strategy, resolvedGoal, pacing } = input;
   const byAdGroup = aggregateBy(inputs.targets, (target) => target.entityRef.adGroupId ?? '');
   const byCampaign = aggregateBy(inputs.targets, (target) => target.entityRef.campaignId ?? '');
   const profileMetrics = profileLevelMetrics(inputs, window);
-  const proposals: Recommendation[] = [];
+  const proposals: AnnotatedRecommendation[] = [];
   const diagnostics: ProposalDiagnostics = {
     targetsRead: inputs.targets.length,
     targetsConsidered: 0,
     proposed: 0,
     suppressed: 0,
     declined: 0,
+    blockedOutOfStock: 0,
     skippedInactive: 0,
     skippedMissingStrategy: 0,
     corridorsAvailable: 0,
     corridorsMissing: 0,
+    preconditionNotes: 0,
     declinedReasons: {},
     examples: [],
   };
@@ -417,7 +431,8 @@ function bidProposals(input: BidProposalInput): {
       },
       category: target.category,
       goal: group?.goal_lens ?? resolvedGoal,
-      cutOnAcosAlone: cutOnAcosAlone(strategy, groupName),
+      stock: target.stock,
+      organicRank: target.organicRank,
       ...(pacingCondition === null ? {} : { pacingCondition }),
     });
 
@@ -425,11 +440,25 @@ function bidProposals(input: BidProposalInput): {
       proposals.push({
         ...outcome.recommendation,
         reason: databaseReason(outcome.recommendation.reason),
+        preconditionNotes: outcome.notes,
       });
       diagnostics.proposed += 1;
+      diagnostics.preconditionNotes += outcome.notes.length;
+      if (outcome.notes.length > 0) {
+        example(diagnostics, target, 'proposed_with_note', outcome.notes.map((note) => note.message).join(' '));
+      }
+    } else if (outcome.kind === 'blocked') {
+      diagnostics.blockedOutOfStock += 1;
+      example(diagnostics, target, 'blocked', outcome.note);
     } else if (outcome.kind === 'suppressed') {
       diagnostics.suppressed += 1;
-      example(diagnostics, target, 'suppressed', outcome.suppressedReason);
+      diagnostics.preconditionNotes += outcome.notes.length;
+      example(
+        diagnostics,
+        target,
+        'suppressed',
+        [outcome.suppressedReason, ...outcome.notes.map((note) => note.message)].join(' '),
+      );
     } else {
       diagnostics.declined += 1;
       diagnostics.declinedReasons[outcome.reason] =
@@ -485,6 +514,22 @@ function rawEntitiesFrom(inputs: RecommendationRunInputs): RawEntity[] {
       budget_capped_days: 0,
     }));
   return [...targetRows, ...campaignRows];
+}
+
+function rankRadarFrom(inputs: RecommendationRunInputs): RawRadarRow[] {
+  const rows = new Map<string, RawRadarRow>();
+  for (const target of inputs.targets) {
+    if (target.entityRef.entityType !== 'keyword' || target.organicRank.status !== 'known') continue;
+    const keyword = target.entityRef.name?.trim();
+    if (!keyword) continue;
+    rows.set(keyword.toLowerCase(), {
+      keyword,
+      rank_now: target.organicRank.currentRank,
+      rank_prev: target.organicRank.previousRank,
+      weeks_stable: 0,
+    });
+  }
+  return [...rows.values()];
 }
 
 function aggregateBy(
@@ -616,6 +661,11 @@ interface TargetWireRow {
   ad_group_state: string | null;
   current_bid: string | number | null;
   daily_budget: string | number | null;
+  advertised_asins: string[];
+  rank_now: string | number | null;
+  rank_prev: string | number | null;
+  rank_asin: string | null;
+  rank_observed_on: string | null;
   impressions: string | number;
   clicks: string | number;
   cost: string | number;
@@ -752,6 +802,11 @@ implements RecommendationRunStore, RecommendationScheduleStore {
                case when a.deleted_at is not null then 'deleted' else a.state::text end as ad_group_state,
                coalesce(k.bid, t.bid) as current_bid,
                c.budget_amount as daily_budget,
+               coalesce(ads.advertised_asins, '{}'::text[]) as advertised_asins,
+               radar.rank_now,
+               radar.rank_prev,
+               radar.rank_asin,
+               radar.rank_observed_on::text as rank_observed_on,
                p.impressions,
                p.clicks,
                p.cost,
@@ -782,6 +837,56 @@ implements RecommendationRunStore, RecommendationScheduleStore {
            and t.org_id = ${scope.orgId}
            and t.profile_id = ${scope.profileId}
            and t.amazon_id = p.target_id
+          left join lateral (
+            select array_agg(distinct pa.asin order by pa.asin)
+                     filter (where pa.asin is not null) as advertised_asins
+              from public.product_ads pa
+             where pa.org_id = ${scope.orgId}
+               and pa.profile_id = ${scope.profileId}
+               and pa.campaign_id = p.campaign_id
+               and pa.ad_group_id = p.ad_group_id
+               and pa.deleted_at is null
+               and pa.state = 'enabled'
+          ) ads on true
+          left join lateral (
+            select candidate.rank_now,
+                   candidate.rank_prev,
+                   candidate.rank_asin,
+                   candidate.rank_observed_on
+              from (
+                select current.organic_rank as rank_now,
+                       previous.organic_rank as rank_prev,
+                       current.asin as rank_asin,
+                       current.observed_on as rank_observed_on,
+                       current.id as rank_id
+                  from public.rank_observations current
+                  left join lateral (
+                    select prior.organic_rank
+                      from public.rank_observations prior
+                     where prior.org_id = ${scope.orgId}
+                       and prior.profile_id = ${scope.profileId}
+                       and prior.source = current.source
+                       and prior.asin = current.asin
+                       and lower(prior.keyword) = lower(current.keyword)
+                       and prior.organic_rank is not null
+                       and prior.observed_on < current.observed_on
+                     order by prior.observed_on desc, prior.id desc
+                     limit 1
+                  ) previous on true
+                 where p.target_kind = 'keyword'
+                   and current.org_id = ${scope.orgId}
+                   and current.profile_id = ${scope.profileId}
+                   and current.source = 'rank_radar'
+                   and current.asin = any(coalesce(ads.advertised_asins, '{}'::text[]))
+                   and lower(current.keyword) = lower(coalesce(k.keyword_text, k.name, p.target_id))
+                   and current.organic_rank is not null
+                   and current.observed_on <= ${window.end}::date
+              ) candidate
+             order by (candidate.rank_prev is not null and candidate.rank_now < candidate.rank_prev) desc,
+                      candidate.rank_observed_on desc,
+                      candidate.rank_id desc
+             limit 1
+          ) radar on true
           left join lateral (
             select b.date, b.suggested_bid_low, b.suggested_bid_median,
                    b.suggested_bid_high, b.bid, b.cpc
@@ -878,6 +983,22 @@ implements RecommendationRunStore, RecommendationScheduleStore {
           adGroupState: row.ad_group_state,
           currentBid: numberOrNull(row.current_bid),
           dailyBudget: numberOrNull(row.daily_budget),
+          stock: {
+            status: 'unknown',
+            asins: row.advertised_asins,
+            reason: 'No validated inventory field is synced for this profile.',
+          },
+          organicRank: entityType !== 'keyword'
+            ? { status: 'not_applicable' }
+            : row.rank_now === null
+              ? { status: 'unknown', reason: 'No matching Rank Radar observation was found.' }
+              : {
+                  status: 'known',
+                  currentRank: Number(row.rank_now),
+                  previousRank: numberOrNull(row.rank_prev),
+                  ...(row.rank_asin === null ? {} : { asin: row.rank_asin }),
+                  ...(row.rank_observed_on === null ? {} : { observedOn: row.rank_observed_on }),
+                },
           metrics: {
             impressions: Number(row.impressions),
             clicks: Number(row.clicks),
@@ -987,6 +1108,44 @@ implements RecommendationRunStore, RecommendationScheduleStore {
           `;
       if (inserted.length !== completion.proposals.length) {
         throw new Error(`Offered ${completion.proposals.length} recommendations, wrote ${inserted.length}`);
+      }
+
+      const annotated = completion.proposals
+        .filter((proposal) => proposal.preconditionNotes.length > 0)
+        .map((proposal) => ({
+          entity_type: proposal.entityRef.entityType,
+          entity_id: proposal.entityRef.entityId,
+          field: proposal.field,
+          note: proposal.preconditionNotes.map((entry) => entry.message).join(' '),
+          codes: proposal.preconditionNotes.map((entry) => entry.code),
+        }));
+      const noteRows = annotated.length === 0
+        ? []
+        : await sql<{ id: number }[]>`
+            insert into public.audit_log
+              (org_id, actor_type, action, target_type, target_id, payload, source)
+            select ${completion.orgId}, 'service', 'recommendation.preconditions.noted',
+                   'recommendation', recommendation.id::text,
+                   jsonb_build_object('note', offered.note, 'codes', offered.codes),
+                   'worker'
+              from jsonb_to_recordset(${serializeJson(annotated)}::text::jsonb) as offered(
+                entity_type text,
+                entity_id text,
+                field text,
+                note text,
+                codes jsonb
+              )
+              join public.recommendations recommendation
+                on recommendation.run_id = ${completion.runId}
+               and recommendation.org_id = ${completion.orgId}
+               and recommendation.profile_id = ${completion.profileId}
+               and recommendation.entity_type::text = offered.entity_type
+               and recommendation.entity_id = offered.entity_id
+               and recommendation.field = offered.field
+            returning id
+          `;
+      if (noteRows.length !== annotated.length) {
+        throw new Error(`Offered ${annotated.length} recommendation precondition notes, wrote ${noteRows.length}`);
       }
 
       const updated = await sql<{ id: string }[]>`

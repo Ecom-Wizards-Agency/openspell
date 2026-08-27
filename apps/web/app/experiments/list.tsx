@@ -10,6 +10,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { ExperimentRecord } from '@wizard-ads/db';
+import type { TestIdea } from '@wizard-ads/core';
 import type { ProfileOption } from '../../src/experiments/data';
 import { toUiExperiment } from '../../src/experiments/ui';
 import type { UiExperiment } from '../../src/experiments/ui';
@@ -26,20 +27,54 @@ const card = {
 
 const day = (iso: string): string => iso.slice(0, 10);
 
+export function ProposedTestsSection({ proposedTests }: { proposedTests: TestIdea[] }) {
+  return (
+    <section aria-labelledby="proposed-tests-heading" data-testid="proposed-tests">
+      <h2 id="proposed-tests-heading" style={{ fontSize: '1.05rem', margin: '0 0 0.35rem' }}>
+        Proposed tests
+      </h2>
+      <p style={{ ...muted, margin: '0 0 0.75rem' }}>
+        Vetted ideas selected from this profile&apos;s goal and campaign signals. These are proposals only;
+        use the existing New experiment flow if you decide to run one.
+      </p>
+      {proposedTests.length === 0 ? (
+        <p style={muted} data-testid="proposed-tests-empty">No new tests warranted for the current signals.</p>
+      ) : (
+        <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+          {proposedTests.map((test, index) => (
+            <li key={`${test.source}-${index}`} style={card} data-testid="proposed-test">
+              <div style={{ alignItems: 'baseline', display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <strong style={{ fontSize: '0.9375rem' }}>Hypothesis</strong>
+                <span style={muted}>{test.priority} priority · {test.source}</span>
+              </div>
+              <p style={{ margin: '0.4rem 0' }}>{test.hypothesis}</p>
+              <p style={{ ...muted, margin: '0.3rem 0' }}><strong>Method:</strong> {test.method}</p>
+              <p style={{ ...muted, margin: '0.3rem 0 0' }}><strong>Success:</strong> {test.successMetric}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export function ExperimentsList({
   items: initialItems,
   profiles,
   selectedProfileId,
+  proposedTests: initialProposedTests,
   canManage,
   role,
 }: {
   items: UiExperiment[];
   profiles: ProfileOption[];
   selectedProfileId: string | null;
+  proposedTests: TestIdea[];
   canManage: boolean;
   role: string;
 }) {
   const [items, setItems] = useState(initialItems);
+  const [proposedTests, setProposedTests] = useState(initialProposedTests);
   const [profileId, setProfileId] = useState(selectedProfileId ?? '');
   const [status, setStatus] = useState('');
   const [message, setMessage] = useState('');
@@ -57,12 +92,14 @@ export function ExperimentsList({
       const response = await fetch(`/api/experiments?${query.toString()}`);
       const payload = (await response.json().catch(() => null)) as {
         items?: ExperimentRecord[];
+        proposedTests?: TestIdea[];
         error?: string;
       } | null;
       if (!response.ok || !payload?.items) {
         throw new Error(payload?.error ?? `Could not read experiments (${response.status})`);
       }
       setItems(payload.items.map(toUiExperiment));
+      setProposedTests(payload.proposedTests ?? []);
     },
     [profileId, status],
   );
@@ -129,6 +166,8 @@ export function ExperimentsList({
           </a>
         )}
       </div>
+
+      <ProposedTestsSection proposedTests={proposedTests} />
 
       <ul data-testid="experiments-list" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
         {items.map((item) => (

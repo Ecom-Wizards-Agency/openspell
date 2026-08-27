@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import { POST } from '../app/api/experiments/route.js';
-import { listProfileOptions } from './experiments/data.js';
+import { listProfileOptions, listProposedTests } from './experiments/data.js';
 
 const available = await databaseAvailable();
 const OWNER_A = '7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a7a';
@@ -116,6 +116,21 @@ describe.skipIf(!available)('POST /api/experiments', () => {
       countryCode: 'US',
     });
     expect(options.some((profile) => profile.id === off?.id)).toBe(false);
+  });
+
+  it('selects proposed tests from the scoped profile signals', async () => {
+    await database.sql`
+      update public.ad_profiles set goal_lens = 'scale' where id = ${profileA}
+    `;
+    await database.sql`
+      update public.campaigns
+         set name = 'Rank | SP | Exact | synthetic'
+       where org_id = ${orgA} and profile_id = ${profileA}
+    `;
+
+    const proposals = await listProposedTests(database, { orgId: orgA, profileId: profileA });
+    expect(proposals.map((proposal) => proposal.source)).toContain('conflicts-and-tests.md#T1');
+    expect(await listProposedTests(database, { orgId: orgA, profileId: profileB })).toEqual([]);
   });
 
   it('refuses another org\'s profile with a 404, and writes nothing', async () => {

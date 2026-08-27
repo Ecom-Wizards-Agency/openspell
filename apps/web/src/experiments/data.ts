@@ -8,6 +8,15 @@
  * resolved to.
  */
 import type { RequestDatabase } from '@wizard-ads/db';
+import {
+  CATEGORY_DISCOVERY,
+  CATEGORY_PROFIT,
+  CATEGORY_RANK,
+  CATEGORY_SHIELD,
+  classifyCampaignCategory,
+  selectTests,
+  type TestIdea,
+} from '@wizard-ads/core';
 
 export interface ProfileOption {
   id: string;
@@ -50,6 +59,60 @@ export function selectProfileId(
   if (profiles.length === 0) return null;
   const match = requested ? profiles.find((profile) => profile.id === requested) : undefined;
   return (match ?? profiles[0])?.id ?? null;
+}
+
+export interface ProfileTestSignals {
+  goal: string | null;
+  campaignNames: string[];
+}
+
+/** Turn profile facts into the exact requirement tags the Python backlog uses. */
+export function profileTestTags(signals: ProfileTestSignals): Set<string> {
+  const tags = new Set<string>();
+  if (signals.goal) tags.add(`goal:${signals.goal}`);
+  const categories = new Set(signals.campaignNames.map(classifyCampaignCategory));
+  if (categories.has(CATEGORY_RANK)) tags.add('rank_present');
+  if (categories.has(CATEGORY_DISCOVERY)) tags.add('discovery_present');
+  if (categories.has(CATEGORY_PROFIT)) tags.add('profit_present');
+  if (categories.has(CATEGORY_SHIELD)) tags.add('shield_present');
+  return tags;
+}
+
+/**
+ * Proposed tests for one scoped profile. These are selections, not experiment
+ * rows: creating a tracked experiment remains the existing manual flow.
+ */
+export async function listProposedTests(
+  handle: Pick<RequestDatabase, 'sql'>,
+  input: { orgId: string; profileId: string },
+): Promise<TestIdea[]> {
+  const [profiles, campaigns] = await Promise.all([
+    handle.sql<{ goal_lens: string | null }[]>`
+      select goal_lens
+        from public.ad_profiles
+       where org_id = ${input.orgId}
+         and id = ${input.profileId}
+    `,
+    handle.sql<{ name: string | null }[]>`
+      select name
+        from public.campaigns
+       where org_id = ${input.orgId}
+         and profile_id = ${input.profileId}
+         and deleted_at is null
+         and state = 'enabled'
+       order by amazon_id
+    `,
+  ]);
+  const profile = profiles[0];
+  if (!profile) return [];
+  return selectTests(
+    profileTestTags({
+      goal: profile.goal_lens,
+      campaignNames: campaigns
+        .map((campaign) => campaign.name)
+        .filter((name): name is string => typeof name === 'string' && name.length > 0),
+    }),
+  );
 }
 
 export interface DailySpendPoint {

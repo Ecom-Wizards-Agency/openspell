@@ -75,6 +75,8 @@ function fixtureInputs(): RecommendationRunInputs {
         adGroupState: 'enabled',
         currentBid: 1,
         dailyBudget: 20,
+        stock: { status: 'unknown', asins: ['B0TEST5101'] },
+        organicRank: { status: 'unknown' },
         metrics: { impressions: 1_000, clicks: 10, cost: 10, orders: 2, sales: 20 },
         corridor: {
           date: '2026-08-26',
@@ -203,11 +205,17 @@ describe('recommendations runner', () => {
         capClamped: false,
         window: { start: '2026-08-20', end: '2026-08-26' },
       },
+      preconditionNotes: [
+        { code: 'stock_unknown' },
+        { code: 'rank_unknown' },
+      ],
     });
     expect(completion?.narrative.diagnostics).toMatchObject({
       targetsRead: 1,
       targetsConsidered: 1,
       proposed: 1,
+      blockedOutOfStock: 0,
+      preconditionNotes: 2,
       corridorsAvailable: 1,
       corridorsMissing: 0,
     });
@@ -234,6 +242,42 @@ describe('recommendations runner', () => {
       corridorsMissing: 1,
       proposed: 1,
     });
+  });
+
+  it('blocks an out-of-stock target before composing a bid proposal', async () => {
+    const inputs = fixtureInputs();
+    const target = inputs.targets[0];
+    if (!target) throw new Error('fixture target missing');
+    target.stock = { status: 'out_of_stock', asins: target.stock.asins, source: 'fixture' };
+    const store = new FakeStore(PROFILE, inputs);
+
+    await runRecommendations(store, JOB, new Date('2026-08-27T12:00:00Z'));
+
+    expect(store.completed[0]?.proposals).toEqual([]);
+    expect(store.completed[0]?.narrative.diagnostics).toMatchObject({
+      proposed: 0,
+      blockedOutOfStock: 1,
+    });
+    expect(store.completed[0]?.narrative.diagnostics.examples).toContainEqual(
+      expect.objectContaining({ outcome: 'blocked', detail: expect.stringContaining('out of stock') }),
+    );
+  });
+
+  it('suppresses a cut while the keyword organic rank is improving', async () => {
+    const inputs = fixtureInputs();
+    const target = inputs.targets[0];
+    if (!target) throw new Error('fixture target missing');
+    target.stock = { status: 'in_stock', asins: target.stock.asins, source: 'fixture' };
+    target.organicRank = { status: 'known', currentRank: 8, previousRank: 12, asin: 'B0TEST5101' };
+    const store = new FakeStore(PROFILE, inputs);
+
+    await runRecommendations(store, JOB, new Date('2026-08-27T12:00:00Z'));
+
+    expect(store.completed[0]?.proposals).toEqual([]);
+    expect(store.completed[0]?.narrative.diagnostics).toMatchObject({ proposed: 0, suppressed: 1 });
+    expect(store.completed[0]?.narrative.diagnostics.examples).toContainEqual(
+      expect.objectContaining({ outcome: 'suppressed', detail: expect.stringContaining('rank is improving') }),
+    );
   });
 
   it('marks a failed run and rethrows the original input error', async () => {
