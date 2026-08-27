@@ -327,25 +327,35 @@ export function rankObservationRows(
   data: RankRadarData,
   requestedDate: string,
 ): RankObservationInput[] {
+  // Live smoke 2026-08-27: the endpoint returns surrounding days even for a
+  // single-day request, and a day can appear twice for one keyword (a null
+  // placeholder next to a real rank). Keep only the requested day, prefer a
+  // non-null rank, and only treat two DIFFERENT non-null ranks as a conflict.
   const rows: RankObservationInput[] = [];
   for (const keyword of data.keywords) {
+    let chosen: number | null | undefined;
     for (const rank of keyword.ranks) {
-      if (rank.date !== requestedDate) {
+      if (rank.date !== requestedDate) continue;
+      if (chosen === undefined || chosen === null) {
+        chosen = rank.organicRank;
+      } else if (rank.organicRank !== null && rank.organicRank !== chosen) {
         throw new ConflictingRankObservation(
-          `radar=${radar.id}, keyword=${keyword.id}, returned_date=${rank.date}, requested_date=${requestedDate}`,
+          `radar=${radar.id}, keyword=${keyword.id}, date=${requestedDate}, ` +
+            `ranks=${chosen} vs ${rank.organicRank}`,
         );
       }
-      rows.push({
-        orgId: payload.orgId,
-        profileId: payload.profileId,
-        asin: radar.asin.trim(),
-        keyword: keyword.keyword.trim(),
-        observedOn: rank.date,
-        organicRank: rank.organicRank,
-        marketplace: marketplace(radar.marketplace),
-        source: SOURCE,
-      });
     }
+    if (chosen === undefined) continue;
+    rows.push({
+      orgId: payload.orgId,
+      profileId: payload.profileId,
+      asin: radar.asin.trim(),
+      keyword: keyword.keyword.trim(),
+      observedOn: requestedDate,
+      organicRank: chosen,
+      marketplace: marketplace(radar.marketplace),
+      source: SOURCE,
+    });
   }
   return rows;
 }
