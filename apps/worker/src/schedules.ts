@@ -9,9 +9,9 @@
  * true a fortnight later, and the slow re-pull is what makes the facts converge
  * on the truth instead of freezing the first guess.
  *
- * Two schedules per report type for one profile is exactly what the original
+ * Multiple schedules per report type for one profile is exactly what the original
  * `sync_schedules` uniqueness key forbade; `variant` (migration
- * 20260814140000) is what makes the pair representable.
+ * 20260814140000) is what makes the set representable.
  *
  * `next_run_at` is left at its default of `now()`, so provisioning a profile
  * enqueues its first pass on the next five-minute cron tick rather than a day
@@ -20,7 +20,7 @@
 import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
 import type { ReportType } from '@wizard-ads/shared';
 
-export type ScheduleVariant = 'default' | 'restatement';
+export type ScheduleVariant = 'default' | 'restatement' | 'comparison';
 
 export interface ScheduleSpec {
   jobType: 'entity.sync' | 'report.request';
@@ -28,10 +28,12 @@ export interface ScheduleSpec {
   variant: ScheduleVariant;
   cadence: string;
   lookbackDays: number | null;
+  /** Whole days before yesterday where this report window ends. */
+  windowOffsetDays: number;
   payload: Record<string, unknown>;
 }
 
-/** The report types v1 pulls. One `report.request` schedule pair each. */
+/** The report types v1 pulls. Three `report.request` schedule variants each. */
 export const DEFAULT_REPORT_TYPES: readonly ReportType[] = [
   'spCampaigns',
   'spTargeting',
@@ -57,6 +59,12 @@ export const DEFAULT_CADENCES = {
    * largest lookback that yields a legal 31-day span.
    */
   reportRestatement: { cadence: '7 days', lookbackDays: MAX_REPORT_RANGE_DAYS + 1 },
+  /** The contiguous block immediately before `reportRestatement`. */
+  reportComparison: {
+    cadence: '7 days',
+    lookbackDays: MAX_REPORT_RANGE_DAYS + 1,
+    windowOffsetDays: MAX_REPORT_RANGE_DAYS + 1,
+  },
   /**
    * The bid corridor (WP-28): one suggested-bid low/median/high snapshot per
    * target per day, on the same daily footing as spend and clicks.
@@ -94,6 +102,7 @@ export function defaultSchedules(
       variant: 'default',
       cadence: DEFAULT_CADENCES.entity.cadence,
       lookbackDays: null,
+      windowOffsetDays: 0,
       payload: { full: DEFAULT_CADENCES.entity.full },
     },
   ];
@@ -104,6 +113,7 @@ export function defaultSchedules(
       variant: 'default',
       cadence: DEFAULT_CADENCES.reportRecent.cadence,
       lookbackDays: DEFAULT_CADENCES.reportRecent.lookbackDays,
+      windowOffsetDays: 0,
       payload: {},
     });
     specs.push({
@@ -112,6 +122,16 @@ export function defaultSchedules(
       variant: 'restatement',
       cadence: DEFAULT_CADENCES.reportRestatement.cadence,
       lookbackDays: DEFAULT_CADENCES.reportRestatement.lookbackDays,
+      windowOffsetDays: 0,
+      payload: {},
+    });
+    specs.push({
+      jobType: 'report.request',
+      reportType,
+      variant: 'comparison',
+      cadence: DEFAULT_CADENCES.reportComparison.cadence,
+      lookbackDays: DEFAULT_CADENCES.reportComparison.lookbackDays,
+      windowOffsetDays: DEFAULT_CADENCES.reportComparison.windowOffsetDays,
       payload: {},
     });
   }

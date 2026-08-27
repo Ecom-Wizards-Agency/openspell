@@ -646,36 +646,62 @@ describe.skipIf(!available)('worker + real Postgres', () => {
   // Schedules
   // -------------------------------------------------------------------------
 
-  it('holds a daily and a weekly restatement schedule for one profile and report type', async () => {
+  it('covers current and comparison windows with legal report schedules', async () => {
     await database.sql`delete from public.sync_schedules where profile_id = ${profileId}`;
     const store = new PostgresWorkerStore(database);
     const specs = defaultSchedules(['spCampaigns']);
-    expect(await store.provisionSchedules(orgId, profileId, specs)).toBe(3);
+    expect(await store.provisionSchedules(orgId, profileId, specs)).toBe(4);
     // Idempotent: the scope key now includes `variant`, so re-provisioning is
     // a no-op rather than a unique violation.
     expect(await store.provisionSchedules(orgId, profileId, specs)).toBe(0);
 
-    const rows = await database.sql<{ variant: string; lookback_days: number; cadence: string }[]>`
-      select variant, lookback_days, cadence::text from public.sync_schedules
+    const rows = await database.sql<{
+      variant: string;
+      lookback_days: number;
+      window_offset_days: number;
+      cadence: string;
+    }[]>`
+      select variant, lookback_days, window_offset_days, cadence::text
+        from public.sync_schedules
        where profile_id = ${profileId} and job_type = 'report.request'
        order by variant
     `;
-    expect(rows.map((r) => ({ variant: r.variant, lookback: Number(r.lookback_days) }))).toEqual([
-      { variant: 'default', lookback: 3 },
-      { variant: 'restatement', lookback: 32 },
+    expect(rows.map((r) => ({
+      variant: r.variant,
+      lookback: Number(r.lookback_days),
+      offset: Number(r.window_offset_days),
+    }))).toEqual([
+      { variant: 'comparison', lookback: 32, offset: 32 },
+      { variant: 'default', lookback: 3, offset: 0 },
+      { variant: 'restatement', lookback: 32, offset: 0 },
     ]);
 
-    // Both are due, so one tick mints both windows: 3 days and 32 days.
+    // All schedules are due. The two 32-day blocks must be contiguous, and the
+    // current block must end yesterday rather than loading a partial today.
     const enqueued = await enqueueDueSchedules(database);
-    expect(enqueued.filter((row) => row.enqueued)).toHaveLength(3);
-    const windows = await database.sql<{ start_date: string; end_date: string }[]>`
-      select payload ->> 'startDate' as start_date, payload ->> 'endDate' as end_date
-        from public.sync_jobs
-       where org_id = ${orgId} and job_type = 'report.request'
-       order by payload ->> 'startDate'
+    expect(enqueued.filter((row) => row.enqueued)).toHaveLength(4);
+    const windows = await database.sql<{
+      variant: string;
+      start_date: string;
+      end_date: string;
+    }[]>`
+      select s.variant, j.payload ->> 'startDate' as start_date,
+             j.payload ->> 'endDate' as end_date
+        from public.sync_jobs j
+        join public.sync_schedules s on s.id = j.schedule_id
+       where j.org_id = ${orgId} and j.job_type = 'report.request'
+       order by s.variant
     `;
     const spans = windows.map((w) => days(w.start_date, w.end_date));
-    expect(spans).toEqual([32, 3]);
+    expect(spans).toEqual([32, 3, 32]);
+    const comparison = windows.find((window) => window.variant === 'comparison');
+    const restatement = windows.find((window) => window.variant === 'restatement');
+    expect(addIsoDays(comparison?.end_date ?? '', 1)).toBe(restatement?.start_date);
+    const [clock] = await database.sql<{ yesterday: string }[]>`
+      select (((now() at time zone timezone)::date - 1)::text) as yesterday
+        from public.ad_profiles where id = ${profileId}
+    `;
+    expect(restatement?.end_date).toBe(clock?.yesterday);
     // The restatement window must be one Amazon will actually generate: it
     // refuses a difference over MAX_REPORT_RANGE_DAYS, and 35 (a 34-day
     // difference) is what 400'd every restatement job in the first live sync.
@@ -757,7 +783,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
 
     const provisioner = new ScheduleProvisioner(store, 60_000, quietLogger);
     provisioner.start();
-    const expectedSchedules = 1 + 2 * DEFAULT_REPORT_TYPES.length;
+    const expectedSchedules = 1 + 3 * DEFAULT_REPORT_TYPES.length;
     await waitFor(async () => {
       const [row] = await database.sql<{ n: string }[]>`
         select count(*) as n from public.sync_schedules where profile_id = ${profileId}
@@ -770,9 +796,9 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       select count(*) as n, count(distinct variant) as variants
         from public.sync_schedules where profile_id = ${profileId}
     `;
-    // One entity pass plus a recent and a restatement schedule per report type.
+    // One entity pass plus recent, restatement and comparison per report type.
     expect(Number(counts?.n)).toBe(expectedSchedules);
-    expect(Number(counts?.variants)).toBe(2);
+    expect(Number(counts?.variants)).toBe(3);
 
     // Re-provisioning the same profile finds nothing to do rather than
     // duplicating: `variant` is in the scope key, so every row conflicts.
@@ -1160,6 +1186,10 @@ function named(name: string, message: string): Error {
 
 function days(start: string, end: string): number {
   return Math.round((Date.parse(end) - Date.parse(start)) / 86_400_000) + 1;
+}
+
+function addIsoDays(date: string, amount: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + amount * 86_400_000).toISOString().slice(0, 10);
 }
 
 async function queueEntity(database: TestDatabase, orgId: string, profileId: string, key: string, full: boolean): Promise<void> {

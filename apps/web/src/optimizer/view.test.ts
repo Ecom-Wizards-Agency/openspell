@@ -67,6 +67,11 @@ describe('kpiTiles', () => {
       'clicks', 'ctr', 'cpc', 'aov', 'cpa', 'cvr', 'cpm',
     ]);
   });
+
+  it('keeps an empty comparison absent instead of fabricating zero totals', () => {
+    const tiles = kpiTiles(totals({ spend: 25, sales: 100 }), totalsOf([]));
+    expect(tiles.every((tile) => tile.prev === null && tile.deltaPct === null)).toBe(true);
+  });
 });
 
 describe('optimizationGroups', () => {

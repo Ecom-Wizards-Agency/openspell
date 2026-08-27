@@ -72,6 +72,7 @@ suite('grid and roster reads against SQL aggregates', () => {
 
     // Both windows, so every row has a real comparison figure.
     for (const window of [PERIOD, COMPARISON]) {
+      const comparisonFactor = window === COMPARISON ? 0.5 : 1;
       for (let day = 0; day < 14; day += 1) {
         const date = addDays(window.start, day);
         for (const campaign of CAMPAIGNS) {
@@ -82,8 +83,12 @@ suite('grid and roster reads against SQL aggregates', () => {
                  match_type, impressions, clicks, cost, purchases_7d, sales_7d, units_sold_7d)
               values (${orgId}, ${profileId}, ${date}, 'SP', ${campaign.id}, ${`${campaign.id}-ag`},
                       ${`${campaign.id}-kw${target}`}, 'keyword', 'exact',
-                      ${1000 + target * 10}, ${campaign.clicks}, ${campaign.spendPerDay},
-                      ${campaign.orders}, ${campaign.salesPerDay}, ${campaign.orders})
+                      ${(1000 + target * 10) * comparisonFactor},
+                      ${campaign.clicks * comparisonFactor},
+                      ${campaign.spendPerDay * comparisonFactor},
+                      ${campaign.orders * comparisonFactor},
+                      ${campaign.salesPerDay * comparisonFactor},
+                      ${campaign.orders * comparisonFactor})
             `;
           }
         }
@@ -220,6 +225,10 @@ suite('grid and roster reads against SQL aggregates', () => {
       comparison: COMPARISON,
     });
     expect(rows.every((row) => row.comparison !== null)).toBe(true);
+    const first = rows[0] as GridRow;
+    expect(resolveField(first, 'spend_comparison')).toBeCloseTo(first.totals.spend / 2, 9);
+    expect(resolveField(first, 'spend_delta_absolute')).toBeCloseTo(first.totals.spend / 2, 9);
+    expect(resolveField(first, 'spend_delta_percent')).toBeCloseTo(1, 9);
 
     // A comparison window with no facts in it must produce null deltas, not zeroes.
     const empty = await loadGridRows(database, 'targets', {
