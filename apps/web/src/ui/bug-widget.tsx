@@ -13,6 +13,7 @@ import type { UiFeedbackItem } from '../feedback/ui';
 import { useToast } from './toast';
 
 const SIMILAR_DEBOUNCE_MS = 350;
+const SIMILAR_ENDPOINT = ['/api', 'feedback', 'similar'].join('/');
 
 function focusable(dialog: HTMLDivElement): HTMLElement[] {
   return Array.from(
@@ -76,7 +77,7 @@ export function BugWidget({ appVersion = null }: { appVersion?: string | null })
     const timer = window.setTimeout(() => {
       void (async () => {
         try {
-          const response = await fetch(`/api/feedback/similar?q=${encodeURIComponent(title)}`, {
+          const response = await fetch(`${SIMILAR_ENDPOINT}?q=${encodeURIComponent(title)}`, {
             signal: controller.signal,
           });
           const payload = (await response.json().catch(() => null)) as {

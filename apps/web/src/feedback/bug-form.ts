@@ -1,9 +1,13 @@
-import { FEEDBACK_SEVERITIES } from '@wizard-ads/db';
 import type { FeedbackSeverity } from '@wizard-ads/db';
 import { pageContext, profileIdFromRoute } from './page-context';
 
 /** One source for both the full form and the compact widget. */
-export const BUG_SEVERITIES = FEEDBACK_SEVERITIES;
+export const BUG_SEVERITIES = [
+  'low',
+  'medium',
+  'high',
+  'critical',
+] as const satisfies readonly FeedbackSeverity[];
 
 export interface BugWidgetPayload {
   type: 'bug';

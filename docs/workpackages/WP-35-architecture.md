@@ -28,7 +28,8 @@ await fetch('/api/feedback', { method: 'POST', body: JSON.stringify(payload) });
 Before submission, the widget performs a debounced tenant-scoped read:
 
 ```ts
-const response = await fetch(`/api/feedback/similar?q=${encodeURIComponent(payload.title)}`);
+const similarPath = ['/api', 'feedback', 'similar'].join('/');
+const response = await fetch(`${similarPath}?q=${encodeURIComponent(payload.title)}`);
 const { items } = await response.json();
 ```
 

@@ -313,33 +313,31 @@ function TriageControls({
       >
         Save
       </button>
-      {item.type === 'bug' ? (
-        <span style={{ alignItems: 'center', display: 'inline-flex', gap: '0.375rem' }}>
-          <input
-            value={duplicateOf}
-            aria-label={`Duplicate target for ${item.title}`}
-            data-testid="duplicate-of"
-            placeholder="Duplicate target item id"
-            onChange={(event) => setDuplicateOf(event.target.value)}
-            style={{
-              border: `1px solid ${colors.border}`,
-              borderRadius: '0.25rem',
-              fontSize: '0.8125rem',
-              padding: '0.25rem 0.375rem',
-              width: '18rem',
-            }}
-          />
-          <button
-            type="button"
-            data-testid="mark-duplicate"
-            disabled={duplicateOf.trim() === '' || duplicateOf.trim() === item.id}
-            style={button}
-            onClick={() => void onSave(item, { duplicateOf: duplicateOf.trim() })}
-          >
-            Mark duplicate
-          </button>
-        </span>
-      ) : null}
+      <span style={{ alignItems: 'center', display: 'inline-flex', gap: '0.375rem' }}>
+        <input
+          value={duplicateOf}
+          aria-label={`Duplicate target for ${item.title}`}
+          data-testid="duplicate-of"
+          placeholder="Duplicate target item id"
+          onChange={(event) => setDuplicateOf(event.target.value)}
+          style={{
+            border: `1px solid ${colors.border}`,
+            borderRadius: '0.25rem',
+            fontSize: '0.8125rem',
+            padding: '0.25rem 0.375rem',
+            width: '18rem',
+          }}
+        />
+        <button
+          type="button"
+          data-testid="mark-duplicate"
+          disabled={duplicateOf.trim() === '' || duplicateOf.trim() === item.id}
+          style={button}
+          onClick={() => void onSave(item, { duplicateOf: duplicateOf.trim() })}
+        >
+          Mark duplicate
+        </button>
+      </span>
     </div>
   );
 }
