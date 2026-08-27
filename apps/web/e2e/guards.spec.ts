@@ -81,6 +81,9 @@ test('the index names the signed-in user and offers a way out', async ({ page })
 });
 
 test('every guarded screen sends an anonymous visitor to the login page', async ({ page }) => {
+  // One goto per guarded route; in CI each first visit pays a dev-server
+  // compile, so the loop needs more than the per-test default.
+  test.setTimeout(300_000);
   await signOut(page);
 
   const landed: string[] = [];
@@ -95,6 +98,7 @@ test('every guarded screen sends an anonymous visitor to the login page', async 
 });
 
 test('the same screens open once there is a session', async ({ page }) => {
+  test.setTimeout(300_000); // same routes, same CI compile cost as above
   await signIn(page, 'admin');
 
   const landed: string[] = [];

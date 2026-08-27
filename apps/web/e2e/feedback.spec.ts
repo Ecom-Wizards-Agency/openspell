@@ -80,7 +80,9 @@ test('similar bugs appear before submit and an admin can collapse a duplicate', 
   const target = item(page, BUG_TITLE);
   const duplicate = item(page, DUPLICATE_TITLE);
   const targetId = await target.getAttribute('data-item-id');
+  const duplicateId = await duplicate.getAttribute('data-item-id');
   expect(targetId).not.toBeNull();
+  expect(duplicateId).not.toBeNull();
   await duplicate.getByTestId('duplicate-of').fill(targetId ?? '');
   await duplicate.getByTestId('mark-duplicate').click();
   await expect(page.getByRole('status')).toHaveText('Saved');
@@ -94,7 +96,11 @@ test('similar bugs appear before submit and an admin can collapse a duplicate', 
   await expect(targetCard).toHaveCount(1);
   await targetCard.getByTestId('duplicate-group').getByText('Duplicates (1)').click();
   await expect(targetCard.getByTestId('duplicate-card')).toContainText(DUPLICATE_TITLE);
-  await expect(page.getByTestId('column-open').getByTestId('bug-card').filter({ hasText: DUPLICATE_TITLE })).toHaveCount(0);
+  // By id, not by text: the expanded duplicates group renders the duplicate's
+  // title INSIDE the target's own card, so a hasText filter matches the target.
+  await expect(
+    page.getByTestId('column-open').locator(`[data-testid="bug-card"][data-item-id="${duplicateId}"]`),
+  ).toHaveCount(0);
 });
 
 test('the filtered views and the counts agree about what was filed', async ({ page }) => {
