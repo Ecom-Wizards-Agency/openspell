@@ -13,7 +13,7 @@ describe('DataDive response parsers', () => {
   it('rejects malformed provider dates', () => {
     const payload = structuredClone(RANK_DATA) as any;
     payload.data[0].ranks[0].date = '27-08-2026';
-    expect(() => parseRankRadarData(payload)).toThrow(/yyyy-mm-dd/);
+    expect(() => parseRankRadarData(payload)).toThrow(/YYYY-MM-DD/);
   });
 
   it('requires the quota feature the worker budgets against', () => {
