@@ -22,6 +22,18 @@ export interface NavContext {
 
 const EMPTY: NavContext = { orgName: null, profiles: [] };
 
+type NavProfileSource = Pick<NavProfile, 'id' | 'label' | 'countryCode' | 'syncEnabled'>;
+
+/** Keep the roster whole while reducing it to exactly what the frame renders. */
+export function mapNavProfiles(rows: readonly NavProfileSource[]): NavProfile[] {
+  return rows.map((row) => ({
+    id: row.id,
+    label: row.label,
+    countryCode: row.countryCode,
+    syncEnabled: row.syncEnabled,
+  }));
+}
+
 export async function navContext(user: SessionUser): Promise<NavContext> {
   try {
     const { database } = await import('../data/db');
@@ -37,11 +49,7 @@ export async function navContext(user: SessionUser): Promise<NavContext> {
     const rows = await listProfiles(handle, active.orgId);
     return {
       orgName: active.name,
-      profiles: rows.map((row) => ({
-        id: row.id,
-        label: row.label,
-        countryCode: row.countryCode,
-      })),
+      profiles: mapNavProfiles(rows),
     };
   } catch {
     return EMPTY;

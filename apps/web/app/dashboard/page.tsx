@@ -38,7 +38,7 @@ import { loadCampaignDailyRows, loadProfileDailyRows, loadProvisionalDates, load
 import { loadExperimentWindows } from '../_lib/experiment-windows';
 import { withDatabase } from '../_lib/db';
 import { addDays, periodFromParams, precedingPeriod, todayIso } from '../_lib/periods';
-import { listProfiles, selectProfile } from '../_lib/profiles';
+import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
 
 export const dynamic = 'force-dynamic';
 
@@ -59,13 +59,14 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const orgId = entry.context.active?.orgId ?? '';
 
   const params = await searchParams;
+  const profileId = await requestedProfileId(params.profile);
   const today = todayIso();
   const period = periodFromParams(params, today);
   const comparison = precedingPeriod(period);
 
   const data = await withDatabase(async (handle) => {
     const profiles = await listProfiles(handle, orgId);
-    const profile = selectProfile(profiles, params.profile);
+    const profile = selectProfile(profiles, profileId);
     if (profile === null) return { profiles, profile: null };
 
     const window = { start: addDays(period.start, -8), end: period.end };

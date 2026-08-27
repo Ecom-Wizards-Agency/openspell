@@ -1503,6 +1503,15 @@ button {
   font-weight: 600;
 }
 
+.wa-profile-option--sync-off {
+  opacity: 0.6;
+}
+
+.wa-profile-show-all {
+  color: var(--wa-text-muted);
+  justify-content: flex-start;
+}
+
 .wa-profile-empty {
   color: var(--wa-text-faint);
   font-size: var(--wa-fs-xs);

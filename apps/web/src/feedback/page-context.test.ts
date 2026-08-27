@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { describePageContext, normalizeRoute, pageContext } from './page-context';
+import {
+  describePageContext,
+  normalizeRoute,
+  pageContext,
+  profileIdFromRoute,
+} from './page-context';
 
 describe('feedback page context', () => {
   it('keeps an internal path and drops anything that could leave the app', () => {
@@ -32,6 +37,18 @@ describe('feedback page context', () => {
     });
     expect(withProfile.profileId).toBe('8a8a8a8a-8a8a-4a8a-8a8a-8a8a8a8a8a8a');
     expect(withProfile.actorType).toBe('mcp');
+  });
+
+  it('extracts a valid profile id from the captured route', () => {
+    const profileId = '8a8a8a8a-8a8a-4a8a-8a8a-8a8a8a8a8a8a';
+
+    expect(profileIdFromRoute(`/grid?entity=campaigns&profile=${profileId}`)).toBe(profileId);
+    expect(profileIdFromRoute('/grid?profile=not-a-uuid')).toBeNull();
+    expect(profileIdFromRoute('https://example.invalid/grid?profile=' + profileId)).toBeNull();
+    expect(pageContext({
+      route: `/grid?profile=${profileId}`,
+      profileId: profileIdFromRoute(`/grid?profile=${profileId}`),
+    }).profileId).toBe(profileId);
   });
 
   it('describes what will be sent, in the words the form shows', () => {

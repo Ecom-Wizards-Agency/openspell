@@ -16,9 +16,9 @@
  * the shareable thing it always should have been.
  *
  * The choice is also mirrored into `PROFILE_COOKIE` on the way out. The URL
- * remains the source of truth — nothing reads the cookie yet — and it exists so
- * a later server-side default can land a fresh visit on the profile the
- * operator last worked, rather than on "All profiles".
+ * remains the source of truth, while server-rendered profile pages use the
+ * cookie only when the URL has no profile parameter. The server validates the
+ * remembered id against the active organisation's roster before using it.
  */
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -29,12 +29,29 @@ export interface NavProfile {
   id: string;
   label: string;
   countryCode: string;
+  syncEnabled: boolean;
+}
+
+export function filterNavProfiles(
+  profiles: readonly NavProfile[],
+  showAll: boolean,
+  query: string,
+): NavProfile[] {
+  const needle = query.trim().toLowerCase();
+  return profiles.filter(
+    (profile) =>
+      (showAll || profile.syncEnabled) &&
+      (needle === '' ||
+        profile.label.toLowerCase().includes(needle) ||
+        profile.countryCode.toLowerCase().includes(needle)),
+  );
 }
 
 export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] }): ReactNode {
   const [selected, setSelected] = useState('');
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [showAll, setShowAll] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -84,13 +101,8 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
   };
 
   const active = profiles.find((profile) => profile.id === selected) ?? null;
-  const needle = query.trim().toLowerCase();
-  const matches = profiles.filter(
-    (profile) =>
-      needle === '' ||
-      profile.label.toLowerCase().includes(needle) ||
-      profile.countryCode.toLowerCase().includes(needle),
-  );
+  const matches = filterNavProfiles(profiles, showAll, query);
+  const syncOffCount = profiles.filter((profile) => !profile.syncEnabled).length;
 
   return (
     <div className="wa-profile" ref={rootRef}>
@@ -139,13 +151,14 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
               <li key={profile.id}>
                 <button
                   type="button"
-                  className="wa-profile-option"
+                  className={`wa-profile-option${profile.syncEnabled ? '' : ' wa-profile-option--sync-off'}`}
                   aria-selected={profile.id === selected}
                   role="option"
                   onClick={() => go(profile.id)}
                 >
                   <span>
                     {profile.label} <span className="wa-hint">· {profile.countryCode}</span>
+                    {profile.syncEnabled ? null : <span className="wa-hint"> · sync off</span>}
                   </span>
                   {profile.id === selected ? <span aria-hidden="true">✓</span> : null}
                 </button>
@@ -153,6 +166,17 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
             ))}
             {matches.length === 0 ? (
               <li className="wa-profile-empty">No profile matches “{query}”.</li>
+            ) : null}
+            {syncOffCount > 0 ? (
+              <li>
+                <button
+                  type="button"
+                  className="wa-profile-option wa-profile-show-all"
+                  onClick={() => setShowAll((value) => !value)}
+                >
+                  {showAll ? 'Show syncing profiles only' : `Show all profiles (${profiles.length})`}
+                </button>
+              </li>
             ) : null}
           </ul>
           {/* Leaves the popover for another screen; it should not also leave

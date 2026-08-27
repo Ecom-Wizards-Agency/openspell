@@ -25,6 +25,7 @@ export async function listProfileOptions(
            currency_code
       from public.ad_profiles
      where org_id = ${orgId}
+       and sync_enabled = true
      order by coalesce(account_name, amazon_profile_id)
   `;
   return rows.map((row) => ({ id: row.id, label: row.label, currencyCode: row.currency_code }));
