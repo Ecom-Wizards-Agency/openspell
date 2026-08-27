@@ -39,6 +39,8 @@ export const connectionStatus = pgEnum('connection_status', [
   'error',
   'revoked',
 ]);
+export const INTEGRATION_PROVIDERS = ['keepa', 'datadive', 'mrp'] as const;
+export const integrationProvider = pgEnum('integration_provider', INTEGRATION_PROVIDERS);
 
 export const adsRegion = pgEnum('ads_region', tuple(Region.options));
 export const profileAccountType = pgEnum('profile_account_type', ['seller', 'vendor', 'agency']);

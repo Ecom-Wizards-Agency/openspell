@@ -39,6 +39,7 @@ const GUARDED = [
   '/bugs',
   '/roadmap',
   '/settings/connections',
+  '/settings/integrations',
   '/settings/profiles',
   '/settings/members',
   '/settings/account',

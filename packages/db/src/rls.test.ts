@@ -160,4 +160,44 @@ describe.skipIf(!available)('row level security', () => {
       expect(rows.map((row) => row.org_id)).toEqual([orgB]);
     });
   });
+
+  it('keeps integration connection writes owner/admin-only and tenant-scoped', async () => {
+    await asUser(database, USER_A, async (sql) => {
+      const own = await sql<{ org_id: string }[]>`
+        select org_id from public.integration_connections
+      `;
+      expect(own.map((row) => row.org_id)).toEqual([orgA]);
+
+      await expect(
+        sql`
+          insert into public.integration_connections (org_id, provider, label)
+          values (${orgA}, 'datadive', 'analyst write')
+        `,
+      ).rejects.toThrow(/row-level security/i);
+
+      const updated = await sql`
+        update public.integration_connections
+           set status = 'error'
+         where org_id = ${orgA}
+        returning id
+      `;
+      expect(updated).toEqual([]);
+    });
+
+    await asUser(database, USER_B, async (sql) => {
+      const inserted = await sql`
+        insert into public.integration_connections (org_id, provider, label)
+        values (${orgB}, 'datadive', 'owner write')
+        returning id
+      `;
+      expect(inserted).toHaveLength(1);
+
+      await expect(
+        sql`
+          insert into public.integration_connections (org_id, provider, label)
+          values (${orgA}, 'mrp', 'foreign write')
+        `,
+      ).rejects.toThrow(/row-level security/i);
+    });
+  });
 });

@@ -15,6 +15,8 @@ import { signIn } from './support/auth';
 
 test.describe.configure({ mode: 'serial' });
 
+const INTEGRATION_VALUE = ['synthetic', 'integration', 'e2e', 'value'].join('-');
+
 test('a viewer sees the roster and can change nothing', async ({ page }) => {
   await signIn(page, 'viewer');
   await page.goto('/settings/profiles');
@@ -28,6 +30,11 @@ test('a viewer sees the roster and can change nothing', async ({ page }) => {
   await page.goto('/settings/connections');
   await expect(page.getByTestId('connect-forbidden')).toBeVisible();
   await expect(page.getByTestId('connect-amazon')).toHaveCount(0);
+
+  await page.goto('/settings/integrations');
+  await expect(page.getByTestId('integrations-read-only')).toBeVisible();
+  await expect(page.getByTestId('connect-integration-keepa')).toHaveCount(0);
+  await expect(page.getByTestId('revoke-integration-keepa')).toHaveCount(0);
 
   const response = await page.request.get('/api/amazon/oauth/start', { maxRedirects: 0 });
   expect(response.status()).toBe(403);
@@ -95,6 +102,37 @@ test('an admin toggles sync and the change survives a reload', async ({ page }) 
   const back = page.locator(`[data-profile-id="${profileId}"]`).getByTestId('toggle-sync');
   await back.selectOption('Off');
   await expect(page.getByTestId('toast')).toContainText('Sync off');
+});
+
+test('an admin stores an integration key once and can revoke it', async ({ page }) => {
+  await signIn(page, 'admin');
+  await page.goto('/settings/integrations');
+
+  await page.getByTestId('integration-label-datadive').fill('E2E DataDive');
+  await page.getByTestId('integration-secret-datadive').fill(INTEGRATION_VALUE);
+  await page.getByTestId('submit-integration-datadive').click();
+
+  const row = page.getByTestId('integration-row-datadive').filter({ hasText: 'E2E DataDive' });
+  await expect(row).toContainText('active');
+  await expect(page.getByTestId('integration-secret-datadive')).toHaveValue('');
+  await expect(page.locator('body')).not.toContainText(INTEGRATION_VALUE);
+
+  await row.getByTestId('revoke-integration-datadive').click();
+  await expect(
+    page.getByTestId('integration-row-datadive').filter({ hasText: 'E2E DataDive' }),
+  ).toContainText('revoked');
+
+  await page.getByTestId('integration-label-datadive').fill('E2E DataDive');
+  await page
+    .getByTestId('integration-secret-datadive')
+    .fill(`${INTEGRATION_VALUE}-rotated`);
+  await page.getByTestId('submit-integration-datadive').click();
+  await expect(
+    page.getByTestId('integration-row-datadive').filter({ hasText: 'E2E DataDive' }),
+  ).toHaveCount(1);
+  await expect(
+    page.getByTestId('integration-row-datadive').filter({ hasText: 'E2E DataDive' }),
+  ).toContainText('active');
 });
 
 test('the analyst edit persisted for every role that can read it', async ({ page }) => {

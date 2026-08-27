@@ -13,8 +13,8 @@ generic foundation they share. No external API calls happen here.
 - ONE generic table `integration_connections` with a provider enum, not per-provider
   tables. Provider-specific knobs live in `config jsonb`.
 - Secrets go to Vault via security-definer RPCs, service-role only — copy the exact shape
-  of the `vault_rpcs` migration (20260813120900) and the `spapi_connections` table shape
-  (`reserved_seams` migration, 20260813121100, line 18).
+  of the 2026-08-13 12:09 Vault RPC migration and the `spapi_connections` table shape
+  from the 2026-08-13 12:11 reserved-seams migration (line 18).
 - The web tier stores a key ONCE and never reads it back; only the worker (service role)
   retrieves it.
 
