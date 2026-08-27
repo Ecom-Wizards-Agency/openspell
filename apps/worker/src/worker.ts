@@ -11,6 +11,10 @@ import {
   type EntityListFailure,
 } from './ads-api.js';
 import { runBidSeriesSync, type BidSeriesSyncDeps } from './bid-series.js';
+import type {
+  RecommendationScheduleStore,
+  RecommendationsRun,
+} from './recommendations-run.js';
 import { SKIP_FAILURE_RATIO, gunzipJson, parseReportRows } from './parsers.js';
 import {
   defaultRegionTokenBuckets,
@@ -46,6 +50,8 @@ export interface SyncWorkerOptions {
   adsApi: AdsApiClient;
   /** WP-10's handler, bound to a database handle. Absent, the job dead-letters. */
   crosscheckIngest?: CrosscheckIngest;
+  /** WP-33's preview-only recommendations runner. Absent, the job dead-letters. */
+  recommendationsRun?: RecommendationsRun;
   buckets?: RegionTokenBuckets;
   claimBatchSize?: number;
   maxConcurrentJobs?: number;
@@ -59,6 +65,7 @@ export class SyncWorker {
   private readonly store: WorkerStore;
   private readonly adsApi: AdsApiClient;
   private readonly crosscheckIngest: CrosscheckIngest | undefined;
+  private readonly recommendationsRun: RecommendationsRun | undefined;
   private readonly buckets: RegionTokenBuckets;
   private readonly claimBatchSize: number;
   private readonly maxConcurrentJobs: number;
@@ -73,6 +80,7 @@ export class SyncWorker {
     this.store = options.store;
     this.adsApi = options.adsApi;
     this.crosscheckIngest = options.crosscheckIngest;
+    this.recommendationsRun = options.recommendationsRun;
     this.buckets = options.buckets ?? defaultRegionTokenBuckets;
     this.claimBatchSize = options.claimBatchSize ?? 10;
     this.maxConcurrentJobs = options.maxConcurrentJobs ?? 10;
@@ -202,7 +210,10 @@ export class SyncWorker {
       case 'report.fetch':
         return this.fetchReport(profile, payload);
       case 'recommendations.run':
-        return { stub: true, handler: 'recommendations.run', runId: payload.runId };
+        if (!this.recommendationsRun) {
+          throw new PermanentJobError('recommendations runner is not configured on this worker');
+        }
+        return { ...(await this.recommendationsRun(payload)) };
       case 'crosscheck.ingest':
         return this.ingestCrosscheck(payload);
     }
@@ -514,6 +525,7 @@ export class ScheduleProvisioner extends PeriodicPass {
     private readonly store: WorkerStore,
     intervalMs = 15 * MINUTE_MS,
     private readonly provisionLogger: WorkerLogger = consoleLogger,
+    private readonly recommendationSchedules?: RecommendationScheduleStore,
   ) {
     super(intervalMs, provisionLogger);
   }
@@ -524,6 +536,7 @@ export class ScheduleProvisioner extends PeriodicPass {
     for (const profile of profiles) {
       written += await this.store.provisionSchedules(profile.orgId, profile.profileId);
     }
+    const recommendations = await this.recommendationSchedules?.enqueueDueRecommendationRuns() ?? 0;
     const repaired = await this.store.repairOverlongLookbacks();
     if (written > 0) {
       this.provisionLogger.info('provisioned default schedules', { profiles: profiles.length, schedules: written });
@@ -531,7 +544,10 @@ export class ScheduleProvisioner extends PeriodicPass {
     if (repaired > 0) {
       this.provisionLogger.info('clamped overlong report lookbacks', { schedules: repaired });
     }
-    return { written, repaired };
+    if (recommendations > 0) {
+      this.provisionLogger.info('enqueued weekly recommendation runs', { jobs: recommendations });
+    }
+    return { written, repaired, recommendations };
   }
 }
 

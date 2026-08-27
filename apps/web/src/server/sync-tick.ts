@@ -18,7 +18,9 @@
  *     the rows that need it belong to profiles that are already provisioned.
  *  3. **Provision** defaults for any newly enabled profile, before the enqueue,
  *     so a profile switched on in the UI syncs this tick.
- *  4. **Enqueue** due schedules, then **requeue** jobs a killed tick stranded.
+ *  4. **Enqueue** due recommendation runs in TypeScript (their required run id
+ *     is minted first), then the remaining SQL schedules; finally **requeue**
+ *     jobs a killed tick stranded.
  *  5. **Drain** until the queue is empty or the budget runs out.
  *  6. **Bid series**, if the budget survived the drain: the daily corridor sync
  *     has no queue job of its own (its payload type is a `packages/shared`
@@ -50,6 +52,8 @@ export interface SyncTickDeps {
   sql: Sql;
   store: SyncTickStore;
   worker: SyncTickWorker;
+  /** Weekly recommendation run/job minting; optional for narrow tests. */
+  recommendationSchedules?: () => Promise<number>;
   /**
    * The daily bid-corridor sync, given the tick's own deadline so it stops
    * between profiles rather than being cut off mid-request. Optional: absent,
@@ -121,10 +125,11 @@ export async function runSyncTick(deps: SyncTickDeps): Promise<SyncTickResult> {
       provisioned += await deps.store.provisionSchedules(profile.orgId, profile.profileId);
     }
 
+    enqueued += await deps.recommendationSchedules?.() ?? 0;
     const enqueuedRows = await deps.sql<{ enqueued: boolean }[]>`
       select enqueued from public.enqueue_due_schedules()
     `;
-    enqueued = enqueuedRows.filter((row) => row.enqueued).length;
+    enqueued += enqueuedRows.filter((row) => row.enqueued).length;
     const [requeuedRow] = await deps.sql<{ requeue_stale_sync_jobs: number }[]>`
       select public.requeue_stale_sync_jobs() as requeue_stale_sync_jobs
     `;
