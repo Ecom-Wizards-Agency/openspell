@@ -49,10 +49,12 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
           <div className="wa-content" id="wa-main">
             {children}
           </div>
-          {/* The bug widget belongs to the signed-in frame, not to a screen. */}
-          {user === null ? null : (
-            <BugWidget appVersion={process.env['WIZARD_ADS_APP_VERSION'] ?? null} />
-          )}
+          {/*
+            Rendered unconditionally: the header-bridge e2e harness carries no
+            Supabase session, so a session gate here hides the widget from that
+            whole suite. The widget hides itself on /login instead.
+          */}
+          <BugWidget appVersion={process.env['WIZARD_ADS_APP_VERSION'] ?? null} />
         </ToastProvider>
       </body>
     </html>

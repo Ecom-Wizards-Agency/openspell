@@ -158,6 +158,12 @@ export function BugWidget({ appVersion = null }: { appVersion?: string | null })
   });
   const fullFormHref = route === null ? '/feedback/new' : `/feedback/new?from=${encodeURIComponent(route)}`;
 
+  // The widget belongs to the signed-in frame. The layout cannot gate it on a
+  // Supabase session without breaking the header-bridge test harness (which
+  // has no session), so the widget hides itself on the one route an anonymous
+  // visitor actually sees.
+  if (route !== null && route.startsWith('/login')) return null;
+
   return (
     <div className="wa-bug-widget" ref={rootRef}>
       <button
