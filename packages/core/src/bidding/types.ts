@@ -170,6 +170,32 @@ export const STEP_BY_PACING_CONDITION: Record<PacingCondition, { lowAcos: number
   launch: { lowAcos: 0.25, lowVisibility: 0.2 },
 };
 
+/** Pre-resolved inventory evidence. Unknown is distinct from in stock. */
+export type StockSignal =
+  | { status: 'in_stock'; asins: readonly string[]; source?: string }
+  | { status: 'out_of_stock'; asins: readonly string[]; source?: string }
+  | { status: 'unknown'; asins: readonly string[]; reason?: string };
+
+/** Organic-rank evidence for a keyword. Product targets mark it not applicable. */
+export type OrganicRankSignal =
+  | {
+      status: 'known';
+      currentRank: number;
+      previousRank: number | null;
+      asin?: string;
+      observedOn?: string;
+    }
+  | { status: 'unknown'; reason?: string }
+  | { status: 'not_applicable' };
+
+export type BidPreconditionNoteCode = 'stock_unknown' | 'rank_unknown';
+
+/** A note that must travel with a recommendation when evidence failed open. */
+export interface BidPreconditionNote {
+  code: BidPreconditionNoteCode;
+  message: string;
+}
+
 export interface BidRequest {
   runId: Uuid;
   profileId: Uuid;
@@ -190,12 +216,13 @@ export interface BidRequest {
   category?: string;
   /** Brand goal/stage, resolved through the same lens table the flags use. */
   goal?: string | null;
+  /** Inventory is a precondition: out of stock blocks; unknown fails open with a note. */
+  stock?: StockSignal;
+  /** Improving rank protects any keyword from a cut; unknown adds a note. */
+  organicRank?: OrganicRankSignal;
   /** Overrides the goal-derived step aggressiveness. */
   pacingCondition?: PacingCondition;
-  /**
-   * Set true for an opt group whose doctrine permits cutting on ACOS alone.
-   * Defaults to false for `Rank`, which is the protection.
-   */
+  /** @deprecated Rank/SKW ACOS cuts are unconditionally forbidden by doctrine. */
   cutOnAcosAlone?: boolean;
   settings?: Partial<BidSettings>;
 }

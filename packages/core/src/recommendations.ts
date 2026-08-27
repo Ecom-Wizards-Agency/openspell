@@ -15,6 +15,7 @@
  * This module proposes. It never executes.
  */
 import { classifyCampaignCategory } from './classify.js';
+import { selectTests, type TestCandidate, type TestIdea } from './experiments/backlog.js';
 import { DEFAULT_THRESHOLDS, resolveGoalLens } from './flags.js';
 import { formatFixed, formatMoney } from './num.js';
 import type { PacingResult } from './pacing.js';
@@ -221,15 +222,6 @@ export interface GraduateItem {
   weeksStable: number;
   why: string;
   action: string;
-}
-
-export interface TestIdea {
-  hypothesis: string;
-  method: string;
-  successMetric: string;
-  source: string;
-  status: 'vetted_backlog' | 'external_signal_hypothesis';
-  priority: string;
 }
 
 export interface RecommendationsResult {
@@ -642,152 +634,6 @@ function generatePauseOptimize(
   }
 
   return { items, notes, tags };
-}
-
-// ---------------------------------------------------------------------------
-// TEST selection. A curated, tagged backlog filtered against this week's actual
-// signals. A candidate with no requirements is never auto-included, because
-// that is how filler gets fabricated.
-
-export interface TestCandidate {
-  id?: string;
-  source?: string;
-  hypothesis: string;
-  method?: string;
-  success_metric?: string;
-  priority?: string;
-  requires?: string[][];
-  confidence?: string;
-}
-
-export const DEFAULT_TEST_BACKLOG: TestCandidate[] = [
-  {
-    id: 'T1',
-    source: 'conflicts-and-tests.md#T1',
-    hypothesis:
-      'Single-keyword exact-match Rank campaigns produce faster/more durable organic rank gains per dollar than equivalent broad/auto/category campaigns, despite showing worse headline ACOS.',
-    method:
-      'Run a matched broad-match and exact-match campaign for the same target keyword in parallel (same product, budget, period) for 4-8 weeks.',
-    success_metric: 'Organic rank position delta + ACOS/CVR, both campaign types, same window.',
-    priority: 'high',
-    requires: [
-      ['rank_present', 'goal:rank-launch'],
-      ['rank_present', 'goal:scale'],
-    ],
-  },
-  {
-    id: 'T3',
-    source: 'conflicts-and-tests.md#T3',
-    hypothesis:
-      'A permanent, very-low-bid scavenger/catch-all campaign captures incremental, low-ACOS orders without cannibalizing structured Rank/Discovery/Profit spend.',
-    method: 'Run alongside (never instead of) the existing structure; track for 60 days.',
-    success_metric:
-      'Incremental profit contribution net of any overlap with existing broad/auto discovery campaigns.',
-    priority: 'high',
-    requires: [['discovery_present', 'goal:scale']],
-  },
-  {
-    id: 'T4',
-    source: 'conflicts-and-tests.md#T4',
-    hypothesis:
-      'Self-targeted product placement (STPP) on your own ASIN produces low-cost, incremental retargeting-like sales.',
-    method: 'Set up an STPP campaign on 1-2 SKUs; compare resulting ACOS and order volume to account baseline.',
-    success_metric: 'ACOS and incremental order volume vs. a matched control period/account.',
-    priority: 'high',
-    requires: [['profit_present'], ['shield_present']],
-  },
-  {
-    id: 'T6',
-    source: 'conflicts-and-tests.md#T6',
-    hypothesis:
-      'Comparing your own CTR/CVR per keyword to the SQP market/aggregate average reliably distinguishes a listing/creative problem from a genuinely winnable keyword that deserves more spend.',
-    method:
-      'Pull SQP for the flagged high-ACOS non-rank keywords; flag >2x CTR/CVR gaps vs. market average; act on the flagged set.',
-    success_metric:
-      'CTR/CVR/rank change 4-8 weeks after acting on flagged keywords, vs. an unflagged control set.',
-    priority: 'high',
-    requires: [['high_acos_non_rank']],
-  },
-  {
-    id: 'T18',
-    source: 'conflicts-and-tests.md#T18',
-    hypothesis:
-      'A formalized statistical negative-keyword threshold (e.g. 3x the clicks needed for one expected sale) produces fewer false-negative pauses than ad-hoc negation timing.',
-    method:
-      'Apply the threshold consistently to Discovery-category auto/broad campaigns for 60 days; audit the false-negative rate.',
-    success_metric: 'ACOS improvement and negative-keyword harvest speed vs. ad-hoc review.',
-    priority: 'medium',
-    requires: [['discovery_bloat']],
-  },
-  {
-    id: 'T13',
-    source: 'conflicts-and-tests.md#T13',
-    hypothesis:
-      'Day-parting bid rules, applied only to Profit/Halo/Shield campaigns (never Rank) and only once volume/CTR/CVR fundamentals are solid, improve blended ACOS without suppressing Rank-campaign bids.',
-    method:
-      'Export hourly reports, build a red/white/green conditional pivot, apply bid rules only to the eligible campaign categories.',
-    success_metric: 'Blended ACOS variance and conversion rate before/after; Rank-category keyword bids unchanged.',
-    priority: 'medium',
-    requires: [['goal:profit-maintain']],
-  },
-  {
-    id: 'T5',
-    source: 'conflicts-and-tests.md#T5',
-    hypothesis:
-      "Pausing own-brand Shield campaigns opens the door to competitor capture of branded search real estate within weeks.",
-    method:
-      'Confirmatory only -- do not actually pause Shield spend to test this. Monitor competitor impression/click share on branded terms via SQP as a standing watch.',
-    success_metric: 'Competitor share-of-search on the brand term over time.',
-    priority: 'high',
-    requires: [
-      ['goal:defend', 'shield_present'],
-      ['hijacker_mentioned', 'shield_present'],
-    ],
-  },
-];
-
-function candidatePertinent(candidate: TestCandidate, brandTags: Set<string>): boolean {
-  const alts = candidate.requires ?? [];
-  if (alts.length === 0) return false;
-  return alts.some((alt) => alt.every((tag) => brandTags.has(tag)));
-}
-
-/**
- * Filter the vetted backlog plus any pre-vetted external signal items down to
- * what this week's tags make pertinent. Returns an empty list, never a filler
- * test, when nothing matches.
- */
-export function selectTests(
-  brandTags: Set<string>,
-  candidates?: TestCandidate[] | null,
-  signalItems?: TestCandidate[] | null,
-): TestIdea[] {
-  const out: TestIdea[] = [];
-  for (const c of candidates ?? DEFAULT_TEST_BACKLOG) {
-    if (candidatePertinent(c, brandTags)) {
-      out.push({
-        hypothesis: c.hypothesis,
-        method: c.method as string,
-        successMetric: c.success_metric as string,
-        source: c.source ?? 'conflicts-and-tests.md',
-        status: 'vetted_backlog',
-        priority: c.priority ?? 'medium',
-      });
-    }
-  }
-  for (const s of signalItems ?? []) {
-    if (candidatePertinent(s, brandTags)) {
-      out.push({
-        hypothesis: s.hypothesis,
-        method: s.method ?? 'Design a small controlled test in this account before generalizing.',
-        successMetric: s.success_metric ?? 'Define a success metric before running.',
-        source: s.source ?? 'external signal digest',
-        status: 'external_signal_hypothesis',
-        priority: s.priority ?? 'low',
-      });
-    }
-  }
-  return out;
 }
 
 // ---------------------------------------------------------------------------

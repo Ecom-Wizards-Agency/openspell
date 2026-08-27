@@ -22,6 +22,7 @@ export * from './flags.js';
 export * from './pacing.js';
 export * from './crosscheck.js';
 export * from './recommendations.js';
+export * from './experiments/backlog.js';
 export * from './ngram.js';
 export * from './bidding/index.js';
 export * from './market/deals.js';

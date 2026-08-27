@@ -34,6 +34,7 @@ import {
   DEFAULT_BID_SETTINGS,
   STEP_BY_PACING_CONDITION,
   type BidRequest,
+  type BidPreconditionNote,
   type BidSettings,
   type PacingCondition,
   type ResolvedConfidence,
@@ -48,8 +49,20 @@ export type NoProposalReason =
   | 'below_minimum';
 
 export type BidOutcome =
-  | { kind: 'proposal'; recommendation: Recommendation; confidence: ResolvedConfidence }
-  | { kind: 'suppressed'; recommendation: Recommendation; suppressedReason: string; confidence: ResolvedConfidence }
+  | {
+      kind: 'proposal';
+      recommendation: Recommendation;
+      notes: BidPreconditionNote[];
+      confidence: ResolvedConfidence;
+    }
+  | {
+      kind: 'suppressed';
+      recommendation: Recommendation;
+      suppressedReason: string;
+      notes: BidPreconditionNote[];
+      confidence: ResolvedConfidence;
+    }
+  | { kind: 'blocked'; blockedReason: 'out_of_stock'; note: string }
   | { kind: 'none'; reason: NoProposalReason };
 
 function resolveSettings(request: BidRequest): BidSettings {
@@ -155,15 +168,63 @@ function isCut(reason: RecommendationReason): boolean {
   return reason === 'high_acos' || reason === 'high_spend_no_sales';
 }
 
+function stockDescription(asins: readonly string[]): string {
+  return asins.length === 0 ? 'the advertised ASIN' : asins.join(', ');
+}
+
+function preconditionNotes(request: BidRequest): BidPreconditionNote[] {
+  const notes: BidPreconditionNote[] = [];
+  if (request.stock === undefined || request.stock.status === 'unknown') {
+    const asins = request.stock?.asins ?? [];
+    notes.push({
+      code: 'stock_unknown',
+      message:
+        `stock unknown for ${stockDescription(asins)} -- no reliable inventory source was supplied; ` +
+        'the stock gate failed open and this recommendation was still evaluated.',
+    });
+  }
+  if (
+    request.entityRef.entityType === 'keyword' &&
+    (request.organicRank === undefined || request.organicRank.status === 'unknown')
+  ) {
+    notes.push({
+      code: 'rank_unknown',
+      message: 'Made without rank visibility: no organic-rank observation was supplied for this keyword.',
+    });
+  }
+  return notes;
+}
+
+function improvingRankProtection(request: BidRequest): string | null {
+  const rank = request.organicRank;
+  if (rank?.status !== 'known' || rank.previousRank === null || rank.currentRank >= rank.previousRank) {
+    return null;
+  }
+  return (
+    `Organic rank is improving (${rank.previousRank} -> ${rank.currentRank}` +
+    `${rank.asin ? ` for ${rank.asin}` : ''}) -- never cut a keyword while paid spend is buying position.`
+  );
+}
+
 /**
  * Propose a bid for one target.
  *
  * A `Rank` target is never proposed for an ACOS-driven cut: it comes back as
  * `suppressed`, carrying the same fully-populated recommendation, so the
- * operator can see what the formula wanted and decide. Doctrine that permits
- * cutting a group on ACOS alone is passed in as `cutOnAcosAlone`.
+ * operator can see what the formula wanted and decide. No tenant setting may
+ * override that doctrine precondition.
  */
 export function proposeBid(request: BidRequest): BidOutcome {
+  if (request.stock?.status === 'out_of_stock') {
+    return {
+      kind: 'blocked',
+      blockedReason: 'out_of_stock',
+      note:
+        `${stockDescription(request.stock.asins)} is out of stock` +
+        `${request.stock.source ? ` per ${request.stock.source}` : ''}; bid optimization was blocked.`,
+    };
+  }
+
   const settings = resolveSettings(request);
   const confidence = resolveConfidence(request.levels, settings.minOrdersForConfidence);
   const entityRpc = safeDiv(request.metrics.sales, request.metrics.clicks);
@@ -227,18 +288,28 @@ export function proposeBid(request: BidRequest): BidOutcome {
     status: 'proposed',
   };
 
-  const rankProtected =
-    request.category === CATEGORY_RANK && request.cutOnAcosAlone !== true && isCut(selected.reason);
-  if (rankProtected) {
+  const notes = preconditionNotes(request);
+
+  const protections: string[] = [];
+  if (isCut(selected.reason) && request.category === CATEGORY_RANK) {
+    protections.push(
+      'Rank/SKW target: never cut on ACOS alone. A rank keyword is deliberately run at or above ' +
+        'break-even to buy organic position, so the formula result is shown rather than proposed.',
+    );
+  }
+  if (isCut(selected.reason)) {
+    const rankProtection = improvingRankProtection(request);
+    if (rankProtection) protections.push(rankProtection);
+  }
+  if (protections.length > 0) {
     return {
       kind: 'suppressed',
       recommendation,
-      suppressedReason:
-        'Rank/SKW target: never cut on ACOS alone. A rank keyword is deliberately run at or above ' +
-        'break-even to buy organic position, so the formula result is shown rather than proposed.',
+      suppressedReason: protections.join(' '),
+      notes,
       confidence,
     };
   }
 
-  return { kind: 'proposal', recommendation, confidence };
+  return { kind: 'proposal', recommendation, notes, confidence };
 }

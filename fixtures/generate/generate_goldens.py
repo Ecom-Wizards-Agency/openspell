@@ -71,7 +71,11 @@ from datasource import (  # noqa: E402
 )
 from flags import evaluate, resolve_goal_lens  # noqa: E402
 from pacing import compute_pacing, pacing_flag  # noqa: E402
-from recommendations import build_recommendations, parse_signal_digest_markdown  # noqa: E402
+from recommendations import (  # noqa: E402
+    build_recommendations,
+    parse_signal_digest_markdown,
+    select_tests,
+)
 
 SCHEMA = "wizard-ads.parity.v1"
 
@@ -695,6 +699,67 @@ def recommendation_cases():
     return cases
 
 
+def test_backlog_cases():
+    custom_candidates = [
+        {
+            "id": "custom-match",
+            "hypothesis": "A tagged candidate is selected.",
+            "method": "Run the tagged candidate.",
+            "success_metric": "The tagged metric improves.",
+            "source": "synthetic#custom-match",
+            "priority": "high",
+            "requires": [{"custom", "goal:scale"}],
+        },
+        {
+            "id": "custom-untagged",
+            "hypothesis": "An untagged candidate is never filler.",
+            "method": "This must not run.",
+            "success_metric": "This must not surface.",
+            "source": "synthetic#custom-untagged",
+            "requires": [],
+        },
+    ]
+    signal_items = [
+        {
+            "hypothesis": "A relevant external signal deserves a controlled test.",
+            "source": "synthetic digest",
+            "priority": "low",
+            "requires": [{"external_match"}],
+        }
+    ]
+    scenarios = [
+        ("empty_tags", set(), None, None),
+        ("rank_launch", {"rank_present", "goal:rank-launch"}, None, None),
+        (
+            "scale_with_categories",
+            {"rank_present", "discovery_present", "profit_present", "goal:scale"},
+            None,
+            None,
+        ),
+        ("defend_with_shield", {"goal:defend", "shield_present"}, None, None),
+        ("account_signals", {"high_acos_non_rank", "discovery_bloat"}, None, None),
+        ("unrelated_tags", {"crisis_mentioned", "stalled_campaign"}, None, None),
+        ("explicit_empty_candidates", {"rank_present", "goal:rank-launch"}, [], None),
+        ("custom_and_gating", {"custom", "goal:scale"}, custom_candidates, None),
+        ("external_signal", {"external_match"}, [], signal_items),
+    ]
+    cases = []
+    for name, tags, candidates, signals in scenarios:
+        selected = select_tests(tags, candidates=candidates, signal_items=signals)
+        cases.append(
+            {
+                "name": f"select_tests:{name}",
+                "input": {
+                    "brandTags": sorted(tags),
+                    "candidates": None if candidates is None else [S.test_candidate(c) for c in candidates],
+                    "signalItems": None if signals is None else [S.test_candidate(s) for s in signals],
+                },
+                "expected": [S.test_idea(item) for item in selected],
+            }
+        )
+    return cases
+
+
 def write(module: str, cases: list, fixtures: dict | None = None) -> None:
     GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
     path = GOLDEN_DIR / f"{module}.json"
@@ -721,6 +786,7 @@ def main() -> int:
     write("pacing", pacing_cases())
     write("crosscheck", crosscheck_cases())
     write("recommendations", recommendation_cases())
+    write("test-backlog", test_backlog_cases())
     return 0
 
 

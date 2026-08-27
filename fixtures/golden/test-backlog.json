@@ -1,0 +1,239 @@
+{
+  "schema": "wizard-ads.parity.v1",
+  "module": "test-backlog",
+  "source": "amazon-agent/tools/amazon-ads-monitor (read-only reference)",
+  "synthetic": true,
+  "fixtures": {},
+  "cases": [
+    {
+      "name": "select_tests:empty_tags",
+      "input": {
+        "brandTags": [],
+        "candidates": null,
+        "signalItems": null
+      },
+      "expected": []
+    },
+    {
+      "name": "select_tests:rank_launch",
+      "input": {
+        "brandTags": [
+          "goal:rank-launch",
+          "rank_present"
+        ],
+        "candidates": null,
+        "signalItems": null
+      },
+      "expected": [
+        {
+          "hypothesis": "Single-keyword exact-match Rank campaigns produce faster/more durable organic rank gains per dollar than equivalent broad/auto/category campaigns, despite showing worse headline ACOS.",
+          "method": "Run a matched broad-match and exact-match campaign for the same target keyword in parallel (same product, budget, period) for 4-8 weeks.",
+          "successMetric": "Organic rank position delta + ACOS/CVR, both campaign types, same window.",
+          "source": "conflicts-and-tests.md#T1",
+          "status": "vetted_backlog",
+          "priority": "high"
+        }
+      ]
+    },
+    {
+      "name": "select_tests:scale_with_categories",
+      "input": {
+        "brandTags": [
+          "discovery_present",
+          "goal:scale",
+          "profit_present",
+          "rank_present"
+        ],
+        "candidates": null,
+        "signalItems": null
+      },
+      "expected": [
+        {
+          "hypothesis": "Single-keyword exact-match Rank campaigns produce faster/more durable organic rank gains per dollar than equivalent broad/auto/category campaigns, despite showing worse headline ACOS.",
+          "method": "Run a matched broad-match and exact-match campaign for the same target keyword in parallel (same product, budget, period) for 4-8 weeks.",
+          "successMetric": "Organic rank position delta + ACOS/CVR, both campaign types, same window.",
+          "source": "conflicts-and-tests.md#T1",
+          "status": "vetted_backlog",
+          "priority": "high"
+        },
+        {
+          "hypothesis": "A permanent, very-low-bid scavenger/catch-all campaign captures incremental, low-ACOS orders without cannibalizing structured Rank/Discovery/Profit spend.",
+          "method": "Run alongside (never instead of) the existing structure; track for 60 days.",
+          "successMetric": "Incremental profit contribution net of any overlap with existing broad/auto discovery campaigns.",
+          "source": "conflicts-and-tests.md#T3",
+          "status": "vetted_backlog",
+          "priority": "high"
+        },
+        {
+          "hypothesis": "Self-targeted product placement (STPP) on your own ASIN produces low-cost, incremental retargeting-like sales.",
+          "method": "Set up an STPP campaign on 1-2 SKUs; compare resulting ACOS and order volume to account baseline.",
+          "successMetric": "ACOS and incremental order volume vs. a matched control period/account.",
+          "source": "conflicts-and-tests.md#T4",
+          "status": "vetted_backlog",
+          "priority": "high"
+        }
+      ]
+    },
+    {
+      "name": "select_tests:defend_with_shield",
+      "input": {
+        "brandTags": [
+          "goal:defend",
+          "shield_present"
+        ],
+        "candidates": null,
+        "signalItems": null
+      },
+      "expected": [
+        {
+          "hypothesis": "Self-targeted product placement (STPP) on your own ASIN produces low-cost, incremental retargeting-like sales.",
+          "method": "Set up an STPP campaign on 1-2 SKUs; compare resulting ACOS and order volume to account baseline.",
+          "successMetric": "ACOS and incremental order volume vs. a matched control period/account.",
+          "source": "conflicts-and-tests.md#T4",
+          "status": "vetted_backlog",
+          "priority": "high"
+        },
+        {
+          "hypothesis": "Pausing own-brand Shield campaigns opens the door to competitor capture of branded search real estate within weeks.",
+          "method": "Confirmatory only -- do not actually pause Shield spend to test this. Monitor competitor impression/click share on branded terms via SQP as a standing watch.",
+          "successMetric": "Competitor share-of-search on the brand term over time.",
+          "source": "conflicts-and-tests.md#T5",
+          "status": "vetted_backlog",
+          "priority": "high"
+        }
+      ]
+    },
+    {
+      "name": "select_tests:account_signals",
+      "input": {
+        "brandTags": [
+          "discovery_bloat",
+          "high_acos_non_rank"
+        ],
+        "candidates": null,
+        "signalItems": null
+      },
+      "expected": [
+        {
+          "hypothesis": "Comparing your own CTR/CVR per keyword to the SQP market/aggregate average reliably distinguishes a listing/creative problem from a genuinely winnable keyword that deserves more spend.",
+          "method": "Pull SQP for the flagged high-ACOS non-rank keywords; flag >2x CTR/CVR gaps vs. market average; act on the flagged set.",
+          "successMetric": "CTR/CVR/rank change 4-8 weeks after acting on flagged keywords, vs. an unflagged control set.",
+          "source": "conflicts-and-tests.md#T6",
+          "status": "vetted_backlog",
+          "priority": "high"
+        },
+        {
+          "hypothesis": "A formalized statistical negative-keyword threshold (e.g. 3x the clicks needed for one expected sale) produces fewer false-negative pauses than ad-hoc negation timing.",
+          "method": "Apply the threshold consistently to Discovery-category auto/broad campaigns for 60 days; audit the false-negative rate.",
+          "successMetric": "ACOS improvement and negative-keyword harvest speed vs. ad-hoc review.",
+          "source": "conflicts-and-tests.md#T18",
+          "status": "vetted_backlog",
+          "priority": "medium"
+        }
+      ]
+    },
+    {
+      "name": "select_tests:unrelated_tags",
+      "input": {
+        "brandTags": [
+          "crisis_mentioned",
+          "stalled_campaign"
+        ],
+        "candidates": null,
+        "signalItems": null
+      },
+      "expected": []
+    },
+    {
+      "name": "select_tests:explicit_empty_candidates",
+      "input": {
+        "brandTags": [
+          "goal:rank-launch",
+          "rank_present"
+        ],
+        "candidates": [],
+        "signalItems": null
+      },
+      "expected": []
+    },
+    {
+      "name": "select_tests:custom_and_gating",
+      "input": {
+        "brandTags": [
+          "custom",
+          "goal:scale"
+        ],
+        "candidates": [
+          {
+            "id": "custom-match",
+            "hypothesis": "A tagged candidate is selected.",
+            "method": "Run the tagged candidate.",
+            "success_metric": "The tagged metric improves.",
+            "source": "synthetic#custom-match",
+            "priority": "high",
+            "requires": [
+              [
+                "custom",
+                "goal:scale"
+              ]
+            ]
+          },
+          {
+            "id": "custom-untagged",
+            "hypothesis": "An untagged candidate is never filler.",
+            "method": "This must not run.",
+            "success_metric": "This must not surface.",
+            "source": "synthetic#custom-untagged",
+            "priority": null,
+            "requires": []
+          }
+        ],
+        "signalItems": null
+      },
+      "expected": [
+        {
+          "hypothesis": "A tagged candidate is selected.",
+          "method": "Run the tagged candidate.",
+          "successMetric": "The tagged metric improves.",
+          "source": "synthetic#custom-match",
+          "status": "vetted_backlog",
+          "priority": "high"
+        }
+      ]
+    },
+    {
+      "name": "select_tests:external_signal",
+      "input": {
+        "brandTags": [
+          "external_match"
+        ],
+        "candidates": [],
+        "signalItems": [
+          {
+            "id": null,
+            "hypothesis": "A relevant external signal deserves a controlled test.",
+            "method": null,
+            "success_metric": null,
+            "source": "synthetic digest",
+            "priority": "low",
+            "requires": [
+              [
+                "external_match"
+              ]
+            ]
+          }
+        ]
+      },
+      "expected": [
+        {
+          "hypothesis": "A relevant external signal deserves a controlled test.",
+          "method": "Design a small controlled test in this account before generalizing.",
+          "successMetric": "Define a success metric before running.",
+          "source": "synthetic digest",
+          "status": "external_signal_hypothesis",
+          "priority": "low"
+        }
+      ]
+    }
+  ]
+}
