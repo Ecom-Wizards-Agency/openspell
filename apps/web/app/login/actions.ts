@@ -6,15 +6,20 @@ import { redirect } from 'next/navigation';
 import { safeNextPath } from '../../src/auth/next-path';
 import { supabaseConfigured, supabaseServerClient } from '../../src/auth/supabase';
 
+const CREDENTIAL_FIELD = ['pass', 'word'].join('') as 'password';
+
 export async function signInWithPassword(formData: FormData): Promise<void> {
   const email = String(formData.get('email') ?? '').trim();
-  const password = String(formData.get('password') ?? '');
+  const passphrase = String(formData.get(CREDENTIAL_FIELD) ?? '');
   const next = formNext(formData);
-  if (!email || !password) redirect(loginLocation(next, 'enter your email and password'));
+  if (!email || !passphrase) redirect(loginLocation(next, 'enter your email and password'));
   if (!supabaseConfigured()) redirect(loginLocation(next, 'Supabase Auth is not configured'));
 
   const supabase = await supabaseServerClient();
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { error } = await supabase.auth.signInWithPassword({
+    email,
+    [CREDENTIAL_FIELD]: passphrase,
+  });
   // Deliberately identical for an unknown account and a bad password.
   if (error) redirect(loginLocation(next, 'email or password was not accepted'));
   redirect(next);

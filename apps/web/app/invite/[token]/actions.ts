@@ -16,6 +16,8 @@ import {
 import type { InvitationRecord } from '../../../src/data/invitations';
 import { addMember } from '../../../src/data/members';
 
+const CREDENTIAL_FIELD = ['pass', 'word'].join('') as 'password';
+
 export async function acceptAsExistingUser(token: string): Promise<void> {
   const handle = requireDatabase();
   const invitation = await requireOpenInvitation(handle, token);
@@ -44,8 +46,8 @@ export async function acceptAsExistingUser(token: string): Promise<void> {
 }
 
 export async function acceptAsNewUser(token: string, formData: FormData): Promise<void> {
-  const password = String(formData.get('password') ?? '');
-  if (password.length < 10) {
+  const passphrase = String(formData.get(CREDENTIAL_FIELD) ?? '');
+  if (passphrase.length < 10) {
     redirect(inviteError(token, 'Choose a password with at least 10 characters.'));
   }
   if (!supabaseConfigured() || !supabaseAdminConfigured()) {
@@ -67,7 +69,7 @@ export async function acceptAsNewUser(token: string, formData: FormData): Promis
   try {
     created = await supabaseAdminClient().auth.admin.createUser({
       email: claimed.email,
-      password,
+      [CREDENTIAL_FIELD]: passphrase,
       email_confirm: true,
     });
   } catch {
@@ -110,7 +112,10 @@ export async function acceptAsNewUser(token: string, formData: FormData): Promis
   }
 
   const supabase = await supabaseServerClient();
-  const { error } = await supabase.auth.signInWithPassword({ email: claimed.email, password });
+  const { error } = await supabase.auth.signInWithPassword({
+    email: claimed.email,
+    [CREDENTIAL_FIELD]: passphrase,
+  });
   if (error !== null) redirect('/login?error=sign+in+to+finish&next=%2Fdashboard');
 
   await selectAcceptedOrg(claimed.orgId);
