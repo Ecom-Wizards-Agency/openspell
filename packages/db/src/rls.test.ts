@@ -136,6 +136,29 @@ describe.skipIf(!available)('row level security', () => {
     });
   });
 
+  it('tenant-scopes product economics and keeps its writes service-role-only', async () => {
+    await asUser(database, USER_A, async (sql) => {
+      const rows = await sql<{ org_id: string }[]>`
+        select org_id from public.product_economics
+      `;
+      expect(rows.map((row) => row.org_id)).toEqual([orgA]);
+
+      await expect(sql`
+        insert into public.product_economics
+          (org_id, profile_id, asin, captured_on, sale_price, currency)
+        select ${orgA}, id, 'B0TEST4408', current_date, 10, 'USD'
+          from public.ad_profiles where org_id = ${orgA} limit 1
+      `).rejects.toThrow(/permission denied|row-level security/i);
+    });
+
+    await asUser(database, USER_B, async (sql) => {
+      const rows = await sql<{ org_id: string }[]>`
+        select org_id from public.product_economics
+      `;
+      expect(rows.map((row) => row.org_id)).toEqual([orgB]);
+    });
+  });
+
   it('keeps the audit log admin-only', async () => {
     // USER_A is an analyst in org A, and the audit log is owner/admin reading.
     await asUser(database, USER_A, async (sql) => {
