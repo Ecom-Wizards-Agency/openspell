@@ -598,7 +598,13 @@ export class ScheduleProvisioner extends PeriodicPass {
     for (const profile of profiles) {
       written += await this.store.provisionSchedules(profile.orgId, profile.profileId);
     }
-    const recommendations = await this.recommendationSchedules?.enqueueDueRecommendationRuns() ?? 0;
+    // Operator rule (2026-08-27): no automation without approval. Scheduled
+    // weekly recommendation runs stay off until explicitly opted in; the
+    // on-demand "Run now" path is unaffected.
+    const weeklyRunsApproved = process.env['WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS'] === '1';
+    const recommendations = weeklyRunsApproved
+      ? ((await this.recommendationSchedules?.enqueueDueRecommendationRuns()) ?? 0)
+      : 0;
     const repaired = await this.store.repairOverlongLookbacks();
     const integrations = await this.store.ensureIntegrationSchedules();
     if (written > 0) {
