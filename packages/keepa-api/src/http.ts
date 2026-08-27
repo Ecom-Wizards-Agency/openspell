@@ -41,7 +41,17 @@ export async function keepaRequest(
       continue;
     }
 
-    const payload = decodeBody(new Uint8Array(await response.arrayBuffer()), path);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    let payload: Record<string, unknown>;
+    try {
+      payload = decodeBody(bytes, path);
+    } catch (error) {
+      // Exhaustion is retryable even when an intermediary replaces Keepa's
+      // JSON body. The exact refill delay is unavailable, so use the reference
+      // client's conservative one-minute fallback.
+      if (response.status !== 429) throw error;
+      payload = {};
+    }
     tokens.update(payload);
     if (response.status >= 200 && response.status < 300) return payload;
     if (response.status === 429) {

@@ -62,6 +62,15 @@ describe('KeepaClient', () => {
     expect(server.requests).toHaveLength(1);
   });
 
+  it('keeps a bodyless 429 retryable with the conservative refill fallback', async () => {
+    const fetch = async () => new Response('', { status: 429 });
+    const client = new KeepaClient({ apiKey, fetch });
+    await expect(client.products(['B0TEST0001'], 'US')).rejects.toMatchObject({
+      name: 'KeepaRetryableError',
+      retryAfterMs: 61_000,
+    });
+  });
+
   it('hard-fails unknown marketplaces before touching HTTP', async () => {
     const server = createFixtureServer([{ status: 200, json: productEnvelope() }]);
     const client = new KeepaClient({ apiKey, fetch: server.fetch });
