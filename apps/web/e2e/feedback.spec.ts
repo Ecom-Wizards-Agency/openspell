@@ -96,7 +96,7 @@ test('similar bugs appear before submit and an admin can collapse a duplicate', 
   ).toHaveCount(0);
 });
 
-test('Roadmap intake preselects feature and puts the request in Requested', async ({ page }) => {
+test('Roadmap intake preselects feature and lands the request in Planned', async ({ page }) => {
   await open(page, '/roadmap');
   await page.getByRole('link', { name: 'Request a feature' }).click();
   await expect(page).toHaveURL(/\/feedback\/new\?type=feature$/);
@@ -106,13 +106,11 @@ test('Roadmap intake preselects feature and puts the request in Requested', asyn
   await page.getByTestId('feedback-title').fill(REQUEST_TITLE);
   await page.getByTestId('feedback-submit').click();
   await expect(page).toHaveURL(/\/roadmap#roadmap-/);
-  const requested = page.getByTestId('column-requested');
-  await expect(requested.getByTestId('roadmap-card').filter({ hasText: REQUEST_TITLE })).toHaveCount(
+  const planned = page.getByTestId('column-planned');
+  await expect(planned.getByTestId('roadmap-card').filter({ hasText: REQUEST_TITLE })).toHaveCount(
     1,
   );
-  await expect(page.getByTestId('column-planned').getByTestId('roadmap-card')).toHaveCount(
-    ROADMAP_SEEDED,
-  );
+  await expect(planned.getByTestId('roadmap-card')).toHaveCount(ROADMAP_SEEDED + 1);
 });
 
 test('a Roadmap vote toggles and survives reload', async ({ page }) => {
@@ -138,7 +136,6 @@ test('an admin triages the feature on Roadmap and controls every move', async ({
   await target.getByTestId('admin-note').fill('Next after the grid.');
   await target.getByTestId('save-triage').click();
   await expect(page.getByRole('status')).toHaveText('Saved');
-  await expect(page.getByTestId('column-requested').getByText(REQUEST_TITLE)).toHaveCount(0);
 
   const planned = page.getByTestId('column-planned');
   target = planned.getByTestId('roadmap-card').filter({ hasText: REQUEST_TITLE });

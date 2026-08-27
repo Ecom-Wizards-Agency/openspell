@@ -16,7 +16,6 @@ import type { UiFeedbackItem } from '../../src/feedback/ui';
 import { banner, button, colors, heading, muted, page } from '../../src/ui/tokens';
 
 interface BoardProps {
-  requested: UiFeedbackItem[];
   planned: UiFeedbackItem[];
   inProgress: UiFeedbackItem[];
   shipped: UiFeedbackItem[];
@@ -24,10 +23,9 @@ interface BoardProps {
   canTriage: boolean;
 }
 
-type ColumnKey = 'requested' | 'planned' | 'inProgress' | 'shipped';
+type ColumnKey = 'planned' | 'inProgress' | 'shipped';
 
 const COLUMNS: { key: ColumnKey; title: string; testId: string }[] = [
-  { key: 'requested', title: 'Requested', testId: 'column-requested' },
   { key: 'planned', title: 'Planned', testId: 'column-planned' },
   { key: 'inProgress', title: 'In progress', testId: 'column-in-progress' },
   { key: 'shipped', title: 'Shipped', testId: 'column-shipped' },
@@ -58,7 +56,6 @@ export function RoadmapBoardView(initial: BoardProps) {
             : row,
         );
       setBoard((current) => ({
-        requested: apply(current.requested),
         planned: apply(current.planned),
         inProgress: apply(current.inProgress),
         shipped: apply(current.shipped),
@@ -235,7 +232,6 @@ function RoadmapCard({
 function regroupRoadmap(current: BoardProps, saved: UiFeedbackItem): BoardProps {
   const byId = new Map<string, UiFeedbackItem>();
   for (const row of [
-    ...current.requested,
     ...current.planned,
     ...current.inProgress,
     ...current.shipped,
@@ -247,8 +243,9 @@ function regroupRoadmap(current: BoardProps, saved: UiFeedbackItem): BoardProps 
   const items = [...byId.values()];
   return {
     canTriage: current.canTriage,
-    requested: items.filter((row) => row.status === 'new' || row.status === 'triaged'),
-    planned: items.filter((row) => row.status === 'planned'),
+    planned: items.filter(
+      (row) => row.status === 'planned' || row.status === 'new' || row.status === 'triaged',
+    ),
     inProgress: items.filter((row) => row.status === 'in_progress'),
     shipped: items.filter((row) => row.status === 'shipped'),
     declined: items.filter((row) => row.status === 'declined'),

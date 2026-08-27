@@ -209,12 +209,17 @@ export async function createFeedbackItem(
   const body = normalizeFeedbackBody(input.body);
   const severity = normalizeFeedbackSeverity(input.type, input.severity);
 
+  // Operator rule (2026-08-27): a feature request lands straight on the
+  // roadmap as Planned — there is no separate "requested" waiting room. Bugs
+  // keep the triage default.
+  const initialStatus = input.type === 'feature' ? 'planned' : 'new';
   const rows = await handle.sql<{ id: string }[]>`
     insert into public.feedback_items
-      (org_id, author_id, type, title, body, severity, page_context)
+      (org_id, author_id, type, title, body, severity, status, page_context)
     values (
       ${input.orgId}, ${input.authorId ?? null}, ${input.type}::public.feedback_type,
       ${title}, ${body}, ${severity}::public.feedback_severity,
+      ${initialStatus}::public.feedback_status,
       ${serializeContext(input.pageContext)}::text::jsonb
     )
     returning id

@@ -34,8 +34,7 @@ export default async function RoadmapPage() {
     const mapped = items.map((item) => toUiItem(item, actor.userId));
     return (
       <RoadmapBoardView
-        requested={mapped.filter((item) => item.status === 'new' || item.status === 'triaged')}
-        planned={mapped.filter((item) => item.status === 'planned')}
+        planned={mapped.filter((item) => ['planned', 'new', 'triaged'].includes(item.status))}
         inProgress={mapped.filter((item) => item.status === 'in_progress')}
         shipped={mapped.filter((item) => item.status === 'shipped')}
         declined={mapped.filter((item) => item.status === 'declined')}
