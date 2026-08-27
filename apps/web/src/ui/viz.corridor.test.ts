@@ -8,7 +8,12 @@
  * day rather than sloping between them.
  */
 import { describe, expect, it } from 'vitest';
-import { corridorBandSegments, stepPath, type BidCorridorPoint } from './viz';
+import {
+  aggregateBidCorridorPoints,
+  corridorBandSegments,
+  stepPath,
+  type BidCorridorPoint,
+} from './viz';
 
 // Identity-ish projections keep the assertions about shape, not scale.
 const x = (index: number): number => index;
@@ -81,5 +86,35 @@ describe('stepPath', () => {
     );
     // Two separate move commands — one per side of the gap.
     expect(path.match(/M/g)).toHaveLength(2);
+  });
+});
+
+describe('aggregateBidCorridorPoints', () => {
+  const days = [
+    point({ date: '2026-08-03', low: 0.8, median: 1, high: 1.4, bid: 1.1, cpc: 0.9, maxCpc: 1.8, components: [{ name: 'placement', pct: 20 }] }),
+    point({ date: '2026-08-04', low: 0.6, median: 1.2, high: 1.8, bid: 1.3, cpc: 1.1, maxCpc: 2.2 }),
+    point({ date: '2026-09-01', low: 1, median: 1.4, high: 2, bid: 1.5, cpc: 1.2, maxCpc: 2.4 }),
+  ];
+
+  it('uses band edges and means for weekly buckets', () => {
+    const weekly = aggregateBidCorridorPoints(days, 'W');
+    expect(weekly[0]).toMatchObject({
+      date: '2026-08-03',
+      low: 0.6,
+      median: 1.1,
+      high: 1.8,
+      cpc: 1,
+      maxCpc: 2,
+      components: [],
+    });
+    expect(weekly[0]?.bid).toBeCloseTo(1.2, 10);
+  });
+
+  it('groups monthly and leaves daily points unaggregated', () => {
+    expect(aggregateBidCorridorPoints(days, 'M').map((entry) => entry.date)).toEqual([
+      '2026-08',
+      '2026-09',
+    ]);
+    expect(aggregateBidCorridorPoints(days, 'D')).toEqual(days);
   });
 });

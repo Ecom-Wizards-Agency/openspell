@@ -39,7 +39,13 @@ import { GridWorkspace } from './grid-client';
 export const dynamic = 'force-dynamic';
 
 interface PageProps {
-  searchParams: Promise<{ profile?: string; entity?: string; from?: string; to?: string }>;
+  searchParams: Promise<{
+    profile?: string;
+    entity?: string;
+    campaign?: string;
+    from?: string;
+    to?: string;
+  }>;
 }
 
 function parseEntity(value: string | undefined): EntityLevel {
@@ -139,6 +145,7 @@ export default async function GridPage({ searchParams }: PageProps) {
         comparisonPeriod={comparison}
         freshness={freshness}
         chip={data.crosscheck?.chip ?? null}
+        campaignId={entity === 'campaigns' ? params.campaign ?? null : null}
       />
 
       <p style={muted}>

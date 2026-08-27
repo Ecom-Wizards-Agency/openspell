@@ -38,6 +38,7 @@ import type {
 import { FreshnessBanner, tokens } from '@wizard-ads/ui';
 import type { VerdictChip } from '@wizard-ads/crosscheck-cli/pure';
 import { CrosscheckChip } from '../crosscheck/panel';
+import { BidHistoryModal } from '../../src/ui/bid-history-modal';
 
 export interface GridWorkspaceProps {
   entity: EntityLevel;
@@ -48,6 +49,8 @@ export interface GridWorkspaceProps {
   comparisonPeriod: { start: string; end: string };
   freshness: FreshnessAssessment;
   chip: VerdictChip | null;
+  /** Campaign deep-link applied as a visible grid filter. */
+  campaignId: string | null;
 }
 
 /**
@@ -60,10 +63,23 @@ export interface GridWorkspaceProps {
  * Ours applies the same default and shows it, so removing it is one click and
  * the exclusion is never invisible.
  */
-function defaultView(entity: EntityLevel): SavedView {
+function defaultView(entity: EntityLevel, campaignId: string | null): SavedView {
   const stateColumn = STATE_COLUMN[entity];
   const filter: FilterSet =
-    stateColumn === undefined
+    campaignId !== null && entity === 'campaigns'
+      ? {
+          groups: [
+            {
+              filters: [
+                {
+                  key: 'CAMPAIGN_ID',
+                  conditions: [{ operator: '=', values: [campaignId] }],
+                },
+              ],
+            },
+          ],
+        }
+      : stateColumn === undefined
       ? { groups: [] }
       : {
           groups: [
@@ -103,8 +119,9 @@ const SCOPE_PARAM: Partial<Record<EntityLevel, { param: string; key: string }>> 
 
 export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
   const available = useMemo(() => columnsFor(props.entity), [props.entity]);
-  const [view, setView] = useState<SavedView>(() => defaultView(props.entity));
+  const [view, setView] = useState<SavedView>(() => defaultView(props.entity, props.campaignId));
   const [saved, setSaved] = useState<readonly SavedView[]>([]);
+  const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
   const [store] = useState(() =>
     typeof window === 'undefined' ? null : new LocalViewStore(window.localStorage),
   );
@@ -117,14 +134,15 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
     void (async () => {
       const [layout, list] = await Promise.all([store.lastLayout(props.entity), store.list(props.entity)]);
       if (cancelled) return;
-      if (layout !== null) setView({ ...layout, id: 'default', name: 'Default' });
-      else setView(defaultView(props.entity));
+      if (props.campaignId !== null) setView(defaultView(props.entity, props.campaignId));
+      else if (layout !== null) setView({ ...layout, id: 'default', name: 'Default' });
+      else setView(defaultView(props.entity, null));
       setSaved(list);
     })();
     return () => {
       cancelled = true;
     };
-  }, [props.entity, store]);
+  }, [props.campaignId, props.entity, store]);
 
   const update = useCallback(
     (patch: Partial<SavedView>) => {
@@ -285,7 +303,26 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
           })
         }
         onReorder={handleReorder}
+        rowHeight={props.entity === 'targets' ? 42 : 30}
+        {...(props.entity === 'targets'
+          ? {
+              onRowClick: (row: GridRow) => {
+                const targetId = row.dimensions['target_id'];
+                if (targetId !== null && targetId !== undefined) setSelectedTargetId(String(targetId));
+              },
+            }
+          : {})}
       />
+
+      {selectedTargetId === null ? null : (
+        <BidHistoryModal
+          profileId={props.profileId}
+          targetId={selectedTargetId}
+          window={props.period}
+          currencyCode={props.currencyCode}
+          onClose={() => setSelectedTargetId(null)}
+        />
+      )}
     </div>
   );
 }

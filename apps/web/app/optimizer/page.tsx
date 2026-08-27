@@ -39,16 +39,15 @@ import {
   totalsOf,
 } from '../../src/optimizer/view';
 import { loadProfileDailyRows, loadReportLedger } from '../_lib/dashboard-data';
-import { corridorWindow, loadCorridor, loadCorridorTargets } from '../_lib/bid-corridor';
 import { periodFromParams, precedingPeriod, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
-import { CorridorSection, OptimizerGroupTable, ReasonCoverageRow, SettingsChip } from './optimizer-view';
+import { OptimizerGroupTable, ReasonCoverageRow, SettingsChip } from './optimizer-view';
 import { runOptimizerNow } from './actions';
 
 export const dynamic = 'force-dynamic';
 
 interface PageProps {
-  searchParams: Promise<{ profile?: string; from?: string; to?: string; run?: string; target?: string }>;
+  searchParams: Promise<{ profile?: string; from?: string; to?: string; run?: string }>;
 }
 
 export default async function OptimizerPage({ searchParams }: PageProps): Promise<ReactNode> {
@@ -115,23 +114,6 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
   const spend: TrendPoint[] = periodRows.map((row) => ({ date: row.date, value: row.spend }));
   const sales: TrendPoint[] = periodRows.map((row) => ({ date: row.date, value: row.sales }));
 
-  // The bid corridor: its own 30-day window, and a chooser over the targets that
-  // carry one. The selected target falls back to the first available so the
-  // drill-down is never empty when there is anything to draw.
-  const corridorRange = corridorWindow(period.end);
-  const corridorTargets = await loadCorridorTargets(handle, orgId, profile.id, corridorRange);
-  const selectedTargetId = params.target ?? corridorTargets[0]?.targetId ?? null;
-  const corridorPoints =
-    selectedTargetId === null
-      ? []
-      : await loadCorridor(handle, orgId, profile.id, selectedTargetId, corridorRange);
-  const corridorHref = (targetId: string): string => {
-    const query = new URLSearchParams({ profile: profile.id, from: period.start, to: period.end });
-    if (run !== null) query.set('run', run.id);
-    query.set('target', targetId);
-    return `/optimizer?${query.toString()}`;
-  };
-
   return (
     <main style={page}>
       <PageHeader
@@ -165,14 +147,6 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
 
       <div className="wa-stack">
         <FreshnessBar assessment={freshness} />
-
-        <CorridorSection
-          targets={corridorTargets.map((t) => ({ targetId: t.targetId, isKeyword: t.isKeyword }))}
-          selectedTargetId={selectedTargetId}
-          points={corridorPoints}
-          currencyCode={profile.currencyCode}
-          hrefFor={corridorHref}
-        />
 
         {run === null ? (
           <EmptyState
@@ -245,7 +219,15 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
                   Optimization groups · {groups.length}
                 </h2>
                 {groups.map((group) => (
-                  <OptimizerGroupTable key={group.key} group={group} />
+                  <OptimizerGroupTable
+                    key={group.key}
+                    group={group}
+                    bidHistoryContext={{
+                      profileId: profile.id,
+                      window: period,
+                      currencyCode: profile.currencyCode,
+                    }}
+                  />
                 ))}
               </section>
             )}

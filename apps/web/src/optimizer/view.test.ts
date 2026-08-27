@@ -8,7 +8,13 @@ import { describe, expect, it } from 'vitest';
 import type { BaseTotals } from '@wizard-ads/ui';
 import type { ProposalView } from '../recommendations/view';
 import type { ProposalStrategy } from '../recommendations/strategy';
-import { kpiTiles, optimizationGroups, settingsSummary, totalsOf } from './view';
+import {
+  bidHistoryKpiTiles,
+  kpiTiles,
+  optimizationGroups,
+  settingsSummary,
+  totalsOf,
+} from './view';
 
 const totals = (over: Partial<BaseTotals>): BaseTotals => ({
   impressions: 0,
@@ -66,6 +72,25 @@ describe('kpiTiles', () => {
       'spend', 'sales', 'orders', 'roas', 'acos', 'rpc', 'impressions',
       'clicks', 'ctr', 'cpc', 'aov', 'cpa', 'cvr', 'cpm',
     ]);
+  });
+
+  it('builds the target-level bid-history KPI subset from the same base totals', () => {
+    const tiles = bidHistoryKpiTiles(
+      totals({ impressions: 1_000, clicks: 50, orders: 5, spend: 40, sales: 100 }),
+    );
+    expect(tiles.map((tile) => tile.metric)).toEqual([
+      'impressions',
+      'clicks',
+      'orders',
+      'spend',
+      'sales',
+      'acos',
+      'ctr',
+      'cvr',
+      'cpc',
+    ]);
+    expect(tiles.find((tile) => tile.metric === 'acos')?.value).toBe(0.4);
+    expect(tiles.find((tile) => tile.metric === 'cpc')?.value).toBe(0.8);
   });
 });
 

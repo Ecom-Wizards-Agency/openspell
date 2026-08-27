@@ -14,6 +14,7 @@
  * produces a ratio, so ACOS on a tile and ACOS on the grid can never disagree.
  */
 import { deriveMetric } from '@wizard-ads/ui';
+import { ZERO_TOTALS } from '@wizard-ads/ui';
 import type { BaseTotals } from '@wizard-ads/ui';
 import type { ProposalView } from '../recommendations/view';
 
@@ -88,6 +89,25 @@ export function kpiTiles(period: BaseTotals, comparison: BaseTotals): KpiTileMod
     const prev = deriveMetric(metric, comparison);
     const deltaPct = value !== null && prev !== null && prev !== 0 ? (value - prev) / prev : null;
     return { metric, label: meta.label, scale: meta.scale, better: meta.better, value, prev, deltaPct };
+  });
+}
+
+/** The target-level subset shown above one target's bid corridor. */
+export function bidHistoryKpiTiles(totals: BaseTotals): KpiTileModel[] {
+  const byMetric = new Map(kpiTiles(totals, ZERO_TOTALS).map((tile) => [tile.metric, tile]));
+  return [
+    'impressions',
+    'clicks',
+    'orders',
+    'spend',
+    'sales',
+    'acos',
+    'ctr',
+    'cvr',
+    'cpc',
+  ].flatMap((metric) => {
+    const tile = byMetric.get(metric);
+    return tile === undefined ? [] : [tile];
   });
 }
 

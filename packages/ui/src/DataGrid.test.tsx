@@ -109,6 +109,29 @@ describe('DataGrid over 50k rows', () => {
     expect(header.getAttribute('aria-sort')).toBe('descending');
   });
 
+  it('shows totals beneath sorted additive and ratio metric headers', () => {
+    const rows = syntheticSearchTermRows(100, { seed: 23 });
+    const sort = [
+      { columnId: 'spend', direction: 'desc' as const },
+      { columnId: 'acos', direction: 'desc' as const },
+    ];
+    render(
+      <DataGrid
+        model={buildGridModel(rows, { sort })}
+        columns={visible}
+        currencyCode="USD"
+        sort={sort}
+        onSortChange={() => {}}
+        height={VIEWPORT.height}
+        rowHeight={ROW_HEIGHT}
+        initialRect={VIEWPORT}
+      />,
+    );
+
+    expect(screen.getByTestId('sorted-column-aggregate-spend').textContent).toMatch(/\$/);
+    expect(screen.getByTestId('sorted-column-aggregate-acos').textContent).toMatch(/%/);
+  });
+
   it('toggles sort on a header click, with shift appending a second key', async () => {
     const rows = syntheticSearchTermRows(100, { seed: 3 });
     const onSortChange = vi.fn();
@@ -156,6 +179,37 @@ describe('DataGrid over 50k rows', () => {
     const body = screen.getAllByTestId('grid-row')[0] as HTMLElement;
     expect(within(body).getAllByText('—').length).toBeGreaterThan(0);
     expect(document.body.textContent).toContain('€');
+  });
+
+  it('renders a suggested-bid median with its low–high range beneath it', () => {
+    const targetColumns = columnsFor('targets').filter((column) => column.id === 'suggested_bid');
+    const [base] = syntheticSearchTermRows(1, { seed: 48 });
+    const target = {
+      ...base,
+      id: 'target-1',
+      dimensions: {
+        ...(base?.dimensions ?? {}),
+        suggested_bid: 0.9,
+        suggested_bid_low: 0.7,
+        suggested_bid_high: 1.2,
+      },
+    } as NonNullable<typeof base>;
+    render(
+      <DataGrid
+        model={buildGridModel([target])}
+        columns={targetColumns}
+        currencyCode="USD"
+        sort={[]}
+        onSortChange={() => {}}
+        height={VIEWPORT.height}
+        rowHeight={42}
+        initialRect={VIEWPORT}
+      />,
+    );
+
+    const cell = within(screen.getByTestId('grid-row')).getByTestId('suggested-bid-cell');
+    expect(cell.textContent).toContain('$0.90');
+    expect(cell.textContent).toContain('$0.70 – $1.20');
   });
 
   it('says nothing matched rather than showing an empty frame', () => {

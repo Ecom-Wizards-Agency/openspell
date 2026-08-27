@@ -618,6 +618,8 @@ export interface BidCorridorChartProps {
   currencyCode: string;
   points: readonly BidCorridorPoint[];
   caption?: string;
+  /** Show the corridor's daily / weekly / monthly projection. */
+  aggregatable?: boolean;
 }
 
 /** The corridor's series, in the rail order the recon fixes (§3). */
@@ -627,6 +629,56 @@ const CORRIDOR_COLORS = {
   cpc: 'var(--wa-viz-1)', // blue — realized CPC
   maxCpc: 'var(--wa-viz-5)', // red — Max CPC (dashed step)
 } as const;
+
+function mean(values: readonly (number | null)[]): number | null {
+  const present = values.filter((value): value is number => value !== null);
+  if (present.length === 0) return null;
+  return present.reduce((sum, value) => sum + value, 0) / present.length;
+}
+
+/**
+ * Aggregate a daily corridor without pretending its band is additive.
+ *
+ * The band preserves every daily edge (minimum low, maximum high), while its
+ * midpoint and the plotted bid/CPC lines are means. Modifier components are
+ * intentionally daily-only: an averaged placement stack never existed on any
+ * one day and would make the tooltip look more exact than it is.
+ */
+export function aggregateBidCorridorPoints(
+  points: readonly BidCorridorPoint[],
+  granularity: Granularity,
+): BidCorridorPoint[] {
+  if (granularity === 'D') return points.map((point) => ({ ...point }));
+  const keyOf = (date: string): string =>
+    granularity === 'W' ? weekKey(date) : date.slice(0, 7);
+  const buckets = new Map<string, BidCorridorPoint[]>();
+  for (const point of points) {
+    const key = keyOf(point.date);
+    const bucket = buckets.get(key);
+    if (bucket === undefined) buckets.set(key, [point]);
+    else bucket.push(point);
+  }
+  const edge = (
+    bucket: readonly BidCorridorPoint[],
+    field: 'low' | 'high',
+    choose: (values: readonly number[]) => number,
+  ): number | null => {
+    const values = bucket
+      .map((point) => point[field])
+      .filter((value): value is number => value !== null);
+    return values.length === 0 ? null : choose(values);
+  };
+  return [...buckets.entries()].map(([date, bucket]) => ({
+    date,
+    low: edge(bucket, 'low', (values) => Math.min(...values)),
+    median: mean(bucket.map((point) => point.median)),
+    high: edge(bucket, 'high', (values) => Math.max(...values)),
+    bid: mean(bucket.map((point) => point.bid)),
+    cpc: mean(bucket.map((point) => point.cpc)),
+    maxCpc: mean(bucket.map((point) => point.maxCpc)),
+    components: [],
+  }));
+}
 
 /**
  * The bid corridor drill-down (`tools/recon/04-optimizer.md` §3).
@@ -651,12 +703,18 @@ export function BidCorridorChart({
   currencyCode,
   points,
   caption,
+  aggregatable = false,
 }: BidCorridorChartProps): ReactNode {
   const [hover, setHover] = useState<number | null>(null);
+  const [gran, setGran] = useState<Granularity>('D');
   const context = useMemo(() => ({ currencyCode, locale: 'en-US' }), [currencyCode]);
+  const viewPoints = useMemo(
+    () => aggregateBidCorridorPoints(points, aggregatable ? gran : 'D'),
+    [aggregatable, gran, points],
+  );
 
-  const dates = points.map((point) => point.date);
-  const values = points.flatMap((point) =>
+  const dates = viewPoints.map((point) => point.date);
+  const values = viewPoints.flatMap((point) =>
     [point.low, point.median, point.high, point.bid, point.cpc, point.maxCpc].filter(
       (value): value is number => value !== null && value !== undefined,
     ),
@@ -680,11 +738,22 @@ export function BidCorridorChart({
 
   const head = (
     <>
-      {title === undefined ? null : (
+      {title === undefined && !aggregatable ? null : (
         <div className="wa-row" style={{ alignItems: 'baseline', gap: '0.75rem', justifyContent: 'space-between' }}>
-          <h3 className="wa-card__title" style={{ fontSize: 'var(--wa-fs-base)' }}>
-            {title}
-          </h3>
+          {title === undefined ? <span /> : (
+            <h3 className="wa-card__title" style={{ fontSize: 'var(--wa-fs-base)' }}>
+              {title}
+            </h3>
+          )}
+          {aggregatable ? (
+            <GranularityToggle
+              value={gran}
+              onChange={(value) => {
+                setHover(null);
+                setGran(value);
+              }}
+            />
+          ) : null}
         </div>
       )}
       {legend}
@@ -718,11 +787,11 @@ export function BidCorridorChart({
 
   const hovered = hover === null ? null : Math.min(Math.max(hover, 0), dates.length - 1);
 
-  const bandPaths = corridorBandSegments(points, x, y);
-  const medianPath = linePath(points.map((p) => ({ date: p.date, value: p.median })), x, y);
-  const cpcPath = linePath(points.map((p) => ({ date: p.date, value: p.cpc })), x, y);
-  const bidPath = stepPath(points.map((p) => ({ date: p.date, value: p.bid })), x, y);
-  const maxCpcPath = stepPath(points.map((p) => ({ date: p.date, value: p.maxCpc })), x, y);
+  const bandPaths = corridorBandSegments(viewPoints, x, y);
+  const medianPath = linePath(viewPoints.map((p) => ({ date: p.date, value: p.median })), x, y);
+  const cpcPath = linePath(viewPoints.map((p) => ({ date: p.date, value: p.cpc })), x, y);
+  const bidPath = stepPath(viewPoints.map((p) => ({ date: p.date, value: p.bid })), x, y);
+  const maxCpcPath = stepPath(viewPoints.map((p) => ({ date: p.date, value: p.maxCpc })), x, y);
 
   return (
     <figure style={{ margin: 0 }} data-testid="bid-corridor">
@@ -789,12 +858,12 @@ export function BidCorridorChart({
           )}
 
           {hovered === null ? null : (
-            <CorridorHoverDots point={points[hovered]} index={hovered} x={x} y={y} />
+            <CorridorHoverDots point={viewPoints[hovered]} index={hovered} x={x} y={y} />
           )}
         </svg>
 
-        {hovered === null || points[hovered] === undefined ? null : (
-          <CorridorTooltip point={points[hovered] as BidCorridorPoint} left={(x(hovered) / W) * 100} flip={hovered > dates.length / 2} context={context} />
+        {hovered === null || viewPoints[hovered] === undefined ? null : (
+          <CorridorTooltip point={viewPoints[hovered] as BidCorridorPoint} left={(x(hovered) / W) * 100} flip={hovered > dates.length / 2} context={context} />
         )}
       </div>
 
@@ -816,7 +885,7 @@ export function BidCorridorChart({
               </tr>
             </thead>
             <tbody>
-              {points.map((point) => (
+              {viewPoints.map((point) => (
                 <tr key={point.date}>
                   <td>{point.date}</td>
                   <td>{formatValue(point.low, 'money', context)}</td>
