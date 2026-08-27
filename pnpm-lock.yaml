@@ -146,6 +146,9 @@ importers:
       '@wizard-ads/crosscheck-cli':
         specifier: workspace:*
         version: link:../../tools/crosscheck-cli
+      '@wizard-ads/datadive-api':
+        specifier: workspace:*
+        version: link:../../packages/datadive-api
       '@wizard-ads/db':
         specifier: workspace:*
         version: link:../../packages/db

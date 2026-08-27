@@ -41,6 +41,27 @@ Any different live shape fails with `DataDiveParseError` instead of being coerce
 silently dropped. Unknown response fields are retained on each domain object's
 `details` property for smoke-test inspection.
 
+## Worker configuration
+
+1. In `/settings/integrations`, create a DataDive connection and enter the API key.
+   The web tier stores it once in Vault and never reads it back.
+2. Set the connection's `config` to the designated ads profile and its Rank Radars:
+
+   ```json
+   {
+     "profile_id": "<profile uuid>",
+     "radar_ids": ["<rank radar id>"]
+   }
+   ```
+
+   Use one profile-scoped connection per marketplace. A job payload's `radarIds`
+   (originating in `sync_schedules.payload`) overrides `config.radar_ids` for that
+   run. If neither scope is present, the handler selects every radar visible to the
+   key and still rejects any marketplace that differs from the designated profile.
+3. Leave the connection active. WP-41's reconciliation provisions the daily
+   `rank.sync` schedule. The handler clears `last_error` and advances
+   `last_synced_at` after a count-verified load.
+
 ## Out of scope
 
 Impression share, click share, and their derived ranks belong to Search Query
