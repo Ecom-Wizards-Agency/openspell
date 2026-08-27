@@ -33,6 +33,30 @@ describe.skipIf(!available)('migrations', () => {
     expect([...files].sort()).toEqual(files);
   });
 
+  it('adds the integration job labels without weakening the report schedule constraint', async () => {
+    const labels = await database.sql<{ enumlabel: string }[]>`
+      select e.enumlabel
+        from pg_catalog.pg_enum e
+        join pg_catalog.pg_type t on t.oid = e.enumtypid
+       where t.typname = 'sync_job_type'
+       order by e.enumsortorder
+    `;
+    expect(labels.slice(-4).map((row) => row.enumlabel)).toEqual([
+      'keepa.sync',
+      'rank.sync',
+      'economics.sync',
+      'sqp.categorize',
+    ]);
+
+    const [constraint] = await database.sql<{ definition: string }[]>`
+      select pg_catalog.pg_get_constraintdef(oid) as definition
+        from pg_catalog.pg_constraint
+       where conname = 'sync_schedules_report_type_required'
+    `;
+    expect(constraint?.definition).toContain("job_type = ANY (ARRAY['report.request'");
+    expect(constraint?.definition).toContain('(report_type IS NOT NULL)');
+  });
+
   it('creates every table the plan names', async () => {
     const rows = await database.sql<{ relname: string }[]>`
       select c.relname

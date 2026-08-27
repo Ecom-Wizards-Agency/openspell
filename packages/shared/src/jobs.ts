@@ -17,6 +17,10 @@ export const JobType = z.enum([
   'report.fetch',
   'crosscheck.ingest',
   'recommendations.run',
+  'keepa.sync',
+  'rank.sync',
+  'economics.sync',
+  'sqp.categorize',
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -88,6 +92,30 @@ export const RecommendationsRunJob = z.object({
   lookbackDays: z.number().int().positive(),
 });
 
+export const KeepaSyncJob = z.object({
+  ...jobBase,
+  type: z.literal(JobType.enum['keepa.sync']),
+  asins: z.array(z.string()).optional(),
+  includeCompetitors: z.boolean(),
+});
+
+export const RankSyncJob = z.object({
+  ...jobBase,
+  type: z.literal(JobType.enum['rank.sync']),
+  radarIds: z.array(z.string()).optional(),
+});
+
+export const EconomicsSyncJob = z.object({
+  ...jobBase,
+  type: z.literal(JobType.enum['economics.sync']),
+});
+
+export const SqpCategorizeJob = z.object({
+  ...jobBase,
+  type: z.literal(JobType.enum['sqp.categorize']),
+  weekStart: IsoDate,
+});
+
 export const JobPayload = z.discriminatedUnion('type', [
   EntitySyncJob,
   ReportRequestJob,
@@ -95,6 +123,10 @@ export const JobPayload = z.discriminatedUnion('type', [
   ReportFetchJob,
   CrosscheckIngestJob,
   RecommendationsRunJob,
+  KeepaSyncJob,
+  RankSyncJob,
+  EconomicsSyncJob,
+  SqpCategorizeJob,
 ]);
 export type JobPayload = z.infer<typeof JobPayload>;
 
@@ -104,3 +136,7 @@ export type ReportPollJob = z.infer<typeof ReportPollJob>;
 export type ReportFetchJob = z.infer<typeof ReportFetchJob>;
 export type CrosscheckIngestJob = z.infer<typeof CrosscheckIngestJob>;
 export type RecommendationsRunJob = z.infer<typeof RecommendationsRunJob>;
+export type KeepaSyncJob = z.infer<typeof KeepaSyncJob>;
+export type RankSyncJob = z.infer<typeof RankSyncJob>;
+export type EconomicsSyncJob = z.infer<typeof EconomicsSyncJob>;
+export type SqpCategorizeJob = z.infer<typeof SqpCategorizeJob>;

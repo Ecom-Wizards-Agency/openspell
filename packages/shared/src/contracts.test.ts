@@ -554,6 +554,26 @@ describe('JobPayload', () => {
         runId: RUN_ID,
         lookbackDays: 30,
       },
+      {
+        orgId: ORG_ID,
+        profileId: PROFILE_ID,
+        type: 'keepa.sync',
+        asins: ['B000000001'],
+        includeCompetitors: true,
+      },
+      {
+        orgId: ORG_ID,
+        profileId: PROFILE_ID,
+        type: 'rank.sync',
+        radarIds: ['radar-1'],
+      },
+      { orgId: ORG_ID, profileId: PROFILE_ID, type: 'economics.sync' },
+      {
+        orgId: ORG_ID,
+        profileId: PROFILE_ID,
+        type: 'sqp.categorize',
+        weekStart: '2026-07-26',
+      },
     ];
 
     const seen = jobs.map((j) => roundTrip(JobPayload, j).type);
@@ -564,6 +584,10 @@ describe('JobPayload', () => {
       'report.fetch',
       'crosscheck.ingest',
       'recommendations.run',
+      'keepa.sync',
+      'rank.sync',
+      'economics.sync',
+      'sqp.categorize',
     ]);
   });
 

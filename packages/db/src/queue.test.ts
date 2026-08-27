@@ -91,6 +91,28 @@ describe.skipIf(!available)('sync job queue', () => {
     expect(claimed.map((job) => job.dedupeKey)).not.toContain('future:1');
   });
 
+  it('claims only allowed job types when an allowlist is present', async () => {
+    await database.sql`
+      insert into public.sync_jobs (org_id, profile_id, job_type, payload, dedupe_key)
+      values
+        (${orgId}, ${profileId}, 'keepa.sync',
+         ${JSON.stringify({ type: 'keepa.sync', orgId, profileId, includeCompetitors: false })}::jsonb,
+         'filter:keepa'),
+        (${orgId}, ${profileId}, 'rank.sync',
+         ${JSON.stringify({ type: 'rank.sync', orgId, profileId })}::jsonb,
+         'filter:rank')
+    `;
+
+    const keepa = await claimSyncJobs(database, 'worker-filtered', 10, ['keepa.sync']);
+    expect(keepa.map((job) => job.dedupeKey)).toEqual(['filter:keepa']);
+    expect(await claimSyncJobs(database, 'worker-empty-filter', 10, [])).toEqual([]);
+
+    const [rank] = await database.sql<{ status: string }[]>`
+      select status from public.sync_jobs where dedupe_key = 'filter:rank'
+    `;
+    expect(rank?.status).toBe('queued');
+  });
+
   it('refuses a duplicate dedupe key inside one org', async () => {
     await expectRejection(queueJobs(1, 'concurrent'), /duplicate key|unique/i);
   });
