@@ -22,7 +22,7 @@ const raw = (asin: string, price: number, lightning = false, coupon: [number, nu
 function deps(result: KeepaProductsResult): KeepaSyncDeps {
   return {
     activeConnection: vi.fn().mockResolvedValue({ id: connectionId, config: {} }),
-    secret: vi.fn().mockResolvedValue('synthetic-key'),
+    readCredential: vi.fn().mockResolvedValue('synthetic-key'),
     scope: vi.fn().mockResolvedValue({
       marketplace: 'US',
       ownAsins: ['B0TEST0001'],

@@ -50,14 +50,14 @@ class Tokens implements TokenTracker {
 }
 
 export class KeepaClient {
-  private readonly apiKey: string;
+  private readonly credential: string;
   private readonly effects: HttpEffects;
   private readonly now: () => number;
   private readonly tokens = new Tokens();
 
   constructor(options: KeepaClientOptions) {
-    this.apiKey = options.apiKey.trim();
-    if (!this.apiKey) throw new KeepaConfigError('Keepa API key cannot be empty');
+    this.credential = options.apiKey.trim();
+    if (!this.credential) throw new KeepaConfigError('Keepa API key cannot be empty');
     this.now = options.now ?? (() => Date.now());
     this.effects = {
       fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
@@ -92,7 +92,7 @@ export class KeepaClient {
       const cost = batch.length * (buyBox ? KEEPA_BUY_BOX_TOKENS_PER_ASIN : KEEPA_PRODUCT_TOKENS_PER_ASIN);
       this.assertBudget(cost);
       const url = new URL('/product', KEEPA_API_URL);
-      url.searchParams.set('key', this.apiKey);
+      url.searchParams.set('key', this.credential);
       url.searchParams.set('domain', String(domain));
       url.searchParams.set('asin', batch.join(','));
       url.searchParams.set('history', history ? '1' : '0');

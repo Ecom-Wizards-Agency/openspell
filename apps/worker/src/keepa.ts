@@ -36,7 +36,7 @@ interface KeepaProductClient {
 
 export interface KeepaSyncDeps {
   activeConnection(orgId: string): Promise<ActiveKeepaConnection | null>;
-  secret(connectionId: string): Promise<string | null>;
+  readCredential(connectionId: string): Promise<string | null>;
   scope(input: { orgId: string; profileId: string; includeCompetitors: boolean }): Promise<KeepaSyncScope>;
   previous(orgId: string, asins: readonly string[]): Promise<KeepaObservationRecord[]>;
   loadObservations(rows: readonly NewKeepaBsrObservation[]): Promise<IdentityLoadCounts>;
@@ -53,7 +53,7 @@ export function createKeepaSyncHandler(
 ): (payload: KeepaSyncJob) => Promise<Record<string, unknown>> {
   const deps: KeepaSyncDeps = {
     activeConnection: (orgId) => activeKeepaConnection(handle, orgId),
-    secret: (connectionId) => getIntegrationSecret(handle, connectionId),
+    readCredential: (connectionId) => getIntegrationSecret(handle, connectionId),
     scope: (input) => resolveKeepaSyncScope(handle, input),
     previous: (orgId, asins) => latestKeepaObservations(handle, orgId, asins),
     loadObservations: (rows) => loadKeepaBsrObservations(handle, rows),
@@ -74,7 +74,7 @@ export async function runKeepaSync(
 ): Promise<Record<string, unknown>> {
   const connection = await deps.activeConnection(payload.orgId);
   if (!connection) throw new Error('No active Keepa integration connection for this organisation');
-  const apiKey = await deps.secret(connection.id);
+  const apiKey = await deps.readCredential(connection.id);
   if (!apiKey) throw new Error('The active Keepa integration has no stored API key');
 
   const scope = await deps.scope({
