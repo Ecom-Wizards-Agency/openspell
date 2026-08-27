@@ -3,6 +3,7 @@ export * from './bid-series.js';
 export * from './config.js';
 export * from './crosscheck.js';
 export * from './health.js';
+export * from './mrp.js';
 export * from './parsers.js';
 export * from './region-token-buckets.js';
 export * from './recommendations-run.js';

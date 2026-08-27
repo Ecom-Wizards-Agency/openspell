@@ -16,6 +16,7 @@
   "dependencies": {
     "@wizard-ads/shared": "workspace:*",
     "@wizard-ads/db": "workspace:*",
+    "@wizard-ads/mrp-api": "workspace:*",
     "@wizard-ads/ads-api": "workspace:*",
     "@wizard-ads/core": "workspace:*",
     "@wizard-ads/crosscheck-cli": "workspace:*",

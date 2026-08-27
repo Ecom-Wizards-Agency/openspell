@@ -149,6 +149,9 @@ importers:
       '@wizard-ads/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@wizard-ads/mrp-api':
+        specifier: workspace:*
+        version: link:../../packages/mrp-api
       '@wizard-ads/shared':
         specifier: workspace:*
         version: link:../../packages/shared

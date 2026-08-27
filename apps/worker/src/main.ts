@@ -9,6 +9,7 @@ import {
   createRecommendationsRunner,
 } from './recommendations-run.js';
 import { PostgresWorkerStore } from './store.js';
+import { createMrpEconomicsSync } from './mrp.js';
 import {
   AuthHealthMonitor,
   BidSeriesSyncPass,
@@ -40,6 +41,7 @@ const worker = new SyncWorker({
   store,
   adsApi,
   jobTypes: config.jobTypes,
+  integrations: { economicsSync: createMrpEconomicsSync(handle) },
   crosscheckIngest: createCrosscheckIngest(handle, { inboxDir: config.crosscheckInboxDir }),
   recommendationsRun: createRecommendationsRunner(recommendationRuns),
   claimBatchSize: config.claimBatchSize,
