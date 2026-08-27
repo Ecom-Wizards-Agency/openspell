@@ -1,12 +1,13 @@
 /**
  * Authenticated route smoke coverage for the operator's primary surfaces.
  *
- * The production-build suite supplies a verified actor through its header
- * bridge. These checks deliberately stop at the page boundary: a heading is
- * enough to prove the route built, authenticated, reached Postgres and
- * rendered. Dataset-specific assertions belong to the feature suites.
+ * The auth suite signs in through the same session-cookie path these guarded
+ * pages use. These checks deliberately stop at the page boundary: a heading
+ * is enough to prove the route authenticated, reached Postgres and rendered.
+ * Dataset-specific assertions belong to the feature suites.
  */
 import { expect, test } from '@playwright/test';
+import { signIn } from './support/auth';
 
 const SURFACES = [
   { route: '/optimizer', heading: 'Campaign Optimizer' },
@@ -18,6 +19,7 @@ const SURFACES = [
 test.describe.configure({ mode: 'serial' });
 
 test('authenticated product surfaces render', async ({ page }) => {
+  await signIn(page, 'admin');
   const rendered: string[] = [];
 
   for (const surface of SURFACES) {
