@@ -49,6 +49,14 @@ begin
   insert into public.orgs (slug, name) values (p_slug, initcap(p_slug)) returning id into v_org;
   insert into public.org_members (org_id, user_id, role) values (v_org, p_user_id, p_role);
 
+  insert into public.org_invitations
+    (org_id, email, role, token_prefix, token_hash, invited_by, expires_at)
+  values
+    (v_org, p_slug || '-invite@example.test', 'viewer',
+     substring(md5(p_slug || '-invite') || md5(p_slug || '-invite-2') for 12),
+     md5(p_slug || '-invite') || md5(p_slug || '-invite-2'), p_user_id,
+     now() + interval '7 days');
+
   insert into public.ads_connections (org_id, label, status)
   values (v_org, p_slug || '-ads', 'active') returning id into v_conn;
 

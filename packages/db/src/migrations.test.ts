@@ -44,7 +44,7 @@ describe.skipIf(!available)('migrations', () => {
 
     for (const expected of [
       // tenancy
-      'orgs', 'org_members', 'ads_connections', 'ad_profiles', 'profile_strategy',
+      'orgs', 'org_members', 'org_invitations', 'ads_connections', 'ad_profiles', 'profile_strategy',
       // entity mirror
       'portfolios', 'campaigns', 'ad_groups', 'product_ads', 'keywords', 'targets',
       'negatives', 'entity_changes',

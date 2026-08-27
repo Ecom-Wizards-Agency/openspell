@@ -63,7 +63,7 @@ describe.skipIf(!available)('row level security', () => {
     const invisible: string[] = [];
     // Deliberately invisible to an analyst: reading the audit log is an
     // owner/admin act, asserted separately below.
-    const adminOnly = new Set(['audit_log']);
+    const adminOnly = new Set(['audit_log', 'org_invitations']);
 
     await asUser(database, USER_A, async (sql) => {
       for (const table of tables) {
@@ -145,6 +145,19 @@ describe.skipIf(!available)('row level security', () => {
     await asUser(database, USER_B, async (sql) => {
       const rows = await sql`select * from public.audit_log`;
       expect(rows.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('keeps invitations admin-only and tenant-scoped', async () => {
+    await asUser(database, USER_A, async (sql) => {
+      const rows = await sql`select org_id from public.org_invitations`;
+      expect(rows).toEqual([]);
+    });
+    await asUser(database, USER_B, async (sql) => {
+      const rows = await sql<{ org_id: string }[]>`
+        select org_id from public.org_invitations order by org_id
+      `;
+      expect(rows.map((row) => row.org_id)).toEqual([orgB]);
     });
   });
 });
