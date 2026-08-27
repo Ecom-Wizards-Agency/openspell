@@ -43,7 +43,18 @@ export default defineConfig({
   retries: 0,
   timeout: 60_000,
   expect: { timeout: 15_000 },
-  reporter: [['list']],
+  reporter: process.env['CI']
+    ? [
+        ['list'],
+        [
+          'html',
+          {
+            outputFolder: './node_modules/.cache/playwright/reports/tags-goto',
+            open: 'never',
+          },
+        ],
+      ]
+    : [['list']],
   use: {
     baseURL,
     trace: 'retain-on-failure',

@@ -24,7 +24,7 @@ export default defineConfig({
   // other two do and one thing only this suite has: a session that can be
   // absent. The WP-08 config arms the header bridge, so every request there is
   // authenticated before it is routed and "anonymous" cannot be expressed.
-  testMatch: /(oauth|roles|guards)\.spec\.ts$/,
+  testMatch: /(oauth|roles|guards|smoke)\.spec\.ts$/,
   globalSetup: './e2e/global-setup.ts',
   globalTeardown: './e2e/global-teardown.ts',
   outputDir: './node_modules/.cache/playwright/auth',
@@ -36,7 +36,18 @@ export default defineConfig({
   // can genuinely take a while.
   timeout: 90_000,
   expect: { timeout: 15_000 },
-  reporter: [['list']],
+  reporter: process.env['CI']
+    ? [
+        ['list'],
+        [
+          'html',
+          {
+            outputFolder: './node_modules/.cache/playwright/reports/auth',
+            open: 'never',
+          },
+        ],
+      ]
+    : [['list']],
   use: {
     baseURL: BASE_URL,
     trace: 'retain-on-failure',

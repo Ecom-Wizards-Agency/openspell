@@ -26,6 +26,10 @@ const GUARDED = [
   '/dashboard',
   '/grid',
   '/crosscheck',
+  '/optimizer',
+  '/optimizer/groups',
+  '/experiments',
+  '/connect-claude',
   '/time-machine',
   '/recommendations',
   '/ngrams',
@@ -35,6 +39,7 @@ const GUARDED = [
   '/roadmap',
   '/settings/connections',
   '/settings/profiles',
+  // WP-39: add `/settings/members` when that route lands.
   '/sync-status',
 ] as const;
 
