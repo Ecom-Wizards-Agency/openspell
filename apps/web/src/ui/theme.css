@@ -2154,3 +2154,23 @@ button {
   border-left: 2px solid var(--wa-border);
   margin-left: 0.125rem;
 }
+
+/* ── DataGrid scroller ────────────────────────────────────────────────── */
+/* The grid is wider than any viewport on purpose; the scrollbar has to be
+   visible at rest or clipped columns read as a rendering bug. */
+
+.wa-grid-scroller {
+  scrollbar-width: thin;
+  scrollbar-color: var(--wa-text-dim) transparent;
+}
+.wa-grid-scroller::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+.wa-grid-scroller::-webkit-scrollbar-thumb {
+  background: var(--wa-border);
+  border-radius: 5px;
+}
+.wa-grid-scroller::-webkit-scrollbar-thumb:hover {
+  background: var(--wa-text-dim);
+}

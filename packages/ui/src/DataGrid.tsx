@@ -200,7 +200,12 @@ export function DataGrid({
 
   return (
     <div style={shell}>
-      <div ref={scrollRef} style={{ ...scroller, height }} data-testid="grid-scroller">
+      <div
+        ref={scrollRef}
+        className="wa-grid-scroller"
+        style={{ ...scroller, height }}
+        data-testid="grid-scroller"
+      >
         <div style={{ width: totalWidth, minWidth: '100%' }}>
           <div style={headerRow} role="row">
             {leafColumns.map((column) => {
