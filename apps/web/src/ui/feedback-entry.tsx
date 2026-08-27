@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * The "Feedback" entry point, on every page.
+ * The "Feedback" entry point, on every authenticated page.
  *
  * It is in the root layout rather than in each screen's header because the
  * whole value of an in-product feedback button is that it is there at the

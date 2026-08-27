@@ -14,8 +14,8 @@
  *  - `NavBar` is pure. It takes the identity and the roster it renders and
  *    touches nothing ambient, so a unit test can render both states without a
  *    request.
- *  - `AppNav` is the server component the root layout mounts. It resolves the
- *    session and the roster and hands them to `NavBar`.
+ *  - `AppNav` is the server component the root layout mounts. It receives the
+ *    resolved session, reads the roster and hands both to `NavBar`.
  *
  * `AppNav` imports its data lazily for the reason `src/server/request-context.ts`
  * documents: `next/headers` only works inside a request, and a top-level import
@@ -23,6 +23,7 @@
  * file.
  */
 import type { ReactNode } from 'react';
+import type { SessionUser } from '../auth/session';
 import { NAV_GROUPS, NAV_LINKS } from './nav-links';
 import type { NavGroup, NavLink } from './nav-links';
 import { ProfileAwareBrand } from './profile-aware-brand';
@@ -105,14 +106,14 @@ export function NavBar({ user, profiles = [], orgName = null }: NavBarProps): Re
 /**
  * The root layout's frame: the same chrome, with the real session behind it.
  *
- * The roster read is best-effort on purpose. The switcher is a convenience in
- * the chrome, and chrome must never be the reason a screen fails to render — an
- * unreachable database already has a page that says so, and it is not this one's
- * job to say it a second time in a stack trace.
+ * The root layout resolves the session once and shares it with the navigation
+ * and authenticated-only frame controls. The roster read is best-effort on
+ * purpose. The switcher is a convenience in the chrome, and chrome must never
+ * be the reason a screen fails to render — an unreachable database already has
+ * a page that says so, and it is not this one's job to say it a second time in
+ * a stack trace.
  */
-export async function AppNav(): Promise<ReactNode> {
-  const { currentUser } = await import('../auth/session');
-  const user = await currentUser();
+export async function AppNav({ user }: { user: SessionUser | null }): Promise<ReactNode> {
   if (user === null) return <NavBar user={null} />;
 
   const { navContext } = await import('./nav-context');

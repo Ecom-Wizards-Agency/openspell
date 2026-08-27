@@ -30,6 +30,7 @@ export interface PageContext {
 }
 
 const MAX_ROUTE = 512;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
  * Keep an application path, drop anything else.
@@ -46,7 +47,13 @@ export function normalizeRoute(route: string | null | undefined): string | null 
   return trimmed.slice(0, MAX_ROUTE);
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** Recover the selected profile from the route captured by the feedback entry. */
+export function profileIdFromRoute(route: string | null | undefined): string | null {
+  const normalized = normalizeRoute(route);
+  if (normalized === null) return null;
+  const candidate = new URL(normalized, 'https://app.invalid').searchParams.get('profile');
+  return candidate !== null && UUID.test(candidate) ? candidate : null;
+}
 
 export function pageContext(input: PageContextInput): PageContext {
   return {

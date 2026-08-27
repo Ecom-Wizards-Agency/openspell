@@ -20,7 +20,10 @@ export const viewport: Viewport = {
   ],
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  const { currentUser } = await import('../src/auth/session');
+  const user = await currentUser();
+
   return (
     // The theme stamp below rewrites `data-theme` before React sees the
     // document, which is exactly the mismatch this attribute exists for.
@@ -38,15 +41,16 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           {/*
             The frame, on every screen including `/login`: it is the only place
             the app offers a way in and a way out, so it cannot be a per-screen
-            decision. `AppNav` reads the session, which makes every route
-            dynamic — correct for a tool whose every page is per-tenant.
+            decision. The layout reads the session once for navigation and
+            authenticated-only controls, which makes every route dynamic —
+            correct for a tool whose every page is per-tenant.
           */}
-          <AppNav />
+          <AppNav user={user} />
           <div className="wa-content" id="wa-main">
             {children}
           </div>
-          {/* WP-15: the feedback widget belongs to the frame, not to a screen. */}
-          <FeedbackEntry />
+          {/* WP-15: the feedback widget belongs to the signed-in frame, not to a screen. */}
+          {user === null ? null : <FeedbackEntry />}
         </ToastProvider>
       </body>
     </html>
