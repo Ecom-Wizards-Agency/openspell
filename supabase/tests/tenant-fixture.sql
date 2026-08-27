@@ -60,6 +60,9 @@ begin
   insert into public.ads_connections (org_id, label, status)
   values (v_org, p_slug || '-ads', 'active') returning id into v_conn;
 
+  insert into public.integration_connections (org_id, provider, label, connected_by)
+  values (v_org, 'keepa', p_slug || '-integration', p_user_id);
+
   insert into public.ad_profiles
     (org_id, connection_id, amazon_profile_id, region, country_code, currency_code, timezone, sync_enabled)
   values
