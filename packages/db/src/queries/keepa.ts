@@ -1,4 +1,4 @@
-import { and, desc, eq, getTableColumns, inArray, isNull } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, inArray, isNull, ne } from 'drizzle-orm';
 import type { DbHandle } from '../client.js';
 import { insights } from '../schema/analysis.js';
 import { productAds } from '../schema/entities.js';
@@ -101,6 +101,7 @@ export async function resolveKeepaSyncScope(
       eq(productAds.orgId, input.orgId),
       eq(productAds.profileId, input.profileId),
       isNull(productAds.deletedAt),
+      ne(productAds.state, 'archived'),
     ));
   const links = input.includeCompetitors
     ? await listCompetitorLinks(handle, input.orgId, input.profileId)
@@ -223,7 +224,11 @@ export async function listCompetitorLinks(
       from public.competitor_links l
       left join public.ad_profiles p on p.id = l.profile_id and p.org_id = l.org_id
      where l.org_id = ${orgId}
-       and (${profileId ?? null}::uuid is null or l.profile_id = ${profileId ?? null}::uuid)
+       and (
+         ${profileId ?? null}::uuid is null
+         or l.profile_id is null
+         or l.profile_id = ${profileId ?? null}::uuid
+       )
      order by coalesce(p.account_name, p.amazon_profile_id), l.our_asin, l.competitor_asin, l.id
   `;
   return rows.map((row) => ({
