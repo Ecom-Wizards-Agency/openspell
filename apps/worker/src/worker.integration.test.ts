@@ -132,7 +132,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     await database.sql`delete from public.fact_profile_daily where profile_id = ${profileId}`;
   });
 
-  afterAll(async () => { await database?.drop(); });
+  afterAll(async () => { await database?.drop(); }, 30_000);
 
   // -------------------------------------------------------------------------
   // recommendations.run

@@ -76,6 +76,19 @@ export default tseslint.config(
     },
   },
   {
+    files: ['packages/mrp-api/**/*.ts'],
+    rules: {
+      'no-restricted-imports': forbid([
+        ['@wizard-ads/db', 'mrp-api is a pure provider client: no database.'],
+        ['@wizard-ads/core', 'mrp-api is a transport boundary, not doctrine.'],
+        ['@wizard-ads/strategy', 'mrp-api receives all configuration as arguments.'],
+        ['@wizard-ads/ads-api', 'provider clients do not depend on each other.'],
+        ['@wizard-ads/ui', 'mrp-api has no presentation concerns.'],
+        ['@wizard-ads/campaigns', 'mrp-api has no campaign-generation concerns.'],
+      ]),
+    },
+  },
+  {
     // The LWA OAuth server routes are the ONE sanctioned exception to the
     // no-ads-api-in-web rule (WP-04 brief): the code exchange and the
     // first profile fetch happen in the callback. Everything else in web
@@ -86,6 +99,7 @@ export default tseslint.config(
       'no-restricted-imports': forbid([
         ['@wizard-ads/ads-api', 'every Amazon API call lives in apps/worker, never in the web app.'],
         ['@wizard-ads/datadive-api', 'every DataDive API call lives in apps/worker, never in the web app.'],
+        ['@wizard-ads/mrp-api', 'every MRP MCP call lives in apps/worker, never in the web app.'],
         [
           '@wizard-ads/db/worker',
           'decrypted integration credentials are worker-only; the web app may only store or revoke them.',

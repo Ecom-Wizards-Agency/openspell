@@ -31,6 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
+    expect(files.at(-1)).toBe('20260827150300_product_economics.sql');
   });
 
   it('adds the integration job labels without weakening the report schedule constraint', async () => {
@@ -76,6 +77,7 @@ describe.skipIf(!available)('migrations', () => {
       // facts
       'fact_sp_target_daily', 'fact_search_term_daily', 'fact_placement_daily',
       'fact_sb_daily', 'fact_sd_daily', 'fact_profile_daily', 'fact_monthly_rollup',
+      'product_economics',
       // sync
       'sync_schedules', 'sync_jobs', 'report_requests',
       // analysis

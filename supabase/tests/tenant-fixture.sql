@@ -126,6 +126,11 @@ begin
   insert into public.fact_monthly_rollup
     (org_id, profile_id, month, source, dimensions, days, impressions, clicks, cost)
   values (v_org, v_profile, date_trunc('month', p_date)::date, 'sp_target', '{}'::jsonb, 1, 100, 5, 4.50);
+  insert into public.product_economics
+    (org_id, profile_id, asin, captured_on, sale_price, cogs, fba_fees,
+     referral_fees, other_fees, margin, ltv_revenue, ltv_orders, repeat_rate, currency)
+  values (v_org, v_profile, 'B0TEST0001', p_date, 25.00, 7.00, 4.00,
+          3.75, 1.00, 9.25, 42.00, 1.40, 0.18, 'USD');
   -- The bid corridor (WP-28): one target's suggested-bid band for the day, with
   -- the bid, realized CPC and max-potential CPC and its modifier components.
   insert into public.bid_series_daily

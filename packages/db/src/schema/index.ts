@@ -13,6 +13,7 @@ export * from './tenancy.js';
 export * from './entities.js';
 export * from './facts.js';
 export * from './bid-series.js';
+export * from './economics.js';
 export * from './sync.js';
 export * from './analysis.js';
 export * from './apply.js';
