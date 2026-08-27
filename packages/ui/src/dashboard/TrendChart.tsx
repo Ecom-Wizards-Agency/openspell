@@ -102,7 +102,13 @@ export function TrendChart({
           />
         ))}
         {firstDate === undefined ? null : (
-          <text x={PADDING.left} y={height - 4} fontSize={10} fill={tokens.color.textFaint}>
+          <text
+            x={PADDING.left}
+            y={height - 4}
+            fontSize={12}
+            fill={tokens.color.textMuted}
+            style={{ fontVariantNumeric: 'tabular-nums' }}
+          >
             {firstDate}
           </text>
         )}
@@ -110,9 +116,10 @@ export function TrendChart({
           <text
             x={width - PADDING.right}
             y={height - 4}
-            fontSize={10}
+            fontSize={12}
             textAnchor="end"
-            fill={tokens.color.textFaint}
+            fill={tokens.color.textMuted}
+            style={{ fontVariantNumeric: 'tabular-nums' }}
           >
             {lastDate}
           </text>

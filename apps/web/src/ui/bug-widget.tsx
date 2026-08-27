@@ -250,7 +250,7 @@ export function BugWidget({ appVersion = null }: { appVersion?: string | null })
               <a href={fullFormHref}>Full form →</a>
               <button
                 type="submit"
-                className="wa-btn wa-btn--primary"
+                className="wa-btn"
                 data-testid="feedback-submit"
                 disabled={pending}
               >

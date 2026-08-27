@@ -70,7 +70,9 @@ the component layer.
 - Will a future interactive grid require keyboard row selection? This package exposes
   selected rendering now; interaction should arrive with the owning workflow.
 
-## Next implementation step
+## Verification contract
 
-Land the canonical token/type foundation, then adopt component states and route actions
-against it.
+Tests pin the fixed brand tokens, light and dark text contrast, chart-role colors,
+three-to-five tick generation, selected rows, toolbar hierarchy, and the top-bar
+identity menu. The repository typecheck, lint, tests, hygiene check, and production
+build remain the release gate.

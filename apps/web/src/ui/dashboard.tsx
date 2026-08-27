@@ -1,10 +1,8 @@
 /**
  * The dashboard's own widgets.
  *
- * WP-06 shipped equivalents in `packages/ui`; these replace them in `apps/web`
- * for the reason the whole of WP-21 exists — that package paints from inline hex
- * literals, so nothing built on it can have a dark mode, and WP-21 does not own
- * it. Everything below is the same view model, rendered against tokens.
+ * WP-06 shipped equivalents in `packages/ui`; these app-level versions use the
+ * same visual tokens while retaining the existing route view models.
  *
  * Nothing here computes. Freshness is assessed by `assessFreshness`, pacing by
  * `computePacing`, flags by `evaluate`; this file decides only how the answers
@@ -30,17 +28,16 @@ export interface KpiTileProps {
   scale: 'money' | 'percent' | 'ratio' | 'integer';
   /** Which direction is good. `null` for a metric where neither is. */
   better: 'higher' | 'lower' | null;
-  deltas: readonly KpiDelta[];
+  /** Exactly one visible comparison. */
+  delta: KpiDelta;
+  /** Optional secondary comparison exposed as hover detail, never another line. */
+  detail?: KpiDelta;
   context: FormatContext;
 }
 
 /**
- * One metric, with both of the comparisons that matter.
- *
- * Prior period answers "is today unusual"; trailing-7 answers "is this a
- * trend". Either alone misleads — a Monday against a Sunday looks like a
- * collapse, and a trailing average alone hides the day the budget doubled — so
- * the tile carries both and says which is which.
+ * One metric and one visible comparison. A second comparison belongs in hover
+ * detail, not in the scan line operators use to read the KPI row.
  *
  * Colour follows the metric's `better` direction, never the sign of the number:
  * ACOS down is green, spend down is neither. And the arrow is not decoration —
@@ -52,20 +49,30 @@ export function KpiTile({
   value,
   scale,
   better,
-  deltas,
+  delta,
+  detail,
   context,
 }: KpiTileProps): ReactNode {
+  const detailText = detail === undefined ? undefined : formatDeltaDetail(detail, scale, context);
   return (
-    <article className="wa-kpi">
+    <article className="wa-kpi" title={detailText}>
       <span className="wa-kpi__label">{label}</span>
       <span className="wa-kpi__value">{formatValue(value, scale, context)}</span>
       <div className="wa-kpi__deltas">
-        {deltas.map((delta) => (
-          <DeltaLine key={delta.caption} delta={delta} better={better} scale={scale} context={context} />
-        ))}
+        <DeltaLine delta={delta} better={better} scale={scale} context={context} />
       </div>
     </article>
   );
+}
+
+function formatDeltaDetail(
+  delta: KpiDelta,
+  scale: KpiTileProps['scale'],
+  context: FormatContext,
+): string {
+  const pct = delta.pct === null ? 'No comparison' : `${(delta.pct * 100).toFixed(1)}%`;
+  const reference = delta.reference === null ? '' : ` (${formatValue(delta.reference, scale, context)})`;
+  return `${pct} ${delta.caption}${reference}`;
 }
 
 function DeltaLine({

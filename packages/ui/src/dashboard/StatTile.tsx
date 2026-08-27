@@ -1,11 +1,6 @@
 /**
- * One metric, with both of the comparisons that matter.
- *
- * Prior period answers "is today unusual"; trailing-7 answers "is this a
- * trend". The reference monitor reports both because either alone misleads --
- * a Monday against a Sunday looks like a collapse, and a trailing average alone
- * hides the day the budget doubled. So the tile carries both, always, and says
- * which is which.
+ * One metric with one comparison line. Additional comparison detail belongs on
+ * hover; the card keeps the scan path to label → value → delta.
  *
  * Colour is driven by the metric's `better` direction, never the sign: ACOS
  * down is green, spend down is grey.
@@ -34,9 +29,17 @@ export function StatTile(props: StatTileProps): ReactNode {
   const spec = metricSpec(props.metric);
   const scale = props.scale ?? spec?.scale ?? 'decimal';
   const label = props.label ?? spec?.label ?? props.metric;
+  const trailingPct = props.trailing7PctChange ?? null;
+  const trailingReference = props.trailing7Avg ?? null;
+  const detail =
+    props.trailing7PctChange === undefined && props.trailing7Avg === undefined
+      ? undefined
+      : `${formatDelta(trailingPct, 'percent', props.context)} vs trailing-7 avg${
+          trailingReference === null ? '' : ` (${formatValue(trailingReference, scale, props.context)})`
+        }`;
 
   return (
-    <div style={tile}>
+    <div style={tile} title={detail}>
       <div style={tileLabel}>{label}</div>
       <div style={tileValue}>{formatValue(props.value, scale, props.context)}</div>
       <div style={tileDeltas}>
@@ -44,14 +47,6 @@ export function StatTile(props: StatTileProps): ReactNode {
           caption="vs prior period"
           pct={props.priorPctChange ?? null}
           reference={props.priorValue ?? null}
-          better={spec?.better ?? null}
-          scale={scale}
-          context={props.context}
-        />
-        <DeltaLine
-          caption="vs trailing-7 avg"
-          pct={props.trailing7PctChange ?? null}
-          reference={props.trailing7Avg ?? null}
           better={spec?.better ?? null}
           scale={scale}
           context={props.context}
@@ -102,15 +97,16 @@ const tile: CSSProperties = {
 
 const tileLabel: CSSProperties = {
   color: tokens.color.textMuted,
-  fontSize: tokens.font.size.xs,
-  letterSpacing: '0.04em',
+  fontSize: tokens.font.size.eyebrow,
+  fontWeight: 600,
+  letterSpacing: '0.06em',
   textTransform: 'uppercase',
 };
 
 const tileValue: CSSProperties = {
-  fontSize: '1.375rem',
+  fontSize: tokens.font.size.kpi,
   fontVariantNumeric: 'tabular-nums',
-  fontWeight: 600,
+  fontWeight: 800,
 };
 
 const tileDeltas: CSSProperties = { display: 'flex', flexDirection: 'column', gap: '0.125rem' };

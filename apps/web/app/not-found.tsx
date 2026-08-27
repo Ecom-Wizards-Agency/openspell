@@ -27,7 +27,7 @@ export default function NotFound() {
 
 const main: CSSProperties = {
   color: 'var(--wa-text)',
-  fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+  fontFamily: 'var(--wa-font)',
   margin: '0 auto',
   maxWidth: '36rem',
   padding: '3rem 1.5rem',

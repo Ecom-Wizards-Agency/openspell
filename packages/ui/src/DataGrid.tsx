@@ -51,6 +51,8 @@ export interface DataGridProps {
   onPinChange?: (columnId: string, pinned: boolean) => void;
   onReorder?: (columnId: string, beforeColumnId: string | null) => void;
   onRowClick?: (row: GridRow) => void;
+  /** Selected row ids are presentation state; selection interaction stays with the caller. */
+  selectedRowIds?: readonly string[];
   /** Viewport height in pixels. The grid scrolls inside it; the page does not. */
   height?: number;
   rowHeight?: number;
@@ -98,6 +100,7 @@ export function DataGrid({
   onPinChange,
   onReorder,
   onRowClick,
+  selectedRowIds = [],
   height = 620,
   rowHeight = DEFAULT_ROW_HEIGHT,
   initialRect,
@@ -110,6 +113,7 @@ export function DataGrid({
     () => ({ currencyCode, ...(locale === undefined ? {} : { locale }) }),
     [currencyCode, locale],
   );
+  const selected = useMemo(() => new Set(selectedRowIds), [selectedRowIds]);
 
   const columnDefs = useMemo<ColumnDef<GridRow, unknown>[]>(
     () =>
@@ -292,17 +296,23 @@ export function DataGrid({
               {items.map((item) => {
                 const row = rows[item.index];
                 if (row === undefined) return null;
+                const isSelected = selected.has(row.id);
                 return (
                   <div
                     key={row.id}
                     role="row"
+                    aria-selected={isSelected}
                     data-testid="grid-row"
                     onClick={() => onRowClick?.(row.original)}
                     style={{
                       ...bodyRow,
                       height: item.size,
                       cursor: onRowClick === undefined ? 'default' : 'pointer',
-                      background: item.index % 2 === 0 ? tokens.color.surface : tokens.color.surfaceAlt,
+                      background: isSelected
+                        ? tokens.color.indigoSoft
+                        : item.index % 2 === 0
+                          ? tokens.color.surface
+                          : tokens.color.surfaceAlt,
                     }}
                   >
                     {row.getVisibleCells().map((cell) => {
@@ -425,13 +435,15 @@ const headerCell: CSSProperties = {
   boxSizing: 'border-box',
   cursor: 'pointer',
   display: 'flex',
-  fontSize: tokens.font.size.sm,
+  fontSize: tokens.font.size.eyebrow,
   fontWeight: 600,
   gap: tokens.space(1),
   padding: `${tokens.space(1.5)} ${tokens.space(2)}`,
   position: 'relative',
   userSelect: 'none',
   whiteSpace: 'nowrap',
+  letterSpacing: '0.06em',
+  textTransform: 'uppercase',
 };
 
 const headerLabel: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis' };
@@ -472,6 +484,7 @@ const totalsRowStyle: CSSProperties = {
 const bodyCell: CSSProperties = {
   boxSizing: 'border-box',
   fontVariantNumeric: 'tabular-nums',
+  fontSize: tokens.font.size.sm,
   overflow: 'hidden',
   padding: `${tokens.space(1)} ${tokens.space(2)}`,
   textOverflow: 'ellipsis',

@@ -81,7 +81,14 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
     return (
       <main style={main} data-interactive="true">
         <header style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-          <h1 style={heading}>Recommendations</h1>
+          <div style={{ alignItems: 'center', display: 'flex', justifyContent: 'space-between' }}>
+            <h1 style={heading}>Recommendations</h1>
+            {run === null ? null : (
+              <a className="wa-btn wa-btn--primary wa-btn--sm" href="#recommendation-review">
+                Open review
+              </a>
+            )}
+          </div>
           <p style={muted}>
             {profile.label} · {profile.currencyCode} ·{' '}
             {run === null
@@ -109,15 +116,17 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
             then there is nothing to review, which is not the same as nothing to do.
           </p>
         ) : (
-          <ReviewWorkspace
-            proposals={proposals}
-            runId={run.id}
-            profileId={profile.id}
-            client={profile.label}
-            counts={run.counts}
-            role={role}
-            hasStrategySnapshot={run.strategySnapshot !== null}
-          />
+          <div id="recommendation-review">
+            <ReviewWorkspace
+              proposals={proposals}
+              runId={run.id}
+              profileId={profile.id}
+              client={profile.label}
+              counts={run.counts}
+              role={role}
+              hasStrategySnapshot={run.strategySnapshot !== null}
+            />
+          </div>
         )}
 
         <p style={muted}>
@@ -146,7 +155,7 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
 const main: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+  fontFamily: 'var(--wa-font)',
   gap: '1.5rem',
   margin: '0 auto',
   maxWidth: '96rem',

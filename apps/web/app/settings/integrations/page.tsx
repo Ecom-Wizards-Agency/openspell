@@ -282,7 +282,7 @@ function CompetitorLinksSection({
           <Field label="Competitor ASIN" htmlFor="competitor-asin">
             <Input id="competitor-asin" name="competitorAsin" required minLength={10} maxLength={10} autoCapitalize="characters" />
           </Field>
-          <Button type="submit" variant="primary">Add pair</Button>
+          <Button type="submit">Add pair</Button>
         </form>
       ) : null}
     </section>

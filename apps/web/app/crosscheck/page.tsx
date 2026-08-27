@@ -104,7 +104,7 @@ export default async function CrosscheckPage({ searchParams }: PageProps) {
 }
 
 const main: CSSProperties = {
-  fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+  fontFamily: 'var(--wa-font)',
   margin: '0 auto',
   maxWidth: '72rem',
   padding: '2rem 1.5rem',

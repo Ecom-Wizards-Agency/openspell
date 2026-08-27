@@ -105,31 +105,7 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
 
   return (
     <div style={bar}>
-      <div style={row}>
-        {props.onEntityChange === undefined ? null : (
-          <div style={segmented} role="tablist" aria-label="Entity level">
-            {ENTITY_LEVELS.map((level) => (
-              <button
-                key={level}
-                type="button"
-                role="tab"
-                aria-selected={level === props.entity}
-                onClick={() => props.onEntityChange?.(level)}
-                style={{
-                  ...segment,
-                  ...(level === props.entity ? segmentActive : {}),
-                }}
-              >
-                {ENTITY_LABELS[level]}
-              </button>
-            ))}
-          </div>
-        )}
-        <div style={{ flex: 1 }} />
-        {props.children}
-      </div>
-
-      <div style={row}>
+      <div style={row} data-toolbar-row="filters">
         <select
           aria-label="Filter column"
           value={draftKey}
@@ -169,7 +145,48 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
           Add
         </button>
 
-        <div style={{ width: '1px', height: '1.5rem', background: tokens.color.border }} />
+        {filters.map((filter, index) => (
+          <span key={`${filter.key}-${index}`} style={chip}>
+            {describeFilter(filter)}
+            <button
+              type="button"
+              aria-label={`Remove filter ${filter.key}`}
+              onClick={() => setFilters(filters.filter((_, i) => i !== index))}
+              style={chipClose}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        {filters.length === 0 ? null : (
+          <button type="button" onClick={() => setFilters([])} style={linkButton}>
+            Clear all
+          </button>
+        )}
+      </div>
+
+      <div style={controlsRow} data-toolbar-row="table-controls">
+        {props.onEntityChange === undefined ? null : (
+          <div style={segmented} role="tablist" aria-label="Entity level">
+            {ENTITY_LEVELS.map((level) => (
+              <button
+                key={level}
+                type="button"
+                role="tab"
+                aria-selected={level === props.entity}
+                onClick={() => props.onEntityChange?.(level)}
+                style={{
+                  ...segment,
+                  ...(level === props.entity ? segmentActive : {}),
+                }}
+              >
+                {ENTITY_LABELS[level]}
+              </button>
+            ))}
+          </div>
+        )}
+        {props.children}
+        <div style={{ flex: 1 }} />
 
         <label style={label}>
           Group by
@@ -193,12 +210,6 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
           Columns ({props.visible.length})
         </button>
 
-        {props.onExport === undefined ? null : (
-          <button type="button" onClick={props.onExport} style={button}>
-            Export CSV ({formatInteger(props.model.shown)} of {formatInteger(props.model.total)})
-          </button>
-        )}
-
         {props.views === undefined ? null : (
           <SavedViews
             views={props.views}
@@ -206,28 +217,13 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
             {...(props.onSaveView === undefined ? {} : { onSave: props.onSaveView })}
           />
         )}
-      </div>
 
-      {filters.length === 0 ? null : (
-        <div style={row}>
-          {filters.map((filter, index) => (
-            <span key={`${filter.key}-${index}`} style={chip}>
-              {describeFilter(filter)}
-              <button
-                type="button"
-                aria-label={`Remove filter ${filter.key}`}
-                onClick={() => setFilters(filters.filter((_, i) => i !== index))}
-                style={chipClose}
-              >
-                ×
-              </button>
-            </span>
-          ))}
-          <button type="button" onClick={() => setFilters([])} style={linkButton}>
-            Clear all
+        {props.onExport === undefined ? null : (
+          <button type="button" onClick={props.onExport} style={primaryButton}>
+            Export CSV ({formatInteger(props.model.shown)} of {formatInteger(props.model.total)})
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {pickerOpen ? (
         <div style={picker}>
@@ -339,6 +335,11 @@ const row: CSSProperties = {
   gap: tokens.space(2),
 };
 
+const controlsRow: CSSProperties = {
+  ...row,
+  justifyContent: 'flex-end',
+};
+
 const control: CSSProperties = {
   background: tokens.color.surface,
   border: `1px solid ${tokens.color.borderStrong}`,
@@ -348,7 +349,15 @@ const control: CSSProperties = {
   padding: `${tokens.space(1)} ${tokens.space(1.5)}`,
 };
 
-const button: CSSProperties = { ...control, cursor: 'pointer' };
+const button: CSSProperties = { ...control, background: 'transparent', cursor: 'pointer' };
+
+const primaryButton: CSSProperties = {
+  ...button,
+  background: tokens.color.accentGradient,
+  borderColor: tokens.color.accent,
+  color: tokens.color.onAccent,
+  fontWeight: 650,
+};
 
 const linkButton: CSSProperties = {
   background: 'none',

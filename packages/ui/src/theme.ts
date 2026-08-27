@@ -21,8 +21,8 @@ export const tokens = {
    * Custom properties with the original literal as the fallback.
    *
    * These are written into `style` attributes, and a host that themes itself
-   * cannot reach them there: the browser re-serialises an inline `#ffffff` to
-   * `rgb(255, 255, 255)` through the CSSOM, so the attribute-substring bridge
+   * cannot reach them there: the browser re-serialises an inline hex color to
+   * an `rgb()` value through the CSSOM, so the attribute-substring bridge
    * `apps/web` used to retheme this palette never matched a single element. The
    * grid rendered the host's light-on-dark text over this package's white rows.
    *

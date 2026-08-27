@@ -22,7 +22,7 @@ import type { FilterSet } from './filter.js';
 const available = columnsFor('search_terms');
 const model = buildGridModel(syntheticSearchTermRows(20, { seed: 2 }));
 
-function renderToolbar(onFilterChange = vi.fn()) {
+function renderToolbar(onFilterChange = vi.fn(), onExport?: () => void) {
   render(
     <GridToolbar
       entity="search_terms"
@@ -34,6 +34,7 @@ function renderToolbar(onFilterChange = vi.fn()) {
       groupBy={[]}
       onGroupByChange={() => {}}
       model={model}
+      {...(onExport === undefined ? {} : { onExport })}
     />,
   );
   return onFilterChange;
@@ -42,6 +43,17 @@ function renderToolbar(onFilterChange = vi.fn()) {
 afterEach(cleanup);
 
 describe('GridToolbar filter draft', () => {
+  it('separates filters from right-aligned table controls and makes export primary', () => {
+    renderToolbar(vi.fn(), vi.fn());
+    const filterRow = document.querySelector('[data-toolbar-row="filters"]');
+    const controlsRow = document.querySelector('[data-toolbar-row="table-controls"]');
+    const exportButton = screen.getByRole('button', { name: /Export CSV/ });
+
+    expect(filterRow?.contains(screen.getByLabelText('Filter column'))).toBe(true);
+    expect(controlsRow?.contains(exportButton)).toBe(true);
+    expect(exportButton.getAttribute('style')).toContain('var(--wa-accent-grad');
+  });
+
   it('offers text operators for a text column and numeric ones for a metric', () => {
     renderToolbar();
     const column = screen.getByLabelText('Filter column');

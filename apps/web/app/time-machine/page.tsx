@@ -310,7 +310,7 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
 const main: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+  fontFamily: 'var(--wa-font)',
   gap: '1.5rem',
   margin: '0 auto',
   maxWidth: '72rem',
@@ -360,8 +360,8 @@ const control: CSSProperties = {
 const submitButton: CSSProperties = {
   border: '1px solid var(--wa-border-strong)',
   borderRadius: '0.375rem',
-  background: 'var(--wa-accent-grad)',
-  color: 'var(--wa-on-accent)',
+  background: 'var(--wa-surface)',
+  color: 'var(--wa-text)',
   fontSize: '0.8125rem',
   fontWeight: 600,
   padding: '0.375rem 0.875rem',

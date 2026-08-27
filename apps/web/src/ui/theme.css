@@ -63,6 +63,7 @@
   --wa-border: color-mix(in srgb, var(--wa-ink) 15%, var(--wa-white));
   --wa-border-strong: color-mix(in srgb, var(--wa-ink) 24%, var(--wa-white));
   --wa-ring: var(--wa-indigo);
+  --wa-focus-contrast: transparent;
 
   /* Signal Orange owns action; Electric Indigo owns focus and selection. */
   --wa-accent: var(--wa-signal);
@@ -155,6 +156,7 @@
     --wa-border: var(--wa-slate);
     --wa-border-strong: color-mix(in srgb, var(--wa-mist) 36%, var(--wa-slate));
     --wa-ring: var(--wa-indigo);
+    --wa-focus-contrast: var(--wa-mist);
 
     --wa-accent: var(--wa-signal);
     --wa-accent-hover: color-mix(in srgb, var(--wa-accent) 88%, var(--wa-cloud));
@@ -219,6 +221,7 @@
   --wa-border: var(--wa-slate);
   --wa-border-strong: color-mix(in srgb, var(--wa-mist) 36%, var(--wa-slate));
   --wa-ring: var(--wa-indigo);
+  --wa-focus-contrast: var(--wa-mist);
 
   --wa-accent: var(--wa-signal);
   --wa-accent-hover: color-mix(in srgb, var(--wa-accent) 88%, var(--wa-cloud));
@@ -315,6 +318,7 @@ kbd {
   outline: 2px solid var(--wa-ring);
   outline-offset: 2px;
   border-radius: var(--wa-radius-sm);
+  box-shadow: 0 0 0 4px var(--wa-focus-contrast);
 }
 
 hr {
@@ -333,7 +337,7 @@ button {
 }
 
 ::placeholder {
-  color: var(--wa-text-faint);
+  color: var(--wa-text-muted);
 }
 
 .wa-sr-only {
@@ -424,7 +428,7 @@ button {
 
 .wa-navgroup > summary {
   align-items: center;
-  color: var(--wa-text-faint);
+  color: var(--wa-text-muted);
   cursor: pointer;
   display: flex;
   font-size: var(--wa-fs-2xs);
@@ -505,7 +509,7 @@ button {
 
 .wa-sidebar-foot {
   border-top: 1px solid var(--wa-border);
-  color: var(--wa-text-faint);
+  color: var(--wa-text-muted);
   font-size: var(--wa-fs-xs);
   margin-top: auto;
   padding: 0.75rem 0.5rem 0;
@@ -541,22 +545,76 @@ button {
 }
 
 .wa-identity {
+  position: relative;
+}
+
+.wa-identity-trigger {
   align-items: center;
-  background: var(--wa-surface-2);
   border: 1px solid var(--wa-border);
   border-radius: var(--wa-radius-pill);
+  cursor: pointer;
   display: flex;
-  font-size: var(--wa-fs-sm);
+  gap: 0.25rem;
+  list-style: none;
+  padding: 0.1875rem 0.375rem 0.1875rem 0.1875rem;
+}
+
+.wa-identity-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.wa-identity-trigger:hover {
+  background: var(--wa-surface-3);
+}
+
+.wa-avatar {
+  align-items: center;
+  background: var(--wa-indigo-soft);
+  border: 1px solid var(--wa-info-border);
+  border-radius: var(--wa-radius-pill);
+  color: var(--wa-text);
+  display: inline-flex;
+  font-size: var(--wa-fs-2xs);
+  font-weight: 700;
+  height: 1.75rem;
+  justify-content: center;
+  letter-spacing: 0.04em;
+  width: 1.75rem;
+}
+
+.wa-identity-menu {
+  align-items: stretch;
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border-strong);
+  border-radius: var(--wa-radius);
+  box-shadow: var(--wa-shadow-2);
+  display: flex;
+  flex-direction: column;
   gap: 0.5rem;
-  max-width: 20rem;
-  padding: 0.1875rem 0.1875rem 0.1875rem 0.625rem;
+  padding: 0.625rem;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.375rem);
+  width: min(20rem, calc(100vw - 2rem));
+  z-index: 60;
 }
 
 .wa-identity-email {
   color: var(--wa-text-muted);
+  font-size: var(--wa-fs-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.wa-identity-menu .wa-btn {
+  width: 100%;
+}
+
+.wa-theme-toggle {
+  background: transparent;
+  font-size: var(--wa-fs-sm);
+  padding: 0.3125rem 0.625rem;
 }
 
 .wa-content {
@@ -599,8 +657,8 @@ button {
 
 .wa-btn {
   align-items: center;
-  background: var(--wa-surface);
-  border: 1px solid var(--wa-border-strong);
+  background: transparent;
+  border: 1px solid var(--wa-border);
   border-radius: var(--wa-radius);
   color: var(--wa-text);
   cursor: pointer;
@@ -698,7 +756,7 @@ button {
 }
 
 .wa-hint {
-  color: var(--wa-text-faint);
+  color: var(--wa-text-muted);
   font-size: var(--wa-fs-xs);
 }
 
@@ -719,14 +777,14 @@ button {
 .wa-input:hover,
 .wa-select:hover,
 .wa-textarea:hover {
-  border-color: var(--wa-text-faint);
+  border-color: var(--wa-text-muted);
 }
 
 .wa-input:focus,
 .wa-select:focus,
 .wa-textarea:focus {
-  border-color: var(--wa-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--wa-accent) 22%, transparent);
+  border-color: var(--wa-ring);
+  box-shadow: 0 0 0 2px var(--wa-ring), 0 0 0 4px var(--wa-focus-contrast);
   outline: none;
 }
 
@@ -967,6 +1025,13 @@ button {
 .wa-table--numeric td,
 .wa-num {
   font-variant-numeric: tabular-nums;
+}
+
+.wa-table th[data-numeric='true'],
+.wa-table td[data-numeric='true'],
+.wa-table .wa-cell--numeric {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .wa-tablewrap {
@@ -1400,7 +1465,7 @@ button {
  * it reads these tokens directly and needs no translation layer.
  *
  * What used to live here was that layer: a rule per WP-06 literal, matching on
- * `[style*='background:#ffffff']`. It never worked. React sets inline styles
+ * against a literal white background. It never worked. React sets inline styles
  * through the CSSOM and the browser re-serialises the attribute to
  * `background: rgb(255, 255, 255)`, so no hex-substring selector ever matched —
  * while `.wa-embed`'s own `color` did apply. The result was the host's
@@ -1674,7 +1739,7 @@ button {
 }
 
 .wa-profile-empty {
-  color: var(--wa-text-faint);
+  color: var(--wa-text-muted);
   font-size: var(--wa-fs-xs);
   list-style: none;
   padding: 0.5rem;
@@ -1745,7 +1810,7 @@ button {
 }
 
 .wa-pill__count {
-  color: var(--wa-text-faint);
+  color: var(--wa-text-muted);
   font-variant-numeric: tabular-nums;
 }
 

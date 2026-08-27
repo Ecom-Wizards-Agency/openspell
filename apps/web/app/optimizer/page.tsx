@@ -80,7 +80,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
           title="No profiles yet"
           body="This organisation has no advertising profiles. Connect Amazon Ads and the roster lands on the next OAuth callback; the optimizer fills itself from the first recommendation run."
           action={
-            <a className="wa-btn wa-btn--primary wa-btn--sm" href="/settings/connections">
+            <a className="wa-btn wa-btn--sm" href="/settings/connections">
               Connect Amazon Ads
             </a>
           }
@@ -144,6 +144,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
                 <input type="hidden" name="profileId" value={profile.id} />
                 <Button
                   type="submit"
+                  variant="primary"
                   size="sm"
                   data-testid="optimizer-run-now"
                   title="Queue a seven-day preview using the last complete profile-local day"
@@ -154,7 +155,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
             ) : null}
             <SettingsChip summary={summary} />
             <a
-              className="wa-btn wa-btn--primary wa-btn--sm"
+              className="wa-btn wa-btn--sm"
               href={`/recommendations?profile=${profile.id}${run === null ? '' : `&run=${run.id}`}`}
             >
               Open review →
@@ -212,7 +213,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
                   scale={tile.scale}
                   better={tile.better}
                   context={context2}
-                  deltas={[{ caption: 'vs prior period', pct: tile.deltaPct, reference: tile.prev }]}
+                  delta={{ caption: 'vs prior period', pct: tile.deltaPct, reference: tile.prev }}
                 />
               ))}
             </section>
@@ -238,6 +239,11 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
               <EmptyState
                 title="This run proposed nothing"
                 body="The engine found no bid, budget or targeting change worth proposing for this profile in this window. On a healthy account that is the expected result more weeks than not."
+                meta={
+                  <time dateTime={run.createdAt.toISOString()}>
+                    Run created {run.createdAt.toISOString().replace('T', ' ').slice(0, 16)} UTC
+                  </time>
+                }
               />
             ) : (
               <section aria-label="Optimization groups" className="wa-stack">

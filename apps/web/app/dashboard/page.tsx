@@ -99,7 +99,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           title="No profiles yet"
           body="This organisation has no advertising profiles. Connect Amazon Ads and the roster lands on the next OAuth callback; the dashboard fills itself from the first sync."
           action={
-            <a className="wa-btn wa-btn--primary wa-btn--sm" href="/settings/connections">
+            <a className="wa-btn wa-btn--sm" href="/settings/connections">
               Connect Amazon Ads
             </a>
           }
@@ -175,18 +175,16 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 scale={scale}
                 better={better}
                 context={context}
-                deltas={[
-                  {
-                    caption: 'vs prior period',
-                    pct: delta?.priorPctChange ?? null,
-                    reference: delta?.priorValue ?? null,
-                  },
-                  {
-                    caption: 'vs trailing-7 avg',
-                    pct: delta?.trailing7PctChange ?? null,
-                    reference: delta?.trailing7Avg ?? null,
-                  },
-                ]}
+                delta={{
+                  caption: 'vs prior period',
+                  pct: delta?.priorPctChange ?? null,
+                  reference: delta?.priorValue ?? null,
+                }}
+                detail={{
+                  caption: 'vs trailing-7 avg',
+                  pct: delta?.trailing7PctChange ?? null,
+                  reference: delta?.trailing7Avg ?? null,
+                }}
               />
             );
           })}

@@ -24,7 +24,7 @@ export default function GlobalError({
       <body
         style={{
           color: 'var(--wa-text)',
-          fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+          fontFamily: 'var(--wa-font, Inter, sans-serif)',
           margin: 0,
         }}
       >

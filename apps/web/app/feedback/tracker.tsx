@@ -143,7 +143,10 @@ export function FeedbackTracker({
       </p>
       <p style={muted}>
         You are signed in as <strong data-testid="feedback-role">{role}</strong>.{' '}
-        <a href="/feedback/new">File something new</a> · <a href="/roadmap">See the roadmap</a>
+        <a href="/feedback/new" className="wa-btn wa-btn--primary wa-btn--sm">
+          File something new
+        </a>{' '}
+        · <a href="/roadmap">See the roadmap</a>
       </p>
 
       {message && <p role="status" style={banner(message === 'Saved' ? 'good' : 'bad')}>{message}</p>}

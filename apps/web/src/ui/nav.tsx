@@ -28,7 +28,7 @@ import { NAV_GROUPS, NAV_LINKS } from './nav-links';
 import type { NavGroup, NavLink } from './nav-links';
 import { ProfileAwareBrand } from './profile-aware-brand';
 import { SidebarNav } from './sidebar';
-import { ProfileSwitcher, ThemeToggle } from './topbar-controls';
+import { IdentityMenu, ProfileSwitcher, ThemeToggle } from './topbar-controls';
 import type { NavProfile } from './topbar-controls';
 
 export { NAV_GROUPS, NAV_LINKS };
@@ -78,25 +78,11 @@ export function NavBar({ user, profiles = [], orgName = null }: NavBarProps): Re
         <ThemeToggle />
 
         {user === null ? (
-          <a href="/login" className="wa-btn wa-btn--primary wa-btn--sm" data-testid="nav-signin">
+          <a href="/login" className="wa-btn wa-btn--sm" data-testid="nav-signin">
             Sign in
           </a>
         ) : (
-          <span className="wa-identity" data-testid="nav-identity">
-            {/* One text node on purpose: the frame test asserts the whole
-                phrase "signed in as <email>" contiguously, so the label and the
-                address cannot be split across elements. */}
-            <span className="wa-identity-email">signed in as {user.email ?? 'your account'}</span>
-            <form action="/auth/signout" method="post">
-              <button
-                type="submit"
-                className="wa-btn wa-btn--ghost wa-btn--sm"
-                data-testid="nav-signout"
-              >
-                sign out
-              </button>
-            </form>
-          </span>
+          <IdentityMenu email={user.email} />
         )}
       </header>
     </div>
