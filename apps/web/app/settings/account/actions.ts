@@ -18,16 +18,16 @@ export async function changePassword(
 ): Promise<PasswordActionResult> {
   try {
     await gateAction();
-    const password = String(formData.get(PASSWORD_FIELD) ?? '');
+    const passphrase = String(formData.get(PASSWORD_FIELD) ?? '');
     const confirmation = String(formData.get('confirmation') ?? '');
-    const validationError = passwordChangeError(password, confirmation);
+    const validationError = passwordChangeError(passphrase, confirmation);
     if (validationError) return { status: 'error', message: validationError };
     if (!supabaseConfigured()) {
       return { status: 'error', message: 'Password changes are not configured on this instance.' };
     }
 
     const supabase = await supabaseServerClient();
-    const { error } = await supabase.auth.updateUser({ [PASSWORD_FIELD]: password });
+    const { error } = await supabase.auth.updateUser({ [PASSWORD_FIELD]: passphrase });
     if (error) {
       return { status: 'error', message: 'The password could not be changed. Try again.' };
     }
