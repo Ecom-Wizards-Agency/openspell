@@ -751,7 +751,13 @@ describe.skipIf(!available)('worker + real Postgres', () => {
 
     const provisioner = new ScheduleProvisioner(store, 60_000, quietLogger);
     provisioner.start();
-    await waitFor(async () => (await store.unscheduledProfiles()).length === 0);
+    const expectedSchedules = 1 + 2 * DEFAULT_REPORT_TYPES.length;
+    await waitFor(async () => {
+      const [row] = await database.sql<{ n: string }[]>`
+        select count(*) as n from public.sync_schedules where profile_id = ${profileId}
+      `;
+      return Number(row?.n) === expectedSchedules;
+    });
     provisioner.stop();
 
     const [counts] = await database.sql<{ n: string; variants: string }[]>`
@@ -759,7 +765,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
         from public.sync_schedules where profile_id = ${profileId}
     `;
     // One entity pass plus a recent and a restatement schedule per report type.
-    expect(Number(counts?.n)).toBe(1 + 2 * DEFAULT_REPORT_TYPES.length);
+    expect(Number(counts?.n)).toBe(expectedSchedules);
     expect(Number(counts?.variants)).toBe(2);
 
     // Re-provisioning the same profile finds nothing to do rather than
@@ -768,7 +774,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     const [after] = await database.sql<{ n: string }[]>`
       select count(*) as n from public.sync_schedules where profile_id = ${profileId}
     `;
-    expect(Number(after?.n)).toBe(1 + 2 * DEFAULT_REPORT_TYPES.length);
+    expect(Number(after?.n)).toBe(expectedSchedules);
   });
 
   it('reconciles active integration schedules and disables them after revocation', async () => {

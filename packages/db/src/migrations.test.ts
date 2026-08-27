@@ -53,7 +53,7 @@ describe.skipIf(!available)('migrations', () => {
         from pg_catalog.pg_constraint
        where conname = 'sync_schedules_report_type_required'
     `;
-    expect(constraint?.definition).toContain("job_type = ANY (ARRAY['report.request'");
+    expect(constraint?.definition).toContain("job_type = 'report.request'::sync_job_type");
     expect(constraint?.definition).toContain('(report_type IS NOT NULL)');
   });
 
