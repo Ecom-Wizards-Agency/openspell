@@ -103,7 +103,7 @@ function FlagItem({ flag, dim = false }: { flag: FlagView; dim?: boolean }): Rea
           <strong>{flag.scope}</strong> · {flag.message}
         </div>
         <div style={muted}>{flag.likelyCause}</div>
-        <div style={{ ...muted, color: tokens.color.textFaint }}>
+        <div style={muted}>
           {flag.metric} · {flag.threshold}
           {flag.suppressedReason === null ? '' : ` · ${flag.suppressedReason}`}
         </div>

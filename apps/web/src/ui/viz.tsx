@@ -14,9 +14,8 @@
  *
  * The rest is the house data-viz spec, applied literally:
  *
- *  - Series colours are the validated categorical slots (blue, then orange),
- *    assigned in fixed order and never cycled — and re-stepped for the dark
- *    surface rather than flipped.
+ *  - Series colours are brand roles: indigo primary, orange highlight, then a
+ *    dashed neutral comparison. They are assigned in fixed order, never cycled.
  *  - 2px lines, round joins, an ≥8px end marker carrying a 2px ring in the
  *    surface colour so it stays legible where two series cross.
  *  - Hairline gridlines one step off the surface, never dashed; axis text in
@@ -144,7 +143,25 @@ const PLOT_W = W - PAD.left - PAD.right;
 const PLOT_H = H - PAD.top - PAD.bottom;
 
 /** Categorical slots, in fixed order. Never generated, never cycled. */
-const SERIES_VARS = ['var(--wa-viz-1)', 'var(--wa-viz-2)', 'var(--wa-viz-3)'] as const;
+const SERIES_STYLES = [
+  {
+    color: 'var(--wa-viz-1)',
+    dashed: false,
+    outline: 'var(--wa-viz-1-outline)',
+  },
+  {
+    color: 'var(--wa-viz-2)',
+    dashed: false,
+    outline: 'transparent',
+  },
+  {
+    color: 'var(--wa-viz-3)',
+    dashed: true,
+    outline: 'transparent',
+  },
+] as const;
+
+const seriesStyle = (index: number) => SERIES_STYLES[index] ?? SERIES_STYLES[0];
 
 export function TrendChart({
   title,
@@ -302,7 +319,7 @@ export function TrendChart({
                 y={y(tick) + 3.5}
                 textAnchor="end"
                 fill="var(--wa-viz-ink)"
-                fontSize={10}
+                fontSize={12}
                 style={{ fontVariantNumeric: 'tabular-nums' }}
               >
                 {formatValue(tick, scale, context)}
@@ -319,7 +336,13 @@ export function TrendChart({
             strokeWidth={1}
           />
 
-          <text x={PAD.left} y={H - 8} fill="var(--wa-viz-ink)" fontSize={10}>
+          <text
+            x={PAD.left}
+            y={H - 8}
+            fill="var(--wa-viz-ink)"
+            fontSize={12}
+            style={{ fontVariantNumeric: 'tabular-nums' }}
+          >
             {dates[0]}
           </text>
           <text
@@ -327,7 +350,8 @@ export function TrendChart({
             y={H - 8}
             textAnchor="end"
             fill="var(--wa-viz-ink)"
-            fontSize={10}
+            fontSize={12}
+            style={{ fontVariantNumeric: 'tabular-nums' }}
           >
             {dates[dates.length - 1]}
           </text>
@@ -344,30 +368,43 @@ export function TrendChart({
           )}
 
           {gseries.map((entry, index) => {
-            const color = SERIES_VARS[index] ?? SERIES_VARS[0];
+            const visual = seriesStyle(index);
+            const color = visual.color;
             const path = linePath(entry.points, x, y);
             const last = lastDefined(entry.points);
             const labelY = endLabelY.get(index);
             return (
               <g key={entry.label}>
                 {path === '' ? null : (
-                  <path
-                    d={path}
-                    fill="none"
-                    stroke={color}
-                    strokeWidth={2}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
+                  <>
+                    <path
+                      d={path}
+                      fill="none"
+                      stroke={visual.outline}
+                      strokeWidth={4}
+                      strokeDasharray={visual.dashed ? '5 4' : undefined}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    />
+                    <path
+                      d={path}
+                      fill="none"
+                      stroke={color}
+                      strokeWidth={2}
+                      strokeDasharray={visual.dashed ? '5 4' : undefined}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </>
                 )}
                 {last === null ? null : (
                   <>
-                    {/* The 2px ring is the surface, not a stroke of the mark. */}
                     <circle
                       cx={x(last.index)}
                       cy={y(last.value)}
                       r={6}
-                      fill="var(--wa-viz-surface)"
+                      fill={index === 0 ? visual.outline : 'var(--wa-viz-surface)'}
                     />
                     <circle cx={x(last.index)} cy={y(last.value)} r={4} fill={color} />
                     {labelY === undefined || Math.abs(labelY - (y(last.value) + 3.5)) < 1 ? null : (
@@ -385,7 +422,7 @@ export function TrendChart({
                       x={x(last.index) + 10}
                       y={labelY}
                       fill="var(--wa-viz-ink)"
-                      fontSize={10}
+                      fontSize={12}
                       style={{ fontVariantNumeric: 'tabular-nums' }}
                     >
                       {formatValue(last.value, scale, context)}
@@ -398,7 +435,7 @@ export function TrendChart({
                       cx={x(hovered)}
                       cy={y(entry.points[hovered]?.value ?? 0)}
                       r={5.5}
-                      fill="var(--wa-viz-surface)"
+                      fill={index === 0 ? visual.outline : 'var(--wa-viz-surface)'}
                     />
                     <circle
                       cx={x(hovered)}
@@ -437,7 +474,12 @@ export function TrendChart({
                 <span
                   aria-hidden="true"
                   className="wa-chart-key"
-                  style={{ background: SERIES_VARS[index] ?? SERIES_VARS[0] }}
+                  style={{
+                    background: seriesStyle(index).dashed ? 'transparent' : seriesStyle(index).color,
+                    borderTop: seriesStyle(index).dashed
+                      ? `2px dashed ${seriesStyle(index).color}`
+                      : undefined,
+                  }}
                 />
                 {entry.label}
                 <strong className="wa-num">
@@ -468,7 +510,7 @@ export function TrendChart({
               <tr>
                 <th scope="col">Date</th>
                 {gseries.map((entry) => (
-                  <th key={entry.label} scope="col">
+                  <th key={entry.label} scope="col" data-numeric="true">
                     {entry.label}
                   </th>
                 ))}
@@ -479,7 +521,7 @@ export function TrendChart({
                 <tr key={date}>
                   <td>{date}</td>
                   {gseries.map((entry) => (
-                    <td key={entry.label}>
+                    <td key={entry.label} data-numeric="true">
                       {formatValue(entry.points[index]?.value ?? null, scale, context)}
                     </td>
                   ))}
@@ -521,7 +563,14 @@ function ChartHead({
               <span
                 aria-hidden="true"
                 className="wa-chart-key"
-                style={{ background: SERIES_VARS[index] ?? SERIES_VARS[0] }}
+                style={{
+                  background: seriesStyle(index).dashed ? 'transparent' : seriesStyle(index).color,
+                  borderTop: seriesStyle(index).dashed
+                    ? `2px dashed ${seriesStyle(index).color}`
+                    : undefined,
+                  boxShadow:
+                    index === 0 ? `0 0 0 1px ${seriesStyle(index).outline}` : undefined,
+                }}
               />
               {entry.label}
             </li>
@@ -719,9 +768,9 @@ export interface BidCorridorChartProps {
 /** The corridor's series, in the rail order the recon fixes (§3). */
 const CORRIDOR_COLORS = {
   suggested: 'var(--wa-viz-2)', // orange — Amazon Suggested (band + median)
-  bid: 'var(--wa-viz-4)', // purple — Bid (step)
-  cpc: 'var(--wa-viz-1)', // blue — realized CPC
-  maxCpc: 'var(--wa-viz-5)', // red — Max CPC (dashed step)
+  bid: 'var(--wa-viz-4)', // secondary indigo — Bid (step)
+  cpc: 'var(--wa-viz-1)', // Electric Indigo — realized CPC
+  maxCpc: 'var(--wa-viz-5)', // neutral comparison — Max CPC (dashed step)
 } as const;
 
 function mean(values: readonly (number | null)[]): number | null {
@@ -779,8 +828,9 @@ export function aggregateBidCorridorPoints(
  *
  * Amazon's daily suggested-bid low↔high drawn as a filled orange band with a
  * dashed median through it — market evidence, not policy — and over it the
- * target's bid (a purple step, because a bid only moves when moved), realized
- * CPC (solid blue), and max-potential CPC (a dashed red step). The whole point
+ * target's bid (a secondary-indigo step, because a bid only moves when moved),
+ * realized CPC (Electric Indigo), and max-potential CPC (a dashed neutral
+ * step). The whole point
  * is to put Amazon's *external* opinion next to our *internal* one and let the
  * operator see the gap: a bid at the corridor floor while CPC runs above its
  * ceiling is a placement-modifier problem, and only this chart shows both.
@@ -823,7 +873,15 @@ export function BidCorridorChart({
         { label: 'Max CPC', color: CORRIDOR_COLORS.maxCpc },
       ].map((entry) => (
         <li key={entry.label}>
-          <span aria-hidden="true" className="wa-chart-key" style={{ background: entry.color }} />
+          <span
+            aria-hidden="true"
+            className="wa-chart-key"
+            style={{
+              background: entry.color,
+              boxShadow:
+                entry.color === CORRIDOR_COLORS.cpc ? '0 0 0 1px var(--wa-viz-1-outline)' : undefined,
+            }}
+          />
           {entry.label}
         </li>
       ))}
@@ -920,15 +978,15 @@ export function BidCorridorChart({
           {ticks.map((tick) => (
             <g key={tick}>
               <line x1={PAD.left} x2={PAD.left + PLOT_W} y1={y(tick)} y2={y(tick)} stroke="var(--wa-viz-grid)" strokeWidth={1} />
-              <text x={PAD.left - 8} y={y(tick) + 3.5} textAnchor="end" fill="var(--wa-viz-ink)" fontSize={10} style={{ fontVariantNumeric: 'tabular-nums' }}>
+              <text x={PAD.left - 8} y={y(tick) + 3.5} textAnchor="end" fill="var(--wa-viz-ink)" fontSize={12} style={{ fontVariantNumeric: 'tabular-nums' }}>
                 {formatValue(tick, 'money', context)}
               </text>
             </g>
           ))}
 
           <line x1={PAD.left} x2={PAD.left + PLOT_W} y1={PAD.top + PLOT_H} y2={PAD.top + PLOT_H} stroke="var(--wa-viz-axis)" strokeWidth={1} />
-          <text x={PAD.left} y={H - 8} fill="var(--wa-viz-ink)" fontSize={10}>{dates[0]}</text>
-          <text x={PAD.left + PLOT_W} y={H - 8} textAnchor="end" fill="var(--wa-viz-ink)" fontSize={10}>{dates[dates.length - 1]}</text>
+          <text x={PAD.left} y={H - 8} fill="var(--wa-viz-ink)" fontSize={12} style={{ fontVariantNumeric: 'tabular-nums' }}>{dates[0]}</text>
+          <text x={PAD.left + PLOT_W} y={H - 8} textAnchor="end" fill="var(--wa-viz-ink)" fontSize={12} style={{ fontVariantNumeric: 'tabular-nums' }}>{dates[dates.length - 1]}</text>
 
           {hovered === null ? null : (
             <line x1={x(hovered)} x2={x(hovered)} y1={PAD.top} y2={PAD.top + PLOT_H} stroke="var(--wa-viz-axis)" strokeWidth={1} />
@@ -938,18 +996,31 @@ export function BidCorridorChart({
           {medianPath === '' ? null : (
             <path d={medianPath} fill="none" stroke={CORRIDOR_COLORS.suggested} strokeWidth={2} strokeDasharray="5 4" strokeLinecap="round" strokeLinejoin="round" />
           )}
-          {/* Max CPC: a dashed red step, far above everything on a modifier day. */}
+          {/* Max CPC: a dashed neutral step, often above everything on a modifier day. */}
           {maxCpcPath === '' ? null : (
             <path d={maxCpcPath} fill="none" stroke={CORRIDOR_COLORS.maxCpc} strokeWidth={2} strokeDasharray="2 3" strokeLinecap="round" strokeLinejoin="round" />
           )}
-          {/* CPC: solid blue, realized cost per click. */}
+          {/* CPC: exact Electric Indigo with a contrast outline in dark mode. */}
           {cpcPath === '' ? null : (
-            <path d={cpcPath} fill="none" stroke={CORRIDOR_COLORS.cpc} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+            <>
+              <path
+                d={cpcPath}
+                fill="none"
+                stroke="var(--wa-viz-1-outline)"
+                strokeWidth={4}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              />
+              <path d={cpcPath} fill="none" stroke={CORRIDOR_COLORS.cpc} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+            </>
           )}
-          {/* Bid: a solid purple step — it only moves when somebody moves it. */}
+          {/* Bid: a solid secondary-indigo step; it only moves when somebody moves it. */}
           {bidPath === '' ? null : (
             <path d={bidPath} fill="none" stroke={CORRIDOR_COLORS.bid} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
           )}
+
+          <CorridorEndpointLabels points={points} x={x} y={y} context={context} />
 
           {hovered === null ? null : (
             <CorridorHoverDots point={viewPoints[hovered]} index={hovered} x={x} y={y} />
@@ -970,24 +1041,24 @@ export function BidCorridorChart({
             <thead>
               <tr>
                 <th scope="col">Date</th>
-                <th scope="col">Low</th>
-                <th scope="col">Median</th>
-                <th scope="col">High</th>
-                <th scope="col">Bid</th>
-                <th scope="col">CPC</th>
-                <th scope="col">Max CPC</th>
+                <th scope="col" data-numeric="true">Low</th>
+                <th scope="col" data-numeric="true">Median</th>
+                <th scope="col" data-numeric="true">High</th>
+                <th scope="col" data-numeric="true">Bid</th>
+                <th scope="col" data-numeric="true">CPC</th>
+                <th scope="col" data-numeric="true">Max CPC</th>
               </tr>
             </thead>
             <tbody>
               {viewPoints.map((point) => (
                 <tr key={point.date}>
                   <td>{point.date}</td>
-                  <td>{formatValue(point.low, 'money', context)}</td>
-                  <td>{formatValue(point.median, 'money', context)}</td>
-                  <td>{formatValue(point.high, 'money', context)}</td>
-                  <td>{formatValue(point.bid, 'money', context)}</td>
-                  <td>{formatValue(point.cpc, 'money', context)}</td>
-                  <td>{formatValue(point.maxCpc, 'money', context)}</td>
+                  <td data-numeric="true">{formatValue(point.low, 'money', context)}</td>
+                  <td data-numeric="true">{formatValue(point.median, 'money', context)}</td>
+                  <td data-numeric="true">{formatValue(point.high, 'money', context)}</td>
+                  <td data-numeric="true">{formatValue(point.bid, 'money', context)}</td>
+                  <td data-numeric="true">{formatValue(point.cpc, 'money', context)}</td>
+                  <td data-numeric="true">{formatValue(point.maxCpc, 'money', context)}</td>
                 </tr>
               ))}
             </tbody>
@@ -998,7 +1069,7 @@ export function BidCorridorChart({
   );
 }
 
-/** The hover crosshair's per-series dots, each ringed in the surface colour. */
+/** The hover crosshair's per-series dots, with a contrast ring for exact indigo. */
 function CorridorHoverDots({
   point,
   index,
@@ -1011,10 +1082,10 @@ function CorridorHoverDots({
   y: (value: number) => number;
 }): ReactNode {
   if (point === undefined) return null;
-  const dots: Array<{ value: number | null; color: string }> = [
+  const dots: Array<{ value: number | null; color: string; ring?: string }> = [
     { value: point.median, color: CORRIDOR_COLORS.suggested },
     { value: point.maxCpc, color: CORRIDOR_COLORS.maxCpc },
-    { value: point.cpc, color: CORRIDOR_COLORS.cpc },
+    { value: point.cpc, color: CORRIDOR_COLORS.cpc, ring: 'var(--wa-viz-1-outline)' },
     { value: point.bid, color: CORRIDOR_COLORS.bid },
   ];
   return (
@@ -1022,7 +1093,12 @@ function CorridorHoverDots({
       {dots.map((dot, i) =>
         dot.value === null ? null : (
           <g key={i}>
-            <circle cx={x(index)} cy={y(dot.value)} r={5.5} fill="var(--wa-viz-surface)" />
+            <circle
+              cx={x(index)}
+              cy={y(dot.value)}
+              r={5.5}
+              fill={dot.ring ?? 'var(--wa-viz-surface)'}
+            />
             <circle cx={x(index)} cy={y(dot.value)} r={3.5} fill={dot.color} />
           </g>
         ),
@@ -1085,6 +1161,46 @@ function TooltipRow({ label, color, value }: { label: string; color: string; val
       {label}
       <strong className="wa-num">{value}</strong>
     </div>
+  );
+}
+
+/** Endpoint values keep the corridor readable without requiring a hover target. */
+function CorridorEndpointLabels({
+  points,
+  x,
+  y,
+  context,
+}: {
+  points: readonly BidCorridorPoint[];
+  x: (index: number) => number;
+  y: (value: number) => number;
+  context: { currencyCode: string; locale: string };
+}): ReactNode {
+  const endpoints = [
+    { points: points.map((point) => ({ date: point.date, value: point.median })), offset: -12 },
+    { points: points.map((point) => ({ date: point.date, value: point.maxCpc })), offset: 14 },
+    { points: points.map((point) => ({ date: point.date, value: point.cpc })), offset: 2 },
+    { points: points.map((point) => ({ date: point.date, value: point.bid })), offset: 14 },
+  ];
+  return (
+    <>
+      {endpoints.map((entry, index) => {
+        const endpoint = lastDefined(entry.points);
+        if (endpoint === null) return null;
+        return (
+          <text
+            key={index}
+            x={x(endpoint.index) + 10}
+            y={y(endpoint.value) + entry.offset}
+            fill="var(--wa-viz-ink)"
+            fontSize={12}
+            style={{ fontVariantNumeric: 'tabular-nums' }}
+          >
+            {formatValue(endpoint.value, 'money', context)}
+          </text>
+        );
+      })}
+    </>
   );
 }
 
@@ -1167,17 +1283,29 @@ export function stepPath(
  * The alternative — ticks at the data's own extremes — puts labels like
  * `$1,283.41` on a gridline, which reads as a data point rather than as a scale.
  */
-function niceTicks(min: number, max: number): number[] {
+export function niceTicks(min: number, max: number): number[] {
   const lo = Math.min(0, min);
   const hi = max === lo ? lo + 1 : max;
   const raw = (hi - lo) / 4;
   const magnitude = 10 ** Math.floor(Math.log10(raw));
   const normalized = raw / magnitude;
-  const step = (normalized > 5 ? 10 : normalized > 2 ? 5 : normalized > 1 ? 2 : 1) * magnitude;
-  const start = Math.floor(lo / step) * step;
-  const ticks: number[] = [];
-  for (let value = start; value <= hi + step / 2; value += step) {
-    ticks.push(Number(value.toFixed(10)));
+  const factors = [1, 2, 2.5, 5, 10];
+  let factorIndex = Math.max(0, factors.findIndex((factor) => factor >= normalized));
+
+  while (factorIndex < factors.length) {
+    const step = (factors[factorIndex] ?? 10) * magnitude;
+    const start = Math.floor(lo / step) * step;
+    const end = Math.ceil(hi / step) * step;
+    const ticks: number[] = [];
+    for (let value = start; value <= end + step / 2; value += step) {
+      ticks.push(Number(value.toFixed(10)));
+    }
+    if (ticks.length <= 5) {
+      if (ticks.length >= 3) return ticks;
+      return [start, Number(((start + end) / 2).toFixed(10)), end];
+    }
+    factorIndex += 1;
   }
-  return ticks;
+
+  return [lo, Number(((lo + hi) / 2).toFixed(10)), hi];
 }

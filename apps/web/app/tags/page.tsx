@@ -52,7 +52,7 @@ export default async function TagsPage({ searchParams }: { searchParams: SearchP
     if (isUnauthenticated(error)) redirect('/login');
     const message = error instanceof Error ? error.message : 'Tags are unavailable';
     return (
-      <main style={{ maxWidth: 760, margin: '48px auto', fontFamily: 'system-ui' }}>
+      <main style={{ maxWidth: 760, margin: '48px auto', fontFamily: 'var(--wa-font)' }}>
         <h1>Tags</h1>
         <p role="alert">{message}</p>
       </main>

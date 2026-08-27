@@ -62,7 +62,7 @@ export default async function OptimizationGroupsPage({ searchParams }: PageProps
           title="No profiles yet"
           body="This organisation has no advertising profiles. Connect Amazon Ads to populate the roster; optimization groups are derived from the recommendation run."
           action={
-            <a className="wa-btn wa-btn--primary wa-btn--sm" href="/settings/connections">
+            <a className="wa-btn wa-btn--sm" href="/settings/connections">
               Connect Amazon Ads
             </a>
           }

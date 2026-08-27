@@ -84,7 +84,7 @@ export default async function Page() {
 }
 
 const main: CSSProperties = {
-  fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+  fontFamily: 'var(--wa-font)',
   margin: '0 auto',
   maxWidth: '48rem',
   padding: '3rem 1.5rem',

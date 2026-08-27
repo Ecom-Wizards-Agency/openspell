@@ -360,7 +360,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
             <h2 style={{ fontSize: '1rem', margin: '0.5rem 0' }}>
               {group.label} · {group.proposals.length}
             </h2>
-            <table style={table}>
+            <table className="wa-table" style={table}>
               <thead>
                 <tr>
                   <th style={th} scope="col">
@@ -413,7 +413,11 @@ function ProposalRow({
 }): ReactNode {
   return (
     <>
-      <tr data-testid={`proposal-${proposal.id}`} data-status={proposal.status}>
+      <tr
+        data-testid={`proposal-${proposal.id}`}
+        data-status={proposal.status}
+        aria-selected={selected}
+      >
         <td style={td}>
           <input
             type="checkbox"

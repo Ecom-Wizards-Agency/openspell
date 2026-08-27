@@ -192,7 +192,7 @@ export function BidHistoryModal({
                     value={tile.value}
                     scale={tile.scale}
                     better={tile.better}
-                    deltas={[]}
+                    delta={{ caption: 'vs prior period', pct: null, reference: null }}
                     context={{ currencyCode, locale: 'en-US' }}
                   />
                 ))}

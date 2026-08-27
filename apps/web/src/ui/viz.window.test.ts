@@ -7,8 +7,10 @@
  * shading for the very test they were reading vanished. It is now clamped to
  * the bucket the window sits in, which is the smallest honest answer.
  */
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { windowBand } from './viz';
+import { niceTicks, TrendChart, windowBand } from './viz';
 
 // The chart's own projection: PAD.left is 62 and the plot is 620 wide.
 const PLOT_WIDTH = 620;
@@ -75,5 +77,50 @@ describe('windowBand', () => {
     expect(band({ start: '2026-09-01', end: '2026-09-30' }, WEEKS)).toBeNull();
     expect(band({ start: '2026-09-01', end: '2026-09-30' }, MONTHS)).toBeNull();
     expect(band({ start: '2026-08-01', end: '2026-08-02' }, [])).toBeNull();
+  });
+});
+
+describe('brand chart rendering', () => {
+  it('keeps every y-axis to three through five gridlines', () => {
+    for (const [min, max] of [
+      [0, 1],
+      [0, 9],
+      [13, 98],
+      [-7, 21],
+      [12_345, 98_765],
+    ] as const) {
+      expect(niceTicks(min, max).length).toBeGreaterThanOrEqual(3);
+      expect(niceTicks(min, max).length).toBeLessThanOrEqual(5);
+    }
+  });
+
+  it('renders fixed brand roles, comparison dashes, tabular 12px ticks, and endpoint labels', () => {
+    const points = (offset: number) => [
+      { date: '2026-08-01', value: 10 + offset },
+      { date: '2026-08-02', value: 20 + offset },
+      { date: '2026-08-03', value: 30 + offset },
+    ];
+    const markup = renderToStaticMarkup(
+      createElement(TrendChart, {
+        title: 'Brand roles',
+        ariaLabel: 'Brand chart',
+        currencyCode: 'USD',
+        scale: 'integer',
+        series: [
+          { label: 'Primary', points: points(0) },
+          { label: 'Highlight', points: points(5) },
+          { label: 'Comparison', points: points(10) },
+        ],
+      }),
+    );
+
+    expect(markup).toContain('stroke="var(--wa-viz-1)"');
+    expect(markup).toContain('stroke="var(--wa-viz-2)"');
+    expect(markup).toContain('stroke="var(--wa-viz-3)"');
+    expect(markup).toContain('stroke-dasharray="5 4"');
+    expect(markup).toContain('stroke="var(--wa-viz-1-outline)"');
+    expect(markup).toContain('font-size="12"');
+    expect(markup).toContain('font-variant-numeric:tabular-nums');
+    expect(markup).toContain('>30</text>');
   });
 });

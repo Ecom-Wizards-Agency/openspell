@@ -144,7 +144,6 @@ export function BulkSyncBar({
       <Button
         type="button"
         size="sm"
-        variant="primary"
         disabled={count === 0 || pending}
         aria-busy={pending}
         data-testid="bulk-enable"

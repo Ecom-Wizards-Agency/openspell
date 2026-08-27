@@ -11,6 +11,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { NAV_LINKS, NavBar } from './nav.js';
+import { userInitials } from './topbar-controls.js';
 import { profileAwareHomeHref } from './profile-aware-brand.js';
 
 const render = (user: { id: string; email: string | null } | null): string =>
@@ -33,23 +34,31 @@ describe('the application nav', () => {
     expect(markup).toContain('href="/login"');
     expect(markup).toContain('Sign in');
     expect(markup).not.toContain('/auth/signout');
-    expect(markup).not.toContain('signed in as');
+    expect(markup).not.toContain('data-testid="nav-identity"');
   });
 
-  it('names the signed-in user and offers a way out', () => {
+  it('keeps identity details inside an avatar menu and offers a way out', () => {
     const markup = render({ id: 'u-1', email: 'operator@example.test' });
-    expect(markup).toContain('signed in as');
+    expect(markup).toContain('data-testid="nav-identity"');
+    expect(markup).toContain('>OP<');
     expect(markup).toContain('operator@example.test');
     expect(markup).toContain('action="/auth/signout"');
-    expect(markup).toContain('sign out');
+    expect(markup).toContain('Sign out');
     // No second, contradictory affordance.
     expect(markup).not.toContain('href="/login"');
   });
 
   it('still offers a way out when the session carries no address', () => {
     const markup = render({ id: 'u-1', email: null });
-    expect(markup).toContain('signed in as your account');
+    expect(markup).toContain('>WA<');
+    expect(markup).toContain('your account');
     expect(markup).toContain('action="/auth/signout"');
+  });
+
+  it('derives stable avatar initials without exposing the address in the trigger', () => {
+    expect(userInitials('victor.uhl@example.test')).toBe('VU');
+    expect(userInitials('operator@example.test')).toBe('OP');
+    expect(userInitials(null)).toBe('WA');
   });
 
   it('keeps only the selected profile when the brand link returns home', () => {

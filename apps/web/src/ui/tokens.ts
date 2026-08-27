@@ -84,7 +84,7 @@ export const page: CSSProperties = {
 
 export const heading: CSSProperties = {
   fontSize: font.size.xl,
-  fontWeight: 640,
+  fontWeight: 700,
   letterSpacing: '-0.02em',
   margin: '0 0 0.375rem',
 };

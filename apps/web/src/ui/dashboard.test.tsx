@@ -11,7 +11,7 @@ describe('KpiTile comparison state', () => {
         scale="percent"
         better="lower"
         context={{ currencyCode: 'USD' }}
-        deltas={[{ caption: 'vs prior period', pct: null, reference: 1.283 }]}
+        delta={{ caption: 'vs prior period', pct: null, reference: 1.283 }}
       />,
     );
 

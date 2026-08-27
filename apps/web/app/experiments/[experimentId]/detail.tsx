@@ -335,12 +335,17 @@ export function ExperimentDetail({
               <tr>
                 <th scope="col">Metric</th>
                 {comparison.windows.map((window) => (
-                  <th key={`${window.label}-scoped`} scope="col" data-testid={`col-scoped-${window.label}`}>
+                  <th
+                    key={`${window.label}-scoped`}
+                    scope="col"
+                    data-numeric="true"
+                    data-testid={`col-scoped-${window.label}`}
+                  >
                     {window.label} · scoped
                   </th>
                 ))}
                 {comparison.windows.map((window) => (
-                  <th key={`${window.label}-acct`} scope="col">
+                  <th key={`${window.label}-acct`} scope="col" data-numeric="true">
                     {window.label} · account
                   </th>
                 ))}
@@ -351,12 +356,18 @@ export function ExperimentDetail({
                 <tr key={row.key}>
                   <td>{row.label}</td>
                   {comparison.windows.map((window) => (
-                    <td key={`${window.label}-scoped-${row.key}`} data-testid={`cell-scoped-${window.label}-${row.key}`}>
+                    <td
+                      key={`${window.label}-scoped-${row.key}`}
+                      data-numeric="true"
+                      data-testid={`cell-scoped-${window.label}-${row.key}`}
+                    >
                       {formatMetric(window.scoped, row.key)}
                     </td>
                   ))}
                   {comparison.windows.map((window) => (
-                    <td key={`${window.label}-acct-${row.key}`}>{formatMetric(window.profile, row.key)}</td>
+                    <td key={`${window.label}-acct-${row.key}`} data-numeric="true">
+                      {formatMetric(window.profile, row.key)}
+                    </td>
                   ))}
                 </tr>
               ))}

@@ -23,8 +23,8 @@ export default function GlobalError({
     <html lang="en">
       <body
         style={{
-          color: '#111827',
-          fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+          color: 'var(--wa-text)',
+          fontFamily: 'var(--wa-font, Inter, sans-serif)',
           margin: 0,
         }}
       >
@@ -32,21 +32,21 @@ export default function GlobalError({
           <h1 style={{ fontSize: '1.5rem', margin: '0 0 0.75rem' }}>
             Something failed on our side
           </h1>
-          <p style={{ color: '#6b7280', fontSize: '0.875rem', margin: '0 0 0.75rem' }}>
+          <p style={{ color: 'var(--wa-text-muted)', fontSize: '0.875rem', margin: '0 0 0.75rem' }}>
             wizard-ads could not render this page at all. Nothing was changed by it.
           </p>
           {error.digest ? (
-            <p style={{ color: '#6b7280', fontSize: '0.875rem', margin: '0 0 0.75rem' }}>
+            <p style={{ color: 'var(--wa-text-muted)', fontSize: '0.875rem', margin: '0 0 0.75rem' }}>
               Quote this reference when you report it: <code>{error.digest}</code>
             </p>
           ) : null}
-          <p style={{ color: '#6b7280', fontSize: '0.875rem', margin: 0 }}>
+          <p style={{ color: 'var(--wa-text-muted)', fontSize: '0.875rem', margin: 0 }}>
             <button
               type="button"
               onClick={reset}
               style={{
-                background: '#f9fafb',
-                border: '1px solid #e5e7eb',
+                background: 'var(--wa-surface-2)',
+                border: '1px solid var(--wa-border)',
                 borderRadius: '0.25rem',
                 cursor: 'pointer',
                 fontSize: '0.8125rem',
@@ -55,7 +55,7 @@ export default function GlobalError({
             >
               Try again
             </button>{' '}
-            <a href="/" style={{ color: '#111827' }}>
+            <a href="/" style={{ color: 'var(--wa-text)' }}>
               Back to the index
             </a>
           </p>

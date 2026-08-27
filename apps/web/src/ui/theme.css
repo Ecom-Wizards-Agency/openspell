@@ -23,83 +23,98 @@
 :root {
   color-scheme: light;
 
-  /* Plane and surfaces */
-  --wa-bg: #f5f7fa;
-  --wa-surface: #ffffff;
-  --wa-surface-2: #f8fafc;
-  --wa-surface-3: #eef2f7;
-  --wa-surface-sunken: #f1f4f9;
-  --wa-sidebar-bg: #ffffff;
-  --wa-topbar-bg: rgba(255, 255, 255, 0.88);
-  --wa-bug-trigger-bg: #1f2937;
-  --wa-bug-trigger-hover: #111827;
-  --wa-bug-trigger-text: #ffffff;
-  --wa-bug-panel-bg: #ffffff;
+  /* Brand palette. Semantic aliases below are the only tokens components read. */
+  --wa-obsidian: #0F1318;
+  --wa-carbon: #171C24;
+  --wa-raised: #1C232D;
+  --wa-slate: #2A323D;
+  --wa-cloud: #F5F6F8;
+  --wa-mist: #9AA5B4;
+  --wa-steel: #5B6573;
+  --wa-ink: #11151C;
+  --wa-white: #FFFFFF;
+  --wa-signal: #FD4807;
+  --wa-indigo: #3322E0;
+  --wa-good: #22C55E;
+  --wa-bad: #EF4444;
+  --wa-series-3: #868A96;
 
-  /* Ink */
-  --wa-text: #0f172a;
-  --wa-text-muted: #5b6b7f;
-  /* 4.63:1 on --wa-surface, up from #8b9bad's 2.84:1. The sidebar section
-     labels are this token's widest user and they are small uppercase text, so
-     4.5 is the bar, not 3. The dark scopes carry the same fix: #6d7d8f measured
-     4.31:1 on --wa-sidebar-bg, a near miss that still fails. */
-  --wa-text-faint: #67768a;
-  --wa-text-invert: #ffffff;
+  /* Plane and surfaces — light mode. */
+  --wa-bg: var(--wa-white);
+  --wa-surface: var(--wa-cloud);
+  --wa-surface-2: var(--wa-white);
+  --wa-surface-3: color-mix(in srgb, var(--wa-ink) 7%, var(--wa-cloud));
+  --wa-surface-sunken: color-mix(in srgb, var(--wa-ink) 4%, var(--wa-cloud));
+  --wa-sidebar-bg: var(--wa-cloud);
+  --wa-topbar-bg: color-mix(in srgb, var(--wa-cloud) 88%, transparent);
+  --wa-bug-trigger-bg: var(--wa-ink);
+  --wa-bug-trigger-hover: var(--wa-obsidian);
+  --wa-bug-trigger-text: var(--wa-cloud);
+  --wa-bug-panel-bg: var(--wa-cloud);
 
-  /* Lines */
-  --wa-border: #e3e8ef;
-  --wa-border-strong: #cdd6e1;
-  --wa-ring: #2a78d6;
+  /* Ink. Faint is reserved for disabled/tertiary marks; readable copy uses dim. */
+  --wa-text: var(--wa-ink);
+  --wa-text-dim: var(--wa-steel);
+  --wa-text-muted: var(--wa-text-dim);
+  --wa-text-faint: var(--wa-steel);
+  --wa-text-invert: var(--wa-cloud);
 
-  /* Accent — the same blue as categorical series slot 1, so a primary button
-     and the first line on a chart are recognisably one system. */
-  --wa-accent: #2a78d6;
-  --wa-accent-hover: #256abf;
-  --wa-accent-active: #1c5cab;
-  --wa-accent-soft: #eaf2fd;
-  --wa-accent-border: #b7d3f6;
-  --wa-accent-text: #1c5cab;
-  --wa-on-accent: #ffffff;
+  /* Lines and focus. */
+  --wa-border: color-mix(in srgb, var(--wa-ink) 15%, var(--wa-white));
+  --wa-border-strong: color-mix(in srgb, var(--wa-ink) 24%, var(--wa-white));
+  --wa-ring: var(--wa-indigo);
+  --wa-focus-contrast: transparent;
 
-  /* Status. Reserved: never reused as a chart series. */
-  --wa-good-text: #05683a;
-  --wa-good-bg: #ecfdf3;
-  --wa-good-border: #a7e8c4;
-  --wa-warn-text: #8a5200;
-  --wa-warn-bg: #fff8e9;
-  --wa-warn-border: #f5d78e;
-  --wa-bad-text: #b42318;
-  --wa-bad-bg: #fef3f2;
-  --wa-bad-border: #f7bdb7;
-  --wa-info-text: #1c5cab;
-  --wa-info-bg: #eaf2fd;
-  --wa-info-border: #b7d3f6;
+  /* Signal Orange owns action; Electric Indigo owns focus and selection. */
+  --wa-accent: var(--wa-signal);
+  --wa-accent-grad: linear-gradient(var(--wa-accent-grad-start), var(--wa-accent-grad-end));
+  --wa-accent-grad-start: #FF8A2B;
+  --wa-accent-grad-end: #E2120A;
+  --wa-accent-hover: color-mix(in srgb, var(--wa-accent) 82%, var(--wa-ink));
+  --wa-accent-active: color-mix(in srgb, var(--wa-accent) 72%, var(--wa-ink));
+  --wa-accent-soft: color-mix(in srgb, var(--wa-accent) 12%, transparent);
+  --wa-accent-border: color-mix(in srgb, var(--wa-accent) 48%, var(--wa-bg));
+  --wa-accent-text: color-mix(in srgb, var(--wa-accent) 75%, var(--wa-ink));
+  --wa-on-accent: var(--wa-ink);
+  --wa-indigo-soft: color-mix(in srgb, var(--wa-indigo) 12%, transparent);
 
-  /* Data visualisation. Validated (see the WP-21 report): light surface
-     #ffffff, adjacent CVD ΔE 9.2, normal-vision ΔE 27.6. */
-  --wa-viz-surface: #ffffff;
-  --wa-viz-1: #2a78d6;
-  --wa-viz-2: #eb6834;
-  --wa-viz-3: #1baf7a;
-  /* WP-28 bid corridor: purple (Bid) and red (Max CPC). Validated against the
-     white surface with the dataviz script — all six checks pass. */
-  --wa-viz-4: #7d5fd1;
-  --wa-viz-5: #cf3a4a;
-  --wa-viz-grid: #e6eaf0;
-  --wa-viz-axis: #cdd6e1;
-  --wa-viz-ink: #5b6b7f;
+  /* Status. Base semantic hues remain exact; text variants preserve AA. */
+  --wa-good-text: color-mix(in srgb, var(--wa-good) 60%, var(--wa-ink));
+  --wa-good-bg: color-mix(in srgb, var(--wa-good) 11%, var(--wa-surface));
+  --wa-good-border: color-mix(in srgb, var(--wa-good) 42%, var(--wa-surface));
+  --wa-warn-text: var(--wa-accent-text);
+  --wa-warn-bg: color-mix(in srgb, var(--wa-accent) 10%, var(--wa-surface));
+  --wa-warn-border: color-mix(in srgb, var(--wa-accent) 38%, var(--wa-surface));
+  --wa-bad-text: color-mix(in srgb, var(--wa-bad) 80%, var(--wa-ink));
+  --wa-bad-bg: color-mix(in srgb, var(--wa-bad) 10%, var(--wa-surface));
+  --wa-bad-border: color-mix(in srgb, var(--wa-bad) 38%, var(--wa-surface));
+  --wa-info-text: color-mix(in srgb, var(--wa-indigo) 76%, var(--wa-ink));
+  --wa-info-bg: var(--wa-indigo-soft);
+  --wa-info-border: color-mix(in srgb, var(--wa-indigo) 42%, var(--wa-surface));
+
+  /* Data visualisation: primary, highlight, comparison. */
+  --wa-viz-surface: var(--wa-surface);
+  --wa-viz-1: var(--wa-indigo);
+  --wa-viz-1-outline: transparent;
+  --wa-viz-2: var(--wa-accent);
+  --wa-viz-3: var(--wa-series-3);
+  --wa-viz-4: color-mix(in srgb, var(--wa-indigo) 72%, var(--wa-text));
+  --wa-viz-5: var(--wa-series-3);
+  --wa-viz-grid: color-mix(in srgb, var(--wa-text) 11%, transparent);
+  --wa-viz-axis: var(--wa-border-strong);
+  --wa-viz-ink: var(--wa-text-dim);
 
   /* Shape and depth */
   --wa-radius-sm: 0.25rem;
   --wa-radius: 0.5rem;
   --wa-radius-lg: 0.75rem;
   --wa-radius-pill: 999px;
-  --wa-shadow-1: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.05);
-  --wa-shadow-2: 0 4px 12px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.06);
-  --wa-shadow-3: 0 12px 32px rgba(15, 23, 42, 0.16);
+  --wa-shadow-1: 0 1px 2px color-mix(in srgb, var(--wa-ink) 5%, transparent), 0 1px 3px color-mix(in srgb, var(--wa-ink) 5%, transparent);
+  --wa-shadow-2: 0 4px 12px color-mix(in srgb, var(--wa-ink) 8%, transparent), 0 1px 3px color-mix(in srgb, var(--wa-ink) 6%, transparent);
+  --wa-shadow-3: 0 12px 32px color-mix(in srgb, var(--wa-ink) 16%, transparent);
 
   /* Type */
-  --wa-font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --wa-font: var(--font-inter), Inter, sans-serif;
   --wa-font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
   --wa-fs-2xs: 0.6875rem;
   --wa-fs-xs: 0.75rem;
@@ -107,7 +122,7 @@
   --wa-fs-base: 0.875rem;
   --wa-fs-md: 1rem;
   --wa-fs-lg: 1.125rem;
-  --wa-fs-xl: 1.375rem;
+  --wa-fs-xl: 1.5rem;
   --wa-fs-2xl: 1.75rem;
 
   /* Frame */
@@ -120,121 +135,130 @@
   :root:not([data-theme='light']) {
     color-scheme: dark;
 
-    --wa-bg: #0b0f16;
-    --wa-surface: #141a23;
-    --wa-surface-2: #19202b;
-    --wa-surface-3: #212a37;
-    --wa-surface-sunken: #10161e;
-    --wa-sidebar-bg: #10161e;
-    --wa-topbar-bg: rgba(16, 22, 30, 0.9);
-    --wa-bug-trigger-bg: #e6edf3;
-    --wa-bug-trigger-hover: #ffffff;
-    --wa-bug-trigger-text: #0b0f16;
-    --wa-bug-panel-bg: #141a23;
+    --wa-bg: var(--wa-obsidian);
+    --wa-surface: var(--wa-carbon);
+    --wa-surface-2: var(--wa-raised);
+    --wa-surface-3: color-mix(in srgb, var(--wa-cloud) 8%, var(--wa-raised));
+    --wa-surface-sunken: color-mix(in srgb, var(--wa-obsidian) 82%, var(--wa-carbon));
+    --wa-sidebar-bg: var(--wa-obsidian);
+    --wa-topbar-bg: color-mix(in srgb, var(--wa-obsidian) 90%, transparent);
+    --wa-bug-trigger-bg: var(--wa-cloud);
+    --wa-bug-trigger-hover: var(--wa-white);
+    --wa-bug-trigger-text: var(--wa-obsidian);
+    --wa-bug-panel-bg: var(--wa-carbon);
 
-    --wa-text: #e6edf3;
-    --wa-text-muted: #9aa8b8;
-    --wa-text-faint: #77879a;
-    --wa-text-invert: #0b0f16;
+    --wa-text: var(--wa-cloud);
+    --wa-text-dim: var(--wa-mist);
+    --wa-text-muted: var(--wa-text-dim);
+    --wa-text-faint: var(--wa-steel);
+    --wa-text-invert: var(--wa-obsidian);
 
-    --wa-border: #253040;
-    --wa-border-strong: #354356;
-    --wa-ring: #58a0f0;
+    --wa-border: var(--wa-slate);
+    --wa-border-strong: color-mix(in srgb, var(--wa-mist) 36%, var(--wa-slate));
+    --wa-ring: var(--wa-indigo);
+    --wa-focus-contrast: var(--wa-mist);
 
-    --wa-accent: #3987e5;
-    --wa-accent-hover: #4d95ea;
-    --wa-accent-active: #63a3ee;
-    --wa-accent-soft: #16273c;
-    --wa-accent-border: #27456b;
-    --wa-accent-text: #8dbcf3;
-    --wa-on-accent: #ffffff;
+    --wa-accent: var(--wa-signal);
+    --wa-accent-hover: color-mix(in srgb, var(--wa-accent) 88%, var(--wa-cloud));
+    --wa-accent-active: color-mix(in srgb, var(--wa-accent) 80%, var(--wa-obsidian));
+    --wa-accent-soft: color-mix(in srgb, var(--wa-accent) 12%, transparent);
+    --wa-accent-border: color-mix(in srgb, var(--wa-accent) 48%, var(--wa-bg));
+    --wa-accent-text: var(--wa-accent);
+    --wa-on-accent: var(--wa-ink);
+    --wa-indigo-soft: color-mix(in srgb, var(--wa-indigo) 12%, transparent);
 
-    --wa-good-text: #5fd39a;
-    --wa-good-bg: #0f2a1e;
-    --wa-good-border: #1f5340;
-    --wa-warn-text: #f0be5c;
-    --wa-warn-bg: #2b2211;
-    --wa-warn-border: #574318;
-    --wa-bad-text: #f79a92;
-    --wa-bad-bg: #2c1719;
-    --wa-bad-border: #5a2a2a;
-    --wa-info-text: #8dbcf3;
-    --wa-info-bg: #16273c;
-    --wa-info-border: #27456b;
+    --wa-good-text: var(--wa-good);
+    --wa-good-bg: color-mix(in srgb, var(--wa-good) 12%, var(--wa-surface));
+    --wa-good-border: color-mix(in srgb, var(--wa-good) 42%, var(--wa-surface));
+    --wa-warn-text: var(--wa-accent);
+    --wa-warn-bg: color-mix(in srgb, var(--wa-accent) 10%, var(--wa-surface));
+    --wa-warn-border: color-mix(in srgb, var(--wa-accent) 38%, var(--wa-surface));
+    --wa-bad-text: var(--wa-bad);
+    --wa-bad-bg: color-mix(in srgb, var(--wa-bad) 11%, var(--wa-surface));
+    --wa-bad-border: color-mix(in srgb, var(--wa-bad) 40%, var(--wa-surface));
+    --wa-info-text: var(--wa-mist);
+    --wa-info-bg: var(--wa-indigo-soft);
+    --wa-info-border: color-mix(in srgb, var(--wa-indigo) 48%, var(--wa-surface));
 
-    /* Validated against the dark surface #141a23: CVD ΔE 9.4, contrast ≥ 3:1. */
-    --wa-viz-surface: #141a23;
-    --wa-viz-1: #3987e5;
-    --wa-viz-2: #d95926;
-    --wa-viz-3: #199e70;
-    --wa-viz-4: #9179e0;
-    --wa-viz-5: #e05563;
-    --wa-viz-grid: #212b39;
-    --wa-viz-axis: #354356;
-    --wa-viz-ink: #9aa8b8;
+    --wa-viz-surface: var(--wa-surface);
+    --wa-viz-1: var(--wa-indigo);
+    --wa-viz-1-outline: var(--wa-mist);
+    --wa-viz-2: var(--wa-accent);
+    --wa-viz-3: var(--wa-series-3);
+    --wa-viz-4: color-mix(in srgb, var(--wa-indigo) 42%, var(--wa-cloud));
+    --wa-viz-5: var(--wa-series-3);
+    --wa-viz-grid: color-mix(in srgb, var(--wa-mist) 16%, transparent);
+    --wa-viz-axis: var(--wa-border-strong);
+    --wa-viz-ink: var(--wa-mist);
 
-    --wa-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
-    --wa-shadow-2: 0 4px 14px rgba(0, 0, 0, 0.55);
-    --wa-shadow-3: 0 14px 36px rgba(0, 0, 0, 0.65);
+    --wa-shadow-1: 0 1px 2px color-mix(in srgb, var(--wa-obsidian) 50%, transparent);
+    --wa-shadow-2: 0 4px 14px color-mix(in srgb, var(--wa-obsidian) 55%, transparent);
+    --wa-shadow-3: 0 14px 36px color-mix(in srgb, var(--wa-obsidian) 65%, transparent);
   }
 }
 
 :root[data-theme='dark'] {
   color-scheme: dark;
 
-  --wa-bg: #0b0f16;
-  --wa-surface: #141a23;
-  --wa-surface-2: #19202b;
-  --wa-surface-3: #212a37;
-  --wa-surface-sunken: #10161e;
-  --wa-sidebar-bg: #10161e;
-  --wa-topbar-bg: rgba(16, 22, 30, 0.9);
-  --wa-bug-trigger-bg: #e6edf3;
-  --wa-bug-trigger-hover: #ffffff;
-  --wa-bug-trigger-text: #0b0f16;
-  --wa-bug-panel-bg: #141a23;
+  --wa-bg: var(--wa-obsidian);
+  --wa-surface: var(--wa-carbon);
+  --wa-surface-2: var(--wa-raised);
+  --wa-surface-3: color-mix(in srgb, var(--wa-cloud) 8%, var(--wa-raised));
+  --wa-surface-sunken: color-mix(in srgb, var(--wa-obsidian) 82%, var(--wa-carbon));
+  --wa-sidebar-bg: var(--wa-obsidian);
+  --wa-topbar-bg: color-mix(in srgb, var(--wa-obsidian) 90%, transparent);
+  --wa-bug-trigger-bg: var(--wa-cloud);
+  --wa-bug-trigger-hover: var(--wa-white);
+  --wa-bug-trigger-text: var(--wa-obsidian);
+  --wa-bug-panel-bg: var(--wa-carbon);
 
-  --wa-text: #e6edf3;
-  --wa-text-muted: #9aa8b8;
-  --wa-text-faint: #77879a;
-  --wa-text-invert: #0b0f16;
+  --wa-text: var(--wa-cloud);
+  --wa-text-dim: var(--wa-mist);
+  --wa-text-muted: var(--wa-text-dim);
+  --wa-text-faint: var(--wa-steel);
+  --wa-text-invert: var(--wa-obsidian);
 
-  --wa-border: #253040;
-  --wa-border-strong: #354356;
-  --wa-ring: #58a0f0;
+  --wa-border: var(--wa-slate);
+  --wa-border-strong: color-mix(in srgb, var(--wa-mist) 36%, var(--wa-slate));
+  --wa-ring: var(--wa-indigo);
+  --wa-focus-contrast: var(--wa-mist);
 
-  --wa-accent: #3987e5;
-  --wa-accent-hover: #4d95ea;
-  --wa-accent-active: #63a3ee;
-  --wa-accent-soft: #16273c;
-  --wa-accent-border: #27456b;
-  --wa-accent-text: #8dbcf3;
-  --wa-on-accent: #ffffff;
+  --wa-accent: var(--wa-signal);
+  --wa-accent-hover: color-mix(in srgb, var(--wa-accent) 88%, var(--wa-cloud));
+  --wa-accent-active: color-mix(in srgb, var(--wa-accent) 80%, var(--wa-obsidian));
+  --wa-accent-soft: color-mix(in srgb, var(--wa-accent) 12%, transparent);
+  --wa-accent-border: color-mix(in srgb, var(--wa-accent) 48%, var(--wa-bg));
+  --wa-accent-text: var(--wa-accent);
+  --wa-on-accent: var(--wa-ink);
+  --wa-indigo-soft: color-mix(in srgb, var(--wa-indigo) 12%, transparent);
 
-  --wa-good-text: #5fd39a;
-  --wa-good-bg: #0f2a1e;
-  --wa-good-border: #1f5340;
-  --wa-warn-text: #f0be5c;
-  --wa-warn-bg: #2b2211;
-  --wa-warn-border: #574318;
-  --wa-bad-text: #f79a92;
-  --wa-bad-bg: #2c1719;
-  --wa-bad-border: #5a2a2a;
-  --wa-info-text: #8dbcf3;
-  --wa-info-bg: #16273c;
-  --wa-info-border: #27456b;
+  --wa-good-text: var(--wa-good);
+  --wa-good-bg: color-mix(in srgb, var(--wa-good) 12%, var(--wa-surface));
+  --wa-good-border: color-mix(in srgb, var(--wa-good) 42%, var(--wa-surface));
+  --wa-warn-text: var(--wa-accent);
+  --wa-warn-bg: color-mix(in srgb, var(--wa-accent) 10%, var(--wa-surface));
+  --wa-warn-border: color-mix(in srgb, var(--wa-accent) 38%, var(--wa-surface));
+  --wa-bad-text: var(--wa-bad);
+  --wa-bad-bg: color-mix(in srgb, var(--wa-bad) 11%, var(--wa-surface));
+  --wa-bad-border: color-mix(in srgb, var(--wa-bad) 40%, var(--wa-surface));
+  --wa-info-text: var(--wa-mist);
+  --wa-info-bg: var(--wa-indigo-soft);
+  --wa-info-border: color-mix(in srgb, var(--wa-indigo) 48%, var(--wa-surface));
 
-  --wa-viz-surface: #141a23;
-  --wa-viz-1: #3987e5;
-  --wa-viz-2: #d95926;
-  --wa-viz-3: #199e70;
-  --wa-viz-grid: #212b39;
-  --wa-viz-axis: #354356;
-  --wa-viz-ink: #9aa8b8;
+  --wa-viz-surface: var(--wa-surface);
+  --wa-viz-1: var(--wa-indigo);
+  --wa-viz-1-outline: var(--wa-mist);
+  --wa-viz-2: var(--wa-accent);
+  --wa-viz-3: var(--wa-series-3);
+  --wa-viz-4: color-mix(in srgb, var(--wa-indigo) 42%, var(--wa-cloud));
+  --wa-viz-5: var(--wa-series-3);
+  --wa-viz-grid: color-mix(in srgb, var(--wa-mist) 16%, transparent);
+  --wa-viz-axis: var(--wa-border-strong);
+  --wa-viz-ink: var(--wa-mist);
 
-  --wa-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
-  --wa-shadow-2: 0 4px 14px rgba(0, 0, 0, 0.55);
-  --wa-shadow-3: 0 14px 36px rgba(0, 0, 0, 0.65);
+  --wa-shadow-1: 0 1px 2px color-mix(in srgb, var(--wa-obsidian) 50%, transparent);
+  --wa-shadow-2: 0 4px 14px color-mix(in srgb, var(--wa-obsidian) 55%, transparent);
+  --wa-shadow-3: 0 14px 36px color-mix(in srgb, var(--wa-obsidian) 65%, transparent);
 }
 
 /* ------------------------------------------------------------------ base -- */
@@ -257,6 +281,18 @@ body {
   line-height: 1.5;
   margin: 0;
   -webkit-font-smoothing: antialiased;
+}
+
+h1 {
+  font-size: var(--wa-fs-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+table,
+[role='table'],
+[role='grid'] {
+  font-variant-numeric: tabular-nums;
 }
 
 a {
@@ -282,6 +318,7 @@ kbd {
   outline: 2px solid var(--wa-ring);
   outline-offset: 2px;
   border-radius: var(--wa-radius-sm);
+  box-shadow: 0 0 0 4px var(--wa-focus-contrast);
 }
 
 hr {
@@ -300,7 +337,7 @@ button {
 }
 
 ::placeholder {
-  color: var(--wa-text-faint);
+  color: var(--wa-text-muted);
 }
 
 .wa-sr-only {
@@ -391,7 +428,7 @@ button {
 
 .wa-navgroup > summary {
   align-items: center;
-  color: var(--wa-text-faint);
+  color: var(--wa-text-muted);
   cursor: pointer;
   display: flex;
   font-size: var(--wa-fs-2xs);
@@ -435,6 +472,7 @@ button {
 
 .wa-navlink {
   align-items: center;
+  border-left: 2px solid transparent;
   border-radius: var(--wa-radius-sm);
   color: var(--wa-text-muted);
   display: flex;
@@ -450,8 +488,9 @@ button {
 }
 
 .wa-navlink[aria-current='page'] {
-  background: var(--wa-accent-soft);
-  color: var(--wa-accent-text);
+  background: var(--wa-indigo-soft);
+  border-left-color: var(--wa-accent);
+  color: var(--wa-text);
   font-weight: 600;
 }
 
@@ -470,7 +509,7 @@ button {
 
 .wa-sidebar-foot {
   border-top: 1px solid var(--wa-border);
-  color: var(--wa-text-faint);
+  color: var(--wa-text-muted);
   font-size: var(--wa-fs-xs);
   margin-top: auto;
   padding: 0.75rem 0.5rem 0;
@@ -506,22 +545,76 @@ button {
 }
 
 .wa-identity {
+  position: relative;
+}
+
+.wa-identity-trigger {
   align-items: center;
-  background: var(--wa-surface-2);
   border: 1px solid var(--wa-border);
   border-radius: var(--wa-radius-pill);
+  cursor: pointer;
   display: flex;
-  font-size: var(--wa-fs-sm);
+  gap: 0.25rem;
+  list-style: none;
+  padding: 0.1875rem 0.375rem 0.1875rem 0.1875rem;
+}
+
+.wa-identity-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.wa-identity-trigger:hover {
+  background: var(--wa-surface-3);
+}
+
+.wa-avatar {
+  align-items: center;
+  background: var(--wa-indigo-soft);
+  border: 1px solid var(--wa-info-border);
+  border-radius: var(--wa-radius-pill);
+  color: var(--wa-text);
+  display: inline-flex;
+  font-size: var(--wa-fs-2xs);
+  font-weight: 700;
+  height: 1.75rem;
+  justify-content: center;
+  letter-spacing: 0.04em;
+  width: 1.75rem;
+}
+
+.wa-identity-menu {
+  align-items: stretch;
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border-strong);
+  border-radius: var(--wa-radius);
+  box-shadow: var(--wa-shadow-2);
+  display: flex;
+  flex-direction: column;
   gap: 0.5rem;
-  max-width: 20rem;
-  padding: 0.1875rem 0.1875rem 0.1875rem 0.625rem;
+  padding: 0.625rem;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.375rem);
+  width: min(20rem, calc(100vw - 2rem));
+  z-index: 60;
 }
 
 .wa-identity-email {
   color: var(--wa-text-muted);
+  font-size: var(--wa-fs-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.wa-identity-menu .wa-btn {
+  width: 100%;
+}
+
+.wa-theme-toggle {
+  background: transparent;
+  font-size: var(--wa-fs-sm);
+  padding: 0.3125rem 0.625rem;
 }
 
 .wa-content {
@@ -564,8 +657,8 @@ button {
 
 .wa-btn {
   align-items: center;
-  background: var(--wa-surface);
-  border: 1px solid var(--wa-border-strong);
+  background: transparent;
+  border: 1px solid var(--wa-border);
   border-radius: var(--wa-radius);
   color: var(--wa-text);
   cursor: pointer;
@@ -592,9 +685,10 @@ button {
 }
 
 .wa-btn--primary {
-  background: var(--wa-accent);
+  background: var(--wa-accent-grad);
   border-color: var(--wa-accent);
   color: var(--wa-on-accent);
+  font-weight: 650;
 }
 
 /*
@@ -612,8 +706,9 @@ button {
 }
 
 .wa-btn--primary:hover:not(:disabled) {
-  background: var(--wa-accent-hover);
+  background: var(--wa-accent-grad);
   border-color: var(--wa-accent-hover);
+  filter: brightness(1.06);
 }
 
 .wa-btn--ghost {
@@ -661,7 +756,7 @@ button {
 }
 
 .wa-hint {
-  color: var(--wa-text-faint);
+  color: var(--wa-text-muted);
   font-size: var(--wa-fs-xs);
 }
 
@@ -682,14 +777,14 @@ button {
 .wa-input:hover,
 .wa-select:hover,
 .wa-textarea:hover {
-  border-color: var(--wa-text-faint);
+  border-color: var(--wa-text-muted);
 }
 
 .wa-input:focus,
 .wa-select:focus,
 .wa-textarea:focus {
-  border-color: var(--wa-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--wa-accent) 22%, transparent);
+  border-color: var(--wa-ring);
+  box-shadow: 0 0 0 2px var(--wa-ring), 0 0 0 4px var(--wa-focus-contrast);
   outline: none;
 }
 
@@ -888,6 +983,7 @@ button {
   border-collapse: separate;
   border-spacing: 0;
   font-size: var(--wa-fs-sm);
+  font-variant-numeric: tabular-nums;
   width: 100%;
 }
 
@@ -895,9 +991,9 @@ button {
   background: var(--wa-surface-2);
   border-bottom: 1px solid var(--wa-border);
   color: var(--wa-text-muted);
-  font-size: var(--wa-fs-xs);
-  font-weight: 650;
-  letter-spacing: 0.03em;
+  font-size: var(--wa-fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
   padding: 0.5rem 0.75rem;
   position: sticky;
   text-align: left;
@@ -921,9 +1017,21 @@ button {
   background: var(--wa-surface-2);
 }
 
+.wa-table tbody tr[aria-selected='true'] td,
+.wa-table tbody tr[data-selected='true'] td {
+  background: var(--wa-indigo-soft);
+}
+
 .wa-table--numeric td,
 .wa-num {
   font-variant-numeric: tabular-nums;
+}
+
+.wa-table th[data-numeric='true'],
+.wa-table td[data-numeric='true'],
+.wa-table .wa-cell--numeric {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .wa-tablewrap {
@@ -937,27 +1045,40 @@ button {
 
 .wa-empty {
   align-items: center;
-  border: 1px dashed var(--wa-border-strong);
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border);
   border-radius: var(--wa-radius-lg);
   color: var(--wa-text-muted);
   display: flex;
   flex-direction: column;
   gap: 0.375rem;
+  margin-inline: auto;
+  max-width: 28rem;
   padding: 2.25rem 1.5rem;
   text-align: center;
+  width: 100%;
 }
 
 .wa-empty__title {
-  color: var(--wa-text);
-  font-size: var(--wa-fs-md);
+  color: var(--wa-text-muted);
+  font-size: var(--wa-fs-2xs);
   font-weight: 600;
+  letter-spacing: 0.06em;
   margin: 0;
+  text-transform: uppercase;
 }
 
 .wa-empty__body {
   font-size: var(--wa-fs-base);
   margin: 0;
-  max-width: 34rem;
+  max-width: 28rem;
+}
+
+.wa-empty__meta {
+  color: var(--wa-text-muted);
+  font-size: var(--wa-fs-xs);
+  font-variant-numeric: tabular-nums;
+  margin: 0;
 }
 
 /* ------------------------------------------------------------------ kpi --- */
@@ -982,22 +1103,21 @@ button {
 .wa-kpi__label {
   color: var(--wa-text-muted);
   font-size: var(--wa-fs-2xs);
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
 .wa-kpi__value {
   font-size: var(--wa-fs-2xl);
-  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
   letter-spacing: -0.02em;
   line-height: 1.1;
 }
 
 .wa-kpi__deltas {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
+  display: block;
 }
 
 .wa-kpi__delta {
@@ -1009,7 +1129,7 @@ button {
 
 .wa-kpi__delta strong {
   font-variant-numeric: tabular-nums;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .wa-delta--good {
@@ -1021,7 +1141,7 @@ button {
 }
 
 .wa-delta--flat {
-  color: var(--wa-text-faint);
+  color: var(--wa-text-muted);
 }
 
 /* ----------------------------------------------------------------- viz ---- */
@@ -1345,7 +1465,7 @@ button {
  * it reads these tokens directly and needs no translation layer.
  *
  * What used to live here was that layer: a rule per WP-06 literal, matching on
- * `[style*='background:#ffffff']`. It never worked. React sets inline styles
+ * against a literal white background. It never worked. React sets inline styles
  * through the CSSOM and the browser re-serialises the attribute to
  * `background: rgb(255, 255, 255)`, so no hex-substring selector ever matched —
  * while `.wa-embed`'s own `color` did apply. The result was the host's
@@ -1381,6 +1501,14 @@ button {
 
 .wa-embed button:hover {
   background: var(--wa-surface-3);
+}
+
+.wa-embed [data-testid='grid-row']:hover {
+  background: var(--wa-surface-2) !important;
+}
+
+.wa-embed [data-testid='grid-row'][aria-selected='true'] {
+  background: var(--wa-indigo-soft) !important;
 }
 
 /* The pin and resize affordances inside the grid header are not buttons in the
@@ -1596,8 +1724,8 @@ button {
 }
 
 .wa-profile-option[aria-selected='true'] {
-  background: var(--wa-accent-soft);
-  color: var(--wa-accent-text);
+  background: var(--wa-indigo-soft);
+  color: var(--wa-text);
   font-weight: 600;
 }
 
@@ -1611,7 +1739,7 @@ button {
 }
 
 .wa-profile-empty {
-  color: var(--wa-text-faint);
+  color: var(--wa-text-muted);
   font-size: var(--wa-fs-xs);
   list-style: none;
   padding: 0.5rem;
@@ -1661,9 +1789,9 @@ button {
 }
 
 .wa-seg__btn[aria-pressed='true'] {
-  background: var(--wa-accent);
-  border-color: var(--wa-accent);
-  color: var(--wa-on-accent);
+  background: var(--wa-indigo-soft);
+  border-color: var(--wa-indigo);
+  color: var(--wa-text);
 }
 
 /* ----------------------------------------------------------- reason pills -- */
@@ -1682,14 +1810,14 @@ button {
 }
 
 .wa-pill__count {
-  color: var(--wa-text-faint);
+  color: var(--wa-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .wa-pill--reason {
-  background: var(--wa-accent-soft);
-  border-color: var(--wa-accent-border);
-  color: var(--wa-accent-text);
+  background: var(--wa-indigo-soft);
+  border-color: var(--wa-info-border);
+  color: var(--wa-text);
   white-space: normal;
 }
 

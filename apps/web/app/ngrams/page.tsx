@@ -125,7 +125,7 @@ export default async function NgramsPage({ searchParams }: { searchParams: Searc
 const main: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+  fontFamily: 'var(--wa-font)',
   gap: '1.5rem',
   margin: '0 auto',
   maxWidth: '96rem',

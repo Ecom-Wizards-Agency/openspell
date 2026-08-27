@@ -96,6 +96,32 @@ describe('DataGrid over 50k rows', () => {
     expect(screen.getByText('50,000 of 50,000 rows')).toBeTruthy();
   });
 
+  it('marks caller-selected rows and paints them with indigo-soft selection', () => {
+    const rows = syntheticSearchTermRows(20, { seed: 7 });
+    const model = buildGridModel(rows);
+    const selectedId = model.rows[0]?.id;
+    expect(selectedId).toBeDefined();
+    render(
+      <DataGrid
+        model={model}
+        columns={visible}
+        currencyCode="USD"
+        sort={[]}
+        onSortChange={() => {}}
+        selectedRowIds={selectedId === undefined ? [] : [selectedId]}
+        height={VIEWPORT.height}
+        rowHeight={ROW_HEIGHT}
+        initialRect={VIEWPORT}
+      />,
+    );
+
+    const selected = screen.getAllByTestId('grid-row').find(
+      (row) => row.getAttribute('aria-selected') === 'true',
+    );
+    expect(selected).toBeDefined();
+    expect(selected?.getAttribute('style')).toContain('var(--wa-indigo-soft');
+  });
+
   it('says out loud that a grouped view recomputed its ratios', () => {
     renderGrid(5_000, { groupBy: ['campaign_name'] });
     expect(

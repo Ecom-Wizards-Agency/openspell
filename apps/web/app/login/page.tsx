@@ -66,7 +66,7 @@ export default async function LoginPage({
                     required
                   />
                 </Field>
-                <Button type="submit" variant="primary">
+                <Button type="submit">
                   Sign in with password
                 </Button>
               </form>

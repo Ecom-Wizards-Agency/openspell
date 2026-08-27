@@ -58,7 +58,15 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
       return (
         <main style={main}>
           <h1 style={heading}>Recommendations</h1>
-          <p style={muted}>This organisation has no advertising profiles yet.</p>
+          <EmptyState
+            title="No profiles yet"
+            body="This organisation has no advertising profiles, so there can be no recommendation run to review. Connect Amazon Ads to create the roster."
+            action={
+              <a className="wa-btn wa-btn--sm" href="/settings/connections">
+                Connect Amazon Ads
+              </a>
+            }
+          />
         </main>
       );
     }
@@ -83,7 +91,14 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
     return (
       <main style={main} data-interactive="true">
         <header style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-          <h1 style={heading}>Recommendations</h1>
+          <div style={{ alignItems: 'center', display: 'flex', justifyContent: 'space-between' }}>
+            <h1 style={heading}>Recommendations</h1>
+            {run === null || proposals.length === 0 ? null : (
+              <a className="wa-btn wa-btn--primary wa-btn--sm" href="#recommendation-review">
+                Open review
+              </a>
+            )}
+          </div>
           <p style={muted}>
             {profile.label} · {profile.currencyCode} ·{' '}
             {run === null
@@ -109,13 +124,18 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
         </header>
 
         {run === null ? (
-          <p style={muted}>
-            No recommendation run has finished for this profile. The weekly engine writes one; until
-            then there is nothing to review, which is not the same as nothing to do.
-          </p>
+          <EmptyState
+            title="No recommendations run yet"
+            body="The weekly engine has not finished a run for this profile, so there is nothing to review yet. The optimizer shows the current facts and when the next run can start."
+            action={
+              <a className="wa-btn wa-btn--sm" href={`/optimizer?profile=${profile.id}`}>
+                Open optimizer
+              </a>
+            }
+          />
         ) : run.finishedAt === null ? (
           <EmptyState
-            title={run.status === 'running' ? 'Optimizer run in progress' : 'Optimizer run queued'}
+            title={run.status === 'running' ? 'Recommendations run in progress' : 'Recommendations run queued'}
             body={
               run.status === 'running'
                 ? 'The worker is assembling facts, doctrine, pacing, and bid corridors now. Refresh shortly to see the preview.'
@@ -124,19 +144,36 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
           />
         ) : run.status !== 'succeeded' ? (
           <EmptyState
-            title="Optimizer run failed"
+            title="Recommendations run failed"
             body="The worker recorded this run as failed. Queue a new preview after checking sync freshness and strategy settings."
           />
-        ) : (
-          <ReviewWorkspace
-            proposals={proposals}
-            runId={run.id}
-            profileId={profile.id}
-            client={profile.label}
-            counts={run.counts}
-            role={role}
-            hasStrategySnapshot={run.strategySnapshot !== null}
+        ) : proposals.length === 0 ? (
+          <EmptyState
+            title="This run proposed nothing"
+            body="The engine found no change worth proposing for this profile in this window. On a healthy account that can be the expected result."
+            meta={
+              <time dateTime={run.createdAt.toISOString()}>
+                Run created {run.createdAt.toISOString().replace('T', ' ').slice(0, 16)} UTC
+              </time>
+            }
+            action={
+              <a className="wa-btn wa-btn--sm" href={`/optimizer?profile=${profile.id}`}>
+                Open optimizer
+              </a>
+            }
           />
+        ) : (
+          <div id="recommendation-review">
+            <ReviewWorkspace
+              proposals={proposals}
+              runId={run.id}
+              profileId={profile.id}
+              client={profile.label}
+              counts={run.counts}
+              role={role}
+              hasStrategySnapshot={run.strategySnapshot !== null}
+            />
+          </div>
         )}
 
         <p style={muted}>
@@ -165,7 +202,7 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
 const main: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+  fontFamily: 'var(--wa-font)',
   gap: '1.5rem',
   margin: '0 auto',
   maxWidth: '96rem',

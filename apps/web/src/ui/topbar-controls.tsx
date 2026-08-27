@@ -32,6 +32,17 @@ export interface NavProfile {
   syncEnabled: boolean;
 }
 
+/** Two stable initials from an address, with a product fallback for address-less sessions. */
+export function userInitials(email: string | null): string {
+  if (email === null) return 'WA';
+  const local = email.split('@')[0]?.trim() ?? '';
+  const parts = local.split(/[._+-]+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0]?.[0] ?? ''}${parts[1]?.[0] ?? ''}`.toUpperCase();
+  }
+  return local.slice(0, 2).toUpperCase() || 'WA';
+}
+
 export function filterNavProfiles(
   profiles: readonly NavProfile[],
   showAll: boolean,
@@ -219,7 +230,7 @@ export function ThemeToggle(): ReactNode {
     <button
       type="button"
       aria-label={`Switch to ${next} mode`}
-      className="wa-btn wa-btn--ghost wa-btn--icon"
+      className="wa-btn wa-theme-toggle"
       data-testid="theme-toggle"
       onClick={() => {
         document.documentElement.setAttribute('data-theme', next);
@@ -232,6 +243,38 @@ export function ThemeToggle(): ReactNode {
       }}
     >
       <span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span>
+      <span>{theme === null ? 'Theme' : theme === 'dark' ? 'Dark' : 'Light'}</span>
     </button>
+  );
+}
+
+/** Compact identity in the bar; the address and sign-out action live inside the menu. */
+export function IdentityMenu({ email }: { email: string | null }): ReactNode {
+  const label = email ?? 'your account';
+  return (
+    <details className="wa-identity" data-testid="nav-identity">
+      <summary className="wa-identity-trigger" aria-label={`Account menu for ${label}`}>
+        <span className="wa-avatar" aria-hidden="true">
+          {userInitials(email)}
+        </span>
+        <svg aria-hidden="true" viewBox="0 0 10 10" className="wa-profile-caret">
+          <path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+        </svg>
+      </summary>
+      <div className="wa-identity-menu">
+        <span className="wa-identity-email" title={label}>
+          {label}
+        </span>
+        <form action="/auth/signout" method="post">
+          <button
+            type="submit"
+            className="wa-btn wa-btn--ghost wa-btn--sm"
+            data-testid="nav-signout"
+          >
+            Sign out
+          </button>
+        </form>
+      </div>
+    </details>
   );
 }

@@ -45,7 +45,7 @@ export default async function InvitationPage({
               Join {invitation.orgName} as {invitation.role} using {invitation.email}.
             </p>
             <form action={action}>
-              <Button type="submit" variant="primary">
+              <Button type="submit">
                 Accept invitation
               </Button>
             </form>
@@ -90,7 +90,7 @@ export default async function InvitationPage({
                 required
               />
             </Field>
-            <Button type="submit" variant="primary">
+            <Button type="submit">
               Create account and join
             </Button>
           </form>

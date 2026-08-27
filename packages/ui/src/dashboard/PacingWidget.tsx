@@ -179,7 +179,7 @@ const track: CSSProperties = {
 const trackFill: CSSProperties = { height: '100%' };
 
 const trackMark: CSSProperties = {
-  background: tokens.color.textFaint,
+  background: tokens.color.textMuted,
   height: '100%',
   position: 'absolute',
   top: 0,

@@ -232,7 +232,7 @@ export function NewExperimentForm({
         </label>
 
         <div>
-          <button type="submit" disabled={pending} data-testid="experiment-submit" className="wa-btn wa-btn--primary">
+          <button type="submit" disabled={pending} data-testid="experiment-submit" className="wa-btn">
             {pending ? 'Creating…' : 'Create experiment'}
           </button>{' '}
           <a href="/experiments" style={{ ...muted, marginLeft: '0.5rem' }}>

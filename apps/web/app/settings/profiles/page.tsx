@@ -229,7 +229,7 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
                 <option value="region">Region</option>
               </Select>
             </Field>
-            <Button type="submit" variant="primary">
+            <Button type="submit">
               Filter
             </Button>
             {/* A link, not a reset: the filter lives in the URL, so clearing it
@@ -324,7 +324,7 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
               }
               action={
                 roster.total === 0 ? (
-                  <a className="wa-btn wa-btn--primary wa-btn--sm" href="/settings/connections">
+                  <a className="wa-btn wa-btn--sm" href="/settings/connections">
                     Connect Amazon Ads
                   </a>
                 ) : (

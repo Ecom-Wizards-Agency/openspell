@@ -48,7 +48,7 @@ export function PasswordForm(): ReactNode {
           />
         </Field>
         <div>
-          <Button type="submit" variant="primary" disabled={pending}>
+          <Button type="submit" disabled={pending}>
             {pending ? 'Saving…' : 'Set password'}
           </Button>
         </div>

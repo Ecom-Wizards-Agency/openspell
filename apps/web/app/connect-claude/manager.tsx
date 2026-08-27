@@ -188,7 +188,6 @@ export function ConnectClaudeManager({
               />
             </Field>
             <Button
-              variant="primary"
               onClick={() => void issue()}
               disabled={busy}
               data-testid="issue-key"

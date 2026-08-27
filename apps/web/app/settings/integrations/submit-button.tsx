@@ -17,7 +17,6 @@ export function IntegrationSubmitButton({
   return (
     <Button
       type="submit"
-      variant="primary"
       data-testid={`submit-integration-${providerId}`}
       disabled={pending}
       aria-disabled={pending}
