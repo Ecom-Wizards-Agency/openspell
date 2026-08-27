@@ -59,7 +59,13 @@ const QuotaFeatureSchema = z.object({
 }).passthrough();
 
 const QuotaSchema = z.object({
-  nextRefreshDate: z.string().refine((value) => !Number.isNaN(Date.parse(value))).nullable(),
+  // Live smoke 2026-08-27: the real endpoint omits the field entirely for some
+  // accounts. Absent and null both mean "no scheduled refresh known".
+  nextRefreshDate: z
+    .string()
+    .refine((value) => !Number.isNaN(Date.parse(value)))
+    .nullish()
+    .transform((value) => value ?? null),
   features: z.record(z.string(), QuotaFeatureSchema),
 }).passthrough();
 
