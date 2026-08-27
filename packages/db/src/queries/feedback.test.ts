@@ -17,9 +17,12 @@ import {
   OPEN_FEEDBACK_STATUSES,
   countFeedback,
   createFeedbackItem,
+  findSimilarOpenBugs,
   getFeedbackItem,
+  listBugBoard,
   listFeedbackItems,
   listRoadmap,
+  markFeedbackDuplicate,
   setFeedbackStatus,
   toggleFeedbackVote,
   updateFeedbackContent,
@@ -245,6 +248,87 @@ describe.skipIf(!available)('WP-15 feedback queries', () => {
         byNewest[index]?.createdAt.getTime() ?? 0,
       );
     }
+  });
+
+  it('finds only matching open bugs in the named organisation', async () => {
+    const match = await createFeedbackItem(database, {
+      orgId: orgA,
+      authorId: OWNER_A,
+      type: 'bug',
+      title: 'Export loses the selected sort',
+    });
+    const closed = await createFeedbackItem(database, {
+      orgId: orgA,
+      authorId: OWNER_A,
+      type: 'bug',
+      title: 'Export loses the selected sort after closing',
+    });
+    await setFeedbackStatus(database, {
+      orgId: orgA,
+      itemId: closed.id,
+      status: 'declined',
+    });
+    const foreign = await createFeedbackItem(database, {
+      orgId: orgB,
+      authorId: OWNER_B,
+      type: 'bug',
+      title: 'Export loses the selected sort in another org',
+    });
+
+    const similar = await findSimilarOpenBugs(database, {
+      orgId: orgA,
+      viewerId: OWNER_A,
+      query: 'loses the selected sort',
+    });
+    expect(similar.map((item) => item.id)).toEqual([match.id]);
+    expect(similar.map((item) => item.id)).not.toContain(foreign.id);
+    expect(await findSimilarOpenBugs(database, { orgId: orgA, query: 'lo' })).toEqual([]);
+  });
+
+  it('marks a same-org item as a duplicate and nests it in the bug read model', async () => {
+    const target = await createFeedbackItem(database, {
+      orgId: orgA,
+      authorId: OWNER_A,
+      type: 'bug',
+      title: 'Canonical export failure',
+    });
+    const duplicate = await createFeedbackItem(database, {
+      orgId: orgA,
+      authorId: VIEWER_A,
+      type: 'bug',
+      title: 'Export fails in the same way',
+    });
+
+    const marked = await markFeedbackDuplicate(database, {
+      orgId: orgA,
+      itemId: duplicate.id,
+      duplicateOf: target.id,
+      viewerId: OWNER_A,
+    });
+    expect(marked.status).toBe('declined');
+    expect(marked.adminNote).toBe(`duplicate of #${target.id}`);
+    expect(marked.duplicateOf).toBe(target.id);
+    expect(marked.dedupCheckedAt).toBeNull();
+
+    const board = await listBugBoard(database, { orgId: orgA, viewerId: OWNER_A });
+    expect(board.open.map((item) => item.id)).toContain(target.id);
+    expect(board.duplicates.map((item) => item.id)).toContain(duplicate.id);
+    expect(board.declined.map((item) => item.id)).not.toContain(duplicate.id);
+
+    await expect(
+      markFeedbackDuplicate(database, {
+        orgId: orgA,
+        itemId: duplicate.id,
+        duplicateOf: foreignItem,
+      }),
+    ).rejects.toBeInstanceOf(FeedbackNotFound);
+
+    const reopened = await setFeedbackStatus(database, {
+      orgId: orgA,
+      itemId: duplicate.id,
+      status: 'triaged',
+    });
+    expect(reopened.duplicateOf).toBeNull();
   });
 
   it('lets an author correct their own item only while it is new', async () => {

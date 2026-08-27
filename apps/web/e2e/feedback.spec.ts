@@ -1,6 +1,6 @@
 /**
- * WP-15 end to end: submit → vote → triage → roadmap, plus the two negatives
- * that matter (a role that may not triage, and another tenant's item).
+ * Feedback end to end: widget submit → bug board → tracker → duplicate collapse,
+ * plus voting, roadmap triage, and the two tenant/role negatives.
  *
  * It runs on the tags-goto harness: a production build behind the header
  * bridge, one worker, serial. The role tests swap the bridge headers for a
@@ -19,6 +19,7 @@ const ROADMAP_SEEDED = Number(process.env['WIZARD_ADS_E2E_ROADMAP_SEEDED'] ?? '0
 
 /** A title unique to this run, so assertions cannot match a leftover row. */
 const BUG_TITLE = `Sort resets after export ${Date.now()}`;
+const DUPLICATE_TITLE = `Another export ordering failure ${Date.now()}`;
 const REQUEST_TITLE = `Bulk apply from the grid ${Date.now()}`;
 
 test.describe.configure({ mode: 'serial' });
@@ -31,29 +32,69 @@ async function open(page: Page, path: string): Promise<void> {
 const item = (page: Page, title: string) =>
   page.getByTestId('feedback-item').filter({ hasText: title });
 
-test('the header entry point carries the page you were on into the report', async ({ page }) => {
+test('the bug widget files from the current page into both boards', async ({ page }) => {
   // Any page: the tag surface is the one this harness already serves.
   await open(page, '/tags');
   await page.getByTestId('feedback-entry').click();
 
-  await expect(page).toHaveURL(/\/feedback\/new\?from=/);
-  await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
+  await expect(page).toHaveURL(/\/tags$/);
+  await expect(page.getByRole('dialog', { name: 'Report a bug' })).toBeVisible();
   // Shown before submitting, not attached silently.
   await expect(page.getByTestId('page-context')).toContainText('page: /tags');
 
-  await page.getByTestId('feedback-title').fill(BUG_TITLE);
-  await page.getByTestId('feedback-body').fill('Exporting a filtered view loses the sort order.');
+  await page
+    .getByTestId('feedback-body')
+    .fill(`${BUG_TITLE}\nExporting a filtered view loses the sort order.`);
   await page.getByTestId('feedback-severity').selectOption('high');
   await page.getByTestId('feedback-submit').click();
 
-  // The form navigates to the tracker on success.
-  await expect(page).toHaveURL(/\/feedback$/);
-  await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
+  await expect(page.getByTestId('toast')).toContainText('Bug filed.');
+  await page.getByTestId('toast').getByRole('link', { name: 'View bug' }).click();
+  await expect(page).toHaveURL(/\/bugs#bug-/);
+  await expect(page.getByTestId('column-open').getByTestId('bug-card').filter({ hasText: BUG_TITLE })).toHaveCount(1);
+
+  await open(page, '/feedback');
   const filed = item(page, BUG_TITLE);
   await expect(filed).toHaveCount(1);
   await expect(filed.getByTestId('item-status')).toHaveText('New');
   await expect(filed.getByTestId('item-severity')).toHaveText('high');
   await expect(filed.getByTestId('item-context')).toContainText('/tags');
+});
+
+test('similar bugs appear before submit and an admin can collapse a duplicate', async ({ page }) => {
+  await open(page, '/tags');
+  await page.getByTestId('feedback-entry').click();
+  await page
+    .getByTestId('feedback-body')
+    .fill(`${BUG_TITLE}\nThis first line should find the report from the prior test.`);
+  await expect(page.getByTestId('similar-bugs')).toContainText(BUG_TITLE);
+
+  await page
+    .getByTestId('feedback-body')
+    .fill(`${DUPLICATE_TITLE}\nThe same export ordering problem, filed a second time.`);
+  await page.getByTestId('feedback-submit').click();
+  await page.getByTestId('toast').getByRole('link', { name: 'View bug' }).click();
+  await expect(page.getByTestId('column-open').getByTestId('bug-card').filter({ hasText: DUPLICATE_TITLE })).toHaveCount(1);
+
+  await open(page, '/feedback');
+  const target = item(page, BUG_TITLE);
+  const duplicate = item(page, DUPLICATE_TITLE);
+  const targetId = await target.getAttribute('data-item-id');
+  expect(targetId).not.toBeNull();
+  await duplicate.getByTestId('duplicate-of').fill(targetId ?? '');
+  await duplicate.getByTestId('mark-duplicate').click();
+  await expect(page.getByRole('status')).toHaveText('Saved');
+  await expect(item(page, DUPLICATE_TITLE).getByTestId('item-status')).toHaveText('Declined');
+  await expect(item(page, DUPLICATE_TITLE).getByTestId('item-note')).toContainText(
+    `duplicate of #${targetId}`,
+  );
+
+  await open(page, '/bugs');
+  const targetCard = page.getByTestId('bug-card').filter({ hasText: BUG_TITLE });
+  await expect(targetCard).toHaveCount(1);
+  await targetCard.getByTestId('duplicate-group').getByText('Duplicates (1)').click();
+  await expect(targetCard.getByTestId('duplicate-card')).toContainText(DUPLICATE_TITLE);
+  await expect(page.getByTestId('column-open').getByTestId('bug-card').filter({ hasText: DUPLICATE_TITLE })).toHaveCount(0);
 });
 
 test('the filtered views and the counts agree about what was filed', async ({ page }) => {

@@ -113,7 +113,10 @@ export function FeedbackTracker({
     }
   };
 
-  const triage = async (item: UiFeedbackItem, changes: { status?: string; adminNote?: string }) => {
+  const triage = async (
+    item: UiFeedbackItem,
+    changes: { status?: string; adminNote?: string; duplicateOf?: string },
+  ) => {
     setMessage('');
     try {
       const response = await fetch(`/api/feedback/${item.id}`, {
@@ -190,7 +193,13 @@ export function FeedbackTracker({
 
       <ul data-testid="feedback-list" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
         {items.map((item) => (
-          <li key={item.id} style={card} data-testid="feedback-item" data-item-id={item.id}>
+          <li
+            key={item.id}
+            id={`feedback-${item.id}`}
+            style={card}
+            data-testid="feedback-item"
+            data-item-id={item.id}
+          >
             <div style={{ alignItems: 'baseline', display: 'flex', gap: '0.5rem' }}>
               <button
                 type="button"
@@ -226,6 +235,7 @@ export function FeedbackTracker({
             <p style={{ ...muted, margin: '0.5rem 0 0' }} data-testid="item-context">
               filed from {item.route ?? 'an unknown page'}
               {item.profileId ? ` · profile ${item.profileId}` : ''}
+              {' · '}item <code data-testid="item-id">{item.id}</code>
             </p>
             {item.adminNote && (
               <p style={{ ...muted, margin: '0.25rem 0 0' }} data-testid="item-note">
@@ -252,10 +262,20 @@ function TriageControls({
   onSave,
 }: {
   item: UiFeedbackItem;
-  onSave: (item: UiFeedbackItem, changes: { status?: string; adminNote?: string }) => Promise<void>;
+  onSave: (
+    item: UiFeedbackItem,
+    changes: { status?: string; adminNote?: string; duplicateOf?: string },
+  ) => Promise<void>;
 }) {
   const [status, setStatus] = useState(item.status);
   const [note, setNote] = useState(item.adminNote ?? '');
+  const [duplicateOf, setDuplicateOf] = useState(item.duplicateOf ?? '');
+
+  useEffect(() => {
+    setStatus(item.status);
+    setNote(item.adminNote ?? '');
+    setDuplicateOf(item.duplicateOf ?? '');
+  }, [item.status, item.adminNote, item.duplicateOf]);
 
   return (
     <div style={{ alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.625rem' }}>
@@ -293,6 +313,31 @@ function TriageControls({
       >
         Save
       </button>
+      <span style={{ alignItems: 'center', display: 'inline-flex', gap: '0.375rem' }}>
+        <input
+          value={duplicateOf}
+          aria-label={`Duplicate target for ${item.title}`}
+          data-testid="duplicate-of"
+          placeholder="Duplicate target item id"
+          onChange={(event) => setDuplicateOf(event.target.value)}
+          style={{
+            border: `1px solid ${colors.border}`,
+            borderRadius: '0.25rem',
+            fontSize: '0.8125rem',
+            padding: '0.25rem 0.375rem',
+            width: '18rem',
+          }}
+        />
+        <button
+          type="button"
+          data-testid="mark-duplicate"
+          disabled={duplicateOf.trim() === '' || duplicateOf.trim() === item.id}
+          style={button}
+          onClick={() => void onSave(item, { duplicateOf: duplicateOf.trim() })}
+        >
+          Mark duplicate
+        </button>
+      </span>
     </div>
   );
 }

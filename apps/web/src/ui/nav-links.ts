@@ -84,6 +84,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     icon: 'chat',
     links: [
       { href: '/feedback', label: 'Feedback', icon: 'chat' },
+      { href: '/bugs', label: 'Bugs', icon: 'bug' },
       { href: '/roadmap', label: 'Roadmap', icon: 'map' },
     ],
   },

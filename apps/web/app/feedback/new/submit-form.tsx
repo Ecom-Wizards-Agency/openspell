@@ -16,9 +16,8 @@ import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { describePageContext } from '../../../src/feedback/page-context';
 import type { PageContext } from '../../../src/feedback/page-context';
+import { BUG_SEVERITIES } from '../../../src/feedback/bug-form';
 import { banner, button, colors, heading, muted, page } from '../../../src/ui/tokens';
-
-const SEVERITIES = ['low', 'medium', 'high', 'critical'] as const;
 
 const field = {
   border: `1px solid ${colors.border}`,
@@ -32,7 +31,7 @@ export function SubmitFeedbackForm({ context }: { context: PageContext }) {
   const [type, setType] = useState<'bug' | 'feature'>('bug');
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
-  const [severity, setSeverity] = useState<(typeof SEVERITIES)[number]>('medium');
+  const [severity, setSeverity] = useState<(typeof BUG_SEVERITIES)[number]>('medium');
   const [message, setMessage] = useState('');
   const [pending, setPending] = useState(false);
 
@@ -137,10 +136,12 @@ export function SubmitFeedbackForm({ context }: { context: PageContext }) {
             <select
               value={severity}
               data-testid="feedback-severity"
-              onChange={(event) => setSeverity(event.target.value as (typeof SEVERITIES)[number])}
+              onChange={(event) =>
+                setSeverity(event.target.value as (typeof BUG_SEVERITIES)[number])
+              }
               style={field}
             >
-              {SEVERITIES.map((option) => (
+              {BUG_SEVERITIES.map((option) => (
                 <option key={option} value={option}>
                   {option}
                 </option>

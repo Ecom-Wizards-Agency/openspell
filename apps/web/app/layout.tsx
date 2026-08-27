@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 import '../src/ui/theme.css';
 import { AppNav } from '../src/ui/nav';
-import { FeedbackEntry } from '../src/ui/feedback-entry';
+import { BugWidget } from '../src/ui/bug-widget';
 import { ToastProvider } from '../src/ui/toast';
 import { THEME_SCRIPT } from '../src/ui/theme-script';
 
@@ -49,8 +49,10 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
           <div className="wa-content" id="wa-main">
             {children}
           </div>
-          {/* WP-15: the feedback widget belongs to the signed-in frame, not to a screen. */}
-          {user === null ? null : <FeedbackEntry />}
+          {/* The bug widget belongs to the signed-in frame, not to a screen. */}
+          {user === null ? null : (
+            <BugWidget appVersion={process.env['WIZARD_ADS_APP_VERSION'] ?? null} />
+          )}
         </ToastProvider>
       </body>
     </html>

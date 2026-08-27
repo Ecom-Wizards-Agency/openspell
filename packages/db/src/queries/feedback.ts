@@ -54,6 +54,9 @@ export interface FeedbackItemRecord {
   severity: FeedbackSeverity | null;
   status: FeedbackStatus;
   adminNote: string | null;
+  duplicateOf: string | null;
+  /** Null until the out-of-band semantic duplicate checker has evaluated it. */
+  dedupCheckedAt: Date | null;
   pageContext: JsonValue;
   votes: number;
   /** Whether the viewer named in the query has voted. False when none was. */
@@ -99,6 +102,15 @@ export interface RoadmapBoard {
   declined: FeedbackItemRecord[];
 }
 
+export interface BugBoard {
+  open: FeedbackItemRecord[];
+  inProgress: FeedbackItemRecord[];
+  fixed: FeedbackItemRecord[];
+  /** Ordinary declines. Duplicate rows are nested beneath their target instead. */
+  declined: FeedbackItemRecord[];
+  duplicates: FeedbackItemRecord[];
+}
+
 interface FeedbackRow {
   id: string;
   org_id: string;
@@ -109,6 +121,8 @@ interface FeedbackRow {
   severity: FeedbackSeverity | null;
   status: FeedbackStatus;
   admin_note: string | null;
+  duplicate_of: string | null;
+  dedup_checked_at: Date | string | null;
   page_context: JsonValue;
   votes: string | number;
   viewer_has_voted: boolean;
@@ -127,6 +141,8 @@ const toItem = (row: FeedbackRow): FeedbackItemRecord => ({
   severity: row.severity,
   status: row.status,
   adminNote: row.admin_note,
+  duplicateOf: row.duplicate_of,
+  dedupCheckedAt: row.dedup_checked_at === null ? null : toDate(row.dedup_checked_at),
   pageContext: row.page_context,
   votes: Number(row.votes),
   viewerHasVoted: row.viewer_has_voted,
@@ -221,7 +237,8 @@ export async function getFeedbackItem(
   const viewerId = input.viewerId ?? null;
   const rows = await handle.sql<FeedbackRow[]>`
     select i.id, i.org_id, i.author_id, i.type::text as type, i.title, i.body,
-           i.severity::text as severity, i.status::text as status, i.admin_note, i.page_context,
+           i.severity::text as severity, i.status::text as status, i.admin_note,
+           i.duplicate_of, i.dedup_checked_at, i.page_context,
            (select count(*) from public.feedback_votes v where v.item_id = i.id) as votes,
            exists(
              select 1 from public.feedback_votes v
@@ -245,7 +262,8 @@ export async function listFeedbackItems(
 
   const rows = await handle.sql<FeedbackRow[]>`
     select i.id, i.org_id, i.author_id, i.type::text as type, i.title, i.body,
-           i.severity::text as severity, i.status::text as status, i.admin_note, i.page_context,
+           i.severity::text as severity, i.status::text as status, i.admin_note,
+           i.duplicate_of, i.dedup_checked_at, i.page_context,
            (select count(*) from public.feedback_votes v where v.item_id = i.id) as votes,
            exists(
              select 1 from public.feedback_votes v
@@ -324,6 +342,71 @@ export async function listRoadmap(
 }
 
 /**
+ * The bug board's complete read model. Planned bugs share the in-progress
+ * column so every non-terminal status has a visible home.
+ */
+export async function listBugBoard(
+  handle: FeedbackQueryHandle,
+  input: { orgId: string; viewerId?: string | null },
+): Promise<BugBoard> {
+  const items = await listFeedbackItems(handle, {
+    orgId: input.orgId,
+    viewerId: input.viewerId ?? null,
+    type: 'bug',
+    sort: 'votes',
+  });
+  const ordinary = items.filter((item) => item.duplicateOf === null);
+  return {
+    open: ordinary.filter((item) => item.status === 'new' || item.status === 'triaged'),
+    inProgress: ordinary.filter(
+      (item) => item.status === 'planned' || item.status === 'in_progress',
+    ),
+    fixed: ordinary.filter((item) => item.status === 'shipped'),
+    declined: ordinary.filter((item) => item.status === 'declined'),
+    duplicates: items.filter((item) => item.duplicateOf !== null),
+  };
+}
+
+/** Escape wildcard characters so a title fragment remains a literal fragment. */
+function feedbackTitlePattern(query: string): string | null {
+  const normalized = query.trim().replace(/\s+/g, ' ').slice(0, 200);
+  if (normalized.length < 3) return null;
+  return `%${normalized.replace(/[\\%_]/g, '\\$&')}%`;
+}
+
+/** Deterministic pre-submit candidates; semantic matching belongs to the 24/7 job. */
+export async function findSimilarOpenBugs(
+  handle: FeedbackQueryHandle,
+  input: { orgId: string; viewerId?: string | null; query: string; limit?: number },
+): Promise<FeedbackItemRecord[]> {
+  const pattern = feedbackTitlePattern(input.query);
+  if (pattern === null) return [];
+  const viewerId = input.viewerId ?? null;
+  const limit = Math.min(Math.max(input.limit ?? 5, 1), 10);
+  const rows = await handle.sql<FeedbackRow[]>`
+    select i.id, i.org_id, i.author_id, i.type::text as type, i.title, i.body,
+           i.severity::text as severity, i.status::text as status, i.admin_note,
+           i.duplicate_of, i.dedup_checked_at, i.page_context,
+           (select count(*) from public.feedback_votes v where v.item_id = i.id) as votes,
+           exists(
+             select 1 from public.feedback_votes v
+              where v.item_id = i.id and v.user_id = ${viewerId}::uuid
+           ) as viewer_has_voted,
+           i.created_at, i.updated_at, i.status_changed_at
+      from public.feedback_items i
+     where i.org_id = ${input.orgId}
+       and i.type = 'bug'
+       and i.status in ('new', 'triaged', 'planned', 'in_progress')
+       and i.duplicate_of is null
+       and i.title ilike ${pattern} escape '\\'
+     order by (select count(*) from public.feedback_votes v where v.item_id = i.id) desc,
+              i.created_at desc, i.id
+     limit ${limit}
+  `;
+  return rows.map(toItem);
+}
+
+/**
  * Cast or withdraw one person's vote, and report the resulting count.
  *
  * A delete that removed a row means the vote was on; otherwise it is inserted.
@@ -368,6 +451,44 @@ export async function toggleFeedbackVote(
   };
 }
 
+/**
+ * Mark one item as another's duplicate in a single tenant-scoped transition.
+ * The type predicate prevents a bug from being hidden under a feature request.
+ */
+export async function markFeedbackDuplicate(
+  handle: FeedbackQueryHandle,
+  input: {
+    orgId: string;
+    itemId: string;
+    duplicateOf: string;
+    viewerId?: string | null;
+  },
+): Promise<FeedbackItemRecord> {
+  const rows = await handle.sql<{ id: string }[]>`
+    update public.feedback_items source
+       set status = 'declined',
+           admin_note = 'duplicate of #' || target.id::text,
+           duplicate_of = target.id
+      from public.feedback_items target
+     where source.org_id = ${input.orgId}
+       and source.id = ${input.itemId}
+       and target.org_id = ${input.orgId}
+       and target.id = ${input.duplicateOf}
+       and target.type = source.type
+       and target.id <> source.id
+    returning source.id
+  `;
+  const id = rows[0]?.id;
+  if (!id) throw new FeedbackNotFound('Feedback item or duplicate target not found');
+  const item = await getFeedbackItem(handle, {
+    orgId: input.orgId,
+    itemId: id,
+    viewerId: input.viewerId ?? null,
+  });
+  if (!item) throw new FeedbackNotFound();
+  return item;
+}
+
 /** Triage. Owner/admin only; the caller checks the role, the database checks it again. */
 export async function setFeedbackStatus(
   handle: FeedbackQueryHandle,
@@ -394,7 +515,12 @@ export async function setFeedbackStatus(
   const rows = await handle.sql<{ id: string }[]>`
     update public.feedback_items
        set status = coalesce(${input.status ?? null}::public.feedback_status, status),
-           admin_note = case when ${noteProvided} then ${note}::text else admin_note end
+           admin_note = case when ${noteProvided} then ${note}::text else admin_note end,
+           duplicate_of = case
+             when ${input.status ?? null}::text is not null
+              and ${input.status ?? null}::text <> 'declined' then null
+             else duplicate_of
+           end
      where org_id = ${input.orgId} and id = ${input.itemId}
     returning id
   `;

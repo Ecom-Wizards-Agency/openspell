@@ -36,6 +36,7 @@ const GUARDED = [
   '/tags',
   '/feedback',
   '/feedback/new',
+  '/bugs',
   '/roadmap',
   '/settings/connections',
   '/settings/profiles',
