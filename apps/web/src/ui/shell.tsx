@@ -22,12 +22,14 @@ import { Badge, Button, Select, Tabs } from './primitives';
 // the duplicate so each surface has exactly one home in the nav.
 const TABS = [
   { href: '/settings/connections', label: 'Connections' },
+  { href: '/settings/integrations', label: 'Integrations' },
   { href: '/settings/profiles', label: 'Profiles' },
   { href: '/sync-status', label: 'Sync status' },
 ] as const;
 
 const HREF_FOR = {
   connections: '/settings/connections',
+  integrations: '/settings/integrations',
   profiles: '/settings/profiles',
   sync: '/sync-status',
 } as const;
