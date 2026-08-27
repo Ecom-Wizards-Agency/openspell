@@ -1715,3 +1715,82 @@ button {
 .wa-kpis--dense .wa-kpi__value {
   font-size: var(--wa-fs-lg);
 }
+/* ---------------------------------------------------- bid history modal --- */
+.wa-modal-backdrop {
+  align-items: center;
+  background: color-mix(in srgb, var(--wa-bg) 72%, transparent);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 1rem;
+  position: fixed;
+  z-index: 100;
+}
+
+.wa-bid-history-modal {
+  background: var(--wa-surface);
+  border: 1px solid var(--wa-border-strong);
+  border-radius: var(--wa-radius-lg);
+  box-shadow: var(--wa-shadow-3);
+  display: flex;
+  flex-direction: column;
+  height: min(92vh, 64rem);
+  max-width: 96rem;
+  overflow: hidden;
+  width: min(96vw, 96rem);
+}
+
+.wa-bid-history-modal__head {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--wa-border);
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+}
+
+.wa-bid-history-modal__title {
+  font-size: var(--wa-fs-xl);
+  line-height: 1.2;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wa-bid-history-modal__sub {
+  color: var(--wa-text-muted);
+  font-size: var(--wa-fs-sm);
+  margin: 0.25rem 0 0;
+}
+
+.wa-bid-history-modal__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1rem;
+  overflow: auto;
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.wa-bid-history-modal__loading {
+  align-items: center;
+  color: var(--wa-text-muted);
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: center;
+  min-height: 20rem;
+}
+
+.wa-bid-history-modal__chart {
+  padding: 1rem;
+}
+
+@media (max-width: 720px) {
+  .wa-modal-backdrop { padding: 0; }
+  .wa-bid-history-modal {
+    border-radius: 0;
+    height: 100vh;
+    width: 100vw;
+  }
+}

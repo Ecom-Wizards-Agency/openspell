@@ -20,6 +20,7 @@ import { ensureFactPartitions } from '@wizard-ads/db';
 import { buildGridModel, groupRows, resolveField } from '@wizard-ads/ui';
 import type { GridRow } from '@wizard-ads/ui';
 import { loadGridRows } from '../app/_lib/grid-data.js';
+import { loadBidHistory } from '../app/_lib/bid-corridor.js';
 import { listProfiles } from '../app/_lib/profiles.js';
 import type { Period } from '../app/_lib/periods.js';
 
@@ -154,6 +155,36 @@ suite('grid and roster reads against SQL aggregates', () => {
       rpc_category: 'Rank',
     });
     expect(target?.dimensions['diff_from_suggested_bid']).toBeCloseTo(0.2, 10);
+  });
+
+  it('loads one org-scoped target history payload with same-window KPI bases', async () => {
+    const history = await loadBidHistory(database, {
+      orgId,
+      profileId,
+      targetId: 'c-skew-a-kw0',
+      from: PERIOD.start,
+      to: PERIOD.end,
+    });
+    expect(history?.target).toMatchObject({
+      targeting: 'widget',
+      matchType: 'exact',
+      adProduct: 'SP',
+      targetKind: 'keyword',
+      campaignId: 'c-skew-a',
+    });
+    expect(history?.points).toHaveLength(2);
+    expect(history?.totals.impressions).toBeGreaterThan(0);
+    expect(history?.totals.spend).toBeGreaterThan(0);
+
+    await expect(
+      loadBidHistory(database, {
+        orgId: '00000000-0000-4000-8000-000000000000',
+        profileId,
+        targetId: 'c-skew-a-kw0',
+        from: PERIOD.start,
+        to: PERIOD.end,
+      }),
+    ).resolves.toBeNull();
   });
 
   it('computes a grouped ACOS equal to sum(cost)/sum(sales) in Postgres', async () => {

@@ -181,6 +181,37 @@ describe('DataGrid over 50k rows', () => {
     expect(document.body.textContent).toContain('€');
   });
 
+  it('renders a suggested-bid median with its low–high range beneath it', () => {
+    const targetColumns = columnsFor('targets').filter((column) => column.id === 'suggested_bid');
+    const [base] = syntheticSearchTermRows(1, { seed: 48 });
+    const target = {
+      ...base,
+      id: 'target-1',
+      dimensions: {
+        ...(base?.dimensions ?? {}),
+        suggested_bid: 0.9,
+        suggested_bid_low: 0.7,
+        suggested_bid_high: 1.2,
+      },
+    } as NonNullable<typeof base>;
+    render(
+      <DataGrid
+        model={buildGridModel([target])}
+        columns={targetColumns}
+        currencyCode="USD"
+        sort={[]}
+        onSortChange={() => {}}
+        height={VIEWPORT.height}
+        rowHeight={42}
+        initialRect={VIEWPORT}
+      />,
+    );
+
+    const cell = within(screen.getByTestId('grid-row')).getByTestId('suggested-bid-cell');
+    expect(cell.textContent).toContain('$0.90');
+    expect(cell.textContent).toContain('$0.70 – $1.20');
+  });
+
   it('says nothing matched rather than showing an empty frame', () => {
     const rows = syntheticSearchTermRows(500, { seed: 6 });
     const model = buildGridModel(rows, {
