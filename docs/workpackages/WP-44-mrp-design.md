@@ -2,17 +2,19 @@
 
 ## Problem
 
-The worker needs per-ASIN economics from a beta MCP endpoint whose exact tool name
-is not part of the repository. The implementation must discover that tool, tolerate
-both JSON and SSE Streamable HTTP responses, keep the personal access token inside
-the existing worker/Vault boundary, and persist an idempotent daily snapshot without
-changing the frozen shared contracts. WP-41 already owns queue dispatch and schedule
-selection; WP-40 owns connection metadata and secret custody.
+The live beta does not expose a bulk product-economics operation. A sync must first
+parse a prose seller roster, map one seller to an in-org ads profile, enumerate that
+profile's advertised ASINs, and call `get_product_metrics` once per ASIN with a seller,
+marketplace, and date window. The provider returns a stringified JSON document whose
+metric sections can grow independently of wizard-ads. The worker must retain those
+unknowns, reject unloaded periods, isolate ordinary per-ASIN failures, and still prove
+that every accepted row reached the existing idempotent loader. Shared contracts and
+the database schema remain frozen.
 
 ## Usage (caller's view)
 
-The always-on worker binds one handler and gives the generic queue no provider
-knowledge:
+The queue still binds one provider handler and remains unaware of seller or ASIN
+orchestration:
 
 ```ts
 const worker = new SyncWorker({
@@ -24,21 +26,28 @@ const worker = new SyncWorker({
 });
 ```
 
-The client can also be exercised at the MCP operations named by the protocol, while
-the normal caller uses the one deep operation:
+The worker sees two domain operations rather than MCP envelopes:
 
 ```ts
 const client = new MrpClient({ endpoint, token, fetch });
-await client.initialize();
-const tools = await client.listTools();
-const raw = await client.callTool(tools[0].name);
-
-const syncClient = new MrpClient({ endpoint, token, fetch });
-const sync = await syncClient.fetchProductEconomics();
-// sync.toolName records the runtime-discovered tool; sync.products are domain rows.
+const { sellers } = await client.fetchSellers();
+const metrics = await client.fetchProductMetrics({
+  asin,
+  sellerIds: [seller.sellerId],
+  marketplaceIds: [marketplaceId],
+  dateFrom: capturedOn,
+  dateTo: capturedOn,
+});
 ```
 
-WP-45 reads one newest row per ASIN without knowing the loader or MCP transport:
+The pure decisions are independently testable without a database or transport:
+
+```ts
+const matches = matchMrpSellersToProfiles(sellers, profiles, sellerMap);
+const row = mapMrpProductMetrics({ orgId, profileId, capturedOn, loadedAt }, metrics);
+```
+
+WP-45 continues to read the existing persistence seam unchanged:
 
 ```ts
 const rows = await latestProductEconomics(handle, { orgId, profileId });
@@ -47,105 +56,113 @@ const rows = await latestProductEconomics(handle, { orgId, profileId });
 ## Shape
 
 ```ts
-interface MrpClientOptions {
-  endpoint: string;
-  token: string;
-  fetch?: FetchLike;
+interface MrpSeller {
+  number: number;
+  name: string;
+  sellerId: number;
+  sellingPartnerId: string | null;
+  region: string | null;
+  access: string | null;
 }
 
-interface MrpProductEconomics {
+interface MrpProductMetricsInput {
   asin: string;
-  capturedOn: string | null;
-  salePrice: number | null;
-  cogs: number | null;
-  fbaFees: number | null;
-  referralFees: number | null;
-  otherFees: number | null;
-  margin: number | null;
-  ltvRevenue: number | null;
-  ltvOrders: number | null;
-  repeatRate: number | null;
-  currency: string | null;
-  details: Record<string, unknown>;
+  sellerIds: number[];
+  marketplaceIds: string[];
+  dateFrom: string;
+  dateTo: string;
+}
+
+interface MrpProductMetrics {
+  product: MrpProductEconomics;
+  period: {
+    from: string;
+    to: string;
+    complete: boolean | null;
+    dataAvailableThrough: Record<string, string | null>;
+    incompleteSources: string[];
+    note: string | null;
+  };
 }
 
 class MrpClient {
   initialize(): Promise<MrpInitializeResult>;
   listTools(): Promise<MrpTool[]>;
   callTool(name: string, args?: Record<string, unknown>): Promise<unknown>;
-  fetchProductEconomics(): Promise<MrpEconomicsResult>;
+  fetchSellers(): Promise<MrpSellersResult>;
+  fetchProductMetrics(input: MrpProductMetricsInput): Promise<MrpProductMetricsResult>;
 }
 
-function selectEconomicsTool(tools: readonly MrpTool[]): MrpTool;
-function parseProductEconomics(value: unknown): MrpProductEconomics[];
-function upsertProductEconomics(
-  handle: DbHandle,
-  rows: readonly NewProductEconomics[],
-): Promise<ProductEconomicsLoadCounts>;
-function latestProductEconomics(
-  handle: DbHandle,
-  args: { orgId: string; profileId: string },
-): Promise<ProductEconomicsRow[]>;
-function createMrpEconomicsSync(handle: DbHandle):
-  (payload: EconomicsSyncJob) => Promise<Record<string, unknown>>;
+interface MrpEconomicsSyncStore {
+  scope(payload: EconomicsSyncJob): Promise<MrpSyncScope | null>;
+  secret(connectionId: string): Promise<string | null>;
+  advertisedAsins(args: { orgId: string; profileId: string; limit: number }):
+    Promise<MrpAsinSelection>;
+  load(rows: readonly NewProductEconomics[]): Promise<ProductEconomicsLoadCounts>;
+  succeeded(args: { connectionId: string; syncedAt: Date; note: string | null }): Promise<void>;
+  failed(args: { connectionId: string; lastError: string; disable: boolean }): Promise<void>;
+}
 ```
 
-The MCP client is the transport choke point. It owns JSON-RPC ids, authorization,
-session-header carry-forward, JSON/SSE decoding, protocol errors, discovery scoring,
-and wire-to-domain validation. Transport envelopes never cross into the worker. Zod
-validates provider data at that boundary, numeric strings become finite numbers, and
-unrecognized product fields remain in `details`, per boundary-discipline.
+`mrp-api` owns all MCP and provider-wire knowledge: lazy initialization, exact live
+tool names, prose/result unwrapping, stringified JSON parsing, tolerant Zod boundary
+validation, metric aliases, and preservation of the full provider document in
+`details`. The worker owns tenant policy: explicit seller-map precedence, normalized
+name matching, region/sync preference, country-to-marketplace mapping, the ASIN cap,
+last-complete-profile-day selection, availability gating, per-ASIN isolation, and the
+five-step loader count assertion. This keeps both interfaces deep and the call chain
+short, per boundary-discipline and interface depth.
 
-The database loader follows the existing five-step fact pattern: empty-batch return,
-whole-batch grain validation, bind-safe chunking, idempotent upsert on
-`(profile_id, asin, captured_on)`, and offered-versus-written assertion. The newest
-query selects one row per ASIN inside both org and profile predicates. The worker
-resolves one active profile-compatible MRP connection, retrieves its token through
-the worker-only RPC, defaults an absent provider capture date to the worker's current
-UTC date, loads the rows, then records connection health. The public surfaces are
-small relative to the protocol, parsing, and persistence policy they hide, per
-interface depth.
+The database adapter queries the existing `product_ads` mirror. It ranks distinct
+ASINs by a 30-day Sponsored Products ad-group spend proxy, then by ASIN, and returns
+both selected and total counts so cap skips are observable. It does not introduce a
+new database query module or change another package's schema.
 
 ## Synthesis decision
 
-The smallest-surface candidate was the base: a single `fetchProductEconomics`
-operation hides discovery and parsing. The testability-first candidate contributed
-public protocol primitives plus exported pure tool selection and product parsing,
-which let fixtures prove the exact initialize/list/call sequence without exposing
-JSON-RPC envelopes. A swappable generic MCP transport object was rejected after the
-red-flag screen: it was a shallow pass-through API that leaked wire types and made the
-worker coordinate protocol stages.
+The smallest-public-surface candidate is the base: two live MRP domain calls hide the
+protocol and provider payload. The isolation-first candidate contributed exported
+pure seller matching, availability gating, marketplace lookup, and row mapping so the
+behavior can be tested without widening the store into temporal load/parse stages. A
+generic runtime-swappable MCP transport was rejected because it exposed wire types and
+forced the worker to coordinate initialize/call/result parsing. A staged planner
+object was also rejected as a shallow temporal decomposition: its caller still had to
+know every stage in order.
 
 ## Tradeoffs accepted
 
-- We accept a fresh MCP session per sync in exchange for stateless, retry-safe jobs.
-- We accept heuristic tool selection in exchange for not committing beta-only tool
-  names from an operator document.
-- We accept nullable economics fields in exchange for preserving partial provider
-  rows; ASIN and at least one economics metric remain mandatory at the parser edge.
-- We accept UTC as the fallback capture day in exchange for a deterministic daily
-  grain when MRP supplies no observation date.
+- We accept one provider call per selected ASIN in exchange for obeying the live schema
+  and isolating individual product failures.
+- We accept ad-group spend as an ordering proxy in exchange for using the existing
+  mirror and facts without a new product-ad fact grain.
+- We accept the full provider document in `details` in exchange for lossless tolerance
+  while the beta metric sections evolve; mapped columns deliberately retain their
+  existing semantics.
+- We accept skipping a whole one-day aggregate when any advertised availability date
+  trails that day in exchange for never persisting provider-declared unloaded data.
 
 ## Alternatives considered
 
-- A raw `McpTransport.request(method, params)` exposed protocol orchestration to every
-  caller and hid almost no complexity, so it lost on interface depth.
-- A worker-owned initialize/list/call sequence kept the client smaller but leaked
-  session and discovery policy across package boundaries and produced a longer call
-  chain.
-- A hard-coded MRP tool name would be simpler locally but contradicts the explicit
-  runtime-discovery requirement and would couple public code to a beta guide.
+- A generic `request(method, params)` client hid only HTTP mechanics and leaked MCP
+  orchestration and wire parsing to the worker, so it lost on interface depth.
+- A worker pipeline with separate discover, match, enumerate, fetch, parse, and load
+  service methods enlarged the public surface without hiding policy; pure decision
+  functions plus one orchestration handler are easier to trace.
+- A new ASIN/spend query in `packages/db` would create a reusable-looking seam for a
+  provider-specific cap and cross a package ownership boundary; the worker adapter is
+  the only current caller and therefore owns that query.
 
 ## Open questions and risks
 
-- Does the live beta require tool arguments despite the current brief naming none?
-  The first operator smoke call must verify the discovered tool's input schema.
-- Does the beta use a capture date or timezone-specific business day? When present,
-  its ISO date wins; otherwise the worker records the current UTC day.
-- Which exact field aliases occur in the live product payload? Unknown fields are
-  retained so a smoke result can extend the boundary parser without losing evidence.
+- Which additional metric aliases will the beta add after the verified payload? The
+  complete document remains in `details`, so extending a column mapping is additive.
+- Will an organisation need one regional seller mapped to multiple marketplace
+  profiles? Explicit `config.seller_map` already supports that even though automatic
+  matching chooses the single best profile per seller.
+- Does a future product-ad report provide true ASIN-grain spend? If so, can it replace
+  the current ad-group proxy without changing the store interface?
 
 ## Next implementation step
 
-Build the fixture-driven MCP client and lock its three-request sequence before adding
-the database loader and worker shell.
+Replace the old bulk economics parser and client operation with fixture-driven live
+seller and single-ASIN product-metrics boundaries.
