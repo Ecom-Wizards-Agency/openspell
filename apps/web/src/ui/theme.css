@@ -2174,3 +2174,14 @@ button {
 .wa-grid-scroller::-webkit-scrollbar-thumb:hover {
   background: var(--wa-text-dim);
 }
+
+/* A .wa-tab rendered as a <button> (mode toggles): strip button chrome but
+   keep the class's underline. */
+.wa-tab--btn {
+  background: none;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  cursor: pointer;
+  font-family: inherit;
+}

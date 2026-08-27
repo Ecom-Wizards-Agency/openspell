@@ -154,23 +154,30 @@ export function CampaignBuilder({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <div aria-label="Campaign builder mode" role="tablist" className="wa-row">
-        <Button
+      {/* Underline tabs like /settings, not primary buttons: Signal Orange is
+          reserved for the one action per view (Run preflight), and a selected
+          mode is a state, not a call to action. */}
+      <div aria-label="Campaign builder mode" role="tablist" className="wa-tabs">
+        <button
+          type="button"
           role="tab"
           aria-selected={mode === 'create'}
-          variant={mode === 'create' ? 'primary' : 'default'}
+          aria-current={mode === 'create' ? 'page' : undefined}
+          className="wa-tab wa-tab--btn"
           onClick={() => selectMode('create')}
         >
           Create new
-        </Button>
-        <Button
+        </button>
+        <button
+          type="button"
           role="tab"
           aria-selected={mode === 'update'}
-          variant={mode === 'update' ? 'primary' : 'default'}
+          aria-current={mode === 'update' ? 'page' : undefined}
+          className="wa-tab wa-tab--btn"
           onClick={() => selectMode('update')}
         >
           Update existing
-        </Button>
+        </button>
       </div>
 
       {updateWithoutProfile ? (
