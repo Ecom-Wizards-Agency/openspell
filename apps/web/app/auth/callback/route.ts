@@ -11,6 +11,7 @@
  * exactly the URL a phishing link would target.
  */
 import { NextResponse } from 'next/server';
+import { safeNextPath } from '../../../src/auth/next-path';
 import { supabaseConfigured, supabaseServerClient } from '../../../src/auth/supabase';
 
 export const runtime = 'nodejs';
@@ -19,7 +20,7 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const code = url.searchParams.get('code');
-  const next = safeNext(url.searchParams.get('next'));
+  const next = safeNextPath(url.searchParams.get('next'), '/settings/connections');
 
   if (!supabaseConfigured()) {
     return NextResponse.redirect(new URL('/login?error=Supabase+Auth+is+not+configured', url));
@@ -35,12 +36,4 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   return NextResponse.redirect(new URL(next, url));
-}
-
-function safeNext(value: string | null): string {
-  if (!value) return '/settings/connections';
-  // A single leading slash, and no scheme: `//evil.example` is a protocol
-  // relative URL and would leave the site.
-  if (!value.startsWith('/') || value.startsWith('//')) return '/settings/connections';
-  return value;
 }

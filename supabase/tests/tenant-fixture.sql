@@ -53,8 +53,8 @@ begin
     (org_id, email, role, token_prefix, token_hash, invited_by, expires_at)
   values
     (v_org, p_slug || '-invite@example.test', 'viewer',
-     substring(encode(digest(p_slug || '-invite', 'sha256'), 'hex') for 12),
-     encode(digest(p_slug || '-invite', 'sha256'), 'hex'), p_user_id,
+     substring(md5(p_slug || '-invite') || md5(p_slug || '-invite-2') for 12),
+     md5(p_slug || '-invite') || md5(p_slug || '-invite-2'), p_user_id,
      now() + interval '7 days');
 
   insert into public.ads_connections (org_id, label, status)

@@ -285,14 +285,17 @@ export async function claimInvitation(
 /** Reopen only a provisional claim; completed/user-bound claims cannot be undone. */
 export async function unclaimInvitation(
   handle: SqlHandle,
+  orgId: string,
   invitationId: string,
+  acceptedBy: string | null = null,
 ): Promise<boolean> {
   const rows = await handle.sql<{ id: string }[]>`
     update public.org_invitations
        set accepted_at = null, accepted_by = null
      where id = ${invitationId}
+       and org_id = ${orgId}
        and accepted_at is not null
-       and accepted_by is null
+       and accepted_by is not distinct from ${acceptedBy}
     returning id
   `;
   return rows.length === 1;

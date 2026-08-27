@@ -89,7 +89,7 @@ describe.skipIf(!available)('invitation persistence and claims', () => {
     const second = await claimInvitation(database, tokenHash);
     expect(first?.status).toBe('accepted');
     expect(second).toBeNull();
-    expect(await unclaimInvitation(database, first?.id ?? '')).toBe(true);
+    expect(await unclaimInvitation(database, orgId, first?.id ?? '')).toBe(true);
     expect((await claimInvitation(database, tokenHash))?.id).toBe(first?.id);
   });
 });

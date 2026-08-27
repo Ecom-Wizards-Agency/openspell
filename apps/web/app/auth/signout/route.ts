@@ -8,6 +8,7 @@
  */
 import { NextResponse } from 'next/server';
 import { E2E_USER_COOKIE, e2eAuthEnabled } from '../../../src/auth/session';
+import { safeNextPath } from '../../../src/auth/next-path';
 import { supabaseConfigured, supabaseServerClient } from '../../../src/auth/supabase';
 import { ORG_COOKIE } from '../../../src/data/orgs';
 
@@ -20,7 +21,9 @@ export async function POST(request: Request): Promise<Response> {
     await supabase.auth.signOut();
   }
 
-  const response = NextResponse.redirect(new URL('/login', request.url), 303);
+  const requestUrl = new URL(request.url);
+  const next = safeNextPath(requestUrl.searchParams.get('next'), '/login');
+  const response = NextResponse.redirect(new URL(next, requestUrl), 303);
   response.cookies.delete(ORG_COOKIE);
   if (e2eAuthEnabled()) response.cookies.delete(E2E_USER_COOKIE);
   return response;
