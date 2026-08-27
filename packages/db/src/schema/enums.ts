@@ -16,6 +16,7 @@ import {
   AdProduct,
   EntityState,
   EntityType,
+  JobType,
   MatchType,
   Placement,
   Region,
@@ -60,14 +61,7 @@ export const negativeScope = pgEnum('negative_scope', ['campaign', 'ad_group']);
 export const entityChangeSource = pgEnum('entity_change_source', ['sync', 'apply']);
 export const targetKind = pgEnum('target_kind', ['keyword', 'target']);
 
-export const syncJobType = pgEnum('sync_job_type', [
-  'entity.sync',
-  'report.request',
-  'report.poll',
-  'report.fetch',
-  'crosscheck.ingest',
-  'recommendations.run',
-]);
+export const syncJobType = pgEnum('sync_job_type', tuple(JobType.options));
 export const syncJobStatus = pgEnum('sync_job_status', [
   'queued',
   'running',

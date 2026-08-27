@@ -7,7 +7,7 @@
  * "helpfully" split that into a select and an update would reintroduce exactly
  * the double-claim this design exists to prevent.
  */
-import type { JobPayload } from '@wizard-ads/shared';
+import type { JobPayload, JobType } from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
 import type { SyncJob } from '../schema/sync.js';
 
@@ -57,9 +57,12 @@ export async function claimSyncJobs(
   handle: DbHandle,
   workerId: string,
   limit: number,
+  jobTypes?: readonly JobType[],
 ): Promise<ClaimedJob[]> {
   const rows = await handle.sql<RawJobRow[]>`
-    select * from public.claim_sync_jobs(${workerId}, ${limit})
+    select * from public.claim_sync_jobs(
+      ${workerId}, ${limit}, ${jobTypes === undefined ? null : [...jobTypes]}::public.sync_job_type[]
+    )
   `;
   return rows.map(toClaimedJob);
 }

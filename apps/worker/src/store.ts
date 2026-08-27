@@ -25,7 +25,7 @@ import {
   type NewEntityChange,
 } from '@wizard-ads/db';
 import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
-import type { EntityRow, JobPayload, ReportType } from '@wizard-ads/shared';
+import type { EntityRow, JobPayload, JobType, ReportType } from '@wizard-ads/shared';
 import type { AdsProfileContext } from './ads-api.js';
 import type { CampaignFactRow, ParsedFactBatch } from './parsers.js';
 import { defaultSchedules, type ScheduleSpec } from './schedules.js';
@@ -92,7 +92,7 @@ export interface StoreLogger {
 const MAX_LOGGED_DUPLICATE_IDS = 20;
 
 export interface WorkerStore {
-  claim(workerId: string, limit: number): Promise<ClaimedJob[]>;
+  claim(workerId: string, limit: number, jobTypes?: readonly JobType[]): Promise<ClaimedJob[]>;
   finish(
     jobId: string,
     outcome: JobOutcome,
@@ -151,6 +151,8 @@ export interface WorkerStore {
    * visits.
    */
   repairOverlongLookbacks(profileId?: string): Promise<number>;
+  /** Reconcile provider schedules from active integration connections. */
+  ensureIntegrationSchedules(): Promise<number>;
   loadFacts(batch: ParsedFactBatch): Promise<number>;
   completeReport(
     reportRequestId: string,
@@ -175,8 +177,8 @@ export class PostgresWorkerStore implements WorkerStore {
     this.logger = logger ?? { info: (message, details) => console.info(message, details ?? {}) };
   }
 
-  claim(workerId: string, limit: number): Promise<ClaimedJob[]> {
-    return claimSyncJobs(this.handle, workerId, limit);
+  claim(workerId: string, limit: number, jobTypes?: readonly JobType[]): Promise<ClaimedJob[]> {
+    return claimSyncJobs(this.handle, workerId, limit, jobTypes);
   }
 
   async finish(
@@ -460,6 +462,99 @@ export class PostgresWorkerStore implements WorkerStore {
       returning id
     `;
     return rows.length;
+  }
+
+  /**
+   * Reconcile the schedules owned by external integrations.
+   *
+   * WP-40 may not have landed in a deployment yet, so the relation probe is a
+   * real compatibility seam, not error swallowing. Once the table exists, only
+   * active connections participate. A connection-level `config.profile_id`
+   * selects one valid sync-enabled profile; otherwise the first profile in each
+   * org/country (the marketplace key currently present on `ad_profiles`) is used.
+   *
+   * DataDive owns both the daily rank read and the weekly SQP categorization
+   * pass. Revoked/error connections disable schedules already provisioned for
+   * them, while a later reactivation enables the same rows again.
+   */
+  async ensureIntegrationSchedules(): Promise<number> {
+    const [relation] = await this.handle.sql<{ relation: string | null }[]>`
+      select to_regclass('public.integration_connections')::text as relation
+    `;
+    if (!relation?.relation) return 0;
+
+    const [result] = await this.handle.sql<{ changed: string }[]>`
+      with active_connections as (
+        select c.org_id, c.provider::text as provider, c.config
+          from public.integration_connections c
+         where c.status::text = 'active'
+      ),
+      default_profiles as (
+        select distinct on (p.org_id, p.country_code)
+               p.org_id, p.country_code, p.id as profile_id
+          from public.ad_profiles p
+         where p.sync_enabled
+         order by p.org_id, p.country_code, p.created_at, p.id
+      ),
+      selected_profiles as (
+        select c.org_id, c.provider, p.profile_id
+          from active_connections c
+          join default_profiles p on p.org_id = c.org_id
+         where nullif(btrim(c.config ->> 'profile_id'), '') is null
+        union
+        select c.org_id, c.provider, p.id as profile_id
+          from active_connections c
+          join public.ad_profiles p
+            on p.org_id = c.org_id
+           and p.sync_enabled
+           and p.id::text = nullif(btrim(c.config ->> 'profile_id'), '')
+      ),
+      expected as (
+        select distinct s.org_id, s.profile_id,
+               m.job_type::public.sync_job_type as job_type,
+               m.cadence::interval as cadence,
+               m.payload
+          from selected_profiles s
+          join (values
+            ('keepa',   'keepa.sync',       '1 day',  '{"includeCompetitors":true}'::jsonb),
+            ('datadive','rank.sync',        '1 day',  '{}'::jsonb),
+            ('datadive','sqp.categorize',   '7 days', '{}'::jsonb),
+            ('mrp',     'economics.sync',   '1 day',  '{}'::jsonb)
+          ) as m(provider, job_type, cadence, payload)
+            on m.provider = s.provider
+      ),
+      disabled as (
+        update public.sync_schedules schedule
+           set enabled = false
+         where schedule.variant = 'integration'
+           and schedule.job_type in (
+             'keepa.sync', 'rank.sync', 'economics.sync', 'sqp.categorize'
+           )
+           and schedule.enabled
+           and not exists (
+             select 1 from expected e
+              where e.profile_id = schedule.profile_id
+                and e.job_type = schedule.job_type
+           )
+        returning schedule.id
+      ),
+      upserted as (
+        insert into public.sync_schedules
+          (org_id, profile_id, job_type, variant, cadence, payload, enabled)
+        select e.org_id, e.profile_id, e.job_type, 'integration', e.cadence, e.payload, true
+          from expected e
+        on conflict (profile_id, job_type, report_type, variant) do update
+          set cadence = excluded.cadence,
+              payload = excluded.payload,
+              enabled = true
+        where sync_schedules.cadence is distinct from excluded.cadence
+           or sync_schedules.payload is distinct from excluded.payload
+           or not sync_schedules.enabled
+        returning id
+      )
+      select ((select count(*) from disabled) + (select count(*) from upserted))::text as changed
+    `;
+    return Number(result?.changed ?? 0);
   }
 
   async unscheduledProfiles(): Promise<{ orgId: string; profileId: string }[]> {

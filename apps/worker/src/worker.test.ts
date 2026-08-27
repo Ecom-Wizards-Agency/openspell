@@ -43,6 +43,7 @@ describe('fetch handler count assertion', () => {
       provisionSchedules: async () => 0,
       unscheduledProfiles: async () => [],
       repairOverlongLookbacks: async () => 0,
+      ensureIntegrationSchedules: async () => 0,
       ensureReportRequest: async () => report,
       setReportCreated: async () => {},
       getReportRequest: async () => report,
@@ -291,6 +292,88 @@ describe('recommendations.run wiring', () => {
   });
 });
 
+describe('integration handler wiring', () => {
+  const payloads: JobPayload[] = [
+    { type: 'keepa.sync', orgId, profileId, includeCompetitors: true },
+    { type: 'rank.sync', orgId, profileId },
+    { type: 'economics.sync', orgId, profileId },
+    { type: 'sqp.categorize', orgId, profileId, weekStart: '2026-08-23' },
+  ];
+
+  it('delegates all four payloads without constructing an Ads client', async () => {
+    let claimed = false;
+    const called: string[] = [];
+    const results: unknown[] = [];
+    const jobs = payloads.map((payload, index): ClaimedJob => ({
+      id: `${index + 1}`.repeat(8) + '-1111-4111-8111-111111111111',
+      orgId,
+      profileId,
+      jobType: payload.type,
+      payload,
+      attempts: 1,
+      maxAttempts: 5,
+      dedupeKey: null,
+      claimedBy: 'integration-worker',
+    }));
+    const worker = new SyncWorker({
+      workerId: 'integration-worker',
+      store: {
+        ...stubStore(),
+        claim: async () => claimed ? [] : (claimed = true, jobs),
+        finish: async (_id, outcome, options) => {
+          expect(outcome).toBe('succeeded');
+          results.push(options?.result);
+        },
+      },
+      integrations: {
+        keepaSync: async (payload) => (called.push(payload.type), { provider: 'keepa' }),
+        rankSync: async (payload) => (called.push(payload.type), { provider: 'datadive' }),
+        economicsSync: async (payload) => (called.push(payload.type), { provider: 'mrp' }),
+        sqpCategorize: async (payload) => (called.push(payload.type), { weekStart: payload.weekStart }),
+      },
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(4);
+    expect(called).toEqual(payloads.map((payload) => payload.type));
+    expect(results).toHaveLength(4);
+  });
+
+  it('dead-letters a job whose handler is not deployed in this runtime', async () => {
+    const payload = payloads[0];
+    if (!payload) throw new Error('missing test payload');
+    let claimed = false;
+    const dead: string[] = [];
+    const worker = new SyncWorker({
+      workerId: 'integration-worker',
+      store: {
+        ...stubStore(),
+        claim: async () => claimed ? [] : (claimed = true, [{
+          id: jobId, orgId, profileId, jobType: payload.type, payload,
+          attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'integration-worker',
+        }]),
+        deadLetter: async (_id, error) => { dead.push(error); },
+      },
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(dead).toEqual(['keepa.sync handler not deployed in this runtime']);
+  });
+
+  it('passes the configured job-type allowlist into every claim', async () => {
+    const filters: (readonly string[] | undefined)[] = [];
+    const worker = new SyncWorker({
+      workerId: 'integration-worker',
+      store: { ...stubStore(), claim: async (_id, _limit, jobTypes) => (filters.push(jobTypes), []) },
+      jobTypes: ['keepa.sync', 'rank.sync'],
+    });
+
+    expect(await worker.drainOnce()).toBe(0);
+    expect(filters).toEqual([['keepa.sync', 'rank.sync']]);
+  });
+});
+
 describe('resolveSourcePath', () => {
   it('reads a relative payload path against the configured inbox root', () => {
     expect(resolveSourcePath('profile-1/2026-08-13', '/srv/inbox')).toBe('/srv/inbox/profile-1/2026-08-13');
@@ -335,6 +418,7 @@ function stubStore(): WorkerStore {
     provisionSchedules: async () => 0,
     unscheduledProfiles: async () => [],
     repairOverlongLookbacks: async () => 0,
+    ensureIntegrationSchedules: async () => 0,
     ensureReportRequest: async () => { throw new Error('unused'); },
     setReportCreated: async () => {},
     getReportRequest: async () => { throw new Error('unused'); },

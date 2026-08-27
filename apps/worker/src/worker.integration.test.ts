@@ -751,7 +751,13 @@ describe.skipIf(!available)('worker + real Postgres', () => {
 
     const provisioner = new ScheduleProvisioner(store, 60_000, quietLogger);
     provisioner.start();
-    await waitFor(async () => (await store.unscheduledProfiles()).length === 0);
+    const expectedSchedules = 1 + 2 * DEFAULT_REPORT_TYPES.length;
+    await waitFor(async () => {
+      const [row] = await database.sql<{ n: string }[]>`
+        select count(*) as n from public.sync_schedules where profile_id = ${profileId}
+      `;
+      return Number(row?.n) === expectedSchedules;
+    });
     provisioner.stop();
 
     const [counts] = await database.sql<{ n: string; variants: string }[]>`
@@ -759,7 +765,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
         from public.sync_schedules where profile_id = ${profileId}
     `;
     // One entity pass plus a recent and a restatement schedule per report type.
-    expect(Number(counts?.n)).toBe(1 + 2 * DEFAULT_REPORT_TYPES.length);
+    expect(Number(counts?.n)).toBe(expectedSchedules);
     expect(Number(counts?.variants)).toBe(2);
 
     // Re-provisioning the same profile finds nothing to do rather than
@@ -768,7 +774,71 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     const [after] = await database.sql<{ n: string }[]>`
       select count(*) as n from public.sync_schedules where profile_id = ${profileId}
     `;
-    expect(Number(after?.n)).toBe(1 + 2 * DEFAULT_REPORT_TYPES.length);
+    expect(Number(after?.n)).toBe(expectedSchedules);
+  });
+
+  it('reconciles active integration schedules and disables them after revocation', async () => {
+    await database.sql`delete from public.sync_schedules where profile_id = ${profileId}`;
+    await database.sql`
+      create table public.integration_connections (
+        id uuid primary key default gen_random_uuid(),
+        org_id uuid not null references public.orgs(id),
+        provider text not null,
+        config jsonb not null default '{}'::jsonb,
+        status public.connection_status not null default 'pending'
+      )
+    `;
+    try {
+      await database.sql`
+        insert into public.integration_connections (org_id, provider, status)
+        values (${orgId}, 'keepa', 'active'),
+               (${orgId}, 'datadive', 'active'),
+               (${orgId}, 'mrp', 'active')
+      `;
+      const store = new PostgresWorkerStore(database);
+      expect(await store.ensureIntegrationSchedules()).toBe(4);
+      expect(await store.ensureIntegrationSchedules()).toBe(0);
+
+      const schedules = await database.sql<{
+        job_type: string;
+        report_type: string | null;
+        cadence: string;
+        payload: Record<string, unknown>;
+        enabled: boolean;
+      }[]>`
+        select job_type::text as job_type, report_type::text as report_type,
+               cadence::text as cadence, payload, enabled
+          from public.sync_schedules
+         where profile_id = ${profileId} and variant = 'integration'
+         order by job_type
+      `;
+      expect(schedules.map((row) => ({
+        type: row.job_type,
+        cadence: row.cadence,
+        reportType: row.report_type,
+        enabled: row.enabled,
+      }))).toEqual([
+        { type: 'economics.sync', cadence: '1 day', reportType: null, enabled: true },
+        { type: 'keepa.sync', cadence: '1 day', reportType: null, enabled: true },
+        { type: 'rank.sync', cadence: '1 day', reportType: null, enabled: true },
+        { type: 'sqp.categorize', cadence: '7 days', reportType: null, enabled: true },
+      ]);
+      expect(schedules.find((row) => row.job_type === 'keepa.sync')?.payload).toEqual({
+        includeCompetitors: true,
+      });
+
+      await database.sql`
+        update public.integration_connections set status = 'revoked' where provider = 'keepa'
+      `;
+      expect(await store.ensureIntegrationSchedules()).toBe(1);
+      const [keepa] = await database.sql<{ enabled: boolean }[]>`
+        select enabled from public.sync_schedules
+         where profile_id = ${profileId} and job_type = 'keepa.sync'
+      `;
+      expect(keepa?.enabled).toBe(false);
+    } finally {
+      await database.sql`drop table public.integration_connections`;
+    }
   });
 
   // -------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import { connectionStringFromEnv } from '@wizard-ads/db';
+import { JobType, type JobType as JobTypeValue } from '@wizard-ads/shared';
 
 export interface WorkerConfig {
   databaseUrl: string;
@@ -7,6 +8,8 @@ export interface WorkerConfig {
   pollIntervalMs: number;
   claimBatchSize: number;
   maxConcurrentJobs: number;
+  /** Queue types this runtime may claim. Undefined means the whole queue. */
+  jobTypes: readonly JobTypeValue[] | undefined;
   /**
    * Root of the crosscheck export inbox (WP-10). A path, so a mounted bucket
    * works. Never a tracked default: a schedule's payload carries only the
@@ -25,6 +28,21 @@ function positiveInteger(value: string | undefined, fallback: number, name: stri
   return parsed;
 }
 
+export function workerJobTypesFromEnv(value: string | undefined): readonly JobTypeValue[] | undefined {
+  if (value === undefined) return undefined;
+  const tokens = value.split(',').map((token) => token.trim());
+  if (tokens.length === 0 || tokens.some((token) => token.length === 0)) {
+    throw new Error('WORKER_JOB_TYPES must be a comma-separated list of job types');
+  }
+
+  const parsed = tokens.map((token) => {
+    const result = JobType.safeParse(token);
+    if (!result.success) throw new Error(`WORKER_JOB_TYPES contains unknown job type ${token}`);
+    return result.data;
+  });
+  return [...new Set(parsed)];
+}
+
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   return {
     databaseUrl: connectionStringFromEnv(env),
@@ -33,6 +51,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     pollIntervalMs: positiveInteger(env['WORKER_POLL_INTERVAL_MS'], 1_000, 'WORKER_POLL_INTERVAL_MS'),
     claimBatchSize: positiveInteger(env['WORKER_CLAIM_BATCH_SIZE'], 10, 'WORKER_CLAIM_BATCH_SIZE'),
     maxConcurrentJobs: positiveInteger(env['WORKER_MAX_CONCURRENT_JOBS'], 10, 'WORKER_MAX_CONCURRENT_JOBS'),
+    jobTypes: workerJobTypesFromEnv(env['WORKER_JOB_TYPES']),
     crosscheckInboxDir: env['CROSSCHECK_INBOX_DIR'] || undefined,
     authHealthcheckIntervalMs:
       positiveInteger(env['WORKER_AUTH_HEALTHCHECK_MINUTES'], 60, 'WORKER_AUTH_HEALTHCHECK_MINUTES') * 60_000,

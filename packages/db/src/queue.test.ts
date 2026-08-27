@@ -8,6 +8,7 @@
  * below.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { JobPayload } from '@wizard-ads/shared';
 import { claimSyncJobs, enqueueDueSchedules, finishSyncJob, requeueStaleSyncJobs } from './queries/jobs.js';
 import { expectRejection } from './testing/errors.js';
 import { createTestDatabase, databaseAvailable } from './testing/harness.js';
@@ -89,6 +90,28 @@ describe.skipIf(!available)('sync job queue', () => {
     `;
     const claimed = await claimSyncJobs(database, 'worker-c', 10);
     expect(claimed.map((job) => job.dedupeKey)).not.toContain('future:1');
+  });
+
+  it('claims only allowed job types when an allowlist is present', async () => {
+    await database.sql`
+      insert into public.sync_jobs (org_id, profile_id, job_type, payload, dedupe_key)
+      values
+        (${orgId}, ${profileId}, 'keepa.sync',
+         ${JSON.stringify({ type: 'keepa.sync', orgId, profileId, includeCompetitors: false })}::jsonb,
+         'filter:keepa'),
+        (${orgId}, ${profileId}, 'rank.sync',
+         ${JSON.stringify({ type: 'rank.sync', orgId, profileId })}::jsonb,
+         'filter:rank')
+    `;
+
+    const keepa = await claimSyncJobs(database, 'worker-filtered', 10, ['keepa.sync']);
+    expect(keepa.map((job) => job.dedupeKey)).toEqual(['filter:keepa']);
+    expect(await claimSyncJobs(database, 'worker-empty-filter', 10, [])).toEqual([]);
+
+    const [rank] = await database.sql<{ status: string }[]>`
+      select status from public.sync_jobs where dedupe_key = 'filter:rank'
+    `;
+    expect(rank?.status).toBe('queued');
   });
 
   it('refuses a duplicate dedupe key inside one org', async () => {
@@ -240,6 +263,27 @@ describe.skipIf(!available)('sync job queue', () => {
       `;
       expect(early?.local_hour).toBe(6);
       expect(early?.local_date).toBe('2026-06-15');
+    });
+
+    it('derives a Sunday weekStart for due SQP categorization jobs', async () => {
+      const [schedule] = await database.sql<{ id: string }[]>`
+        insert into public.sync_schedules
+          (org_id, profile_id, job_type, variant, cadence, next_run_at)
+        values (${orgId}, ${profileId}, 'sqp.categorize', 'sqp-week-test', interval '7 days',
+                '2026-08-27T11:59:00Z')
+        returning id
+      `;
+      const scheduleId = schedule?.id ?? '';
+
+      const rows = await enqueueDueSchedules(database, new Date('2026-08-27T12:00:00Z'));
+      expect(rows.find((row) => row.scheduleId === scheduleId)?.enqueued).toBe(true);
+      const [job] = await database.sql<{ payload: unknown }[]>`
+        select payload from public.sync_jobs where schedule_id = ${scheduleId}
+      `;
+      expect(JobPayload.parse(job?.payload)).toMatchObject({
+        type: 'sqp.categorize',
+        weekStart: '2026-08-23',
+      });
     });
   });
 });

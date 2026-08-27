@@ -1,6 +1,14 @@
 import type { SkippedReportRow } from '@wizard-ads/ads-api';
 import type { ClaimedJob } from '@wizard-ads/db';
-import { JobPayload, type Region } from '@wizard-ads/shared';
+import {
+  JobPayload,
+  type EconomicsSyncJob,
+  type JobType,
+  type KeepaSyncJob,
+  type RankSyncJob,
+  type Region,
+  type SqpCategorizeJob,
+} from '@wizard-ads/shared';
 import { isPermanentCrosscheckError, type CrosscheckIngest } from './crosscheck.js';
 import {
   AdsApiRetryableError,
@@ -39,6 +47,13 @@ export interface WorkerLogger {
   error(message: string, details?: Record<string, unknown>): void;
 }
 
+export interface IntegrationHandlers {
+  keepaSync?: (payload: KeepaSyncJob) => Promise<Record<string, unknown>>;
+  rankSync?: (payload: RankSyncJob) => Promise<Record<string, unknown>>;
+  economicsSync?: (payload: EconomicsSyncJob) => Promise<Record<string, unknown>>;
+  sqpCategorize?: (payload: SqpCategorizeJob) => Promise<Record<string, unknown>>;
+}
+
 const consoleLogger: WorkerLogger = {
   info: (message, details) => console.info(message, details ?? {}),
   error: (message, details) => console.error(message, details ?? {}),
@@ -47,7 +62,12 @@ const consoleLogger: WorkerLogger = {
 export interface SyncWorkerOptions {
   workerId: string;
   store: WorkerStore;
-  adsApi: AdsApiClient;
+  /** Optional so an integration-only runtime needs no Amazon credentials. */
+  adsApi?: AdsApiClient;
+  /** Job types this runtime may atomically claim. Undefined means all. */
+  jobTypes?: readonly JobType[];
+  /** Provider handlers deployed in this runtime. Missing handlers dead-letter. */
+  integrations?: IntegrationHandlers;
   /** WP-10's handler, bound to a database handle. Absent, the job dead-letters. */
   crosscheckIngest?: CrosscheckIngest;
   /** WP-33's preview-only recommendations runner. Absent, the job dead-letters. */
@@ -63,7 +83,9 @@ export interface SyncWorkerOptions {
 export class SyncWorker {
   readonly workerId: string;
   private readonly store: WorkerStore;
-  private readonly adsApi: AdsApiClient;
+  private readonly adsApi: AdsApiClient | undefined;
+  private readonly jobTypes: readonly JobType[] | undefined;
+  private readonly integrations: IntegrationHandlers;
   private readonly crosscheckIngest: CrosscheckIngest | undefined;
   private readonly recommendationsRun: RecommendationsRun | undefined;
   private readonly buckets: RegionTokenBuckets;
@@ -79,6 +101,8 @@ export class SyncWorker {
     this.workerId = options.workerId;
     this.store = options.store;
     this.adsApi = options.adsApi;
+    this.jobTypes = options.jobTypes;
+    this.integrations = options.integrations ?? {};
     this.crosscheckIngest = options.crosscheckIngest;
     this.recommendationsRun = options.recommendationsRun;
     this.buckets = options.buckets ?? defaultRegionTokenBuckets;
@@ -141,12 +165,13 @@ export class SyncWorker {
   }
 
   async runAuthHealthcheck(): Promise<{ ok: Region[]; failed: Region[] }> {
+    const adsApi = this.requireAdsApi();
     const regions: Region[] = ['NA', 'EU', 'FE'];
     const ok: Region[] = [];
     const failed: Region[] = [];
     await Promise.all(regions.map(async (region) => {
       try {
-        await this.buckets.run(region, () => this.adsApi.listProfiles(region));
+        await this.buckets.run(region, () => adsApi.listProfiles(region));
         ok.push(region);
       } catch (error) {
         failed.push(region);
@@ -161,7 +186,7 @@ export class SyncWorker {
     const capacity = this.maxConcurrentJobs - this.running.size;
     if (capacity <= 0) return 0;
     const batchSize = Math.min(maxJobs ?? this.claimBatchSize, capacity);
-    const jobs = await this.store.claim(this.workerId, batchSize);
+    const jobs = await this.store.claim(this.workerId, batchSize, this.jobTypes);
     for (const job of jobs) {
       const task = this.runClaimed(job).finally(() => this.running.delete(job.id));
       this.running.set(job.id, task);
@@ -216,7 +241,24 @@ export class SyncWorker {
         return { ...(await this.recommendationsRun(payload)) };
       case 'crosscheck.ingest':
         return this.ingestCrosscheck(payload);
+      case 'keepa.sync':
+        return this.runIntegration(payload.type, this.integrations.keepaSync, payload);
+      case 'rank.sync':
+        return this.runIntegration(payload.type, this.integrations.rankSync, payload);
+      case 'economics.sync':
+        return this.runIntegration(payload.type, this.integrations.economicsSync, payload);
+      case 'sqp.categorize':
+        return this.runIntegration(payload.type, this.integrations.sqpCategorize, payload);
     }
+  }
+
+  private async runIntegration<TPayload extends JobPayload>(
+    type: TPayload['type'],
+    handler: ((payload: TPayload) => Promise<Record<string, unknown>>) | undefined,
+    payload: TPayload,
+  ): Promise<Record<string, unknown>> {
+    if (!handler) throw new PermanentJobError(`${type} handler not deployed in this runtime`);
+    return handler(payload);
   }
 
   /**
@@ -241,7 +283,8 @@ export class SyncWorker {
     profile: AdsProfileContext,
     payload: Extract<JobPayload, { type: 'entity.sync' }>,
   ): Promise<Record<string, unknown>> {
-    const listing = await this.buckets.run(profile.region, () => this.adsApi.listEntities(profile, payload.full));
+    const adsApi = this.requireAdsApi();
+    const listing = await this.buckets.run(profile.region, () => adsApi.listEntities(profile, payload.full));
 
     // A product-scoped job cares only about its own product; an unscoped job
     // covers all three.
@@ -342,10 +385,11 @@ export class SyncWorker {
     profile: AdsProfileContext,
     payload: Extract<JobPayload, { type: 'report.request' }>,
   ): Promise<Record<string, unknown>> {
+    const adsApi = this.requireAdsApi();
     const ledger = await this.store.ensureReportRequest(jobId, payload);
     let amazonReportId = ledger.amazonReportId;
     if (!amazonReportId) {
-      const created = await this.buckets.run(profile.region, () => this.adsApi.createReport({
+      const created = await this.buckets.run(profile.region, () => adsApi.createReport({
         profile,
         reportType: payload.reportType,
         startDate: payload.startDate,
@@ -366,8 +410,9 @@ export class SyncWorker {
     profile: AdsProfileContext,
     payload: Extract<JobPayload, { type: 'report.poll' }>,
   ): Promise<Record<string, unknown>> {
+    const adsApi = this.requireAdsApi();
     const ledger = await this.store.getReportRequest(payload.reportRequestId);
-    const status = await this.buckets.run(profile.region, () => this.adsApi.getReport(profile, payload.amazonReportId));
+    const status = await this.buckets.run(profile.region, () => adsApi.getReport(profile, payload.amazonReportId));
     if (status.status === 'PENDING' || status.status === 'PROCESSING') {
       if (this.now().getTime() - ledger.requestedAt.getTime() >= FOUR_HOURS_MS) {
         await this.store.updateReportPoll(ledger.id, { status: 'expired', error: 'report did not complete within 4 hours' });
@@ -405,10 +450,11 @@ export class SyncWorker {
     profile: AdsProfileContext,
     payload: Extract<JobPayload, { type: 'report.fetch' }>,
   ): Promise<Record<string, unknown>> {
+    const adsApi = this.requireAdsApi();
     const ledger = await this.store.getReportRequest(payload.reportRequestId);
     let downloaded;
     try {
-      const source = await this.adsApi.downloadReport(payload.downloadUrl);
+      const source = await adsApi.downloadReport(payload.downloadUrl);
       downloaded = await gunzipJson(source);
     } catch (error) {
       if (!(error instanceof DownloadUrlExpiredError)) throw error;
@@ -455,6 +501,11 @@ export class SyncWorker {
       reportRows: batch.sourceRows, parsed, loaded, skipped, skipReasons: reasons,
       bytesDownloaded: downloaded.bytesDownloaded,
     };
+  }
+
+  private requireAdsApi(): AdsApiClient {
+    if (!this.adsApi) throw new PermanentJobError('Amazon Ads API not deployed in this runtime');
+    return this.adsApi;
   }
 }
 
@@ -538,6 +589,7 @@ export class ScheduleProvisioner extends PeriodicPass {
     }
     const recommendations = await this.recommendationSchedules?.enqueueDueRecommendationRuns() ?? 0;
     const repaired = await this.store.repairOverlongLookbacks();
+    const integrations = await this.store.ensureIntegrationSchedules();
     if (written > 0) {
       this.provisionLogger.info('provisioned default schedules', { profiles: profiles.length, schedules: written });
     }
@@ -547,7 +599,10 @@ export class ScheduleProvisioner extends PeriodicPass {
     if (recommendations > 0) {
       this.provisionLogger.info('enqueued weekly recommendation runs', { jobs: recommendations });
     }
-    return { written, repaired, recommendations };
+    if (integrations > 0) {
+      this.provisionLogger.info('reconciled integration schedules', { schedules: integrations });
+    }
+    return { written, repaired, recommendations, integrations };
   }
 }
 
