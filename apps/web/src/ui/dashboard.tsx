@@ -418,23 +418,33 @@ export function FlagsCard({
   );
 }
 
+/**
+ * One flag, one line. Fifteen active flags at four lines each buried the rest
+ * of the dashboard, so the collapsed row keeps only what an operator scans for
+ * — severity, scope, the quantitative headline — and the diagnosis (likely
+ * cause + the rule that fired) waits behind the disclosure.
+ */
 function FlagItem({ flag, dim = false }: { flag: FlagView; dim?: boolean }): ReactNode {
   return (
-    <li
-      className="wa-row"
-      style={{ alignItems: 'flex-start', gap: '0.5rem', opacity: dim ? 0.85 : 1 }}
-    >
-      <Badge tone={dim ? 'neutral' : SEVERITY_TONE[flag.severity]}>{flag.severity}</Badge>
-      <div style={{ flex: '1 1 14rem', fontSize: 'var(--wa-fs-sm)', minWidth: 0 }}>
-        <div>
-          <strong>{flag.scope}</strong> · {flag.message}
+    <li style={{ opacity: dim ? 0.85 : 1 }}>
+      <details className="wa-flag">
+        <summary className="wa-flag__sum">
+          <Badge tone={dim ? 'neutral' : SEVERITY_TONE[flag.severity]}>{flag.severity}</Badge>
+          <span className="wa-flag__head">
+            <strong>{flag.scope}</strong> · {flag.message}
+          </span>
+          <span className="wa-flag__chev" aria-hidden="true">
+            ›
+          </span>
+        </summary>
+        <div className="wa-flag__body">
+          <div style={{ color: 'var(--wa-text-muted)' }}>{flag.likelyCause}</div>
+          <div className="wa-hint">
+            {flag.metric} · {flag.threshold}
+            {flag.suppressedReason === null ? '' : ` · ${flag.suppressedReason}`}
+          </div>
         </div>
-        <div style={{ color: 'var(--wa-text-muted)' }}>{flag.likelyCause}</div>
-        <div className="wa-hint">
-          {flag.metric} · {flag.threshold}
-          {flag.suppressedReason === null ? '' : ` · ${flag.suppressedReason}`}
-        </div>
-      </div>
+      </details>
     </li>
   );
 }

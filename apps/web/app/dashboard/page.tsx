@@ -20,23 +20,20 @@
  * use: anonymous visitors are sent to `/login`, and every read below is scoped
  * by the org the gate resolved.
  */
-import type { CSSProperties } from 'react';
 import { analyzeAccount, classifyCampaignCategory, computePacing, evaluate, pacingFlag } from '@wizard-ads/core';
 import type { DailyRow, Flag } from '@wizard-ads/core';
 import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
-import { assessFreshness, deriveMetric } from '@wizard-ads/ui';
+import { assessFreshness } from '@wizard-ads/ui';
 import { CrosscheckChip } from '../crosscheck/panel';
 import { gate } from '../../src/auth/guard';
 import { gateMessage } from '../../src/ui/gate-message';
 import { Card, EmptyState, PageHeader } from '../../src/ui/primitives';
-import { FlagsCard, FreshnessBar, KpiTile, PacingCard } from '../../src/ui/dashboard';
+import { FlagsCard, FreshnessBar, PacingCard } from '../../src/ui/dashboard';
+import { Cockpit } from '../../src/ui/cockpit';
+import { kpiTiles, totalsOf } from '../../src/optimizer/view';
 import type { FlagView, PacingView } from '../../src/ui/dashboard';
-import { TrendChart } from '../../src/ui/viz';
-import type { TrendPoint } from '../../src/ui/viz';
 import { page } from '../../src/ui/tokens';
 import { loadCampaignDailyRows, loadProfileDailyRows, loadReportLedger } from '../_lib/dashboard-data';
-import { loadExperimentWindows } from '../_lib/experiment-windows';
-import { comparePeriodMetric } from '../../src/dashboard/kpis';
 import { withDatabase } from '../_lib/db';
 import { addDays, periodFromParams, settledComparisonWindows, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
@@ -78,15 +75,14 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           : analysisWindow.start,
       end: period.end,
     };
-    const [ledger, accountRows, campaignRows, crosscheck, experimentWindows] = await Promise.all([
+    const [ledger, accountRows, campaignRows, crosscheck] = await Promise.all([
       loadReportLedger(handle, orgId, profile.id),
       loadProfileDailyRows(handle, orgId, profile.id, profile.label, accountWindow),
       loadCampaignDailyRows(handle, orgId, profile.id, profile.label, analysisWindow),
       loadCrosscheckPanel(handle, { profileId: profile.id }).catch(() => null),
-      loadExperimentWindows(handle, orgId, profile.id).catch(() => []),
     ]);
 
-    return { profiles, profile, ledger, accountRows, campaignRows, crosscheck, experimentWindows };
+    return { profiles, profile, ledger, accountRows, campaignRows, crosscheck };
   });
 
   if (data === null) {
@@ -120,7 +116,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     accountRows = [],
     campaignRows = [],
     ledger = [],
-    experimentWindows = [],
   } = data;
   const context = { currencyCode: profile.currencyCode };
 
@@ -149,7 +144,16 @@ export default async function DashboardPage({ searchParams }: PageProps) {
 
   const freshness = assessFreshness(ledger, { now: new Date() });
   const inPeriod = accountRows.filter((row) => row.date >= period.start && row.date <= period.end);
-  const currentWindow = settled.current;
+  // A young profile's facts may begin after the settled window opens. Claiming
+  // a sixteen-day window while summing four days of rows overstates confidence,
+  // so the window is clamped to actual coverage and the subtitle says so.
+  const coverageStart = accountRows[0]?.date ?? null;
+  const currentWindow =
+    settled.current !== null && coverageStart !== null && coverageStart > settled.current.start
+      ? { start: coverageStart, end: settled.current.end }
+      : settled.current;
+  const coverageClamped =
+    settled.current !== null && currentWindow !== null && currentWindow.start !== settled.current.start;
   const comparisonWindow = settled.comparison;
   const settledRows =
     currentWindow === null
@@ -167,18 +171,44 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     end: settled.settling.end,
   };
 
-  const kpis: { metric: string; label: string; scale: 'money' | 'percent'; better: 'higher' | 'lower' | null }[] = [
-    { metric: 'spend', label: 'Spend', scale: 'money', better: null },
-    { metric: 'sales', label: 'Sales', scale: 'money', better: 'higher' },
-    { metric: 'acos', label: 'ACOS', scale: 'percent', better: 'lower' },
-    { metric: 'cpc', label: 'CPC', scale: 'money', better: 'lower' },
-  ];
+  const cockpitDays = inPeriod.map((row) => ({
+    date: row.date,
+    impressions: row.impressions,
+    clicks: row.clicks,
+    spend: row.spend,
+    sales: row.sales,
+    orders: row.orders,
+  }));
+  const tiles = kpiTiles(
+    settledRows.length === 0 ? null : totalsOf(settledRows),
+    comparisonRows.length === 0 ? null : totalsOf(comparisonRows),
+  );
+
+  const byCampaign = new Map<string, { name: string; category: string; spend: number; sales: number; clicks: number; orders: number }>();
+  for (const row of categorised) {
+    const name = row.campaignName ?? '(unknown campaign)';
+    const acc = byCampaign.get(name) ?? {
+      name,
+      category: String(row.category ?? classifyCampaignCategory(name)),
+      spend: 0,
+      sales: 0,
+      clicks: 0,
+      orders: 0,
+    };
+    acc.spend += row.spend;
+    acc.sales += row.sales;
+    acc.clicks += row.clicks;
+    acc.orders += row.orders;
+    byCampaign.set(name, acc);
+  }
+  const campaignSummary = [...byCampaign.values()].sort((a, b) => b.spend - a.spend).slice(0, 12);
+
 
   return (
     <main style={page}>
       <PageHeader
         title="Dashboard"
-        subtitle={`${profile.label} · ${period.start} to ${period.end} · ${settled.current === null || settled.comparison === null ? 'no settled KPI comparison yet' : `settled KPI window ${settled.current.start} to ${settled.current.end} compared against ${settled.comparison.start} to ${settled.comparison.end}`} · all figures in ${profile.currencyCode}`}
+        subtitle={`${profile.label} · ${period.start} to ${period.end} · ${currentWindow === null || settled.comparison === null ? 'no settled KPI comparison yet' : `settled KPIs ${currentWindow.start} to ${currentWindow.end}${coverageClamped ? ' (first synced day)' : ''} vs ${settled.comparison.start} to ${settled.comparison.end}`} · all figures in ${profile.currencyCode}`}
       />
 
       <div className="wa-stack">
@@ -186,96 +216,93 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           {data.crosscheck ? <CrosscheckChip chip={data.crosscheck.chip} /> : null}
         </FreshnessBar>
 
-        <section aria-label="Headline metrics" className="wa-kpis">
-          {kpis.map(({ metric, label, scale, better }) => {
-            const comparisonMetric = comparePeriodMetric(settledRows, comparisonRows, metric);
-            return (
-              <KpiTile
-                key={metric}
-                label={`${label} (settled)`}
-                value={comparisonMetric.value}
-                scale={scale}
-                better={better}
-                context={context}
-                delta={{
-                  caption: 'vs prior period',
-                  pct: comparisonMetric.deltaPct,
-                  reference: comparisonMetric.reference,
-                }}
-              />
-            );
-          })}
-        </section>
+        <Cockpit
+          days={cockpitDays}
+          tiles={tiles}
+          currencyCode={profile.currencyCode}
+          settlingStart={settlingWindow.start}
+          coverageStart={accountRows[0]?.date ?? null}
+        />
 
-        <section aria-label="Trends" className="wa-grid-2">
-          <Card>
-            <TrendChart
-              title="Spend and sales"
-              ariaLabel="Daily spend and sales"
-              scale="money"
-              aggregatable
-              currencyCode={profile.currencyCode}
-              windows={experimentWindows}
-              settlingWindow={settlingWindow}
-              caption={`Spend and sales are additive, so weekly and monthly roll up by sum. In ${profile.currencyCode}.`}
-              series={[
-                { label: 'Spend', points: series(inPeriod, 'spend') },
-                { label: 'Sales', points: series(inPeriod, 'sales') },
-              ]}
-            />
-          </Card>
-          <Card>
-            <div style={twoCharts}>
-              <TrendChart
-                title="ACOS"
-                ariaLabel="Daily ACOS"
-                scale="percent"
-                currencyCode={profile.currencyCode}
-                windows={experimentWindows}
-                settlingWindow={settlingWindow}
-                caption="Advertising cost of sales, as a fraction of sales."
-                series={[{ label: 'ACOS', points: series(inPeriod, 'acos') }]}
-              />
-              <TrendChart
-                title="CPC"
-                ariaLabel="Daily CPC"
-                scale="money"
-                currencyCode={profile.currencyCode}
-                settlingWindow={settlingWindow}
-                caption={`Cost per click, in ${profile.currencyCode}.`}
-                series={[{ label: 'CPC', points: series(inPeriod, 'cpc') }]}
-              />
-            </div>
-          </Card>
-        </section>
+        <CampaignTable rows={campaignSummary} currencyCode={profile.currencyCode} profileId={profile.id} period={period} />
 
         <section className="wa-grid-2">
           <PacingCard pacing={pacing as PacingView | null} context={context} />
           <FlagsCard active={activeFlags as FlagView[]} suppressed={flags.suppressed as FlagView[]} />
         </section>
 
-        <p className="wa-page-sub">
-          <a href={`/grid?profile=${profile.id}&from=${period.start}&to=${period.end}`}>
-            Open the grid for this profile →
-          </a>
-        </p>
       </div>
     </main>
   );
 }
 
-function series(rows: readonly DailyRow[], metric: string): TrendPoint[] {
-  return rows.map((row) => ({
-    date: row.date,
-    value: deriveMetric(metric, {
-      impressions: row.impressions,
-      clicks: row.clicks,
-      spend: row.spend,
-      sales: row.sales,
-      orders: row.orders,
-      units: 0,
-    }),
-  }));
-}
 
-const twoCharts: CSSProperties = { display: 'flex', flexDirection: 'column', gap: '1.25rem' };
+
+function CampaignTable({
+  rows,
+  currencyCode,
+  profileId,
+  period,
+}: {
+  rows: { name: string; category: string; spend: number; sales: number; clicks: number; orders: number }[];
+  currencyCode: string;
+  profileId: string;
+  period: { start: string; end: string };
+}) {
+  if (rows.length === 0) return null;
+  const money = (v: number) =>
+    v.toLocaleString('en-US', { style: 'currency', currency: currencyCode, maximumFractionDigits: v >= 100 ? 0 : 2 });
+  const totalSpend = rows.reduce((a, r) => a + r.spend, 0) || 1;
+  return (
+    <Card>
+      <div className="wa-card-head">
+        <h2 className="wa-card-title">Top campaigns by spend</h2>
+        <a className="wa-btn wa-btn--ghost wa-btn--sm" href={`/grid?profile=${profileId}&from=${period.start}&to=${period.end}`}>
+          Open the grid →
+        </a>
+      </div>
+      <table className="wa-table wa-table--dense">
+        <thead>
+          <tr>
+            <th style={{ textAlign: 'left' }}>Campaign</th>
+            <th style={{ textAlign: 'left' }}>Category</th>
+            <th>Spend</th>
+            <th>Share</th>
+            <th>Sales</th>
+            <th>ACOS</th>
+            <th>Clicks</th>
+            <th>Orders</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.name}>
+              <td style={{ textAlign: 'left' }}>
+                <span className="wa-campaign-name">
+                  {row.name.split(' | ').map((seg, i) => (
+                    <span key={i} className={i === 0 ? 'wa-campaign-seg wa-campaign-seg--head' : 'wa-campaign-seg'}>
+                      {seg}
+                    </span>
+                  ))}
+                </span>
+              </td>
+              <td style={{ textAlign: 'left' }}>
+                <span className={`wa-cat wa-cat--${row.category.toLowerCase()}`}>{row.category}</span>
+              </td>
+              <td>{money(row.spend)}</td>
+              <td>
+                <span className="wa-sharebar" aria-label={`${((row.spend / totalSpend) * 100).toFixed(0)}% of listed spend`}>
+                  <span className="wa-sharebar__fill" style={{ width: `${Math.max(3, (row.spend / totalSpend) * 100)}%` }} />
+                </span>
+              </td>
+              <td>{money(row.sales)}</td>
+              <td>{row.spend > 0 && row.sales > 0 ? `${((row.spend / row.sales) * 100).toFixed(1)}%` : '—'}</td>
+              <td>{row.clicks.toLocaleString('en-US')}</td>
+              <td>{row.orders.toLocaleString('en-US')}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
+  );
+}

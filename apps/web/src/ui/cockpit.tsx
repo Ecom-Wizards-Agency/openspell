@@ -81,6 +81,7 @@ function seriesFor(
         spend: bucket.spend,
         sales: bucket.sales,
         orders: bucket.orders,
+        units: bucket.orders,
       }),
     }));
 }
