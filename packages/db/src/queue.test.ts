@@ -8,6 +8,7 @@
  * below.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { JobPayload } from '@wizard-ads/shared';
 import { claimSyncJobs, enqueueDueSchedules, finishSyncJob, requeueStaleSyncJobs } from './queries/jobs.js';
 import { expectRejection } from './testing/errors.js';
 import { createTestDatabase, databaseAvailable } from './testing/harness.js';
@@ -262,6 +263,27 @@ describe.skipIf(!available)('sync job queue', () => {
       `;
       expect(early?.local_hour).toBe(6);
       expect(early?.local_date).toBe('2026-06-15');
+    });
+
+    it('derives a Sunday weekStart for due SQP categorization jobs', async () => {
+      const [schedule] = await database.sql<{ id: string }[]>`
+        insert into public.sync_schedules
+          (org_id, profile_id, job_type, variant, cadence, next_run_at)
+        values (${orgId}, ${profileId}, 'sqp.categorize', 'sqp-week-test', interval '7 days',
+                '2026-08-27T11:59:00Z')
+        returning id
+      `;
+      const scheduleId = schedule?.id ?? '';
+
+      const rows = await enqueueDueSchedules(database, new Date('2026-08-27T12:00:00Z'));
+      expect(rows.find((row) => row.scheduleId === scheduleId)?.enqueued).toBe(true);
+      const [job] = await database.sql<{ payload: unknown }[]>`
+        select payload from public.sync_jobs where schedule_id = ${scheduleId}
+      `;
+      expect(JobPayload.parse(job?.payload)).toMatchObject({
+        type: 'sqp.categorize',
+        weekStart: '2026-08-23',
+      });
     });
   });
 });

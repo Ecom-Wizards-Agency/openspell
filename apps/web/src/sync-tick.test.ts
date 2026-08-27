@@ -14,13 +14,26 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
-import { runSyncTick, SYNC_TICK_LOCK_KEY } from './server/sync-tick';
+import { CRON_SYNC_JOB_TYPES, runSyncTick, SYNC_TICK_LOCK_KEY } from './server/sync-tick';
 import type { SyncTickStore, SyncTickWorker } from './server/sync-tick';
 
 const available = await databaseAvailable();
 
+describe('cron claim filter', () => {
+  it('enumerates Amazon jobs and recommendations, excluding integration work', () => {
+    expect(CRON_SYNC_JOB_TYPES).toEqual([
+      'entity.sync',
+      'report.request',
+      'report.poll',
+      'report.fetch',
+      'recommendations.run',
+    ]);
+  });
+});
+
 class FakeStore implements SyncTickStore {
   repairs = 0;
+  integrationPasses = 0;
   provisioned: string[] = [];
   released: string[] = [];
   unscheduled: { orgId: string; profileId: string }[] = [];
@@ -34,6 +47,10 @@ class FakeStore implements SyncTickStore {
   async repairOverlongLookbacks(): Promise<number> {
     this.repairs += 1;
     return 1;
+  }
+  async ensureIntegrationSchedules(): Promise<number> {
+    this.integrationPasses += 1;
+    return 4;
   }
   async release(workerId: string): Promise<number> {
     this.released.push(workerId);
@@ -105,6 +122,8 @@ describe.skipIf(!available)('runSyncTick', () => {
     // profile is the one `provisionSchedules` would have repaired anyway.
     expect(store.repairs).toBe(1);
     expect(result.repaired).toBe(1);
+    expect(store.integrationPasses).toBe(1);
+    expect(result.integrationSchedules).toBe(4);
     expect(store.provisioned).toEqual(['profile']);
     expect(result.provisioned).toBe(2);
     expect(recommendationScheduleRuns).toBe(1);
@@ -134,6 +153,7 @@ describe.skipIf(!available)('runSyncTick', () => {
       expect(result).toMatchObject({ ok: true, skipped: 'overlap', drained: 0 });
       // Nothing was touched: not the schedules, not the queue, not Amazon.
       expect(store.repairs).toBe(0);
+      expect(store.integrationPasses).toBe(0);
       expect(worker.drains).toBe(0);
       expect(store.released).toEqual([]);
     } finally {
@@ -172,6 +192,26 @@ describe.skipIf(!available)('runSyncTick', () => {
     expect(result.bidSeries).toBeUndefined();
     // The drain still happened; only the optional step was skipped.
     expect(worker.drains).toBeGreaterThan(0);
+  });
+
+  it('does not start integration schedule reconciliation after the deadline', async () => {
+    const store = new FakeStore();
+    const worker = new FakeWorker();
+    let calls = 0;
+    const start = Date.now();
+
+    const result = await runSyncTick({
+      sql: database.sql,
+      store,
+      worker,
+      budgetMs: 1,
+      now: () => (calls += 1) === 1 ? start : start + 1,
+    });
+
+    expect(result.budgetHit).toBe(true);
+    expect(store.integrationPasses).toBe(0);
+    expect(result.integrationSchedules).toBe(0);
+    expect(worker.drains).toBe(0);
   });
 
   it('releases and reports when a step throws', async () => {

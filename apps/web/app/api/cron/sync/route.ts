@@ -29,7 +29,7 @@ import {
   createRecommendationsRunner,
   runBidSeriesSync,
 } from '@wizard-ads/worker';
-import { runSyncTick } from '../../../../src/server/sync-tick';
+import { CRON_SYNC_JOB_TYPES, runSyncTick } from '../../../../src/server/sync-tick';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -74,6 +74,7 @@ export async function GET(request: Request): Promise<Response> {
     workerId: `vercel-cron-${randomUUID()}`,
     store,
     adsApi,
+    jobTypes: CRON_SYNC_JOB_TYPES,
     recommendationsRun: createRecommendationsRunner(recommendationRuns),
   });
 

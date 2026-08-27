@@ -29,6 +29,16 @@
  *  7. **Release** anything still running back to `queued`, and unlock.
  */
 import type { Sql } from '@wizard-ads/db';
+import type { JobType } from '@wizard-ads/shared';
+
+/** Queue work owned by Vercel cron; integration jobs stay on the always-on host. */
+export const CRON_SYNC_JOB_TYPES = [
+  'entity.sync',
+  'report.request',
+  'report.poll',
+  'report.fetch',
+  'recommendations.run',
+] as const satisfies readonly JobType[];
 
 /**
  * The advisory-lock key for the sync tick. Arbitrary but fixed: any other
@@ -40,6 +50,7 @@ export interface SyncTickStore {
   unscheduledProfiles(): Promise<{ orgId: string; profileId: string }[]>;
   provisionSchedules(orgId: string, profileId: string): Promise<number>;
   repairOverlongLookbacks(profileId?: string): Promise<number>;
+  ensureIntegrationSchedules(): Promise<number>;
   release(workerId: string): Promise<number>;
 }
 
@@ -73,6 +84,7 @@ export interface SyncTickResult {
   skipped?: 'overlap';
   provisioned: number;
   repaired: number;
+  integrationSchedules: number;
   enqueued: number;
   requeued: number;
   drained: number;
@@ -103,13 +115,15 @@ export async function runSyncTick(deps: SyncTickDeps): Promise<SyncTickResult> {
   if (!lock?.locked) {
     locked.release();
     return {
-      ok: true, skipped: 'overlap', provisioned: 0, repaired: 0, enqueued: 0,
+      ok: true, skipped: 'overlap', provisioned: 0, repaired: 0, integrationSchedules: 0,
+      enqueued: 0,
       requeued: 0, drained: 0, released: 0, budgetHit: false, ms: now() - startedAt,
     };
   }
 
   let provisioned = 0;
   let repaired = 0;
+  let integrationSchedules = 0;
   let enqueued = 0;
   let requeued = 0;
   let drained = 0;
@@ -125,24 +139,33 @@ export async function runSyncTick(deps: SyncTickDeps): Promise<SyncTickResult> {
       provisioned += await deps.store.provisionSchedules(profile.orgId, profile.profileId);
     }
 
-    enqueued += await deps.recommendationSchedules?.() ?? 0;
-    const enqueuedRows = await deps.sql<{ enqueued: boolean }[]>`
-      select enqueued from public.enqueue_due_schedules()
-    `;
-    enqueued += enqueuedRows.filter((row) => row.enqueued).length;
-    const [requeuedRow] = await deps.sql<{ requeue_stale_sync_jobs: number }[]>`
-      select public.requeue_stale_sync_jobs() as requeue_stale_sync_jobs
-    `;
-    requeued = Number(requeuedRow?.requeue_stale_sync_jobs ?? 0);
+    if (now() < deadline) {
+      integrationSchedules = await deps.store.ensureIntegrationSchedules();
+      if (now() >= deadline) budgetHit = true;
+    } else {
+      budgetHit = true;
+    }
 
-    for (;;) {
-      if (now() >= deadline) {
-        budgetHit = true;
-        break;
+    if (!budgetHit) {
+      enqueued += await deps.recommendationSchedules?.() ?? 0;
+      const enqueuedRows = await deps.sql<{ enqueued: boolean }[]>`
+        select enqueued from public.enqueue_due_schedules()
+      `;
+      enqueued += enqueuedRows.filter((row) => row.enqueued).length;
+      const [requeuedRow] = await deps.sql<{ requeue_stale_sync_jobs: number }[]>`
+        select public.requeue_stale_sync_jobs() as requeue_stale_sync_jobs
+      `;
+      requeued = Number(requeuedRow?.requeue_stale_sync_jobs ?? 0);
+
+      for (;;) {
+        if (now() >= deadline) {
+          budgetHit = true;
+          break;
+        }
+        const claimed = await deps.worker.drainOnce(undefined, deadline);
+        if (claimed === 0) break;
+        drained += claimed;
       }
-      const claimed = await deps.worker.drainOnce(undefined, deadline);
-      if (claimed === 0) break;
-      drained += claimed;
     }
 
     // Only with real time left: a corridor sync started at the edge of the
@@ -160,7 +183,7 @@ export async function runSyncTick(deps: SyncTickDeps): Promise<SyncTickResult> {
     return {
       ok: false,
       error: error instanceof Error ? error.message : 'sync tick failed',
-      provisioned, repaired, enqueued, requeued, drained, released, budgetHit,
+      provisioned, repaired, integrationSchedules, enqueued, requeued, drained, released, budgetHit,
       ...(bidSeries ? { bidSeries } : {}),
       ...(bidSeriesError ? { bidSeriesError } : {}),
       ms: now() - startedAt,
@@ -178,7 +201,7 @@ export async function runSyncTick(deps: SyncTickDeps): Promise<SyncTickResult> {
 
   return {
     ok: true,
-    provisioned, repaired, enqueued, requeued, drained, released, budgetHit,
+    provisioned, repaired, integrationSchedules, enqueued, requeued, drained, released, budgetHit,
     ...(bidSeries ? { bidSeries } : {}),
     ...(bidSeriesError ? { bidSeriesError } : {}),
     ms: now() - startedAt,
