@@ -22,7 +22,9 @@ import { filterSetOf } from './filter.js';
 import { buildGridModel } from './pipeline.js';
 
 const ROWS = 50_000;
-const FRAME_MS = 16;
+// Shared CI runners are slower and noisier than any dev machine; the frame
+// budget is a dev-hardware regression tripwire, not a CI hardware benchmark.
+const FRAME_MS = process.env['CI'] === undefined ? 16 : 48;
 
 /**
  * Best of a few runs.
