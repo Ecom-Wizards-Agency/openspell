@@ -27,13 +27,17 @@ const RankRadarSchema = z.object({
   imageUrl: NonEmptyString,
 }).passthrough();
 
+// Live smoke 2026-08-27: /v1/niches/rank-radars returns bare `{data: [...]}` —
+// the pagination metadata only exists in DataDive's MCP layer, not the REST
+// API. Everything except `data` is therefore optional, defaulted to a
+// single-page reading.
 const RankRadarPageSchema = z.object({
-  currentPage: NonnegativeInteger,
-  pageSize: NonnegativeInteger,
-  hasNext: z.boolean(),
-  hasPrev: z.boolean(),
-  lastPage: NonnegativeInteger,
-  total: NonnegativeInteger,
+  currentPage: NonnegativeInteger.optional(),
+  pageSize: NonnegativeInteger.optional(),
+  hasNext: z.boolean().optional(),
+  hasPrev: z.boolean().optional(),
+  lastPage: NonnegativeInteger.optional(),
+  total: NonnegativeInteger.optional(),
   data: z.array(RankRadarSchema),
 }).passthrough();
 
@@ -112,10 +116,10 @@ export interface ParsedRankRadarPage {
 export function parseRankRadarPage(value: unknown): ParsedRankRadarPage {
   const body = parse(RankRadarPageSchema, value, 'rank radar list');
   return {
-    currentPage: body.currentPage,
-    pageSize: body.pageSize,
-    hasNext: body.hasNext,
-    total: body.total,
+    currentPage: body.currentPage ?? 1,
+    pageSize: body.pageSize ?? body.data.length,
+    hasNext: body.hasNext ?? false,
+    total: body.total ?? body.data.length,
     items: body.data.map((item, index) =>
       parseRadar(item, `rank radar list.data[${index}]`),
     ),
