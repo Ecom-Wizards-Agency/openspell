@@ -23,9 +23,17 @@ export interface MrpTool {
   inputSchema: Record<string, unknown>;
 }
 
+export interface MrpSeller {
+  number: number;
+  name: string;
+  sellerId: number;
+  sellingPartnerId: string | null;
+  region: string | null;
+  access: string | null;
+}
+
 export interface MrpProductEconomics {
   asin: string;
-  capturedOn: IsoDate | null;
   salePrice: number | null;
   cogs: number | null;
   fbaFees: number | null;
@@ -39,7 +47,36 @@ export interface MrpProductEconomics {
   details: Record<string, unknown>;
 }
 
-export interface MrpEconomicsResult {
+export interface MrpPeriod {
+  from: IsoDate;
+  to: IsoDate;
+  days: number | null;
+  complete: boolean | null;
+  dataAvailableThrough: Record<string, IsoDate | null>;
+  incompleteSources: string[];
+  note: string | null;
+}
+
+export interface MrpProductMetrics {
+  product: MrpProductEconomics;
+  period: MrpPeriod;
+}
+
+export interface MrpProductMetricsInput {
+  asin: string;
+  sellerIds: number[];
+  marketplaceIds: string[];
+  dateFrom: IsoDate;
+  dateTo: IsoDate;
+}
+
+export interface MrpSellersResult {
   toolName: string;
-  products: MrpProductEconomics[];
+  sellers: MrpSeller[];
+  ignoredLines: number;
+}
+
+export interface MrpProductMetricsResult {
+  toolName: string;
+  metrics: MrpProductMetrics;
 }

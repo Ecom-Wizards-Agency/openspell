@@ -1,32 +1,33 @@
 # `@wizard-ads/mrp-api`
 
-Minimal My Real Profit MCP client for product economics. It speaks JSON-RPC 2.0
-over an injected `fetch`, carries an MCP session id when the server returns one,
-and accepts either a normal JSON response or `text/event-stream` data events.
+Minimal My Real Profit MCP client for the live product-metrics beta. It speaks
+JSON-RPC 2.0 over an injected `fetch`, carries the MCP session id returned by the
+server, and accepts plain JSON or SSE responses.
 
 ```ts
 const client = new MrpClient({ endpoint, token, fetch });
-const result = await client.fetchProductEconomics();
+const { sellers } = await client.fetchSellers();
+const result = await client.fetchProductMetrics({
+  asin,
+  sellerIds: [sellerId],
+  marketplaceIds: [marketplaceId],
+  dateFrom,
+  dateTo,
+});
 ```
 
-`fetchProductEconomics()` initializes a fresh session, discovers tools, selects
-the strongest tool-name match across `products`, `economics`, `profit`, and
-`ltv`, calls it with an empty argument object, and returns normalized rows plus
-the resolved tool name. The lower-level `initialize`, `listTools`, and
-`callTool` operations remain available for a controlled live smoke check.
+`fetchSellers()` calls the live `get_sellers` tool and parses its numbered prose
+lines. `fetchProductMetrics()` calls `get_product_metrics` for exactly one ASIN
+with the required seller, marketplace, and date arrays. The product tool's
+stringified JSON `result` is parsed with a tolerant Zod boundary: compatible
+sale-price, cost, fee, margin, LTV, repeat-rate, and currency values are normalized,
+while the complete provider document remains in `details`.
 
-## Transport assumptions to verify live
+The lower-level `initialize`, `listTools`, and `callTool` operations remain
+available for a controlled smoke inspection. Transport and authentication failures
+are typed separately from tool-call and payload errors so the worker can isolate
+ordinary per-ASIN provider failures without hiding an unavailable server.
 
-- The personal access token is an HTTP Bearer token.
-- The endpoint accepts one JSON-RPC request per POST.
-- The selected economics tool has no required arguments. Its advertised input
-  schema is retained by `listTools()` so the operator can verify this before the
-  first production sync.
-- Product rows are returned in `structuredContent`, JSON text content, or a
-  common rows/products/items/data/results wrapper. Numeric JSON strings are
-  accepted; unmapped fields are retained in each row's `details`.
-
-The direct-database bulk fallback offered by MRP is deliberately not
-implemented. It is a gated alternative only: adopting it requires an explicit
-operator decision, a read-only database credential and schema review, and a
-separate work package. The MCP path remains the only runtime path here.
+The direct-database bulk fallback offered by MRP is deliberately not implemented.
+Adopting it requires an explicit operator decision, read-only database credentials,
+schema review, and a separate work package. MCP remains the only runtime path.
