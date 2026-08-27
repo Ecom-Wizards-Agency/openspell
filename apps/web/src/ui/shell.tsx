@@ -17,7 +17,7 @@ import type { OrgContext } from '../data/orgs';
 import { selectOrg } from './actions';
 import { Badge, Button, Select, Tabs } from './primitives';
 
-// Feedback and Roadmap deliberately do NOT appear here. They live in the
+// Bugs and Roadmap deliberately do NOT appear here. They live in the
 // sidebar's PRODUCT group and were duplicated as Settings tabs; WP-24 removes
 // the duplicate so each surface has exactly one home in the nav.
 const TABS = [

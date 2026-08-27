@@ -8,6 +8,7 @@
  */
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
+import type { FeedbackType } from '@wizard-ads/db';
 import {
   isUnauthenticated,
   openWebDatabase,
@@ -33,13 +34,16 @@ export default async function NewFeedbackPage({ searchParams }: { searchParams: 
     await requireOrgRole(database, actor);
     const query = await searchParams;
     const route = single(query['from']);
+    const requestedType = single(query['type']);
+    const preselectedType: FeedbackType | undefined =
+      requestedType === 'bug' || requestedType === 'feature' ? requestedType : undefined;
     const context = pageContext({
       route,
       profileId: profileIdFromRoute(route),
       appVersion: process.env['WIZARD_ADS_APP_VERSION'] ?? null,
       actorType: 'user',
     });
-    return <SubmitFeedbackForm context={context} />;
+    return <SubmitFeedbackForm context={context} preselectedType={preselectedType} />;
   } catch (error) {
     // A page, not an API: an anonymous reporter gets the login screen rather
     // than an instruction to sign in with nowhere to do it.
@@ -47,7 +51,7 @@ export default async function NewFeedbackPage({ searchParams }: { searchParams: 
     const message = error instanceof Error ? error.message : 'Feedback is unavailable';
     return (
       <main style={page}>
-        <h1 style={heading}>Feedback</h1>
+        <h1 style={heading}>Submission form</h1>
         <p role="alert">{message}</p>
         <p style={muted}>Nothing was filed; this is the form refusing to open.</p>
       </main>

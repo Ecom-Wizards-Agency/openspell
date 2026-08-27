@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { FeedbackTriageControls } from '../../src/feedback/triage-controls';
+import type { FeedbackTriageChanges } from '../../src/feedback/triage-controls';
 import type { UiFeedbackItem } from '../../src/feedback/ui';
 import { banner, button, colors, heading, muted, page } from '../../src/ui/tokens';
 
@@ -10,6 +12,7 @@ export interface BugBoardProps {
   fixed: UiFeedbackItem[];
   declined: UiFeedbackItem[];
   duplicates: UiFeedbackItem[];
+  canTriage: boolean;
 }
 
 const COLUMNS: { key: 'open' | 'inProgress' | 'fixed'; title: string; testId: string }[] = [
@@ -48,9 +51,32 @@ export function BugBoardView(initial: BugBoardProps) {
         fixed: apply(current.fixed),
         declined: apply(current.declined),
         duplicates: apply(current.duplicates),
+        canTriage: current.canTriage,
       }));
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : 'Vote failed');
+    }
+  };
+
+  const triage = async (item: UiFeedbackItem, changes: FeedbackTriageChanges): Promise<void> => {
+    setMessage('');
+    try {
+      const response = await fetch(`/api/feedback/${item.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(changes),
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        item?: Partial<UiFeedbackItem>;
+        error?: string;
+      } | null;
+      if (!response.ok || !payload?.item) {
+        throw new Error(payload?.error ?? `Update failed (${response.status})`);
+      }
+      setBoard((current) => regroupBugs(current, { ...item, ...payload.item }));
+      setMessage('Saved');
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : 'Update failed');
     }
   };
 
@@ -65,10 +91,14 @@ export function BugBoardView(initial: BugBoardProps) {
     <main style={page} data-interactive={ready ? 'true' : 'false'}>
       <h1 style={heading}>Bugs</h1>
       <p style={muted}>
-        Known bugs from <a href="/feedback">the tracker</a>, ordered by votes. Check here before
-        filing so an existing report can collect the vote instead.
+        Operational failures, ordered by votes. Check here before filing so an existing report can
+        collect the vote instead. <a href="/feedback/new?type=bug">Report a bug</a>
       </p>
-      {message === '' ? null : <p role="status" style={banner('bad')}>{message}</p>}
+      {message === '' ? null : (
+        <p role="status" style={banner(message === 'Saved' ? 'good' : 'bad')}>
+          {message}
+        </p>
+      )}
 
       <div
         style={{
@@ -100,6 +130,8 @@ export function BugBoardView(initial: BugBoardProps) {
                   item={item}
                   duplicates={board.duplicates.filter((row) => row.duplicateOf === item.id)}
                   onVote={vote}
+                  onTriage={triage}
+                  canTriage={initial.canTriage}
                 />
               ))}
             </ul>
@@ -119,6 +151,8 @@ export function BugBoardView(initial: BugBoardProps) {
               item={item}
               duplicates={board.duplicates.filter((row) => row.duplicateOf === item.id)}
               onVote={vote}
+              onTriage={triage}
+              canTriage={initial.canTriage}
             />
           ))}
         </ul>
@@ -130,9 +164,15 @@ export function BugBoardView(initial: BugBoardProps) {
             <h3 style={{ fontSize: '0.875rem' }}>Duplicates whose target is unavailable</h3>
             <ul>
               {ungroupedDuplicates.map((item) => (
-                <li key={item.id} data-testid="duplicate-card" data-item-id={item.id}>
-                  <a href={`/feedback#feedback-${item.id}`}>{item.title}</a>
-                </li>
+                <BugCard
+                  key={item.id}
+                  item={item}
+                  duplicates={[]}
+                  onVote={vote}
+                  onTriage={triage}
+                  canTriage={initial.canTriage}
+                  duplicateCard
+                />
               ))}
             </ul>
           </div>
@@ -146,15 +186,21 @@ function BugCard({
   item,
   duplicates,
   onVote,
+  onTriage,
+  canTriage,
+  duplicateCard = false,
 }: {
   item: UiFeedbackItem;
   duplicates: UiFeedbackItem[];
   onVote: (item: UiFeedbackItem) => Promise<void>;
+  onTriage: (item: UiFeedbackItem, changes: FeedbackTriageChanges) => Promise<void>;
+  canTriage: boolean;
+  duplicateCard?: boolean;
 }) {
   return (
     <li
       id={`bug-${item.id}`}
-      data-testid="bug-card"
+      data-testid={duplicateCard ? 'duplicate-card' : 'bug-card'}
       data-item-id={item.id}
       style={{
         background: colors.surface,
@@ -178,14 +224,34 @@ function BugCard({
         >
           ▲ <span data-testid="vote-count">{item.votes}</span>
         </button>
-        <a href={`/feedback#feedback-${item.id}`} style={{ fontSize: '0.875rem', fontWeight: 650 }}>
+        <strong style={{ fontSize: '0.875rem', fontWeight: 650 }}>
           {item.title}
-        </a>
+        </strong>
       </div>
-      <p style={{ ...muted, margin: '0.375rem 0 0' }}>
+      <p style={{ ...muted, margin: '0.375rem 0 0' }} data-testid="item-severity">
         {item.severity ?? 'severity not set'}
         {item.adminNote ? ` · ${item.adminNote}` : ''}
       </p>
+      {item.body ? (
+        <p style={{ fontSize: '0.875rem', margin: '0.375rem 0 0', whiteSpace: 'pre-wrap' }}>
+          {item.body}
+        </p>
+      ) : null}
+      <p style={{ ...muted, margin: '0.375rem 0 0' }} data-testid="item-context">
+        filed from {item.route ?? 'an unknown page'} {' · '}item{' '}
+        <code data-testid="item-id">{item.id}</code>
+      </p>
+      {canTriage ? (
+        <FeedbackTriageControls
+          item={item}
+          allowDuplicate={item.duplicateOf === null}
+          onSave={onTriage}
+        />
+      ) : (
+        <p style={{ ...muted, margin: '0.5rem 0 0' }} data-testid="triage-readonly">
+          Only an owner or admin can triage a bug.
+        </p>
+      )}
       {duplicates.length === 0 ? null : (
         <details data-testid="duplicate-group" style={{ marginTop: '0.5rem' }}>
           <summary style={{ cursor: 'pointer', fontSize: '0.8125rem' }}>
@@ -193,13 +259,45 @@ function BugCard({
           </summary>
           <ul style={{ margin: '0.375rem 0 0', paddingLeft: '1.25rem' }}>
             {duplicates.map((duplicate) => (
-              <li key={duplicate.id} data-testid="duplicate-card" data-item-id={duplicate.id}>
-                <a href={`/feedback#feedback-${duplicate.id}`}>{duplicate.title}</a>
-              </li>
+              <BugCard
+                key={duplicate.id}
+                item={duplicate}
+                duplicates={[]}
+                onVote={onVote}
+                onTriage={onTriage}
+                canTriage={canTriage}
+                duplicateCard
+              />
             ))}
           </ul>
         </details>
       )}
     </li>
   );
+}
+
+function regroupBugs(current: BugBoardProps, saved: UiFeedbackItem): BugBoardProps {
+  const byId = new Map<string, UiFeedbackItem>();
+  for (const row of [
+    ...current.open,
+    ...current.inProgress,
+    ...current.fixed,
+    ...current.declined,
+    ...current.duplicates,
+  ]) {
+    byId.set(row.id, row.id === saved.id ? saved : row);
+  }
+  byId.set(saved.id, saved);
+  const items = [...byId.values()];
+  const ordinary = items.filter((row) => row.duplicateOf === null);
+  return {
+    canTriage: current.canTriage,
+    open: ordinary.filter((row) => row.status === 'new' || row.status === 'triaged'),
+    inProgress: ordinary.filter(
+      (row) => row.status === 'planned' || row.status === 'in_progress',
+    ),
+    fixed: ordinary.filter((row) => row.status === 'shipped'),
+    declined: ordinary.filter((row) => row.status === 'declined'),
+    duplicates: items.filter((row) => row.duplicateOf !== null),
+  };
 }

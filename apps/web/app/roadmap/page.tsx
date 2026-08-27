@@ -9,7 +9,8 @@
  */
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
-import { listRoadmap } from '@wizard-ads/db';
+import { listFeedbackItems } from '@wizard-ads/db';
+import { can } from '../../src/auth/roles';
 import { isUnauthenticated, openWebDatabase, requestActor } from '../../src/server/request-context';
 import { requireOrgRole } from '../../src/server/org-role';
 import { toUiItem } from '../../src/feedback/ui';
@@ -23,15 +24,22 @@ export default async function RoadmapPage() {
   const database = openWebDatabase();
   try {
     const actor = await requestActor(await headers());
-    await requireOrgRole(database, actor);
-    const board = await listRoadmap(database, { orgId: actor.orgId, viewerId: actor.userId });
-    const map = (items: typeof board.planned) => items.map((item) => toUiItem(item, actor.userId));
+    const role = await requireOrgRole(database, actor);
+    const items = await listFeedbackItems(database, {
+      orgId: actor.orgId,
+      viewerId: actor.userId,
+      type: 'feature',
+      sort: 'votes',
+    });
+    const mapped = items.map((item) => toUiItem(item, actor.userId));
     return (
       <RoadmapBoardView
-        planned={map(board.planned)}
-        inProgress={map(board.inProgress)}
-        shipped={map(board.shipped)}
-        declined={map(board.declined)}
+        requested={mapped.filter((item) => item.status === 'new' || item.status === 'triaged')}
+        planned={mapped.filter((item) => item.status === 'planned')}
+        inProgress={mapped.filter((item) => item.status === 'in_progress')}
+        shipped={mapped.filter((item) => item.status === 'shipped')}
+        declined={mapped.filter((item) => item.status === 'declined')}
+        canTriage={can(role, 'triageFeedback')}
       />
     );
   } catch (error) {
