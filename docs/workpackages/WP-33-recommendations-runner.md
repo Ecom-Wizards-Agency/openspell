@@ -33,13 +33,15 @@ single highest-leverage change in the wave.
      - Pacing: month-to-date `fact_profile_daily` + `ad_profiles.monthly_budget` through
        `packages/core/src/pacing.ts`.
      - Rank: pass null — the engine already notes absence. Do not fabricate.
-   - Output mapping: engine push/pauseOptimize/graduate/tests/notes → `recommendations`
-     rows. `reason` must map into the existing DB enum (`high_acos`,
-     `high_spend_no_sales`, `low_acos`, `low_visibility`, `flag`, `pacing`) — put the
-     mapping table in the module header comment; the enum is a hard DB constraint.
-     `field` = bid/budget/state; `current_value`/`proposed_value` from `proposeBid`;
-     `inputs` provenance NOT NULL (follow `RecommendationInputs` in
-     `packages/shared/src/recommendations.ts`). Follow the write-path patterns of
+   - Output mapping — **manager decision 2026-08-27 (resolves the reported contract
+     gap)**: persist ONLY `proposeBid` results as `recommendations` rows (they carry real
+     `EntityRef`s, current/proposed bid values, and White Box reasons mapping cleanly into
+     the DB reason enum). The qualitative engine output (push/pauseOptimize/graduate/
+     tests/notes prose) is stored on the RUN, not as rows — in the run's audit_log payload
+     (and/or a details field the run insert already supports), so the UI can render it as
+     run narrative without fabricating entity references. Do NOT fabricate entity IDs and
+     do NOT extend `packages/shared`. `inputs` provenance NOT NULL per
+     `RecommendationInputs`. Follow the write-path patterns of
      `packages/db/src/queries/recommendations.ts::createNegativeProposals` (run insert +
      rows + audit_log; `::text::jsonb` serialization rule). Count-assert writes.
 2. **Replace the stub** at `apps/worker/src/worker.ts:205`: inject the runner as a
