@@ -164,7 +164,13 @@ function parseQuotaFeature(value: unknown, path: string): QuotaFeature {
 }
 
 export function parseQuota(value: unknown): DataDiveQuota {
-  const body = parse(QuotaSchema, value, 'quota');
+  // Live smoke 2026-08-27: /v1/quota wraps its payload in the same `data`
+  // envelope as the list endpoints. Accept both, preferring the envelope.
+  const unwrapped =
+    typeof value === 'object' && value !== null && 'data' in value && !('features' in value)
+      ? (value as { data: unknown }).data
+      : value;
+  const body = parse(QuotaSchema, unwrapped, 'quota');
   const parsedFeatures: Record<string, QuotaFeature> = {};
   for (const [name, feature] of Object.entries(body.features)) {
     parsedFeatures[name] = parseQuotaFeature(feature, `quota.features.${name}`);
