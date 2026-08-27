@@ -13,16 +13,24 @@
  */
 import { asc, eq, sql } from 'drizzle-orm';
 import { adProfiles } from '@wizard-ads/db';
-import type { DbHandle } from '@wizard-ads/db';
-import type { ProfileOption } from '@wizard-ads/ui';
+import type { AdProfile, DbHandle } from '@wizard-ads/db';
 
-export interface ProfileRecord extends ProfileOption {
-  amazonProfileId: string;
+export interface ProfileRecord
+  extends Pick<
+    AdProfile,
+    | 'id'
+    | 'amazonProfileId'
+    | 'region'
+    | 'countryCode'
+    | 'currencyCode'
+    | 'syncEnabled'
+    | 'targetAcos'
+    | 'monthlyBudget'
+    | 'goalLens'
+    | 'timezone'
+  > {
+  label: string;
   /** Doctrine values, per profile. Absent means the widget that needs one is off. */
-  targetAcos: number | null;
-  monthlyBudget: number | null;
-  goalLens: string | null;
-  timezone: string;
 }
 
 export async function listProfiles(handle: DbHandle, orgId: string): Promise<ProfileRecord[]> {

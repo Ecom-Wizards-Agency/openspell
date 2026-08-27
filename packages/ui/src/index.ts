@@ -37,8 +37,6 @@ export { DataGrid } from './DataGrid.js';
 export type { DataGridProps } from './DataGrid.js';
 export { GridToolbar, describeFilter } from './GridToolbar.js';
 export type { GridToolbarProps } from './GridToolbar.js';
-export { ProfileSwitcher } from './ProfileSwitcher.js';
-export type { ProfileOption } from './ProfileSwitcher.js';
 
 export * from './dashboard/freshness.js';
 export { FreshnessBanner } from './dashboard/FreshnessBanner.js';
