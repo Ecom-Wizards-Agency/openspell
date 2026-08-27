@@ -1,10 +1,10 @@
 /**
- * The roadmap: the same items as the tracker, arranged as three columns.
+ * The feature roadmap, arranged by status from request through shipped.
  *
  * It is a view, not a second data set — a card is on the board because its
  * status says so, and it moves when an admin changes that status. Declined
  * items are on the page too, collapsed, with the note that explains them:
- * telling somebody why their request is not happening is cheaper than letting
+ * Telling somebody why their request is not happening is cheaper than letting
  * them ask again in six weeks.
  */
 import { headers } from 'next/headers';
