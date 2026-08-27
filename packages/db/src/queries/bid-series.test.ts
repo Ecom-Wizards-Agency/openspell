@@ -14,6 +14,7 @@ import {
   BidSeriesLoadCountMismatch,
   hasBidSeriesForDate,
   listBidSeriesTargets,
+  readLatestBidSeriesByTargetIds,
   readBidSeries,
   upsertBidSeries,
 } from './bid-series.js';
@@ -118,6 +119,36 @@ describe.skipIf(!available)('WP-28 bid series queries', () => {
     const kw = targets.find((t) => t.targetId === 'kw-1');
     expect(kw?.isKeyword).toBe(true);
     expect(kw?.days).toBe(2);
+  });
+
+  it('reads the latest corridor values for a batch of target ids', async () => {
+    const latest = await readLatestBidSeriesByTargetIds(database, {
+      orgId,
+      profileId,
+      targetIds: ['kw-1', 'tg-1', 'missing'],
+    });
+    expect(latest.map((row) => row.targetId).sort()).toEqual(['kw-1', 'tg-1']);
+    const keyword = latest.find((row) => row.targetId === 'kw-1');
+    expect(keyword).toMatchObject({
+      date: TODAY,
+      suggestedBidLow: 0.5,
+      suggestedBidMedian: 0.8,
+      suggestedBidHigh: 9.99,
+      maxPotentialCpc: 1.35,
+    });
+  });
+
+  it('returns no latest rows for an empty batch or another org', async () => {
+    await expect(
+      readLatestBidSeriesByTargetIds(database, { orgId, profileId, targetIds: [] }),
+    ).resolves.toEqual([]);
+    await expect(
+      readLatestBidSeriesByTargetIds(database, {
+        orgId: '00000000-0000-4000-8000-000000000000',
+        profileId,
+        targetIds: ['kw-1'],
+      }),
+    ).resolves.toEqual([]);
   });
 
   it('an org that does not own the profile reads nothing', async () => {

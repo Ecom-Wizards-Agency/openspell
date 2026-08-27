@@ -156,6 +156,64 @@ export interface BidSeriesTarget {
   days: number;
 }
 
+/** The current corridor values the targets grid shows beside each target. */
+export interface LatestBidSeries {
+  targetId: string;
+  date: string;
+  suggestedBidLow: number | null;
+  suggestedBidMedian: number | null;
+  suggestedBidHigh: number | null;
+  maxPotentialCpc: number | null;
+}
+
+/**
+ * Latest corridor row for every requested target, in one statement.
+ *
+ * `targetIds` comes from the already-aggregated targets grid. Keeping the
+ * latest-row rule here means the web loader cannot accidentally issue one
+ * history query per target or disagree with another caller about whether date
+ * or load time breaks a tie.
+ */
+export async function readLatestBidSeriesByTargetIds(
+  handle: Pick<DbHandle, 'sql'>,
+  args: { orgId: string; profileId: string; targetIds: readonly string[] },
+): Promise<LatestBidSeries[]> {
+  if (args.targetIds.length === 0) return [];
+  const rows = await handle.sql<
+    {
+      target_id: string;
+      date: string;
+      suggested_bid_low: string | number | null;
+      suggested_bid_median: string | number | null;
+      suggested_bid_high: string | number | null;
+      max_potential_cpc: string | number | null;
+    }[]
+  >`
+    select distinct on (target_id)
+           target_id,
+           date::text as date,
+           suggested_bid_low,
+           suggested_bid_median,
+           suggested_bid_high,
+           max_potential_cpc
+      from public.bid_series_daily
+     where org_id = ${args.orgId}
+       and profile_id = ${args.profileId}
+       and target_id = any(${[...args.targetIds]}::text[])
+     order by target_id, date desc, loaded_at desc
+  `;
+  const nullableNumber = (value: string | number | null): number | null =>
+    value === null ? null : Number(value);
+  return rows.map((row) => ({
+    targetId: row.target_id,
+    date: row.date,
+    suggestedBidLow: nullableNumber(row.suggested_bid_low),
+    suggestedBidMedian: nullableNumber(row.suggested_bid_median),
+    suggestedBidHigh: nullableNumber(row.suggested_bid_high),
+    maxPotentialCpc: nullableNumber(row.max_potential_cpc),
+  }));
+}
+
 /**
  * The targets that have a corridor in the window, most-recent first. The
  * surface offers these as the drill-down chooser rather than a blank field.

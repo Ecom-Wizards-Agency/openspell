@@ -89,6 +89,27 @@ suite('grid and roster reads against SQL aggregates', () => {
         }
       }
     }
+
+    await database.sql`
+      insert into public.keywords
+        (org_id, profile_id, amazon_id, ad_product, name, state, campaign_id, ad_group_id,
+         keyword_text, match_type, bid)
+      values
+        (${orgId}, ${profileId}, 'c-skew-a-kw0', 'SP', 'widget exact', 'enabled',
+         'c-skew-a', 'c-skew-a-ag', 'widget', 'exact', 1.10)
+      on conflict (profile_id, amazon_id) do update set bid = excluded.bid
+    `;
+    await database.sql`
+      insert into public.bid_series_daily
+        (org_id, profile_id, date, campaign_id, ad_group_id, target_id, is_keyword,
+         suggested_bid_low, suggested_bid_median, suggested_bid_high, bid, cpc,
+         max_potential_cpc)
+      values
+        (${orgId}, ${profileId}, '2026-07-13', 'c-skew-a', 'c-skew-a-ag',
+         'c-skew-a-kw0', true, 0.60, 0.80, 1.00, 1.00, 0.70, 1.25),
+        (${orgId}, ${profileId}, '2026-07-14', 'c-skew-a', 'c-skew-a-ag',
+         'c-skew-a-kw0', true, 0.70, 0.90, 1.20, 1.10, 0.75, 1.40)
+    `;
   }, 120_000);
 
   afterAll(async () => {
@@ -114,6 +135,25 @@ suite('grid and roster reads against SQL aggregates', () => {
     expect(truncated).toBe(false);
     // Rule 4: outputs counted against inputs, as an assertion.
     expect(rows.length).toBe(Number((counted as { n: string }).n));
+  });
+
+  it('enriches targets with the latest bid series and campaign RPC category', async () => {
+    const { rows } = await loadGridRows(database, 'targets', {
+      orgId,
+      profileId,
+      currencyCode: 'USD',
+      period: PERIOD,
+      comparison: COMPARISON,
+    });
+    const target = rows.find((row) => row.dimensions['target_id'] === 'c-skew-a-kw0');
+    expect(target?.dimensions).toMatchObject({
+      suggested_bid: 0.9,
+      suggested_bid_low: 0.7,
+      suggested_bid_high: 1.2,
+      max_potential_cpc: 1.4,
+      rpc_category: 'Rank',
+    });
+    expect(target?.dimensions['diff_from_suggested_bid']).toBeCloseTo(0.2, 10);
   });
 
   it('computes a grouped ACOS equal to sum(cost)/sum(sales) in Postgres', async () => {

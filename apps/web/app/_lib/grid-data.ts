@@ -22,6 +22,8 @@
  *
  * Read-only. Every write in this product happens in the worker.
  */
+import { classifyCampaignCategory } from '@wizard-ads/core';
+import { readLatestBidSeriesByTargetIds } from '@wizard-ads/db';
 import type { DbHandle } from '@wizard-ads/db';
 import type { EntityLevel, GridRow } from '@wizard-ads/ui';
 import type { Period } from './periods.js';
@@ -309,23 +311,42 @@ async function loadTargets(
      limit ${limit}
   `;
 
-  return rows.map((row) => ({
-    id: `target:${row.target_id}`,
-    dimensions: {
-      target_id: row.target_id,
-      targeting: row.targeting ?? row.target_id,
-      target_state: row.target_state,
-      target_kind: row.target_kind,
-      match_type: row.match_type,
-      bid: row.bid === null ? null : num(row.bid),
-      ad_group_name: row.ad_group_name ?? row.ad_group_id,
-      campaign_name: row.campaign_name ?? row.campaign_id,
-      ad_product: row.ad_product,
-    },
-    totals: totalsOf(row),
-    comparison: comparisonOf(row),
-    currencyCode: options.currencyCode,
-  }));
+  const latest = await readLatestBidSeriesByTargetIds(handle, {
+    orgId,
+    profileId,
+    targetIds: rows.map((row) => row.target_id),
+  });
+  const latestByTarget = new Map(latest.map((row) => [row.targetId, row]));
+
+  return rows.map((row) => {
+    const series = latestByTarget.get(row.target_id);
+    const bid = row.bid === null ? null : num(row.bid);
+    const suggestedBid = series?.suggestedBidMedian ?? null;
+    return {
+      id: `target:${row.target_id}`,
+      dimensions: {
+        target_id: row.target_id,
+        targeting: row.targeting ?? row.target_id,
+        target_state: row.target_state,
+        target_kind: row.target_kind,
+        match_type: row.match_type,
+        bid,
+        suggested_bid: suggestedBid,
+        suggested_bid_low: series?.suggestedBidLow ?? null,
+        suggested_bid_high: series?.suggestedBidHigh ?? null,
+        max_potential_cpc: series?.maxPotentialCpc ?? null,
+        diff_from_suggested_bid:
+          bid === null || suggestedBid === null ? null : bid - suggestedBid,
+        ad_group_name: row.ad_group_name ?? row.ad_group_id,
+        campaign_name: row.campaign_name ?? row.campaign_id,
+        rpc_category: classifyCampaignCategory(row.campaign_name),
+        ad_product: row.ad_product,
+      },
+      totals: totalsOf(row),
+      comparison: comparisonOf(row),
+      currencyCode: options.currencyCode,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

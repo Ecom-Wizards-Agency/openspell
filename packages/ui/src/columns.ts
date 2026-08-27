@@ -65,6 +65,8 @@ export interface GridColumn {
   pinned?: boolean;
   /** Shown in the column picker, so a name never has to be self-explanatory. */
   description?: string;
+  /** The rare cell whose visual hierarchy carries more than its sort value. */
+  cell?: 'suggested_bid';
 }
 
 const dimension = (
@@ -168,6 +170,29 @@ const DIMENSIONS: Record<EntityLevel, GridColumn[]> = {
         'negatives; one concept gets one name here.',
     }),
     dimension('bid', 'Bid', { scale: 'money', align: 'right', width: 96 }),
+    dimension('suggested_bid', 'Suggested bid', {
+      scale: 'money',
+      align: 'right',
+      width: 128,
+      cell: 'suggested_bid',
+      description: 'Latest Amazon suggested-bid median, with the low–high range beneath it.',
+    }),
+    dimension('max_potential_cpc', 'Max potential CPC', {
+      scale: 'money',
+      align: 'right',
+      width: 136,
+      description: 'Latest base bid after placement, audience, and dayparting modifiers.',
+    }),
+    dimension('diff_from_suggested_bid', 'Bid − suggested', {
+      scale: 'money',
+      align: 'right',
+      width: 128,
+      description: 'Current bid minus the latest Amazon suggested-bid median.',
+    }),
+    dimension('rpc_category', 'RPC category', {
+      width: 120,
+      description: 'Campaign-name classification. A filter, not an optimizer run.',
+    }),
     dimension('ad_group_name', 'Ad group', { width: 220 }),
     dimension('campaign_name', 'Campaign', { width: 280 }),
     dimension('ad_product', 'Ad type', { width: 88 }),
@@ -225,7 +250,16 @@ function isKeyDimension(level: EntityLevel, id: string): boolean {
   const keys: Record<EntityLevel, readonly string[]> = {
     campaigns: ['campaign_state', 'ad_product', 'budget_amount'],
     ad_groups: ['ad_group_state', 'campaign_name', 'default_bid'],
-    targets: ['target_state', 'match_type', 'bid', 'campaign_name'],
+    targets: [
+      'target_state',
+      'match_type',
+      'bid',
+      'suggested_bid',
+      'max_potential_cpc',
+      'diff_from_suggested_bid',
+      'rpc_category',
+      'campaign_name',
+    ],
     search_terms: ['match_type', 'campaign_name', 'harvested'],
     placements: ['campaign_name', 'placement_modifier'],
   };

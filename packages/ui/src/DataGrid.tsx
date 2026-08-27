@@ -74,6 +74,21 @@ function Cell({ row, column, context }: CellProps): ReactNode {
   const value = resolveField(row, column.id);
   const ref = parseFieldId(column.id);
 
+  if (column.cell === 'suggested_bid') {
+    const low = resolveField(row, 'suggested_bid_low');
+    const high = resolveField(row, 'suggested_bid_high');
+    return (
+      <span data-testid="suggested-bid-cell" style={twoLineCell}>
+        <span>{formatValue(value, column.scale, context)}</span>
+        {value === null ? null : (
+          <span style={cellSubline}>
+            {formatValue(low, column.scale, context)} – {formatValue(high, column.scale, context)}
+          </span>
+        )}
+      </span>
+    );
+  }
+
   if (ref !== null && (ref.part === 'delta_absolute' || ref.part === 'delta_percent')) {
     const spec = metricSpec(ref.metric);
     const numeric = typeof value === 'number' ? value : null;
@@ -192,6 +207,7 @@ export function DataGrid({
                 <div
                   key={column.id}
                   role="columnheader"
+                  aria-label={definition?.header ?? column.id}
                   aria-sort={rule === undefined ? 'none' : rule.direction === 'asc' ? 'ascending' : 'descending'}
                   title={definition?.description}
                   onClick={(event) => handleHeaderClick(column.id, event)}
@@ -211,7 +227,22 @@ export function DataGrid({
                       : {}),
                   }}
                 >
-                  <span style={headerLabel}>{flexRender(column.columnDef.header, {} as never)}</span>
+                  <span
+                    style={{
+                      ...headerStack,
+                      alignItems: definition?.align === 'right' ? 'flex-end' : 'flex-start',
+                    }}
+                  >
+                    <span style={headerLabel}>{flexRender(column.columnDef.header, {} as never)}</span>
+                    {rule === undefined || definition?.kind !== 'metric' || totalsRow === null ? null : (
+                      <span
+                        data-testid={`sorted-column-aggregate-${column.id}`}
+                        style={headerAggregate}
+                      >
+                        <Cell row={totalsRow} column={definition} context={formatContext} />
+                      </span>
+                    )}
+                  </span>
                   {rule === undefined ? null : (
                     // aria-sort already tells a screen reader the direction;
                     // the glyph would only make the header's name read "Spend▼".
@@ -407,7 +438,7 @@ const scroller: CSSProperties = { overflow: 'auto', position: 'relative' };
  * guessing it puts the totals row over the first data row -- which is what
  * happened before this was pinned.
  */
-const HEADER_HEIGHT = 32;
+const HEADER_HEIGHT = 44;
 
 const headerRow: CSSProperties = {
   background: tokens.color.surfaceAlt,
@@ -435,6 +466,22 @@ const headerCell: CSSProperties = {
 };
 
 const headerLabel: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis' };
+
+const headerStack: CSSProperties = {
+  display: 'flex',
+  flex: '1 1 auto',
+  flexDirection: 'column',
+  lineHeight: 1.1,
+  minWidth: 0,
+  overflow: 'hidden',
+};
+
+const headerAggregate: CSSProperties = {
+  color: tokens.color.textMuted,
+  fontSize: tokens.font.size.xs,
+  fontWeight: 500,
+  marginTop: '0.125rem',
+};
 
 const sortMark: CSSProperties = { color: tokens.color.accent, fontSize: '0.625rem' };
 
@@ -476,6 +523,18 @@ const bodyCell: CSSProperties = {
   padding: `${tokens.space(1)} ${tokens.space(2)}`,
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
+};
+
+const twoLineCell: CSSProperties = {
+  display: 'inline-flex',
+  flexDirection: 'column',
+  lineHeight: 1.05,
+};
+
+const cellSubline: CSSProperties = {
+  color: tokens.color.textMuted,
+  fontSize: tokens.font.size.xs,
+  marginTop: '0.125rem',
 };
 
 const emptyState: CSSProperties = {

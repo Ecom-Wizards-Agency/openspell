@@ -109,6 +109,29 @@ describe('DataGrid over 50k rows', () => {
     expect(header.getAttribute('aria-sort')).toBe('descending');
   });
 
+  it('shows totals beneath sorted additive and ratio metric headers', () => {
+    const rows = syntheticSearchTermRows(100, { seed: 23 });
+    const sort = [
+      { columnId: 'spend', direction: 'desc' as const },
+      { columnId: 'acos', direction: 'desc' as const },
+    ];
+    render(
+      <DataGrid
+        model={buildGridModel(rows, { sort })}
+        columns={visible}
+        currencyCode="USD"
+        sort={sort}
+        onSortChange={() => {}}
+        height={VIEWPORT.height}
+        rowHeight={ROW_HEIGHT}
+        initialRect={VIEWPORT}
+      />,
+    );
+
+    expect(screen.getByTestId('sorted-column-aggregate-spend').textContent).toMatch(/\$/);
+    expect(screen.getByTestId('sorted-column-aggregate-acos').textContent).toMatch(/%/);
+  });
+
   it('toggles sort on a header click, with shift appending a second key', async () => {
     const rows = syntheticSearchTermRows(100, { seed: 3 });
     const onSortChange = vi.fn();
