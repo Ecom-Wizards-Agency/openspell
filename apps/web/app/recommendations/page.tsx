@@ -31,6 +31,8 @@ import {
 import { requireOrgRole } from '../../src/server/org-role';
 import { listOrgProfiles, selectOrgProfile } from '../../src/recommendations/data';
 import { toProposalView } from '../../src/recommendations/view';
+import { selectRecommendationRun } from '../../src/recommendations/runs';
+import { EmptyState } from '../../src/ui/primitives';
 import { ReviewWorkspace } from './review';
 
 export const runtime = 'nodejs';
@@ -67,11 +69,11 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
       limit: 20,
     });
     const requestedRun = one(query['run']);
-    const runId = requestedRun ?? runs[0]?.id ?? null;
+    const runId = selectRecommendationRun(runs, requestedRun)?.id ?? null;
     const run = runId === null ? null : await getRecommendationRun(database, { orgId: actor.orgId, runId });
 
     const records =
-      run === null
+      run === null || run.status !== 'succeeded'
         ? []
         : await listRecommendations(database, { orgId: actor.orgId, runId: run.id });
     const proposals = records.map((record) =>
@@ -86,7 +88,9 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
             {profile.label} · {profile.currencyCode} ·{' '}
             {run === null
               ? 'no runs yet'
-              : `run ${run.engineVersion ?? 'unversioned'} over ${run.windowStart ?? '?'} to ${run.windowEnd ?? '?'}`}
+              : run.finishedAt === null
+                ? `run ${run.status}`
+                : `run ${run.engineVersion ?? 'unversioned'} over ${run.windowStart ?? '?'} to ${run.windowEnd ?? '?'}`}
           </p>
           {runs.length > 1 ? (
             <nav style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }} aria-label="Runs">
@@ -96,7 +100,8 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
                   href={`/recommendations?profile=${profile.id}&run=${option.id}`}
                   style={{ ...pill, fontWeight: option.id === run?.id ? 600 : 400 }}
                 >
-                  {option.createdAt.toISOString().slice(0, 10)} · {option.proposalsCount}
+                  {option.createdAt.toISOString().slice(0, 10)} ·{' '}
+                  {option.finishedAt === null ? option.status : option.proposalsCount}
                 </a>
               ))}
             </nav>
@@ -108,6 +113,20 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
             No recommendation run has finished for this profile. The weekly engine writes one; until
             then there is nothing to review, which is not the same as nothing to do.
           </p>
+        ) : run.finishedAt === null ? (
+          <EmptyState
+            title={run.status === 'running' ? 'Optimizer run in progress' : 'Optimizer run queued'}
+            body={
+              run.status === 'running'
+                ? 'The worker is assembling facts, doctrine, pacing, and bid corridors now. Refresh shortly to see the preview.'
+                : "The preview is in the worker queue. It will use the last complete seven-day window in this profile's timezone."
+            }
+          />
+        ) : run.status !== 'succeeded' ? (
+          <EmptyState
+            title="Optimizer run failed"
+            body="The worker recorded this run as failed. Queue a new preview after checking sync freshness and strategy settings."
+          />
         ) : (
           <ReviewWorkspace
             proposals={proposals}
