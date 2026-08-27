@@ -4,6 +4,10 @@ import { configFromEnv } from './config.js';
 import { createCrosscheckIngest } from './crosscheck.js';
 import { closeServer, startHealthServer } from './health.js';
 import { PostgresBidSeriesStore } from './bid-series.js';
+import {
+  PostgresRecommendationRunStore,
+  createRecommendationsRunner,
+} from './recommendations-run.js';
 import { PostgresWorkerStore } from './store.js';
 import {
   AuthHealthMonitor,
@@ -19,11 +23,13 @@ const store = new PostgresWorkerStore(handle);
 // One client instance serves both the queue worker (as an AdsApiClient) and the
 // bid-corridor sync (as a SuggestedBidClient); DbAdsApiClient implements both.
 const adsApi = createAdsApiClientFromEnv(handle);
+const recommendationRuns = new PostgresRecommendationRunStore(handle);
 const worker = new SyncWorker({
   workerId: config.workerId,
   store,
   adsApi,
   crosscheckIngest: createCrosscheckIngest(handle, { inboxDir: config.crosscheckInboxDir }),
+  recommendationsRun: createRecommendationsRunner(recommendationRuns),
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,
   pollIntervalMs: config.pollIntervalMs,
@@ -31,7 +37,7 @@ const worker = new SyncWorker({
 const health = await startHealthServer(worker, config.port);
 const authHealth = new AuthHealthMonitor(worker, config.authHealthcheckIntervalMs);
 const reaper = new StaleClaimReaper(store, config.staleClaimAfter);
-const provisioner = new ScheduleProvisioner(store);
+const provisioner = new ScheduleProvisioner(store, undefined, undefined, recommendationRuns);
 const bidSeries = new BidSeriesSyncPass({
   store: new PostgresBidSeriesStore(handle),
   client: adsApi,

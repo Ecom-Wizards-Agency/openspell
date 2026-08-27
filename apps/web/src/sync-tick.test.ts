@@ -84,11 +84,16 @@ describe.skipIf(!available)('runSyncTick', () => {
     store.unscheduled = [{ orgId: 'org', profileId: 'profile' }];
     const worker = new FakeWorker();
     let bidSeriesRuns = 0;
+    let recommendationScheduleRuns = 0;
 
     const result = await runSyncTick({
       sql: database.sql,
       store,
       worker,
+      recommendationSchedules: async () => {
+        recommendationScheduleRuns += 1;
+        return 3;
+      },
       bidSeries: async () => {
         bidSeriesRuns += 1;
         return { profiles: 1, written: 7 };
@@ -102,6 +107,8 @@ describe.skipIf(!available)('runSyncTick', () => {
     expect(result.repaired).toBe(1);
     expect(store.provisioned).toEqual(['profile']);
     expect(result.provisioned).toBe(2);
+    expect(recommendationScheduleRuns).toBe(1);
+    expect(result.enqueued).toBeGreaterThanOrEqual(3);
     expect(worker.drains).toBe(1);
     expect(bidSeriesRuns).toBe(1);
     expect(result.bidSeries).toEqual({ profiles: 1, written: 7 });

@@ -22,9 +22,11 @@ import { NextResponse } from 'next/server';
 import { connectionStringFromEnv, createDb } from '@wizard-ads/db';
 import {
   PostgresBidSeriesStore,
+  PostgresRecommendationRunStore,
   PostgresWorkerStore,
   SyncWorker,
   createAdsApiClientFromEnv,
+  createRecommendationsRunner,
   runBidSeriesSync,
 } from '@wizard-ads/worker';
 import { runSyncTick } from '../../../../src/server/sync-tick';
@@ -66,11 +68,13 @@ export async function GET(request: Request): Promise<Response> {
   // one of them is reserved for the tick lock.
   const handle = createDb({ connectionString, max: 7 });
   const store = new PostgresWorkerStore(handle);
+  const recommendationRuns = new PostgresRecommendationRunStore(handle);
   const adsApi = createAdsApiClientFromEnv(handle);
   const worker = new SyncWorker({
     workerId: `vercel-cron-${randomUUID()}`,
     store,
     adsApi,
+    recommendationsRun: createRecommendationsRunner(recommendationRuns),
   });
 
   try {
@@ -78,6 +82,7 @@ export async function GET(request: Request): Promise<Response> {
       sql: handle.sql,
       store,
       worker,
+      recommendationSchedules: () => recommendationRuns.enqueueDueRecommendationRuns(),
       budgetMs: DRAIN_BUDGET_MS,
       // One client serves both roles: DbAdsApiClient is an AdsApiClient for the
       // queue and a SuggestedBidClient for the corridor.

@@ -20,10 +20,12 @@ import {
   listRecommendationRuns,
   listRecommendations,
 } from '@wizard-ads/db';
+import { RECOMMENDATIONS_ENGINE_VERSION } from '@wizard-ads/worker';
 import { assessFreshness } from '@wizard-ads/ui';
 import { gate } from '../../src/auth/guard';
+import { can } from '../../src/auth/roles';
 import { gateMessage } from '../../src/ui/gate-message';
-import { Card, EmptyState, PageHeader } from '../../src/ui/primitives';
+import { Button, Card, EmptyState, PageHeader } from '../../src/ui/primitives';
 import { KpiTile, FreshnessBar } from '../../src/ui/dashboard';
 import { TrendChart } from '../../src/ui/viz';
 import type { TrendPoint } from '../../src/ui/viz';
@@ -41,6 +43,7 @@ import { corridorWindow, loadCorridor, loadCorridorTargets } from '../_lib/bid-c
 import { periodFromParams, precedingPeriod, todayIso } from '../_lib/periods';
 import { listProfiles, selectProfile } from '../_lib/profiles';
 import { CorridorSection, OptimizerGroupTable, ReasonCoverageRow, SettingsChip } from './optimizer-view';
+import { runOptimizerNow } from './actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -60,6 +63,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
   }
   const { handle, context } = entry;
   const orgId = context.active?.orgId ?? '';
+  const mayRunOptimizer = can(context.active?.role, 'editTargets');
 
   const params = await searchParams;
   const period = periodFromParams(params, todayIso());
@@ -84,8 +88,9 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
     );
   }
 
-  const runs = await listRecommendationRuns(handle, { orgId, profileId: profile.id, limit: 20 });
-  const runId = params.run ?? runs[0]?.id ?? null;
+  const runs = (await listRecommendationRuns(handle, { orgId, profileId: profile.id, limit: 100 }))
+    .filter((candidate) => candidate.engineVersion === RECOMMENDATIONS_ENGINE_VERSION);
+  const runId = runs.find((candidate) => candidate.id === params.run)?.id ?? runs[0]?.id ?? null;
   const run = runId === null ? null : await getRecommendationRun(handle, { orgId, runId });
   const records =
     run === null ? [] : await listRecommendations(handle, { orgId, runId: run.id });
@@ -133,6 +138,19 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
         subtitle={`${profile.label} · ${period.start} to ${period.end} · compared against ${comparison.start} to ${comparison.end} · all figures in ${profile.currencyCode}`}
         actions={
           <div className="wa-row" style={{ gap: '0.5rem' }}>
+            {mayRunOptimizer ? (
+              <form action={runOptimizerNow}>
+                <input type="hidden" name="profileId" value={profile.id} />
+                <Button
+                  type="submit"
+                  size="sm"
+                  data-testid="optimizer-run-now"
+                  title="Queue a seven-day preview using the last complete profile-local day"
+                >
+                  Run now
+                </Button>
+              </form>
+            ) : null}
             <SettingsChip summary={summary} />
             <a
               className="wa-btn wa-btn--primary wa-btn--sm"
@@ -163,6 +181,23 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
               <a className="wa-btn wa-btn--sm" href={`/grid?profile=${profile.id}`}>
                 Open the grid
               </a>
+            }
+          />
+        ) : run.status !== 'succeeded' ? (
+          <EmptyState
+            title={
+              run.status === 'queued'
+                ? 'Optimizer run queued'
+                : run.status === 'running'
+                  ? 'Optimizer run in progress'
+                  : 'Optimizer run failed'
+            }
+            body={
+              run.status === 'queued'
+                ? 'The preview is in the worker queue. It will use the last complete seven-day window in this profile’s timezone.'
+                : run.status === 'running'
+                  ? 'The worker is assembling facts, doctrine, pacing, and bid corridors now. Refresh shortly to see the preview.'
+                  : 'The worker recorded this run as failed. Queue a new preview after checking sync freshness and strategy settings.'
             }
           />
         ) : (

@@ -38,6 +38,12 @@ import { PostgresBidSeriesStore } from './bid-series.js';
 import { createCrosscheckIngest } from './crosscheck.js';
 import type { ParsedFactBatch } from './parsers.js';
 import { RegionTokenBuckets } from './region-token-buckets.js';
+import {
+  PostgresRecommendationRunStore,
+  RECOMMENDATION_SCHEDULE_PRIORITY,
+  RECOMMENDATIONS_ENGINE_VERSION,
+  createRecommendationsRunner,
+} from './recommendations-run.js';
 import { DEFAULT_REPORT_TYPES, defaultSchedules } from './schedules.js';
 import { PostgresWorkerStore } from './store.js';
 import { ScheduleProvisioner, StaleClaimReaper, SyncWorker, type WorkerLogger } from './worker.js';
@@ -121,6 +127,183 @@ describe.skipIf(!available)('worker + real Postgres', () => {
   });
 
   afterAll(async () => { await database?.drop(); });
+
+  // -------------------------------------------------------------------------
+  // recommendations.run
+  // -------------------------------------------------------------------------
+
+  it('runs against seeded facts and persists a succeeded run plus numeric proposals', async () => {
+    const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    const strategy = {
+      schema: 'wizard-ads.tenant-strategy.v1',
+      pacing: {},
+      opt_groups: {
+        Profit: {
+          target_acos: 0.3,
+          max_increase: 0.25,
+          max_decrease: 0.5,
+          goal_lens: 'profit-maintain',
+          cut_on_acos_alone: true,
+        },
+      },
+      rank_lifecycle: {},
+      staged_apply: {},
+      bids: {},
+      sv_bands: {},
+      caps: {},
+      pat_split: {},
+      naming: {},
+    };
+
+    await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+    await database.sql`select app.ensure_fact_partitions(${yesterday}::date, 1)`;
+    await database.sql`
+      update public.campaigns
+         set name = 'Profit | exact | synthetic widget'
+       where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = 'c-1'
+    `;
+    await database.sql`
+      update public.profile_strategy
+         set doc = ${JSON.stringify(strategy)}::text::jsonb
+       where org_id = ${orgId} and profile_id is null
+    `;
+    await database.sql`
+      insert into public.fact_sp_target_daily
+        (org_id, profile_id, date, ad_product, campaign_id, ad_group_id, target_id,
+         target_kind, match_type, impressions, clicks, cost, purchases_7d, sales_7d,
+         units_sold_7d)
+      values (${orgId}, ${profileId}, ${yesterday}, 'SP', 'c-1', 'ag-1', 'kw-1',
+              'keyword', 'exact', 1000, 10, 10, 2, 20, 2)
+      on conflict (profile_id, date, ad_product, campaign_id, ad_group_id, target_id)
+      do update set impressions = excluded.impressions, clicks = excluded.clicks,
+                    cost = excluded.cost, purchases_7d = excluded.purchases_7d,
+                    sales_7d = excluded.sales_7d
+    `;
+    await database.sql`
+      insert into public.fact_profile_daily
+        (org_id, profile_id, date, currency_code, impressions, clicks, cost, purchases_7d,
+         sales_7d, units_sold_7d, provisional)
+      values (${orgId}, ${profileId}, ${yesterday}, 'USD', 1000, 10, 10, 2, 20, 2, false)
+      on conflict (profile_id, date)
+      do update set impressions = excluded.impressions, clicks = excluded.clicks,
+                    cost = excluded.cost, purchases_7d = excluded.purchases_7d,
+                    sales_7d = excluded.sales_7d
+    `;
+
+    const recommendationStore = new PostgresRecommendationRunStore(database);
+    const queued = await recommendationStore.enqueueRecommendationRun({
+      orgId,
+      profileId,
+      source: 'web',
+    });
+    const worker = new SyncWorker({
+      workerId: 'recommendations',
+      store: new PostgresWorkerStore(database),
+      adsApi: new FakeAdsApi(),
+      buckets: new RegionTokenBuckets(2),
+      logger: quietLogger,
+      recommendationsRun: createRecommendationsRunner(recommendationStore),
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    const [job] = await database.sql<{ status: string; result: Record<string, unknown> }[]>`
+      select status::text as status, result from public.sync_jobs where id = ${queued.jobId}
+    `;
+    expect(job?.status).toBe('succeeded');
+    expect(job?.result).toMatchObject({ runId: queued.runId, proposals: 1 });
+
+    const [run] = await database.sql<{
+      status: string;
+      proposals_count: number;
+      window_start: string;
+      window_end: string;
+      engine_version: string;
+      strategy_snapshot: Record<string, unknown>;
+    }[]>`
+      select status::text as status, proposals_count,
+             window_start::text as window_start, window_end::text as window_end,
+             engine_version, strategy_snapshot
+        from public.recommendation_runs where id = ${queued.runId}
+    `;
+    expect(run).toMatchObject({
+      status: 'succeeded',
+      proposals_count: 1,
+      window_end: yesterday,
+      engine_version: RECOMMENDATIONS_ENGINE_VERSION,
+    });
+    expect(run?.strategy_snapshot).toMatchObject({ opt_groups: strategy.opt_groups });
+
+    const proposals = await database.sql<{
+      reason: string;
+      entity_id: string;
+      field: string;
+      status: string;
+      inputs: Record<string, unknown>;
+    }[]>`
+      select reason::text as reason, entity_id, field, status::text as status, inputs
+        from public.recommendations where run_id = ${queued.runId}
+    `;
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({
+      reason: 'high_acos',
+      entity_id: 'kw-1',
+      field: 'bid',
+      status: 'proposed',
+      inputs: { clicks: 10, cvrSourceLevel: 'keyword' },
+    });
+
+    const [audit] = await database.sql<{ payload: Record<string, unknown> }[]>`
+      select payload from public.audit_log
+       where org_id = ${orgId}
+         and action = 'recommendation.run.succeeded'
+         and target_id = ${queued.runId}
+    `;
+    expect(audit?.payload).toMatchObject({
+      proposals: 1,
+      narrative: { diagnostics: { proposed: 1 } },
+    });
+  });
+
+  it('mints one delayed weekly run/job per due sync-enabled profile', async () => {
+    await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+    // N-gram proposals share recommendation_runs but are not weekly optimizer
+    // executions, so a recent one must not suppress this profile's due run.
+    await database.sql`
+      insert into public.recommendation_runs
+        (org_id, profile_id, status, lookback_days, engine_version, started_at, finished_at)
+      values (${orgId}, ${profileId}, 'succeeded', 7, 'ngram-explorer', now(), now())
+    `;
+    const store = new PostgresRecommendationRunStore(database);
+    const now = new Date();
+
+    expect(await store.enqueueDueRecommendationRuns(now)).toBe(1);
+    expect(await store.enqueueDueRecommendationRuns(now)).toBe(0);
+
+    const [job] = await database.sql<{
+      run_id: string;
+      payload_run_id: string;
+      priority: number;
+      delay_seconds: number;
+      engine_version: string;
+    }[]>`
+      select r.id as run_id,
+             j.payload ->> 'runId' as payload_run_id,
+             r.engine_version,
+             j.priority,
+             extract(epoch from (j.run_after - ${now.toISOString()}::timestamptz)) as delay_seconds
+        from public.recommendation_runs r
+        join public.sync_jobs j on j.payload ->> 'runId' = r.id::text
+       where r.org_id = ${orgId}
+       order by r.created_at desc
+       limit 1
+    `;
+    expect(job?.payload_run_id).toBe(job?.run_id);
+    expect(job?.engine_version).toBe(RECOMMENDATIONS_ENGINE_VERSION);
+    expect(job?.priority).toBe(RECOMMENDATION_SCHEDULE_PRIORITY);
+    expect(Number(job?.delay_seconds)).toBe(5 * 60 * 60);
+  });
 
   // -------------------------------------------------------------------------
   // entity.sync

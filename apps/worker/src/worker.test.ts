@@ -228,6 +228,69 @@ describe('crosscheck.ingest retry policy', () => {
   });
 });
 
+describe('recommendations.run wiring', () => {
+  const payload: Extract<JobPayload, { type: 'recommendations.run' }> = {
+    type: 'recommendations.run',
+    orgId,
+    profileId,
+    runId: reportRequestId,
+    lookbackDays: 7,
+  };
+
+  it('delegates to the injected runner and stores its result', async () => {
+    const job: ClaimedJob = {
+      id: jobId, orgId, profileId, jobType: payload.type, payload,
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+    };
+    let claimed = false;
+    const results: unknown[] = [];
+    const calls: JobPayload[] = [];
+    const worker = new SyncWorker({
+      workerId: 'unit-worker', adsApi: new OneRowApi(),
+      buckets: new RegionTokenBuckets(2), logger: { info: () => {}, error: () => {} },
+      store: {
+        ...stubStore(),
+        claim: async () => claimed ? [] : (claimed = true, [job]),
+        finish: async (_id, outcome, options) => {
+          expect(outcome).toBe('succeeded');
+          results.push(options?.result);
+        },
+      },
+      recommendationsRun: async (incoming) => {
+        calls.push(incoming as JobPayload);
+        return { runId: incoming.runId, proposals: 2, window: null, alreadySucceeded: false };
+      },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(calls).toEqual([payload]);
+    expect(results).toEqual([
+      { runId: reportRequestId, proposals: 2, window: null, alreadySucceeded: false },
+    ]);
+  });
+
+  it('dead-letters when no recommendations runner is configured', async () => {
+    const job: ClaimedJob = {
+      id: jobId, orgId, profileId, jobType: payload.type, payload,
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+    };
+    let claimed = false;
+    const dead: string[] = [];
+    const worker = new SyncWorker({
+      workerId: 'unit-worker', adsApi: new OneRowApi(),
+      buckets: new RegionTokenBuckets(2), logger: { info: () => {}, error: () => {} },
+      store: {
+        ...stubStore(),
+        claim: async () => claimed ? [] : (claimed = true, [job]),
+        deadLetter: async (_id, error) => { dead.push(error); },
+      },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(dead).toEqual(['recommendations runner is not configured on this worker']);
+  });
+});
+
 describe('resolveSourcePath', () => {
   it('reads a relative payload path against the configured inbox root', () => {
     expect(resolveSourcePath('profile-1/2026-08-13', '/srv/inbox')).toBe('/srv/inbox/profile-1/2026-08-13');

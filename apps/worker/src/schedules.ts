@@ -70,6 +70,18 @@ export const DEFAULT_CADENCES = {
    * the whole cadence story reads in one place.
    */
   bidSeries: { cadence: '1 day' },
+  /**
+   * The weekly White Box preview. It is enqueued by the TypeScript provisioner,
+   * not `enqueue_due_schedules()`: its payload needs a recommendation run id
+   * minted first. Lower priority plus a five-hour delay lets the report
+   * request/poll/fetch pipeline land fresher facts before the preview runs.
+   */
+  recommendations: {
+    cadence: '7 days',
+    lookbackDays: 7,
+    delay: '5 hours',
+    priority: 50,
+  },
 } as const;
 
 export function defaultSchedules(
