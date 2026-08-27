@@ -15,6 +15,7 @@ import { createFeedbackItem } from '@wizard-ads/db';
 import { GET, POST } from '../app/api/feedback/route.js';
 import { GET as GET_ITEM, PATCH } from '../app/api/feedback/[itemId]/route.js';
 import { POST as VOTE } from '../app/api/feedback/[itemId]/vote/route.js';
+import { GET as GET_SIMILAR } from '../app/api/feedback/similar/route.js';
 
 const available = await databaseAvailable();
 const OWNER_A = '9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a';
@@ -151,6 +152,29 @@ describe.skipIf(!available)('feedback routes', () => {
       severity: 'critical',
     });
     expect(response.status).toBe(400);
+  });
+
+  it('scopes similar open bug titles to the requesting organisation', async () => {
+    const title = 'Bulk export loses the selected sort';
+    const ours = await file(OWNER_A, orgA, { type: 'bug', title });
+    const oursId = ((await ours.json()) as ItemBody).item.id;
+    const foreign = await createFeedbackItem(database, {
+      orgId: orgB,
+      authorId: OWNER_B,
+      type: 'bug',
+      title,
+    });
+
+    const response = await GET_SIMILAR(
+      new Request('http://localhost/api/feedback/similar?q=loses%20the%20selected%20sort', {
+        headers: headers(VIEWER_A, orgA),
+      }),
+    );
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as { items: { id: string; type: string }[] };
+    expect(payload.items.map((item) => item.id)).toContain(oursId);
+    expect(payload.items.map((item) => item.id)).not.toContain(foreign.id);
+    expect(payload.items.every((item) => item.type === 'bug')).toBe(true);
   });
 
   it('toggles a vote and reports the resulting count', async () => {

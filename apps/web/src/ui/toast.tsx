@@ -27,10 +27,11 @@ export interface Toast {
   id: number;
   tone: ToastTone;
   message: string;
+  action?: { href: string; label: string };
 }
 
 interface ToastApi {
-  show: (message: string, tone?: ToastTone) => void;
+  show: (message: string, tone?: ToastTone, action?: Toast['action']) => void;
 }
 
 const ToastContext = createContext<ToastApi | null>(null);
@@ -47,10 +48,13 @@ export function ToastProvider({ children }: { children: ReactNode }): ReactNode 
   }, []);
 
   const show = useCallback(
-    (message: string, tone: ToastTone = 'info') => {
+    (message: string, tone: ToastTone = 'info', action?: Toast['action']) => {
       const id = nextId.current;
       nextId.current += 1;
-      setToasts((current) => [...current.slice(-2), { id, tone, message }]);
+      setToasts((current) => [
+        ...current.slice(-2),
+        { id, tone, message, ...(action === undefined ? {} : { action }) },
+      ]);
       window.setTimeout(() => dismiss(id), DISMISS_AFTER_MS);
     },
     [dismiss],
@@ -68,6 +72,11 @@ export function ToastProvider({ children }: { children: ReactNode }): ReactNode 
               {MARK[toast.tone]}
             </span>
             <span className="wa-toast__text">{toast.message}</span>
+            {toast.action === undefined ? null : (
+              <a className="wa-btn wa-btn--ghost wa-btn--sm" href={toast.action.href}>
+                {toast.action.label}
+              </a>
+            )}
             <button
               type="button"
               aria-label="Dismiss"

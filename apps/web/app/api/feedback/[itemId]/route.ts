@@ -8,7 +8,12 @@
  * query layer and the database's guard trigger both enforce, so a 403 here is
  * the third fence rather than the only one.
  */
-import { getFeedbackItem, setFeedbackStatus, updateFeedbackContent } from '@wizard-ads/db';
+import {
+  getFeedbackItem,
+  markFeedbackDuplicate,
+  setFeedbackStatus,
+  updateFeedbackContent,
+} from '@wizard-ads/db';
 import { FEEDBACK_STATUSES } from '@wizard-ads/db';
 import type { FeedbackSeverity, FeedbackStatus } from '@wizard-ads/db';
 import { requestActor, openWebDatabase } from '../../../../src/server/request-context';
@@ -50,9 +55,11 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
       title?: unknown;
       body?: unknown;
       severity?: unknown;
+      duplicateOf?: unknown;
     };
 
-    const wantsTriage = body.status !== undefined || body.adminNote !== undefined;
+    const wantsDuplicate = body.duplicateOf !== undefined;
+    const wantsTriage = body.status !== undefined || body.adminNote !== undefined || wantsDuplicate;
     const wantsEdit =
       body.title !== undefined || body.body !== undefined || body.severity !== undefined;
     if (wantsTriage && wantsEdit) {
@@ -61,6 +68,21 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
 
     if (wantsTriage) {
       await requireCapability(database, actor, 'triageFeedback');
+      if (wantsDuplicate) {
+        if (body.status !== undefined || body.adminNote !== undefined) {
+          throw new Error('Marking a duplicate is a separate triage request');
+        }
+        if (typeof body.duplicateOf !== 'string') {
+          throw new Error('duplicateOf must be a feedback item id');
+        }
+        const item = await markFeedbackDuplicate(database, {
+          orgId: actor.orgId,
+          itemId,
+          duplicateOf: body.duplicateOf,
+          viewerId: actor.userId,
+        });
+        return Response.json({ item });
+      }
       if (body.status !== undefined && typeof body.status !== 'string') {
         throw new Error('status must be a string');
       }

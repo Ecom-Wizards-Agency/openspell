@@ -17,6 +17,7 @@ export interface UiFeedbackItem {
   severity: string | null;
   status: string;
   adminNote: string | null;
+  duplicateOf: string | null;
   votes: number;
   viewerHasVoted: boolean;
   viewerIsAuthor: boolean;
@@ -41,6 +42,7 @@ export function toUiItem(item: FeedbackItemRecord, viewerId: string | null): UiF
     severity: item.severity,
     status: item.status,
     adminNote: item.adminNote,
+    duplicateOf: item.duplicateOf,
     votes: item.votes,
     viewerHasVoted: item.viewerHasVoted,
     viewerIsAuthor: viewerId !== null && item.authorId === viewerId,
