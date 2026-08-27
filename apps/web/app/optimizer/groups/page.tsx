@@ -23,7 +23,7 @@ import { page } from '../../../src/ui/tokens';
 import { toProposalView } from '../../../src/recommendations/view';
 import { optimizationGroups } from '../../../src/optimizer/view';
 import { periodFromParams, todayIso } from '../../_lib/periods';
-import { listProfiles, selectProfile } from '../../_lib/profiles';
+import { listProfiles, requestedProfileId, selectProfile } from '../../_lib/profiles';
 
 export const dynamic = 'force-dynamic';
 
@@ -49,10 +49,11 @@ export default async function OptimizationGroupsPage({ searchParams }: PageProps
   const orgId = context.active?.orgId ?? '';
 
   const params = await searchParams;
+  const profileId = await requestedProfileId(params.profile);
   const period = periodFromParams(params, todayIso());
 
   const profiles = await listProfiles(handle, orgId);
-  const profile = selectProfile(profiles, params.profile);
+  const profile = selectProfile(profiles, profileId);
   if (profile === null) {
     return (
       <main style={page}>

@@ -14,8 +14,8 @@ export const ORG_COOKIE = 'wizard_ads_org';
  *
  * The URL's `?profile=` stays the source of truth — it is what makes a screen
  * shareable — and this only remembers the last choice so a fresh entry into the
- * app can land on it instead of on "All profiles". Written by the switcher;
- * nothing reads it yet.
+ * app can land on it instead of on "All profiles". Written by the switcher and
+ * validated against the active organisation's full roster before a page uses it.
  */
 export const PROFILE_COOKIE = 'wizard_ads_profile';
 

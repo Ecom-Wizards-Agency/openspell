@@ -39,7 +39,7 @@ import {
 import { loadProfileDailyRows, loadReportLedger } from '../_lib/dashboard-data';
 import { corridorWindow, loadCorridor, loadCorridorTargets } from '../_lib/bid-corridor';
 import { periodFromParams, precedingPeriod, todayIso } from '../_lib/periods';
-import { listProfiles, selectProfile } from '../_lib/profiles';
+import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
 import { CorridorSection, OptimizerGroupTable, ReasonCoverageRow, SettingsChip } from './optimizer-view';
 
 export const dynamic = 'force-dynamic';
@@ -62,11 +62,12 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
   const orgId = context.active?.orgId ?? '';
 
   const params = await searchParams;
+  const profileId = await requestedProfileId(params.profile);
   const period = periodFromParams(params, todayIso());
   const comparison = precedingPeriod(period);
 
   const profiles = await listProfiles(handle, orgId);
-  const profile = selectProfile(profiles, params.profile);
+  const profile = selectProfile(profiles, profileId);
   if (profile === null) {
     return (
       <main style={page}>

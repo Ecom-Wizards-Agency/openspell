@@ -11,6 +11,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { NAV_LINKS, NavBar } from './nav.js';
+import { profileAwareHomeHref } from './profile-aware-brand.js';
 
 const render = (user: { id: string; email: string | null } | null): string =>
   renderToStaticMarkup(createElement(NavBar, { user }));
@@ -49,5 +50,12 @@ describe('the application nav', () => {
     const markup = render({ id: 'u-1', email: null });
     expect(markup).toContain('signed in as your account');
     expect(markup).toContain('action="/auth/signout"');
+  });
+
+  it('keeps only the selected profile when the brand link returns home', () => {
+    expect(profileAwareHomeHref('https://app.example.test/grid?profile=p-1&from=2026-08-01')).toBe(
+      '/?profile=p-1',
+    );
+    expect(profileAwareHomeHref('https://app.example.test/grid?from=2026-08-01')).toBe('/');
   });
 });

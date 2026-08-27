@@ -25,6 +25,7 @@
 import type { ReactNode } from 'react';
 import { NAV_GROUPS, NAV_LINKS } from './nav-links';
 import type { NavGroup, NavLink } from './nav-links';
+import { ProfileAwareBrand } from './profile-aware-brand';
 import { SidebarNav } from './sidebar';
 import { ProfileSwitcher, ThemeToggle } from './topbar-controls';
 import type { NavProfile } from './topbar-controls';
@@ -53,12 +54,7 @@ export function NavBar({ user, profiles = [], orgName = null }: NavBarProps): Re
       </a>
 
       <aside className="wa-sidebar">
-        <a className="wa-brand" href="/">
-          <span aria-hidden="true" className="wa-brand-mark">
-            w
-          </span>
-          <span className="wa-brand-label">wizard-ads</span>
-        </a>
+        <ProfileAwareBrand />
 
         <SidebarNav />
 

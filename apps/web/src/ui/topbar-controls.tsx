@@ -16,9 +16,9 @@
  * the shareable thing it always should have been.
  *
  * The choice is also mirrored into `PROFILE_COOKIE` on the way out. The URL
- * remains the source of truth — nothing reads the cookie yet — and it exists so
- * a later server-side default can land a fresh visit on the profile the
- * operator last worked, rather than on "All profiles".
+ * remains the source of truth, while server-rendered profile pages use the
+ * cookie only when the URL has no profile parameter. The server validates the
+ * remembered id against the active organisation's roster before using it.
  */
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';

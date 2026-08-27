@@ -14,6 +14,7 @@
 import { asc, eq, sql } from 'drizzle-orm';
 import { adProfiles } from '@wizard-ads/db';
 import type { AdProfile, DbHandle } from '@wizard-ads/db';
+import { PROFILE_COOKIE } from '../../src/cookies';
 
 export interface ProfileRecord
   extends Pick<
@@ -57,12 +58,30 @@ export async function listProfiles(handle: DbHandle, orgId: string): Promise<Pro
   }));
 }
 
+/** The URL wins when it names a profile; the cookie only fills an absent parameter. */
+export function profilePreference(
+  requested: string | undefined,
+  remembered: string | undefined,
+): string | undefined {
+  return requested ?? remembered;
+}
+
+/** Read the browser-independent profile preference for a server-rendered page. */
+export async function requestedProfileId(requested: string | undefined): Promise<string | undefined> {
+  if (requested !== undefined) return requested;
+  // Lazy for the same reason as the frame's request imports: pure tests of this
+  // module must not pull `next/headers` into a non-request module graph.
+  const { cookies } = await import('next/headers');
+  return profilePreference(requested, (await cookies()).get(PROFILE_COOKIE)?.value);
+}
+
 /**
  * Which profile a page is about.
  *
- * A requested profile that does not exist (or is not visible to this member)
+ * A URL- or cookie-requested profile that does not exist in the org roster
  * falls back to a default rather than rendering an empty page against an id
- * nobody can see. When nothing is requested the default is the first
+ * nobody can see. The exact roster match is what makes the cookie advisory,
+ * not an authorization boundary. When nothing is requested the default is the first
  * *sync-enabled* profile: an org of two hundred profiles with three switched on
  * should open on one that actually has data, not on whichever profile happens to
  * sort first — that was the "All profiles" foot-gun from the video. If none is
