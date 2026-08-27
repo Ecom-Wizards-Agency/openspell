@@ -295,8 +295,30 @@ function profileDate(now: Date, timezone: string): string {
   return `${year}-${month}-${day}`;
 }
 
+/**
+ * DataDive names marketplaces by Amazon domain suffix ("com", "co.uk",
+ * "com.au"); our profiles carry ISO country codes. Normalize both to the
+ * country code so US ↔ "com" compares equal (live smoke 2026-08-27).
+ */
+const DOMAIN_SUFFIX_COUNTRIES: Record<string, string> = {
+  'COM': 'US',
+  'CO.UK': 'UK',
+  'COM.AU': 'AU',
+  'COM.MX': 'MX',
+  'COM.BR': 'BR',
+  'CO.JP': 'JP',
+  'COM.TR': 'TR',
+  'COM.BE': 'BE',
+  'AE': 'AE',
+  'SA': 'SA',
+  'IN': 'IN',
+};
+
 function marketplace(value: string): string {
-  return value.trim().toUpperCase();
+  const upper = value.trim().toUpperCase();
+  const mapped = DOMAIN_SUFFIX_COUNTRIES[upper] ?? upper;
+  // Our UK profiles are stored as either UK or GB depending on source.
+  return mapped === 'GB' ? 'UK' : mapped;
 }
 
 export function rankObservationRows(
