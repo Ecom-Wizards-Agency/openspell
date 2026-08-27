@@ -79,12 +79,19 @@ function DeltaLine({
   scale: KpiTileProps['scale'];
   context: FormatContext;
 }): ReactNode {
+  if (delta.pct === null) {
+    return (
+      <p className="wa-kpi__delta wa-delta--flat" style={{ margin: 0 }}>
+        <span style={{ color: 'var(--wa-text-muted)' }}>No comparison data</span>
+      </p>
+    );
+  }
   const direction = deltaDirection(delta.pct, better);
   return (
     <p className={`wa-kpi__delta wa-delta--${direction}`} style={{ margin: 0 }}>
       <strong>
-        <span aria-hidden="true">{delta.pct === null || delta.pct === 0 ? '·' : delta.pct > 0 ? '↑' : '↓'}</span>{' '}
-        {delta.pct === null ? '—' : `${Math.abs(delta.pct * 100).toFixed(1)}%`}
+        <span aria-hidden="true">{delta.pct === 0 ? '·' : delta.pct > 0 ? '↑' : '↓'}</span>{' '}
+        {`${Math.abs(delta.pct * 100).toFixed(1)}%`}
       </strong>
       <span style={{ color: 'var(--wa-text-muted)' }}>
         {delta.caption}

@@ -34,10 +34,11 @@ import type { FlagView, PacingView } from '../../src/ui/dashboard';
 import { TrendChart } from '../../src/ui/viz';
 import type { TrendPoint } from '../../src/ui/viz';
 import { page } from '../../src/ui/tokens';
-import { loadCampaignDailyRows, loadProfileDailyRows, loadProvisionalDates, loadReportLedger } from '../_lib/dashboard-data';
+import { loadCampaignDailyRows, loadProfileDailyRows, loadReportLedger } from '../_lib/dashboard-data';
 import { loadExperimentWindows } from '../_lib/experiment-windows';
+import { comparePeriodMetric } from '../../src/dashboard/kpis';
 import { withDatabase } from '../_lib/db';
-import { addDays, periodFromParams, precedingPeriod, todayIso } from '../_lib/periods';
+import { addDays, periodFromParams, settledComparisonWindows, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
 
 export const dynamic = 'force-dynamic';
@@ -62,24 +63,30 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const profileId = await requestedProfileId(params.profile);
   const today = todayIso();
   const period = periodFromParams(params, today);
-  const comparison = precedingPeriod(period);
+  const settled = settledComparisonWindows(period, today);
+  const analysisWindow = { start: addDays(period.start, -8), end: period.end };
 
   const data = await withDatabase(async (handle) => {
     const profiles = await listProfiles(handle, orgId);
     const profile = selectProfile(profiles, profileId);
     if (profile === null) return { profiles, profile: null };
 
-    const window = { start: addDays(period.start, -8), end: period.end };
-    const [ledger, accountRows, campaignRows, provisional, crosscheck, experimentWindows] = await Promise.all([
+    const accountWindow = {
+      start:
+        settled.comparison !== null && settled.comparison.start < analysisWindow.start
+          ? settled.comparison.start
+          : analysisWindow.start,
+      end: period.end,
+    };
+    const [ledger, accountRows, campaignRows, crosscheck, experimentWindows] = await Promise.all([
       loadReportLedger(handle, orgId, profile.id),
-      loadProfileDailyRows(handle, orgId, profile.id, profile.label, window),
-      loadCampaignDailyRows(handle, orgId, profile.id, profile.label, window),
-      loadProvisionalDates(handle, orgId, profile.id, window),
+      loadProfileDailyRows(handle, orgId, profile.id, profile.label, accountWindow),
+      loadCampaignDailyRows(handle, orgId, profile.id, profile.label, analysisWindow),
       loadCrosscheckPanel(handle, { profileId: profile.id }).catch(() => null),
       loadExperimentWindows(handle, orgId, profile.id).catch(() => []),
     ]);
 
-    return { profiles, profile, ledger, accountRows, campaignRows, provisional, crosscheck, experimentWindows };
+    return { profiles, profile, ledger, accountRows, campaignRows, crosscheck, experimentWindows };
   });
 
   if (data === null) {
@@ -113,7 +120,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     accountRows = [],
     campaignRows = [],
     ledger = [],
-    provisional = [],
     experimentWindows = [],
   } = data;
   const context = { currencyCode: profile.currencyCode };
@@ -123,12 +129,18 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     category: classifyCampaignCategory(row.campaignName),
   }));
 
-  const reportDate = accountRows.length > 0 ? (accountRows[accountRows.length - 1] as DailyRow).date : period.end;
-  const analysis = analyzeAccount(profile.label, reportDate, accountRows, categorised);
+  const analysisRows = accountRows.filter(
+    (row) => row.date >= analysisWindow.start && row.date <= analysisWindow.end,
+  );
+  const reportDate =
+    analysisRows.length > 0
+      ? (analysisRows[analysisRows.length - 1] as DailyRow).date
+      : period.end;
+  const analysis = analyzeAccount(profile.label, reportDate, analysisRows, categorised);
   const flags = evaluate(analysis, null, profile.goalLens);
 
   const pacing = computePacing(
-    accountRows.map((row) => ({ date: row.date, spend: row.spend })),
+    analysisRows.map((row) => ({ date: row.date, spend: row.spend })),
     reportDate,
     profile.monthlyBudget,
   );
@@ -137,6 +149,23 @@ export default async function DashboardPage({ searchParams }: PageProps) {
 
   const freshness = assessFreshness(ledger, { now: new Date() });
   const inPeriod = accountRows.filter((row) => row.date >= period.start && row.date <= period.end);
+  const currentWindow = settled.current;
+  const comparisonWindow = settled.comparison;
+  const settledRows =
+    currentWindow === null
+      ? []
+      : accountRows.filter((row) => row.date >= currentWindow.start && row.date <= currentWindow.end);
+  const comparisonRows =
+    comparisonWindow === null
+      ? []
+      : accountRows.filter(
+          (row) => row.date >= comparisonWindow.start && row.date <= comparisonWindow.end,
+        );
+  const settlingWindow = {
+    label: 'Settling · 14-day attribution window',
+    start: settled.settling.start,
+    end: settled.settling.end,
+  };
 
   const kpis: { metric: string; label: string; scale: 'money' | 'percent'; better: 'higher' | 'lower' | null }[] = [
     { metric: 'spend', label: 'Spend', scale: 'money', better: null },
@@ -149,7 +178,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     <main style={page}>
       <PageHeader
         title="Dashboard"
-        subtitle={`${profile.label} · ${period.start} to ${period.end} · compared against ${comparison.start} to ${comparison.end} · all figures in ${profile.currencyCode}`}
+        subtitle={`${profile.label} · ${period.start} to ${period.end} · ${settled.current === null || settled.comparison === null ? 'no settled KPI comparison yet' : `settled KPI window ${settled.current.start} to ${settled.current.end} compared against ${settled.comparison.start} to ${settled.comparison.end}`} · all figures in ${profile.currencyCode}`}
       />
 
       <div className="wa-stack">
@@ -157,34 +186,22 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           {data.crosscheck ? <CrosscheckChip chip={data.crosscheck.chip} /> : null}
         </FreshnessBar>
 
-        {provisional.some((date) => date >= period.start && date <= period.end) ? (
-          <p className="wa-banner wa-banner--warn" style={{ display: 'block' }}>
-            {provisional.length} day(s) in this window are still attributing. Same-day sales restate
-            for 14 days; those days are shown, not hidden, and should not be read as a trend.
-          </p>
-        ) : null}
-
         <section aria-label="Headline metrics" className="wa-kpis">
           {kpis.map(({ metric, label, scale, better }) => {
-            const delta = analysis.accountSeries.deltas[metric];
+            const comparisonMetric = comparePeriodMetric(settledRows, comparisonRows, metric);
             return (
               <KpiTile
                 key={metric}
-                label={`${label} (period)`}
-                value={periodValue(inPeriod, metric)}
+                label={`${label} (settled)`}
+                value={comparisonMetric.value}
                 scale={scale}
                 better={better}
                 context={context}
                 deltas={[
                   {
                     caption: 'vs prior period',
-                    pct: delta?.priorPctChange ?? null,
-                    reference: delta?.priorValue ?? null,
-                  },
-                  {
-                    caption: 'vs trailing-7 avg',
-                    pct: delta?.trailing7PctChange ?? null,
-                    reference: delta?.trailing7Avg ?? null,
+                    pct: comparisonMetric.deltaPct,
+                    reference: comparisonMetric.reference,
                   },
                 ]}
               />
@@ -201,6 +218,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               aggregatable
               currencyCode={profile.currencyCode}
               windows={experimentWindows}
+              settlingWindow={settlingWindow}
               caption={`Spend and sales are additive, so weekly and monthly roll up by sum. In ${profile.currencyCode}.`}
               series={[
                 { label: 'Spend', points: series(inPeriod, 'spend') },
@@ -216,6 +234,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 scale="percent"
                 currencyCode={profile.currencyCode}
                 windows={experimentWindows}
+                settlingWindow={settlingWindow}
                 caption="Advertising cost of sales, as a fraction of sales."
                 series={[{ label: 'ACOS', points: series(inPeriod, 'acos') }]}
               />
@@ -224,6 +243,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 ariaLabel="Daily CPC"
                 scale="money"
                 currencyCode={profile.currencyCode}
+                settlingWindow={settlingWindow}
                 caption={`Cost per click, in ${profile.currencyCode}.`}
                 series={[{ label: 'CPC', points: series(inPeriod, 'cpc') }]}
               />
@@ -244,27 +264,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       </div>
     </main>
   );
-}
-
-/**
- * Period totals, from sums.
- *
- * The tiles show the whole selected window, not the last day, so `spend` is a
- * sum and `acos` is `sum(spend)/sum(sales)` over that window — the same rule the
- * grid's group-by follows, applied to the same numbers, so a tile and a grid
- * total can never disagree.
- */
-function periodValue(rows: readonly DailyRow[], metric: string): number | null {
-  if (rows.length === 0) return null;
-  const totals = { impressions: 0, clicks: 0, spend: 0, sales: 0, orders: 0, units: 0 };
-  for (const row of rows) {
-    totals.impressions += row.impressions;
-    totals.clicks += row.clicks;
-    totals.spend += row.spend;
-    totals.sales += row.sales;
-    totals.orders += row.orders;
-  }
-  return deriveMetric(metric, totals);
 }
 
 function series(rows: readonly DailyRow[], metric: string): TrendPoint[] {

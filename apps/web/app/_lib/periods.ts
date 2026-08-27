@@ -18,6 +18,8 @@ export interface Period {
 }
 
 export const DEFAULT_WINDOW_DAYS = 30;
+/** Amazon can restate attributed sales for this many trailing days. */
+export const ATTRIBUTION_SETTLING_DAYS = 14;
 
 export function addDays(date: string, days: number): string {
   const [y, m, d] = date.split('-').map(Number) as [number, number, number];
@@ -43,6 +45,33 @@ export function precedingPeriod(period: Period): Period {
   const length = daysBetween(period.start, period.end);
   const end = addDays(period.start, -1);
   return { start: addDays(end, -(length - 1)), end };
+}
+
+export interface SettledComparisonWindows {
+  /** Selected-period dates old enough for their attributed sales to be stable. */
+  current: Period | null;
+  /** Equal-length period immediately before `current`. */
+  comparison: Period | null;
+  /** The trailing dates whose attributed sales may still restate. */
+  settling: Period;
+}
+
+/**
+ * Split a selected range into settled KPI evidence and the visible settling tail.
+ *
+ * The chart still shows the selected period. KPI values and deltas use `current`
+ * and `comparison`, which are equal-length and never include one of Amazon's
+ * trailing 14 restatement days.
+ */
+export function settledComparisonWindows(period: Period, today: string): SettledComparisonWindows {
+  const settling: Period = {
+    start: addDays(today, -ATTRIBUTION_SETTLING_DAYS),
+    end: addDays(today, -1),
+  };
+  const settledEnd = period.end < settling.start ? period.end : addDays(settling.start, -1);
+  if (settledEnd < period.start) return { current: null, comparison: null, settling };
+  const current = { start: period.start, end: settledEnd };
+  return { current, comparison: precedingPeriod(current), settling };
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
