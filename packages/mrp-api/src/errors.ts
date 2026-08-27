@@ -17,6 +17,10 @@ export class MrpHttpError extends MrpApiError {
   }
 }
 
+export class MrpTransportError extends MrpApiError {
+  override readonly name = 'MrpTransportError';
+}
+
 export class MrpAuthError extends MrpHttpError {
   override readonly name = 'MrpAuthError';
 }

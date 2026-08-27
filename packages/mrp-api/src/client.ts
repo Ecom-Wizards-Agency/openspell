@@ -4,14 +4,17 @@ import {
   MrpConfigError,
   MrpHttpError,
   MrpProtocolError,
+  MrpTransportError,
   MrpToolCallError,
 } from './errors.js';
-import { parseProductEconomics, selectEconomicsTool } from './parser.js';
+import { parseProductMetrics, parseSellers } from './parser.js';
 import type {
   FetchLike,
   MrpClientOptions,
-  MrpEconomicsResult,
   MrpInitializeResult,
+  MrpProductMetricsInput,
+  MrpProductMetricsResult,
+  MrpSellersResult,
   MrpTool,
 } from './types.js';
 
@@ -101,10 +104,19 @@ function decodedBodies(text: string, contentType: string): unknown[] {
   }
 }
 
+function errorText(value: z.infer<typeof callResultSchema>): string | null {
+  for (const part of value.content ?? []) {
+    if (part.type === 'text' && part.text?.trim()) return part.text.replace(/\s+/g, ' ').trim();
+  }
+  return null;
+}
+
 function extractedToolPayload(value: unknown): unknown {
   const result = callResultSchema.safeParse(value);
   if (!result.success) throw new MrpProtocolError('MRP tools/call returned a malformed result');
-  if (result.data.isError) throw new MrpToolCallError('MRP economics tool reported an error');
+  if (result.data.isError) {
+    throw new MrpToolCallError(errorText(result.data) ?? 'MRP tool reported an error');
+  }
   if (result.data.structuredContent !== undefined) return result.data.structuredContent;
 
   const payloads: unknown[] = [];
@@ -113,10 +125,10 @@ function extractedToolPayload(value: unknown): unknown {
     try {
       payloads.push(JSON.parse(part.text));
     } catch {
-      throw new MrpProtocolError('MRP tools/call text content is not JSON');
+      payloads.push(part.text);
     }
   }
-  if (payloads.length === 0) throw new MrpProtocolError('MRP tools/call returned no JSON content');
+  if (payloads.length === 0) throw new MrpProtocolError('MRP tools/call returned no text or structured content');
   return payloads.length === 1 ? payloads[0] : payloads;
 }
 
@@ -146,11 +158,16 @@ export class MrpClient {
     if (this.sessionId !== null) headers['mcp-session-id'] = this.sessionId;
     if (this.negotiatedProtocol !== null) headers['mcp-protocol-version'] = this.negotiatedProtocol;
 
-    const response = await this.fetch(this.endpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(request),
-    });
+    let response: Response;
+    try {
+      response = await this.fetch(this.endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+      });
+    } catch (cause) {
+      throw new MrpTransportError('MRP MCP request could not reach the configured server', { cause });
+    }
     if (response.status === 401 || response.status === 403) {
       throw new MrpAuthError('MRP rejected the personal access token', response.status);
     }
@@ -165,9 +182,9 @@ export class MrpClient {
       const envelope = rpcEnvelopeSchema.safeParse(body);
       if (!envelope.success || envelope.data.id !== request.id) continue;
       if (envelope.data.error) {
-        throw new MrpProtocolError(
-          `MRP ${method} failed with JSON-RPC ${envelope.data.error.code}: ${envelope.data.error.message}`,
-        );
+        const message = `MRP ${method} failed with JSON-RPC ${envelope.data.error.code}: ${envelope.data.error.message}`;
+        if (method === 'tools/call') throw new MrpToolCallError(message);
+        throw new MrpProtocolError(message);
       }
       if (!Object.prototype.hasOwnProperty.call(envelope.data, 'result')) {
         throw new MrpProtocolError(`MRP ${method} response has no result`);
@@ -209,10 +226,35 @@ export class MrpClient {
     return extractedToolPayload(await this.request('tools/call', { name, arguments: args }));
   }
 
-  async fetchProductEconomics(): Promise<MrpEconomicsResult> {
+  private async ensureInitialized(): Promise<void> {
     if (this.negotiatedProtocol === null) await this.initialize();
-    const tool = selectEconomicsTool(await this.listTools());
-    const payload = await this.callTool(tool.name);
-    return { toolName: tool.name, products: parseProductEconomics(payload) };
+  }
+
+  async fetchSellers(): Promise<MrpSellersResult> {
+    await this.ensureInitialized();
+    const toolName = 'get_sellers';
+    const parsed = parseSellers(await this.callTool(toolName));
+    return { toolName, ...parsed };
+  }
+
+  async fetchProductMetrics(input: MrpProductMetricsInput): Promise<MrpProductMetricsResult> {
+    await this.ensureInitialized();
+    const toolName = 'get_product_metrics';
+    const asin = input.asin.trim().toUpperCase();
+    if (!/^[A-Z0-9]{10}$/.test(asin)) throw new MrpConfigError(`Invalid MRP ASIN ${JSON.stringify(input.asin)}`);
+    if (input.sellerIds.length === 0 || input.sellerIds.some((id) => !Number.isSafeInteger(id))) {
+      throw new MrpConfigError('MRP product metrics requires at least one integer seller id');
+    }
+    if (input.marketplaceIds.length === 0 || input.marketplaceIds.some((id) => !id.trim())) {
+      throw new MrpConfigError('MRP product metrics requires at least one marketplace id');
+    }
+    const payload = await this.callTool(toolName, {
+      asin,
+      seller_ids: input.sellerIds,
+      marketplace_ids: input.marketplaceIds,
+      date_from: input.dateFrom,
+      date_to: input.dateTo,
+    });
+    return { toolName, metrics: parseProductMetrics(payload, asin) };
   }
 }

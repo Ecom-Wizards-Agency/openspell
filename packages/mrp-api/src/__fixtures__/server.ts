@@ -17,7 +17,11 @@ export interface McpFixtureServer {
   requests: RecordedMcpRequest[];
 }
 
-export function createMcpFixtureServer(responses: readonly RecordedMcpResponse[]): McpFixtureServer {
+export type RecordedMcpResponder = RecordedMcpResponse | (
+  (request: RecordedMcpRequest) => RecordedMcpResponse
+);
+
+export function createMcpFixtureServer(responses: readonly RecordedMcpResponder[]): McpFixtureServer {
   const requests: RecordedMcpRequest[] = [];
   let cursor = 0;
   const fetch: FetchLike = async (_input, init) => {
@@ -26,8 +30,9 @@ export function createMcpFixtureServer(responses: readonly RecordedMcpResponse[]
     const json = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
     requests.push({ headers: recordedHeaders, json });
 
-    const response = responses[cursor++];
-    if (!response) throw new Error(`no recorded MCP response for request ${cursor}`);
+    const responder = responses[cursor++];
+    if (!responder) throw new Error(`no recorded MCP response for request ${cursor}`);
+    const response = typeof responder === 'function' ? responder(requests.at(-1) as RecordedMcpRequest) : responder;
     const responseHeaders = new Headers(response.headers);
     if (response.text !== undefined) {
       return new Response(response.text, { status: response.status, headers: responseHeaders });
@@ -45,6 +50,12 @@ export const rpcResult = (id: number, result: unknown): unknown => ({
   jsonrpc: '2.0',
   id,
   result,
+});
+
+export const rpcError = (id: number, error: { code: number; message: string }): unknown => ({
+  jsonrpc: '2.0',
+  id,
+  error,
 });
 
 export function sseResponse(id: number, result: unknown): RecordedMcpResponse {
