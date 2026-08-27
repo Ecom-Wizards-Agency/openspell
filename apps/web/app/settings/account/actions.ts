@@ -2,6 +2,7 @@
 
 import { gateAction } from '../../../src/auth/guard';
 import { supabaseConfigured, supabaseServerClient } from '../../../src/auth/supabase';
+import { passwordChangeError } from './password-policy';
 
 export type PasswordActionResult =
   | { status: 'idle' }
@@ -19,12 +20,8 @@ export async function changePassword(
     await gateAction();
     const password = String(formData.get(PASSWORD_FIELD) ?? '');
     const confirmation = String(formData.get('confirmation') ?? '');
-    if (password.length < 10) {
-      return { status: 'error', message: 'Use at least 10 characters.' };
-    }
-    if (password !== confirmation) {
-      return { status: 'error', message: 'The two passwords do not match.' };
-    }
+    const validationError = passwordChangeError(password, confirmation);
+    if (validationError) return { status: 'error', message: validationError };
     if (!supabaseConfigured()) {
       return { status: 'error', message: 'Password changes are not configured on this instance.' };
     }

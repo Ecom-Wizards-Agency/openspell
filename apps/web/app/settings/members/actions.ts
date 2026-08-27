@@ -212,9 +212,16 @@ function errorResult(message: string): { status: 'error'; message: string } {
 function memberError(error: unknown, fallback: string): { status: 'error'; message: string } {
   if (error instanceof Error) {
     if (error.name === 'Forbidden') return errorResult('Only admins and owners can manage members.');
-    if (error.message && !/database|sql|postgres|stack/i.test(error.message)) {
-      return errorResult(error.message);
-    }
+    const safeMessages = [
+      'Enter an email address.',
+      'Invitations may grant admin, analyst, or viewer access.',
+      'That address is already a member.',
+      'That address already has a pending invitation.',
+      'Choose a valid organisation role.',
+      'No invitation was selected.',
+      'No member was selected.',
+    ];
+    if (safeMessages.includes(error.message)) return errorResult(error.message);
   }
   return errorResult(fallback);
 }
