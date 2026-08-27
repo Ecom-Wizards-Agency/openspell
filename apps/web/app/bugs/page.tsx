@@ -2,6 +2,7 @@
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { listBugBoard } from '@wizard-ads/db';
+import { can } from '../../src/auth/roles';
 import { toUiItem } from '../../src/feedback/ui';
 import { requireOrgRole } from '../../src/server/org-role';
 import { isUnauthenticated, openWebDatabase, requestActor } from '../../src/server/request-context';
@@ -15,7 +16,7 @@ export default async function BugsPage() {
   const database = openWebDatabase();
   try {
     const actor = await requestActor(await headers());
-    await requireOrgRole(database, actor);
+    const role = await requireOrgRole(database, actor);
     const board = await listBugBoard(database, { orgId: actor.orgId, viewerId: actor.userId });
     const map = (items: typeof board.open) => items.map((item) => toUiItem(item, actor.userId));
     return (
@@ -25,6 +26,7 @@ export default async function BugsPage() {
         fixed={map(board.fixed)}
         declined={map(board.declined)}
         duplicates={map(board.duplicates)}
+        canTriage={can(role, 'triageFeedback')}
       />
     );
   } catch (error) {

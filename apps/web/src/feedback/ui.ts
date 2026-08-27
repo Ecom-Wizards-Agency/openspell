@@ -3,7 +3,7 @@
  *
  * A server component may not hand a client component a `Date` and a nested
  * `JsonValue` and expect either side to agree about them later, so the record
- * is flattened once, here, and both the tracker and the roadmap read the same
+ * is flattened once, here, and both the Bugs and Roadmap boards read the same
  * flattening. "Is this mine" is resolved on the server too: the client never
  * sees another member's user id just to compare it against its own.
  */

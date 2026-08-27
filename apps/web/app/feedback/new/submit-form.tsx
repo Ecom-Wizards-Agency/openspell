@@ -14,6 +14,7 @@
  */
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
+import type { FeedbackType } from '@wizard-ads/db';
 import { describePageContext } from '../../../src/feedback/page-context';
 import type { PageContext } from '../../../src/feedback/page-context';
 import { BUG_SEVERITIES } from '../../../src/feedback/bug-form';
@@ -27,8 +28,14 @@ const field = {
   width: '100%',
 } as const;
 
-export function SubmitFeedbackForm({ context }: { context: PageContext }) {
-  const [type, setType] = useState<'bug' | 'feature'>('bug');
+export function SubmitFeedbackForm({
+  context,
+  preselectedType,
+}: {
+  context: PageContext;
+  preselectedType?: FeedbackType;
+}) {
+  const [type, setType] = useState<FeedbackType>(preselectedType ?? 'bug');
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [severity, setSeverity] = useState<(typeof BUG_SEVERITIES)[number]>('medium');
@@ -68,7 +75,8 @@ export function SubmitFeedbackForm({ context }: { context: PageContext }) {
         if (!response.ok || !payload?.item) {
           throw new Error(payload?.error ?? `Submission failed (${response.status})`);
         }
-        window.location.href = '/feedback';
+        window.location.href =
+          type === 'bug' ? `/bugs#bug-${payload.item.id}` : `/roadmap#roadmap-${payload.item.id}`;
       } catch (error) {
         setPending(false);
         setMessage(error instanceof Error ? error.message : 'Submission failed');
@@ -78,10 +86,20 @@ export function SubmitFeedbackForm({ context }: { context: PageContext }) {
 
   return (
     <main style={page} data-interactive={ready ? 'true' : 'false'}>
-      <h1 style={heading}>Tell us what is broken, or what is missing</h1>
+      <h1 style={heading}>
+        {preselectedType === 'bug'
+          ? 'Report a bug'
+          : preselectedType === 'feature'
+            ? 'Request a feature'
+            : 'Tell us what is broken, or what is missing'}
+      </h1>
       <p style={muted}>
-        Everything filed here lands in the tracker the team works from. No screenshots in v1 —
-        the page you were on comes along automatically.
+        {preselectedType === 'bug'
+          ? 'Describe the operational failure, what you expected, and what happened.'
+          : preselectedType === 'feature'
+            ? 'Describe the capability you need and what it would help you accomplish.'
+            : 'Choose whether something is broken or a capability is missing.'}{' '}
+        No screenshots in v1 — the page you were on comes along automatically.
       </p>
 
       {message && (
@@ -91,21 +109,23 @@ export function SubmitFeedbackForm({ context }: { context: PageContext }) {
       )}
 
       <form onSubmit={submit} style={{ display: 'grid', gap: '0.875rem', maxWidth: '38rem' }}>
-        <fieldset style={{ border: 'none', display: 'flex', gap: '1rem', padding: 0 }}>
-          <legend style={{ ...muted, padding: 0 }}>What is this?</legend>
-          {(['bug', 'feature'] as const).map((option) => (
-            <label key={option} style={{ fontSize: '0.875rem' }}>
-              <input
-                type="radio"
-                name="type"
-                value={option}
-                checked={type === option}
-                onChange={() => setType(option)}
-              />{' '}
-              {option === 'bug' ? 'Bug report' : 'Feature request'}
-            </label>
-          ))}
-        </fieldset>
+        {preselectedType === undefined ? (
+          <fieldset style={{ border: 'none', display: 'flex', gap: '1rem', padding: 0 }}>
+            <legend style={{ ...muted, padding: 0 }}>What is this?</legend>
+            {(['bug', 'feature'] as const).map((option) => (
+              <label key={option} style={{ fontSize: '0.875rem' }}>
+                <input
+                  type="radio"
+                  name="type"
+                  value={option}
+                  checked={type === option}
+                  onChange={() => setType(option)}
+                />{' '}
+                {option === 'bug' ? 'Bug report' : 'Feature request'}
+              </label>
+            ))}
+          </fieldset>
+        ) : null}
 
         <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.875rem' }}>
           Title
@@ -166,9 +186,12 @@ export function SubmitFeedbackForm({ context }: { context: PageContext }) {
 
         <div>
           <button type="submit" disabled={pending} data-testid="feedback-submit" style={button}>
-            {pending ? 'Sending…' : 'Send feedback'}
+            {pending ? 'Sending…' : type === 'bug' ? 'Report bug' : 'Request feature'}
           </button>{' '}
-          <a href="/feedback" style={{ ...muted, marginLeft: '0.5rem' }}>
+          <a
+            href={type === 'bug' ? '/bugs' : '/roadmap'}
+            style={{ ...muted, marginLeft: '0.5rem' }}
+          >
             Cancel
           </a>
         </div>

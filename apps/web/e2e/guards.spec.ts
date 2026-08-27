@@ -9,7 +9,7 @@
  *     itself — the bar, and what it offers in each session state.
  *  2. **Half the product was unguarded and the other half printed its refusal.**
  *     `/dashboard`, `/grid` and `/crosscheck` rendered a tenant's numbers to
- *     anybody; `/recommendations`, `/ngrams`, `/tags`, `/feedback` and
+ *     anybody; `/recommendations`, `/ngrams`, `/tags`, `/bugs` and
  *     `/roadmap` answered "Authentication required" with an HTTP 200. Both are
  *     now the same thing: a redirect to `/login`.
  *
@@ -34,7 +34,6 @@ const GUARDED = [
   '/recommendations',
   '/ngrams',
   '/tags',
-  '/feedback',
   '/feedback/new',
   '/bugs',
   '/roadmap',

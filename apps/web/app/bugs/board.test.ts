@@ -28,7 +28,10 @@ const item = (
 
 describe('/bugs board render', () => {
   it('renders every status column and collapses a duplicate beneath its target', () => {
-    const target = item('10000000-0000-4000-8000-000000000001', 'Export loses sort', 'new');
+    const target = {
+      ...item('10000000-0000-4000-8000-000000000001', 'Export loses sort', 'new'),
+      severity: 'high' as const,
+    };
     const duplicate = item(
       '10000000-0000-4000-8000-000000000002',
       'Sort vanishes on export',
@@ -42,6 +45,7 @@ describe('/bugs board render', () => {
         fixed: [item('10000000-0000-4000-8000-000000000004', 'Old fixed bug', 'shipped')],
         declined: [item('10000000-0000-4000-8000-000000000005', 'Expected behaviour', 'declined')],
         duplicates: [duplicate],
+        canTriage: true,
       }),
     );
 
@@ -52,6 +56,8 @@ describe('/bugs board render', () => {
     expect(markup).toContain('Duplicates (1)');
     expect(markup).toContain(duplicate.title);
     expect(markup).toContain(`id="bug-${target.id}"`);
-    expect(markup).toContain(`href="/feedback#feedback-${target.id}"`);
+    expect(markup).toContain('data-testid="status-select"');
+    expect(markup).toContain('data-testid="mark-duplicate"');
+    expect(markup).toContain('high');
   });
 });

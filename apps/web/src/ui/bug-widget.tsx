@@ -156,7 +156,9 @@ export function BugWidget({ appVersion = null }: { appVersion?: string | null })
     appVersion,
     actorType: 'user',
   });
-  const fullFormHref = route === null ? '/feedback/new' : `/feedback/new?from=${encodeURIComponent(route)}`;
+  const bugFormHref = '/feedback/new?type=bug';
+  const fullFormHref =
+    route === null ? bugFormHref : bugFormHref + '&from=' + encodeURIComponent(route);
 
   // The widget belongs to the signed-in frame. The layout cannot gate it on a
   // Supabase session without breaking the header-bridge test harness (which

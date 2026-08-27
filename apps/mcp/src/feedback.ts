@@ -2,17 +2,17 @@
  * `submit_feedback` (WP-15).
  *
  * AdLabs exposes `submit_bug_report` over MCP, and it is the one write their
- * server allows; this is the same idea pointed at our own tracker, so a model
+ * server allows; this is the same idea pointed at our own typed boards, so a model
  * that finds a bug while reading an account can file it where the team already
  * looks instead of describing it into a chat log nobody re-reads.
  *
  * Two properties make it safe to expose while every other write stays gated:
  *
  *  - It writes one row to one table, and that row is not advertising data. The
- *    worst outcome of a confused caller is a noisy tracker, not a changed bid.
+ *    worst outcome of a confused caller is a noisy board, not a changed bid.
  *  - It is audit-logged like every other call, by the same wrapper. The item
  *    itself records `actorType: 'mcp'` and the key id in its page context, so
- *    the tracker shows where it came from without an admin cross-referencing
+ *    the board shows where it came from without an admin cross-referencing
  *    the log.
  *
  * The tool lives in its own file and is registered from `server.ts` in one
@@ -31,9 +31,9 @@ export const SUBMIT_FEEDBACK_TITLE = 'File a bug report or feature request';
 export const SUBMIT_FEEDBACK_DESCRIPTION =
   'File a bug report or feature request against wizard-ads itself. Use it when a tool answers ' +
   'something that cannot be right, when a number disagrees with the account, or when a ' +
-  'capability you needed is missing. It writes to the same tracker and roadmap the team works ' +
-  'from; it changes nothing about any advertising account. Say what you did, what you expected ' +
-  'and what happened, in the body.';
+  'capability you needed is missing. Bugs are routed to the Bugs board; feature requests are ' +
+  'routed to Roadmap. It changes nothing about any advertising account. Say what you did, what ' +
+  'you expected and what happened, in the body.';
 
 export const submitFeedbackInputSchema = {
   type: z.enum(['bug', 'feature']).describe('bug for something broken, feature for something missing'),
@@ -90,8 +90,9 @@ export async function submitFeedback(
         status: item.status,
         severity: item.severity,
         note:
-          'Filed. It is visible now in the web app under /feedback, and on /roadmap once an ' +
-          'admin plans it. Nothing about any advertising account was changed.',
+          args.type === 'bug'
+            ? 'Filed. It is visible now on /bugs. Nothing about any advertising account was changed.'
+            : 'Filed. It is visible now on /roadmap. Nothing about any advertising account was changed.',
       },
       summary: { id: item.id, type: item.type, severity: item.severity ?? null },
     };
