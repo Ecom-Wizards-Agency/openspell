@@ -83,7 +83,12 @@ export async function GET(request: Request): Promise<Response> {
       sql: handle.sql,
       store,
       worker,
-      recommendationSchedules: () => recommendationRuns.enqueueDueRecommendationRuns(),
+      // Operator rule (2026-08-27): no automation without approval. Weekly
+      // recommendation runs stay off until explicitly opted in; Run now is
+      // unaffected.
+      ...(process.env['WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS'] === '1'
+        ? { recommendationSchedules: () => recommendationRuns.enqueueDueRecommendationRuns() }
+        : {}),
       budgetMs: DRAIN_BUDGET_MS,
       // One client serves both roles: DbAdsApiClient is an AdsApiClient for the
       // queue and a SuggestedBidClient for the corridor.
