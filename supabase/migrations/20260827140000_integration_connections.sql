@@ -26,7 +26,7 @@ create table public.integration_connections (
 comment on table public.integration_connections is
   'Per-organisation external API connections. Credentials live in Vault; config contains non-secret provider settings.';
 comment on column public.integration_connections.vault_secret_id is
-  'vault.secrets.id. Written and read only by the integration secret custody RPCs.';
+  'vault.secrets.id. The credential value itself moves only through the integration custody RPCs.';
 
 create trigger integration_connections_touch before update on public.integration_connections
   for each row execute function app.touch_updated_at();
@@ -61,7 +61,8 @@ begin
 
   select c.org_id, c.vault_secret_id into v_org_id, v_secret_id
     from public.integration_connections c
-   where c.id = p_connection_id;
+   where c.id = p_connection_id
+   for update;
 
   if v_org_id is null then
     raise exception 'no such integration connection %', p_connection_id using errcode = '22023';
@@ -137,7 +138,8 @@ begin
 
   select c.vault_secret_id into v_secret_id
     from public.integration_connections c
-   where c.id = p_connection_id;
+   where c.id = p_connection_id
+   for update;
 
   update public.integration_connections
      set vault_secret_id = null, status = 'revoked'

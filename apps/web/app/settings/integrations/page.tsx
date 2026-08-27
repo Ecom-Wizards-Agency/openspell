@@ -20,6 +20,7 @@ import {
 } from '../../../src/ui/primitives';
 import { heading, muted, page } from '../../../src/ui/tokens';
 import { connectIntegration, revokeIntegration } from './actions';
+import { IntegrationSubmitButton } from './submit-button';
 
 export const dynamic = 'force-dynamic';
 
@@ -193,13 +194,7 @@ function ProviderCard({
               data-testid={`integration-secret-${provider.id}`}
             />
           </Field>
-          <Button
-            type="submit"
-            variant="primary"
-            data-testid={`submit-integration-${provider.id}`}
-          >
-            Connect {provider.name}
-          </Button>
+          <IntegrationSubmitButton providerId={provider.id} providerName={provider.name} />
         </form>
       ) : null}
     </Card>

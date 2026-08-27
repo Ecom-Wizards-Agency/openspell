@@ -43,6 +43,7 @@ export interface SetIntegrationConnectionStatusInput {
   orgId: string;
   connectionId: string;
   status: IntegrationConnectionStatus;
+  /** Safe operator-facing text only. Never pass a raw provider, HTTP, or Vault error. */
   lastError?: string | null;
 }
 
@@ -108,7 +109,10 @@ export async function listIntegrationConnections(
   return rows.map(toRecord);
 }
 
-/** Create pending metadata. Store the credential through `storeIntegrationSecret` next. */
+/**
+ * Create pending metadata, or reuse the unique provider/label row for a retry
+ * or rotation. Store the credential through `storeIntegrationSecret` next.
+ */
 export async function createIntegrationConnection(
   handle: IntegrationQueryHandle,
   input: CreateIntegrationConnectionInput,
@@ -120,6 +124,10 @@ export async function createIntegrationConnection(
       ${input.orgId}, ${input.provider}::public.integration_provider, ${normalizeLabel(input.label)},
       ${input.connectedBy ?? null}, ${serializeConfig(input.config)}::text::jsonb
     )
+    on conflict (org_id, provider, label) do update
+      set connected_by = excluded.connected_by,
+          status = 'pending',
+          last_error = null
     returning id, org_id, provider::text as provider, label, config,
               status::text as status, (vault_secret_id is not null) as has_secret,
               connected_by, connected_at, last_synced_at, last_error, created_at, updated_at
@@ -148,15 +156,30 @@ export async function setIntegrationConnectionStatus(
   return toRecord(row);
 }
 
+/** A generic boundary error that cannot carry postgres.js's bound credential parameter. */
+export class IntegrationSecretStoreError extends Error {
+  constructor() {
+    super('The integration credential could not be stored');
+    this.name = 'IntegrationSecretStoreError';
+  }
+}
+
 /** Store or rotate a credential. Returns the safe-to-log Vault row id, never the value. */
 export async function storeIntegrationSecret(
   handle: IntegrationQueryHandle,
   connectionId: string,
   value: string,
 ): Promise<string> {
-  const rows = await handle.sql<{ store_integration_secret: string }[]>`
-    select public.store_integration_secret(${connectionId}, ${value})
-  `;
+  let rows: { store_integration_secret: string }[];
+  try {
+    rows = await handle.sql<{ store_integration_secret: string }[]>`
+      select public.store_integration_secret(${connectionId}, ${value})
+    `;
+  } catch {
+    // postgres.js attaches bind parameters to query errors. Never let that
+    // object cross this boundary, even as a non-enumerable property or cause.
+    throw new IntegrationSecretStoreError();
+  }
   const secretId = rows[0]?.store_integration_secret;
   if (!secretId) throw new Error('store_integration_secret returned no secret id');
   return secretId;

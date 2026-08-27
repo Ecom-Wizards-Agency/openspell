@@ -8,6 +8,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  IntegrationSecretStoreError,
   createIntegrationConnection,
   getIntegrationSecret,
   listIntegrationConnections,
@@ -19,10 +20,31 @@ import { expectRejection } from './testing/errors.js';
 import { createTestDatabase, databaseAvailable } from './testing/harness.js';
 import { asActor, asUser } from './testing/rls.js';
 import type { TestDatabase } from './testing/harness.js';
+import type { IntegrationQueryHandle } from './queries/integrations.js';
 
 const available = await databaseAvailable();
 const USER = '99999999-9999-4999-8999-999999999999';
 const FAKE_VALUE = ['synthetic', 'external', 'key', '0123456789'].join('-');
+
+describe('integration secret error boundary', () => {
+  it('drops postgres.js bind parameters before an error reaches its caller', async () => {
+    const driverError = new Error('synthetic database failure');
+    Object.defineProperty(driverError, 'parameters', { value: [FAKE_VALUE] });
+    const handle = {
+      sql: async () => Promise.reject(driverError),
+    } as unknown as IntegrationQueryHandle;
+
+    try {
+      await storeIntegrationSecret(handle, 'connection-id', FAKE_VALUE);
+      expect.unreachable('a failed store must throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(IntegrationSecretStoreError);
+      expect(error).not.toHaveProperty('parameters');
+      expect(error).not.toHaveProperty('cause');
+      expect((error as Error).message).not.toContain(FAKE_VALUE);
+    }
+  });
+});
 
 describe.skipIf(!available)('integration connections and secret RPCs', () => {
   let database: TestDatabase;
@@ -86,10 +108,29 @@ describe.skipIf(!available)('integration connections and secret RPCs', () => {
         status: 'active',
       }),
     ).rejects.toThrow(/not found/i);
+
+    const retry = await createIntegrationConnection(database, {
+      orgId,
+      provider: 'datadive',
+      label: 'Primary',
+      connectedBy: USER,
+      config: { cadence: 'weekly' },
+    });
+    expect(retry.id).toBe(connectionId);
+    expect(retry.status).toBe('pending');
+    expect(retry.lastError).toBeNull();
+    // Reconnecting changes custody state, not provider settings a later work
+    // package may already have stored.
+    expect(retry.config).toEqual({ cadence: 'daily' });
   });
 
   it('refuses an empty value without changing the connection', async () => {
-    await expect(storeIntegrationSecret(database, connectionId, '')).rejects.toThrow(/empty token/i);
+    await expect(
+      database.sql`select public.store_integration_secret(${connectionId}, ${''})`,
+    ).rejects.toThrow(/empty token/i);
+    await expect(storeIntegrationSecret(database, connectionId, '')).rejects.toBeInstanceOf(
+      IntegrationSecretStoreError,
+    );
     expect(await getIntegrationSecret(database, connectionId)).toBeNull();
   });
 
@@ -99,7 +140,7 @@ describe.skipIf(!available)('integration connections and secret RPCs', () => {
     expect(await getIntegrationSecret(database, connectionId)).toBe(FAKE_VALUE);
 
     const [row] = await database.sql<
-      { vault_secret_id: string; status: string; connected_at: Date; leaked: boolean }[]
+      { vault_secret_id: string; status: string; connected_at: string; leaked: boolean }[]
     >`
       select c.vault_secret_id,
              c.status::text as status,
@@ -114,7 +155,7 @@ describe.skipIf(!available)('integration connections and secret RPCs', () => {
     `;
     expect(row?.vault_secret_id).toBe(secretId);
     expect(row?.status).toBe('active');
-    expect(row?.connected_at).toBeInstanceOf(Date);
+    expect(row?.connected_at).toBeTruthy();
     expect(row?.leaked).toBe(false);
   });
 
@@ -126,6 +167,40 @@ describe.skipIf(!available)('integration connections and secret RPCs', () => {
 
     expect(Number(after[0]?.n)).toBe(Number(before[0]?.n));
     expect(await getIntegrationSecret(database, connectionId)).toBe(rotated);
+  });
+
+  it('serializes simultaneous stores onto one Vault row', async () => {
+    const before = await database.sql<{ n: string }[]>`select count(*) as n from vault.secrets`;
+    const values = [`${FAKE_VALUE}-parallel-a`, `${FAKE_VALUE}-parallel-b`] as const;
+    const ids = await Promise.all(
+      values.map((value) => storeIntegrationSecret(database, connectionId, value)),
+    );
+    const after = await database.sql<{ n: string }[]>`select count(*) as n from vault.secrets`;
+
+    expect(new Set(ids).size).toBe(1);
+    expect(Number(after[0]?.n)).toBe(Number(before[0]?.n));
+    expect(values).toContain(await getIntegrationSecret(database, connectionId));
+  });
+
+  it('serializes a store racing a revoke without orphaning a Vault row', async () => {
+    const name = `wizard-ads:integration-connection:${connectionId}`;
+    await Promise.all([
+      storeIntegrationSecret(database, connectionId, `${FAKE_VALUE}-store-race`),
+      revokeIntegrationSecret(database, connectionId),
+    ]);
+
+    const [connection] = await database.sql<{ vault_secret_id: string | null }[]>`
+      select vault_secret_id from public.integration_connections where id = ${connectionId}
+    `;
+    const [vault] = await database.sql<{ ids: string[] }[]>`
+      select coalesce(array_agg(id), '{}') as ids from vault.secrets where name = ${name}
+    `;
+    const ids = vault?.ids ?? [];
+    expect(ids).toHaveLength(connection?.vault_secret_id === null ? 0 : 1);
+    if (connection?.vault_secret_id) expect(ids).toEqual([connection.vault_secret_id]);
+
+    // The remaining permission/revoke checks start from a live credential.
+    await storeIntegrationSecret(database, connectionId, `${FAKE_VALUE}-after-race`);
   });
 
   it('refuses authenticated and anonymous callers at the grant', async () => {

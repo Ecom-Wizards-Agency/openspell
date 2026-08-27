@@ -51,7 +51,6 @@ export async function connectIntegration(formData: FormData): Promise<void> {
       status: 'error',
       lastError: 'The credential could not be stored in Vault.',
     });
-    throw new Error('The integration could not be connected.');
   }
 
   revalidatePath(SETTINGS_PATH);

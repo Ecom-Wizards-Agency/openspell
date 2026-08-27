@@ -71,6 +71,10 @@ export default tseslint.config(
     rules: {
       'no-restricted-imports': forbid([
         ['@wizard-ads/ads-api', 'every Amazon API call lives in apps/worker, never in the web app.'],
+        [
+          '@wizard-ads/db/worker',
+          'decrypted integration credentials are worker-only; the web app may only store or revoke them.',
+        ],
       ]),
     },
   },

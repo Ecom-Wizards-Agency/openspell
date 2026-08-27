@@ -121,6 +121,18 @@ test('an admin stores an integration key once and can revoke it', async ({ page 
   await expect(
     page.getByTestId('integration-row-datadive').filter({ hasText: 'E2E DataDive' }),
   ).toContainText('revoked');
+
+  await page.getByTestId('integration-label-datadive').fill('E2E DataDive');
+  await page
+    .getByTestId('integration-secret-datadive')
+    .fill(`${INTEGRATION_VALUE}-rotated`);
+  await page.getByTestId('submit-integration-datadive').click();
+  await expect(
+    page.getByTestId('integration-row-datadive').filter({ hasText: 'E2E DataDive' }),
+  ).toHaveCount(1);
+  await expect(
+    page.getByTestId('integration-row-datadive').filter({ hasText: 'E2E DataDive' }),
+  ).toContainText('active');
 });
 
 test('the analyst edit persisted for every role that can read it', async ({ page }) => {
