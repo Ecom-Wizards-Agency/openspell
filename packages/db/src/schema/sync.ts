@@ -48,8 +48,10 @@ export const syncSchedules = pgTable(
     enabled: boolean('enabled').notNull().default(true),
     priority: integer('priority').notNull().default(100),
     payload: jsonb('payload').notNull().default({}),
-    /** Report windows: the restatement re-pull is a longer lookback, nothing more. */
+    /** Inclusive number of days in a scheduled report request. */
     lookbackDays: integer('lookback_days'),
+    /** Whole days between yesterday and the end of this report window. */
+    windowOffsetDays: integer('window_offset_days').notNull().default(0),
     lastEnqueuedAt: ts('last_enqueued_at'),
     createdAt: ts('created_at').notNull().defaultNow(),
     updatedAt: ts('updated_at').notNull().defaultNow(),

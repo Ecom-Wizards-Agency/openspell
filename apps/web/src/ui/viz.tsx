@@ -83,6 +83,8 @@ export interface TrendChartProps {
    * empty means an unchanged chart.
    */
   windows?: readonly ChartWindow[];
+  /** Trailing attribution-restatement window, rendered with its own neutral band. */
+  settlingWindow?: ChartWindow;
 }
 
 const GRANULARITIES: readonly Granularity[] = ['D', 'W', 'M'];
@@ -153,6 +155,7 @@ export function TrendChart({
   caption,
   aggregatable = false,
   windows = [],
+  settlingWindow,
 }: TrendChartProps): ReactNode {
   const [hover, setHover] = useState<number | null>(null);
   const [gran, setGran] = useState<Granularity>('D');
@@ -200,6 +203,22 @@ export function TrendChart({
   const x = (index: number): number =>
     dates.length === 1 ? PAD.left + PLOT_W / 2 : PAD.left + (index / (dates.length - 1)) * PLOT_W;
   const y = (value: number): number => PAD.top + PLOT_H - ((value - bottom) / span) * PLOT_H;
+  const settlingBand =
+    settlingWindow === undefined ? null : windowBand(settlingWindow, dates, x, PLOT_W);
+  const endpoints = gseries
+    .map((entry, seriesIndex) => ({ seriesIndex, last: lastDefined(entry.points) }))
+    .filter(
+      (entry): entry is { seriesIndex: number; last: { index: number; value: number } } =>
+        entry.last !== null,
+    );
+  const stackedLabelYs = stackEndLabelYs(
+    endpoints.map((entry) => y(entry.last.value) + 3.5),
+    PAD.top + 8,
+    PAD.top + PLOT_H,
+  );
+  const endLabelY = new Map(
+    endpoints.map((entry, index) => [entry.seriesIndex, stackedLabelYs[index] ?? y(entry.last.value) + 3.5]),
+  );
 
   const hovered = hover === null ? null : Math.min(Math.max(hover, 0), dates.length - 1);
 
@@ -221,7 +240,7 @@ export function TrendChart({
             setHover(Math.round(ratio * (dates.length - 1)));
           }}
         >
-          {/* Experiment windows, painted first so they sit behind everything. */}
+          {/* Background windows sit behind axes, series, and hover marks. */}
           {windows.map((window, index) => {
             const band = windowBand(window, dates, x, PLOT_W);
             if (band === null) return null;
@@ -242,6 +261,31 @@ export function TrendChart({
               </rect>
             );
           })}
+
+          {settlingBand === null ? null : (
+            <g data-testid="settling-window">
+              <rect
+                x={settlingBand.x}
+                y={PAD.top}
+                width={settlingBand.width}
+                height={PLOT_H}
+                fill="var(--wa-warn-bg)"
+                stroke="var(--wa-warn-border)"
+                strokeWidth={1}
+                opacity={0.45}
+              >
+                <title>{settlingWindow?.label ?? 'Settling'}</title>
+              </rect>
+              <text
+                x={settlingBand.x + 5}
+                y={PAD.top + 11}
+                fill="var(--wa-warn-text)"
+                fontSize={9}
+              >
+                settling
+              </text>
+            </g>
+          )}
 
           {ticks.map((tick) => (
             <g key={tick}>
@@ -303,6 +347,7 @@ export function TrendChart({
             const color = SERIES_VARS[index] ?? SERIES_VARS[0];
             const path = linePath(entry.points, x, y);
             const last = lastDefined(entry.points);
+            const labelY = endLabelY.get(index);
             return (
               <g key={entry.label}>
                 {path === '' ? null : (
@@ -325,9 +370,20 @@ export function TrendChart({
                       fill="var(--wa-viz-surface)"
                     />
                     <circle cx={x(last.index)} cy={y(last.value)} r={4} fill={color} />
+                    {labelY === undefined || Math.abs(labelY - (y(last.value) + 3.5)) < 1 ? null : (
+                      <line
+                        x1={x(last.index) + 5}
+                        x2={x(last.index) + 9}
+                        y1={y(last.value)}
+                        y2={labelY - 3.5}
+                        stroke="var(--wa-viz-axis)"
+                        strokeWidth={1}
+                      />
+                    )}
                     <text
+                      data-testid={`end-label-${index}`}
                       x={x(last.index) + 10}
-                      y={y(last.value) + 3.5}
+                      y={labelY}
                       fill="var(--wa-viz-ink)"
                       fontSize={10}
                       style={{ fontVariantNumeric: 'tabular-nums' }}
@@ -395,6 +451,11 @@ export function TrendChart({
 
       <figcaption className="wa-hint" style={{ marginTop: '0.25rem' }}>
         {caption ?? ''}
+        {settlingBand === null ? null : (
+          <span data-testid="settling-note">
+            {' '}· Shaded dates are still settling inside Amazon&apos;s 14-day attribution window.
+          </span>
+        )}
       </figcaption>
 
       <details style={{ marginTop: '0.5rem' }}>
@@ -586,6 +647,39 @@ function lastDefined(points: readonly TrendPoint[]): { index: number; value: num
     if (value !== null && value !== undefined) return { index, value };
   }
   return null;
+}
+
+/**
+ * Stack endpoint-label baselines with a minimum gap while keeping them in the
+ * plot. Input and output order match, so callers can map positions by series.
+ */
+export function stackEndLabelYs(
+  positions: readonly number[],
+  minY: number,
+  maxY: number,
+  gap = 13,
+): number[] {
+  if (positions.length === 0) return [];
+  const sorted = positions
+    .map((y, index) => ({ index, y: Math.min(maxY, Math.max(minY, y)) }))
+    .sort((a, b) => a.y - b.y);
+  const availableGap = sorted.length <= 1 ? gap : Math.min(gap, (maxY - minY) / (sorted.length - 1));
+  for (let index = 1; index < sorted.length; index += 1) {
+    const previous = sorted[index - 1] as { index: number; y: number };
+    const current = sorted[index] as { index: number; y: number };
+    current.y = Math.max(current.y, previous.y + availableGap);
+  }
+  const overflow = (sorted[sorted.length - 1]?.y ?? maxY) - maxY;
+  if (overflow > 0) {
+    for (const entry of sorted) entry.y -= overflow;
+  }
+  const underflow = minY - (sorted[0]?.y ?? minY);
+  if (underflow > 0) {
+    for (const entry of sorted) entry.y += underflow;
+  }
+  const result = Array<number>(positions.length);
+  for (const entry of sorted) result[entry.index] = entry.y;
+  return result;
 }
 
 // ---------------------------------------------------------------------------

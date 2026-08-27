@@ -92,6 +92,11 @@ describe('kpiTiles', () => {
     expect(tiles.find((tile) => tile.metric === 'acos')?.value).toBe(0.4);
     expect(tiles.find((tile) => tile.metric === 'cpc')?.value).toBe(0.8);
   });
+
+  it('keeps an empty comparison absent instead of fabricating zero totals', () => {
+    const tiles = kpiTiles(totals({ spend: 25, sales: 100 }), totalsOf([]));
+    expect(tiles.every((tile) => tile.prev === null && tile.deltaPct === null)).toBe(true);
+  });
 });
 
 describe('optimizationGroups', () => {

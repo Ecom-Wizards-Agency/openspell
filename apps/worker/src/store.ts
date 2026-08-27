@@ -422,11 +422,13 @@ export class PostgresWorkerStore implements WorkerStore {
     for (const spec of specs) {
       const rows = await this.handle.sql<{ id: string }[]>`
         insert into public.sync_schedules
-          (org_id, profile_id, job_type, report_type, variant, cadence, lookback_days, payload)
+          (org_id, profile_id, job_type, report_type, variant, cadence, lookback_days,
+           window_offset_days, payload)
         values
           (${orgId}, ${profileId}, ${spec.jobType}::public.sync_job_type,
            ${spec.reportType}::public.report_type, ${spec.variant},
-           ${spec.cadence}::interval, ${spec.lookbackDays}, ${JSON.stringify(spec.payload)}::jsonb)
+           ${spec.cadence}::interval, ${spec.lookbackDays}, ${spec.windowOffsetDays},
+           ${JSON.stringify(spec.payload)}::jsonb)
         on conflict (profile_id, job_type, report_type, variant) do nothing
         returning id
       `;

@@ -17,7 +17,6 @@ import {
   Card,
   Field,
   Input,
-  Select,
   TableFrame,
 } from '../../../src/ui/primitives';
 import { heading, muted, page } from '../../../src/ui/tokens';
@@ -30,6 +29,7 @@ import {
   revokeIntegration,
 } from './actions';
 import { IntegrationSubmitButton } from './submit-button';
+import { CompetitorProfileSelect } from './competitor-profile-select';
 
 export const dynamic = 'force-dynamic';
 
@@ -268,14 +268,7 @@ function CompetitorLinksSection({
 
       {mayEdit && profiles.length > 0 ? (
         <form action={addCompetitorLink} className="wa-row" style={{ alignItems: 'end', gap: '0.75rem', marginTop: '1rem' }}>
-          <Field label="Profile / marketplace" htmlFor="competitor-profile">
-            <Select id="competitor-profile" name="profileId" required defaultValue="">
-              <option value="" disabled>Select a profile</option>
-              {profiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>{profile.label} · {profile.countryCode}</option>
-              ))}
-            </Select>
-          </Field>
+          <CompetitorProfileSelect profiles={profiles} />
           <Field label="Our ASIN" htmlFor="our-asin">
             <Input id="our-asin" name="ourAsin" required minLength={10} maxLength={10} autoCapitalize="characters" />
           </Field>

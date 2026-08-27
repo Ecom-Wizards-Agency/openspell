@@ -69,7 +69,8 @@ export interface KpiTileModel {
 /** Sum a set of daily rows into base totals. Absent is absent, not zero. */
 export function totalsOf(
   rows: readonly { impressions: number; clicks: number; spend: number; sales: number; orders: number }[],
-): BaseTotals {
+): BaseTotals | null {
+  if (rows.length === 0) return null;
   const totals: BaseTotals = { impressions: 0, clicks: 0, spend: 0, sales: 0, orders: 0, units: 0 };
   for (const row of rows) {
     totals.impressions += row.impressions;
@@ -82,11 +83,11 @@ export function totalsOf(
 }
 
 /** The KPI tile row: value this period, value last period, and the delta. */
-export function kpiTiles(period: BaseTotals, comparison: BaseTotals): KpiTileModel[] {
+export function kpiTiles(period: BaseTotals | null, comparison: BaseTotals | null): KpiTileModel[] {
   return KPI_METRICS.map((metric) => {
     const meta = META[metric] ?? { label: metric, scale: 'money' as const, better: null };
-    const value = deriveMetric(metric, period);
-    const prev = deriveMetric(metric, comparison);
+    const value = period === null ? null : deriveMetric(metric, period);
+    const prev = comparison === null ? null : deriveMetric(metric, comparison);
     const deltaPct = value !== null && prev !== null && prev !== 0 ? (value - prev) / prev : null;
     return { metric, label: meta.label, scale: meta.scale, better: meta.better, value, prev, deltaPct };
   });

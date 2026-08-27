@@ -39,7 +39,7 @@ import {
   totalsOf,
 } from '../../src/optimizer/view';
 import { loadProfileDailyRows, loadReportLedger } from '../_lib/dashboard-data';
-import { periodFromParams, precedingPeriod, todayIso } from '../_lib/periods';
+import { periodFromParams, settledComparisonWindows, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
 import { OptimizerGroupTable, ReasonCoverageRow, SettingsChip } from './optimizer-view';
 import { runOptimizerNow } from './actions';
@@ -66,8 +66,9 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
 
   const params = await searchParams;
   const profileId = await requestedProfileId(params.profile);
-  const period = periodFromParams(params, todayIso());
-  const comparison = precedingPeriod(period);
+  const today = todayIso();
+  const period = periodFromParams(params, today);
+  const settled = settledComparisonWindows(period, today);
 
   const profiles = await listProfiles(handle, orgId);
   const profile = selectProfile(profiles, profileId);
@@ -100,11 +101,20 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
 
   const [periodRows, comparisonRows, ledger] = await Promise.all([
     loadProfileDailyRows(handle, orgId, profile.id, profile.label, period),
-    loadProfileDailyRows(handle, orgId, profile.id, profile.label, comparison),
+    settled.comparison === null
+      ? Promise.resolve([])
+      : loadProfileDailyRows(handle, orgId, profile.id, profile.label, settled.comparison),
     loadReportLedger(handle, orgId, profile.id),
   ]);
 
-  const tiles = kpiTiles(totalsOf(periodRows), totalsOf(comparisonRows));
+  const currentWindow = settled.current;
+  const settledRows =
+    currentWindow === null
+      ? []
+      : periodRows.filter(
+          (row) => row.date >= currentWindow.start && row.date <= currentWindow.end,
+        );
+  const tiles = kpiTiles(totalsOf(settledRows), totalsOf(comparisonRows));
   const groups = optimizationGroups(proposals);
   const coverage = reasonCoverage(proposals);
   const summary = settingsSummary(proposals);
@@ -113,12 +123,17 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
 
   const spend: TrendPoint[] = periodRows.map((row) => ({ date: row.date, value: row.spend }));
   const sales: TrendPoint[] = periodRows.map((row) => ({ date: row.date, value: row.sales }));
+  const settlingWindow = {
+    label: 'Settling · 14-day attribution window',
+    start: settled.settling.start,
+    end: settled.settling.end,
+  };
 
   return (
     <main style={page}>
       <PageHeader
         title="Campaign Optimizer"
-        subtitle={`${profile.label} · ${period.start} to ${period.end} · compared against ${comparison.start} to ${comparison.end} · all figures in ${profile.currencyCode}`}
+        subtitle={`${profile.label} · ${period.start} to ${period.end} · ${settled.current === null || settled.comparison === null ? 'no settled KPI comparison yet' : `settled KPI window ${settled.current.start} to ${settled.current.end} compared against ${settled.comparison.start} to ${settled.comparison.end}`} · all figures in ${profile.currencyCode}`}
         actions={
           <div className="wa-row" style={{ gap: '0.5rem' }}>
             {mayRunOptimizer ? (
@@ -181,7 +196,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
               {tiles.map((tile) => (
                 <KpiTile
                   key={tile.metric}
-                  label={tile.label}
+                  label={`${tile.label} (settled)`}
                   value={tile.value}
                   scale={tile.scale}
                   better={tile.better}
@@ -198,6 +213,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
                 scale="money"
                 aggregatable
                 currencyCode={profile.currencyCode}
+                settlingWindow={settlingWindow}
                 caption={`Additive metrics, so weekly and monthly roll up by sum. In ${profile.currencyCode}.`}
                 series={[
                   { label: 'Spend', points: spend },

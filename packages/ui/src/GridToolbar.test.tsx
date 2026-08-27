@@ -13,7 +13,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { GridToolbar } from './GridToolbar.js';
+import { describeFilter, GridToolbar } from './GridToolbar.js';
 import { columnsFor, defaultVisibleColumns } from './columns.js';
 import { syntheticSearchTermRows } from './fixtures.js';
 import { buildGridModel } from './pipeline.js';
@@ -49,11 +49,15 @@ describe('GridToolbar filter draft', () => {
 
     fireEvent.change(column, { target: { value: 'SEARCH_TERM' } });
     expect([...operator.options].map((option) => option.value)).toContain('LIKE');
+    expect([...operator.options].find((option) => option.value === 'LIKE')?.text).toBe('contains');
     expect([...operator.options].map((option) => option.value)).not.toContain('>');
+    expect(screen.getByPlaceholderText('Search term')).toBeTruthy();
 
     fireEvent.change(column, { target: { value: 'ACOS' } });
     expect([...operator.options].map((option) => option.value)).toContain('>');
+    expect([...operator.options].find((option) => option.value === '=')?.text).toBe('equals');
     expect([...operator.options].map((option) => option.value)).not.toContain('LIKE');
+    expect(screen.getByPlaceholderText('ACOS')).toBeTruthy();
   });
 
   it('coerces the draft operator when the column type changes', () => {
@@ -85,6 +89,9 @@ describe('GridToolbar filter draft', () => {
     expect(filter?.conditions[0]?.operator).toBe('LIKE');
     // And it survives the round trip it previously died on.
     expect(() => buildGridModel(model.rows, { filter: emitted })).not.toThrow();
+    expect(describeFilter(filter as NonNullable<typeof filter>, available)).toBe(
+      'Search term contains widget',
+    );
   });
 
   it('refuses to add a filter with no column or no value', () => {

@@ -51,6 +51,20 @@ export interface GridToolbarProps {
 
 const NUMERIC_OPERATORS: readonly FilterOperator[] = ['>', '>=', '<', '<=', '=', '<>'];
 const TEXT_OPERATORS: readonly FilterOperator[] = ['LIKE', 'NOT_LIKE', '=', '<>', 'IN', 'NOT_IN'];
+const OPERATOR_LABELS: Record<FilterOperator, string> = {
+  LIKE: 'contains',
+  NOT_LIKE: 'does not contain',
+  '=': 'equals',
+  '<>': 'does not equal',
+  IN: 'is one of',
+  NOT_IN: 'is not one of',
+  '>': 'greater than',
+  '>=': 'at least',
+  '<': 'less than',
+  '<=': 'at most',
+  IS_NULL: 'is empty',
+  IS_NOT_NULL: 'is not empty',
+};
 
 /**
  * Which operators a column accepts.
@@ -94,7 +108,9 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
   };
 
   const operators = operatorsFor(draftKey);
-  const draftIsNumeric = operators === NUMERIC_OPERATORS;
+  const draftColumn = props.available.find(
+    (column) => columnIdToFilterKey(column.id) === draftKey,
+  );
 
   /** Selecting a column re-derives the operator set and snaps the draft into it. */
   const chooseKey = (key: string): void => {
@@ -147,18 +163,18 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
           aria-label="Filter operator"
           value={draftOperator}
           onChange={(event) => setDraftOperator(event.target.value as FilterOperator)}
-          style={{ ...control, width: '5.5rem' }}
+          style={{ ...control, width: '10rem' }}
         >
           {operators.map((operator) => (
             <option key={operator} value={operator}>
-              {operator}
+              {OPERATOR_LABELS[operator]}
             </option>
           ))}
         </select>
         <input
           aria-label="Filter value"
           value={draftValue}
-          placeholder={draftIsNumeric ? 'value' : 'text'}
+          placeholder={draftColumn === undefined ? 'Choose a field' : draftColumn.header}
           onChange={(event) => setDraftValue(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter') addFilter();
@@ -212,7 +228,7 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
         <div style={row}>
           {filters.map((filter, index) => (
             <span key={`${filter.key}-${index}`} style={chip}>
-              {describeFilter(filter)}
+              {describeFilter(filter, props.available)}
               <button
                 type="button"
                 aria-label={`Remove filter ${filter.key}`}
@@ -311,16 +327,17 @@ function SavedViews({
 }
 
 /** Human-readable chip text. Percent metrics read as percents, as typed. */
-export function describeFilter(filter: Filter): string {
+export function describeFilter(filter: Filter, columns: readonly GridColumn[] = []): string {
   const columnId = filterKeyToColumnId(filter.key);
+  const column = columns.find((candidate) => candidate.id === columnId);
   const ref = parseFieldId(columnId);
   const spec = ref === null ? undefined : metricSpec(ref.metric);
   const unit = spec?.scale === 'percent' || ref?.part === 'delta_percent' ? '%' : '';
-  const joiner = ` ${filter.logical_operator ?? 'AND'} `;
+  const joiner = ` ${(filter.logical_operator ?? 'AND').toLowerCase()} `;
   const parts = filter.conditions.map(
-    (condition) => `${condition.operator ?? '='} ${condition.values.join(', ')}${unit}`,
+    (condition) => `${OPERATOR_LABELS[condition.operator ?? '=']} ${condition.values.join(', ')}${unit}`,
   );
-  return `${filter.key} ${parts.join(joiner)}`;
+  return `${column?.header ?? filter.key} ${parts.join(joiner)}`;
 }
 
 const bar: CSSProperties = {
