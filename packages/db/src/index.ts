@@ -45,6 +45,7 @@ export type {
   SetIntegrationConnectionStatusInput,
 } from './queries/integrations.js';
 export * from './queries/jobs.js';
+export * from './queries/keepa.js';
 export * from './queries/partitions.js';
 export * from './queries/profiles.js';
 export * from './queries/recommendations.js';

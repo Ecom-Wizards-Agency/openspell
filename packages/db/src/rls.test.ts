@@ -200,4 +200,15 @@ describe.skipIf(!available)('row level security', () => {
       ).rejects.toThrow(/row-level security/i);
     });
   });
+
+  it('keeps competitor price events tenant-readable and service-role writable', async () => {
+    await asUser(database, USER_A, async (sql) => {
+      const rows = await sql<{ org_id: string }[]>`select org_id from public.competitor_price_events`;
+      expect(rows.map((row) => row.org_id)).toEqual([orgA]);
+      await expect(sql`
+        insert into public.competitor_price_events (org_id, asin, event_kind, detected_at)
+        values (${orgA}, 'B0TEST0003', 'deal_start', now())
+      `).rejects.toThrow(/permission denied|row-level security/i);
+    });
+  });
 });
