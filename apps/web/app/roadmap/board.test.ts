@@ -22,12 +22,11 @@ const feature = (status: string): UiFeedbackItem => ({
 });
 
 describe('/roadmap board render', () => {
-  it('renders intake, requested items, votes, and feature triage without duplicate controls', () => {
+  it('renders intake, planned items, votes, and feature triage without duplicate controls', () => {
     const item = feature('new');
     const markup = renderToStaticMarkup(
       createElement(RoadmapBoardView, {
-        requested: [item],
-        planned: [],
+        planned: [item],
         inProgress: [],
         shipped: [],
         declined: [],
@@ -36,7 +35,7 @@ describe('/roadmap board render', () => {
     );
 
     expect(markup).toContain('Request a feature');
-    expect(markup).toContain('Requested');
+    expect(markup).toContain('Planned');
     expect(markup).toContain(`id="roadmap-${item.id}"`);
     expect(markup).toContain('data-testid="vote-count">3');
     expect(markup).toContain('data-testid="status-select"');
