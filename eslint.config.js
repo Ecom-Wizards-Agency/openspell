@@ -48,6 +48,7 @@ export default tseslint.config(
         ['@wizard-ads/core', 'shared is the contract package: it depends on nothing of ours.'],
         ['@wizard-ads/strategy', 'shared is the contract package: it depends on nothing of ours.'],
         ['@wizard-ads/ads-api', 'shared is the contract package: it depends on nothing of ours.'],
+        ['@wizard-ads/keepa-api', 'shared is the contract package: it depends on nothing of ours.'],
         ['@wizard-ads/ui', 'shared is the contract package: it depends on nothing of ours.'],
       ]),
     },
@@ -58,6 +59,7 @@ export default tseslint.config(
       'no-restricted-imports': forbid([
         ['@wizard-ads/db', 'core and strategy are pure: zero I/O, no database.'],
         ['@wizard-ads/ads-api', 'core and strategy are pure: zero I/O, no Amazon calls.'],
+        ['@wizard-ads/keepa-api', 'core and strategy are pure: zero I/O, no Keepa calls.'],
       ]),
     },
   },
@@ -71,6 +73,7 @@ export default tseslint.config(
     rules: {
       'no-restricted-imports': forbid([
         ['@wizard-ads/ads-api', 'every Amazon API call lives in apps/worker, never in the web app.'],
+        ['@wizard-ads/keepa-api', 'every Keepa API call lives in apps/worker, never in the web app.'],
         [
           '@wizard-ads/db/worker',
           'decrypted integration credentials are worker-only; the web app may only store or revoke them.',

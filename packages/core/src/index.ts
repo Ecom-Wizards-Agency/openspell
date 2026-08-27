@@ -24,3 +24,4 @@ export * from './crosscheck.js';
 export * from './recommendations.js';
 export * from './ngram.js';
 export * from './bidding/index.js';
+export * from './market/deals.js';
