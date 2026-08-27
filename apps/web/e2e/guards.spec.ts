@@ -70,7 +70,10 @@ test('the index names the signed-in user and offers a way out', async ({ page })
   const nav = page.getByTestId('app-nav');
   await expect(nav).toBeVisible();
   await expect(nav.getByTestId('nav-identity')).toBeVisible();
+  // The way out lives inside the avatar menu since the design system pass.
+  await nav.getByTestId('nav-identity').locator('summary').click();
   await expect(nav.getByTestId('nav-signout')).toBeVisible();
+  await page.keyboard.press('Escape');
   await expect(nav.getByTestId('nav-signin')).toHaveCount(0);
   await expect(page.getByTestId('home-signed-in')).toBeVisible();
 

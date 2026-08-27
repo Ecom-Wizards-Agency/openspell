@@ -301,7 +301,9 @@ describe.skipIf(!available)('feedback routes', () => {
              (select count(*) from public.feedback_votes v where v.item_id = i.id) as votes
         from public.feedback_items i where i.id = ${foreignItemId}
     `;
-    expect(row?.status).toBe('new');
+    // Feature requests land as Planned by rule; the point is that the foreign
+    // operations changed nothing.
+    expect(row?.status).toBe('planned');
     expect(Number(row?.votes)).toBe(0);
 
     // And org A's list never mentions it.

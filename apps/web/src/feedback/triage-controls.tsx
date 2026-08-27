@@ -73,7 +73,9 @@ export function FeedbackTriageControls({
           borderRadius: '0.25rem',
           fontSize: '0.8125rem',
           padding: '0.25rem 0.375rem',
-          width: '22rem',
+          maxWidth: '22rem',
+          minWidth: 0,
+          width: '100%',
         }}
       />
       <button
@@ -97,7 +99,9 @@ export function FeedbackTriageControls({
               borderRadius: '0.25rem',
               fontSize: '0.8125rem',
               padding: '0.25rem 0.375rem',
-              width: '18rem',
+              maxWidth: '18rem',
+              minWidth: 0,
+              width: '100%',
             }}
           />
           <button

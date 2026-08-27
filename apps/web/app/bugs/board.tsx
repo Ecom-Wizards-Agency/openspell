@@ -117,6 +117,11 @@ export function BugBoardView(initial: BugBoardProps) {
               background: colors.subtle,
               border: `1px solid ${colors.border}`,
               borderRadius: '0.5rem',
+              // Grid children default to min-width auto; without 0 an overlong
+              // card overflows under the neighbouring column, which then
+              // swallows its clicks.
+              minWidth: 0,
+              overflow: 'hidden',
               padding: '0.75rem',
             }}
           >
