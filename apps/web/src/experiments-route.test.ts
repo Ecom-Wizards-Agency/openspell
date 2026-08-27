@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import { POST } from '../app/api/experiments/route.js';
+import { listProfileOptions } from './experiments/data.js';
 
 const available = await databaseAvailable();
 const OWNER_A = '7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a7a';
@@ -90,6 +91,31 @@ describe.skipIf(!available)('POST /api/experiments', () => {
     expect(response.status).toBe(201);
     const { item } = (await response.json()) as { item: { profileId: string } };
     expect(item.profileId).toBe(profileA);
+  });
+
+  it('loads only syncing profile options and includes the marketplace suffix data', async () => {
+    await database.sql`
+      update public.ad_profiles
+         set account_name = 'Duplicate label', country_code = 'US', sync_enabled = true
+       where id = ${profileA}
+    `;
+    const [off] = await database.sql<{ id: string }[]>`
+      insert into public.ad_profiles
+        (org_id, amazon_profile_id, region, country_code, currency_code, timezone,
+         account_name, sync_enabled)
+      values
+        (${orgA}, 'exp-sync-off', 'EU', 'DE', 'EUR', 'Europe/Berlin', 'Duplicate label', false)
+      returning id
+    `;
+
+    const options = await listProfileOptions(database, orgA);
+    expect(options).toContainEqual({
+      id: profileA,
+      label: 'Duplicate label',
+      currencyCode: 'USD',
+      countryCode: 'US',
+    });
+    expect(options.some((profile) => profile.id === off?.id)).toBe(false);
   });
 
   it('refuses another org\'s profile with a 404, and writes nothing', async () => {

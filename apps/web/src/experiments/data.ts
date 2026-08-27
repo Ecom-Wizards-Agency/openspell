@@ -13,22 +13,34 @@ export interface ProfileOption {
   id: string;
   label: string;
   currencyCode: string;
+  countryCode: string;
 }
 
 export async function listProfileOptions(
   handle: Pick<RequestDatabase, 'sql'>,
   orgId: string,
 ): Promise<ProfileOption[]> {
-  const rows = await handle.sql<{ id: string; label: string; currency_code: string }[]>`
+  const rows = await handle.sql<{
+    id: string;
+    label: string;
+    currency_code: string;
+    country_code: string;
+  }[]>`
     select id,
            coalesce(account_name, amazon_profile_id) as label,
-           currency_code
+           currency_code,
+           country_code
       from public.ad_profiles
      where org_id = ${orgId}
        and sync_enabled = true
      order by coalesce(account_name, amazon_profile_id)
   `;
-  return rows.map((row) => ({ id: row.id, label: row.label, currencyCode: row.currency_code }));
+  return rows.map((row) => ({
+    id: row.id,
+    label: row.label,
+    currencyCode: row.currency_code,
+    countryCode: row.country_code,
+  }));
 }
 
 export function selectProfileId(

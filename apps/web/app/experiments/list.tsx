@@ -102,7 +102,7 @@ export function ExperimentsList({
           >
             {profiles.map((profile) => (
               <option key={profile.id} value={profile.id}>
-                {profile.label}
+                {profile.label} · {profile.countryCode}
               </option>
             ))}
           </select>
