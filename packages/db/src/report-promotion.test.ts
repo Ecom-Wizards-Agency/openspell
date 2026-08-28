@@ -86,7 +86,10 @@ describe.skipIf(!available)('transactional report-date promotion', () => {
   let database: TestDatabase;
   let orgId: string;
   let profileId: string;
-  const reportDate = new Date().toISOString().slice(0, 10);
+  // The shared tenant fixture seeds a current-day profile fact. Use a nearby
+  // partitioned day with no fixture activity so the first replacement's
+  // deleted-row assertion starts from a genuinely empty canonical scope.
+  const reportDate = new Date(Date.now() - 10 * 86_400_000).toISOString().slice(0, 10);
 
   beforeAll(async () => {
     database = await createTestDatabase('wp57_promotion');
