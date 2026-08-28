@@ -16,6 +16,7 @@ import {
   type DbHandle,
   type SqpWeeklyPromotionInput,
   type SqpWeeklyPromotionResult,
+  type SqpSourceReportMetadata,
   type VocabularyPersistenceCounts,
   type WeeklyPpcQueryRecord,
 } from '@wizard-ads/db';
@@ -74,6 +75,12 @@ export interface SqpBatchCheckpoint {
   reportId: string | null;
   reportDocumentId: string | null;
   createdByWorkflow: boolean;
+  /** Worker request time used for promotion freshness ordering. */
+  requestedAt: string | null;
+  /** Provider metadata; it is not substituted for worker freshness time. */
+  providerCreatedAt: string | null;
+  /** Worker observation time for a terminal provider state. */
+  completedAt: string | null;
 }
 
 export interface SqpWorkflowCheckpoint {
@@ -135,6 +142,7 @@ export interface SqpWorkflowDependencies {
     report: SpApiReport;
   }) => Promise<boolean>;
   nextPollAfterSeconds?: number;
+  now?: () => Date;
 }
 
 export interface PendingSqpWorkflowResult {
@@ -202,6 +210,7 @@ export async function runSqpRequestWorkflow(
   for (const batch of checkpoint.batches) {
     if (batch.status !== 'planned') continue;
     await dependencies.providerGate.beforeCall('create_report', batch.requestKey);
+    const requestedAt = workflowNow(dependencies).toISOString();
     const createdReport = await dependencies.api.createReport(batch.plan.request);
     if (!createdReport.reportId) {
       throw new SqpWorkflowPermanentError('SP-API created an SQP report without an id');
@@ -209,6 +218,7 @@ export async function runSqpRequestWorkflow(
     batch.reportId = createdReport.reportId;
     batch.status = 'requested';
     batch.createdByWorkflow = true;
+    batch.requestedAt = requestedAt;
     await dependencies.checkpoints.save(checkpoint);
   }
 
@@ -225,6 +235,18 @@ export async function runSqpRequestWorkflow(
     if (report.reportType !== null && report.reportType !== SQP_REPORT_TYPE) {
       throw new SqpWorkflowPermanentError('SP-API returned a different report type');
     }
+    const providerCreatedAt = parseProviderTimestamp(report.createdTime, 'createdTime');
+    if (
+      batch.providerCreatedAt !== null &&
+      providerCreatedAt !== null &&
+      batch.providerCreatedAt !== providerCreatedAt
+    ) {
+      throw new SqpWorkflowPermanentError('SP-API changed the SQP report created timestamp');
+    }
+    if (providerCreatedAt !== null) batch.providerCreatedAt = providerCreatedAt;
+    if (batch.requestedAt === null) {
+      batch.requestedAt = providerCreatedAt ?? workflowNow(dependencies).toISOString();
+    }
     switch (report.processingStatus) {
       case 'IN_QUEUE':
       case 'IN_PROGRESS':
@@ -235,6 +257,7 @@ export async function runSqpRequestWorkflow(
         }
         batch.reportDocumentId = report.reportDocumentId;
         batch.status = 'ready';
+        batch.completedAt = workflowNow(dependencies).toISOString();
         break;
       case 'CANCELLED':
         // Amazon documents two indistinguishable causes: manual cancellation
@@ -249,6 +272,7 @@ export async function runSqpRequestWorkflow(
         }
         batch.status = 'empty';
         batch.reportDocumentId = null;
+        batch.completedAt = workflowNow(dependencies).toISOString();
         break;
       case 'FATAL':
         throw new SqpWorkflowPermanentError(`SQP report ${batch.reportId} failed fatally`);
@@ -304,6 +328,10 @@ export async function runSqpRequestWorkflow(
       vocabulary,
     }).category,
   }));
+  const sourceReports = promotionSourceReports(checkpoint);
+  const requestedAt = new Date(Math.min(...sourceReports.map((report) => report.requestedAt.valueOf())));
+  const completedAt = new Date(Math.max(...sourceReports.map((report) => report.completedAt.valueOf())));
+  const requestIdentity = promotionRequestIdentity(payload, sourceReports);
   const ingestion = await dependencies.data.promoteFacts({
     orgId: payload.orgId,
     profileId: payload.profileId,
@@ -311,6 +339,10 @@ export async function runSqpRequestWorkflow(
     weekStart: payload.weekStart,
     weekEnd: payload.weekEnd,
     requestedAsins: plans.flatMap((plan) => plan.asins),
+    requestIdentity,
+    requestedAt,
+    completedAt,
+    sourceReports,
     rows: categorized,
     counts: { ...merged.counts, upserts: categorized.length },
   });
@@ -475,6 +507,70 @@ function workflowKey(payload: SqpRequestJobType, plans: readonly SqpReportReques
   ].join('\u0000')).digest('hex')}`;
 }
 
+function promotionRequestIdentity(
+  payload: SqpRequestJobType,
+  reports: readonly SqpSourceReportMetadata[],
+): string {
+  return `sqp-source:${createHash('sha256').update([
+    payload.orgId,
+    payload.profileId,
+    payload.marketplaceId,
+    payload.weekStart,
+    payload.weekEnd,
+    ...[...reports]
+      .sort((left, right) => left.requestKey.localeCompare(right.requestKey))
+      .flatMap((report) => [
+        report.requestKey,
+        report.reportId,
+        report.reportDocumentId ?? 'no-document',
+        ...report.requestedAsins,
+      ]),
+  ].join('\u0000')).digest('hex')}`;
+}
+
+function promotionSourceReports(checkpoint: SqpWorkflowCheckpoint): SqpSourceReportMetadata[] {
+  return checkpoint.batches.map((batch) => {
+    if (
+      (batch.status !== 'ready' && batch.status !== 'empty') ||
+      batch.reportId === null ||
+      batch.requestedAt === null ||
+      batch.completedAt === null
+    ) {
+      throw new SqpWorkflowPermanentError('SQP source metadata is incomplete at promotion');
+    }
+    return {
+      requestKey: batch.requestKey,
+      reportId: batch.reportId,
+      reportDocumentId: batch.reportDocumentId,
+      requestedAt: new Date(batch.requestedAt),
+      completedAt: new Date(batch.completedAt),
+      providerCreatedAt: batch.providerCreatedAt === null ? null : new Date(batch.providerCreatedAt),
+      requestedAsins: batch.plan.asins,
+    };
+  });
+}
+
+function workflowNow(dependencies: Pick<SqpWorkflowDependencies, 'now'>): Date {
+  const value = dependencies.now?.() ?? new Date();
+  if (!(value instanceof Date) || Number.isNaN(value.valueOf())) {
+    throw new SqpWorkflowPermanentError('SQP workflow clock returned an invalid timestamp');
+  }
+  return new Date(value);
+}
+
+function parseProviderTimestamp(value: string | null, field: string): string | null {
+  if (value === null) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) {
+    throw new SqpWorkflowPermanentError(`SP-API returned an invalid SQP report ${field}`);
+  }
+  return parsed.toISOString();
+}
+
+function validOptionalTimestamp(value: string | null): boolean {
+  return value === null || !Number.isNaN(new Date(value).valueOf());
+}
+
 function freshCheckpoint(
   runKey: string,
   payload: SqpRequestJobType,
@@ -494,6 +590,9 @@ function freshCheckpoint(
       reportId: null,
       reportDocumentId: null,
       createdByWorkflow: false,
+      requestedAt: null,
+      providerCreatedAt: null,
+      completedAt: null,
     })),
     completed: null,
   };
@@ -523,11 +622,27 @@ function validateCheckpoint(
       !['planned', 'requested', 'ready', 'empty'].includes(batch.status) ||
       typeof batch.createdByWorkflow !== 'boolean' ||
       (batch.status === 'planned' && (batch.reportId !== null || batch.reportDocumentId !== null)) ||
-      (batch.status === 'requested' && batch.reportId === null) ||
-      (batch.status === 'ready' && (batch.reportId === null || batch.reportDocumentId === null)) ||
-      (batch.status === 'empty' && batch.reportId === null)
+      (batch.status === 'planned' &&
+        (batch.requestedAt !== null || batch.providerCreatedAt !== null || batch.completedAt !== null)) ||
+      (batch.status === 'requested' && (batch.reportId === null || batch.requestedAt === null)) ||
+      (batch.status === 'requested' && batch.completedAt !== null) ||
+      (batch.status === 'ready' &&
+        (batch.reportId === null || batch.reportDocumentId === null ||
+          batch.requestedAt === null || batch.completedAt === null)) ||
+      (batch.status === 'empty' &&
+        (batch.reportId === null || batch.requestedAt === null || batch.completedAt === null)) ||
+      !validOptionalTimestamp(batch.requestedAt) ||
+      !validOptionalTimestamp(batch.providerCreatedAt) ||
+      !validOptionalTimestamp(batch.completedAt)
     ) {
       throw new SqpWorkflowPermanentError('SQP checkpoint contains an invalid batch state');
+    }
+    if (
+      batch.requestedAt !== null &&
+      batch.completedAt !== null &&
+      new Date(batch.completedAt) < new Date(batch.requestedAt)
+    ) {
+      throw new SqpWorkflowPermanentError('SQP checkpoint completed before it was requested');
     }
   }
   if (

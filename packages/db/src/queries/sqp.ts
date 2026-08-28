@@ -6,8 +6,10 @@
  * ASIN/week scope transactionally, and proves that the canonical rows match
  * the deduplicated input before commit.
  */
+import { createHash } from 'node:crypto';
 import {
   and,
+  desc,
   eq,
   getTableColumns,
   inArray,
@@ -31,14 +33,45 @@ import {
   contextualNegativeProposals,
   factSqpWeekly,
   queryVocabulary,
+  sqpPromotionRuns,
 } from '../schema/index.js';
 import { chunkForInsert } from './chunk.js';
+
+const SQP_SOURCE_SYSTEM = 'amazon_sp_api_brand_analytics' as const;
 
 export class SqpPersistenceError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'SqpPersistenceError';
   }
+}
+
+export class StaleSqpPromotionError extends SqpPersistenceError {
+  constructor(
+    readonly requestIdentity: string,
+    readonly requestedAt: Date,
+    readonly currentRequestIdentity: string,
+    readonly currentRequestedAt: Date,
+  ) {
+    super(
+      `SQP request ${requestIdentity} at ${requestedAt.toISOString()} is older than ` +
+        `${currentRequestIdentity} at ${currentRequestedAt.toISOString()}`,
+    );
+    this.name = 'StaleSqpPromotionError';
+  }
+}
+
+export interface SqpSourceReportMetadata {
+  requestKey: string;
+  reportId: string;
+  reportDocumentId: string | null;
+  /** When this worker requested the source report. */
+  requestedAt: Date;
+  /** When this worker observed the source report in a terminal state. */
+  completedAt: Date;
+  /** Provider-created timestamp retained separately from worker freshness. */
+  providerCreatedAt: Date | null;
+  requestedAsins: readonly string[];
 }
 
 export interface SqpWeeklyPromotionInput {
@@ -49,11 +82,18 @@ export interface SqpWeeklyPromotionInput {
   weekEnd: string;
   /** Every ASIN in the report request, including ASINs that returned no rows. */
   requestedAsins: readonly string[];
+  /** Stable across retries of the exact same set of provider reports. */
+  requestIdentity: string;
+  requestedAt: Date;
+  completedAt: Date;
+  sourceReports: readonly SqpSourceReportMetadata[];
   rows: readonly SqpWeeklyFactType[];
   counts: SqpIngestionCountsType;
 }
 
 export interface SqpWeeklyPromotionResult {
+  status: 'promoted' | 'already_promoted';
+  promotionRunId: string;
   sourceAsins: number;
   sourceRows: number;
   parsedRows: number;
@@ -79,6 +119,14 @@ export async function promoteSqpWeeklyFacts(
   const staged = validatePromotion(input);
 
   return handle.db.transaction(async (tx) => {
+    // Per-ASIN locks let disjoint batches proceed while serializing any
+    // overlap. Sorting is load-bearing: two multi-ASIN transactions cannot
+    // deadlock by taking the same locks in a different order.
+    for (const asin of staged.requestedAsins) {
+      const lockKey = [staged.profileId, staged.marketplaceId, staged.weekStart, asin].join(':');
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+    }
+
     const profiles = await tx
       .select({ id: adProfiles.id })
       .from(adProfiles)
@@ -86,6 +134,60 @@ export async function promoteSqpWeeklyFacts(
       .limit(1);
     if (!profiles[0]) {
       throw new SqpPersistenceError('SQP profile does not belong to the organisation');
+    }
+
+    const identityRows = await tx
+      .select()
+      .from(sqpPromotionRuns)
+      .where(and(
+        eq(sqpPromotionRuns.profileId, staged.profileId),
+        eq(sqpPromotionRuns.requestIdentity, staged.requestIdentity),
+      ))
+      .limit(1);
+    const existingIdentity = identityRows[0];
+
+    const scopeRows = await tx
+      .select()
+      .from(sqpPromotionRuns)
+      .where(and(
+        eq(sqpPromotionRuns.profileId, staged.profileId),
+        eq(sqpPromotionRuns.marketplaceId, staged.marketplaceId),
+        eq(sqpPromotionRuns.weekStart, staged.weekStart),
+      ))
+      .orderBy(desc(sqpPromotionRuns.requestedAt), desc(sqpPromotionRuns.completedAt));
+    const requested = new Set(staged.requestedAsins);
+    const current = scopeRows.find((row) => row.requestedAsins.some((asin) => requested.has(asin)));
+
+    if (current && staged.requestedAt < current.requestedAt) {
+      throw new StaleSqpPromotionError(
+        staged.requestIdentity,
+        staged.requestedAt,
+        current.requestIdentity,
+        current.requestedAt,
+      );
+    }
+    if (
+      current &&
+      staged.requestedAt.getTime() === current.requestedAt.getTime() &&
+      staged.requestIdentity !== current.requestIdentity
+    ) {
+      throw new SqpPersistenceError(
+        'two different overlapping SQP requests cannot share one freshness timestamp',
+      );
+    }
+    if (existingIdentity) {
+      assertIdempotentPromotion(staged, existingIdentity);
+      const canonicalRows = await countCanonicalSqpRows(tx, staged);
+      assertCount('SQP idempotent canonical rows', existingIdentity.canonicalRows, canonicalRows);
+      return {
+        status: 'already_promoted',
+        promotionRunId: existingIdentity.id,
+        ...staged.counts,
+        deletedRows: 0,
+        promotedRows: 0,
+        upserts: 0,
+        canonicalRows,
+      };
     }
 
     const deleted = await tx
@@ -141,20 +243,37 @@ export async function promoteSqpWeeklyFacts(
     }
     assertCount('SQP upserts', staged.rows.length, upserts);
 
-    const [canonical] = await tx
-      .select({ rows: sql<number>`count(*)::int` })
-      .from(factSqpWeekly)
-      .where(and(
-        eq(factSqpWeekly.orgId, staged.orgId),
-        eq(factSqpWeekly.profileId, staged.profileId),
-        eq(factSqpWeekly.marketplaceId, staged.marketplaceId),
-        eq(factSqpWeekly.weekStart, staged.weekStart),
-        inArray(factSqpWeekly.asin, staged.requestedAsins),
-      ));
-    const canonicalRows = canonical?.rows ?? 0;
+    const canonicalRows = await countCanonicalSqpRows(tx, staged);
     assertCount('SQP canonical rows', staged.rows.length, canonicalRows);
 
+    const [promotionRun] = await tx
+      .insert(sqpPromotionRuns)
+      .values({
+        orgId: staged.orgId,
+        profileId: staged.profileId,
+        marketplaceId: staged.marketplaceId,
+        weekStart: staged.weekStart,
+        sourceSystem: SQP_SOURCE_SYSTEM,
+        requestIdentity: staged.requestIdentity,
+        requestedAt: staged.requestedAt,
+        completedAt: staged.completedAt,
+        requestedAsins: staged.requestedAsins,
+        sourceReports: staged.sourceReports.map(serializeSourceReport),
+        inputFingerprint: staged.inputFingerprint,
+        sourceAsins: staged.counts.sourceAsins,
+        sourceRows: staged.counts.sourceRows,
+        parsedRows: staged.counts.parsedRows,
+        deduplicatedRows: staged.counts.deduplicatedRows,
+        refusedRows: staged.counts.refusedRows,
+        promotedRows: upserts,
+        canonicalRows,
+      })
+      .returning({ id: sqpPromotionRuns.id });
+    if (!promotionRun) throw new SqpPersistenceError('SQP promotion provenance was not written');
+
     return {
+      status: 'promoted',
+      promotionRunId: promotionRun.id,
       ...staged.counts,
       deletedRows: deleted.length,
       promotedRows: upserts,
@@ -162,6 +281,45 @@ export async function promoteSqpWeeklyFacts(
       canonicalRows,
     };
   });
+}
+
+type SqpPromotionTransaction = Parameters<Parameters<DbHandle['db']['transaction']>[0]>[0];
+type ValidatedSqpPromotion = ReturnType<typeof validatePromotion>;
+
+async function countCanonicalSqpRows(
+  tx: SqpPromotionTransaction,
+  staged: ValidatedSqpPromotion,
+): Promise<number> {
+  const [canonical] = await tx
+    .select({ rows: sql<number>`count(*)::int` })
+    .from(factSqpWeekly)
+    .where(and(
+      eq(factSqpWeekly.orgId, staged.orgId),
+      eq(factSqpWeekly.profileId, staged.profileId),
+      eq(factSqpWeekly.marketplaceId, staged.marketplaceId),
+      eq(factSqpWeekly.weekStart, staged.weekStart),
+      inArray(factSqpWeekly.asin, staged.requestedAsins),
+    ));
+  return canonical?.rows ?? 0;
+}
+
+function assertIdempotentPromotion(
+  staged: ValidatedSqpPromotion,
+  existing: typeof sqpPromotionRuns.$inferSelect,
+): void {
+  if (
+    existing.orgId !== staged.orgId ||
+    existing.marketplaceId !== staged.marketplaceId ||
+    existing.weekStart !== staged.weekStart ||
+    existing.sourceSystem !== SQP_SOURCE_SYSTEM ||
+    existing.requestedAt.getTime() !== staged.requestedAt.getTime() ||
+    existing.completedAt.getTime() !== staged.completedAt.getTime() ||
+    existing.requestedAsins.length !== staged.requestedAsins.length ||
+    existing.requestedAsins.some((asin, index) => asin !== staged.requestedAsins[index]) ||
+    existing.inputFingerprint !== staged.inputFingerprint
+  ) {
+    throw new SqpPersistenceError('an SQP request identity was reused with different evidence');
+  }
 }
 
 export async function readSqpWeeklyFacts(
@@ -605,6 +763,11 @@ function validatePromotion(input: SqpWeeklyPromotionInput): {
   weekStart: string;
   weekEnd: string;
   requestedAsins: string[];
+  requestIdentity: string;
+  requestedAt: Date;
+  completedAt: Date;
+  sourceReports: SqpSourceReportMetadata[];
+  inputFingerprint: string;
   rows: SqpWeeklyFactType[];
   counts: SqpIngestionCountsType;
 } {
@@ -621,6 +784,33 @@ function validatePromotion(input: SqpWeeklyPromotionInput): {
   assertWeek(input.weekStart, input.weekEnd);
   const requestedAsins = normalizeAsins(input.requestedAsins);
   if (requestedAsins.length === 0) throw new SqpPersistenceError('SQP promotion has no requested ASINs');
+  const requestIdentity = input.requestIdentity.trim();
+  if (requestIdentity.length === 0) {
+    throw new SqpPersistenceError('SQP promotion has no stable request identity');
+  }
+  assertTimestamp('SQP requestedAt', input.requestedAt);
+  assertTimestamp('SQP completedAt', input.completedAt);
+  if (input.completedAt < input.requestedAt) {
+    throw new SqpPersistenceError('SQP completion cannot precede its request');
+  }
+  const sourceReports = validateSourceReports(input.sourceReports, requestedAsins);
+  const earliestRequestedAt = sourceReports.reduce(
+    (earliest, report) => report.requestedAt < earliest ? report.requestedAt : earliest,
+    sourceReports[0]!.requestedAt,
+  );
+  const latestCompletedAt = sourceReports.reduce(
+    (latest, report) => report.completedAt > latest ? report.completedAt : latest,
+    sourceReports[0]!.completedAt,
+  );
+  if (earliestRequestedAt.getTime() !== input.requestedAt.getTime()) {
+    throw new SqpPersistenceError('SQP requestedAt does not match its earliest source report');
+  }
+  if (latestCompletedAt.getTime() !== input.completedAt.getTime()) {
+    throw new SqpPersistenceError('SQP completedAt does not match its latest source report');
+  }
+  if (counts.sourceAsins > requestedAsins.length) {
+    throw new SqpPersistenceError('SQP source ASIN count exceeds the requested scope');
+  }
   const requested = new Set(requestedAsins);
   const rows = input.rows.map((value, index) => {
     const row = SqpWeeklyFact.parse(value);
@@ -644,6 +834,23 @@ function validatePromotion(input: SqpWeeklyPromotionInput): {
     row.asin,
     row.normalizedQuery,
   ], 'SQP fact');
+  const sortedRows = [...rows].sort((left, right) =>
+    left.asin.localeCompare(right.asin) || left.normalizedQuery.localeCompare(right.normalizedQuery),
+  );
+  const inputFingerprint = createHash('sha256').update(JSON.stringify({
+    orgId: input.orgId,
+    profileId: input.profileId,
+    marketplaceId: input.marketplaceId,
+    weekStart: input.weekStart,
+    weekEnd: input.weekEnd,
+    requestedAsins,
+    requestIdentity,
+    requestedAt: input.requestedAt.toISOString(),
+    completedAt: input.completedAt.toISOString(),
+    sourceReports: sourceReports.map(serializeSourceReport),
+    rows: sortedRows,
+    counts,
+  })).digest('hex');
   return {
     orgId: input.orgId,
     profileId: input.profileId,
@@ -651,9 +858,97 @@ function validatePromotion(input: SqpWeeklyPromotionInput): {
     weekStart: input.weekStart,
     weekEnd: input.weekEnd,
     requestedAsins,
-    rows,
+    requestIdentity,
+    requestedAt: new Date(input.requestedAt),
+    completedAt: new Date(input.completedAt),
+    sourceReports,
+    inputFingerprint,
+    rows: sortedRows,
     counts,
   };
+}
+
+function validateSourceReports(
+  values: readonly SqpSourceReportMetadata[],
+  requestedAsins: readonly string[],
+): SqpSourceReportMetadata[] {
+  if (values.length === 0) throw new SqpPersistenceError('SQP promotion has no source reports');
+  const seenRequestKeys = new Set<string>();
+  const seenReportIds = new Set<string>();
+  const seenAsins = new Set<string>();
+  const reports = values.map((value, index) => {
+    const requestKey = value.requestKey.trim();
+    const reportId = value.reportId.trim();
+    const reportDocumentId = value.reportDocumentId?.trim() || null;
+    if (requestKey.length === 0 || reportId.length === 0) {
+      throw new SqpPersistenceError(`SQP source report ${index} lacks provider identity`);
+    }
+    if (seenRequestKeys.has(requestKey) || seenReportIds.has(reportId)) {
+      throw new SqpPersistenceError(`duplicate SQP source report identity at index ${index}`);
+    }
+    seenRequestKeys.add(requestKey);
+    seenReportIds.add(reportId);
+    assertTimestamp(`SQP source report ${index} requestedAt`, value.requestedAt);
+    assertTimestamp(`SQP source report ${index} completedAt`, value.completedAt);
+    if (value.completedAt < value.requestedAt) {
+      throw new SqpPersistenceError(`SQP source report ${index} completed before it was requested`);
+    }
+    if (value.providerCreatedAt !== null) {
+      assertTimestamp(`SQP source report ${index} providerCreatedAt`, value.providerCreatedAt);
+    }
+    const asins = normalizeAsins(value.requestedAsins);
+    if (asins.length === 0) {
+      throw new SqpPersistenceError(`SQP source report ${index} has no requested ASINs`);
+    }
+    for (const asin of asins) {
+      if (seenAsins.has(asin)) {
+        throw new SqpPersistenceError(`SQP source reports overlap on ASIN ${asin}`);
+      }
+      seenAsins.add(asin);
+    }
+    return {
+      requestKey,
+      reportId,
+      reportDocumentId,
+      requestedAt: new Date(value.requestedAt),
+      completedAt: new Date(value.completedAt),
+      providerCreatedAt: value.providerCreatedAt === null ? null : new Date(value.providerCreatedAt),
+      requestedAsins: asins,
+    };
+  }).sort((left, right) => left.requestKey.localeCompare(right.requestKey));
+  if (
+    seenAsins.size !== requestedAsins.length ||
+    requestedAsins.some((asin) => !seenAsins.has(asin))
+  ) {
+    throw new SqpPersistenceError('SQP source reports do not exactly cover the requested ASIN scope');
+  }
+  return reports;
+}
+
+function serializeSourceReport(report: SqpSourceReportMetadata): {
+  requestKey: string;
+  reportId: string;
+  reportDocumentId: string | null;
+  requestedAt: string;
+  completedAt: string;
+  providerCreatedAt: string | null;
+  requestedAsins: readonly string[];
+} {
+  return {
+    requestKey: report.requestKey,
+    reportId: report.reportId,
+    reportDocumentId: report.reportDocumentId,
+    requestedAt: report.requestedAt.toISOString(),
+    completedAt: report.completedAt.toISOString(),
+    providerCreatedAt: report.providerCreatedAt?.toISOString() ?? null,
+    requestedAsins: report.requestedAsins,
+  };
+}
+
+function assertTimestamp(label: string, value: Date): void {
+  if (!(value instanceof Date) || Number.isNaN(value.valueOf())) {
+    throw new SqpPersistenceError(`${label} is invalid`);
+  }
 }
 
 function assertWeek(weekStart: string, weekEnd: string): void {

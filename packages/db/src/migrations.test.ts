@@ -95,7 +95,7 @@ describe.skipIf(!available)('migrations', () => {
       'report_coverage', 'historical_bootstrap_progress',
       'report_promotion_watermarks', 'attribution_observations',
       'ad_creative_asset_mappings', 'fact_creative_daily',
-      'query_vocabulary', 'contextual_negative_proposals',
+      'sqp_promotion_runs', 'query_vocabulary', 'contextual_negative_proposals',
       'optimization_groups', 'campaign_optimization_assignments',
       'recommendation_observations', 'marketing_stream_events',
       'marketing_stream_hourly_facts', 'dayparting_schedule_proposals',

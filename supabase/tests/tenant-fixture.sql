@@ -270,6 +270,26 @@ begin
   values (v_org, v_profile, p_date, 'SB', 'sb-1', 'sb-ag-1', 'sb-ad-1',
           'legacy', 40, 2, 1.8, 0, 0);
 
+  insert into public.sqp_promotion_runs
+    (org_id, profile_id, marketplace_id, week_start, source_system,
+     request_identity, requested_at, completed_at, requested_asins,
+     source_reports, input_fingerprint, source_asins, source_rows, parsed_rows,
+     deduplicated_rows, refused_rows, promoted_rows, canonical_rows)
+  values
+    (v_org, v_profile, p_slug || '-market',
+     p_date - extract(dow from p_date)::integer,
+     'amazon_sp_api_brand_analytics', p_slug || '-sqp-promotion',
+     now() - interval '1 minute', now(), array['B0TEST0001'],
+     jsonb_build_array(jsonb_build_object(
+       'requestKey', p_slug || '-sqp-request',
+       'reportId', p_slug || '-sqp-report',
+       'reportDocumentId', null,
+       'requestedAt', to_jsonb(now() - interval '1 minute'),
+       'completedAt', to_jsonb(now()),
+       'providerCreatedAt', null,
+       'requestedAsins', jsonb_build_array('B0TEST0001')
+     )), md5(p_slug || '-sqp-input'), 0, 0, 0, 0, 0, 0, 0);
+
   insert into public.query_vocabulary
     (org_id, marketplace_id, kind, value, normalized_value, source, approved,
      reviewed_at, reviewed_by)

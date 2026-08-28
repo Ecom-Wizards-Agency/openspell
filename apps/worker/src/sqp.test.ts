@@ -35,11 +35,13 @@ describe('weekly SQP worker workflow', () => {
     const data = new FakeDataStore(vocabulary(), ppcRows());
     const gate = new RecordingGate();
     const checkpoints = new InMemorySqpWorkflowCheckpoints();
+    let clockTick = 0;
     const dependencies = {
       api,
       data,
       providerGate: gate,
       checkpoints,
+      now: () => new Date(Date.parse('2026-08-24T00:00:00Z') + clockTick++ * 60_000),
       resolveRouting: ({ ppc, category }: Parameters<NonNullable<
         Parameters<typeof runSqpRequestWorkflow>[1]['resolveRouting']
       >>[0]) => {
@@ -97,6 +99,20 @@ describe('weekly SQP worker workflow', () => {
       proposals: { offered: 2, upserts: 2, readBack: 2, preservedHumanDecisions: 0 },
     });
     expect(data.promotions).toHaveLength(1);
+    expect(data.promotions[0]).toMatchObject({
+      requestIdentity: expect.stringMatching(/^sqp-source:[a-f0-9]{64}$/),
+      requestedAt: new Date('2026-08-24T00:00:00Z'),
+      completedAt: new Date('2026-08-24T00:01:00Z'),
+      sourceReports: [{
+        requestKey: expect.any(String),
+        reportId: 'report-synthetic',
+        reportDocumentId: 'document-synthetic',
+        requestedAt: new Date('2026-08-24T00:00:00Z'),
+        completedAt: new Date('2026-08-24T00:01:00Z'),
+        providerCreatedAt: new Date('2026-08-23T00:00:00Z'),
+        requestedAsins: ['B000000001'],
+      }],
+    });
     expect(data.promotions[0]?.rows.map((row) => [row.normalizedQuery, row.category])).toEqual([
       ['synthetic brand mug', 'own_brand'],
       ['travel mug', 'core'],
@@ -289,6 +305,8 @@ class FakeDataStore implements SqpWorkflowDataStore {
   async promoteFacts(input: SqpWeeklyPromotionInput): Promise<SqpWeeklyPromotionResult> {
     this.promotions.push(input);
     return {
+      status: 'promoted',
+      promotionRunId: `promotion-${this.promotions.length}`,
       ...input.counts,
       deletedRows: 0,
       promotedRows: input.rows.length,

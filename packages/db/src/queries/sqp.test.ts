@@ -16,6 +16,7 @@ import {
   readSqpWeeklyFacts,
   readWeeklyPpcQueryFacts,
   SqpPersistenceError,
+  StaleSqpPromotionError,
 } from './sqp.js';
 
 const available = await databaseAvailable();
@@ -39,6 +40,7 @@ describe('WP-59 SQP validation without a database', () => {
       weekStart: WEEK_START,
       weekEnd: WEEK_END,
       requestedAsins: ['B000000001'],
+      ...promotionSource('source-invalid-counts', ['B000000001'], '2026-08-23T00:00:00Z'),
       rows: [fact('83838383-8383-4383-8383-838383838383')],
       counts: {
         sourceAsins: 1,
@@ -89,6 +91,7 @@ describe.skipIf(!available)('WP-59 SQP database persistence', () => {
       weekStart: WEEK_START,
       weekEnd: WEEK_END,
       requestedAsins: ['B000000001'],
+      ...promotionSource('source-first', ['B000000001'], '2026-08-23T00:00:00Z'),
       rows,
       counts: {
         sourceAsins: 1,
@@ -99,7 +102,9 @@ describe.skipIf(!available)('WP-59 SQP database persistence', () => {
         upserts: 2,
       },
     });
-    expect(first).toEqual({
+    expect(first).toMatchObject({
+      status: 'promoted',
+      promotionRunId: expect.any(String),
       sourceAsins: 1,
       sourceRows: 2,
       parsedRows: 2,
@@ -118,6 +123,7 @@ describe.skipIf(!available)('WP-59 SQP database persistence', () => {
       weekStart: WEEK_START,
       weekEnd: WEEK_END,
       requestedAsins: ['B000000001'],
+      ...promotionSource('source-revised', ['B000000001'], '2026-08-24T00:00:00Z'),
       rows: [{ ...rows[0]!, asinClicks: 5, asinClickShare: 0.25 }],
       counts: {
         sourceAsins: 1,
@@ -149,6 +155,7 @@ describe.skipIf(!available)('WP-59 SQP database persistence', () => {
       weekStart: WEEK_START,
       weekEnd: WEEK_END,
       requestedAsins: ['B000000001'],
+      ...promotionSource('source-empty', ['B000000001'], '2026-08-25T00:00:00Z'),
       rows: [],
       counts: {
         sourceAsins: 0,
@@ -160,6 +167,153 @@ describe.skipIf(!available)('WP-59 SQP database persistence', () => {
       },
     });
     expect(empty).toMatchObject({ deletedRows: 1, promotedRows: 0, upserts: 0, canonicalRows: 0 });
+  });
+
+  it('makes an exact source-report retry idempotent and rechecks canonical counts', async () => {
+    const marketplaceId = 'marketplace-idempotent';
+    const input = promotionInput({
+      orgId,
+      profileId,
+      marketplaceId,
+      requestIdentity: 'source-idempotent',
+      requestedAt: '2026-08-23T02:00:00Z',
+      rows: [fact(profileId, {
+        marketplaceId,
+        searchQuery: 'Idempotent Synthetic Query',
+        normalizedQuery: 'idempotent synthetic query',
+      })],
+    });
+
+    const first = await promoteSqpWeeklyFacts(database, input);
+    const retry = await promoteSqpWeeklyFacts(database, input);
+    expect(first).toMatchObject({ status: 'promoted', promotedRows: 1, canonicalRows: 1 });
+    expect(retry).toMatchObject({
+      status: 'already_promoted',
+      promotionRunId: first.promotionRunId,
+      deletedRows: 0,
+      promotedRows: 0,
+      upserts: 0,
+      canonicalRows: 1,
+    });
+    const [ledger] = await database.sql<{ n: string }[]>`
+      select count(*) as n from public.sqp_promotion_runs
+       where profile_id = ${profileId} and request_identity = 'source-idempotent'
+    `;
+    expect(Number(ledger?.n)).toBe(1);
+  });
+
+  it('rejects an older overlapping ASIN scope before any canonical replacement', async () => {
+    const marketplaceId = 'marketplace-stale';
+    const newer = promotionInput({
+      orgId,
+      profileId,
+      marketplaceId,
+      requestIdentity: 'source-newer',
+      requestedAt: '2026-08-24T03:00:00Z',
+      rows: [fact(profileId, {
+        marketplaceId,
+        searchQuery: 'Newer Synthetic Evidence',
+        normalizedQuery: 'newer synthetic evidence',
+        asinClicks: 9,
+      })],
+    });
+    await promoteSqpWeeklyFacts(database, newer);
+
+    const stale = promotionInput({
+      orgId,
+      profileId,
+      marketplaceId,
+      requestIdentity: 'source-stale',
+      requestedAt: '2026-08-24T02:00:00Z',
+      requestedAsins: ['B000000001', 'B000000002'],
+      rows: [
+        fact(profileId, {
+          marketplaceId,
+          searchQuery: 'Stale Synthetic Evidence',
+          normalizedQuery: 'stale synthetic evidence',
+          asinClicks: 1,
+        }),
+        fact(profileId, {
+          marketplaceId,
+          asin: 'B000000002',
+          searchQuery: 'Stale Second ASIN',
+          normalizedQuery: 'stale second asin',
+        }),
+      ],
+    });
+    await expect(promoteSqpWeeklyFacts(database, stale)).rejects.toBeInstanceOf(
+      StaleSqpPromotionError,
+    );
+    const readBack = await readSqpWeeklyFacts(database, {
+      orgId,
+      profileId,
+      marketplaceId,
+      weekStart: WEEK_START,
+    });
+    expect(readBack).toHaveLength(1);
+    expect(readBack[0]).toMatchObject({
+      normalizedQuery: 'newer synthetic evidence',
+      asinClicks: 9,
+    });
+    const [staleRuns] = await database.sql<{ n: string }[]>`
+      select count(*) as n from public.sqp_promotion_runs
+       where profile_id = ${profileId} and request_identity = 'source-stale'
+    `;
+    expect(Number(staleRuns?.n)).toBe(0);
+  });
+
+  it('serializes concurrent overlapping batches and leaves the newer evidence canonical', async () => {
+    const marketplaceId = 'marketplace-concurrent';
+    const requestedAsins = ['B000000001', 'B000000002'];
+    const older = promotionInput({
+      orgId,
+      profileId,
+      marketplaceId,
+      requestIdentity: 'source-concurrent-older',
+      requestedAt: '2026-08-25T01:00:00Z',
+      requestedAsins,
+      rows: requestedAsins.map((asin, index) => fact(profileId, {
+        marketplaceId,
+        asin,
+        searchQuery: `Concurrent Older ${index}`,
+        normalizedQuery: `concurrent older ${index}`,
+        asinClicks: 1,
+      })),
+    });
+    const newer = promotionInput({
+      orgId,
+      profileId,
+      marketplaceId,
+      requestIdentity: 'source-concurrent-newer',
+      requestedAt: '2026-08-25T02:00:00Z',
+      requestedAsins: [...requestedAsins].reverse(),
+      rows: requestedAsins.map((asin, index) => fact(profileId, {
+        marketplaceId,
+        asin,
+        searchQuery: `Concurrent Newer ${index}`,
+        normalizedQuery: `concurrent newer ${index}`,
+        asinClicks: 7 + index,
+      })),
+    });
+
+    const [olderResult, newerResult] = await Promise.allSettled([
+      promoteSqpWeeklyFacts(database, older),
+      promoteSqpWeeklyFacts(database, newer),
+    ]);
+    expect(newerResult.status).toBe('fulfilled');
+    if (olderResult.status === 'rejected') {
+      expect(olderResult.reason).toBeInstanceOf(StaleSqpPromotionError);
+    }
+    const readBack = await readSqpWeeklyFacts(database, {
+      orgId,
+      profileId,
+      marketplaceId,
+      weekStart: WEEK_START,
+    });
+    expect(readBack.map((row) => [row.asin, row.normalizedQuery, row.asinClicks])).toEqual([
+      ['B000000001', 'concurrent newer 0', 7],
+      ['B000000002', 'concurrent newer 1', 8],
+    ]);
   });
 
   it('keeps AI vocabulary pending until review and never undoes approval', async () => {
@@ -309,5 +463,61 @@ function fact(profileId: string, overrides: Partial<SqpWeeklyFact> = {}): SqpWee
     asinPurchases: 2,
     asinPurchaseShare: 0.4,
     ...overrides,
+  };
+}
+
+function promotionSource(
+  requestIdentity: string,
+  requestedAsins: readonly string[],
+  requestedAtValue: string,
+): Pick<
+  Parameters<typeof promoteSqpWeeklyFacts>[1],
+  'requestIdentity' | 'requestedAt' | 'completedAt' | 'sourceReports'
+> {
+  const requestedAt = new Date(requestedAtValue);
+  const completedAt = new Date(requestedAt.valueOf() + 300_000);
+  return {
+    requestIdentity,
+    requestedAt,
+    completedAt,
+    sourceReports: [{
+      requestKey: `request-${requestIdentity}`,
+      reportId: `report-${requestIdentity}`,
+      reportDocumentId: `document-${requestIdentity}`,
+      requestedAt,
+      completedAt,
+      providerCreatedAt: new Date(requestedAt.valueOf() + 1_000),
+      requestedAsins,
+    }],
+  };
+}
+
+function promotionInput(input: {
+  orgId: string;
+  profileId: string;
+  marketplaceId: string;
+  requestIdentity: string;
+  requestedAt: string;
+  requestedAsins?: readonly string[];
+  rows: readonly SqpWeeklyFact[];
+}): Parameters<typeof promoteSqpWeeklyFacts>[1] {
+  const requestedAsins = input.requestedAsins ?? ['B000000001'];
+  return {
+    orgId: input.orgId,
+    profileId: input.profileId,
+    marketplaceId: input.marketplaceId,
+    weekStart: WEEK_START,
+    weekEnd: WEEK_END,
+    requestedAsins,
+    ...promotionSource(input.requestIdentity, requestedAsins, input.requestedAt),
+    rows: input.rows,
+    counts: {
+      sourceAsins: new Set(input.rows.map((row) => row.asin)).size,
+      sourceRows: input.rows.length,
+      parsedRows: input.rows.length,
+      deduplicatedRows: input.rows.length,
+      refusedRows: 0,
+      upserts: input.rows.length,
+    },
   };
 }

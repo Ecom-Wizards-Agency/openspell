@@ -409,6 +409,62 @@ create unique index fact_sqp_weekly_normalized_grain_key
     (profile_id, marketplace_id, week_start, asin, normalized_query)
   where marketplace_id is not null and normalized_query is not null;
 
+-- Immutable provenance for complete SQP promotions. Brand Analytics SQP is an
+-- SP-API source, so it must not be mislabeled with an Ads Reporting source
+-- enum. The application serializes overlapping scopes with sorted per-ASIN
+-- transaction advisory locks, then uses the newest overlapping row as the
+-- freshness watermark before replacing canonical facts.
+create table public.sqp_promotion_runs (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references public.orgs (id) on delete cascade,
+  profile_id uuid not null,
+  marketplace_id text not null,
+  week_start date not null,
+  source_system text not null,
+  request_identity text not null,
+  requested_at timestamptz not null,
+  completed_at timestamptz not null,
+  promoted_at timestamptz not null default now(),
+  requested_asins text[] not null,
+  source_reports jsonb not null,
+  input_fingerprint text not null,
+  source_asins bigint not null,
+  source_rows bigint not null,
+  parsed_rows bigint not null,
+  deduplicated_rows bigint not null,
+  refused_rows bigint not null,
+  promoted_rows bigint not null,
+  canonical_rows bigint not null,
+  constraint sqp_promotion_runs_profile_fkey foreign key (org_id, profile_id)
+    references public.ad_profiles (org_id, id) on delete cascade,
+  constraint sqp_promotion_runs_source_system_check
+    check (source_system = 'amazon_sp_api_brand_analytics'),
+  constraint sqp_promotion_runs_marketplace_nonempty check (btrim(marketplace_id) <> ''),
+  constraint sqp_promotion_runs_request_identity_nonempty check (btrim(request_identity) <> ''),
+  constraint sqp_promotion_runs_time_order check (completed_at >= requested_at),
+  constraint sqp_promotion_runs_asins_nonempty check (cardinality(requested_asins) > 0),
+  constraint sqp_promotion_runs_source_reports_nonempty check (
+    jsonb_typeof(source_reports) = 'array' and jsonb_array_length(source_reports) > 0
+  ),
+  constraint sqp_promotion_runs_counts_nonnegative check (
+    source_asins >= 0 and source_rows >= 0 and parsed_rows >= 0
+    and deduplicated_rows >= 0 and refused_rows >= 0
+    and promoted_rows >= 0 and canonical_rows >= 0
+  ),
+  constraint sqp_promotion_runs_source_reconciled check (
+    source_rows = parsed_rows + refused_rows
+  ),
+  constraint sqp_promotion_runs_promoted_reconciled check (
+    deduplicated_rows = promoted_rows and promoted_rows = canonical_rows
+  ),
+  unique (profile_id, request_identity)
+);
+
+create index sqp_promotion_runs_scope_freshness_idx
+  on public.sqp_promotion_runs
+    (profile_id, marketplace_id, week_start, requested_at desc);
+select app.install_tenant_rls('public.sqp_promotion_runs');
+
 create table public.query_vocabulary (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null references public.orgs (id) on delete cascade,

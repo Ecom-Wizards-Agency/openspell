@@ -147,6 +147,72 @@ export const reportPromotionWatermarks = pgTable(
   ],
 );
 
+/**
+ * Immutable SQP promotion provenance.
+ *
+ * SQP reports come from SP-API Brand Analytics, which is intentionally not
+ * mislabeled as an Ads Reporting v3/unified-reporting source. Each row owns a
+ * complete requested-ASIN scope. The query layer takes sorted, per-ASIN
+ * transaction advisory locks and treats the newest overlapping run as the
+ * freshness watermark.
+ */
+export const sqpPromotionRuns = pgTable(
+  'sqp_promotion_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull(),
+    marketplaceId: text('marketplace_id').notNull(),
+    weekStart: date('week_start').notNull(),
+    sourceSystem: text('source_system').notNull(),
+    requestIdentity: text('request_identity').notNull(),
+    requestedAt: ts('requested_at').notNull(),
+    completedAt: ts('completed_at').notNull(),
+    promotedAt: ts('promoted_at').notNull().defaultNow(),
+    requestedAsins: text('requested_asins').array().notNull(),
+    sourceReports: jsonb('source_reports').notNull(),
+    inputFingerprint: text('input_fingerprint').notNull(),
+    sourceAsins: count('source_asins').notNull(),
+    sourceRows: count('source_rows').notNull(),
+    parsedRows: count('parsed_rows').notNull(),
+    deduplicatedRows: count('deduplicated_rows').notNull(),
+    refusedRows: count('refused_rows').notNull(),
+    promotedRows: count('promoted_rows').notNull(),
+    canonicalRows: count('canonical_rows').notNull(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.orgId, t.profileId], foreignColumns: [adProfiles.orgId, adProfiles.id] })
+      .onDelete('cascade'),
+    uniqueIndex('sqp_promotion_runs_profile_id_request_identity_key').on(
+      t.profileId,
+      t.requestIdentity,
+    ),
+    index('sqp_promotion_runs_scope_freshness_idx').on(
+      t.profileId,
+      t.marketplaceId,
+      t.weekStart,
+      t.requestedAt,
+    ),
+    check('sqp_promotion_runs_source_system_check', sql`${t.sourceSystem} = 'amazon_sp_api_brand_analytics'`),
+    check('sqp_promotion_runs_marketplace_nonempty', sql`btrim(${t.marketplaceId}) <> ''`),
+    check('sqp_promotion_runs_request_identity_nonempty', sql`btrim(${t.requestIdentity}) <> ''`),
+    check('sqp_promotion_runs_time_order', sql`${t.completedAt} >= ${t.requestedAt}`),
+    check('sqp_promotion_runs_asins_nonempty', sql`cardinality(${t.requestedAsins}) > 0`),
+    check(
+      'sqp_promotion_runs_source_reports_nonempty',
+      sql`jsonb_typeof(${t.sourceReports}) = 'array' and jsonb_array_length(${t.sourceReports}) > 0`,
+    ),
+    check(
+      'sqp_promotion_runs_source_reconciled',
+      sql`${t.sourceRows} = ${t.parsedRows} + ${t.refusedRows}`,
+    ),
+    check(
+      'sqp_promotion_runs_promoted_reconciled',
+      sql`${t.deduplicatedRows} = ${t.promotedRows} and ${t.promotedRows} = ${t.canonicalRows}`,
+    ),
+  ],
+);
+
 export const attributionObservations = pgTable(
   'attribution_observations',
   {
