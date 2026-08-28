@@ -4,6 +4,7 @@ export * from './config.js';
 export * from './crosscheck.js';
 export * from './creative-performance.js';
 export * from './datadive.js';
+export * from './dayparting.js';
 export * from './health.js';
 export * from './keepa.js';
 export * from './mrp.js';
