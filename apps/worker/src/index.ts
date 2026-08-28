@@ -12,6 +12,7 @@ export * from './parsers.js';
 export * from './region-token-buckets.js';
 export * from './recommendations-run.js';
 export * from './schedules.js';
+export * from './sqp.js';
 export * from './history-planning.js';
 export * from './report-promotion.js';
 export * from './store.js';
