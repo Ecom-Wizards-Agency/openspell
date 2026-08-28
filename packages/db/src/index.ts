@@ -51,6 +51,7 @@ export * from './queries/keepa.js';
 export * from './queries/partitions.js';
 export * from './queries/profiles.js';
 export * from './queries/recommendations.js';
+export * from './queries/report-promotion.js';
 export * from './queries/tags.js';
 export * from './queries/time-machine.js';
 export * from './queries/tokens.js';
