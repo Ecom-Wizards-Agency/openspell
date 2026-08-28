@@ -60,9 +60,11 @@ No history depth or settling threshold is embedded as tenant doctrine.
 - Pure tests cover count reconciliation, mixed-date refusal, report-kind
   refusal, exact per-date handoff, zero-row dates, bounded contiguous history
   windows, missing dates and settling.
-- A disposable-PostgreSQL test is present for stale-row removal, two attribution
-  revisions, idempotency and late-request rejection. It uses only synthetic
-  tenants and is skipped when no local test database is available.
+- The disposable-PostgreSQL 17 transaction suite executed with synthetic
+  tenants and passed stale-row removal, two attribution revisions, idempotency,
+  canonical-count readback, and late-request rejection. The test date is kept
+  outside the tenant fixture's seeded current-day fact so its empty-scope
+  assertion is real rather than accidental.
 - Package tests, lint and public-repository hygiene are required before handoff.
 
 ## Remaining integration gates
@@ -73,7 +75,5 @@ No history depth or settling threshold is embedded as tenant doctrine.
   become relationally constrained.
 - Decide and test canonical precedence when Reporting v3 and unified reports
   overlap after a profile passes a side-by-side parity gate.
-- Run the disposable-PostgreSQL transaction test in CI or a local database job;
-  a skipped test is not evidence that the SQL transaction executed.
 - Promote coverage/progress rows only from the orchestrator that can assert
   request, response and canonical counts for the full bootstrap.
