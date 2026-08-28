@@ -52,8 +52,8 @@ describe('SQP request construction', () => {
       {
         reportType: 'GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT',
         marketplaceId: 'marketplace-1',
-        dataStartTime: '2026-08-16',
-        dataEndTime: '2026-08-22',
+        dataStartTime: '2026-08-16T00:00:00.000Z',
+        dataEndTime: '2026-08-22T23:59:59.999Z',
         reportOptions: { reportPeriod: 'WEEK', asin: 'B000000001 B000000002' },
       },
     ]);

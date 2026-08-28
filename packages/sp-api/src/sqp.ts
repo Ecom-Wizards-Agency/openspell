@@ -62,8 +62,11 @@ export function buildSqpReportRequests(input: {
   return batchSqpAsins(input.asins).map((batch) => ({
     reportType: SQP_REPORT_TYPE,
     marketplaceId: input.marketplaceId,
-    dataStartTime: input.weekStart,
-    dataEndTime: input.weekEnd,
+    // Reports v2021-06-30 requires RFC 3339 date-times. Keep the public
+    // builder week-shaped, then expand the verified Sunday-Saturday period to
+    // the complete UTC days only at the transport boundary.
+    dataStartTime: `${input.weekStart}T00:00:00.000Z`,
+    dataEndTime: `${input.weekEnd}T23:59:59.999Z`,
     reportOptions: { reportPeriod: 'WEEK', asin: batch.join(' ') },
   }));
 }
