@@ -27,6 +27,8 @@ import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from '
 import type { ColumnDef } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { GridColumn } from './columns.js';
+import { isGroupedRow } from './aggregate.js';
+import type { GroupedRow } from './aggregate.js';
 import { formatDelta, formatInteger, formatValue } from './format.js';
 import type { FormatContext } from './format.js';
 import { metricSpec } from './metrics.js';
@@ -75,6 +77,17 @@ interface CellProps {
 function Cell({ row, column, context }: CellProps): ReactNode {
   const value = resolveField(row, column.id);
   const ref = parseFieldId(column.id);
+
+  if (isGroupedRow(row) && row.groupDepth >= 0 && column.kind === 'dimension') {
+    if (row.groupColumnId !== column.id) return null;
+    return (
+      <span data-testid={`group-level-${row.groupDepth + 1}`} style={groupCell}>
+        {row.groupDepth === 0 ? null : <span aria-hidden style={groupBranch}>↳</span>}
+        <span style={groupValue}>{formatValue(value, column.scale, context)}</span>
+        <span style={groupCount}>{formatInteger(row.groupSize, context.locale)} rows</span>
+      </span>
+    );
+  }
 
   if (column.cell === 'suggested_bid') {
     const low = resolveField(row, 'suggested_bid_low');
@@ -188,7 +201,7 @@ export function DataGrid({
    * meaningful relative to an ordering, so when the ordering changes the offset
    * stops meaning anything.
    */
-  const orderKey = `${sort.map((rule) => `${rule.columnId}:${rule.direction}`).join(',')}|${model.matched}|${model.grouped}`;
+  const orderKey = `${sort.map((rule) => `${rule.columnId}:${rule.direction}`).join(',')}|${model.matched}|${model.groupBy.join(',')}`;
   useEffect(() => {
     const element = scrollRef.current;
     if (element !== null) element.scrollTop = 0;
@@ -205,6 +218,9 @@ export function DataGrid({
         className="wa-grid-scroller"
         style={{ ...scroller, height }}
         data-testid="grid-scroller"
+        role={model.grouped ? 'treegrid' : 'grid'}
+        aria-label={model.grouped ? `Results grouped by ${model.groupBy.join(', ')}` : 'Results'}
+        aria-rowcount={model.shown + (totalsRow === null ? 1 : 2)}
       >
         <div style={{ width: totalWidth, minWidth: '100%' }}>
           <div style={headerRow} role="row">
@@ -315,7 +331,9 @@ export function DataGrid({
                     }}
                   >
                     {isFirst ? (
-                      `Total · ${formatInteger(model.shown, locale)} row${model.shown === 1 ? '' : 's'}`
+                      model.grouped
+                        ? `Total · ${formatInteger(model.matched, locale)} source row${model.matched === 1 ? '' : 's'}`
+                        : `Total · ${formatInteger(model.shown, locale)} row${model.shown === 1 ? '' : 's'}`
                     ) : definition === undefined ? null : (
                       <Cell row={totalsRow} column={definition} context={formatContext} />
                     )}
@@ -333,11 +351,21 @@ export function DataGrid({
                 const row = rows[item.index];
                 if (row === undefined) return null;
                 const isSelected = selected.has(row.id);
+                const groupedRow = isGroupedRow(row.original) && row.original.groupDepth >= 0
+                  ? row.original
+                  : null;
                 return (
                   <div
                     key={row.id}
                     role="row"
                     aria-selected={isSelected}
+                    {...(groupedRow === null
+                      ? {}
+                      : {
+                          'aria-level': groupedRow.groupDepth + 1,
+                          'aria-label': groupRowLabel(groupedRow, columns, formatContext),
+                          'data-group-level': String(groupedRow.groupDepth + 1),
+                        })}
                     data-testid="grid-row"
                     onClick={() => onRowClick?.(row.original)}
                     style={{
@@ -346,9 +374,14 @@ export function DataGrid({
                       cursor: onRowClick === undefined ? 'default' : 'pointer',
                       background: isSelected
                         ? tokens.color.indigoSoft
-                        : item.index % 2 === 0
-                          ? tokens.color.surface
-                          : tokens.color.surfaceAlt,
+                        : groupedRow !== null && !groupedRow.isLeafGroup
+                          ? tokens.color.surfaceAlt
+                          : item.index % 2 === 0
+                            ? tokens.color.surface
+                            : tokens.color.surfaceAlt,
+                      ...(groupedRow?.groupDepth === 0
+                        ? { borderTop: `1px solid ${tokens.color.borderStrong}` }
+                        : {}),
                     }}
                   >
                     {row.getVisibleCells().map((cell) => {
@@ -386,8 +419,9 @@ export function DataGrid({
 
       <div style={footer}>
         <span>
-          {formatInteger(model.shown, locale)} of {formatInteger(model.total, locale)} rows
-          {model.grouped ? ` · grouped from ${formatInteger(model.matched, locale)}` : ''}
+          {model.grouped
+            ? `${formatInteger(model.shown, locale)} hierarchy rows · ${formatInteger(model.exported, locale)} deepest groups · ${formatInteger(model.matched, locale)} matched source rows of ${formatInteger(model.total, locale)}`
+            : `${formatInteger(model.shown, locale)} of ${formatInteger(model.total, locale)} rows`}
         </span>
         {model.grouped ? (
           <span style={{ color: tokens.color.textMuted }}>
@@ -397,6 +431,17 @@ export function DataGrid({
       </div>
     </div>
   );
+}
+
+function groupRowLabel(
+  row: GroupedRow,
+  columns: readonly GridColumn[],
+  context: FormatContext,
+): string {
+  const column = columns.find((candidate) => candidate.id === row.groupColumnId);
+  const label = column?.header ?? row.groupColumnId;
+  const value = formatValue(resolveField(row, row.groupColumnId), column?.scale ?? 'text', context);
+  return `Grouping level ${row.groupDepth + 1} of ${row.groupBy.length}: ${label} ${value}; ${formatInteger(row.groupSize, context.locale)} source rows`;
 }
 
 /**
@@ -553,6 +598,30 @@ const cellSubline: CSSProperties = {
   color: tokens.color.textMuted,
   fontSize: tokens.font.size.xs,
   marginTop: '0.125rem',
+};
+
+const groupCell: CSSProperties = {
+  alignItems: 'center',
+  display: 'inline-flex',
+  gap: tokens.space(1),
+  maxWidth: '100%',
+};
+
+const groupBranch: CSSProperties = {
+  color: tokens.color.textMuted,
+  flex: '0 0 auto',
+};
+
+const groupValue: CSSProperties = {
+  fontWeight: 600,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+};
+
+const groupCount: CSSProperties = {
+  color: tokens.color.textMuted,
+  flex: '0 0 auto',
+  fontSize: tokens.font.size.xs,
 };
 
 const emptyState: CSSProperties = {

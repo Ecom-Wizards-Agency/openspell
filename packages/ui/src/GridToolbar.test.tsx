@@ -22,7 +22,11 @@ import type { FilterSet } from './filter.js';
 const available = columnsFor('search_terms');
 const model = buildGridModel(syntheticSearchTermRows(20, { seed: 2 }));
 
-function renderToolbar(onFilterChange = vi.fn(), onExport?: () => void) {
+function renderToolbar(
+  onFilterChange = vi.fn(),
+  onExport?: () => void,
+  options: { groupBy?: readonly string[]; onGroupByChange?: (levels: string[]) => void } = {},
+) {
   render(
     <GridToolbar
       entity="search_terms"
@@ -31,8 +35,8 @@ function renderToolbar(onFilterChange = vi.fn(), onExport?: () => void) {
       onVisibleChange={() => {}}
       filter={{ groups: [] }}
       onFilterChange={onFilterChange}
-      groupBy={[]}
-      onGroupByChange={() => {}}
+      groupBy={options.groupBy ?? []}
+      onGroupByChange={options.onGroupByChange ?? (() => {})}
       model={model}
       {...(onExport === undefined ? {} : { onExport })}
     />,
@@ -112,5 +116,67 @@ describe('GridToolbar filter draft', () => {
     fireEvent.change(screen.getByLabelText('Filter value'), { target: { value: 'widget' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     expect(onFilterChange).not.toHaveBeenCalled();
+  });
+
+  it('adds only unused dimensions as ordered grouping levels', () => {
+    const onGroupByChange = vi.fn();
+    renderToolbar(vi.fn(), undefined, {
+      groupBy: ['campaign_name', 'ad_group_name'],
+      onGroupByChange,
+    });
+    const add = screen.getByLabelText('Add grouping level') as HTMLSelectElement;
+    expect([...add.options].some((option) => option.value === 'campaign_name')).toBe(false);
+    expect([...add.options].some((option) => option.value === 'ad_group_name')).toBe(false);
+
+    fireEvent.change(add, { target: { value: 'match_type' } });
+    expect(onGroupByChange).toHaveBeenCalledWith([
+      'campaign_name',
+      'ad_group_name',
+      'match_type',
+    ]);
+  });
+
+  it('shows accessible move and remove controls for every grouping level', () => {
+    const onGroupByChange = vi.fn();
+    renderToolbar(vi.fn(), undefined, {
+      groupBy: ['campaign_name', 'ad_group_name', 'match_type'],
+      onGroupByChange,
+    });
+
+    expect(screen.getByRole('list', { name: 'Ordered grouping levels' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Move Ad group up' }));
+    expect(onGroupByChange).toHaveBeenCalledWith([
+      'ad_group_name',
+      'campaign_name',
+      'match_type',
+    ]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove grouping level Match' }));
+    expect(onGroupByChange).toHaveBeenLastCalledWith(['campaign_name', 'ad_group_name']);
+    expect(screen.getByRole('button', { name: 'Move Campaign up' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Move Match down' }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('states that a grouped export contains deepest groups, not hierarchy rows', () => {
+    const groupedModel = buildGridModel(syntheticSearchTermRows(100, { seed: 14 }), {
+      groupBy: ['campaign_name', 'ad_group_name', 'match_type'],
+    });
+    render(
+      <GridToolbar
+        entity="search_terms"
+        available={available}
+        visible={defaultVisibleColumns('search_terms')}
+        onVisibleChange={() => {}}
+        filter={{ groups: [] }}
+        onFilterChange={() => {}}
+        groupBy={groupedModel.groupBy}
+        onGroupByChange={() => {}}
+        model={groupedModel}
+        onExport={() => {}}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: `Export CSV (${groupedModel.exported} deepest groups)` }),
+    ).toBeTruthy();
   });
 });

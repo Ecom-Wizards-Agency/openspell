@@ -45,6 +45,9 @@ const visibleIds = defaultVisibleColumns('search_terms');
 const visible = visibleIds
   .map((id) => available.find((column) => column.id === id))
   .filter((column): column is NonNullable<typeof column> => column !== undefined);
+const groupedVisible = ['campaign_name', 'ad_group_name', 'match_type', 'spend', 'sales', 'acos']
+  .map((id) => available.find((column) => column.id === id))
+  .filter((column): column is NonNullable<typeof column> => column !== undefined);
 
 function renderGrid(rowCount: number, options: { groupBy?: string[] } = {}) {
   const rows = syntheticSearchTermRows(rowCount, { seed: 20260814 });
@@ -126,6 +129,43 @@ describe('DataGrid over 50k rows', () => {
     renderGrid(5_000, { groupBy: ['campaign_name'] });
     expect(
       screen.getByText(/Ratio metrics recomputed from summed bases, never averaged\./),
+    ).toBeTruthy();
+  });
+
+  it('renders three hierarchy levels with accessible labels and truthful counts', () => {
+    const rows = syntheticSearchTermRows(3_597, { seed: 44 });
+    const model = buildGridModel(rows, {
+      groupBy: ['campaign_name', 'ad_group_name', 'match_type'],
+      sort: [{ columnId: 'spend', direction: 'desc' }],
+    });
+    render(
+      <DataGrid
+        model={model}
+        columns={groupedVisible}
+        currencyCode="USD"
+        sort={[{ columnId: 'spend', direction: 'desc' }]}
+        onSortChange={() => {}}
+        height={VIEWPORT.height}
+        rowHeight={ROW_HEIGHT}
+        initialRect={VIEWPORT}
+      />,
+    );
+
+    expect(
+      screen.getByRole('treegrid', {
+        name: 'Results grouped by campaign_name, ad_group_name, match_type',
+      }),
+    ).toBeTruthy();
+    const rendered = screen.getAllByTestId('grid-row');
+    expect(rendered.some((row) => row.getAttribute('aria-level') === '1')).toBe(true);
+    expect(rendered.some((row) => row.getAttribute('aria-level') === '2')).toBe(true);
+    expect(rendered.some((row) => row.getAttribute('aria-level') === '3')).toBe(true);
+    expect(rendered.some((row) => row.getAttribute('aria-label')?.startsWith('Grouping level 2 of 3: Ad group '))).toBe(true);
+    expect(screen.getByText('Total · 3,597 source rows')).toBeTruthy();
+    expect(
+      screen.getByText(
+        `${model.shown} hierarchy rows · ${model.exported} deepest groups · 3,597 matched source rows of 3,597`,
+      ),
     ).toBeTruthy();
   });
 

@@ -135,14 +135,16 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
       const [layout, list] = await Promise.all([store.lastLayout(props.entity), store.list(props.entity)]);
       if (cancelled) return;
       if (props.campaignId !== null) setView(defaultView(props.entity, props.campaignId));
-      else if (layout !== null) setView({ ...layout, id: 'default', name: 'Default' });
+      else if (layout !== null) {
+        setView(withValidGrouping({ ...layout, id: 'default', name: 'Default' }, available));
+      }
       else setView(defaultView(props.entity, null));
       setSaved(list);
     })();
     return () => {
       cancelled = true;
     };
-  }, [props.campaignId, props.entity, store]);
+  }, [available, props.campaignId, props.entity, store]);
 
   const update = useCallback(
     (patch: Partial<SavedView>) => {
@@ -175,7 +177,7 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
   const visibleColumns = useMemo<GridColumn[]>(() => {
     const byId = new Map(available.map((column) => [column.id, column]));
     const wanted = model.grouped
-      ? [...view.groupBy, ...view.columns.filter((id) => byId.get(id)?.kind === 'metric')]
+      ? [...model.groupBy, ...view.columns.filter((id) => byId.get(id)?.kind === 'metric')]
       : view.columns;
     return wanted
       .map((id) => byId.get(id))
@@ -185,7 +187,7 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
         const pinned = view.pinned.includes(column.id);
         return { ...column, ...(width === undefined ? {} : { width }), pinned };
       });
-  }, [available, model.grouped, view.columns, view.groupBy, view.pinned, view.widths]);
+  }, [available, model.groupBy, model.grouped, view.columns, view.pinned, view.widths]);
 
   const handleExport = useCallback(() => {
     const result = toCsv(model, {
@@ -201,10 +203,10 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
   const handleSaveView = useCallback(
     (name: string) => {
       if (store === null) return;
-      const toSave: SavedView = { ...view, id: newViewId(), name };
+      const toSave: SavedView = { ...view, groupBy: model.groupBy, id: newViewId(), name };
       void store.save(toSave).then(() => store.list(props.entity)).then(setSaved);
     },
-    [props.entity, store, view],
+    [model.groupBy, props.entity, store, view],
   );
 
   const handleReorder = useCallback(
@@ -228,7 +230,7 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
     if (mapping === undefined) return null;
     const ids = Array.from(
       new Set(
-        model.rows
+        model.exportRows
           .map((row) => row.dimensions[mapping.key])
           .filter((value): value is string | number => value !== null && value !== undefined)
           .map((value) => String(value)),
@@ -238,7 +240,7 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
     const params = new URLSearchParams({ profile: props.profileId, entity: props.entity });
     params.set(mapping.param, ids.join(','));
     return `/experiments/new?${params.toString()}`;
-  }, [model.rows, props.entity, props.profileId]);
+  }, [model.exportRows, props.entity, props.profileId]);
 
   return (
     // `wa-embed` sets the inherited text colour and chromes the bare controls
@@ -260,12 +262,12 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
         onVisibleChange={(columns) => update({ columns })}
         filter={view.filter}
         onFilterChange={(filter) => update({ filter })}
-        groupBy={view.groupBy}
+        groupBy={model.groupBy}
         onGroupByChange={(groupBy) => update({ groupBy })}
         model={model}
         onExport={handleExport}
         views={saved}
-        onApplyView={(applied) => setView(applied)}
+        onApplyView={(applied) => setView(withValidGrouping(applied, available))}
         onSaveView={handleSaveView}
       />
 
@@ -325,6 +327,19 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
       )}
     </div>
   );
+}
+
+export function withValidGrouping(view: SavedView, available: readonly GridColumn[]): SavedView {
+  const dimensions = new Set(
+    available.filter((column) => column.kind === 'dimension').map((column) => column.id),
+  );
+  const requested = Array.isArray(view.groupBy)
+    ? view.groupBy.filter((columnId): columnId is string => typeof columnId === 'string')
+    : [];
+  return {
+    ...view,
+    groupBy: [...new Set(requested)].filter((columnId) => dimensions.has(columnId)),
+  };
 }
 
 /**
