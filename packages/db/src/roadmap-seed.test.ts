@@ -36,6 +36,7 @@ describe.skipIf(!available)('the roadmap seed', () => {
     const first = await seedRoadmap(database, { orgId });
     expect(first.offered).toBe(ROADMAP_ITEMS.length);
     expect(first.created).toBe(ROADMAP_ITEMS.length);
+    expect(first.updated).toBe(0);
     expect(first.alreadyPresent).toBe(0);
     expect(first.authorId).toBe(OWNER);
 
@@ -49,6 +50,7 @@ describe.skipIf(!available)('the roadmap seed', () => {
   it('is idempotent: a second run creates nothing', async () => {
     const again = await seedRoadmap(database, { orgId });
     expect(again.created).toBe(0);
+    expect(again.updated).toBe(0);
     expect(again.alreadyPresent).toBe(ROADMAP_ITEMS.length);
 
     const [count] = await database.sql<{ count: string }[]>`
@@ -56,6 +58,44 @@ describe.skipIf(!available)('the roadmap seed', () => {
     `;
     // The tenant fixture's own bug report is the one extra row.
     expect(Number(count?.count)).toBe(ROADMAP_ITEMS.length + 1);
+  });
+
+  it('previews and applies planned-card content updates without duplicating aliases', async () => {
+    const item = ROADMAP_ITEMS.find((candidate) => (candidate.aliases?.length ?? 0) > 0);
+    expect(item).toBeDefined();
+    if (!item) return;
+    const alias = item.aliases?.[0];
+    expect(alias).toBeDefined();
+    if (!alias) return;
+
+    await database.sql`
+      update public.feedback_items
+         set title = ${alias}, body = 'Older roadmap copy'
+       where org_id = ${orgId} and title = ${item.title}
+    `;
+
+    const preview = await seedRoadmap(database, { orgId, dryRun: true });
+    expect(preview.created).toBe(0);
+    expect(preview.updated).toBe(1);
+    expect(preview.alreadyPresent).toBe(ROADMAP_ITEMS.length - 1);
+    const [unchanged] = await database.sql<{ title: string; body: string }[]>`
+      select title, body from public.feedback_items
+       where org_id = ${orgId} and title = ${alias}
+    `;
+    expect(unchanged).toEqual({ title: alias, body: 'Older roadmap copy' });
+
+    const applied = await seedRoadmap(database, { orgId });
+    expect(applied).toMatchObject({ created: 0, updated: 1, alreadyPresent: ROADMAP_ITEMS.length - 1 });
+    const [canonical] = await database.sql<{ title: string; body: string }[]>`
+      select title, body from public.feedback_items
+       where org_id = ${orgId} and title = ${item.title}
+    `;
+    expect(canonical).toEqual({ title: item.title, body: item.body });
+    const [count] = await database.sql<{ count: string }[]>`
+      select count(*) as count from public.feedback_items
+       where org_id = ${orgId} and title in (${item.title}, ${alias})
+    `;
+    expect(Number(count?.count)).toBe(1);
   });
 
   it('lands the items on the board, in vote order', async () => {
