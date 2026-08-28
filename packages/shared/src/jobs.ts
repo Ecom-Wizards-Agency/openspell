@@ -24,6 +24,16 @@ export const JobType = z.enum([
 ]);
 export type JobType = z.infer<typeof JobType>;
 
+/** New worker jobs are separate until their dispatcher handlers land. */
+export const FeatureJobType = z.enum([
+  'creative.sync',
+  'sqp.request',
+  'history.bootstrap',
+  'report.promote',
+  'marketing_stream.normalize',
+]);
+export type FeatureJobType = z.infer<typeof FeatureJobType>;
+
 /** v1 report types. Names follow Amazon's Reporting v3 report type ids. */
 export const ReportType = z.enum([
   'spCampaigns',
@@ -34,6 +44,12 @@ export const ReportType = z.enum([
   'sdCampaigns',
 ]);
 export type ReportType = z.infer<typeof ReportType>;
+
+/** Additive report surfaces not yet implemented by the legacy Ads API client. */
+export const FeatureReportType = z.enum(['sbAds']);
+export type FeatureReportType = z.infer<typeof FeatureReportType>;
+export const WorkerReportType = z.union([ReportType, FeatureReportType]);
+export type WorkerReportType = z.infer<typeof WorkerReportType>;
 
 /** Every job is scoped to one org and one profile. RLS depends on it. */
 const jobBase = {
@@ -90,6 +106,8 @@ export const RecommendationsRunJob = z.object({
   type: z.literal(JobType.enum['recommendations.run']),
   runId: Uuid,
   lookbackDays: z.number().int().positive(),
+  /** When present, the run evaluates only this due group and carries its snapshot. */
+  groupId: Uuid.optional(),
 });
 
 export const KeepaSyncJob = z.object({
@@ -116,6 +134,45 @@ export const SqpCategorizeJob = z.object({
   weekStart: IsoDate,
 });
 
+export const CreativeSyncJob = z.object({
+  ...jobBase,
+  type: z.literal(FeatureJobType.enum['creative.sync']),
+  startDate: IsoDate,
+  endDate: IsoDate,
+  adProduct: z.literal('SB'),
+});
+
+export const SqpRequestJob = z.object({
+  ...jobBase,
+  type: z.literal(FeatureJobType.enum['sqp.request']),
+  marketplaceId: AmazonId,
+  asins: z.array(AmazonId).min(1),
+  weekStart: IsoDate,
+  weekEnd: IsoDate,
+});
+
+export const HistoryBootstrapJob = z.object({
+  ...jobBase,
+  type: z.literal(FeatureJobType.enum['history.bootstrap']),
+  reportType: WorkerReportType,
+  source: z.enum(['amazon_reporting_v3', 'amazon_unified_reporting']),
+  cursorDate: IsoDate.nullable(),
+});
+
+export const ReportPromoteJob = z.object({
+  ...jobBase,
+  type: z.literal(FeatureJobType.enum['report.promote']),
+  reportRequestId: Uuid,
+  reportType: WorkerReportType,
+  date: IsoDate,
+});
+
+export const MarketingStreamNormalizeJob = z.object({
+  ...jobBase,
+  type: z.literal(FeatureJobType.enum['marketing_stream.normalize']),
+  messageIds: z.array(z.string().min(1)).min(1),
+});
+
 export const JobPayload = z.discriminatedUnion('type', [
   EntitySyncJob,
   ReportRequestJob,
@@ -130,6 +187,15 @@ export const JobPayload = z.discriminatedUnion('type', [
 ]);
 export type JobPayload = z.infer<typeof JobPayload>;
 
+export const FeatureJobPayload = z.discriminatedUnion('type', [
+  CreativeSyncJob,
+  SqpRequestJob,
+  HistoryBootstrapJob,
+  ReportPromoteJob,
+  MarketingStreamNormalizeJob,
+]);
+export type FeatureJobPayload = z.infer<typeof FeatureJobPayload>;
+
 export type EntitySyncJob = z.infer<typeof EntitySyncJob>;
 export type ReportRequestJob = z.infer<typeof ReportRequestJob>;
 export type ReportPollJob = z.infer<typeof ReportPollJob>;
@@ -140,3 +206,8 @@ export type KeepaSyncJob = z.infer<typeof KeepaSyncJob>;
 export type RankSyncJob = z.infer<typeof RankSyncJob>;
 export type EconomicsSyncJob = z.infer<typeof EconomicsSyncJob>;
 export type SqpCategorizeJob = z.infer<typeof SqpCategorizeJob>;
+export type CreativeSyncJob = z.infer<typeof CreativeSyncJob>;
+export type SqpRequestJob = z.infer<typeof SqpRequestJob>;
+export type HistoryBootstrapJob = z.infer<typeof HistoryBootstrapJob>;
+export type ReportPromoteJob = z.infer<typeof ReportPromoteJob>;
+export type MarketingStreamNormalizeJob = z.infer<typeof MarketingStreamNormalizeJob>;

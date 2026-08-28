@@ -86,6 +86,7 @@ wizard-ads/
 │   ├── db/                        # Drizzle schema + typed queries + RLS test helpers
 │   ├── ads-api/                   # Amazon Ads API client (LWA refresh, profiles, entities,
 │   │                              #   Exports, Reporting v3, backoff). Pure client, no DB
+│   ├── sp-api/                    # Selling Partner API Reports client (worker-only, no DB)
 │   ├── core/                      # Doctrine engine, pure functions ZERO I/O: analyze, flags,
 │   │                              #   pacing, recommendations, White Box bidding, ngram,
 │   │                              #   crosscheck
@@ -99,8 +100,8 @@ wizard-ads/
 └── _local/                        # gitignored; *.TEMPLATE.json tracked
 ```
 
-Dependency direction (enforced): `shared` ← `core`/`strategy`/`ads-api`/`db` ← `web`/`worker`/`mcp`.
-`core` never imports `db` or `ads-api`. wizard-ads consumes nothing from other ~/os projects at
+Dependency direction (enforced): `shared` ← `core`/`strategy`/`ads-api`/`sp-api`/`db` ← `web`/`worker`/`mcp`.
+`core` never imports `db`, `ads-api`, or `sp-api`. wizard-ads consumes no sibling project at
 runtime (Python reference tools are build-time spec sources via the fixtures generator only).
 
 ## Database schema outline

@@ -3,7 +3,7 @@
 // Beyond ordinary TypeScript hygiene this file is where the dependency direction
 // from AGENTS.md is mechanically enforced:
 //
-//   shared  <-  core / strategy / ads-api / datadive-api / db  <-  web / worker / mcp
+//   shared  <-  core / strategy / ads-api / sp-api / datadive-api / db  <-  web / worker / mcp
 //
 // `core` never imports `db` or `ads-api`; `apps/web` never imports `ads-api`
 // (every Amazon call lives in the worker); `shared` imports nothing of ours.
@@ -49,6 +49,7 @@ export default tseslint.config(
         ['@wizard-ads/core', 'shared is the contract package: it depends on nothing of ours.'],
         ['@wizard-ads/strategy', 'shared is the contract package: it depends on nothing of ours.'],
         ['@wizard-ads/ads-api', 'shared is the contract package: it depends on nothing of ours.'],
+        ['@wizard-ads/sp-api', 'shared is the contract package: it depends on nothing of ours.'],
         ['@wizard-ads/datadive-api', 'shared is the contract package: it depends on nothing of ours.'],
         ['@wizard-ads/keepa-api', 'shared is the contract package: it depends on nothing of ours.'],
         ['@wizard-ads/ui', 'shared is the contract package: it depends on nothing of ours.'],
@@ -61,8 +62,21 @@ export default tseslint.config(
       'no-restricted-imports': forbid([
         ['@wizard-ads/db', 'core and strategy are pure: zero I/O, no database.'],
         ['@wizard-ads/ads-api', 'core and strategy are pure: zero I/O, no Amazon calls.'],
+        ['@wizard-ads/sp-api', 'core and strategy are pure: zero I/O, no Amazon calls.'],
         ['@wizard-ads/datadive-api', 'core and strategy are pure: zero I/O, no DataDive calls.'],
         ['@wizard-ads/keepa-api', 'core and strategy are pure: zero I/O, no Keepa calls.'],
+      ]),
+    },
+  },
+  {
+    files: ['packages/sp-api/**/*.ts'],
+    rules: {
+      'no-restricted-imports': forbid([
+        ['@wizard-ads/db', 'sp-api is a pure HTTP client: no database.'],
+        ['@wizard-ads/core', 'sp-api is transport, not doctrine.'],
+        ['@wizard-ads/strategy', 'sp-api receives configuration as arguments.'],
+        ['@wizard-ads/ads-api', 'Amazon provider clients stay independent.'],
+        ['@wizard-ads/ui', 'sp-api has no presentation dependency.'],
       ]),
     },
   },
@@ -101,6 +115,7 @@ export default tseslint.config(
     rules: {
       'no-restricted-imports': forbid([
         ['@wizard-ads/ads-api', 'every Amazon API call lives in apps/worker, never in the web app.'],
+        ['@wizard-ads/sp-api', 'every Amazon API call lives in apps/worker, never in the web app.'],
         ['@wizard-ads/datadive-api', 'every DataDive API call lives in apps/worker, never in the web app.'],
         ['@wizard-ads/mrp-api', 'every MRP MCP call lives in apps/worker, never in the web app.'],
         ['@wizard-ads/keepa-api', 'every Keepa API call lives in apps/worker, never in the web app.'],
