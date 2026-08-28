@@ -143,7 +143,8 @@ export async function revokeApiKey(handle: DbHandle, keyId: string): Promise<boo
 }
 
 /**
- * Resolve a presented token to a key, or throw an `AuthError`.
+ * Resolve a presented token to a read-only key, stamp its last-used time, or
+ * throw an `AuthError`.
  *
  * Every failure is a 401 with the same message. Distinguishing "no such key"
  * from "revoked" from "expired" tells an attacker which of their guesses was
@@ -158,11 +159,14 @@ export async function verifyApiKey(handle: DbHandle, token: string): Promise<Api
 
   const hash = hashToken(token);
   const rows = await handle.sql<(KeyRow & { token_hash: string })[]>`
-    select id, org_id, label, key_prefix, token_hash, scope, profile_ids,
-           expires_at, revoked_at, last_used_at, created_at
-    from mcp.api_keys
-    where token_hash = ${hash}
-    limit 1
+    update mcp.api_keys
+       set last_used_at = now()
+     where token_hash = ${hash}
+       and scope = 'read'
+       and revoked_at is null
+       and (expires_at is null or expires_at > now())
+    returning id, org_id, label, key_prefix, token_hash, scope, profile_ids,
+              expires_at, revoked_at, last_used_at, created_at
   `;
 
   const row = rows[0];
@@ -170,15 +174,9 @@ export async function verifyApiKey(handle: DbHandle, token: string): Promise<Api
   // The lookup already matched on the hash; the constant-time compare is here
   // so the code does not depend on the index comparison being safe.
   if (!constantTimeEquals(row.token_hash, hash)) throw unauthorized;
-  if (row.revoked_at !== null) throw unauthorized;
-  if (row.expires_at !== null && row.expires_at.getTime() <= Date.now()) throw unauthorized;
+  if (row.scope !== 'read') throw unauthorized;
 
   return toRecord(row);
-}
-
-/** Fire-and-forget: a failed touch must never fail the call it was observing. */
-export async function touchApiKey(handle: DbHandle, keyId: string): Promise<void> {
-  await handle.sql`update mcp.api_keys set last_used_at = now() where id = ${keyId}`;
 }
 
 function constantTimeEquals(a: string, b: string): boolean {
