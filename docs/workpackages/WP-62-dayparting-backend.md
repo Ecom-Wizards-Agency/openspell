@@ -141,7 +141,7 @@ verification used a disposable PostgreSQL 17 server bound to localhost:
 - focused database suite: 5 of 5 tests passed;
 - complete worker suite: 16 files and 132 tests passed; the 24 existing live
   integration cases remained intentionally skipped without credentials;
-- complete database suite with migrations: 24 files and 188 tests passed;
+- complete database suite with migrations: 24 files and 189 tests passed;
 - repository `pnpm check`: all 18 workspace typechecks and test tasks passed,
   followed by lint, public-repository hygiene, and skill lint.
 
