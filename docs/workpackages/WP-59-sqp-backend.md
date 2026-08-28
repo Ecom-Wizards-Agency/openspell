@@ -86,7 +86,7 @@ The load-bearing behavior is:
   check must independently confirm no-data first;
 - canonical facts are transactionally replaced for every requested ASIN,
   including ASINs that return no rows;
-- source, parsed, refused, deduplicated, upserted and canonical counts reconcile
+- source, parsed, refused, deduplicated, promoted, upserted and canonical counts reconcile
   before commit;
 - approved vocabulary is never made pending by a later suggestion refresh;
 - AI suggestions remain pending until a human records review evidence;

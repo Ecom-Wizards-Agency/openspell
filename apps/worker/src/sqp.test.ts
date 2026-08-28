@@ -69,7 +69,14 @@ describe('weekly SQP worker workflow', () => {
       status: 'completed',
       reused: false,
       reports: { total: 1, created: 1, reusedCompleted: 0, empty: 0 },
-      ingestion: { sourceRows: 3, parsedRows: 3, refusedRows: 0, upserts: 3, canonicalRows: 3 },
+      ingestion: {
+        sourceRows: 3,
+        parsedRows: 3,
+        refusedRows: 0,
+        promotedRows: 3,
+        upserts: 3,
+        canonicalRows: 3,
+      },
       categories: {
         rawTotal: 1_300,
         branded: 100,
@@ -284,6 +291,7 @@ class FakeDataStore implements SqpWorkflowDataStore {
     return {
       ...input.counts,
       deletedRows: 0,
+      promotedRows: input.rows.length,
       upserts: input.rows.length,
       canonicalRows: input.rows.length,
     };

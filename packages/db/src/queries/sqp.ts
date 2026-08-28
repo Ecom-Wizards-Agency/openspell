@@ -60,6 +60,7 @@ export interface SqpWeeklyPromotionResult {
   deduplicatedRows: number;
   refusedRows: number;
   deletedRows: number;
+  promotedRows: number;
   upserts: number;
   canonicalRows: number;
 }
@@ -156,6 +157,7 @@ export async function promoteSqpWeeklyFacts(
     return {
       ...staged.counts,
       deletedRows: deleted.length,
+      promotedRows: upserts,
       upserts,
       canonicalRows,
     };

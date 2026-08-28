@@ -106,6 +106,7 @@ describe.skipIf(!available)('WP-59 SQP database persistence', () => {
       deduplicatedRows: 2,
       refusedRows: 0,
       deletedRows: 0,
+      promotedRows: 2,
       upserts: 2,
       canonicalRows: 2,
     });
@@ -127,7 +128,7 @@ describe.skipIf(!available)('WP-59 SQP database persistence', () => {
         upserts: 1,
       },
     });
-    expect(revised).toMatchObject({ deletedRows: 2, upserts: 1, canonicalRows: 1 });
+    expect(revised).toMatchObject({ deletedRows: 2, promotedRows: 1, upserts: 1, canonicalRows: 1 });
     const readBack = await readSqpWeeklyFacts(database, {
       orgId,
       profileId,
@@ -158,7 +159,7 @@ describe.skipIf(!available)('WP-59 SQP database persistence', () => {
         upserts: 0,
       },
     });
-    expect(empty).toMatchObject({ deletedRows: 1, upserts: 0, canonicalRows: 0 });
+    expect(empty).toMatchObject({ deletedRows: 1, promotedRows: 0, upserts: 0, canonicalRows: 0 });
   });
 
   it('keeps AI vocabulary pending until review and never undoes approval', async () => {
