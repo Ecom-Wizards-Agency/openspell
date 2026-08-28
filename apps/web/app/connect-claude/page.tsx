@@ -8,8 +8,8 @@
  * entry: issue a read-only key, see the keys an org already has, and revoke one.
  *
  * Issuing and revoking are gated behind `manageConnection` (owner/admin), the
- * same role that connects Amazon, because a key that reads the whole org's
- * advertising data is as sensitive as that grant. Everyone in the org can *see*
+ * same role that connects Amazon, because a key that reads selected advertising
+ * profiles is as sensitive as that grant. Everyone in the org can *see*
  * the roster, so a viewer knows a key exists and who holds what.
  *
  * Entry goes through `gate()`; the key list is scoped by the org it resolves.
@@ -22,6 +22,7 @@ import { PageHeader } from '../../src/ui/primitives';
 import { page } from '../../src/ui/tokens';
 import { mcpEndpoint } from '../../src/env';
 import { listMcpKeys } from '../../src/data/mcp-keys';
+import { listProfiles } from '../_lib/profiles';
 import { ConnectClaudeManager } from './manager';
 
 export const dynamic = 'force-dynamic';
@@ -40,7 +41,10 @@ export default async function ConnectClaudePage(): Promise<ReactNode> {
   const org = context.active;
   if (!org) return null;
 
-  const keys = await listMcpKeys(handle, org.orgId);
+  const [keys, profiles] = await Promise.all([
+    listMcpKeys(handle, org.orgId),
+    listProfiles(handle, org.orgId),
+  ]);
   const canManage = can(org.role, 'manageConnection');
   const endpoint = mcpEndpoint();
 
@@ -63,23 +67,29 @@ export default async function ConnectClaudePage(): Promise<ReactNode> {
                 Point your client at your MCP endpoint: <code>{endpoint}</code>
               </li>
               <li>
-                Paste the key as the bearer token. The client then reads this org&rsquo;s profiles,
-                campaigns and reports — read-only, exactly what the key grants.
+                Store the key in <code>WIZARD_ADS_MCP_TOKEN</code>. The client can then read only
+                the profiles selected when the key was issued.
               </li>
             </ol>
             <p className="wa-hint" style={{ marginTop: '0.75rem' }}>
               One key, any MCP client — Claude, Codex, ChatGPT, Cursor or Gemini all connect over the
-              same endpoint and bearer token. Ready-to-paste snippets for Claude and Codex appear the
-              moment you issue a key.
+              same endpoint and bearer token. The setup snippets below reference the environment
+              variable by name and never contain its value.
             </p>
             <p className="wa-hint" style={{ marginTop: '0.5rem' }}>
-              Keys are org-wide and read-only in v1. Narrowing a key to specific profiles, or
-              granting write, is a later capability — not a default you can reach for by accident.
+              Every new key is read-only, expires automatically, and has a hard profile allowlist.
+              Wizard Ads exposes no Amazon write tools through MCP.
             </p>
           </div>
         </section>
 
-        <ConnectClaudeManager keys={keys} canManage={canManage} role={org.role} endpoint={endpoint} />
+        <ConnectClaudeManager
+          keys={keys}
+          profiles={profiles.map((profile) => ({ id: profile.id, label: profile.label }))}
+          canManage={canManage}
+          role={org.role}
+          endpoint={endpoint}
+        />
       </div>
     </main>
   );
