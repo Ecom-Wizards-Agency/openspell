@@ -4,7 +4,7 @@ export interface SpApiAccessTokenProvider {
 
 export type FetchLike = (
   input: string,
-  init?: Omit<RequestInit, 'body'> & { body?: string | Uint8Array },
+  init?: RequestInit,
 ) => Promise<Response>;
 
 export interface SpApiClientOptions {
