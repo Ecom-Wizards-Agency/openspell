@@ -104,7 +104,13 @@ export function assessFreshness(
       continue;
     }
 
-    if (coversThrough === null || lastGood.endDate > coversThrough) coversThrough = lastGood.endDate;
+    // Coverage is the furthest day ANY completed load reached, not the end
+    // date of the newest completion: a backfill that finishes an old window
+    // last must not drag "covers through" backwards.
+    const coveredThrough = rows
+      .filter((row) => row.status === 'completed')
+      .reduce((acc, row) => (row.endDate > acc ? row.endDate : acc), lastGood.endDate);
+    if (coversThrough === null || coveredThrough > coversThrough) coversThrough = coveredThrough;
 
     const ageMs = options.now.getTime() - new Date(lastGood.completedAt as string).getTime();
     const stale = ageMs > staleAfter;
@@ -116,7 +122,7 @@ export function assessFreshness(
     if (lastGood.countsMatch === false) lossyTypes.push(reportType);
 
     details.push(
-      `${reportType}: loaded ${formatAge(ageMs)} ago, covers through ${lastGood.endDate}` +
+      `${reportType}: loaded ${formatAge(ageMs)} ago, covers through ${coveredThrough}` +
         (lastGood.rowsLoaded === null ? '' : `, ${formatInteger(lastGood.rowsLoaded)} rows`) +
         (lastGood.countsMatch === false
           ? ` — parsed ${count(lastGood.rowsParsed)}, wrote ${count(lastGood.rowsLoaded)}`

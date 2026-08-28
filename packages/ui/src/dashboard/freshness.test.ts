@@ -70,6 +70,24 @@ describe('assessFreshness', () => {
     expect(assessment.details.join(' ')).toContain('parsed 4,200, wrote 4,100');
   });
 
+  it('does not let a backfill that completes an OLD window last drag coverage backwards', () => {
+    // The current window loaded at 03:20; a comparison-window backfill for
+    // July finished LATER. Coverage must stay at the furthest day loaded.
+    const assessment = assessFreshness(
+      [
+        entry({ endDate: '2026-08-13', completedAt: '2026-08-14T03:20:00Z' }),
+        entry({
+          endDate: '2026-07-27',
+          requestedAt: '2026-08-14T05:00:00Z',
+          completedAt: '2026-08-14T05:30:00Z',
+        }),
+      ],
+      { now: NOW },
+    );
+    expect(assessment.coversThrough).toBe('2026-08-13');
+    expect(assessment.tone).toBe('good');
+  });
+
   it('reports per report type, and takes the newest end date across all of them', () => {
     const assessment = assessFreshness(
       [
