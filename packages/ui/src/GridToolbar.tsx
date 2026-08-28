@@ -211,7 +211,7 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
         {props.onExport === undefined ? null : (
           <button type="button" onClick={props.onExport} style={primaryButton}>
             {props.model.grouped
-              ? `Export CSV (${formatInteger(props.model.exported)} deepest groups)`
+              ? `Export CSV (${formatInteger(props.model.exported)} deepest ${props.model.exported === 1 ? 'group' : 'groups'})`
               : `Export CSV (${formatInteger(props.model.exported)} of ${formatInteger(props.model.total)})`}
           </button>
         )}

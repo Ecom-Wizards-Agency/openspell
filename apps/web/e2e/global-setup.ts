@@ -154,6 +154,18 @@ async function seed(connectionString: string): Promise<{
     if (dashboardFacts.length !== 1) {
       throw new Error(`Seeded 1 dashboard fact, wrote ${dashboardFacts.length}`);
     }
+    const gridFacts = await handle.sql<{ target_id: string }[]>`
+      insert into public.fact_sp_target_daily
+        (org_id, profile_id, date, ad_product, campaign_id, ad_group_id, target_id,
+         target_kind, match_type, impressions, clicks, cost, purchases_7d, sales_7d,
+         units_sold_7d)
+      values (${orgId}, ${fixtureProfileId}, current_date - 2, 'SP', 'c-1', 'ag-1',
+              'kw-1', 'keyword', 'exact', 300, 18, 14, 3, 75, 3)
+      returning target_id
+    `;
+    if (gridFacts.length !== 1) {
+      throw new Error(`Seeded 1 grid fact, wrote ${gridFacts.length}`);
+    }
 
     return {
       orgId,
