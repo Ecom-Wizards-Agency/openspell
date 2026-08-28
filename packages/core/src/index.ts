@@ -26,3 +26,4 @@ export * from './experiments/backlog.js';
 export * from './ngram.js';
 export * from './bidding/index.js';
 export * from './market/deals.js';
+export * from './query-intelligence/index.js';
