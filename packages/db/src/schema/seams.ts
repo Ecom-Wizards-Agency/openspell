@@ -21,7 +21,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { count, money, ts } from './columns.js';
-import { connectionStatus, entityState, supaRule } from './enums.js';
+import { connectionStatus, entityState, queryCategory, supaRule } from './enums.js';
 import { adProfiles, orgs } from './tenancy.js';
 
 export const spapiConnections = pgTable('spapi_connections', {
@@ -73,20 +73,39 @@ export const factSqpWeekly = pgTable(
       .notNull()
       .references(() => adProfiles.id, { onDelete: 'cascade' }),
     weekStart: date('week_start').notNull(),
+    marketplaceId: text('marketplace_id'),
+    weekEnd: date('week_end').generatedAlwaysAs(sql`week_start + 6`),
     asin: text('asin').notNull(),
     searchQuery: text('search_query').notNull(),
+    normalizedQuery: text('normalized_query'),
+    category: queryCategory('category').notNull().default('unreviewed'),
+    searchQueryScore: money('search_query_score', 16, 6),
     /** Top 100 queries per ASIN per week: these totals are floors, never sums. */
     searchVolume: count('search_volume'),
     impressions: count('impressions'),
+    totalImpressions: count('total_impressions'),
+    asinImpressions: count('asin_impressions'),
     impressionShare: money('impression_share', 9, 6),
     clicks: count('clicks'),
+    totalClicks: count('total_clicks'),
+    asinClicks: count('asin_clicks'),
     clickShare: money('click_share', 9, 6),
+    totalCartAdds: count('total_cart_adds'),
+    asinCartAdds: count('asin_cart_adds'),
+    asinCartAddShare: money('asin_cart_add_share', 9, 6),
     purchases: count('purchases'),
+    totalPurchases: count('total_purchases'),
+    asinPurchases: count('asin_purchases'),
     purchaseShare: money('purchase_share', 9, 6),
     medianPrice: money('median_price'),
     loadedAt: ts('loaded_at').notNull().defaultNow(),
   },
-  (t) => [index('fact_sqp_weekly_profile_week').on(t.profileId, t.weekStart)],
+  (t) => [
+    index('fact_sqp_weekly_profile_week').on(t.profileId, t.weekStart),
+    uniqueIndex('fact_sqp_weekly_normalized_grain_key')
+      .on(t.profileId, t.marketplaceId, t.weekStart, t.asin, t.normalizedQuery)
+      .where(sql`${t.marketplaceId} is not null and ${t.normalizedQuery} is not null`),
+  ],
 );
 
 export const supaFlags = pgTable(
@@ -231,10 +250,20 @@ export const creativeAssets = pgTable(
     contentHash: text('content_hash'),
     name: text('name'),
     firstSeenAt: ts('first_seen_at').notNull().defaultNow(),
+    amazonCreatedAt: ts('amazon_created_at'),
+    amazonUpdatedAt: ts('amazon_updated_at'),
     metrics: jsonb('metrics').notNull().default({}),
     createdAt: ts('created_at').notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('creative_assets_key').on(t.orgId, t.contentHash)],
+  (t) => [
+    uniqueIndex('creative_assets_profile_amazon_asset_key')
+      .on(t.profileId, t.amazonAssetId)
+      .where(sql`${t.profileId} is not null and ${t.amazonAssetId} is not null`),
+    index('creative_assets_content_hash_idx')
+      .on(t.orgId, t.contentHash)
+      .where(sql`${t.contentHash} is not null`),
+    uniqueIndex('creative_assets_org_profile_id_key').on(t.orgId, t.profileId, t.id),
+  ],
 );
 
 export const creativePlacements = pgTable(

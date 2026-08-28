@@ -31,6 +31,8 @@ declare
   v_experiment uuid;
   v_asset uuid;
   v_report uuid;
+  v_recommendation uuid;
+  v_group uuid;
   v_strategy jsonb := jsonb_build_object(
     'schema', 'wizard-ads.tenant-strategy.v1',
     'pacing', '{}'::jsonb,
@@ -159,7 +161,8 @@ begin
     (run_id, org_id, profile_id, reason, entity_type, entity_id, field, current_value, proposed_value, inputs)
   values (v_run, v_org, v_profile, 'high_acos', 'keyword', 'kw-1', 'bid', '0.90'::jsonb, '0.70'::jsonb,
           jsonb_build_object('rpc', 5.0, 'clicks', 5, 'cvrSourceLevel', 'keyword',
-                             'ceilingApplied', null, 'capClamped', false));
+                             'ceilingApplied', null, 'capClamped', false))
+  returning id into v_recommendation;
   insert into public.insights (org_id, profile_id, date, kind, title, body)
   values (v_org, v_profile, p_date, 'daily', 'synthetic insight', 'body');
   insert into public.crosscheck_results
@@ -227,6 +230,96 @@ begin
   values (v_org, v_profile, 'video', p_slug || '-hash-1') returning id into v_asset;
   insert into public.creative_placements (org_id, asset_id, profile_id, campaign_id)
   values (v_org, v_asset, v_profile, 'c-1');
+
+  -- Operator-intelligence foundations (WP-56)
+  insert into public.report_coverage
+    (org_id, profile_id, report_type, grain, source, status,
+     earliest_requested_date, earliest_returned_date, latest_loaded_date)
+  values (v_org, v_profile, 'spCampaigns', 'daily', 'amazon_reporting_v3', 'complete',
+          p_date - 1, p_date - 1, p_date);
+
+  insert into public.historical_bootstrap_progress
+    (org_id, profile_id, report_type, grain, source, status,
+     requested_start_date, requested_end_date, chunks_planned, chunks_completed)
+  values (v_org, v_profile, 'spCampaigns', 'daily', 'amazon_reporting_v3', 'complete',
+          p_date - 1, p_date, 1, 1);
+
+  insert into public.report_promotion_watermarks
+    (org_id, profile_id, report_type, report_date, source, report_request_id,
+     requested_at, source_rows, parsed_rows, refused_rows, promoted_rows, canonical_rows)
+  values (v_org, v_profile, 'spCampaigns', p_date, 'amazon_reporting_v3', v_report,
+          now(), 1, 1, 0, 1, 1);
+
+  insert into public.attribution_observations
+    (org_id, profile_id, source_observation_key, event_date, ad_product,
+     report_type, source, observed_at, attribution_window_days, event_date_age_days,
+     impressions, clicks, cost, purchases, sales)
+  values (v_org, v_profile, p_slug || '-attribution-1', p_date, 'SP',
+          'spCampaigns', 'amazon_reporting_v3', now(), 14, 1,
+          100, 5, 4.5, 1, 25);
+
+  insert into public.ad_creative_asset_mappings
+    (org_id, profile_id, source_mapping_key, ad_product, campaign_id,
+     ad_group_id, ad_id, creative_asset_id, attribution_state, observed_at)
+  values (v_org, v_profile, p_slug || '-mapping-1', 'SB', 'sb-1',
+          'sb-ag-1', 'sb-ad-1', v_asset, 'legacy', now());
+
+  insert into public.fact_creative_daily
+    (org_id, profile_id, date, ad_product, campaign_id, ad_group_id, ad_id,
+     attribution_state, impressions, clicks, cost, purchases, sales)
+  values (v_org, v_profile, p_date, 'SB', 'sb-1', 'sb-ag-1', 'sb-ad-1',
+          'legacy', 40, 2, 1.8, 0, 0);
+
+  insert into public.query_vocabulary
+    (org_id, marketplace_id, kind, value, normalized_value, source, approved,
+     reviewed_at, reviewed_by)
+  values (v_org, p_slug || '-market', 'core_term', 'fixture term', 'fixture term',
+          'operator', true, now(), p_user_id);
+
+  insert into public.contextual_negative_proposals
+    (org_id, profile_id, marketplace_id, campaign_id, ad_group_id, search_term,
+     normalized_query, category, source_group_role, match_type, reason)
+  values (v_org, v_profile, p_slug || '-market', 'c-1', 'ag-1', 'fixture excluded',
+          'fixture excluded', 'excluded', 'discovery', 'negative_exact', 'fixture');
+
+  insert into public.optimization_groups
+    (org_id, profile_id, name, role, target_acos,
+     bid_increase_cap, bid_decrease_cap, placement_increase_cap,
+     placement_decrease_cap, cadence, prioritization)
+  values (v_org, v_profile, 'Fixture Group', 'rank', 0.2,
+          0.1, 0.1, 0.1, 0.1, interval '1 day', 'balanced')
+  returning id into v_group;
+
+  insert into public.campaign_optimization_assignments
+    (org_id, profile_id, campaign_id, group_id, assigned_by)
+  values (v_org, v_profile, 'c-1', v_group, p_user_id);
+
+  insert into public.recommendation_observations
+    (org_id, profile_id, recommendation_id, group_id, expected_value,
+     observation_window_start, observation_window_end, evidence_state,
+     decision, evidence_note)
+  values (v_org, v_profile, v_recommendation, v_group, 0.7,
+          p_date - 7, p_date, 'insufficient', 'hold', 'fixture');
+
+  insert into public.marketing_stream_events
+    (org_id, profile_id, message_id, dataset, ad_product, event_time,
+     received_at, revision, payload_hash, raw_payload)
+  values (v_org, v_profile, p_slug || '-stream-1', 'traffic', 'SP',
+          date_trunc('hour', now()), now(), 0, p_slug || '-payload-1', '{}'::jsonb);
+
+  insert into public.marketing_stream_hourly_facts
+    (org_id, profile_id, ad_product, campaign_id, utc_hour, profile_timezone,
+     local_date, local_hour, local_day_of_week, currency_code, impressions,
+     clicks, settling_state, source_events)
+  values (v_org, v_profile, 'SP', 'c-1', date_trunc('hour', now()), 'UTC',
+          current_date, extract(hour from now())::integer,
+          extract(dow from current_date)::integer, 'USD', 10, 1, 'settling', 1);
+
+  insert into public.dayparting_schedule_proposals
+    (org_id, profile_id, campaign_id, baseline_label, evidence_start,
+     evidence_end, settled_hours, blocks)
+  values (v_org, v_profile, 'c-1', 'fixture baseline', p_date - 7, p_date,
+          24, '[]'::jsonb);
 
   return v_org;
 end;

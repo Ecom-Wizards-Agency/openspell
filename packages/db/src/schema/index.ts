@@ -21,3 +21,4 @@ export * from './experiments.js';
 export * from './integrations.js';
 export * from './surface.js';
 export * from './seams.js';
+export * from './operator-intelligence.js';
