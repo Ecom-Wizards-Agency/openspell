@@ -11,7 +11,7 @@
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "lint": "eslint .",
-    "test": "turbo run test",
+    "test": "turbo run test --filter=!@wizard-ads/ui && pnpm --filter @wizard-ads/ui run test",
     "hygiene": "tsx tools/hygiene-lint/src/cli.ts",
     "skill-lint": "node tools/skill-lint/index.mjs",
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run hygiene && pnpm run skill-lint"
