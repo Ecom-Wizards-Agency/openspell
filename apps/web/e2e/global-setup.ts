@@ -142,11 +142,23 @@ async function seed(connectionString: string): Promise<{
     const [profile] = await handle.sql<{ id: string }[]>`
       select id from public.ad_profiles where org_id = ${orgId} limit 1
     `;
+    const fixtureProfileId = profile?.id ?? '';
+    const dashboardFacts = await handle.sql<{ date: string }[]>`
+      insert into public.fact_profile_daily
+        (org_id, profile_id, date, currency_code, impressions, clicks, cost,
+         purchases_7d, sales_7d, units_sold_7d, provisional)
+      values (${orgId}, ${fixtureProfileId}, current_date - 2, 'USD', 400, 24, 18,
+              4, 90, 4, false)
+      returning date::text
+    `;
+    if (dashboardFacts.length !== 1) {
+      throw new Error(`Seeded 1 dashboard fact, wrote ${dashboardFacts.length}`);
+    }
 
     return {
       orgId,
       otherOrgId: other?.seed_tenant_fixture ?? '',
-      fixtureProfileId: profile?.id ?? '',
+      fixtureProfileId,
     };
   } finally {
     await handle.close();
