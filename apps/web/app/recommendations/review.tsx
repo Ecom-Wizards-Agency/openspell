@@ -3,14 +3,14 @@
 /**
  * The review workspace: filter, inspect, decide, export.
  *
- * Shape cloned from the recon (`tools/recon/04-optimizer.md`), with the two
- * things it says are the reason operators trust the incumbent kept intact:
+ * A human-sized operator queue, with the two trust-building interactions from
+ * the recon (`tools/recon/04-optimizer.md`) kept intact:
  *
  * - **Bulk action over a filtered set.** Narrow by reason, status, strategy or
  *   text; the decision buttons then act on exactly what is on screen. "The
  *   single most valuable interaction in the product."
  * - **The three-act approval gesture for anything that leaves the tool.**
- *   Choose rows, tick a separate "I confirm this export" box, then press
+ *   Choose rows, tick a separate "Yes, export changes" box, then press
  *   Export. Three distinct acts, one of which is affirming intent.
  *
  * And the one place we deliberately differ: the incumbent's optimizer can run
@@ -20,7 +20,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { ProposalView } from '../../src/recommendations/view';
-import { groupByReason, reasonCoverage } from '../../src/recommendations/view';
+import { groupByDecision, groupByReason } from '../../src/recommendations/view';
 
 export interface ReviewWorkspaceProps {
   proposals: readonly ProposalView[];
@@ -68,7 +68,9 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const [confirmed, setConfirmed] = useState(false);
-  const [optGroup, setOptGroup] = useState('ungrouped');
+  const [optGroup, setOptGroup] = useState(
+    () => props.proposals.find((proposal) => proposal.strategy.optGroup !== null)?.strategy.optGroup ?? 'ungrouped',
+  );
   const [lever, setLever] = useState('bid-down');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -78,10 +80,19 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
     () => props.proposals.filter((proposal) => matches(proposal, filters)),
     [props.proposals, filters],
   );
-  const groups = useMemo(() => groupByReason(visible), [visible]);
-  const coverage = useMemo(() => reasonCoverage(props.proposals), [props.proposals]);
+  const queue = useMemo(() => groupByDecision(visible), [visible]);
   const objectives = useMemo(
     () => [...new Set(props.proposals.map((proposal) => proposal.strategy.objective))].sort(),
+    [props.proposals],
+  );
+  const strategyGroups = useMemo(
+    () => [
+      ...new Set(
+        props.proposals.flatMap((proposal) =>
+          proposal.strategy.optGroup === null ? [] : [proposal.strategy.optGroup],
+        ),
+      ),
+    ].sort(),
     [props.proposals],
   );
 
@@ -94,6 +105,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
     () => visible.filter((proposal) => selected.has(proposal.id) && proposal.status === 'accepted').length,
     [visible, selected],
   );
+  const exportCount = selectedIds.length > 0 ? acceptedSelected : (props.counts['accepted'] ?? 0);
 
   const toggle = useCallback((id: string) => {
     setSelected((current) => {
@@ -155,7 +167,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
     setError(null);
     setMessage(null);
     if (!confirmed) {
-      setError('Tick "I confirm this export" before exporting.');
+      setError('Tick "Yes, export changes" before exporting.');
       return;
     }
     if (note.trim().length === 0) {
@@ -187,21 +199,32 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
   }, [confirmed, lever, note, optGroup, post, props.client, props.profileId, props.runId, selectedIds]);
 
   return (
-    <section style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <div style={summary} data-testid="run-counts">
-        <span>
-          <strong>{props.counts['proposed'] ?? 0}</strong> proposed
-        </span>
-        <span>
-          <strong>{props.counts['accepted'] ?? 0}</strong> accepted
-        </span>
-        <span>
-          <strong>{props.counts['dismissed'] ?? 0}</strong> dismissed
-        </span>
-        <span data-testid="exported-count">
-          exported <strong>{props.counts['exported'] ?? 0}</strong> of{' '}
-          {(props.counts['exported'] ?? 0) + (props.counts['accepted'] ?? 0)} accepted
-        </span>
+    <section className="wa-review" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      <div className="wa-review__summary" data-testid="run-counts">
+        <div className="wa-review__stat wa-review__stat--attention">
+          <span className="wa-label">Needs review</span>
+          <strong>{props.counts['proposed'] ?? 0}</strong>
+          {' '}
+          <span>new proposals</span>
+        </div>
+        <div className="wa-review__stat">
+          <span className="wa-label">Ready to export</span>
+          <strong>{props.counts['accepted'] ?? 0}</strong>
+          {' '}
+          <span>accepted proposals</span>
+        </div>
+        <div className="wa-review__stat">
+          <span className="wa-label">Completed</span>
+          <strong>
+            {(props.counts['dismissed'] ?? 0) +
+              (props.counts['exported'] ?? 0) +
+              (props.counts['applied'] ?? 0) +
+              (props.counts['superseded'] ?? 0)}
+          </strong>
+          <span data-testid="exported-count">
+            {props.counts['exported'] ?? 0} exported · {props.counts['dismissed'] ?? 0} dismissed
+          </span>
+        </div>
       </div>
 
       {props.hasStrategySnapshot ? null : (
@@ -211,19 +234,12 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         </p>
       )}
 
-      <div style={coverageRow} data-testid="reason-coverage">
-        {coverage.map((entry) => (
-          <span key={entry.reason} style={pill}>
-            {entry.label}: {entry.count} ({(entry.share * 100).toFixed(0)}%)
-          </span>
-        ))}
-      </div>
-
-      <fieldset style={panel}>
-        <legend style={legend}>Filter</legend>
+      <fieldset className="wa-review__toolbar" style={panel}>
+        <legend style={legend}>Find and select</legend>
         <label style={label}>
           Reason
           <select
+            className="wa-select wa-select--sm"
             value={filters.reason}
             onChange={(event) => setFilters({ ...filters, reason: event.target.value })}
           >
@@ -238,6 +254,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         <label style={label}>
           Status
           <select
+            className="wa-select wa-select--sm"
             value={filters.status}
             onChange={(event) => setFilters({ ...filters, status: event.target.value })}
           >
@@ -252,6 +269,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         <label style={label}>
           Objective
           <select
+            className="wa-select wa-select--sm"
             value={filters.objective}
             onChange={(event) => setFilters({ ...filters, objective: event.target.value })}
           >
@@ -266,12 +284,13 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         <label style={label}>
           Search
           <input
+            className="wa-input wa-input--sm"
             type="text"
             value={filters.text}
             onChange={(event) => setFilters({ ...filters, text: event.target.value })}
           />
         </label>
-        <button type="button" onClick={() => setFilters(EMPTY_FILTERS)}>
+        <button className="wa-btn wa-btn--ghost wa-btn--sm" type="button" onClick={() => setFilters(EMPTY_FILTERS)}>
           Clear
         </button>
       </fieldset>
@@ -281,25 +300,26 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         <label style={{ ...label, flex: '1 1 24rem' }}>
           Note (required to dismiss, and to export)
           <textarea
+            className="wa-textarea"
             value={note}
             onChange={(event) => setNote(event.target.value)}
             rows={2}
             aria-label="Decision note"
           />
         </label>
-        <button type="button" onClick={selectAllVisible} disabled={busy}>
+        <button className="wa-btn wa-btn--sm" type="button" onClick={selectAllVisible} disabled={busy}>
           Select all {visible.length} filtered
         </button>
-        <button type="button" onClick={() => setSelected(new Set())} disabled={busy}>
+        <button className="wa-btn wa-btn--ghost wa-btn--sm" type="button" onClick={() => setSelected(new Set())} disabled={busy}>
           Clear selection
         </button>
-        <button type="button" onClick={() => void decide('accepted')} disabled={busy}>
+        <button className="wa-btn wa-btn--primary wa-btn--sm" type="button" onClick={() => void decide('accepted')} disabled={busy}>
           Accept selected
         </button>
-        <button type="button" onClick={() => void decide('dismissed')} disabled={busy}>
+        <button className="wa-btn wa-btn--sm" type="button" onClick={() => void decide('dismissed')} disabled={busy}>
           Dismiss selected
         </button>
-        <button type="button" onClick={() => void decide('proposed')} disabled={busy}>
+        <button className="wa-btn wa-btn--ghost wa-btn--sm" type="button" onClick={() => void decide('proposed')} disabled={busy}>
           Re-open selected
         </button>
         <span style={muted} data-testid="selection-count">
@@ -308,14 +328,20 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
       </fieldset>
 
       <fieldset style={panel}>
-        <legend style={legend}>Export accepted proposals</legend>
+        <legend style={legend}>Export accepted changes</legend>
         <label style={label}>
-          Opt group
-          <input type="text" value={optGroup} onChange={(event) => setOptGroup(event.target.value)} />
+          Strategy group for export
+          <select className="wa-select wa-select--sm" value={optGroup} onChange={(event) => setOptGroup(event.target.value)}>
+            <option value="ungrouped">Ungrouped</option>
+            {strategyGroups.map((group) => (
+              <option key={group} value={group}>{group}</option>
+            ))}
+          </select>
+          <span style={muted}>Selects caps from this run’s snapshot; it is not a persisted campaign assignment.</span>
         </label>
         <label style={label}>
           Lever
-          <select value={lever} onChange={(event) => setLever(event.target.value)}>
+          <select className="wa-select wa-select--sm" value={lever} onChange={(event) => setLever(event.target.value)}>
             {LEVERS.map((value) => (
               <option key={value} value={value}>
                 {value}
@@ -325,18 +351,25 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         </label>
         <label style={{ ...label, flexDirection: 'row', alignItems: 'center', gap: '0.375rem' }}>
           <input
+            className="wa-checkbox"
             type="checkbox"
             checked={confirmed}
             onChange={(event) => setConfirmed(event.target.checked)}
           />
-          I confirm this export
+          Yes, export changes
         </label>
-        <button type="button" onClick={() => void exportBatch()} disabled={busy || !canExport}>
-          Export
+        <button
+          className="wa-btn wa-btn--primary wa-btn--sm"
+          type="button"
+          onClick={() => void exportBatch()}
+          disabled={busy || !canExport}
+          data-testid="export-accepted"
+        >
+          Export {exportCount} accepted change{exportCount === 1 ? '' : 's'}
         </button>
         <span style={muted}>
           {canExport
-            ? 'v1 writes nothing to Amazon: this stages a batch and produces the files the operator flow applies.'
+            ? 'Creates review files only. Wizard Ads does not update Amazon.'
             : `role ${props.role} may review but not export.`}
         </span>
       </fieldset>
@@ -352,45 +385,74 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         </p>
       )}
 
-      {groups.length === 0 ? (
+      {queue.length === 0 ? (
         <p style={muted}>No proposal matches this filter.</p>
       ) : (
-        groups.map((group) => (
-          <section key={group.reason} data-testid={`reason-group-${group.reason}`}>
-            <h2 style={{ fontSize: '1rem', margin: '0.5rem 0' }}>
-              {group.label} · {group.proposals.length}
-            </h2>
-            <table className="wa-table" style={table}>
-              <thead>
-                <tr>
-                  <th style={th} scope="col">
-                    <span aria-hidden="true">✓</span>
-                    <span style={visuallyHidden}>Select</span>
-                  </th>
-                  <th style={th} scope="col">Entity</th>
-                  <th style={th} scope="col">Scope</th>
-                  <th style={th} scope="col">Objective</th>
-                  <th style={th} scope="col">Field</th>
-                  <th style={thRight} scope="col">Current</th>
-                  <th style={thRight} scope="col">Proposed</th>
-                  <th style={thRight} scope="col">Δ</th>
-                  <th style={th} scope="col">Status</th>
-                  <th style={th} scope="col">Work</th>
-                </tr>
-              </thead>
-              <tbody>
-                {group.proposals.map((proposal) => (
-                  <ProposalRow
-                    key={proposal.id}
-                    proposal={proposal}
-                    selected={selected.has(proposal.id)}
-                    expanded={expanded === proposal.id}
-                    onToggle={() => toggle(proposal.id)}
-                    onExpand={() => setExpanded(expanded === proposal.id ? null : proposal.id)}
-                  />
-                ))}
-              </tbody>
-            </table>
+        queue.map((lane) => (
+          <section
+            key={lane.id}
+            className="wa-review__lane"
+            data-testid={`decision-lane-${lane.id}`}
+            aria-labelledby={`decision-lane-title-${lane.id}`}
+          >
+            <header className="wa-review__lane-head">
+              <div>
+                <h2 id={`decision-lane-title-${lane.id}`}>{lane.label}</h2>
+                <p>{lane.description}</p>
+              </div>
+              <strong>{lane.proposals.length}</strong>
+            </header>
+            <div className="wa-review__clusters">
+              {lane.reasons.map((group, index) => (
+                <details
+                  key={group.reason}
+                  className="wa-review__cluster"
+                  data-testid={`reason-group-${lane.id}-${group.reason}`}
+                  open={lane.id === 'needs_review' && index === 0}
+                >
+                  <summary>
+                    <span>
+                      <strong>{group.label}</strong>
+                      <small>{group.proposals[0]?.changeReason}</small>
+                    </span>
+                    <span className="wa-review__cluster-count">{group.proposals.length}</span>
+                  </summary>
+                  <div className="wa-tablewrap wa-review__tablewrap">
+                    <table className="wa-table wa-table--dense" style={table}>
+                      <thead>
+                        <tr>
+                          <th style={th} scope="col">
+                            <span aria-hidden="true">✓</span>
+                            <span style={visuallyHidden}>Select</span>
+                          </th>
+                          <th style={th} scope="col">Entity</th>
+                          <th style={th} scope="col">Scope</th>
+                          <th style={th} scope="col">Objective</th>
+                          <th style={th} scope="col">Field</th>
+                          <th style={thRight} scope="col">Current</th>
+                          <th style={thRight} scope="col">Proposed</th>
+                          <th style={thRight} scope="col">Δ</th>
+                          <th style={th} scope="col">Status</th>
+                          <th style={th} scope="col">Evidence</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {group.proposals.map((proposal) => (
+                          <ProposalRow
+                            key={proposal.id}
+                            proposal={proposal}
+                            selected={selected.has(proposal.id)}
+                            expanded={expanded === proposal.id}
+                            onToggle={() => toggle(proposal.id)}
+                            onExpand={() => setExpanded(expanded === proposal.id ? null : proposal.id)}
+                          />
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              ))}
+            </div>
           </section>
         ))
       )}
@@ -437,8 +499,8 @@ function ProposalRow({
         <td style={tdRight}>{percent(proposal.delta)}</td>
         <td style={td}>{proposal.status}</td>
         <td style={td}>
-          <button type="button" onClick={onExpand} aria-expanded={expanded}>
-            {expanded ? 'Hide work' : 'Show work'}
+          <button className="wa-btn wa-btn--ghost wa-btn--sm" type="button" onClick={onExpand} aria-expanded={expanded}>
+            {expanded ? 'Hide evidence' : 'Show evidence'}
           </button>
         </td>
       </tr>
@@ -493,13 +555,6 @@ function ProposalRow({
   );
 }
 
-const summary: CSSProperties = {
-  display: 'flex',
-  flexWrap: 'wrap',
-  gap: '1rem',
-  fontSize: '0.875rem',
-};
-const coverageRow: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: '0.5rem' };
 const panel: CSSProperties = {
   alignItems: 'flex-end',
   border: '1px solid var(--wa-border)',
@@ -512,12 +567,6 @@ const panel: CSSProperties = {
 const legend: CSSProperties = { fontSize: '0.8125rem', fontWeight: 600, padding: '0 0.25rem' };
 const label: CSSProperties = { display: 'flex', flexDirection: 'column', fontSize: '0.8125rem', gap: '0.25rem' };
 const muted: CSSProperties = { color: 'var(--wa-text-muted)', fontSize: '0.8125rem' };
-const pill: CSSProperties = {
-  background: 'var(--wa-surface-3)',
-  borderRadius: '999px',
-  fontSize: '0.75rem',
-  padding: '0.125rem 0.5rem',
-};
 const table: CSSProperties = { borderCollapse: 'collapse', fontSize: '0.8125rem', width: '100%' };
 const th: CSSProperties = {
   borderBottom: '1px solid var(--wa-border-strong)',
@@ -530,10 +579,17 @@ const tdRight: CSSProperties = { ...td, textAlign: 'right' };
 const provenancePanel: CSSProperties = {
   background: 'var(--wa-surface-2)',
   borderRadius: '0.375rem',
+  overflowWrap: 'anywhere',
   padding: '0.75rem',
 };
 const definitions: CSSProperties = { display: 'flex', flexDirection: 'column', gap: '0.25rem', margin: 0 };
-const definitionRow: CSSProperties = { display: 'flex', gap: '0.5rem' };
+const definitionRow: CSSProperties = {
+  alignItems: 'baseline',
+  display: 'grid',
+  gap: '0.25rem 0.75rem',
+  gridTemplateColumns: 'minmax(9rem, 13rem) minmax(0, 1fr)',
+  overflowWrap: 'anywhere',
+};
 const warning: CSSProperties = {
   background: 'var(--wa-bad-bg)',
   border: '1px solid var(--wa-bad-border)',

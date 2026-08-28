@@ -10,7 +10,7 @@
  *     spend is uneven across the bucket — the exact case a spiky account hits.
  */
 import { describe, expect, it } from 'vitest';
-import { bucketKey, seriesFor } from './cockpit';
+import { bucketKey, partitionKpiTiles, seriesFor } from './cockpit';
 import type { CockpitDay } from './cockpit';
 
 const day = (date: string, over: Partial<CockpitDay> = {}): CockpitDay => ({
@@ -64,5 +64,24 @@ describe('seriesFor', () => {
     const days = [day('2026-08-27'), day('2026-08-20')]; // Thu of two adjacent weeks
     const points = seriesFor(days, 'spend', 'W');
     expect(points.map((p) => p.date)).toEqual(['2026-08-17', '2026-08-24']);
+  });
+});
+
+describe('partitionKpiTiles', () => {
+  it('keeps exactly the four operator KPIs primary and preserves every supporting metric', () => {
+    const tiles = ['ctr', 'acos', 'spend', 'orders', 'sales', 'clicks'].map((metric) => ({
+      metric,
+      label: metric,
+      scale: metric === 'orders' || metric === 'clicks' ? ('integer' as const) : ('money' as const),
+      better: null,
+      value: 1,
+      prev: 1,
+      deltaPct: 0,
+    }));
+
+    const groups = partitionKpiTiles(tiles);
+    expect(groups.primary.map((tile) => tile.metric)).toEqual(['spend', 'sales', 'orders', 'acos']);
+    expect(groups.supporting.map((tile) => tile.metric)).toEqual(['ctr', 'clicks']);
+    expect([...groups.primary, ...groups.supporting]).toHaveLength(tiles.length);
   });
 });

@@ -102,11 +102,20 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
           <p style={muted}>
             {profile.label} · {profile.currencyCode} ·{' '}
             {run === null
-              ? 'no runs yet'
+              ? 'no run selected'
               : run.finishedAt === null
                 ? `run ${run.status}`
-                : `run ${run.engineVersion ?? 'unversioned'} over ${run.windowStart ?? '?'} to ${run.windowEnd ?? '?'}`}
+                : `${proposals.length} proposal${proposals.length === 1 ? '' : 's'} · ${run.windowStart ?? '?'} to ${run.windowEnd ?? '?'}`}
           </p>
+          {run === null ? null : (
+            <details className="wa-dashboard-context" style={{ marginTop: 0 }}>
+              <summary>Run details</summary>
+              <p>
+                Engine {run.engineVersion ?? 'unversioned'} · status {run.status} · created{' '}
+                {run.createdAt.toISOString().replace('T', ' ').slice(0, 16)} UTC
+              </p>
+            </details>
+          )}
           {runs.length > 1 ? (
             <nav style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }} aria-label="Runs">
               {runs.map((option) => (

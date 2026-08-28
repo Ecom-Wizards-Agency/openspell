@@ -112,6 +112,62 @@ export interface ReasonGroup {
   proposals: ProposalView[];
 }
 
+export type DecisionLaneId = 'needs_review' | 'ready_to_export' | 'completed';
+
+export interface DecisionLane {
+  id: DecisionLaneId;
+  label: string;
+  description: string;
+  proposals: ProposalView[];
+  reasons: ReasonGroup[];
+}
+
+const DECISION_LANES: ReadonlyArray<{
+  id: DecisionLaneId;
+  label: string;
+  description: string;
+  statuses: ReadonlySet<string>;
+}> = [
+  {
+    id: 'needs_review',
+    label: 'Needs review',
+    description: 'New proposals waiting for an operator decision.',
+    statuses: new Set(['proposed']),
+  },
+  {
+    id: 'ready_to_export',
+    label: 'Ready to export',
+    description: 'Accepted proposals that can leave Wizard Ads as files.',
+    statuses: new Set(['accepted']),
+  },
+  {
+    id: 'completed',
+    label: 'Completed',
+    description: 'Dismissed, exported, applied, or superseded proposals kept for the record.',
+    statuses: new Set(['dismissed', 'exported', 'applied', 'superseded']),
+  },
+];
+
+/**
+ * Turn a flat run into the three operator decisions the stored status supports.
+ *
+ * This deliberately does not invent an optimization-group assignment. Until a
+ * proposal carries real group context, reason is the most specific trustworthy
+ * queue dimension and status says what the operator can do next.
+ */
+export function groupByDecision(proposals: readonly ProposalView[]): DecisionLane[] {
+  return DECISION_LANES.map((lane) => {
+    const inLane = proposals.filter((proposal) => lane.statuses.has(proposal.status));
+    return {
+      id: lane.id,
+      label: lane.label,
+      description: lane.description,
+      proposals: inLane,
+      reasons: groupByReason(inLane),
+    };
+  }).filter((lane) => lane.proposals.length > 0);
+}
+
 /**
  * Group by reason, in the order the recon's optimizer presents them: the two
  * efficiency criteria, then the two sales criteria, then everything else.

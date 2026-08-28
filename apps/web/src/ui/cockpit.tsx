@@ -1,10 +1,9 @@
 'use client';
 
 /**
- * The dashboard cockpit: an AdLabs-grade KPI strip whose tiles ARE the chart
- * controls. Up to two tiles are selected at once; each drives one axis of the
- * dual-axis trend below — indigo for the first, orange for the second — so an
- * operator reads a number and charts it in the same gesture.
+ * The dashboard cockpit: four primary operator KPIs above the chart, with the
+ * remaining metrics available on demand. Tiles remain chart controls, so the
+ * simpler hierarchy does not remove analytical access.
  *
  * Granularity is honest for ratios: weekly and monthly buckets are built by
  * summing the BASE fields inside the bucket and deriving the metric from the
@@ -36,7 +35,24 @@ export interface CockpitProps {
 }
 
 const SERIES_COLORS = ['var(--wa-indigo)', 'var(--wa-accent)'] as const;
+const PRIMARY_METRICS = ['spend', 'sales', 'orders', 'acos'] as const;
 export type Granularity = 'D' | 'W' | 'M';
+
+export function partitionKpiTiles(tiles: readonly KpiTileModel[]): {
+  primary: KpiTileModel[];
+  supporting: KpiTileModel[];
+} {
+  const byMetric = new Map(tiles.map((tile) => [tile.metric, tile]));
+  const primary = PRIMARY_METRICS.flatMap((metric) => {
+    const tile = byMetric.get(metric);
+    return tile === undefined ? [] : [tile];
+  });
+  const primarySet = new Set(PRIMARY_METRICS);
+  return {
+    primary,
+    supporting: tiles.filter((tile) => !primarySet.has(tile.metric as (typeof PRIMARY_METRICS)[number])),
+  };
+}
 
 function formatValue(value: number | null, scale: KpiTileModel['scale'], currency: string): string {
   if (value === null) return '—';
@@ -89,6 +105,7 @@ export function seriesFor(
 export function Cockpit({ days, tiles, currencyCode, settlingStart, coverageStart }: CockpitProps): ReactNode {
   const [selected, setSelected] = useState<string[]>(['spend', 'sales']);
   const [gran, setGran] = useState<Granularity>('D');
+  const tileGroups = useMemo(() => partitionKpiTiles(tiles), [tiles]);
 
   const toggle = (metric: string): void => {
     setSelected((current) => {
@@ -116,33 +133,34 @@ export function Cockpit({ days, tiles, currencyCode, settlingStart, coverageStar
 
   return (
     <section aria-label="Performance cockpit" className="wa-cockpit">
-      <div className="wa-cockpit__strip" role="listbox" aria-label="Metrics — select up to two to chart">
-        {tiles.map((tile) => {
-          const index = selected.indexOf(tile.metric);
-          const color = index >= 0 ? SERIES_COLORS[index] : undefined;
-          return (
-            <button
-              key={tile.metric}
-              type="button"
-              role="option"
-              aria-selected={index >= 0}
-              className="wa-cockpit__tile"
-              style={color === undefined ? undefined : { boxShadow: `inset 0 -3px 0 0 ${color}` }}
-              onClick={() => toggle(tile.metric)}
-            >
-              <span className="wa-kpi__label">{tile.label}</span>
-              <span className="wa-cockpit__value">{formatValue(tile.value, tile.scale, currencyCode)}</span>
-              <span className="wa-cockpit__prev">
-                {tile.prev === null
-                  ? 'no comparison'
-                  : `${formatValue(tile.prev, tile.scale, currencyCode)} · ${
-                      tile.deltaPct === null ? '—' : `${tile.deltaPct >= 0 ? '+' : ''}${(tile.deltaPct * 100).toFixed(1)}%`
-                    }`}
-              </span>
-            </button>
-          );
-        })}
+      <div className="wa-cockpit__strip wa-cockpit__strip--primary" role="listbox" aria-label="Primary metrics — select up to two to chart">
+        {tileGroups.primary.map((tile) => (
+          <MetricTile
+            key={tile.metric}
+            tile={tile}
+            currencyCode={currencyCode}
+            selectedIndex={selected.indexOf(tile.metric)}
+            onSelect={() => toggle(tile.metric)}
+          />
+        ))}
       </div>
+
+      {tileGroups.supporting.length === 0 ? null : (
+        <details className="wa-cockpit__supporting">
+          <summary>Supporting metrics · {tileGroups.supporting.length}</summary>
+          <div className="wa-cockpit__strip wa-cockpit__strip--supporting" role="listbox" aria-label="Supporting metrics — select up to two to chart">
+            {tileGroups.supporting.map((tile) => (
+              <MetricTile
+                key={tile.metric}
+                tile={tile}
+                currencyCode={currencyCode}
+                selectedIndex={selected.indexOf(tile.metric)}
+                onSelect={() => toggle(tile.metric)}
+              />
+            ))}
+          </div>
+        </details>
+      )}
 
       <DualAxisTrend
         charted={charted}
@@ -153,6 +171,42 @@ export function Cockpit({ days, tiles, currencyCode, settlingStart, coverageStar
         coverageStart={coverageStart}
       />
     </section>
+  );
+}
+
+function MetricTile({
+  tile,
+  currencyCode,
+  selectedIndex,
+  onSelect,
+}: {
+  tile: KpiTileModel;
+  currencyCode: string;
+  selectedIndex: number;
+  onSelect: () => void;
+}): ReactNode {
+  const color = selectedIndex >= 0 ? SERIES_COLORS[selectedIndex] : undefined;
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={selectedIndex >= 0}
+      className="wa-cockpit__tile"
+      style={color === undefined ? undefined : { borderBottomColor: color }}
+      onClick={onSelect}
+    >
+      <span className="wa-kpi__label">{tile.label}</span>
+      <span className="wa-cockpit__value">{formatValue(tile.value, tile.scale, currencyCode)}</span>
+      <span className="wa-cockpit__prev">
+        {tile.prev === null
+          ? 'no comparison'
+          : `${formatValue(tile.prev, tile.scale, currencyCode)} · ${
+              tile.deltaPct === null
+                ? '—'
+                : `${tile.deltaPct >= 0 ? '+' : ''}${(tile.deltaPct * 100).toFixed(1)}%`
+            }`}
+      </span>
+    </button>
   );
 }
 

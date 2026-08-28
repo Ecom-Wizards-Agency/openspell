@@ -41,7 +41,7 @@ const META: Record<
   { label: string; scale: 'money' | 'percent' | 'ratio' | 'integer'; better: 'higher' | 'lower' | null }
 > = {
   spend: { label: 'Spend', scale: 'money', better: null },
-  sales: { label: 'Sales', scale: 'money', better: 'higher' },
+  sales: { label: 'Ad Sales', scale: 'money', better: 'higher' },
   orders: { label: 'Orders', scale: 'integer', better: 'higher' },
   roas: { label: 'ROAS', scale: 'ratio', better: 'higher' },
   acos: { label: 'ACOS', scale: 'percent', better: 'lower' },
@@ -112,8 +112,8 @@ export function bidHistoryKpiTiles(totals: BaseTotals): KpiTileModel[] {
   });
 }
 
-export interface OptimizationGroup {
-  /** The grouping key (a campaign, until a real opt-group model exists). */
+export interface CampaignReviewGroup {
+  /** The grouping key: a campaign, not a persisted optimization group. */
   key: string;
   label: string;
   /** Target ACOS shared by the group's proposals, when they agree; else null. */
@@ -126,15 +126,14 @@ export interface OptimizationGroup {
 }
 
 /**
- * Group proposals into optimization groups.
+ * Group proposals by campaign for a more scannable review.
  *
- * There is no backing optimization-group model yet (`04-optimizer.md` §4 — a
- * group is a named set of campaigns with its own target ACOS and prioritization;
- * our schema carries neither), so the campaign stands in as the group and the
- * strategy the run resolved for it supplies the target/objective. When a real
- * group model lands this function keys on it instead; nothing else changes.
+ * This is deliberately named for what the data supports. A persisted
+ * optimization group is a different object: it can own several campaigns and
+ * policy. Until that model exists, the UI must not label campaign buckets as
+ * optimization groups.
  */
-export function optimizationGroups(proposals: readonly ProposalView[]): OptimizationGroup[] {
+export function campaignReviewGroups(proposals: readonly ProposalView[]): CampaignReviewGroup[] {
   const byKey = new Map<string, ProposalView[]>();
   for (const proposal of proposals) {
     const key = campaignOf(proposal);
