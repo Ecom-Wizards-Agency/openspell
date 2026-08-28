@@ -152,8 +152,10 @@ implementation brief in `docs/workpackages/`.
 - SQP now has strict Sunday-Saturday planning, one-marketplace requests, canonical ASIN batching,
   resumable exact-identity checkpoints, complete-report reuse, strict document parsing, counted
   transactional replacement, vocabulary approval preservation, spend-conserving PPC joins and
-  routing-gated review proposals. The live queue cannot carry `sqp.request` until the authoritative
-  job union/database enum and a durable feature-report checkpoint table are widened.
+  routing-gated review proposals. Overlapping promotions take sorted per-ASIN transaction locks
+  and reject stale evidence from an immutable source-report freshness ledger before deletion. The
+  live queue cannot carry `sqp.request` until the authoritative job union/database enum and a
+  durable feature-report checkpoint table are widened.
 - Dayparting now has an append-only revision ledger, exact-source stale guards, normalized SP/SB/SD
   hourly facts, DST-local derivation, settling/revised states, confidence-shrunk proposals and
   CSV/JSON serialization. Its SQS subscriber has the equivalent queue-contract gate.
@@ -183,8 +185,9 @@ implementation brief in `docs/workpackages/`.
       isolated UI suite passed 149 of 149 instead of measuring unrelated CPU contention.
 - [x] Additive migration, RLS, report promotion, roadmap, creative persistence and dayparting
       persistence suites executed against disposable PostgreSQL with synthetic fixtures. The final
-      database package run passed 25 files and 194 tests; the worker package passed 18 files and
-      163 tests against the same disposable database.
+      database package run passed 25 files and 197 tests; the worker package passed 18 files and
+      163 tests against the same disposable database. The MCP package passed 55 tests with scoped,
+      expiring issuance and unsafe-legacy-key refusal.
 - [x] Workspace build passed; the web build generated the current route tree without production
       environment values.
 - [ ] Exact deployed revisions for web and always-on worker.

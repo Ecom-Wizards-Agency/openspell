@@ -26,7 +26,9 @@ verified product behavior.
 - Discovery returns analytical read tools only. The production catalog contains no Amazon-write
   or product-mutation tools.
 - Key expiry, revocation, profile allowlists, audit logging, and `last_used_at` updates are
-  enforced. Setup instructions refer to `WIZARD_ADS_MCP_TOKEN` and do not embed a secret.
+  enforced. Issuance requires an owned, non-empty profile allowlist and a bounded future expiry;
+  verification also refuses legacy unscoped or non-expiring rows. Setup instructions refer to
+  `WIZARD_ADS_MCP_TOKEN` and do not embed a secret.
 - Codex and Claude Code each completed discovery, a real permitted read, audit verification,
   last-used verification, and a denied-profile check with a newly issued scoped key.
 - The previously exposed key was revoked and never reused.
@@ -71,7 +73,9 @@ verified product behavior.
   Amazon Audit parity remain separate evidence gates. The adapter-ready SP-API workflow adds exact
   Sunday-Saturday planning, one marketplace per request, canonical ASIN batches, resumable
   exact-identity checkpoints, completed-report reuse, strict payload validation, transactional
-  complete-scope replacement and human-decision preservation.
+  complete-scope replacement and human-decision preservation. Sorted per-ASIN transaction locks
+  and immutable source-report promotion runs reject an older overlapping request before canonical
+  deletion and make an exact retry a checked no-op.
 - The pure optimizer evidence engine validates immutable group context, refuses compounding until
   the exported value is synchronized and its observation window is complete, compares
   de-duplicated matched pre/post volume, continues only with lift evidence, and proposes the exact
@@ -90,16 +94,20 @@ verified product behavior.
   workspace typechecks, lint, non-DB-backed Vitest suites, public-repo hygiene and skill lint. The
   UI performance suite runs after the other Turbo package suites so its unchanged wall-clock budget
   measures the code rather than CPU contention from unrelated tests.
-- The full database package passed against disposable PostgreSQL: 25 files and 194 synthetic
+- The full database package passed against disposable PostgreSQL: 25 files and 197 synthetic
   tests, including migration/RLS coverage, roadmap manifest, report promotion, creative,
   SQP, and dayparting persistence. The worker package passed 18 files and 163 tests against
-  the same disposable database, including retry and idempotency paths.
+  the same disposable database, including retry and idempotency paths. The MCP package passed
+  55 tests against the disposable database, including refusal of unsafe legacy key shapes.
 - Playwright passed both local release suites after the final SQP integration: 26 production-build workflows and 27
   authenticated-dev workflows. Coverage includes guided campaign export, four-series dashboard
   controls, nested grid grouping, recommendations, experiments, tags, feedback, OAuth/role safety,
   every guarded route, and Time Machine flows.
 - `pnpm build` passed; the web build generated the current route tree without production
   environment values.
+- An independent high-reasoning release review found two medium issues: unsafe legacy MCP key
+  shapes and stale SQP promotion. Both were fixed and regression-tested; a follow-up review is
+  required after their integration.
 - The web production revision remains unverified unless a revision-stamped deployment is recorded
   separately. A passing local or preview build is not described as production behavior.
 - Authenticated competitor and production route QA remains blocked until the existing Chrome tabs
