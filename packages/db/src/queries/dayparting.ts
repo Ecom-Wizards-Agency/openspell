@@ -544,7 +544,6 @@ function assertSameRevision(
     existing.revision !== offered.revision ||
     existing.adProduct !== offered.adProduct ||
     toIso(existing.eventTime) !== toIso(offered.eventTime) ||
-    toIso(existing.receivedAt) !== toIso(offered.receivedAt) ||
     existing.payloadHash !== offered.payloadHash
   ) {
     throw new MarketingStreamPersistenceError(

@@ -99,7 +99,13 @@ describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
     });
     expect(appended.affectedScopes).toEqual([{ adProduct: 'SP', utcHour: firstHour }]);
 
-    const redelivery = await appendMarketingStreamEvents(database, { orgId, profileId, events: initial });
+    // SQS can deliver the same immutable event later. Receipt time is ledger
+    // metadata, not a new source revision, so it must still deduplicate.
+    const redelivery = await appendMarketingStreamEvents(database, {
+      orgId,
+      profileId,
+      events: initial.map((event) => ({ ...event, receivedAt: '2026-06-01T10:06:00.000Z' })),
+    });
     expect(redelivery).toMatchObject({
       offeredMessages: 3,
       insertedMessages: 0,
