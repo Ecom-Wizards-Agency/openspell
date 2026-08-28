@@ -19,6 +19,7 @@ describe('Connect AI setup safety', () => {
     expect(claude).toContain('Bearer ${WIZARD_ADS_MCP_TOKEN}');
     expect(codex).toContain(`--url ${ENDPOINT}`);
     expect(codex).toContain('--bearer-token-env-var WIZARD_ADS_MCP_TOKEN');
+    expect(codex.split('\n').every((line) => !line.startsWith('+'))).toBe(true);
     expect(`${claude}\n${codex}`).not.toContain(secretValue);
   });
 

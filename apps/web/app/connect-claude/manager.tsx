@@ -51,7 +51,11 @@ export function claudeSnippet(endpoint: string): string {
 
 /** Codex persists only the environment-variable name through its supported flag. */
 export function codexSnippet(endpoint: string): string {
-  return `codex mcp add wizard-ads \\\n+  --url ${endpoint} \\\n+  --bearer-token-env-var WIZARD_ADS_MCP_TOKEN`;
+  return [
+    'codex mcp add wizard-ads \\',
+    `  --url ${endpoint} \\`,
+    '  --bearer-token-env-var WIZARD_ADS_MCP_TOKEN',
+  ].join('\n');
 }
 
 function profileScope(key: Row, profiles: readonly McpProfileOption[]): string {
