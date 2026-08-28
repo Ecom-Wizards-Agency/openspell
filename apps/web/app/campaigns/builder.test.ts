@@ -53,6 +53,23 @@ function mount(): HTMLElement {
   return host;
 }
 
+function button(host: HTMLElement, text: string): HTMLButtonElement {
+  const match = [...host.querySelectorAll('button')].find((candidate) => candidate.textContent?.includes(text));
+  if (match === undefined) throw new Error(`Button not found: ${text}`);
+  return match;
+}
+
+function setValue(element: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  const prototype = element instanceof HTMLTextAreaElement
+    ? HTMLTextAreaElement.prototype
+    : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+  act(() => {
+    setter?.call(element, value);
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
 afterEach(() => {
   act(() => {
     for (const root of mounted.splice(0)) root.unmount();
@@ -61,22 +78,43 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('Campaign Builder UI modes', () => {
-  it('opens in UPDATE mode and keeps download behind preflight', () => {
+describe('Campaign Builder guided modes', () => {
+  it('opens in guided UPDATE mode with JSON closed and export behind preflight', () => {
     const host = mount();
     expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain('Update existing');
-    const textarea = host.querySelector('[data-testid="campaign-builder-json"]') as HTMLTextAreaElement;
-    expect(textarea.value).toContain('allowEndDateClear');
-    const download = [...host.querySelectorAll('button')].find((button) => button.textContent?.includes('Download'));
-    expect(download?.disabled).toBe(true);
+    expect(host.querySelector('input#update-campaign-id')).not.toBeNull();
+    expect(button(host, 'Campaign settings').getAttribute('aria-pressed')).toBe('true');
+    expect((host.querySelector('[data-testid="campaign-builder-advanced"]') as HTMLDetailsElement).open).toBe(false);
+    expect(host.textContent).toContain('Neither action changes Amazon');
+    expect(button(host, 'Download bulksheet').disabled).toBe(true);
   });
 
-  it('shows every preflight diff row with its operation', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json(preview)));
+  it('validates guided fields before making a request', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
     const host = mount();
-    const preflight = [...host.querySelectorAll('button')].find((button) => button.textContent?.includes('Run preflight'));
-    await act(async () => {
-      preflight?.click();
+    await act(async () => button(host, 'Preview changes').click());
+    expect(fetch).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Campaign ID');
+  });
+
+  it('submits a guided sparse UPDATE and shows every returned diff row', async () => {
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json(preview));
+    vi.stubGlobal('fetch', fetch);
+    const host = mount();
+    setValue(host.querySelector('#update-campaign-id') as HTMLInputElement, '1001');
+    setValue(host.querySelector('#update-amount') as HTMLInputElement, '25');
+    await act(async () => button(host, 'Preview changes').click());
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const init = fetch.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      mode: 'update',
+      output: 'preview',
+      config: {
+        allowEndDateClear: false,
+        changes: { campaigns: [{ campaignId: '1001', dailyBudget: 25 }] },
+      },
     });
     const renderedRows = host.querySelectorAll('[data-testid="campaign-update-rows"] tbody tr');
     expect(renderedRows).toHaveLength(preview.rows.length);
@@ -85,26 +123,40 @@ describe('Campaign Builder UI modes', () => {
       expect.stringContaining('Archive'),
       expect.stringContaining('Create'),
     ]);
-    const download = [...host.querySelectorAll('button')].find((button) => button.textContent?.includes('Download'));
-    expect(download?.disabled).toBe(false);
+    expect(button(host, 'Download bulksheet').disabled).toBe(false);
   });
 
-  it('switches to the existing CREATE input idiom without retaining an UPDATE preview', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json(preview)));
+  it('switches to CREATE recipes and updates the live engine name preview', () => {
     const host = mount();
-    const preflight = [...host.querySelectorAll('button')].find((button) => button.textContent?.includes('Run preflight'));
-    await act(async () => {
-      preflight?.click();
-    });
-    expect(host.querySelectorAll('[data-testid="campaign-update-rows"] tbody tr')).toHaveLength(3);
-
-    const createTab = [...host.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent?.includes('Create new')) as HTMLButtonElement;
+    const createTab = button(host, 'Create new');
     act(() => createTab.click());
     expect(createTab.getAttribute('aria-selected')).toBe('true');
+    expect(button(host, 'Keyword group').getAttribute('aria-pressed')).toBe('true');
+
+    setValue(host.querySelector('#campaign-product') as HTMLInputElement, 'Widget');
+    setValue(host.querySelector('#campaign-descriptor') as HTMLInputElement, 'long-tail');
+    setValue(host.querySelector('#campaign-sku') as HTMLTextAreaElement, 'SKU-1');
+    setValue(host.querySelector('#campaign-targets') as HTMLTextAreaElement, 'synthetic keyword');
+
+    const name = host.querySelector('[data-testid="campaign-name-preview"]')?.textContent ?? '';
+    expect(name).toContain('Profit | SP | Exact | Halo | Widget | synthetic keyword | 01 | EW');
+    expect(host.querySelector('[data-testid="campaign-validation"]')).toBeNull();
     expect(host.querySelector('[data-testid="campaign-update-rows"]')).toBeNull();
-    const textarea = host.querySelector('[data-testid="campaign-builder-json"]') as HTMLTextAreaElement;
-    expect(textarea.value).toContain('"campaigns"');
-    expect(textarea.value).toContain('"state": "paused"');
+  });
+
+  it('keeps JSON editing explicit and blocks malformed advanced input locally', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const host = mount();
+    const advanced = host.querySelector('[data-testid="campaign-builder-advanced"]') as HTMLDetailsElement;
+    act(() => { advanced.open = true; });
+    const json = host.querySelector('[data-testid="campaign-builder-json"]') as HTMLTextAreaElement;
+    expect(json.value).toContain('"changes"');
+    setValue(json, '{invalid');
+    await act(async () => button(host, 'Preview changes').click());
+    expect(fetch).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Advanced JSON is not valid');
+    expect(button(host, 'Reset to guided form').disabled).toBe(false);
   });
 });
 

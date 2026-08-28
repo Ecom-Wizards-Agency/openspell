@@ -20,6 +20,35 @@ import {
 } from '../../../../src/campaigns/artifact';
 
 export const runtime = 'nodejs';
+export const CAMPAIGN_BUILD_EFFECT = 'export-only' as const;
+
+export interface CampaignBuildRequest {
+  mode: CampaignBuilderMode;
+  output: 'preview' | 'xlsx';
+  profileId: unknown;
+  config: unknown;
+}
+
+/** Keep the HTTP surface closed to apply/write-shaped actions. */
+export function parseCampaignBuildRequest(value: unknown): CampaignBuildRequest {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('request body must be an object');
+  }
+  const body = value as Record<string, unknown>;
+  if (body['mode'] !== 'create' && body['mode'] !== 'update') {
+    throw new Error('mode must be create or update');
+  }
+  const output = body['output'] ?? 'preview';
+  if (output !== 'preview' && output !== 'xlsx') {
+    throw new Error('output must be preview or xlsx');
+  }
+  return {
+    mode: body['mode'],
+    output,
+    profileId: body['profileId'],
+    config: body['config'],
+  };
+}
 
 function attachment(filename: string): string {
   return `attachment; filename="${filename.replaceAll('"', '')}"`;
@@ -30,20 +59,8 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const actor = await requestActor(request.headers);
     await requireOrgMembership(database, actor);
-    const body = (await request.json()) as {
-      mode?: unknown;
-      output?: unknown;
-      profileId?: unknown;
-      config?: unknown;
-    };
-    if (body.mode !== 'create' && body.mode !== 'update') {
-      throw new Error('mode must be create or update');
-    }
-    const mode: CampaignBuilderMode = body.mode;
-    const output = body.output ?? 'preview';
-    if (output !== 'preview' && output !== 'xlsx') {
-      throw new Error('output must be preview or xlsx');
-    }
+    const body = parseCampaignBuildRequest(await request.json());
+    const { mode, output } = body;
 
     let client = 'campaigns';
     let marketplace = 'US';

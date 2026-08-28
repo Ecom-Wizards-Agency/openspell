@@ -1,4 +1,4 @@
-/** `/campaigns` — JSON plan, preflight, and manual bulksheet export. */
+/** `/campaigns` — guided planning, preflight, and manual bulksheet export. */
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import {
@@ -35,11 +35,11 @@ export default async function CampaignsPage({ searchParams }: { searchParams: Se
       <main className="wa-page" data-interactive="true">
         <PageHeader
           title="Campaign Builder"
-          subtitle="Create paused Sponsored Products campaigns or diff desired changes against synced live entities. Both modes end at an operator-reviewed bulksheet; neither writes to Amazon."
+          subtitle="Plan new Sponsored Products campaigns or review changes against synced entities. Every workflow ends with a bulksheet for manual review and upload."
           meta={
             profile === null ? null : (
               <span className="wa-hint">
-                UPDATE source: {profile.label} · {profile.countryCode} · synced mirror
+                Update source · {profile.label} · {profile.countryCode} · synced mirror
               </span>
             )
           }
