@@ -67,21 +67,41 @@ export interface DataGridProps {
 }
 
 const helper = createColumnHelper<GridRow>();
+const EMPTY_COLLAPSED_GROUPS: ReadonlySet<string> = new Set();
 
 interface CellProps {
   row: GridRow;
   column: GridColumn;
   context: FormatContext;
+  collapsedGroupIds: ReadonlySet<string>;
+  onToggleGroup: (groupId: string) => void;
 }
 
-function Cell({ row, column, context }: CellProps): ReactNode {
+function Cell({ row, column, context, collapsedGroupIds, onToggleGroup }: CellProps): ReactNode {
   const value = resolveField(row, column.id);
   const ref = parseFieldId(column.id);
 
   if (isGroupedRow(row) && row.groupDepth >= 0 && column.kind === 'dimension') {
     if (row.groupColumnId !== column.id) return null;
+    const collapsed = collapsedGroupIds.has(row.id);
     return (
       <span data-testid={`group-level-${row.groupDepth + 1}`} style={groupCell}>
+        {row.isLeafGroup ? (
+          <span aria-hidden style={groupLeafMarker}>•</span>
+        ) : (
+          <button
+            type="button"
+            aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${column.header} ${formatValue(value, column.scale, context)}`}
+            aria-expanded={!collapsed}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleGroup(row.id);
+            }}
+            style={groupToggle}
+          >
+            <span aria-hidden>{collapsed ? '▸' : '▾'}</span>
+          </button>
+        )}
         {row.groupDepth === 0 ? null : <span aria-hidden style={groupBranch}>↳</span>}
         <span style={groupValue}>{formatValue(value, column.scale, context)}</span>
         <span style={groupCount}>{formatInteger(row.groupSize, context.locale)} rows</span>
@@ -137,11 +157,76 @@ export function DataGrid({
 }: DataGridProps): ReactNode {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
+  const groupingKey = model.groupBy.join('\u0000');
+  const [collapseState, setCollapseState] = useState<{
+    groupingKey: string;
+    ids: ReadonlySet<string>;
+  }>(() => ({ groupingKey, ids: EMPTY_COLLAPSED_GROUPS }));
+  const collapsedGroupIds =
+    collapseState.groupingKey === groupingKey
+      ? collapseState.ids
+      : EMPTY_COLLAPSED_GROUPS;
   const formatContext = useMemo<FormatContext>(
     () => ({ currencyCode, ...(locale === undefined ? {} : { locale }) }),
     [currencyCode, locale],
   );
   const selected = useMemo(() => new Set(selectedRowIds), [selectedRowIds]);
+  const collapsibleGroupIds = useMemo(
+    () => {
+      if (!model.grouped) return EMPTY_COLLAPSED_GROUPS;
+      return new Set(
+        model.rows
+          .filter((row): row is GroupedRow => isGroupedRow(row) && !row.isLeafGroup)
+          .map((row) => row.id),
+      );
+    },
+    [model.grouped, model.rows],
+  );
+
+  useEffect(() => {
+    setCollapseState((current) =>
+      current.groupingKey === groupingKey
+        ? current
+        : { groupingKey, ids: EMPTY_COLLAPSED_GROUPS },
+    );
+  }, [groupingKey]);
+
+  useEffect(() => {
+    setCollapseState((current) => {
+      if (current.groupingKey !== groupingKey) return current;
+      const next = new Set([...current.ids].filter((id) => collapsibleGroupIds.has(id)));
+      return next.size === current.ids.size ? current : { ...current, ids: next };
+    });
+  }, [collapsibleGroupIds, groupingKey]);
+
+  const toggleGroup = useCallback((groupId: string) => {
+    setCollapseState((current) => {
+      const ids = current.groupingKey === groupingKey
+        ? current.ids
+        : EMPTY_COLLAPSED_GROUPS;
+      const next = new Set(ids);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return { groupingKey, ids: next };
+    });
+  }, [groupingKey]);
+
+  const visibleRows = useMemo(() => {
+    if (!model.grouped || collapsedGroupIds.size === 0) return model.rows;
+    const hiddenGroupIds = new Set<string>();
+    const visible: GridRow[] = [];
+    for (const row of model.rows) {
+      if (!isGroupedRow(row) || row.parentGroupId === null) {
+        visible.push(row);
+        continue;
+      }
+      const parentHidden =
+        collapsedGroupIds.has(row.parentGroupId) || hiddenGroupIds.has(row.parentGroupId);
+      if (parentHidden) hiddenGroupIds.add(row.id);
+      else visible.push(row);
+    }
+    return visible;
+  }, [collapsedGroupIds, model.grouped, model.rows]);
 
   const columnDefs = useMemo<ColumnDef<GridRow, unknown>[]>(
     () =>
@@ -150,10 +235,18 @@ export function DataGrid({
           id: column.id,
           header: column.header,
           size: column.width,
-          cell: (info) => <Cell row={info.row.original} column={column} context={formatContext} />,
+          cell: (info) => (
+            <Cell
+              row={info.row.original}
+              column={column}
+              context={formatContext}
+              collapsedGroupIds={collapsedGroupIds}
+              onToggleGroup={toggleGroup}
+            />
+          ),
         }),
       ) as ColumnDef<GridRow, unknown>[],
-    [columns, formatContext],
+    [collapsedGroupIds, columns, formatContext, toggleGroup],
   );
 
   const pinnedIds = useMemo(
@@ -162,7 +255,7 @@ export function DataGrid({
   );
 
   const table = useReactTable({
-    data: model.rows,
+    data: visibleRows,
     columns: columnDefs,
     getCoreRowModel: getCoreRowModel(),
     state: { columnPinning: { left: pinnedIds, right: [] } },
@@ -264,7 +357,13 @@ export function DataGrid({
                         data-testid={`sorted-column-aggregate-${column.id}`}
                         style={headerAggregate}
                       >
-                        <Cell row={totalsRow} column={definition} context={formatContext} />
+                        <Cell
+                          row={totalsRow}
+                          column={definition}
+                          context={formatContext}
+                          collapsedGroupIds={collapsedGroupIds}
+                          onToggleGroup={toggleGroup}
+                        />
                       </span>
                     )}
                   </span>
@@ -335,7 +434,13 @@ export function DataGrid({
                         ? `Total · ${formatInteger(model.matched, locale)} source row${model.matched === 1 ? '' : 's'}`
                         : `Total · ${formatInteger(model.shown, locale)} row${model.shown === 1 ? '' : 's'}`
                     ) : definition === undefined ? null : (
-                      <Cell row={totalsRow} column={definition} context={formatContext} />
+                      <Cell
+                        row={totalsRow}
+                        column={definition}
+                        context={formatContext}
+                        collapsedGroupIds={collapsedGroupIds}
+                        onToggleGroup={toggleGroup}
+                      />
                     )}
                   </div>
                 );
@@ -359,6 +464,9 @@ export function DataGrid({
                     key={row.id}
                     role="row"
                     aria-selected={isSelected}
+                    {...(groupedRow !== null && !groupedRow.isLeafGroup
+                      ? { 'aria-expanded': !collapsedGroupIds.has(groupedRow.id) }
+                      : {})}
                     {...(groupedRow === null
                       ? {}
                       : {
@@ -420,7 +528,7 @@ export function DataGrid({
       <div style={footer}>
         <span>
           {model.grouped
-            ? `${formatInteger(model.shown, locale)} hierarchy rows · ${formatInteger(model.exported, locale)} deepest groups · ${formatInteger(model.matched, locale)} matched source rows of ${formatInteger(model.total, locale)}`
+            ? `${visibleRows.length === model.shown ? formatInteger(model.shown, locale) : `${formatInteger(visibleRows.length, locale)} visible of ${formatInteger(model.shown, locale)}`} hierarchy rows · ${formatInteger(model.exported, locale)} deepest groups · ${formatInteger(model.matched, locale)} matched source rows of ${formatInteger(model.total, locale)}`
             : `${formatInteger(model.shown, locale)} of ${formatInteger(model.total, locale)} rows`}
         </span>
         {model.grouped ? (
@@ -610,6 +718,25 @@ const groupCell: CSSProperties = {
 const groupBranch: CSSProperties = {
   color: tokens.color.textMuted,
   flex: '0 0 auto',
+};
+
+const groupToggle: CSSProperties = {
+  alignItems: 'center',
+  background: 'none',
+  border: 'none',
+  color: tokens.color.textMuted,
+  cursor: 'pointer',
+  display: 'inline-flex',
+  flex: '0 0 auto',
+  justifyContent: 'center',
+  padding: tokens.space(0.5),
+};
+
+const groupLeafMarker: CSSProperties = {
+  color: tokens.color.textMuted,
+  flex: '0 0 auto',
+  textAlign: 'center',
+  width: tokens.space(2),
 };
 
 const groupValue: CSSProperties = {
