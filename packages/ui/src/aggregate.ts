@@ -108,13 +108,22 @@ export function isGroupedRow(row: GridRow): row is GroupedRow {
 export function groupRows(rows: readonly GridRow[], columnIds: readonly string[]): GroupedRow[] {
   const levels = uniqueGroupLevels(columnIds);
   if (levels.length === 0) return [];
-  assertSingleCurrency(rows);
+
+  // The common operator path is one grouping dimension. Avoid constructing a
+  // hierarchy index and path arrays for 50k source rows when every bucket is a
+  // root and a leaf. Multi-level grouping keeps the general tree path below.
+  if (levels.length === 1) return groupRowsSingleLevel(rows, levels[0] as string, levels);
 
   const buckets = new Map<string, GroupedRow>();
   const children = new Map<string, GroupedRow[]>();
   const tagSets = new Map<string, Set<string>>();
+  let currency: string | null = null;
 
   for (const row of rows) {
+    if (currency === null) currency = row.currencyCode;
+    else if (currency !== row.currencyCode) {
+      throw new MixedCurrencyError([currency, row.currencyCode].sort());
+    }
     let pathKey = '';
     let parentGroupId: string | null = null;
     const dimensions: Record<string, DimensionValue> = {};
@@ -180,6 +189,67 @@ export function groupRows(rows: readonly GridRow[], columnIds: readonly string[]
   return out;
 }
 
+function groupRowsSingleLevel(
+  rows: readonly GridRow[],
+  columnId: string,
+  groupBy: readonly string[],
+): GroupedRow[] {
+  const buckets = new Map<string, GroupedRow>();
+  const tagSets = new Map<string, Set<string>>();
+  let currency: string | null = null;
+
+  for (const row of rows) {
+    if (currency === null) currency = row.currencyCode;
+    else if (currency !== row.currencyCode) {
+      throw new MixedCurrencyError([currency, row.currencyCode].sort());
+    }
+
+    const value = resolveField(row, columnId);
+    const key = dimensionKey(columnId, value);
+    let bucket = buckets.get(key);
+    if (bucket === undefined) {
+      bucket = {
+        id: `group:${encodeURIComponent(key)}`,
+        dimensions: { [columnId]: value },
+        totals: emptyTotals(),
+        comparison: null,
+        currencyCode: row.currencyCode,
+        groupSize: 0,
+        groupBy,
+        groupDepth: 0,
+        groupColumnId: columnId,
+        groupPath: [{ columnId, value }],
+        parentGroupId: null,
+        isLeafGroup: true,
+      };
+      buckets.set(key, bucket);
+    }
+
+    addTotals(bucket.totals, row.totals);
+    bucket.groupSize += 1;
+    if (row.comparison !== null) {
+      if (bucket.comparison === null) bucket.comparison = emptyTotals();
+      addTotals(bucket.comparison, row.comparison);
+    }
+    if ((row.tagIds?.length ?? 0) > 0) {
+      let tags = tagSets.get(key);
+      if (tags === undefined) {
+        tags = new Set<string>();
+        tagSets.set(key, tags);
+      }
+      for (const tagId of row.tagIds ?? []) tags.add(tagId);
+    }
+  }
+
+  const result = [...buckets.values()];
+  for (const bucket of result) {
+    const key = dimensionKey(columnId, bucket.groupPath[0]?.value ?? null);
+    const tags = tagSets.get(key);
+    if (tags !== undefined) bucket.tagIds = [...tags].sort();
+  }
+  return result;
+}
+
 /**
  * One row summing everything shown. The grid pins it above the body, so the
  * number an operator quotes is the number the filter produced -- not a total of
@@ -187,11 +257,15 @@ export function groupRows(rows: readonly GridRow[], columnIds: readonly string[]
  */
 export function grandTotal(rows: readonly GridRow[], label = 'Total'): GroupedRow | null {
   if (rows.length === 0) return null;
-  const currency = assertSingleCurrency(rows);
   const totals = emptyTotals();
   let comparison: BaseTotals | null = null;
+  let currency: string | null = null;
 
   for (const row of rows) {
+    if (currency === null) currency = row.currencyCode;
+    else if (currency !== row.currencyCode) {
+      throw new MixedCurrencyError([currency, row.currencyCode].sort());
+    }
     addTotals(totals, row.totals);
     if (row.comparison !== null) {
       if (comparison === null) comparison = emptyTotals();
