@@ -10,8 +10,9 @@
  *   1. The written insight references the seeded figures — its `spend` and
  *      `sales` equal the sums independently computed from `fact_profile_daily`
  *      over the analyst's own window.
- *   2. The MCP audit log shows the analyst's key called read tools only. Every
- *      logged action is on the read allowlist; none of the write tools appear.
+ *   2. The MCP audit log shows the analyst's key called read tools and resources
+ *      only. Every logged action is on the read allowlist; none of the write
+ *      tools appear.
  *
  * The suite skips, rather than fails, when no Postgres is reachable, so
  * `pnpm check` stays honest on a machine with no database.
@@ -182,7 +183,7 @@ describe.skipIf(!available)('daily analyst against dev-seed', () => {
     expect(Number(after[0]?.count)).toBe(Number(before[0]?.count));
   });
 
-  it('touched only read tools: the audit log shows zero write-tool calls by the analyst key', async () => {
+  it('touched only read operations: the audit log shows zero write-tool calls by the analyst key', async () => {
     const actions = await db.sql<{ action: string; outcome: string }[]>`
       select action, (payload->>'outcome') as outcome
         from public.audit_log
@@ -195,17 +196,22 @@ describe.skipIf(!available)('daily analyst against dev-seed', () => {
     const writes = actions.filter((row) => WRITE_TOOLS.has(row.action));
     expect(writes).toEqual([]);
 
-    // Every logged action is a read tool, and none was a gated refusal.
+    // Every logged action is an analytical tool or resource read, and none was
+    // a gated refusal. Resource action names come from the MCP audit wrapper.
     const readAllowlist = new Set([
       'mcp.list_profiles',
       'mcp.get_sync_status',
       'mcp.get_entity_data',
       'mcp.get_flags',
       'mcp.get_pacing',
+      'mcp.resource.instructions.read',
+      'mcp.resource.profile-context.list',
+      'mcp.resource.profile-context.read',
     ]);
     for (const row of actions) {
       expect(readAllowlist.has(row.action)).toBe(true);
       expect(row.outcome).toBe('ok');
     }
+    expect(actions.some((row) => row.action === 'mcp.resource.profile-context.read')).toBe(true);
   });
 });
