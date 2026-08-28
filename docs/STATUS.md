@@ -81,12 +81,12 @@ implementation brief in `docs/workpackages/`.
 | 56 | Data foundations | review | additive migration, tenant RLS, count assertions; local PostgreSQL only |
 | 57 | Report promotion and history planning | review | transaction-safe report-date replacement and bounded history planner; live loader gated |
 | 58 | Creative Performance backend | review | Asset-ID mappings/facts, strict SB Video staging seam, ambiguity states |
-| 59 | Query Intelligence core | review | pure taxonomy, spend-conserving joins, contextual negatives and parameterized SUPA flags |
+| 59 | SQP and Query Intelligence | review | strict weekly SP-API seam, counted persistence, pure taxonomy, spend-conserving joins and contextual negatives; live queue gated |
 | 60 | Stateful optimizer core | review | synchronization/observation gates, lift/hold/revert decisions and bounded de-rounding |
 | 62 | Dayparting v0.5 backend | review | revision-safe ledger/hourly facts, DST/settling, bounded proposals and exports; SQS wiring gated |
 | 63 | Operator Console UX | review | four-series chart, guided builder, recommendation grouping and nested grid |
 | 64 | Roadmap reconciliation | review | deduplicated manifest with value, prerequisite and deferral reason |
-| 67 | Integration and release evidence | in-progress | serial integration, local/deployed verification and review handoff |
+| 67 | Integration and release evidence | review | serial integration, local verification and review handoff; production web verification remains gated |
 
 ## Milestone gates
 
@@ -149,6 +149,17 @@ implementation brief in `docs/workpackages/`.
   asset mappings. It records ambiguous, legacy, unsupported and unmapped states instead of
   attributing an ad group's facts to one guessed asset. The external Amazon report adapter and live
   count crosscheck remain gated on an authoritative response fixture.
+- SQP now has strict Sunday-Saturday planning, one-marketplace requests, canonical ASIN batching,
+  resumable exact-identity checkpoints, complete-report reuse, strict document parsing, counted
+  transactional replacement, vocabulary approval preservation, spend-conserving PPC joins and
+  routing-gated review proposals. The live queue cannot carry `sqp.request` until the authoritative
+  job union/database enum and a durable feature-report checkpoint table are widened.
+- Dayparting now has an append-only revision ledger, exact-source stale guards, normalized SP/SB/SD
+  hourly facts, DST-local derivation, settling/revised states, confidence-shrunk proposals and
+  CSV/JSON serialization. Its SQS subscriber has the equivalent queue-contract gate.
+- The pure optimizer evidence engine covers synchronization conflicts, incomplete observation,
+  insufficient evidence, supported lift and exact pre-change reversion. Worker scheduling and
+  persistence remain open.
 
 ## Open repository follow-ups
 
@@ -172,7 +183,8 @@ implementation brief in `docs/workpackages/`.
       isolated UI suite passed 149 of 149 instead of measuring unrelated CPU contention.
 - [x] Additive migration, RLS, report promotion, roadmap, creative persistence and dayparting
       persistence suites executed against disposable PostgreSQL with synthetic fixtures. The final
-      database package run passed 24 files and 189 tests.
+      database package run passed 25 files and 194 tests; the worker package passed 18 files and
+      163 tests against the same disposable database.
 - [x] Workspace build passed; the web build generated the current route tree without production
       environment values.
 - [ ] Exact deployed revisions for web and always-on worker.

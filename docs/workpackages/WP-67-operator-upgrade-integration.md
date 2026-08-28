@@ -68,7 +68,10 @@ verified product behavior.
   preserved categories plus presentation labels, human-review states, customer-search-term intent
   for Sponsored Brands, like-for-like rollups, spend-conserving SQP/PPC joins, contextual ad-group
   negative proposals, and parameterized SUPA flags. Live ingestion, persistence, approval UI and
-  Amazon Audit parity remain separate evidence gates.
+  Amazon Audit parity remain separate evidence gates. The adapter-ready SP-API workflow adds exact
+  Sunday-Saturday planning, one marketplace per request, canonical ASIN batches, resumable
+  exact-identity checkpoints, completed-report reuse, strict payload validation, transactional
+  complete-scope replacement and human-decision preservation.
 - The pure optimizer evidence engine validates immutable group context, refuses compounding until
   the exported value is synchronized and its observation window is complete, compares
   de-duplicated matched pre/post volume, continues only with lift evidence, and proposes the exact
@@ -87,10 +90,11 @@ verified product behavior.
   workspace typechecks, lint, non-DB-backed Vitest suites, public-repo hygiene and skill lint. The
   UI performance suite runs after the other Turbo package suites so its unchanged wall-clock budget
   measures the code rather than CPU contention from unrelated tests.
-- The full database package passed against disposable PostgreSQL: 24 files and 189 synthetic
-  tests, including migration/RLS coverage, roadmap manifest, report promotion, creative
-  persistence, and dayparting persistence.
-- Playwright passed both local release suites: 26 production-build workflows and 27
+- The full database package passed against disposable PostgreSQL: 25 files and 194 synthetic
+  tests, including migration/RLS coverage, roadmap manifest, report promotion, creative,
+  SQP, and dayparting persistence. The worker package passed 18 files and 163 tests against
+  the same disposable database, including retry and idempotency paths.
+- Playwright passed both local release suites after the final SQP integration: 26 production-build workflows and 27
   authenticated-dev workflows. Coverage includes guided campaign export, four-series dashboard
   controls, nested grid grouping, recommendations, experiments, tags, feedback, OAuth/role safety,
   every guarded route, and Time Machine flows.
@@ -104,7 +108,7 @@ verified product behavior.
 ## Explicitly incomplete
 
 - Hosted application of the additive migration and roadmap manifest.
-- The live Ads/SP-API adapters for SB Video and SQP, SQP persistence/approval workflow, and
+- The live Ads adapter for SB Video, the live SQP queue/connection wiring and approval surface, and
   authoritative row-count crosschecks.
 - Database/worker scheduling and persistence for the stateful optimization evidence loop, plus
   Time Machine v2 conflict-safe inverse exports.
