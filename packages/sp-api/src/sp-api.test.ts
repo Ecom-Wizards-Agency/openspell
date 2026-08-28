@@ -1,7 +1,12 @@
 import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { SpApiClient, SpApiParseError } from './index.js';
-import { batchSqpAsins, buildSqpReportRequests, parseSqpReport } from './sqp.js';
+import {
+  batchSqpAsins,
+  buildSqpReportRequests,
+  parseSqpReport,
+  planSqpReportRequests,
+} from './sqp.js';
 import type { FetchLike } from './types.js';
 
 const PROFILE_ID = '00000000-0000-4000-8000-000000000001';
@@ -39,6 +44,29 @@ describe('SQP request construction', () => {
     const batches = batchSqpAsins([...asins, asins[0] ?? '']);
     expect(batches.flat()).toEqual(asins);
     expect(batches.every((batch) => batch.join(' ').length <= 200)).toBe(true);
+  });
+
+  it('canonicalizes request identity regardless of input order or casing', () => {
+    const first = planSqpReportRequests({
+      marketplaceId: 'marketplace-1',
+      asins: ['b000000002', 'B000000001', 'B000000002'],
+      weekStart: '2026-08-16',
+      weekEnd: '2026-08-22',
+    });
+    const second = planSqpReportRequests({
+      marketplaceId: 'marketplace-1',
+      asins: ['B000000001', 'B000000002'],
+      weekStart: '2026-08-16',
+      weekEnd: '2026-08-22',
+    });
+    expect(first).toEqual(second);
+    expect(first[0]?.asins).toEqual(['B000000001', 'B000000002']);
+    expect(() => planSqpReportRequests({
+      marketplaceId: 'marketplace-1',
+      asins: ['not an asin'],
+      weekStart: '2026-08-16',
+      weekEnd: '2026-08-22',
+    })).toThrow(/ten letters or digits/);
   });
 
   it('builds one-marketplace, one-week report requests', () => {
@@ -94,6 +122,58 @@ describe('SQP document parsing', () => {
     expect(result.counts.parsedRows + result.counts.refusedRows).toBe(result.counts.sourceRows);
     expect(result.rows).toHaveLength(result.counts.upserts);
     expect(result.rows[0]?.normalizedQuery).toBe('synthetic query');
+  });
+
+  it('refuses conflicting normalized grains instead of choosing a winner', () => {
+    const result = parseSqpReport({
+      dataByAsin: [
+        validSqpRow(),
+        validSqpRow({
+          clickData: { totalClickCount: 20, asinClickCount: 5, asinClickShare: 0.25 },
+        }),
+      ],
+    }, {
+      profileId: PROFILE_ID,
+      marketplaceId: 'marketplace-1',
+      expectedWeekStart: '2026-08-16',
+      expectedWeekEnd: '2026-08-22',
+      expectedAsins: ['B000000001'],
+    });
+    expect(result.rows).toEqual([]);
+    expect(result.counts).toEqual({
+      sourceAsins: 1,
+      sourceRows: 2,
+      parsedRows: 0,
+      deduplicatedRows: 0,
+      refusedRows: 2,
+      upserts: 0,
+    });
+    expect(result.refused).toHaveLength(2);
+  });
+
+  it('accepts additive fields but refuses rows outside the requested scope', () => {
+    const additive = validSqpRow({ futureAmazonField: { ignored: true } });
+    expect(parseSqpReport({ dataByAsin: [additive], futureDocumentField: true }, {
+      profileId: PROFILE_ID,
+      marketplaceId: 'marketplace-1',
+      expectedWeekStart: '2026-08-16',
+      expectedWeekEnd: '2026-08-22',
+      expectedAsins: ['B000000001'],
+    }).rows).toHaveLength(1);
+
+    const wrongAsin = parseSqpReport({
+      dataByAsin: [validSqpRow({ asin: 'B000000009' })],
+    }, {
+      profileId: PROFILE_ID,
+      marketplaceId: 'marketplace-1',
+      expectedWeekStart: '2026-08-16',
+      expectedWeekEnd: '2026-08-22',
+      expectedAsins: ['B000000001'],
+    });
+    expect(wrongAsin).toMatchObject({
+      rows: [],
+      counts: { sourceRows: 1, parsedRows: 0, refusedRows: 1, upserts: 0 },
+    });
   });
 });
 

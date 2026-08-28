@@ -11,6 +11,16 @@ import type { CreateReportInput } from './types.js';
 export const SQP_REPORT_TYPE = 'GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT';
 export const SQP_ASIN_OPTION_MAX_CHARS = 200;
 
+export interface SqpReportRequestPlan {
+  /** Stable for the marketplace, week and canonical ASIN batch. */
+  requestKey: string;
+  marketplaceId: string;
+  weekStart: string;
+  weekEnd: string;
+  asins: string[];
+  request: CreateReportInput;
+}
+
 function dateAtUtc(date: string): Date {
   const parsed = new Date(`${date}T00:00:00Z`);
   if (Number.isNaN(parsed.valueOf()) || parsed.toISOString().slice(0, 10) !== date) {
@@ -30,7 +40,7 @@ export function assertWeeklyPeriod(weekStart: string, weekEnd: string): void {
 }
 
 export function batchSqpAsins(asins: readonly string[]): string[][] {
-  const unique = [...new Set(asins.map((asin) => asin.trim()).filter((asin) => asin.length > 0))];
+  const unique = [...new Set(asins.map(normalizeSqpAsin))].sort();
   const batches: string[][] = [];
   let current: string[] = [];
   let currentLength = 0;
@@ -52,6 +62,14 @@ export function batchSqpAsins(asins: readonly string[]): string[][] {
   return batches;
 }
 
+export function normalizeSqpAsin(value: string): string {
+  const asin = value.trim().toUpperCase();
+  if (!/^[A-Z0-9]{10}$/.test(asin)) {
+    throw new SpApiParseError('SQP ASIN must be ten letters or digits');
+  }
+  return asin;
+}
+
 export function buildSqpReportRequests(input: {
   marketplaceId: string;
   asins: readonly string[];
@@ -69,6 +87,32 @@ export function buildSqpReportRequests(input: {
     dataEndTime: `${input.weekEnd}T23:59:59.999Z`,
     reportOptions: { reportPeriod: 'WEEK', asin: batch.join(' ') },
   }));
+}
+
+export function planSqpReportRequests(input: {
+  marketplaceId: string;
+  asins: readonly string[];
+  weekStart: string;
+  weekEnd: string;
+}): SqpReportRequestPlan[] {
+  if (input.marketplaceId.trim().length === 0) {
+    throw new SpApiParseError('SQP request requires one marketplace');
+  }
+  assertWeeklyPeriod(input.weekStart, input.weekEnd);
+  const batches = batchSqpAsins(input.asins);
+  if (batches.length === 0) throw new SpApiParseError('SQP request requires at least one ASIN');
+  return batches.map((asins) => {
+    const [request] = buildSqpReportRequests({ ...input, asins });
+    if (!request) throw new SpApiParseError('SQP request planner produced no request');
+    return {
+      requestKey: [input.marketplaceId, input.weekStart, input.weekEnd, asins.join(' ')].join('\u0000'),
+      marketplaceId: input.marketplaceId,
+      weekStart: input.weekStart,
+      weekEnd: input.weekEnd,
+      asins,
+      request,
+    };
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -120,7 +164,7 @@ function parseRow(input: {
   const purchase = nested(input.row, 'purchaseData');
   const searchQuery = text(search, 'searchQuery');
 
-  return SqpWeeklyFact.parse({
+  const parsed = SqpWeeklyFact.parse({
     profileId: input.profileId,
     marketplaceId: input.marketplaceId,
     asin: text(input.row, 'asin'),
@@ -147,6 +191,16 @@ function parseRow(input: {
     asinPurchases: integer(purchase, 'asinPurchaseCount'),
     asinPurchaseShare: numeric(purchase, 'asinPurchaseShare'),
   });
+  if (
+    parsed.asinImpressions > parsed.totalImpressions ||
+    parsed.asinClicks > parsed.totalClicks ||
+    parsed.asinCartAdds > parsed.totalCartAdds ||
+    parsed.asinPurchases > parsed.totalPurchases
+  ) {
+    throw new SpApiParseError('SQP ASIN counts exceed their query totals');
+  }
+  assertWeeklyPeriod(parsed.weekStart, parsed.weekEnd);
+  return { ...parsed, asin: normalizeSqpAsin(parsed.asin) };
 }
 
 export interface ParsedSqpReport {
@@ -157,14 +211,24 @@ export interface ParsedSqpReport {
 
 export function parseSqpReport(
   document: unknown,
-  context: { profileId: string; marketplaceId: string; category?: QueryCategory },
+  context: {
+    profileId: string;
+    marketplaceId: string;
+    category?: QueryCategory;
+    expectedWeekStart?: string;
+    expectedWeekEnd?: string;
+    expectedAsins?: readonly string[];
+  },
 ): ParsedSqpReport {
   if (!isRecord(document) || !Array.isArray(document['dataByAsin'])) {
     throw new SpApiParseError('SQP document has no dataByAsin array');
   }
   const source = document['dataByAsin'];
-  const parsed: SqpWeeklyFactType[] = [];
+  const candidates: Array<{ index: number; row: SqpWeeklyFactType }> = [];
   const refused: Array<{ index: number; reason: string }> = [];
+  const expectedAsins = context.expectedAsins === undefined
+    ? undefined
+    : new Set(context.expectedAsins.map(normalizeSqpAsin));
 
   source.forEach((candidate, index) => {
     if (!isRecord(candidate)) {
@@ -172,14 +236,22 @@ export function parseSqpReport(
       return;
     }
     try {
-      parsed.push(
-        parseRow({
+      const row = parseRow({
           row: candidate,
           profileId: context.profileId,
           marketplaceId: context.marketplaceId,
           category: context.category ?? 'unreviewed',
-        }),
-      );
+        });
+      if (
+        (context.expectedWeekStart !== undefined && row.weekStart !== context.expectedWeekStart) ||
+        (context.expectedWeekEnd !== undefined && row.weekEnd !== context.expectedWeekEnd)
+      ) {
+        throw new SpApiParseError('SQP row is outside the requested week');
+      }
+      if (expectedAsins !== undefined && !expectedAsins.has(row.asin)) {
+        throw new SpApiParseError('SQP row returned an unrequested ASIN');
+      }
+      candidates.push({ index, row });
     } catch (error) {
       refused.push({
         index,
@@ -188,16 +260,35 @@ export function parseSqpReport(
     }
   });
 
-  const unique = new Map<string, SqpWeeklyFactType>();
-  for (const row of parsed) {
-    const key = [row.marketplaceId, row.asin, row.weekStart, row.normalizedQuery].join('\u0000');
-    if (!unique.has(key)) unique.set(key, row);
+  const grouped = new Map<string, Array<{ index: number; row: SqpWeeklyFactType }>>();
+  for (const candidate of candidates) {
+    const key = [
+      candidate.row.marketplaceId,
+      candidate.row.asin,
+      candidate.row.weekStart,
+      candidate.row.normalizedQuery,
+    ].join('\u0000');
+    grouped.set(key, [...(grouped.get(key) ?? []), candidate]);
   }
-  const rows = [...unique.values()];
+  const rows: SqpWeeklyFactType[] = [];
+  let conflictingRows = 0;
+  for (const group of grouped.values()) {
+    const first = group[0];
+    if (!first) continue;
+    if (group.every((candidate) => sameFact(first.row, candidate.row))) {
+      rows.push(first.row);
+      continue;
+    }
+    conflictingRows += group.length;
+    refused.push(...group.map(({ index }) => ({
+      index,
+      reason: 'conflicting duplicate normalized SQP grain',
+    })));
+  }
   const counts = SqpIngestionCounts.parse({
     sourceAsins: new Set(source.filter(isRecord).map((row) => row['asin']).filter((value): value is string => typeof value === 'string')).size,
     sourceRows: source.length,
-    parsedRows: parsed.length,
+    parsedRows: candidates.length - conflictingRows,
     deduplicatedRows: rows.length,
     refusedRows: refused.length,
     upserts: rows.length,
@@ -206,4 +297,8 @@ export function parseSqpReport(
     throw new SpApiParseError('SQP row reconciliation failed');
   }
   return { rows, counts, refused };
+}
+
+function sameFact(left: SqpWeeklyFactType, right: SqpWeeklyFactType): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
