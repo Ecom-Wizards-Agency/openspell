@@ -81,8 +81,9 @@ The load-bearing behavior is:
   structures, wrong weeks, unrequested ASINs and conflicting normalized grains
   are refused;
 - any refused source row blocks canonical promotion;
-- an automatic `CANCELLED` result is treated as authoritative no-data only for
-  a report created by this workflow, whose client has no cancellation method;
+- `CANCELLED` never clears canonical rows on status alone because Amazon uses
+  it for both automatic no-data and manual cancellation; an injected provider
+  check must independently confirm no-data first;
 - canonical facts are transactionally replaced for every requested ASIN,
   including ASINs that return no rows;
 - source, parsed, refused, deduplicated, upserted and canonical counts reconcile
@@ -122,9 +123,11 @@ Production execution still requires:
    exposing credentials to web;
 4. persist explicit tenant routing-policy fields before enabling contextual
    proposal generation;
-5. apply the already-reviewed operator-intelligence migration to the exact
+5. supply authoritative no-data confirmation for cancelled reports, or retain
+   the fail-closed behavior that preserves prior canonical evidence;
+6. apply the already-reviewed operator-intelligence migration to the exact
    authorized target before any worker uses these tables;
-6. run an authoritative live row/count parity check before treating the report
+7. run an authoritative live row/count parity check before treating the report
    as product evidence.
 
 Provider-wide `getReports` discovery is not a substitute for the checkpoint:

@@ -126,6 +126,14 @@ export interface SqpWorkflowDependencies {
   data: SqpWorkflowDataStore;
   /** Absent until tenant routing policy explicitly supports a proposal. */
   resolveRouting?: (context: SqpRoutingContext) => SqpRoutingDecision | null;
+  /**
+   * Amazon uses CANCELLED both for automatic no-data and manual cancellation.
+   * Only independent provider evidence may confirm that deletion is safe.
+   */
+  confirmCancelledNoData?: (context: {
+    batch: SqpBatchCheckpoint;
+    report: SpApiReport;
+  }) => Promise<boolean>;
   nextPollAfterSeconds?: number;
 }
 
@@ -229,12 +237,14 @@ export async function runSqpRequestWorkflow(
         batch.status = 'ready';
         break;
       case 'CANCELLED':
-        // This client exposes no cancellation operation. For reports it
-        // created, Amazon's documented automatic no-data cancellation is an
-        // authoritative empty scope and must clear stale canonical rows.
-        if (!batch.createdByWorkflow) {
+        // Amazon documents two indistinguishable causes: manual cancellation
+        // and automatic no-data. Never delete canonical rows on status alone.
+        if (
+          !batch.createdByWorkflow ||
+          await dependencies.confirmCancelledNoData?.({ batch, report }) !== true
+        ) {
           throw new SqpWorkflowPermanentError(
-            'a reused cancelled SQP report is not authoritative no-data evidence',
+            'cancelled SQP report lacks authoritative no-data confirmation',
           );
         }
         batch.status = 'empty';

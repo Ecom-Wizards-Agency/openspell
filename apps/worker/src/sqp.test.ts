@@ -141,6 +141,7 @@ describe('weekly SQP worker workflow', () => {
       data,
       providerGate: new RecordingGate(),
       checkpoints: new InMemorySqpWorkflowCheckpoints(),
+      confirmCancelledNoData: async () => true,
     });
     expect(completed).toMatchObject({
       status: 'completed',
@@ -152,6 +153,17 @@ describe('weekly SQP worker workflow', () => {
       rows: [],
     });
     expect(api.actions).toEqual(['create_report', 'get_report']);
+  });
+
+  it('preserves canonical evidence when cancellation has no no-data confirmation', async () => {
+    const data = new FakeDataStore([], []);
+    await expect(runSqpRequestWorkflow(job(), {
+      api: new FakeSqpApi(['CANCELLED'], document()),
+      data,
+      providerGate: new RecordingGate(),
+      checkpoints: new InMemorySqpWorkflowCheckpoints(),
+    })).rejects.toThrow(/lacks authoritative no-data confirmation/);
+    expect(data.promotions).toHaveLength(0);
   });
 
   it('fails permanently on unknown or fatal provider states', async () => {
