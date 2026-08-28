@@ -209,6 +209,7 @@ export async function appendMarketingStreamEvents(
                  event_time, received_at, revision, payload_hash, raw_payload
             from public.marketing_stream_events
            where profile_id = ${input.profileId}
+             and org_id = ${input.orgId}
              and dataset = ${event.dataset}::public.marketing_stream_dataset
              and message_id = ${event.messageId}
              and revision = ${event.revision}
@@ -542,7 +543,8 @@ function assertSameRevision(
     existing.messageId !== offered.messageId ||
     existing.revision !== offered.revision ||
     existing.adProduct !== offered.adProduct ||
-    truncateUtcHour(existing.eventTime) !== truncateUtcHour(offered.eventTime) ||
+    toIso(existing.eventTime) !== toIso(offered.eventTime) ||
+    toIso(existing.receivedAt) !== toIso(offered.receivedAt) ||
     existing.payloadHash !== offered.payloadHash
   ) {
     throw new MarketingStreamPersistenceError(

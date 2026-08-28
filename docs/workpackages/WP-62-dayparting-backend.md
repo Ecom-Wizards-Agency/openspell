@@ -138,7 +138,7 @@ counts, tenant-scoped reads, and idempotent proposal persistence. The final
 verification used a disposable PostgreSQL 17 server bound to localhost:
 
 - focused worker suite: 8 of 8 tests passed;
-- focused database suite: 4 of 4 tests passed;
+- focused database suite: 5 of 5 tests passed;
 - complete worker suite: 16 files and 132 tests passed; the 24 existing live
   integration cases remained intentionally skipped without credentials;
 - complete database suite with migrations: 24 files and 188 tests passed;

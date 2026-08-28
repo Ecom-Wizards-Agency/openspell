@@ -37,6 +37,28 @@ describe('WP-62 projection validation without a database', () => {
       facts: [hourlyFact('77777777-7777-4777-8777-777777777777', { sourceEvents: 2 })],
     })).rejects.toThrow(/cites 2 source events/);
   });
+
+  it('refuses same-revision redelivery with changed event metadata before touching the database', async () => {
+    await expect(appendMarketingStreamEvents(unusable, {
+      orgId: '76767676-7676-4676-8676-767676767676',
+      profileId: '77777777-7777-4777-8777-777777777777',
+      events: [
+        streamEvent('77777777-7777-4777-8777-777777777777', 'message-one', 'traffic', {
+          impressions: 1,
+          clicks: 1,
+          cost: 1,
+        }),
+        streamEvent('77777777-7777-4777-8777-777777777777', 'message-one', 'traffic', {
+          impressions: 1,
+          clicks: 1,
+          cost: 1,
+        }, {
+          eventTime: '2026-06-01T10:30:00.000Z',
+          receivedAt: '2026-06-01T10:35:00.000Z',
+        }),
+      ],
+    })).rejects.toThrow(/changed its immutable identity/);
+  });
 });
 
 describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
