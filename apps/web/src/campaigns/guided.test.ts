@@ -115,4 +115,13 @@ describe('guided UPDATE translation', () => {
       amount: '25',
     })).toContain('Campaign ID must be a numeric Amazon ID from the synced profile.');
   });
+
+  it('applies the engine bounds to guided budgets and bids', () => {
+    expect(validateUpdateGuide({
+      ...defaultUpdateGuide(), campaignId: '1001', amount: '0',
+    })).toContain('Daily budget must be between 1 and 1000.');
+    expect(validateUpdateGuide({
+      ...defaultUpdateGuide(), recipe: 'ad-group', adGroupId: '2001', amount: '0',
+    })).toContain('Bid must be between 0.02 and 1000.');
+  });
 });

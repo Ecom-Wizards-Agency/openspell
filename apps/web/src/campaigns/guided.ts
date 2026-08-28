@@ -331,8 +331,14 @@ function requireId(value: string, label: string, issues: string[]): void {
 export function validateUpdateGuide(state: UpdateGuideState): string[] {
   const issues: string[] = [];
   const amount = optionalNumber(state.amount);
-  if (amount !== undefined && (!Number.isFinite(amount) || amount < 0)) {
-    issues.push('The amount must be a positive number.');
+  const amountMinimum = state.recipe === 'campaign' ? MIN_BUDGET : MIN_BID;
+  if (amount !== undefined
+    && (!Number.isFinite(amount) || amount < amountMinimum || amount > MAX_BID)) {
+    issues.push(
+      state.recipe === 'campaign'
+        ? `Daily budget must be between ${MIN_BUDGET} and ${MAX_BID}.`
+        : `Bid must be between ${MIN_BID} and ${MAX_BID}.`,
+    );
   }
   switch (state.recipe) {
     case 'archive-campaigns': {
