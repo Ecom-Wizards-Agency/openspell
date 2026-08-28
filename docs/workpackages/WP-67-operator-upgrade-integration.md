@@ -106,8 +106,9 @@ verified product behavior.
 - `pnpm build` passed; the web build generated the current route tree without production
   environment values.
 - An independent high-reasoning release review found two medium issues: unsafe legacy MCP key
-  shapes and stale SQP promotion. Both were fixed and regression-tested; a follow-up review is
-  required after their integration.
+  shapes and stale SQP promotion. Both were fixed and regression-tested. The follow-up review of
+  the integrated tip found no remaining high- or medium-severity flags; root verification executed
+  the database-backed cases that were unavailable in the reviewer's environment.
 - The web production revision remains unverified unless a revision-stamped deployment is recorded
   separately. A passing local or preview build is not described as production behavior.
 - Authenticated competitor and production route QA remains blocked until the existing Chrome tabs
