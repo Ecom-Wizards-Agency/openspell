@@ -56,10 +56,10 @@ working parallel work packages. Every work package gets a **handover brief as an
 | Location | `~/os/wizard-ads` (sixth ~/os project; register in root `AGENTS.md` + `company-ai-skills/docs/dependencies.md`) |
 | Name | **wizard-ads** |
 | Tenancy | Internal-first, SaaS-ready (multi-tenant schema/auth day one; no signup/billing in v1) |
-| Stack | Next.js (Vercel) + Supabase (Postgres/Auth/pg_cron) + Fly.io worker; **all TypeScript** monorepo incl. MCP |
+| Stack | Next.js (Vercel) + Supabase (Postgres/Auth/pg_cron) + long-lived job worker; MCP on the always-on operator host behind Cloudflare Tunnel; **all TypeScript** monorepo |
 | v1 posture | Read-only: sync, reporting, analytics, recommendations. Writes only after AdLabs crosscheck passes |
 | AdLabs recon | Yes — logged-in Chrome UI walkthrough + MCP surface → specs (Victor logs in) |
-| Costs | Supabase free → Pro (~$25/mo) at v0 close (fact backfill exceeds 500MB); Fly worker ~$5/mo. Victor approves when flagged |
+| Costs | Supabase free → Pro only when measured storage/compute requires it; MCP uses the existing operator host and Cloudflare Zero Trust free tier. Any separate job-worker hosting is approved from measured need. |
 | Handover | One md brief per work package in `docs/workpackages/`; agents launched with one-liners |
 
 ## Monorepo structure
@@ -75,11 +75,11 @@ wizard-ads/
 │   │   │                          #   dashboard/grid/recommendations/ngram/tags/settings,
 │   │   ├── app/api/amazon/oauth/  #   LWA start + callback (server-side code exchange)
 │   │   └── app/go/[token]/        #   goto deep-link resolver
-│   ├── worker/                    # TS sync worker on Fly.io: job claim loop (FOR UPDATE
+│   ├── worker/                    # TS sync worker on long-lived compute: job claim loop (FOR UPDATE
 │   │                              #   SKIP LOCKED), report request/poll/fetch handlers,
 │   │                              #   per-region token buckets + 429 backoff
 │   └── mcp/                       # MCP server (@modelcontextprotocol/sdk, Streamable HTTP),
-│                                  #   same Fly app, own port; API-key auth per org
+│                                  #   Evo container behind Cloudflare Tunnel; API-key auth per org
 ├── packages/
 │   ├── shared/                    # THE contract package: zod schemas/types for every cross-
 │   │                              #   package shape. Frozen early; changes need Fable sign-off
@@ -145,10 +145,11 @@ Supabase Postgres; all tenant tables carry `org_id` + RLS; worker uses service r
   Cloudflare worker stays for CLI flows; wizard-ads doesn't depend on it.
 - **Tokens**: web never holds Amazon tokens; worker caches access tokens in memory, refreshes
   60s early (pattern from `SPAdsApiDataSource._get_access_token`).
-- **Scheduler**: pg_cron (5-min tick) turns due `sync_schedules` into `sync_jobs`; a Fly.io
-  worker (~$5/mo, always on) claims via FOR UPDATE SKIP LOCKED, per-region token buckets,
+- **Scheduler**: pg_cron (5-min tick) turns due `sync_schedules` into `sync_jobs`; a long-lived
+  worker claims via FOR UPDATE SKIP LOCKED, per-region token buckets,
   exponential backoff honoring Retry-After. Edge functions rejected as executor (400s limit,
-  3h report polling, heavy GZIP downloads). Queue is ~200 lines, no BullMQ.
+  3h report polling, heavy GZIP downloads). A Cloudflare Tunnel is ingress, not worker compute;
+  Cloudflare Workers are not used for these long report jobs. Queue is ~200 lines, no BullMQ.
 - **Pipelines**: entity sync daily (list endpoints + Exports API for bulk + campaign-name join —
   closes datasource.py's documented gap) with snapshot-diff → `entity_changes`. Reporting v3 as
   **three separated passes**: `report.request` → `report.poll` (5→10→20→30 min intervals, give
@@ -263,8 +264,9 @@ on v1 exit.
 2. Fable writes all handover briefs into `docs/workpackages/` (from this plan + research).
 3. Launch the day-1 parallel set (WP-1..5 to their owners; WP-11 scheduled with Victor for the
    AdLabs login session).
-4. Supabase project creation (free tier); Fly app later at WP-3 deploy; flag Victor for
-   Supabase Pro at v0 close and for the new LWA redirect URI registration.
+4. Supabase project creation (free tier); choose the job-worker host from measured runtime and
+   reliability needs; flag Victor before a paid Supabase upgrade and for the new LWA redirect URI
+   registration.
 5. Fable reviews each WP against its acceptance checks before merge; contracts change only
    through WP-0's owner with Fable sign-off.
 

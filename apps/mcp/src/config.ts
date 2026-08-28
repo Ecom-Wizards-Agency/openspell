@@ -10,7 +10,7 @@
 export interface McpConfig {
   /** Service-role connection string. The MCP server bypasses RLS and scopes in the tool layer. */
   connectionString: string;
-  /** Port for the Streamable HTTP endpoint. Its own port on the worker's Fly app. */
+  /** Port for the Streamable HTTP endpoint inside its dedicated runtime container. */
   port: number;
   host: string;
   /** @deprecated Retained for embedded callers; the read-only catalog does not use it. */

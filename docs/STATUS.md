@@ -2,10 +2,11 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated`.
 
-Reconciled 2026-08-28 against `origin/main` at `602a780`. Here, **merged** means the
+Reconciled 2026-08-29 against `origin/main` at `602a780`. Here, **merged** means the
 implementation is reachable from that revision. It does not mean deployed, applied to a hosted
 database, live-data verified, or accepted by an operator. Full evidence and source pointers:
-`docs/workpackages/WP-52-reconciliation.md`.
+`docs/workpackages/WP-52-reconciliation.md`. Work after WP-52 is integrated on
+`wp-67-operator-upgrade-integration` for review and is not described as merged to `main`.
 
 ## Repository state
 
@@ -70,6 +71,23 @@ No tracked implementation brief exists for WP-20, WP-37, WP-45, or WP-46. Number
 treated as shipped packages. WP-47A has architecture/QA records and a merge commit but no numbered
 implementation brief in `docs/workpackages/`.
 
+## Current review wave
+
+| WP | Package | State | Review-branch evidence |
+|---|---|---|---|
+| 53 | Design directions | review | three static branded previews; recommended Operator Console direction |
+| 54 | MCP production setup | review | secured Evo container stack, dedicated Cloudflare Tunnel, two-client read/audit verification |
+| 55 | Additive contracts and SP-API client | review | shared operator contracts plus pure `packages/sp-api` |
+| 56 | Data foundations | review | additive migration, tenant RLS, count assertions; local PostgreSQL only |
+| 57 | Report promotion and history planning | review | transaction-safe report-date replacement and bounded history planner; live loader gated |
+| 58 | Creative Performance backend | review | Asset-ID mappings/facts, strict SB Video staging seam, ambiguity states |
+| 59 | Query Intelligence core | review | pure taxonomy, spend-conserving joins, contextual negatives and parameterized SUPA flags |
+| 60 | Stateful optimizer core | review | synchronization/observation gates, lift/hold/revert decisions and bounded de-rounding |
+| 62 | Dayparting v0.5 backend | review | revision-safe ledger/hourly facts, DST/settling, bounded proposals and exports; SQS wiring gated |
+| 63 | Operator Console UX | review | four-series chart, guided builder, recommendation grouping and nested grid |
+| 64 | Roadmap reconciliation | review | deduplicated manifest with value, prerequisite and deferral reason |
+| 67 | Integration and release evidence | in-progress | serial integration, local/deployed verification and review handoff |
+
 ## Milestone gates
 
 - **v0 close:** OAuth and profile discovery; entity and campaign-fact sync on pilot profiles;
@@ -84,13 +102,20 @@ implementation brief in `docs/workpackages/`.
 - The latest durable full-route production QA is `docs/design/QA-2026-08-27.md`. Its second round
   records the brand system, settling presentation, comparison-flow repairs, target bid columns,
   and Bugs/Roadmap split as live on that date.
-- That record also says the MCP service was not deployed. No later revision-stamped MCP evidence
-  is tracked yet.
+- WP-54 supersedes the old MCP note: the service is healthy behind a dedicated Cloudflare Tunnel
+  on the always-on operator host. Codex and Claude Code each discovered the same 11 analytical
+  tools, completed a permitted real read, produced audit and last-used evidence, and received a
+  not-found result outside the key's profile allowlist. No mutation tool is exposed.
 - `docs/design/REDESIGN-2026-08-28.md`, WP-50, WP-51, and the final freshness fix are later Git
   evidence. The repository does not record which revision production currently serves, so they
   remain deployment-unverified.
+- The web deployment inspected during this wave did not expose trustworthy Git metadata. A local
+  or preview build therefore does not close the production-revision gate.
+- Authenticated Chrome CDP reached Wizard Ads, AdLabs, and SYNQ tabs, but the first-party tab was
+  blocked by the browser and the competitor tabs were at sign-in. No credential was entered and
+  no competitor data or dashboard configuration was changed.
 
-## Reconciled data behavior at `602a780`
+## Reconciled production behavior at `602a780`
 
 - New schedule provisioning requests a 3-day recent window, a 32-day restatement window, and the
   preceding 32-day comparison window. The recent window overlaps the restatement window: distinct
@@ -103,35 +128,63 @@ implementation brief in `docs/workpackages/`.
 - The UI uses a generic 14-day settling rule. There is no account-specific attribution-maturity
   model or observation history.
 - Unified reporting, maximum-history bootstrap, exact coverage matrices, stale-row reconciliation,
-  and attribution observations remain WP-55–57 work; no `packages/sp-api` exists yet.
+  and attribution observations are absent from this `main` revision.
+
+## Review-branch data foundations
+
+- `packages/sp-api` now provides a pure Brand Analytics SQP client and strict weekly report-window
+  helpers. Amazon calls still belong to the worker; web never receives a token.
+- The additive operator-intelligence migration defines report coverage, bootstrap progress,
+  promotion watermarks, attribution observations, Asset-ID creative facts, SQP vocabulary and
+  proposals, optimization groups and observations, and Marketing Stream/dayparting storage.
+  Migration and RLS tests use synthetic data on disposable PostgreSQL; the migration has not been
+  applied to hosted Supabase.
+- Report promotion now has a transaction boundary, exact staged/promoted/canonical counts, a
+  newer-evidence watermark, stale-row removal for a complete report-date snapshot, and a retained
+  pre-promotion attribution observation.
+- The existing live parser cannot assign every refused source row to an exact date. The new
+  replacement path is therefore not connected to production ingestion yet; deleting an old
+  report-date snapshot before proving complete date-level input would be unsafe.
+- The creative backend uses `(profile, Amazon Asset ID)` identity and explicit ad-to-creative-to-
+  asset mappings. It records ambiguous, legacy, unsupported and unmapped states instead of
+  attributing an ad group's facts to one guessed asset. The external Amazon report adapter and live
+  count crosscheck remain gated on an authoritative response fixture.
 
 ## Open repository follow-ups
 
 - OAuth still carries the `INTEGRATE(WP-02)` client seam.
 - `EntityTagFilter` remains DB-local instead of shared; `exportBatch` remains a route-local role
   constant instead of a central auth capability.
-- Dashboard fact reads do not display source provenance; imported and authoritative history must
-  remain distinguishable in operator-facing coverage.
+- Dashboard fact reads now label missing source dates honestly, but complete source provenance and
+  coverage headers still require the live report-promotion path.
 - Mirror chunks and later change-log writes are not one retry-convergent transaction; the negatives
   mirror also retains its cross-scope key-collision risk.
 - Unknown match-type spellings remain target rows with a null match type.
 - Report ingest does not create missing historical partitions before a backfill write.
-- Dedicated SB/SD and creative analytics remain open product surfaces.
+- Query Intelligence, Creative Performance, Dayparting, Strategy, and Time Machine v2 remain open
+  product surfaces even where their contracts or backend foundations now exist.
 
 ## Unverified release gates
 
-- [ ] Latest GitHub CI result for `602a780`. The CI definition includes Postgres and Playwright,
-      but WP-52 did not query GitHub.
-- [ ] Repository check fully green. The WP-52 run failed the 50,000-row filter frame budget once;
-      three isolated repeats passed, so the load-sensitive failure remains open.
-- [ ] Database/RLS suites on the WP-52 machine; no local test Postgres was available.
-- [ ] Exact deployed revisions for web, worker, and MCP.
+- [x] GitHub CI run `33129362599` succeeded for exact `main` revision `602a780`.
+- [x] Final review-branch `pnpm check` after the last integration commit. The root test runner now
+      executes the unchanged UI frame-budget suite after the other Turbo packages; the complete
+      isolated UI suite passed 149 of 149 instead of measuring unrelated CPU contention.
+- [x] Additive migration, RLS, report promotion, roadmap, creative persistence and dayparting
+      persistence suites executed against disposable PostgreSQL with synthetic fixtures. The final
+      database package run passed 24 files and 189 tests.
+- [x] Workspace build passed; the web build generated the current route tree without production
+      environment values.
+- [ ] Exact deployed revisions for web and always-on worker.
+- [x] Revision-stamped MCP health plus Codex and Claude discovery/read/audit/last-used/allowlist
+      checks. Re-run after the final review-branch commit before handoff.
 - [ ] Hosted migration ledger reconciled to the 30 tracked SQL migrations.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [ ] Full current Wizard Ads route/state click-through after the latest commits.
+- [x] Local Playwright release suites: 26 production-build workflows and 27 authenticated-dev
+      workflows passed, including dashboard, nested grid, campaign export, recommendations,
+      experiments, Time Machine, tenancy, OAuth safety and every guarded route.
 - [ ] Fresh AdLabs and SYNQ workflow comparison. AdLabs has a durable redacted baseline in
       `tools/recon`; SYNQ has no tracked workflow evidence.
-- [ ] MCP health, discovery, permitted read, audit/last-used update, denied-profile behavior, and
-      Codex/Claude client checks.
 - [ ] v1 crosscheck exit gate: consecutive verified days, campaign-grain parity, and explained
       optimizer spot-check.
