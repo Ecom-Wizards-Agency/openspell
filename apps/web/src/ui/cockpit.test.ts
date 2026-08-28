@@ -231,7 +231,7 @@ describe('accessible period detail', () => {
       'Aug 24, 2026. Spend: $10.00',
     );
     expect(periodAriaLabel(points[1] as NonNullable<(typeof points)[number]>, series, 1, 'USD')).toContain(
-      'Spend: $0.00. No recorded activity for this period.',
+      'Spend: $0.00. No source row; chart shows zero for continuity.',
     );
   });
 
@@ -240,7 +240,7 @@ describe('accessible period detail', () => {
     const periods = [...host.querySelectorAll<SVGRectElement>('.wa-cockpit__period-hit')];
     expect(periods).toHaveLength(3);
     expect(periods.every((period) => period.getAttribute('tabindex') === '0')).toBe(true);
-    expect(periods[1]?.getAttribute('aria-label')).toContain('No recorded activity for this period.');
+    expect(periods[1]?.getAttribute('aria-label')).toContain('No source row; chart shows zero for continuity.');
     expect(host.querySelector('[role="radiogroup"][aria-label="Chart aggregation"]')).not.toBeNull();
     expect(host.querySelector('[role="radio"][aria-label="Daily"]')).not.toBeNull();
   });

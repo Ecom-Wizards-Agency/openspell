@@ -301,7 +301,9 @@ export function periodAriaLabel(
     const value = item.points[pointIndex]?.value ?? null;
     return `${item.label}: ${formatExactValue(value, item.scale, currencyCode)}`;
   });
-  const gapNote = point.observedDays === 0 ? 'No recorded activity for this period.' : null;
+  const gapNote = point.observedDays === 0
+    ? 'No source row; chart shows zero for continuity.'
+    : null;
   return [formatPeriod(point), ...values, gapNote].filter((part): part is string => part !== null).join('. ');
 }
 
