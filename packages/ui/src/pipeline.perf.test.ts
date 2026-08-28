@@ -47,6 +47,50 @@ function timeBest(runs: number, fn: () => void): number {
   return best;
 }
 
+function timeSamples(runs: number, fn: () => void): number[] {
+  fn(); // Warm the JIT before measuring operator interactions.
+  const samples: number[] = [];
+  for (let index = 0; index < runs; index += 1) {
+    const start = performance.now();
+    fn();
+    samples.push(performance.now() - start);
+  }
+  return samples;
+}
+
+describe('3,597-row operator reference fixture', () => {
+  const rows = syntheticSearchTermRows(3_597, { seed: 20260829 });
+
+  it('keeps best and p95 filter plus three-level grouping response under 150ms', () => {
+    const filter = filterSetOf({
+      key: 'IMPRESSIONS',
+      conditions: [{ operator: '>', values: ['100'] }],
+    });
+    let represented = 0;
+    let matched = 0;
+    const samples = timeSamples(20, () => {
+      const model = buildGridModel(rows, {
+        filter,
+        groupBy: ['campaign_name', 'ad_group_name', 'match_type'],
+        sort: [{ columnId: 'spend', direction: 'desc' }],
+      });
+      represented = model.exportRows.reduce(
+        (count, row) => count + ('groupSize' in row ? Number(row.groupSize) : 0),
+        0,
+      );
+      matched = model.matched;
+    });
+    const ordered = [...samples].sort((left, right) => left - right);
+    const best = ordered[0] ?? Number.POSITIVE_INFINITY;
+    const p95 = ordered[Math.ceil(ordered.length * 0.95) - 1] ?? Number.POSITIVE_INFINITY;
+
+    expect(represented).toBeGreaterThan(0);
+    expect(represented).toBe(matched);
+    expect(best).toBeLessThan(150);
+    expect(p95).toBeLessThan(150);
+  });
+});
+
 describe('50k-row search-term set', () => {
   const rows = syntheticSearchTermRows(ROWS, { seed: 20260814 });
 

@@ -42,6 +42,7 @@ export interface SavedView {
   widths: Readonly<Record<string, number>>;
   filter: FilterSet;
   sort: readonly SortRule[];
+  /** Unique dimension ids in outermost-to-innermost hierarchy order. */
   groupBy: readonly string[];
   /**
    * Null means "whatever the page is showing". A view that pins a date range is
