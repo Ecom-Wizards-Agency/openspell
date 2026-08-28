@@ -18,6 +18,8 @@ them; it does not contain them.
   non-secret pool/timeout/row-limit overrides.
 - `WIZARD_ADS_MCP_CLOUDFLARED_TOKEN_FILE`: path to a mode-`0600` file containing
   only the remotely managed tunnel token.
+- `WIZARD_ADS_CLOUDFLARED_UID`: numeric host UID that owns the tunnel-token file.
+- `WIZARD_ADS_CLOUDFLARED_GID`: numeric host GID that owns the tunnel-token file.
 - `WIZARD_ADS_MCP_REVISION`: the full approved Git object id.
 - `WIZARD_ADS_CLOUDFLARED_IMAGE`: optional approved image tag or digest. When it
   is omitted, Compose uses Cloudflare's `latest` image; pin a reviewed digest for
@@ -26,6 +28,19 @@ them; it does not contain them.
 Never place either protected file in the repository, paste their contents into a
 shell command, or print them in a deployment log. The tunnel token is sufficient
 to run a connector and must be rotated if exposed.
+
+Keep the tunnel-token file at mode `0600`. Compose bind-mounts a file-backed
+secret without changing its host ownership, so the `cloudflared` container runs
+as the explicitly supplied owner UID and GID. Set both values from the account
+that owns the protected file; do not assume that the image's default user has the
+same numeric identity. Before deployment, verify metadata without reading the
+file contents:
+
+```bash
+test "$(stat -c '%a' "$WIZARD_ADS_MCP_CLOUDFLARED_TOKEN_FILE")" = "600"
+test "$(stat -c '%u' "$WIZARD_ADS_MCP_CLOUDFLARED_TOKEN_FILE")" = "$WIZARD_ADS_CLOUDFLARED_UID"
+test "$(stat -c '%g' "$WIZARD_ADS_MCP_CLOUDFLARED_TOKEN_FILE")" = "$WIZARD_ADS_CLOUDFLARED_GID"
+```
 
 ## Cloudflare preparation
 
@@ -47,11 +62,12 @@ requires `cloudflared` 2025.4.0 or newer:
 
 ## Build and start
 
-From the clean checkout at the approved revision, set the four non-secret
+From the clean checkout at the approved revision, set the six non-secret
 deployment references above in the operator environment. Validate the rendered
 configuration before creating containers:
 
 ```bash
+bash docs/deploy/check-mcp-evo-compose.sh
 docker compose -f docs/deploy/mcp-evo.compose.yaml config --quiet
 docker compose -f docs/deploy/mcp-evo.compose.yaml build --pull mcp
 docker compose -f docs/deploy/mcp-evo.compose.yaml up -d
@@ -63,7 +79,9 @@ environment-file values may be rendered by some Compose versions.
 
 The MCP container becomes healthy only when its database probe succeeds.
 `cloudflared` waits for that state, then connects using the read-only secret
-mount at `/run/secrets/tunnel-token`. Both services use `restart: unless-stopped`.
+mount at `/run/secrets/tunnel-token`. Its runtime UID and GID match the protected
+file owner, so mode `0600` remains sufficient. Both services use
+`restart: unless-stopped`.
 
 ## Validate the deployment
 

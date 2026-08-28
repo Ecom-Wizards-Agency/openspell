@@ -19,6 +19,7 @@ services:
 
   cloudflared:
     image: ${WIZARD_ADS_CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}
+    user: "${WIZARD_ADS_CLOUDFLARED_UID:?Set WIZARD_ADS_CLOUDFLARED_UID to the tunnel-token file owner uid}:${WIZARD_ADS_CLOUDFLARED_GID:?Set WIZARD_ADS_CLOUDFLARED_GID to the tunnel-token file owner gid}"
     restart: unless-stopped
     command:
       - tunnel
