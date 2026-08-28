@@ -18,7 +18,6 @@ Audit one connected advertising profile without changing it. Build every conclus
 - `get_recommendations` — include the latest explainable proposals.
 - `get_flags` — include active and suppressed doctrine-engine findings.
 - `get_pacing` — assess month-to-date budget pacing.
-- `create_goto_link` — hand large evidence sets to the operator in-product.
 
 ## Non-negotiable rules
 
@@ -85,7 +84,12 @@ Call `get_flags`, `get_pacing`, and `get_recommendations` for the same profile. 
 
 Reconcile the profile total against campaign aggregates for the same window. Explain any mismatch before grading the account. Do not sum campaign, target, search-term, placement, and product totals together; they are overlapping views of the same traffic.
 
-When an evidence table is too large for the report, call `create_goto_link` with the closest supported route and the exact profile, entity, date, filter, and sort state. Use `download_data` only when a full CSV appendix adds value, and verify `rowsWritten` equals `rowsOffered` and `truncated` is false before calling it complete.
+When an evidence table is too large for the report, provide a textual in-app handoff with the
+closest route and the exact profile, entity, date, filters, and sort to apply manually. Use
+`/grid` for entity evidence, `/search-terms` for shopper queries, `/recommendations` for proposals,
+and `/sync` for freshness concerns. Do not claim that a link or saved view was created. Use
+`download_data` only when a full CSV appendix adds value, and verify `rowsWritten` equals
+`rowsOffered` and `truncated` is false before calling it complete.
 
 ## HTML report contract
 
@@ -98,7 +102,7 @@ Return one accessible, self-contained HTML document with escaped account-derived
 5. **What drove the result** — ad product, campaign, keyword/target, search-term, and placement evidence.
 6. **Flags and pacing** — active flags, suppressed flags, and month-to-date pacing.
 7. **Proposals for review** — current engine recommendations with provenance; explicitly state when none exist.
-8. **Evidence links and exports** — GoTo links and any verified CSV appendix.
+8. **In-app review and exports** — textual route/filter instructions and any verified CSV appendix.
 9. **Method notes** — attributed-sales scope, ratio recomputation, missing-row semantics, attribution lag, archived-spend inclusion, and product attribution limits.
 
 Use the profile currency for money and label percentages consistently. Never hide a missing value by rendering it as zero. End with: “Read-only audit: no account changes were made.”
