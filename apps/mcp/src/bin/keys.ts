@@ -1,7 +1,7 @@
 /**
  * Key management for an operator: `pnpm --filter @wizard-ads/mcp keys <command>`.
  *
- *   keys issue --org <slug> --label "crosscheck QA" [--profiles <id,id>] [--days 90]
+ *   keys issue --org <slug> --label "crosscheck QA" --profiles <id,id> [--days 30]
  *   keys list  --org <slug>
  *   keys revoke --id <key id>
  *
@@ -10,7 +10,15 @@
  * design.
  */
 import { connectionStringFromEnv, createDb } from '@wizard-ads/db';
-import { issueApiKey, listApiKeys, revokeApiKey } from '../keys.js';
+import {
+  DEFAULT_API_KEY_LIFETIME_DAYS,
+  issueApiKey,
+  listApiKeys,
+  MAX_API_KEY_LIFETIME_DAYS,
+  revokeApiKey,
+} from '../keys.js';
+
+const DAY_MS = 86_400_000;
 
 function flag(argv: readonly string[], name: string): string | undefined {
   const index = argv.indexOf(`--${name}`);
@@ -26,7 +34,18 @@ async function main(argv: readonly string[]): Promise<void> {
     if (command === 'issue') {
       const slug = flag(argv, 'org');
       const label = flag(argv, 'label');
-      if (!slug || !label) throw new Error('usage: keys issue --org <slug> --label <label>');
+      const profiles = flag(argv, 'profiles');
+      if (!slug || !label || !profiles) {
+        throw new Error(
+          'usage: keys issue --org <slug> --label <label> --profiles <id,id> [--days 30]',
+        );
+      }
+
+      const daysFlag = flag(argv, 'days');
+      const days = daysFlag === undefined ? DEFAULT_API_KEY_LIFETIME_DAYS : Number(daysFlag);
+      if (!Number.isInteger(days) || days < 1 || days > MAX_API_KEY_LIFETIME_DAYS) {
+        throw new Error(`--days must be a whole number from 1 to ${MAX_API_KEY_LIFETIME_DAYS}`);
+      }
 
       const rows = await handle.sql<{ id: string }[]>`
         select id from public.orgs where slug = ${slug}
@@ -34,21 +53,19 @@ async function main(argv: readonly string[]): Promise<void> {
       const org = rows[0];
       if (!org) throw new Error(`no org with slug "${slug}"`);
 
-      const profiles = flag(argv, 'profiles');
-      const days = flag(argv, 'days');
       const issued = await issueApiKey(handle, {
         orgId: org.id,
         label,
-        profileIds: profiles ? profiles.split(',').map((value) => value.trim()) : null,
-        expiresAt: days ? new Date(Date.now() + Number(days) * 86_400_000) : null,
+        profileIds: profiles.split(',').map((value) => value.trim()),
+        expiresAt: new Date(Date.now() + days * DAY_MS),
       });
 
       console.log(`key id : ${issued.record.id}`);
       console.log(`scope  : ${issued.record.scope}`);
       console.log(
-        `profiles: ${issued.record.profileIds ? issued.record.profileIds.join(', ') : 'all in org'}`,
+        `profiles: ${issued.record.profileIds?.join(', ') ?? 'invalid legacy scope'}`,
       );
-      console.log(`expires: ${issued.record.expiresAt?.toISOString() ?? 'never'}`);
+      console.log(`expires: ${issued.record.expiresAt?.toISOString() ?? 'invalid legacy expiry'}`);
       console.log('');
       console.log('token (shown once, store it in the client config, never in this repo):');
       console.log(issued.token);

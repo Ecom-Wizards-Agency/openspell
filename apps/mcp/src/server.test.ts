@@ -20,7 +20,12 @@ import type { McpConfig } from './config.js';
 import { startHttpServer } from './http.js';
 import { jsonText } from './json.js';
 import type { RunningServer } from './http.js';
-import { issueApiKey, revokeApiKey } from './keys.js';
+import {
+  issueApiKey,
+  MAX_API_KEY_LIFETIME_DAYS,
+  revokeApiKey,
+} from './keys.js';
+import type { IssueApiKeyInput } from './keys.js';
 
 const available = await databaseAvailable();
 
@@ -38,6 +43,7 @@ describe.skipIf(!available)('the MCP server', () => {
   let server: RunningServer;
   let orgAId: string;
   let orgBId: string;
+  let orgAProfileIds: string[];
   let profileA: string;
   let profileB: string;
   let amazonProfileA: string;
@@ -64,6 +70,7 @@ describe.skipIf(!available)('the MCP server', () => {
       select id, amazon_profile_id from public.ad_profiles
        where org_id = ${orgAId} order by amazon_profile_id
     `;
+    orgAProfileIds = profiles.map((profile) => profile.id);
     profileA = profiles[0]?.id ?? '';
     amazonProfileA = profiles[0]?.amazon_profile_id ?? '';
     profileB = profiles[1]?.id ?? '';
@@ -108,8 +115,18 @@ describe.skipIf(!available)('the MCP server', () => {
        where id = ${profileA}
     `;
 
-    const keyA = await issueApiKey(database, { orgId: orgAId, label: 'suite key A' });
-    const keyB = await issueApiKey(database, { orgId: orgBId, label: 'suite key B' });
+    const keyA = await issueApiKey(database, {
+      orgId: orgAId,
+      label: 'suite key A',
+      profileIds: orgAProfileIds,
+      expiresAt: futureExpiry(),
+    });
+    const keyB = await issueApiKey(database, {
+      orgId: orgBId,
+      label: 'suite key B',
+      profileIds: [orgBProfile],
+      expiresAt: futureExpiry(),
+    });
     tokenA = keyA.token;
     tokenB = keyB.token;
     keyAId = keyA.record.id;
@@ -561,6 +578,7 @@ describe.skipIf(!available)('the MCP server', () => {
       orgId: orgAId,
       label: 'one profile only',
       profileIds: [profileB],
+      expiresAt: futureExpiry(),
     });
     const client = await connect(server, scoped.token);
     try {
@@ -644,8 +662,74 @@ describe.skipIf(!available)('the MCP server', () => {
   // Authentication
   // -------------------------------------------------------------------------
 
+  it('issues only bounded, explicitly profile-scoped keys for profiles owned by the org', async () => {
+    const valid = await issueApiKey(database, {
+      orgId: orgAId,
+      label: '  bounded key  ',
+      profileIds: [profileA, profileB],
+      expiresAt: futureExpiry(MAX_API_KEY_LIFETIME_DAYS),
+    });
+    expect(valid.record.label).toBe('bounded key');
+    expect(valid.record.profileIds).toEqual([profileA, profileB]);
+    expect(valid.record.expiresAt).not.toBeNull();
+
+    const missingProfiles = {
+      orgId: orgAId,
+      label: 'missing profiles',
+      expiresAt: futureExpiry(),
+    } as IssueApiKeyInput;
+    await expect(issueApiKey(database, missingProfiles)).rejects.toThrow(
+      'at least one profile',
+    );
+    await expect(
+      issueApiKey(database, {
+        orgId: orgAId,
+        label: 'duplicate profiles',
+        profileIds: [profileA, profileA],
+        expiresAt: futureExpiry(),
+      }),
+    ).rejects.toThrow('must not contain duplicates');
+    await expect(
+      issueApiKey(database, {
+        orgId: orgAId,
+        label: 'invalid profile',
+        profileIds: ['not-a-uuid'],
+        expiresAt: futureExpiry(),
+      }),
+    ).rejects.toThrow('valid UUID');
+    await expect(
+      issueApiKey(database, {
+        orgId: orgAId,
+        label: 'foreign profile',
+        profileIds: [orgBProfile],
+        expiresAt: futureExpiry(),
+      }),
+    ).rejects.toThrow('belong to the selected organization');
+    await expect(
+      issueApiKey(database, {
+        orgId: orgAId,
+        label: 'past expiry',
+        profileIds: [profileA],
+        expiresAt: new Date(Date.now() - 1_000),
+      }),
+    ).rejects.toThrow('must be in the future');
+    await expect(
+      issueApiKey(database, {
+        orgId: orgAId,
+        label: 'too long',
+        profileIds: [profileA],
+        expiresAt: futureExpiry(MAX_API_KEY_LIFETIME_DAYS + 1),
+      }),
+    ).rejects.toThrow(`cannot exceed ${MAX_API_KEY_LIFETIME_DAYS} days`);
+  });
+
   it('rejects a missing, malformed, revoked or expired key with 401', async () => {
-    const doomed = await issueApiKey(database, { orgId: orgAId, label: 'to be revoked' });
+    const doomed = await issueApiKey(database, {
+      orgId: orgAId,
+      label: 'to be revoked',
+      profileIds: [profileA],
+      expiresAt: futureExpiry(),
+    });
     const working = await connect(server, doomed.token);
     await working.close();
     expect(await status(server, doomed.token)).toBe(200);
@@ -656,11 +740,18 @@ describe.skipIf(!available)('the MCP server', () => {
     const expired = await issueApiKey(database, {
       orgId: orgAId,
       label: 'already expired',
-      expiresAt: new Date(Date.now() - 1000),
+      profileIds: [profileA],
+      expiresAt: futureExpiry(),
     });
+    await database.sql`update mcp.api_keys set expires_at = now() - interval '1 second' where id = ${expired.record.id}`;
     expect(await status(server, expired.token)).toBe(401);
 
-    const wrongScope = await issueApiKey(database, { orgId: orgAId, label: 'legacy write scope' });
+    const wrongScope = await issueApiKey(database, {
+      orgId: orgAId,
+      label: 'legacy write scope',
+      profileIds: [profileA],
+      expiresAt: futureExpiry(),
+    });
     await database.sql`update mcp.api_keys set scope = 'write' where id = ${wrongScope.record.id}`;
     expect(await status(server, wrongScope.token)).toBe(401);
     expect(await status(server, undefined)).toBe(401);
@@ -669,6 +760,34 @@ describe.skipIf(!available)('the MCP server', () => {
 
     // And the client cannot get past it either.
     await expect(connect(server, doomed.token)).rejects.toThrow();
+  });
+
+  it('rejects legacy keys with all-profile, empty, missing, or overlong constraints', async () => {
+    const legacy = await Promise.all(
+      ['null profiles', 'empty profiles', 'null expiry', 'overlong expiry'].map((label) =>
+        issueApiKey(database, {
+          orgId: orgAId,
+          label,
+          profileIds: [profileA],
+          expiresAt: futureExpiry(),
+        }),
+      ),
+    );
+    const [nullProfiles, emptyProfiles, nullExpiry, overlongExpiry] = legacy;
+    if (!nullProfiles || !emptyProfiles || !nullExpiry || !overlongExpiry) {
+      throw new Error('legacy key setup failed');
+    }
+
+    await database.sql`update mcp.api_keys set profile_ids = null where id = ${nullProfiles.record.id}`;
+    await database.sql`update mcp.api_keys set profile_ids = '{}'::uuid[] where id = ${emptyProfiles.record.id}`;
+    await database.sql`update mcp.api_keys set expires_at = null where id = ${nullExpiry.record.id}`;
+    await database.sql`
+      update mcp.api_keys
+         set expires_at = created_at + make_interval(days => ${MAX_API_KEY_LIFETIME_DAYS + 1})
+       where id = ${overlongExpiry.record.id}
+    `;
+
+    for (const key of legacy) expect(await status(server, key.token)).toBe(401);
   });
 
   it('stores no plaintext token and stamps last-used on the key', async () => {
@@ -722,6 +841,10 @@ async function connect(server: RunningServer, token: string): Promise<Client> {
   const client = new Client({ name: 'wizard-ads-test-client', version: '0.0.0' });
   await client.connect(transport);
   return client;
+}
+
+function futureExpiry(days = 30): Date {
+  return new Date(Date.now() + days * 86_400_000);
 }
 
 /** Resource contents are text or binary; this suite only ever asks for text. */

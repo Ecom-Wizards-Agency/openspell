@@ -70,6 +70,10 @@ describe.skipIf(!available)('daily analyst against dev-seed', () => {
     const found = orgs[0];
     if (!found) throw new Error('dev-seed did not create the development org');
     orgId = found.id;
+    const profiles = await db.sql<{ id: string }[]>`
+      select id from public.ad_profiles where org_id = ${orgId} order by id
+    `;
+    if (profiles.length === 0) throw new Error('dev-seed did not create development profiles');
 
     const config: McpConfig = {
       connectionString: db.connectionString,
@@ -83,7 +87,13 @@ describe.skipIf(!available)('daily analyst against dev-seed', () => {
     };
     server = await startHttpServer({ config, handle: db });
 
-    const issued = await issueApiKey(db, { orgId, label: 'analyst integration', scope: 'read' });
+    const issued = await issueApiKey(db, {
+      orgId,
+      label: 'analyst integration',
+      scope: 'read',
+      profileIds: profiles.map((profile) => profile.id),
+      expiresAt: new Date(Date.now() + 30 * 86_400_000),
+    });
     keyId = issued.record.id;
     mcp = await connectMcp({ url: server.url, token: issued.token });
   }, 120_000);
