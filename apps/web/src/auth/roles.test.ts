@@ -20,6 +20,7 @@ const EXPECTED: Record<OrgRole, Record<Capability, boolean>> = {
     manageMembers: true,
     triageFeedback: true,
     manageExperiments: true,
+    exportBatches: true,
   },
   admin: {
     read: true,
@@ -29,6 +30,7 @@ const EXPECTED: Record<OrgRole, Record<Capability, boolean>> = {
     manageMembers: true,
     triageFeedback: true,
     manageExperiments: true,
+    exportBatches: true,
   },
   analyst: {
     read: true,
@@ -38,6 +40,7 @@ const EXPECTED: Record<OrgRole, Record<Capability, boolean>> = {
     manageMembers: false,
     triageFeedback: false,
     manageExperiments: true,
+    exportBatches: false,
   },
   viewer: {
     read: true,
@@ -47,6 +50,7 @@ const EXPECTED: Record<OrgRole, Record<Capability, boolean>> = {
     manageMembers: false,
     triageFeedback: false,
     manageExperiments: false,
+    exportBatches: false,
   },
 };
 
@@ -72,6 +76,7 @@ describe('org roles', () => {
     expect(rolesWith('manageConnection')).toEqual(['owner', 'admin']);
     expect(rolesWith('manageMembers')).toEqual(['owner', 'admin']);
     expect(rolesWith('triageFeedback')).toEqual(['owner', 'admin']);
+    expect(rolesWith('exportBatches')).toEqual(['owner', 'admin']);
   });
 
   it('keeps manageMembers aligned with every org_members write policy', () => {

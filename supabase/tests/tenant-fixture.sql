@@ -170,12 +170,17 @@ begin
   values (v_org, v_profile, p_date, 'profile', 'cost', 10.80, 10.80, 0, 0.07, 'verified');
 
   -- Writes
-  insert into public.apply_batches (org_id, profile_id, tag, opt_group, lever, note, status, applied_on)
-  values (v_org, v_profile, p_slug || '-2026W33-rank-bid-down', 'rank', 'bid-down', 'synthetic', 'applied', p_date)
+  insert into public.apply_batches
+    (org_id, profile_id, tag, opt_group, lever, note, status, applied_on,
+     exported_proposals, reversible_rows, unsupported_rows)
+  values (v_org, v_profile, p_slug || '-2026W33-rank-bid-down', 'rank', 'bid-down',
+          'synthetic', 'applied', p_date, 1, 1, 0)
   returning id into v_batch;
   insert into public.apply_rows
-    (batch_id, org_id, entity_type, entity_id, entity_name, field, old_value, new_value, lever, clicks, revenue)
-  values (v_batch, v_org, 'keyword', 'kw-1', 'widget', 'bid', '0.90'::jsonb, '0.70'::jsonb, 'bid-down', 5, 25.00);
+    (batch_id, org_id, profile_id, entity_type, entity_id, entity_name, field,
+     old_value, new_value, lever, clicks, revenue)
+  values (v_batch, v_org, v_profile, 'keyword', 'kw-1', 'widget', 'bid',
+          '0.90'::jsonb, '0.70'::jsonb, 'bid-down', 5, 25.00);
   insert into public.campaign_maps (org_id, profile_id, name)
   values (v_org, v_profile, 'harvest map');
 

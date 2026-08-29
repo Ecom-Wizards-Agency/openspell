@@ -8,10 +8,10 @@
  *  - `entity_changes` — every bid / budget / state diff the entity sync noticed.
  *    Its `source` says whether *we* caused it (`apply`) or somebody changed it
  *    outside wizard-ads (`sync`); the latter is the point of recording it at all.
- *  - `apply_batches` / `apply_rows` — the operator's own applied changes, one row
- *    per field per opt-group batch, carrying the batch's note and lever.
+ *  - `apply_batches` / `apply_rows` — the operator's exported changes, one row
+ *    per field per opt-group batch, carrying lifecycle evidence, note and lever.
  *
- * The two would double-count an applied change that the next sync also observes,
+ * The two would double-count an exported change that the next sync also observes,
  * so the `entity_changes` branch is narrowed to rows with **no** `apply_batch_id`
  * (a sync-detected or otherwise unattributed change), and the apply branch owns
  * everything an operator batch touched. An entry is therefore attributed to
@@ -22,11 +22,27 @@
  * not the first: a query that forgot the org predicate would be a cross-tenant
  * read in the browser even though the same query is safe from PostgREST.
  */
-import type { DbHandle } from '../client.js';
+import { createHash } from 'node:crypto';
+import {
+  ReversionBatchPreview,
+  serializeApplyRows,
+} from '@wizard-ads/shared';
+import type {
+  ApplyEntityType,
+  ApplyRow,
+  ApplyValue,
+  ReversionBatchPreview as ReversionBatchPreviewType,
+  ReversionRowPreview,
+} from '@wizard-ads/shared';
+import type { DbHandle, QuerySql } from '../client.js';
 import type { JsonValue } from './goto.js';
-import { toDate } from './pg-time.js';
+import { lockCurrentApplyStates } from './apply-state.js';
+import { toDate, toDateOrNull } from './pg-time.js';
 
 export type TimeMachineQueryHandle = Pick<DbHandle, 'sql'>;
+interface TimeMachineReadHandle {
+  sql: QuerySql;
+}
 
 /** How the change was recorded — the filter the timeline groups by source. */
 export type ChangeSource = 'sync' | 'apply';
@@ -49,6 +65,9 @@ export interface TimelineEntry {
     optGroup: string;
     lever: string;
     note: string;
+    status: string;
+    sourceBatchId: string | null;
+    exportedAt: Date;
   } | null;
 }
 
@@ -82,6 +101,9 @@ interface TimelineRow {
   batch_opt_group: string | null;
   batch_lever: string | null;
   batch_note: string | null;
+  batch_status: string | null;
+  batch_source_batch_id: string | null;
+  batch_exported_at: Date | string | null;
 }
 
 const toEntry = (row: TimelineRow): TimelineEntry => ({
@@ -103,6 +125,9 @@ const toEntry = (row: TimelineRow): TimelineEntry => ({
           optGroup: row.batch_opt_group ?? '',
           lever: row.batch_lever ?? '',
           note: row.batch_note ?? '',
+          status: row.batch_status ?? 'staged',
+          sourceBatchId: row.batch_source_batch_id,
+          exportedAt: toDate(row.batch_exported_at ?? row.observed_at),
         },
 });
 
@@ -142,6 +167,9 @@ export async function listTimeline(
         null::text                                    as batch_opt_group,
         null::text                                    as batch_lever,
         null::text                                    as batch_note
+        ,null::text                                   as batch_status
+        ,null::uuid                                   as batch_source_batch_id
+        ,null::timestamptz                            as batch_exported_at
       from public.entity_changes ec
       where ec.org_id = ${filter.orgId}
         and ec.profile_id = ${filter.profileId}
@@ -156,19 +184,22 @@ export async function listTimeline(
     (
       select
         'apply:' || ar.id::text                       as id,
-        'apply'                                        as source,
+        'apply'                                       as source,
         ar.entity_type::text                          as entity_type,
         ar.entity_id                                  as amazon_id,
         ar.entity_name                                as entity_name,
         ar.field                                      as field,
         ar.old_value                                  as old_value,
         ar.new_value                                  as new_value,
-        coalesce(ab.applied_on::timestamptz, ab.created_at) as observed_at,
+        coalesce(ab.applied_at, ab.exported_at, ab.created_at) as observed_at,
         ab.id                                         as batch_id,
         ab.tag                                        as batch_tag,
         ab.opt_group                                  as batch_opt_group,
         ar.lever                                      as batch_lever,
         ab.note                                       as batch_note
+        ,ab.status::text                              as batch_status
+        ,ab.source_batch_id                           as batch_source_batch_id
+        ,ab.exported_at                               as batch_exported_at
       from public.apply_rows ar
       join public.apply_batches ab on ab.id = ar.batch_id
       where ar.org_id = ${filter.orgId}
@@ -178,9 +209,9 @@ export async function listTimeline(
         and (${field}::text is null or ar.field = ${field}::text)
         and (${source}::text is null or ${source}::text = 'apply')
         and (${from}::timestamptz is null
-             or coalesce(ab.applied_on::timestamptz, ab.created_at) >= ${from}::timestamptz)
+             or coalesce(ab.applied_at, ab.exported_at, ab.created_at) >= ${from}::timestamptz)
         and (${to}::timestamptz is null
-             or coalesce(ab.applied_on::timestamptz, ab.created_at) <= ${to}::timestamptz)
+             or coalesce(ab.applied_at, ab.exported_at, ab.created_at) <= ${to}::timestamptz)
     )
     order by observed_at desc, id desc
     limit ${limit}
@@ -220,4 +251,443 @@ export async function listTimelineFacets(
   const entityTypes = [...new Set(rows.map((row) => row.entity_type))].sort();
   const fields = [...new Set(rows.map((row) => row.field))].sort();
   return { entityTypes, fields };
+}
+
+// ---------------------------------------------------------------------------
+// Time Machine v2: immutable export batches and evidence-backed reversions.
+// ---------------------------------------------------------------------------
+
+export interface ReversionBatchSummary {
+  batchId: string;
+  sourceBatchId: string | null;
+  profileId: string;
+  tag: string;
+  optGroup: string;
+  lever: string;
+  lifecycleStatus: ReversionBatchPreviewType['lifecycleStatus'];
+  exportedAt: Date;
+  appliedAt: Date | null;
+  exportedProposals: number;
+  reversibleRows: number;
+  unsupportedRows: number;
+}
+
+interface ReversionBatchHeaderRow {
+  id: string;
+  source_batch_id: string | null;
+  active_reversion_batch_id: string | null;
+  profile_id: string;
+  tag: string;
+  opt_group: string;
+  lever: string;
+  note: string;
+  status: string;
+  exported_at: Date | string;
+  applied_at: Date | string | null;
+  artifact_sha256: string | null;
+  exported_proposals: number;
+  reversible_rows: number;
+  unsupported_rows: number;
+}
+
+interface ReversionEvidenceRow {
+  row_id: string;
+  recommendation_id: string | null;
+  entity_type: ApplyEntityType;
+  entity_id: string;
+  entity_name: string | null;
+  field: string;
+  old_value: unknown;
+  new_value: unknown;
+  supported: boolean;
+  present: boolean;
+  current_value: unknown;
+  current_synced_at: Date | string | null;
+  synchronized_value: unknown;
+  synchronized_at: Date | string | null;
+  has_unlinked_exact_change: boolean;
+}
+
+function lifecycleStatus(row: Pick<ReversionBatchHeaderRow, 'source_batch_id' | 'status'>): ReversionBatchPreviewType['lifecycleStatus'] {
+  if (row.status === 'abandoned') return 'abandoned';
+  if (row.status === 'reverted') return 'verified_reverted';
+  if (row.source_batch_id !== null) return 'reversion_exported';
+  if (row.status === 'applied') return 'applied_externally';
+  return 'exported';
+}
+
+function scalar(value: unknown): { valid: true; value: ApplyValue } | { valid: false; value: null } {
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    (typeof value === 'number' && Number.isFinite(value))
+  ) {
+    return { valid: true, value };
+  }
+  return { valid: false, value: null };
+}
+
+function sameScalar(left: ApplyValue, right: ApplyValue): boolean {
+  return typeof left === typeof right && Object.is(left, right);
+}
+
+function classifyReversionRow(
+  batchId: string,
+  exportedAt: Date,
+  row: ReversionEvidenceRow,
+): ReversionRowPreview {
+  const original = scalar(row.old_value);
+  const exported = scalar(row.new_value);
+  const current = scalar(row.current_value);
+  const synchronized = scalar(row.synchronized_value);
+  const synchronizedAt = toDateOrNull(row.synchronized_at);
+  const currentSyncedAt = toDateOrNull(row.current_synced_at);
+
+  let state: ReversionRowPreview['state'];
+  let reason: string;
+
+  if (!original.valid || !exported.valid) {
+    state = 'unsupported';
+    reason = 'The exported row contains a structured value that the staged-apply bridge cannot invert.';
+  } else if (!row.supported) {
+    state = 'unsupported';
+    reason = 'This entity field does not have a verified current-state adapter.';
+  } else if (!row.present) {
+    state = 'conflict';
+    reason = 'The entity is missing or deleted in the current synchronized mirror.';
+  } else if (synchronizedAt === null) {
+    state = row.has_unlinked_exact_change ? 'ambiguous' : 'awaiting_sync';
+    reason = row.has_unlinked_exact_change
+      ? 'An exact change was observed, but it cannot be attributed uniquely to this export.'
+      : 'The exported value has not appeared in a uniquely linked synchronization event.';
+  } else if (
+    currentSyncedAt === null ||
+    currentSyncedAt.getTime() < exportedAt.getTime()
+  ) {
+    state = 'conflict';
+    reason = 'The current mirror has not been synchronized since this batch was exported.';
+  } else if (!current.valid) {
+    state = 'unsupported';
+    reason = 'The current synchronized value is not a scalar value.';
+  } else if (sameScalar(current.value, exported.value)) {
+    state = 'ready';
+    reason = 'The exported value was uniquely observed and still matches the current synchronized value.';
+  } else if (sameScalar(current.value, original.value)) {
+    state = 'already_reverted';
+    reason = 'The current synchronized value already equals the original value.';
+  } else {
+    state = 'conflict';
+    reason = 'The current synchronized value differs from the value this export expected to apply.';
+  }
+
+  const originalValue = original.value;
+  const exportedValue = exported.value;
+  return {
+    batchId,
+    rowId: row.row_id,
+    recommendationId: row.recommendation_id,
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    entityName: row.entity_name,
+    field: row.field,
+    originalValue,
+    proposedValue: exportedValue,
+    exportedValue,
+    synchronizedValue: synchronizedAt === null || !synchronized.valid ? null : synchronized.value,
+    synchronizedAt: synchronizedAt?.toISOString() ?? null,
+    currentValue: current.valid ? current.value : null,
+    currentSyncedAt: currentSyncedAt?.toISOString() ?? null,
+    inverseValue: originalValue,
+    state,
+    conflict: state === 'conflict' || state === 'ambiguous',
+    exportAllowed: state === 'ready',
+    reason,
+  };
+}
+
+export async function listReversionBatches(
+  handle: TimeMachineQueryHandle,
+  input: { orgId: string; profileId: string; limit?: number },
+): Promise<ReversionBatchSummary[]> {
+  const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+  const rows = await handle.sql<ReversionBatchHeaderRow[]>`
+    select id, source_batch_id,
+           (select child.id from public.apply_batches child
+             where child.org_id = apply_batches.org_id
+               and child.profile_id = apply_batches.profile_id
+               and child.source_batch_id = apply_batches.id
+               and child.status <> 'abandoned'
+             order by child.exported_at desc limit 1) as active_reversion_batch_id,
+           profile_id, tag, opt_group, lever, note,
+           status::text as status, exported_at, applied_at, artifact_sha256,
+           exported_proposals, reversible_rows, unsupported_rows
+      from public.apply_batches
+     where org_id = ${input.orgId}
+       and profile_id = ${input.profileId}
+     order by exported_at desc, id desc
+     limit ${limit}
+  `;
+  return rows.map((row) => ({
+    batchId: row.id,
+    sourceBatchId: row.source_batch_id,
+    profileId: row.profile_id,
+    tag: row.tag,
+    optGroup: row.opt_group,
+    lever: row.lever,
+    lifecycleStatus: lifecycleStatus(row),
+    exportedAt: toDate(row.exported_at),
+    appliedAt: toDateOrNull(row.applied_at),
+    exportedProposals: row.exported_proposals,
+    reversibleRows: row.reversible_rows,
+    unsupportedRows: row.unsupported_rows,
+  }));
+}
+
+/** One source batch, reconstructed from immutable rows and exact sync links. */
+export async function getReversionBatchPreview(
+  handle: TimeMachineReadHandle,
+  input: { orgId: string; batchId: string },
+): Promise<ReversionBatchPreviewType | null> {
+  const [header] = await handle.sql<ReversionBatchHeaderRow[]>`
+    select id, source_batch_id,
+           (select child.id from public.apply_batches child
+             where child.org_id = apply_batches.org_id
+               and child.profile_id = apply_batches.profile_id
+               and child.source_batch_id = apply_batches.id
+               and child.status <> 'abandoned'
+             order by child.exported_at desc limit 1) as active_reversion_batch_id,
+           profile_id, tag, opt_group, lever, note,
+           status::text as status, exported_at, applied_at, artifact_sha256,
+           exported_proposals, reversible_rows, unsupported_rows
+      from public.apply_batches
+     where org_id = ${input.orgId} and id = ${input.batchId}
+  `;
+  if (header === undefined) return null;
+
+  const evidence = await handle.sql<ReversionEvidenceRow[]>`
+    select ar.id as row_id, ar.recommendation_id,
+           ar.entity_type::text as entity_type, ar.entity_id, ar.entity_name,
+           ar.field, ar.old_value, ar.new_value,
+           current_state.supported, current_state.present,
+           current_state.current_value, current_state.current_synced_at,
+           linked.new_value as synchronized_value,
+           linked.observed_at as synchronized_at,
+           exists (
+             select 1
+               from public.entity_changes possible
+              where possible.org_id = b.org_id
+                and possible.profile_id = b.profile_id
+                and possible.apply_batch_id is null
+                and possible.source = 'sync'
+                and possible.entity_type::text =
+                    (case when ar.entity_type = 'placement' then 'campaign' else ar.entity_type::text end)
+                and possible.amazon_id = ar.entity_id
+                and app.canonical_apply_field(possible.entity_type::text, possible.field)
+                    = app.canonical_apply_field(ar.entity_type::text, ar.field)
+                and possible.old_value = ar.old_value
+                and possible.new_value = ar.new_value
+                and possible.observed_at >= b.exported_at
+           ) as has_unlinked_exact_change
+      from public.apply_batches b
+      join public.apply_rows ar
+        on ar.org_id = b.org_id
+       and ar.profile_id = b.profile_id
+       and ar.batch_id = b.id
+      cross join lateral app.resolve_apply_current_value(
+        b.org_id, b.profile_id, ar.entity_type, ar.entity_id, ar.field
+      ) current_state
+      left join lateral (
+        select ec.new_value, ec.observed_at
+          from public.entity_changes ec
+         where ec.org_id = b.org_id
+           and ec.profile_id = b.profile_id
+           and ec.apply_row_id = ar.id
+         order by ec.observed_at, ec.id
+         limit 1
+      ) linked on true
+     where b.org_id = ${input.orgId}
+       and b.id = ${input.batchId}
+     order by ar.created_at, ar.id
+  `;
+
+  const exportedAt = toDate(header.exported_at);
+  const rows = evidence.map((row) => classifyReversionRow(header.id, exportedAt, row));
+  const readyRows = rows.filter((row) => row.exportAllowed).length;
+  const blockedRows = header.exported_proposals - readyRows;
+  let exportAllowed = true;
+  let reason = `${readyRows} synchronized changes are ready for an exact inverse export.`;
+
+  if (header.source_batch_id !== null) {
+    exportAllowed = false;
+    reason = 'A reversion export is an immutable audit record and cannot itself be inverted here.';
+  } else if (header.active_reversion_batch_id !== null) {
+    exportAllowed = false;
+    reason = 'This batch already has an active reversion export.';
+  } else if (header.status === 'abandoned') {
+    exportAllowed = false;
+    reason = 'This export was abandoned.';
+  } else if (header.status === 'reverted') {
+    exportAllowed = false;
+    reason = 'This batch is already verified as reverted.';
+  } else if (header.artifact_sha256 === null) {
+    exportAllowed = false;
+    reason = 'This legacy export has no immutable artifact fingerprint.';
+  } else if (header.unsupported_rows > 0) {
+    exportAllowed = false;
+    reason = `${header.unsupported_rows} exported create rows do not have an invertible old value.`;
+  } else if (rows.length !== header.reversible_rows) {
+    exportAllowed = false;
+    reason = `The ledger expected ${header.reversible_rows} reversible rows but reconstructed ${rows.length}.`;
+  } else if (rows.length === 0) {
+    exportAllowed = false;
+    reason = 'This export contains no reversible update rows.';
+  } else if (readyRows !== rows.length) {
+    exportAllowed = false;
+    reason = `${rows.length - readyRows} of ${rows.length} rows are waiting, ambiguous, unsupported, or conflicted.`;
+  }
+
+  return ReversionBatchPreview.parse({
+    batchId: header.id,
+    sourceBatchId: header.source_batch_id,
+    activeReversionBatchId: header.active_reversion_batch_id,
+    profileId: header.profile_id,
+    tag: header.tag,
+    optGroup: header.opt_group,
+    lever: header.lever,
+    note: header.note,
+    lifecycleStatus: lifecycleStatus(header),
+    exportedAt: exportedAt.toISOString(),
+    appliedAt: toDateOrNull(header.applied_at)?.toISOString() ?? null,
+    artifactSha256: header.artifact_sha256,
+    exportedProposals: header.exported_proposals,
+    reversibleRows: header.reversible_rows,
+    unsupportedRows: header.unsupported_rows,
+    rows,
+    readyRows,
+    blockedRows,
+    exportAllowed,
+    reason,
+  });
+}
+
+export interface ReversionExportResult {
+  batchId: string;
+  sourceBatchId: string;
+  tag: string;
+  rows: ApplyRow[];
+  artifactSha256: string;
+}
+
+/**
+ * Create a new immutable staged batch containing the exact inverse rows. The
+ * source is re-read under a transaction lock, so a stale browser preview can
+ * never authorize a conflicting export. Nothing is sent to Amazon.
+ */
+export async function createReversionExport(
+  handle: TimeMachineQueryHandle,
+  input: {
+    orgId: string;
+    batchId: string;
+    tag: string;
+    note: string;
+    actorId?: string | null;
+  },
+): Promise<ReversionExportResult> {
+  const note = input.note.trim();
+  if (note.length === 0) throw new Error('A reversion export requires a note.');
+  const tag = input.tag.trim();
+  if (tag.length === 0) throw new Error('A reversion export requires a batch tag.');
+
+  return await handle.sql.begin(async (sql) => {
+    await sql`select pg_advisory_xact_lock(hashtextextended(${`time-machine:${input.orgId}:${input.batchId}`}, 0))`;
+    await sql`
+      select id from public.apply_batches
+       where org_id = ${input.orgId} and id = ${input.batchId}
+       for update
+    `;
+    const initialPreview = await getReversionBatchPreview({ sql }, {
+      orgId: input.orgId,
+      batchId: input.batchId,
+    });
+    if (initialPreview === null) throw new Error('Not found');
+    await lockCurrentApplyStates({ sql }, {
+      orgId: input.orgId,
+      profileId: initialPreview.profileId,
+      targets: initialPreview.rows.map((row) => ({
+        key: row.rowId,
+        entityType: row.entityType,
+        entityId: row.entityId,
+        field: row.field,
+      })),
+    });
+    const preview = await getReversionBatchPreview({ sql }, {
+      orgId: input.orgId,
+      batchId: input.batchId,
+    });
+    if (preview === null) throw new Error('Not found');
+    if (!preview.exportAllowed) throw new Error(`Reversion blocked: ${preview.reason}`);
+
+    const rows: ApplyRow[] = preview.rows.map((row) => ({
+      entityType: row.entityType,
+      entityId: row.entityId,
+      field: row.field,
+      old: row.exportedValue,
+      new: row.inverseValue,
+      ...(row.entityName === null ? {} : { name: row.entityName }),
+    }));
+    if (rows.length !== preview.readyRows || rows.length !== preview.reversibleRows) {
+      throw new Error(
+        `Reversion preview offered ${preview.reversibleRows} rows, prepared ${rows.length}`,
+      );
+    }
+    const artifactSha256 = createHash('sha256')
+      .update(serializeApplyRows(rows))
+      .digest('hex');
+    const [batch] = await sql<{ id: string }[]>`
+      insert into public.apply_batches
+        (org_id, profile_id, tag, opt_group, lever, note, status, source_batch_id,
+         exported_at, artifact_sha256, exported_proposals, reversible_rows,
+         unsupported_rows, created_by)
+      values (${input.orgId}, ${preview.profileId}, ${tag}, ${preview.optGroup},
+              'revert', ${note}, 'staged', ${preview.batchId}, now(), ${artifactSha256},
+              ${rows.length}, ${rows.length}, 0, ${input.actorId ?? null}::uuid)
+      returning id
+    `;
+    const batchId = batch?.id;
+    if (batchId === undefined) throw new Error('Failed to create the reversion export.');
+
+    const inserted = await sql<{ id: string }[]>`
+      insert into public.apply_rows
+        (batch_id, org_id, profile_id, entity_type, entity_id, entity_name,
+         field, old_value, new_value, lever)
+      select ${batchId}, ${input.orgId}, ${preview.profileId},
+             offered.entity_type::public.apply_entity_type, offered.entity_id,
+             offered.entity_name, offered.field, offered.old_value::jsonb,
+             offered.new_value::jsonb, 'revert'
+        from unnest(
+               ${rows.map((row) => row.entityType)}::text[],
+               ${rows.map((row) => row.entityId)}::text[],
+               ${rows.map((row) => row.name ?? null)}::text[],
+               ${rows.map((row) => row.field)}::text[],
+               ${rows.map((row) => JSON.stringify(row.old))}::text[],
+               ${rows.map((row) => JSON.stringify(row.new))}::text[]
+             ) offered(entity_type, entity_id, entity_name, field, old_value, new_value)
+      returning id
+    `;
+    if (inserted.length !== rows.length) {
+      throw new Error(`Reversion offered ${rows.length} rows, wrote ${inserted.length}`);
+    }
+
+    await sql`
+      insert into public.audit_log
+        (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
+      values (${input.orgId}, 'user', ${input.actorId ?? null}, 'reversion.exported',
+              'apply_batch', ${batchId},
+              ${JSON.stringify({ sourceBatchId: preview.batchId, rows: rows.length, artifactSha256 })}::text::jsonb,
+              'web')
+    `;
+
+    return { batchId, sourceBatchId: preview.batchId, tag, rows, artifactSha256 };
+  });
 }

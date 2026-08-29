@@ -10,7 +10,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '../testing/harness.js';
 import type { TestDatabase } from '../testing/harness.js';
-import { listTimeline, listTimelineFacets } from './time-machine.js';
+import { reconcileEntityChangeLinks, recordEntityChanges } from './entities.js';
+import {
+  createReversionExport,
+  getReversionBatchPreview,
+  listReversionBatches,
+  listTimeline,
+  listTimelineFacets,
+} from './time-machine.js';
 
 const available = await databaseAvailable();
 const USER_A = '71717171-7171-4171-8171-717171717171';
@@ -50,6 +57,16 @@ describe.skipIf(!available)('WP-30 Time Machine queries', () => {
       values (${orgA}, ${profileA}, 'campaign', 'c-1', 'Marker campaign', 'budget',
               '10'::jsonb, '15'::jsonb, 'sync')
     `;
+
+    for (const id of ['kw-ready', 'kw-ambiguous']) {
+      await database.sql`
+        insert into public.keywords
+          (org_id, profile_id, amazon_id, ad_product, name, state, campaign_id,
+           ad_group_id, keyword_text, match_type, bid, synced_at)
+        values (${orgA}, ${profileA}, ${id}, 'SP', ${id}, 'enabled', 'c-1', 'ag-1',
+                ${id}, 'exact', 0.90, now())
+      `;
+    }
   }, 60_000);
 
   afterAll(async () => {
@@ -128,5 +145,359 @@ describe.skipIf(!available)('WP-30 Time Machine queries', () => {
     const foreign = await listTimelineFacets(database, { orgId: orgB, profileId: profileB });
     expect(foreign.entityTypes).toEqual(['keyword']);
     expect(foreign.fields).toEqual(['bid']);
+  });
+
+  it('links one exact export uniquely and creates an immutable inverse batch', async () => {
+    const [batch] = await database.sql<{ id: string }[]>`
+      insert into public.apply_batches
+        (org_id, profile_id, tag, opt_group, lever, note, status, exported_at,
+         artifact_sha256, exported_proposals, reversible_rows, unsupported_rows)
+      values (${orgA}, ${profileA}, 'tm-ready-export', 'rank', 'push', 'synthetic',
+              'staged', now() - interval '1 hour', ${'a'.repeat(64)}, 1, 1, 0)
+      returning id
+    `;
+    const batchId = batch?.id ?? '';
+    await database.sql`
+      insert into public.apply_rows
+        (batch_id, org_id, profile_id, entity_type, entity_id, entity_name, field,
+         old_value, new_value, lever)
+      values (${batchId}, ${orgA}, ${profileA}, 'keyword', 'kw-ready', 'Ready keyword',
+              'bid', '0.9'::jsonb, '0.71'::jsonb, 'push')
+    `;
+
+    await database.sql`
+      update public.keywords
+         set bid = 0.71, synced_at = now() + interval '1 second'
+       where org_id = ${orgA} and profile_id = ${profileA} and amazon_id = 'kw-ready'
+    `;
+    const written = await recordEntityChanges(database, [{
+      orgId: orgA,
+      profileId: profileA,
+      entityType: 'keyword',
+      amazonId: 'kw-ready',
+      entityName: 'Ready keyword',
+      field: 'bid',
+      oldValue: 0.9,
+      newValue: 0.71,
+      source: 'sync',
+    }]);
+    expect(written).toBe(1);
+
+    const [link] = await database.sql<{
+      apply_batch_id: string | null;
+      apply_row_id: string | null;
+    }[]>`
+      select apply_batch_id, apply_row_id from public.entity_changes
+       where org_id = ${orgA} and profile_id = ${profileA} and amazon_id = 'kw-ready'
+       order by observed_at desc limit 1
+    `;
+    expect(link?.apply_batch_id).toBe(batchId);
+    expect(link?.apply_row_id).not.toBeNull();
+
+    const preview = await getReversionBatchPreview(database, { orgId: orgA, batchId });
+    expect(preview).not.toBeNull();
+    expect(preview?.rows).toHaveLength(1);
+    expect(preview?.rows[0]).toMatchObject({
+      originalValue: 0.9,
+      exportedValue: 0.71,
+      synchronizedValue: 0.71,
+      currentValue: 0.71,
+      inverseValue: 0.9,
+      state: 'ready',
+      exportAllowed: true,
+    });
+    expect(preview?.exportAllowed).toBe(true);
+    expect(preview?.lifecycleStatus).toBe('applied_externally');
+
+    const inverse = await createReversionExport(database, {
+      orgId: orgA,
+      batchId,
+      tag: 'tm-ready-export-revert',
+      note: 'Synthetic inverse export',
+      actorId: USER_A,
+    });
+    expect(inverse.rows).toHaveLength(1);
+    expect(inverse.rows[0]).toMatchObject({ old: 0.71, new: 0.9 });
+    expect(inverse.artifactSha256).toMatch(/^[a-f0-9]{64}$/);
+
+    const [stored] = await database.sql<{
+      source_batch_id: string | null;
+      reversible_rows: number;
+      exported_proposals: number;
+    }[]>`
+      select source_batch_id, reversible_rows, exported_proposals
+        from public.apply_batches
+       where org_id = ${orgA} and id = ${inverse.batchId}
+    `;
+    expect(stored).toEqual({
+      source_batch_id: batchId,
+      reversible_rows: 1,
+      exported_proposals: 1,
+    });
+    const [audit] = await database.sql<{ count: number }[]>`
+      select count(*)::int as count from public.audit_log
+       where org_id = ${orgA} and action = 'reversion.exported' and target_id = ${inverse.batchId}
+    `;
+    expect(audit?.count).toBe(1);
+
+    const afterExport = await getReversionBatchPreview(database, { orgId: orgA, batchId });
+    expect(afterExport?.activeReversionBatchId).toBe(inverse.batchId);
+    expect(afterExport?.exportAllowed).toBe(false);
+    await expect(
+      createReversionExport(database, {
+        orgId: orgA,
+        batchId,
+        tag: 'tm-ready-export-second-revert',
+        note: 'Synthetic duplicate inverse',
+        actorId: USER_A,
+      }),
+    ).rejects.toThrow('active reversion export');
+
+    await database.sql`
+      update public.keywords
+         set bid = 0.90, synced_at = now() + interval '2 seconds'
+       where org_id = ${orgA} and profile_id = ${profileA} and amazon_id = 'kw-ready'
+    `;
+    await recordEntityChanges(database, [{
+      orgId: orgA,
+      profileId: profileA,
+      entityType: 'keyword',
+      amazonId: 'kw-ready',
+      entityName: 'Ready keyword',
+      field: 'bid',
+      oldValue: 0.71,
+      newValue: 0.9,
+      source: 'sync',
+    }]);
+
+    const verified = await getReversionBatchPreview(database, { orgId: orgA, batchId });
+    expect(verified?.lifecycleStatus).toBe('verified_reverted');
+    const [lifecycles] = await database.sql<{
+      source_status: string;
+      inverse_status: string;
+      inverse_applied_at: Date | null;
+    }[]>`
+      select source.status::text as source_status,
+             inverse.status::text as inverse_status,
+             inverse.applied_at as inverse_applied_at
+        from public.apply_batches source
+        join public.apply_batches inverse on inverse.source_batch_id = source.id
+       where source.id = ${batchId}
+    `;
+    expect(lifecycles).toMatchObject({
+      source_status: 'reverted',
+      inverse_status: 'applied',
+    });
+    expect(lifecycles?.inverse_applied_at).not.toBeNull();
+  });
+
+  it('canonicalizes worker budget/default-bid fields and advances only complete batches', async () => {
+    const cases = [
+      {
+        tag: 'tm-campaign-budget-alias',
+        entityType: 'campaign',
+        entityId: 'c-1',
+        applyField: 'budget_amount',
+        syncField: 'budgetAmount',
+        oldValue: 10,
+        newValue: 13.37,
+        update: () => database.sql`
+          update public.campaigns set budget_amount = 13.37, synced_at = now()
+           where org_id = ${orgA} and profile_id = ${profileA} and amazon_id = 'c-1'
+        `,
+      },
+      {
+        tag: 'tm-ad-group-bid-alias',
+        entityType: 'ad_group',
+        entityId: 'ag-1',
+        applyField: 'bid',
+        syncField: 'defaultBid',
+        oldValue: 0.75,
+        newValue: 1.17,
+        update: () => database.sql`
+          update public.ad_groups set default_bid = 1.17, synced_at = now()
+           where org_id = ${orgA} and profile_id = ${profileA} and amazon_id = 'ag-1'
+        `,
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const [batch] = await database.sql<{ id: string }[]>`
+        insert into public.apply_batches
+          (org_id, profile_id, tag, opt_group, lever, note, status, exported_at,
+           artifact_sha256, exported_proposals, reversible_rows, unsupported_rows)
+        values (${orgA}, ${profileA}, ${testCase.tag}, 'profit', 'adjust', 'synthetic',
+                'staged', now() - interval '1 hour', ${'d'.repeat(64)}, 1, 1, 0)
+        returning id
+      `;
+      const batchId = batch?.id ?? '';
+      await database.sql`
+        insert into public.apply_rows
+          (batch_id, org_id, profile_id, entity_type, entity_id, field, old_value, new_value)
+        values (${batchId}, ${orgA}, ${profileA},
+                ${testCase.entityType}::public.apply_entity_type, ${testCase.entityId},
+                ${testCase.applyField}, ${JSON.stringify(testCase.oldValue)}::jsonb,
+                ${JSON.stringify(testCase.newValue)}::jsonb)
+      `;
+      await testCase.update();
+      await recordEntityChanges(database, [{
+        orgId: orgA,
+        profileId: profileA,
+        entityType: testCase.entityType,
+        amazonId: testCase.entityId,
+        field: testCase.syncField,
+        oldValue: testCase.oldValue,
+        newValue: testCase.newValue,
+        source: 'sync',
+      }]);
+
+      const preview = await getReversionBatchPreview(database, { orgId: orgA, batchId });
+      expect(preview?.rows).toHaveLength(1);
+      expect(preview?.rows[0]).toMatchObject({ state: 'ready', exportAllowed: true });
+      expect(preview?.lifecycleStatus).toBe('applied_externally');
+    }
+  });
+
+  it('reconciles orphaned evidence on retry and permits only one concurrent link', async () => {
+    const [batch] = await database.sql<{ id: string }[]>`
+      insert into public.apply_batches
+        (org_id, profile_id, tag, opt_group, lever, note, status, exported_at,
+         artifact_sha256, exported_proposals, reversible_rows, unsupported_rows)
+      values (${orgA}, ${profileA}, 'tm-reconcile-retry', 'rank', 'push', 'synthetic',
+              'staged', now() - interval '1 hour', ${'e'.repeat(64)}, 1, 1, 0)
+      returning id
+    `;
+    const batchId = batch?.id ?? '';
+    await database.sql`
+      insert into public.apply_rows
+        (batch_id, org_id, profile_id, entity_type, entity_id, field, old_value, new_value)
+      values (${batchId}, ${orgA}, ${profileA}, 'keyword', 'kw-ambiguous', 'bid',
+              '0.72'::jsonb, '0.74'::jsonb)
+    `;
+    await database.sql`
+      update public.keywords set bid = 0.74, synced_at = now()
+       where org_id = ${orgA} and profile_id = ${profileA} and amazon_id = 'kw-ambiguous'
+    `;
+    await database.sql`
+      insert into public.entity_changes
+        (org_id, profile_id, entity_type, amazon_id, field, old_value, new_value, source)
+      values
+        (${orgA}, ${profileA}, 'keyword', 'kw-ambiguous', 'bid', '0.72'::jsonb, '0.74'::jsonb, 'sync'),
+        (${orgA}, ${profileA}, 'keyword', 'kw-ambiguous', 'bid', '0.72'::jsonb, '0.74'::jsonb, 'sync')
+    `;
+
+    const counts = await reconcileEntityChangeLinks(database, { orgId: orgA, profileId: profileA });
+    expect(counts.offered).toBeGreaterThanOrEqual(2);
+    const [evidence] = await database.sql<{ linked: number; unlinked: number }[]>`
+      select count(*) filter (where apply_row_id is not null)::int as linked,
+             count(*) filter (where apply_row_id is null)::int as unlinked
+        from public.entity_changes
+       where org_id = ${orgA} and profile_id = ${profileA}
+         and amazon_id = 'kw-ambiguous' and new_value = '0.74'::jsonb
+    `;
+    expect(evidence).toEqual({ linked: 1, unlinked: 1 });
+    const preview = await getReversionBatchPreview(database, { orgId: orgA, batchId });
+    expect(preview?.lifecycleStatus).toBe('applied_externally');
+
+    const retry = await reconcileEntityChangeLinks(database, { orgId: orgA, profileId: profileA });
+    expect(retry.linked).toBe(0);
+  });
+
+  it('keeps repeated same-value exports ambiguous and blocks both inverses', async () => {
+    const batches: string[] = [];
+    for (const tag of ['tm-duplicate-a', 'tm-duplicate-b']) {
+      const [batch] = await database.sql<{ id: string }[]>`
+        insert into public.apply_batches
+          (org_id, profile_id, tag, opt_group, lever, note, status, exported_at,
+           artifact_sha256, exported_proposals, reversible_rows, unsupported_rows)
+        values (${orgA}, ${profileA}, ${tag}, 'rank', 'push', 'synthetic', 'staged',
+                now() - interval '1 hour', ${'b'.repeat(64)}, 1, 1, 0)
+        returning id
+      `;
+      const batchId = batch?.id ?? '';
+      batches.push(batchId);
+      await database.sql`
+        insert into public.apply_rows
+          (batch_id, org_id, profile_id, entity_type, entity_id, field, old_value, new_value)
+        values (${batchId}, ${orgA}, ${profileA}, 'keyword', 'kw-ambiguous', 'bid',
+                '0.9'::jsonb, '0.72'::jsonb)
+      `;
+    }
+
+    await recordEntityChanges(database, [{
+      orgId: orgA,
+      profileId: profileA,
+      entityType: 'keyword',
+      amazonId: 'kw-ambiguous',
+      field: 'bid',
+      oldValue: 0.9,
+      newValue: 0.72,
+      source: 'sync',
+    }]);
+    await database.sql`
+      update public.keywords set bid = 0.72, synced_at = now() + interval '1 second'
+       where org_id = ${orgA} and profile_id = ${profileA} and amazon_id = 'kw-ambiguous'
+    `;
+
+    const [change] = await database.sql<{ apply_batch_id: string | null }[]>`
+      select apply_batch_id from public.entity_changes
+       where org_id = ${orgA} and profile_id = ${profileA} and amazon_id = 'kw-ambiguous'
+       order by observed_at desc limit 1
+    `;
+    expect(change?.apply_batch_id).toBeNull();
+    for (const batchId of batches) {
+      const preview = await getReversionBatchPreview(database, { orgId: orgA, batchId });
+      expect(preview?.rows[0]?.state).toBe('ambiguous');
+      expect(preview?.exportAllowed).toBe(false);
+    }
+  });
+
+  it('blocks legacy, mixed-create, conflicted, and cross-tenant batches explicitly', async () => {
+    const summaries = await listReversionBatches(database, { orgId: orgA, profileId: profileA });
+    const legacy = summaries.find((summary) => summary.tag.includes('2026W33'));
+    expect(legacy).toBeDefined();
+    const legacyPreview = await getReversionBatchPreview(database, {
+      orgId: orgA,
+      batchId: legacy?.batchId ?? '',
+    });
+    expect(legacyPreview?.exportAllowed).toBe(false);
+    expect(legacyPreview?.reason).toContain('legacy export');
+
+    const [mixed] = await database.sql<{ id: string }[]>`
+      insert into public.apply_batches
+        (org_id, profile_id, tag, opt_group, lever, note, artifact_sha256,
+         exported_proposals, reversible_rows, unsupported_rows)
+      values (${orgA}, ${profileA}, 'tm-mixed-create', 'profit', 'negative', 'synthetic',
+              ${'c'.repeat(64)}, 2, 1, 1)
+      returning id
+    `;
+    await database.sql`
+      insert into public.apply_rows
+        (batch_id, org_id, profile_id, entity_type, entity_id, field, old_value, new_value)
+      values (${mixed?.id ?? ''}, ${orgA}, ${profileA}, 'keyword', 'kw-ready', 'bid',
+              '0.71'::jsonb, '0.73'::jsonb)
+    `;
+    const mixedPreview = await getReversionBatchPreview(database, {
+      orgId: orgA,
+      batchId: mixed?.id ?? '',
+    });
+    expect(mixedPreview?.unsupportedRows).toBe(1);
+    expect(mixedPreview?.exportAllowed).toBe(false);
+    expect(mixedPreview?.reason).toContain('create rows');
+
+    const foreign = await getReversionBatchPreview(database, {
+      orgId: orgB,
+      batchId: mixed?.id ?? '',
+    });
+    expect(foreign).toBeNull();
+
+    await expect(
+      database.sql`
+        insert into public.apply_rows
+          (batch_id, org_id, profile_id, entity_type, entity_id, field, old_value, new_value)
+        values (${mixed?.id ?? ''}, ${orgA}, ${profileB}, 'keyword', 'kw-1', 'bid',
+                '0.9'::jsonb, '0.8'::jsonb)
+      `,
+    ).rejects.toThrow();
   });
 });

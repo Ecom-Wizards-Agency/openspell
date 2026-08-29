@@ -17,6 +17,8 @@ import * as schema from './schema/index.js';
 
 export type Database = PostgresJsDatabase<typeof schema>;
 export type Sql = postgres.Sql;
+/** Query-only surface shared by a root connection and an open transaction. */
+export type QuerySql = postgres.Sql | postgres.TransactionSql;
 
 export interface DbHandle {
   /** Typed query builder. */

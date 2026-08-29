@@ -2,7 +2,7 @@
  * `/time-machine` — the account's change history, read only.
  *
  * AdLabs' change log, over data we already keep: `entity_changes` (what a sync
- * noticed drift on) unioned with the operator's own `apply_batches`. One
+ * noticed drift on) unioned with the operator's own export batches. One
  * reverse-chronological timeline per profile, grouped by day the way the
  * incumbent does, filterable by entity type, field, source and date range.
  *
@@ -13,7 +13,12 @@
 import type { CSSProperties } from 'react';
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
-import { listTimeline, listTimelineFacets } from '@wizard-ads/db';
+import {
+  getReversionBatchPreview,
+  listReversionBatches,
+  listTimeline,
+  listTimelineFacets,
+} from '@wizard-ads/db';
 import type { ChangeSource, TimelineEntry } from '@wizard-ads/db';
 import {
   isUnauthenticated,
@@ -22,6 +27,9 @@ import {
   requireOrgMembership,
 } from '../../src/server/request-context';
 import { listOrgProfiles, selectOrgProfile } from '../../src/recommendations/data';
+import { requireOrgRole } from '../../src/server/org-role';
+import { can } from '../../src/auth/roles';
+import { ReversionPanel } from './reversion-panel';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -104,6 +112,7 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
   try {
     const actor = await requestActor(await headers());
     await requireOrgMembership(database, actor);
+    const role = await requireOrgRole(database, actor);
     const query = await searchParams;
 
     const profiles = await listOrgProfiles(database, actor.orgId);
@@ -142,6 +151,20 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
       from: from ?? null,
       to: toBound,
     });
+    const reversionBatches = await listReversionBatches(database, {
+      orgId: actor.orgId,
+      profileId: profile.id,
+    });
+    const requestedBatch = one(query['batch']);
+    const selectedBatch =
+      reversionBatches.find((batch) => batch.batchId === requestedBatch) ?? reversionBatches[0] ?? null;
+    const reversionPreview =
+      selectedBatch === null
+        ? null
+        : await getReversionBatchPreview(database, {
+            orgId: actor.orgId,
+            batchId: selectedBatch.batchId,
+          });
     const days = groupByDay(entries);
     const hasAnyHistory = facets.entityTypes.length > 0 || facets.fields.length > 0;
     const filtersActive = entityType !== null || field !== null || source !== null || from !== null || toParam !== null;
@@ -156,8 +179,8 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
         <header style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
           <h1 style={heading}>Time Machine</h1>
           <p style={muted}>
-            {profile.label} · {profile.countryCode} · every change on this account, newest first —
-            what a sync detected and what you applied.
+            {profile.label}{' · '}{profile.countryCode}{' · '}exported batches, synchronized evidence, and
+            external account changes. Wizard Ads does not write to Amazon.
           </p>
           {profiles.length > 1 ? (
             <nav style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }} aria-label="Profiles">
@@ -173,6 +196,41 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
             </nav>
           ) : null}
         </header>
+
+        {reversionBatches.length === 0 ? null : (
+          <section className="wa-tm-batches" aria-labelledby="export-batches-title">
+            <header className="wa-tm-section-head">
+              <div>
+                <span className="wa-label">Batch history</span>
+                <h2 id="export-batches-title">Exports and reversions</h2>
+              </div>
+              <span>{reversionBatches.length} recent batch{reversionBatches.length === 1 ? '' : 'es'}</span>
+            </header>
+            <nav className="wa-tm-batch-list" aria-label="Export batches">
+              {reversionBatches.map((batch) => (
+                <a
+                  key={batch.batchId}
+                  href={`/time-machine?${new URLSearchParams({ profile: profile.id, batch: batch.batchId })}`}
+                  className={batch.batchId === selectedBatch?.batchId ? 'is-selected' : undefined}
+                  data-testid="time-machine-batch"
+                >
+                  <span>
+                    <strong>{batch.tag}</strong>
+                    <small>{batch.optGroup} · {batch.lever}</small>
+                  </span>
+                  <span>
+                    <strong>{batch.reversibleRows}</strong>
+                    <small>{batch.lifecycleStatus.replaceAll('_', ' ')}</small>
+                  </span>
+                </a>
+              ))}
+            </nav>
+          </section>
+        )}
+
+        {reversionPreview === null ? null : (
+          <ReversionPanel preview={reversionPreview} canExport={can(role, 'exportBatches')} />
+        )}
 
         {hasAnyHistory ? (
           <form method="get" style={filters} aria-label="Filter changes" data-testid="timeline-filters">
@@ -204,7 +262,7 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
               <select name="source" defaultValue={source ?? ''} style={control} data-testid="filter-source">
                 <option value="">Any source</option>
                 <option value="sync">Sync detected</option>
-                <option value="apply">Operator apply</option>
+                <option value="apply">Operator export</option>
               </select>
             </label>
             <label style={fieldLabel}>
@@ -255,7 +313,17 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
                             style={entry.source === 'apply' ? applyBadge : syncBadge}
                             data-testid="entry-source"
                           >
-                            {entry.source === 'apply' ? 'Applied' : 'Sync'}
+                            {entry.source === 'sync'
+                              ? 'Sync'
+                              : entry.batch?.sourceBatchId != null
+                                ? 'Reversion export'
+                                : entry.batch?.status === 'applied'
+                                  ? 'Applied externally'
+                                  : entry.batch?.status === 'reverted'
+                                    ? 'Verified reverted'
+                                    : entry.batch?.status === 'abandoned'
+                                      ? 'Abandoned'
+                                      : 'Exported'}
                           </span>
                           <span style={{ fontWeight: 600 }}>{ENTITY_LABEL[entry.entityType] ?? entry.entityType}</span>
                           <span style={{ color: 'var(--wa-text)' }}>

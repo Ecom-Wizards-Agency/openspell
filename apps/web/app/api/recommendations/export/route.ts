@@ -8,38 +8,25 @@
  * document and the workbook three views of one recorded act rather than three
  * chances to export slightly different sets.
  *
- * Roles: owner and admin only, mirroring
- * `install_tenant_rls('public.apply_batches', array['owner','admin'])`. The web
- * handle connects as the application role, so that policy is the second fence
- * and this check is the first. When WP-04 next touches its capability table,
- * this belongs there as an `exportBatch` capability rather than as a constant
- * here.
+ * Roles: owner and admin only, through the shared `exportBatches` capability,
+ * mirroring the apply-ledger RLS policy. The route check is the first fence and
+ * RLS remains the second.
  */
 import {
   exportAcceptedRecommendations,
   getRecommendationRun,
 } from '@wizard-ads/db';
-import {
-  RequestAuthError,
-  errorResponse,
-  openWebDatabase,
-  requestActor,
-} from '../../../../src/server/request-context';
-import { requireOrgRole } from '../../../../src/server/org-role';
+import { errorResponse, openWebDatabase, requestActor } from '../../../../src/server/request-context';
+import { requireCapability } from '../../../../src/server/org-role';
 import { batchTag, exportFilenames } from '../../../../src/recommendations/export';
 
 export const runtime = 'nodejs';
-
-const EXPORT_ROLES = ['owner', 'admin'] as const;
 
 export async function POST(request: Request): Promise<Response> {
   const database = openWebDatabase();
   try {
     const actor = await requestActor(request.headers);
-    const role = await requireOrgRole(database, actor);
-    if (!(EXPORT_ROLES as readonly string[]).includes(role)) {
-      throw new RequestAuthError(`role ${role} is not permitted to export an apply batch`, 403);
-    }
+    await requireCapability(database, actor, 'exportBatches');
 
     const body = (await request.json()) as {
       runId?: unknown;
