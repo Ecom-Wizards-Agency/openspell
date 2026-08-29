@@ -37,7 +37,21 @@ export async function loadReportLedger(
   limit = 40,
 ): Promise<ReportLedgerEntry[]> {
   const rows = await handle.db
-    .select()
+    // Select only the fields this view consumes. `report_requests` is widened
+    // additively as new ingestion evidence ships; a generic select made every
+    // dashboard depend on all later columns being present before the UI could
+    // render, even though the freshness model did not read them.
+    .select({
+      reportType: reportRequests.reportType,
+      status: reportRequests.status,
+      endDate: reportRequests.endDate,
+      requestedAt: reportRequests.requestedAt,
+      completedAt: reportRequests.completedAt,
+      rowsParsed: reportRequests.rowsParsed,
+      rowsLoaded: reportRequests.rowsLoaded,
+      countsMatch: reportRequests.countsMatch,
+      error: reportRequests.error,
+    })
     .from(reportRequests)
     .where(and(eq(reportRequests.orgId, orgId), eq(reportRequests.profileId, profileId)))
     .orderBy(desc(reportRequests.requestedAt))
