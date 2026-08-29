@@ -75,7 +75,7 @@ export function RosterSelectionProvider({ children }: { children: ReactNode }): 
         data-interactive={ready ? 'true' : 'false'}
         style={{ border: 0, margin: 0, minWidth: 0, padding: 0, width: '100%' }}
       >
-        <legend className="wa-sr-only">Profile editing controls</legend>
+        <legend className="wa-sr-only">Profile roster selection and management controls</legend>
         {children}
       </fieldset>
     </SelectionContext.Provider>

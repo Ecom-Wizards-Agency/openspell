@@ -14,9 +14,11 @@ import { createDb } from '@wizard-ads/db';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { signIn } from './support/auth';
+import { applyRequestedCpuThrottle } from './support/cpu-throttle';
 import { readState } from './support/fixture';
 
 test.describe.configure({ mode: 'serial' });
+test.beforeEach(async ({ page }) => applyRequestedCpuThrottle(page));
 
 const INTEGRATION_VALUE = ['synthetic', 'integration', 'e2e', 'value'].join('-');
 const ROLE_PROFILE_ID = ['roles', 'profile', 'fixture'].join('-');
@@ -112,7 +114,12 @@ test('an analyst edits targets but cannot toggle sync or connect', async ({ page
   await row.getByTestId('field-targetTotalAcos').fill('18');
   await row.getByTestId('field-goalLens').selectOption('scale');
   await row.getByTestId('field-monthlyBudget').fill('4200');
+  const targetPost = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/settings/profiles',
+  );
   await row.getByTestId('save-targets').click();
+  const targetResponse = await targetPost;
+  await targetResponse.finished();
   // The action re-renders the page; wait for that before asking for a fresh
   // one, so the assertion is about persistence and not about timing.
   await expect(page.getByTestId('field-targetAcos').first()).toHaveValue('24.5');
@@ -161,6 +168,52 @@ test('an admin toggles sync and the change survives a reload', async ({ page }) 
   const back = page.locator(`[data-profile-id="${profileId}"]`).getByTestId('toggle-sync');
   await back.selectOption('Off');
   await expect(page.getByTestId('toast')).toContainText('Sync off');
+});
+
+test('an admin persists a schedule and bulk-syncs the exact selected synthetic row', async ({ page }) => {
+  await signIn(page, 'admin');
+  const syntheticQuery = 'q=AAA+synthetic+storefront+1';
+  await openProfiles(page, `/settings/profiles?${syntheticQuery}`);
+  await expect(page.getByTestId('profile-row')).toHaveCount(1);
+
+  const row = page.getByTestId('profile-row');
+  await row.getByTestId('field-timezone').fill('Europe/Berlin');
+  await row.getByTestId('field-syncHour').fill('7');
+  const schedulePost = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/settings/profiles',
+  );
+  await row.getByTestId('save-schedule').click();
+  const scheduleResponse = await schedulePost;
+  await scheduleResponse.finished();
+
+  await openProfiles(page, `/settings/profiles?${syntheticQuery}`);
+  const persisted = page.getByTestId('profile-row');
+  await expect(persisted.getByTestId('field-timezone')).toHaveValue('Europe/Berlin');
+  await expect(persisted.getByTestId('field-syncHour')).toHaveValue('7');
+  await expect(persisted.getByTestId('timezone-locked')).toHaveText('pinned');
+
+  // Selection begins only after the provider's explicit hydration marker. The
+  // unique filter makes the input count, selected count and changed count all
+  // exactly one, and afterAll deletes this disposable profile.
+  await page.getByTestId('row-select-all').check();
+  await expect(page.getByTestId('bulk-count')).toHaveText('1 selected');
+  await expect(page.getByTestId('bulk-enable')).toBeEnabled();
+  await page.getByTestId('bulk-enable').click();
+  await expect(page.getByTestId('toast')).toContainText('Sync on for 1 profile.');
+  await expect(page.getByTestId('bulk-count')).toHaveText('No profiles selected');
+
+  await openProfiles(page, `/settings/profiles?${syntheticQuery}&sync=on`);
+  await expect(page.getByTestId('profile-row')).toHaveCount(1);
+  await expect(page.getByTestId('toggle-sync')).toHaveValue('1');
+
+  await page.getByTestId('row-select-all').check();
+  await expect(page.getByTestId('bulk-count')).toHaveText('1 selected');
+  await page.getByTestId('bulk-disable').click();
+  await expect(page.getByTestId('toast')).toContainText('Sync off for 1 profile.');
+
+  await openProfiles(page, `/settings/profiles?${syntheticQuery}&sync=off`);
+  await expect(page.getByTestId('profile-row')).toHaveCount(1);
+  await expect(page.getByTestId('toggle-sync')).toHaveValue('0');
 });
 
 test('an admin stores an integration key once and can revoke it', async ({ page }) => {

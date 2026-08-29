@@ -16,5 +16,6 @@ describe('profile editor hydration gate', () => {
     expect(markup).toContain('data-testid="profile-editor"');
     expect(markup).toContain('data-interactive="false"');
     expect(markup).toContain('disabled=""');
+    expect(markup).toContain('Profile roster selection and management controls');
   });
 });
