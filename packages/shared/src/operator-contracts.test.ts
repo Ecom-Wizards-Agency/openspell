@@ -8,6 +8,8 @@ import {
   DaypartingScheduleProposal,
   DirectionalAdjustmentProvenance,
   FeatureJobPayload,
+  JobPayload,
+  MarketingStreamBatchEnvelope,
   MarketingStreamHourlyFact,
   MarketingStreamLedgerEvent,
   OptimizationGroup,
@@ -334,6 +336,31 @@ describe('report promotion and attribution observations', () => {
 });
 
 describe('Marketing Stream and dayparting', () => {
+  it('accepts an explicitly tenant-scoped batch and rejects mixed-profile events', () => {
+    const event = {
+      profileId: PROFILE_ID,
+      messageId: 'message-1',
+      dataset: 'traffic' as const,
+      adProduct: 'SP' as const,
+      eventTime: '2026-08-28T00:00:00Z',
+      receivedAt: '2026-08-28T00:01:00Z',
+      revision: 0,
+      payloadHash: 'synthetic-hash',
+      rawPayload: { metrics: [] },
+    };
+    const envelope = MarketingStreamBatchEnvelope.parse({
+      schema: 'wizard-ads.marketing-stream-batch.v1',
+      orgId: ORG_ID,
+      profileId: PROFILE_ID,
+      events: [event],
+    });
+    expect(envelope.events).toHaveLength(1);
+    expect(MarketingStreamBatchEnvelope.safeParse({
+      ...envelope,
+      events: [{ ...event, profileId: RUN_ID }],
+    }).success).toBe(false);
+  });
+
   it('preserves an idempotent raw event and DST-aware local derivation fields', () => {
     const event = MarketingStreamLedgerEvent.parse({
       profileId: PROFILE_ID,
@@ -432,6 +459,13 @@ describe('feature jobs', () => {
       },
     ];
     expect(jobs.map((job) => FeatureJobPayload.parse(job).type)).toEqual([
+      'creative.sync',
+      'sqp.request',
+      'history.bootstrap',
+      'report.promote',
+      'marketing_stream.normalize',
+    ]);
+    expect(jobs.map((job) => JobPayload.parse(job).type)).toEqual([
       'creative.sync',
       'sqp.request',
       'history.bootstrap',

@@ -2,12 +2,11 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated`.
 
-Reconciled 2026-08-29 against `origin/main` at `602a780`. Here, **merged** means the
-implementation is reachable from that revision. It does not mean deployed, applied to a hosted
-database, live-data verified, or accepted by an operator. Full evidence and source pointers:
-`docs/workpackages/WP-52-reconciliation.md`. WP-53 onward is integrated on
-`wp-67-operator-upgrade-integration` for review; WP-61 Time Machine v2 is stacked on that tip in
-`wp-61-time-machine-v2`. Neither branch is described as merged to `main`.
+Reconciled 2026-08-29 against release candidate `8d7bd41`, based on `origin/main` at
+`bfce504`. Here, **merged** means the implementation is reachable from the recorded candidate. It
+does not by itself mean live-data verified, deployed, or accepted by an operator. Full original evidence and source pointers are in
+`docs/workpackages/WP-52-reconciliation.md`; the post-release capability design is in
+`docs/workpackages/WP-68-outstanding-capabilities-design.md`.
 
 ## Repository state
 
@@ -66,29 +65,41 @@ database, live-data verified, or accepted by an operator. Full evidence and sour
 | 49 | Bugs/Roadmap split | merged | separate operator surfaces and feature intake; merge `c745f69` |
 | 50 | Campaign builder update mode | merged | synced-state diff and export-only update flow; merge `b1ca073` |
 | 51 | Test backlog and stock gate | merged | test proposals and stock/rank preconditions; merge `517f379` |
-| 52 | Repository reconciliation | review | documentation/evidence package on `wp-52-reconciliation` |
+| 52 | Repository reconciliation | merged | documentation/evidence package included in the operator-upgrade release |
 
 No tracked implementation brief exists for WP-20, WP-37, WP-45, or WP-46. Number gaps are not
 treated as shipped packages. WP-47A has architecture/QA records and a merge commit but no numbered
 implementation brief in `docs/workpackages/`.
 
-## Current review wave
+## Operator-upgrade release
 
-| WP | Package | State | Review-branch evidence |
+| WP | Package | State | Release evidence |
 |---|---|---|---|
-| 53 | Design directions | review | three static branded previews; recommended Operator Console direction |
-| 54 | MCP production setup | review | secured Evo container stack, dedicated Cloudflare Tunnel, two-client read/audit verification |
-| 55 | Additive contracts and SP-API client | review | shared operator contracts plus pure `packages/sp-api` |
-| 56 | Data foundations | review | additive migration, tenant RLS, count assertions; local PostgreSQL only |
-| 57 | Report promotion and history planning | review | transaction-safe report-date replacement and bounded history planner; live loader gated |
-| 58 | Creative Performance backend | review | Asset-ID mappings/facts, strict SB Video staging seam, ambiguity states |
-| 59 | SQP and Query Intelligence | review | strict weekly SP-API seam, counted persistence, pure taxonomy, spend-conserving joins and contextual negatives; live queue gated |
-| 60 | Stateful optimizer core | review | synchronization/observation gates, lift/hold/revert decisions and bounded de-rounding |
-| 61 | Time Machine v2 | review | export-time mirror snapshots, exact row-level sync attribution, verified lifecycle transitions, conflict-safe inverse exports and audit evidence |
-| 62 | Dayparting v0.5 backend | review | revision-safe ledger/hourly facts, DST/settling, bounded proposals and exports; SQS wiring gated |
-| 63 | Operator Console UX | review | four-series chart, guided builder, recommendation grouping and nested grid |
-| 64 | Roadmap reconciliation | review | deduplicated manifest with value, prerequisite and deferral reason |
-| 67 | Integration and release evidence | review | serial integration, local verification and review handoff; production web verification remains gated |
+| 53 | Design directions | merged | three static branded previews; Operator Console direction implemented |
+| 54 | MCP production setup | merged and deployed | secured Evo container stack, Cloudflare Tunnel, two-client read/audit verification |
+| 55 | Additive contracts and SP-API client | merged | shared operator contracts plus pure `packages/sp-api` |
+| 56 | Data foundations | merged and hosted | additive migration, tenant RLS and count assertions; hosted ledger verified |
+| 57 | Report promotion and history planning | merged | transaction-safe report-date replacement and bounded history planner; live loader gated |
+| 58 | Creative Performance backend | merged | Asset-ID mappings/facts, strict SB Video staging seam, ambiguity states |
+| 59 | SQP and Query Intelligence backend | merged | strict weekly SP-API seam, counted persistence, pure taxonomy, spend-conserving joins and contextual negatives; live queue gated |
+| 60 | Stateful optimizer core | merged | synchronization/observation gates, lift/hold/revert decisions and bounded de-rounding |
+| 61 | Time Machine v2 | merged and hosted | export-time mirror snapshots, exact row-level sync attribution, conflict-safe inverse exports |
+| 62 | Dayparting v0.5 backend | merged | revision-safe ledger/hourly facts, DST/settling, bounded proposals and exports; SQS wiring gated |
+| 63 | Operator Console UX | merged and deployed | four-series chart, guided builder, grouped recommendations and nested grid |
+| 64 | Roadmap reconciliation | merged | deduplicated manifest with value, prerequisite and deferral reason |
+| 67 | Integration and release evidence | merged and deployed | release CI, hosted migrations, production web and MCP revision verified |
+
+## Current implementation wave
+
+| WP | Package | State | Boundary |
+|---|---|---|---|
+| 68 | Outstanding capability reconciliation and design | merged | verified gap map and serialized domain-workspace architecture |
+| 69 | Persistent optimization groups | merged | atomic settings/assignments, group-scoped worker runs, anti-compounding evidence gate and operator UI |
+| 70 | Intelligence product surfaces | merged | Creative, Query, Dayparting and Strategy read/review routes |
+| 71 | SQP production queue | gated | job contract is widened; live authenticated SP-API dispatch and checkpoint scheduling remain absent |
+| 72 | Marketing Stream SQS runtime | merged; live gated | SQS receipt, raw-first retention, acknowledgement, retry and read-time settling are implemented; subscription/fanout is not provisioned |
+| 73 | SB Video live adapter | gated | requires a live-verified ad-to-creative-to-Asset-ID response chain |
+| 74 | Integrated release verification | review | local DB/RLS/unit/build and 54 Playwright workflows pass; hosted revision and live provider rows remain to verify |
 
 ## Milestone gates
 
@@ -101,24 +112,27 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
-- The latest durable full-route production QA is `docs/design/QA-2026-08-27.md`. Its second round
+- The pre-release full-route production QA is `docs/design/QA-2026-08-27.md`. Its second round
   records the brand system, settling presentation, comparison-flow repairs, target bid columns,
   and Bugs/Roadmap split as live on that date.
 - WP-54 supersedes the old MCP note: the service is healthy behind a dedicated Cloudflare Tunnel
   on the always-on operator host. Codex and Claude Code each discovered the same 11 analytical
   tools, completed a permitted real read, produced audit and last-used evidence, and received a
   not-found result outside the key's profile allowlist. No mutation tool is exposed.
-- `docs/design/REDESIGN-2026-08-28.md`, WP-50, WP-51, and the final freshness fix are later Git
-  evidence. The repository does not record which revision production currently serves, so they
-  remain deployment-unverified.
-- The web deployment inspected during this wave did not expose trustworthy Git metadata. A local
-  or preview build therefore does not close the production-revision gate.
+- Production was revision-stamped and verified at `bfce504` after the release merge. The dashboard,
+  campaign builder, 3,597-row nested grid, optimizer, recommendations, Time Machine, Sync Status
+  and Connect AI routes completed an authenticated click-through without page, console or HTTP
+  errors. Cold grid navigation remains above the requested target and stays open as a performance
+  follow-up.
+- The hosted migration ledger contains the operator-intelligence foundation followed by Time
+  Machine v2. Both exact tracked files were hash-checked before application; all new tables retain
+  tenant RLS.
 - The requested normal Chrome connector was unavailable to the current automation session; this is
   not evidence that any product logged out. A separate CDP surface exposed open Wizard Ads,
   AdLabs, and SYNQ product tabs, but it is not treated as the operator's requested normal session.
   No credential was entered and no competitor data or dashboard configuration was changed.
 
-## Reconciled production behavior at `602a780`
+## Reconciled production behavior before the operator-upgrade release
 
 - New schedule provisioning requests a 3-day recent window, a 32-day restatement window, and the
   preceding 32-day comparison window. The recent window overlaps the restatement window: distinct
@@ -133,15 +147,15 @@ implementation brief in `docs/workpackages/`.
 - Unified reporting, maximum-history bootstrap, exact coverage matrices, stale-row reconciliation,
   and attribution observations are absent from this `main` revision.
 
-## Review-branch data foundations
+## Released data foundations
 
 - `packages/sp-api` now provides a pure Brand Analytics SQP client and strict weekly report-window
   helpers. Amazon calls still belong to the worker; web never receives a token.
 - The additive operator-intelligence migration defines report coverage, bootstrap progress,
   promotion watermarks, attribution observations, Asset-ID creative facts, SQP vocabulary and
   proposals, optimization groups and observations, and Marketing Stream/dayparting storage.
-  Migration and RLS tests use synthetic data on disposable PostgreSQL; the migration has not been
-  applied to hosted Supabase.
+  Migration and RLS tests use synthetic data on disposable PostgreSQL; the migration is also present
+  in the verified hosted ledger.
 - Report promotion now has a transaction boundary, exact staged/promoted/canonical counts, a
   newer-evidence watermark, stale-row removal for a complete report-date snapshot, and a retained
   pre-promotion attribution observation.
@@ -161,10 +175,19 @@ implementation brief in `docs/workpackages/`.
   durable feature-report checkpoint table are widened.
 - Dayparting now has an append-only revision ledger, exact-source stale guards, normalized SP/SB/SD
   hourly facts, DST-local derivation, settling/revised states, confidence-shrunk proposals and
-  CSV/JSON serialization. Its SQS subscriber has the equivalent queue-contract gate.
+  CSV/JSON serialization. The optional SQS consumer uses the standard AWS credential chain,
+  retains valid raw events when modelling policy is absent, acknowledges only after counted
+  projection, and keeps retry/health details sanitized. No live subscription has been provisioned.
 - The pure optimizer evidence engine covers synchronization conflicts, incomplete observation,
-  insufficient evidence, supported lift and exact pre-change reversion. Worker scheduling and
-  persistence remain open.
+  insufficient evidence, supported lift and exact pre-change reversion. Group scheduling and
+  persistence now refuse overlapping previews and hold after export until the latest observation
+  is complete with a `continue` decision. `hold` and `revert` remain review gates.
+- Creative Performance, Query Intelligence, Dayparting and Strategy Overview are now guarded,
+  task-navigation-accessible operator surfaces. Empty or incomplete sources remain visible as
+  source gates instead of demo performance.
+- Historical live PPC rows in Query Intelligence are intentionally profile-only. The current
+  `product_ads` mirror is not dated and therefore cannot prove an ASIN assignment for an earlier
+  SQP week; exact joins remain available only to authoritative dated inputs.
 
 ## Open repository follow-ups
 
@@ -178,13 +201,16 @@ implementation brief in `docs/workpackages/`.
   The negatives mirror still retains its cross-scope key-collision risk.
 - Unknown match-type spellings remain target rows with a null match type.
 - Report ingest does not create missing historical partitions before a backfill write.
-- Query Intelligence, Creative Performance, Dayparting, and Strategy remain open product surfaces
-  even where their contracts or backend foundations now exist. Time Machine v2 is implemented on
-  its review branch but remains hosted-migration, deployed-revision, and live-sync unverified.
+- Live SQP and SB Video provider adapters remain open. The new product surfaces are complete for
+  stored evidence, but cannot establish live Amazon parity until those adapters produce counted,
+  authoritative rows. Time Machine v2 is hosted and deployed, but a live reversion cannot be
+  end-to-end verified until an eligible export batch exists.
+- Optimization-group free-text exclusions are explicitly reference metadata. Typed, enforceable
+  exclusion rules remain a separate contract/work package rather than silently matching names.
 
 ## Unverified release gates
 
-- [x] GitHub CI run `33129362599` succeeded for exact `main` revision `602a780`.
+- [x] GitHub CI succeeded for exact `main` revision `bfce504`.
 - [x] Final review-branch `pnpm check` after the last integration commit. The root test runner now
       executes the unchanged UI frame-budget suite after the other Turbo packages; the complete
       isolated UI suite passed 149 of 149 instead of measuring unrelated CPU contention.
@@ -195,16 +221,22 @@ implementation brief in `docs/workpackages/`.
       expiring issuance and unsafe-legacy-key refusal.
 - [x] Workspace build passed; the web build generated the current route tree without production
       environment values.
-- [ ] Exact deployed revisions for web and always-on worker.
+- [x] Exact deployed revisions for web and always-on MCP service at `bfce504`.
 - [x] Revision-stamped MCP health plus Codex and Claude discovery/read/audit/last-used/allowlist
       checks. Re-run after the final review-branch commit before handoff.
-- [ ] Hosted migration ledger reconciled to the 32 tracked SQL migrations on this review branch.
+- [x] Hosted ledger verified for the two newly authorized additive migrations.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
-- [ ] Full current Wizard Ads route/state click-through after the latest commits.
+- [x] Full current Wizard Ads route/state click-through after the release merge.
 - [x] Local Playwright release suites: 27 production-build workflows and 27 authenticated-dev
       workflows passed, including dashboard, nested grid, campaign export, recommendations,
       experiments, Time Machine, tenancy, OAuth safety and every guarded route.
 - [ ] Fresh AdLabs and SYNQ workflow comparison. AdLabs has a durable redacted baseline in
       `tools/recon`; SYNQ has no tracked workflow evidence.
+- [x] Release-candidate PostgreSQL suites: database 209, worker 179 and web 316 tests passed with
+      migrations and synthetic tenant fixtures. The UI 3,597-row performance suite remained green.
+- [x] Release-candidate Playwright: 27 production-build workflows and 27 authenticated-dev
+      workflows passed, including every new intelligence route and anonymous redirects.
+- [ ] Apply `20260829140000_feature_job_types.sql` only after exact hosted authorization; the SQS
+      runtime remains disabled without its queue configuration, so deploying code first is safe.
 - [ ] v1 crosscheck exit gate: consecutive verified days, campaign-grain parity, and explained
       optimizer spot-check.

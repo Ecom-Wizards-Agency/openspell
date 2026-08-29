@@ -32,6 +32,7 @@ export interface ReviewWorkspaceProps {
   counts: Record<string, number>;
   role: string;
   hasStrategySnapshot: boolean;
+  runGroupName?: string | null;
 }
 
 const STATUSES = ['proposed', 'accepted', 'dismissed', 'exported', 'applied', 'superseded'];
@@ -70,7 +71,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
   const [note, setNote] = useState('');
   const [confirmed, setConfirmed] = useState(false);
   const [optGroup, setOptGroup] = useState(
-    () => props.proposals.find((proposal) => proposal.strategy.optGroup !== null)?.strategy.optGroup ?? 'ungrouped',
+    () => props.runGroupName ?? props.proposals.find((proposal) => proposal.strategy.optGroup !== null)?.strategy.optGroup ?? 'ungrouped',
   );
   const [lever, setLever] = useState('bid-down');
   const [busy, setBusy] = useState(false);

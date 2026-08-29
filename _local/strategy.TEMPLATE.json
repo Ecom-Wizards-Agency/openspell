@@ -69,6 +69,8 @@
 
   "bids": {
     "start_bid_pct_of_recommended": "<signed int, e.g. start N% below the suggested bid>",
+    "mechanical_bid_step": "<currency interval whose multiples should be moved by one legal cent>",
+    "mechanical_placement_step": "<integer placement interval whose multiples should move by one legal point>",
     "by_bucket": {
       "<your-bucket-name>": {
         "daily_budget": "<number>",
@@ -109,6 +111,12 @@
     "_comment": "Gate an expanded (tool- or agent-suggested) candidate must clear before it is considered.",
     "min_relevancy": "<fraction>",
     "max_sv": "<int monthly search volume>"
+  },
+
+  "dayparting": {
+    "_comment": "Marketing Stream evidence policy. Both values are tenant-owned and the worker refuses to acknowledge deliveries until they are filled and seeded.",
+    "settling_window_hours": "<non-negative number of hours before evidence is settled>",
+    "budget_capped_at_percent": "<non-negative budget-usage percentage that marks a capped hour>"
   },
 
   "naming": {

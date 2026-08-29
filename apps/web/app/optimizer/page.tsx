@@ -21,6 +21,7 @@ import {
   getRecommendationRun,
   listRecommendationRuns,
   listRecommendations,
+  readOptimizationWorkspace,
 } from '@wizard-ads/db';
 import { RECOMMENDATIONS_ENGINE_VERSION } from '@wizard-ads/worker';
 import { assessFreshness } from '@wizard-ads/ui';
@@ -90,8 +91,11 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
     );
   }
 
-  const runs = (await listRecommendationRuns(handle, { orgId, profileId: profile.id, limit: 100 }))
-    .filter((candidate) => candidate.engineVersion === RECOMMENDATIONS_ENGINE_VERSION);
+  const [allRuns, optimizationWorkspace] = await Promise.all([
+    listRecommendationRuns(handle, { orgId, profileId: profile.id, limit: 100 }),
+    readOptimizationWorkspace(handle, { orgId, profileId: profile.id }),
+  ]);
+  const runs = allRuns.filter((candidate) => candidate.engineVersion === RECOMMENDATIONS_ENGINE_VERSION);
   const runId = runs.find((candidate) => candidate.id === params.run)?.id ?? runs[0]?.id ?? null;
   const run = runId === null ? null : await getRecommendationRun(handle, { orgId, runId });
   const records =
@@ -127,7 +131,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
     settledRows.length === 0 ? null : totalsOf(settledRows),
     comparisonRows.length === 0 ? null : totalsOf(comparisonRows),
   );
-  const groups = campaignReviewGroups(proposals);
+  const campaignGroups = campaignReviewGroups(proposals);
   const coverage = reasonCoverage(proposals);
   const summary = settingsSummary(proposals);
   const freshness = assessFreshness(ledger, { now: new Date() });
@@ -148,7 +152,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
         subtitle={`${profile.label} · ${period.start} to ${period.end} · ${currentWindow === null || settled.comparison === null ? 'no settled KPI comparison yet' : `settled KPIs ${currentWindow.start} to ${currentWindow.end}${coverageClamped ? ' (first synced day)' : ''} vs ${settled.comparison.start} to ${settled.comparison.end}`} · all figures in ${profile.currencyCode}`}
         actions={
           <div className="wa-row" style={{ gap: '0.5rem' }}>
-            {mayRunOptimizer ? (
+            {mayRunOptimizer && optimizationWorkspace.groups.length === 0 ? (
               <form action={runOptimizerNow}>
                 <input type="hidden" name="profileId" value={profile.id} />
                 <Button
@@ -162,7 +166,12 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
                 </Button>
               </form>
             ) : null}
-            <SettingsChip summary={summary} />
+            {mayRunOptimizer && optimizationWorkspace.groups.length > 0 ? (
+              <a className="wa-btn wa-btn--primary wa-btn--sm" href={`/optimizer/groups?profile=${profile.id}`}>
+                Run group previews
+              </a>
+            ) : null}
+            <SettingsChip summary={summary} group={run?.groupSnapshot} />
             <a
               className="wa-btn wa-btn--sm"
               href={`/recommendations?profile=${profile.id}${run === null ? '' : `&run=${run.id}`}`}
@@ -175,6 +184,26 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
 
       <div className="wa-stack">
         <FreshnessBar assessment={freshness} />
+
+        {runs.length > 1 ? (
+          <details className="wa-dashboard-context" style={{ marginTop: 0 }}>
+            <summary>
+              Run history · {run?.groupSnapshot?.name ?? 'Legacy profile run'} · {run?.status ?? 'none'}
+            </summary>
+            <nav className="wa-row" aria-label="Optimizer runs" style={{ marginTop: '0.625rem' }}>
+              {runs.slice(0, 20).map((candidate) => (
+                <a
+                  className={`wa-pill ${candidate.id === run?.id ? 'wa-pill--reason' : ''}`}
+                  href={`/optimizer?profile=${profile.id}&run=${candidate.id}&from=${period.start}&to=${period.end}`}
+                  key={candidate.id}
+                  aria-current={candidate.id === run?.id ? 'page' : undefined}
+                >
+                  {candidate.groupSnapshot?.name ?? 'Legacy profile'} · {candidate.createdAt.toISOString().slice(0, 10)} · {candidate.status === 'succeeded' ? `${candidate.proposalsCount} proposals` : candidate.status}
+                </a>
+              ))}
+            </nav>
+          </details>
+        ) : null}
 
         <Cockpit
           days={cockpitDays}
@@ -215,7 +244,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
           <>
             <ReasonCoverageRow coverage={coverage} total={proposals.length} />
 
-            {groups.length === 0 ? (
+            {campaignGroups.length === 0 ? (
               <EmptyState
                 title="This run proposed nothing"
                 body="The engine found no bid, budget or targeting change worth proposing for this profile in this window. On a healthy account that is the expected result more weeks than not."
@@ -226,11 +255,11 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
                 }
               />
             ) : (
-              <section aria-label="Campaign review groups" className="wa-stack">
+              <section aria-label="Campaign drill-down" className="wa-stack">
                 <h2 className="wa-section-title" style={{ margin: 0 }}>
-                  Campaign review groups · {groups.length}
+                  {run.groupSnapshot ? `${run.groupSnapshot.name} campaign drill-down` : 'Legacy campaign drill-down'} · {campaignGroups.length}
                 </h2>
-                {groups.map((group) => (
+                {campaignGroups.map((group) => (
                   <OptimizerGroupTable
                     key={group.key}
                     group={group}

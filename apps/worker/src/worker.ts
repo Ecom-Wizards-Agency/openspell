@@ -3,10 +3,15 @@ import type { ClaimedJob } from '@wizard-ads/db';
 import {
   JobPayload,
   type EconomicsSyncJob,
+  type CreativeSyncJob,
+  type HistoryBootstrapJob,
   type JobType,
   type KeepaSyncJob,
+  type MarketingStreamNormalizeJob,
   type RankSyncJob,
   type Region,
+  type ReportPromoteJob,
+  type SqpRequestJob,
   type SqpCategorizeJob,
 } from '@wizard-ads/shared';
 import { isPermanentCrosscheckError, type CrosscheckIngest } from './crosscheck.js';
@@ -60,6 +65,11 @@ export interface IntegrationHandlers {
   rankSync?: (payload: RankSyncJob) => Promise<Record<string, unknown>>;
   economicsSync?: (payload: EconomicsSyncJob) => Promise<Record<string, unknown>>;
   sqpCategorize?: (payload: SqpCategorizeJob) => Promise<Record<string, unknown>>;
+  creativeSync?: (payload: CreativeSyncJob) => Promise<Record<string, unknown>>;
+  sqpRequest?: (payload: SqpRequestJob) => Promise<Record<string, unknown>>;
+  historyBootstrap?: (payload: HistoryBootstrapJob) => Promise<Record<string, unknown>>;
+  reportPromote?: (payload: ReportPromoteJob) => Promise<Record<string, unknown>>;
+  marketingStreamNormalize?: (payload: MarketingStreamNormalizeJob) => Promise<Record<string, unknown>>;
 }
 
 const consoleLogger: WorkerLogger = {
@@ -260,6 +270,16 @@ export class SyncWorker {
         return this.runIntegration(payload.type, this.integrations.economicsSync, payload);
       case 'sqp.categorize':
         return this.runIntegration(payload.type, this.integrations.sqpCategorize, payload);
+      case 'creative.sync':
+        return this.runIntegration(payload.type, this.integrations.creativeSync, payload);
+      case 'sqp.request':
+        return this.runIntegration(payload.type, this.integrations.sqpRequest, payload);
+      case 'history.bootstrap':
+        return this.runIntegration(payload.type, this.integrations.historyBootstrap, payload);
+      case 'report.promote':
+        return this.runIntegration(payload.type, this.integrations.reportPromote, payload);
+      case 'marketing_stream.normalize':
+        return this.runIntegration(payload.type, this.integrations.marketingStreamNormalize, payload);
     }
   }
 

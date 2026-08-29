@@ -31,7 +31,24 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260829130000_time_machine_v2.sql');
+    expect(files.at(-1)).toBe('20260829140000_feature_job_types.sql');
+  });
+
+  it('keeps every shared feature job representable in the database queue', async () => {
+    const labels = await database.sql<{ enumlabel: string }[]>`
+      select e.enumlabel
+        from pg_catalog.pg_enum e
+        join pg_catalog.pg_type t on t.oid = e.enumtypid
+       where t.typname = 'sync_job_type'
+       order by e.enumsortorder
+    `;
+    expect(labels.slice(-5).map((row) => row.enumlabel)).toEqual([
+      'creative.sync',
+      'sqp.request',
+      'history.bootstrap',
+      'report.promote',
+      'marketing_stream.normalize',
+    ]);
   });
 
   it('adds the integration job labels without weakening the report schedule constraint', async () => {
@@ -42,7 +59,8 @@ describe.skipIf(!available)('migrations', () => {
        where t.typname = 'sync_job_type'
        order by e.enumsortorder
     `;
-    expect(labels.slice(-4).map((row) => row.enumlabel)).toEqual([
+    const integrationLabels = new Set(['keepa.sync', 'rank.sync', 'economics.sync', 'sqp.categorize']);
+    expect(labels.map((row) => row.enumlabel).filter((label) => integrationLabels.has(label))).toEqual([
       'keepa.sync',
       'rank.sync',
       'economics.sync',

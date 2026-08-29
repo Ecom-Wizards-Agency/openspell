@@ -25,6 +25,32 @@ export const MarketingStreamLedgerEvent = z.object({
 });
 export type MarketingStreamLedgerEvent = z.infer<typeof MarketingStreamLedgerEvent>;
 
+/**
+ * One transport-neutral unit delivered through the private SQS queue.
+ *
+ * The Amazon subscription/fanout boundary is responsible for mapping provider
+ * records into this explicit contract. The worker never infers an internal
+ * tenant or profile from a campaign id, and every event repeats the profile id
+ * so a mixed-profile batch is rejected before any ledger write.
+ */
+export const MarketingStreamBatchEnvelope = z.object({
+  schema: z.literal('wizard-ads.marketing-stream-batch.v1'),
+  orgId: Uuid,
+  profileId: Uuid,
+  events: z.array(MarketingStreamLedgerEvent).min(1),
+}).superRefine((envelope, context) => {
+  envelope.events.forEach((event, index) => {
+    if (event.profileId !== envelope.profileId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['events', index, 'profileId'],
+        message: 'event profile does not match envelope profile',
+      });
+    }
+  });
+});
+export type MarketingStreamBatchEnvelope = z.infer<typeof MarketingStreamBatchEnvelope>;
+
 export const HourSettlingState = z.enum(['settling', 'settled', 'revised']);
 export type HourSettlingState = z.infer<typeof HourSettlingState>;
 

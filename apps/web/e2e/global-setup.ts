@@ -60,10 +60,30 @@ export default async function globalSetup(): Promise<void> {
   // Teardown is attached here rather than in a second file so the handles it
   // closes are the ones this function opened.
   (globalThis as Record<string, unknown>)['__wizardAdsE2E'] = async () => {
-    server?.kill('SIGTERM');
+    await stopProcess(server);
     await mock?.close();
     await dropDatabase(admin);
   };
+}
+
+async function stopProcess(child: ChildProcess | null): Promise<void> {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+
+  await new Promise<void>((resolveStop, rejectStop) => {
+    const timeout = setTimeout(() => {
+      child.kill('SIGKILL');
+    }, 15_000);
+
+    child.once('exit', () => {
+      clearTimeout(timeout);
+      resolveStop();
+    });
+    child.once('error', (error) => {
+      clearTimeout(timeout);
+      rejectStop(error);
+    });
+    child.kill('SIGTERM');
+  });
 }
 
 async function createDatabase(admin: string): Promise<string> {
@@ -188,6 +208,13 @@ async function startWebServer(connectionString: string, amazon: AmazonMock): Pro
       stdio: ['ignore', 'inherit', 'inherit'],
       env: {
         ...process.env,
+        // The authenticated suite compiles every guarded route in one dev
+        // process. Give Next enough headroom to avoid its development-only
+        // memory restart, which would discard the in-process OAuth fixture.
+        NODE_OPTIONS: appendNodeOption(
+          process.env['NODE_OPTIONS'],
+          '--max-old-space-size=4096',
+        ),
         NODE_ENV: 'development',
         DATABASE_URL: connectionString,
         WIZARD_ADS_APP_URL: BASE_URL,
@@ -207,6 +234,10 @@ async function startWebServer(connectionString: string, amazon: AmazonMock): Pro
 
   await waitForServer(`${BASE_URL}/login`, 120_000);
   return child;
+}
+
+function appendNodeOption(current: string | undefined, option: string): string {
+  return [current, option].filter((value): value is string => Boolean(value)).join(' ');
 }
 
 async function waitForServer(url: string, timeoutMs: number): Promise<void> {

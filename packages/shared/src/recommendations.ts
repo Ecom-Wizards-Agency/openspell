@@ -10,6 +10,7 @@
  */
 import { z } from 'zod';
 import { EntityRef, IsoDate, Uuid } from './primitives.js';
+import { DirectionalAdjustmentProvenance } from './optimization.js';
 
 /** The four White Box reasons, plus our two non-bid proposal sources. */
 export const RecommendationReason = z.enum([
@@ -67,6 +68,8 @@ export const RecommendationInputs = z.object({
   floorApplied: z.string().nullable().optional(),
   /** True when a change cap clamped the step. A cap is a ceiling, not a step. */
   capClamped: z.boolean(),
+  /** Present when a legal tenant-configured non-mechanical adjustment was evaluated. */
+  directionalAdjustment: DirectionalAdjustmentProvenance.optional(),
   window: z
     .object({
       start: IsoDate,

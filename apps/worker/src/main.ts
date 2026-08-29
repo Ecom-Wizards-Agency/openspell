@@ -6,6 +6,7 @@ import { createDataDiveRankSyncHandler } from './datadive.js';
 import { closeServer, startHealthServer } from './health.js';
 import { PostgresBidSeriesStore } from './bid-series.js';
 import { createKeepaSyncHandler } from './keepa.js';
+import { createMarketingStreamSqsConsumer } from './marketing-stream-sqs.js';
 import {
   PostgresRecommendationRunStore,
   createRecommendationsRunner,
@@ -31,6 +32,9 @@ const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
 const config = configFromEnv();
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
 const store = new PostgresWorkerStore(handle);
+const marketingStream = config.marketingStreamQueueUrl
+  ? createMarketingStreamSqsConsumer({ handle, queueUrl: config.marketingStreamQueueUrl })
+  : undefined;
 // Integration-only deployments do not read ADS_* at boot. Amazon wiring exists
 // only when this runtime's claim policy includes an Amazon job type (or all).
 const runsAmazonJobs = config.jobTypes === undefined
@@ -54,7 +58,8 @@ const worker = new SyncWorker({
   maxConcurrentJobs: config.maxConcurrentJobs,
   pollIntervalMs: config.pollIntervalMs,
 });
-const health = await startHealthServer(worker, config.port);
+marketingStream?.start();
+const health = await startHealthServer(worker, config.port, { marketingStream });
 const authHealth = adsApi
   ? new AuthHealthMonitor(worker, config.authHealthcheckIntervalMs)
   : undefined;
@@ -76,6 +81,7 @@ async function shutdown(): Promise<void> {
   reaper.stop();
   provisioner.stop();
   bidSeries?.stop();
+  await marketingStream?.stop();
   await worker.shutdown();
   await closeServer(health);
   await handle.close();

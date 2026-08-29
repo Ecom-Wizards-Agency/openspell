@@ -236,6 +236,7 @@ describe('recommendations.run wiring', () => {
     profileId,
     runId: reportRequestId,
     lookbackDays: 7,
+    groupId: jobId,
   };
 
   it('delegates to the injected runner and stores its result', async () => {
@@ -298,9 +299,26 @@ describe('integration handler wiring', () => {
     { type: 'rank.sync', orgId, profileId },
     { type: 'economics.sync', orgId, profileId },
     { type: 'sqp.categorize', orgId, profileId, weekStart: '2026-08-23' },
+    {
+      type: 'creative.sync', orgId, profileId, adProduct: 'SB',
+      startDate: '2026-08-01', endDate: '2026-08-23',
+    },
+    {
+      type: 'sqp.request', orgId, profileId, marketplaceId: 'marketplace-one',
+      asins: ['B000000001'], weekStart: '2026-08-16', weekEnd: '2026-08-22',
+    },
+    {
+      type: 'history.bootstrap', orgId, profileId, reportType: 'sbAds',
+      source: 'amazon_unified_reporting', cursorDate: null,
+    },
+    {
+      type: 'report.promote', orgId, profileId, reportRequestId,
+      reportType: 'sbAds', date: '2026-08-23',
+    },
+    { type: 'marketing_stream.normalize', orgId, profileId, messageIds: ['message-one'] },
   ];
 
-  it('delegates all four payloads without constructing an Ads client', async () => {
+  it('delegates every queue payload only through an explicitly bound handler', async () => {
     let claimed = false;
     const called: string[] = [];
     const results: unknown[] = [];
@@ -330,13 +348,44 @@ describe('integration handler wiring', () => {
         rankSync: async (payload) => (called.push(payload.type), { provider: 'datadive' }),
         economicsSync: async (payload) => (called.push(payload.type), { provider: 'mrp' }),
         sqpCategorize: async (payload) => (called.push(payload.type), { weekStart: payload.weekStart }),
+        creativeSync: async (payload) => (called.push(payload.type), { rows: 1 }),
+        sqpRequest: async (payload) => (called.push(payload.type), { asins: payload.asins.length }),
+        historyBootstrap: async (payload) => (called.push(payload.type), { source: payload.source }),
+        reportPromote: async (payload) => (called.push(payload.type), { date: payload.date }),
+        marketingStreamNormalize: async (payload) => (
+          called.push(payload.type), { messages: payload.messageIds.length }
+        ),
       },
       logger: { info: () => {}, error: () => {} },
     });
 
-    expect(await worker.drainOnce()).toBe(4);
+    expect(await worker.drainOnce()).toBe(payloads.length);
     expect(called).toEqual(payloads.map((payload) => payload.type));
-    expect(results).toHaveLength(4);
+    expect(results).toHaveLength(payloads.length);
+  });
+
+  it('dead-letters an approved feature payload when its real handler is absent', async () => {
+    const payload = payloads.at(-1);
+    if (!payload || payload.type !== 'marketing_stream.normalize') {
+      throw new Error('missing Marketing Stream payload');
+    }
+    let claimed = false;
+    const dead: string[] = [];
+    const worker = new SyncWorker({
+      workerId: 'integration-worker',
+      store: {
+        ...stubStore(),
+        claim: async () => claimed ? [] : (claimed = true, [{
+          id: jobId, orgId, profileId, jobType: payload.type, payload,
+          attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'integration-worker',
+        }]),
+        deadLetter: async (_id, error) => { dead.push(error); },
+      },
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(dead).toEqual(['marketing_stream.normalize handler not deployed in this runtime']);
   });
 
   it('dead-letters a job whose handler is not deployed in this runtime', async () => {
