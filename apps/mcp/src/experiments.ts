@@ -26,7 +26,7 @@ import type { ServerContext, ToolOutcome } from './server.js';
 
 export const LIST_EXPERIMENTS_TITLE = 'List experiments';
 export const LIST_EXPERIMENTS_DESCRIPTION =
-  'Deliberate tests recorded in wizard-ads — bid pushes, creative and price changes — with their ' +
+  'Deliberate tests recorded in OpenSpell — bid pushes, creative and price changes — with their ' +
   'windows, scope and status. Read this before concluding a metric moved on its own: a shaded ' +
   'window here is a change somebody chose to make. Filter by profile or status.';
 

@@ -29,7 +29,7 @@ import type { ServerContext, ToolOutcome } from './server.js';
 export const SUBMIT_FEEDBACK_TITLE = 'File a bug report or feature request';
 
 export const SUBMIT_FEEDBACK_DESCRIPTION =
-  'File a bug report or feature request against wizard-ads itself. Use it when a tool answers ' +
+  'File a bug report or feature request against OpenSpell itself. Use it when a tool answers ' +
   'something that cannot be right, when a number disagrees with the account, or when a ' +
   'capability you needed is missing. Bugs are routed to the Bugs board; feature requests are ' +
   'routed to Roadmap. It changes nothing about any advertising account. Say what you did, what ' +

@@ -1,14 +1,14 @@
-# wizard-ads
+# OpenSpell (`wizard-ads` repository)
 
-An in-house Amazon Advertising platform: it syncs advertising profiles and entities,
+OpenSpell is an in-house Amazon Advertising platform: it syncs advertising profiles and entities,
 ingests Reporting v3 asynchronously, stores facts at target, search-term, placement
 and profile grain, and produces bid and budget recommendations that show their work.
-Version 1 is deliberately read-only. It proposes and the operator applies; accepted
-proposals leave as an export rather than an API write, and write access unlocks only
-once our numbers have matched an established tool side by side on real profiles for a
-sustained period. Built as a TypeScript monorepo: Next.js on Vercel, Supabase for
-Postgres, auth and scheduling, and a small always-on worker for the parts of Amazon's
-API that take hours rather than milliseconds.
+Preview is the default. Supported mutations use an operator-approved, worker-only
+contract: every write must be bounded, idempotent, audited, resynchronized, and conflict
+checked. See `docs/STATUS.md` for current runtime availability. The MCP service remains
+an analytical read surface and cannot approve itself. Built as a TypeScript monorepo:
+Next.js on Vercel, Supabase for Postgres, auth and scheduling, and a small always-on
+worker for the parts of Amazon's API that take hours rather than milliseconds.
 
 ## Quickstart
 
