@@ -224,6 +224,22 @@ const SCOPE_PARAM: Partial<Record<EntityLevel, { param: string; key: string }>> 
   search_terms: { param: 'terms', key: 'search_term' },
 };
 
+/** Stable first-seen scope with a hard URL-size bound and no full-array pipeline. */
+export function experimentScopeIds(rows: readonly GridRow[], key: string): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const value = row.dimensions[key];
+    if (value === null || value === undefined) continue;
+    const id = String(value);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+    if (ids.length === 100) break;
+  }
+  return ids;
+}
+
 export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
   const scope = gridRowsRequestUrl(props);
   const generation = useRef(0);
@@ -360,14 +376,25 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     }
     let cancelled = false;
     void (async () => {
-      const [layout, list] = await Promise.all([store.lastLayout(props.entity), store.list(props.entity)]);
-      if (cancelled) return;
-      if (props.campaignId !== null) setView(defaultView(props.entity, props.campaignId));
-      else if (layout !== null) {
-        setView(withValidGrouping({ ...layout, id: 'default', name: 'Default' }, available));
+      try {
+        const [layout, list] = await Promise.all([
+          store.lastLayout(props.entity),
+          store.list(props.entity),
+        ]);
+        if (cancelled) return;
+        if (props.campaignId !== null) setView(defaultView(props.entity, props.campaignId));
+        else if (layout !== null) {
+          setView(withValidGrouping({ ...layout, id: 'default', name: 'Default' }, available));
+        }
+        else setView(defaultView(props.entity, null));
+        setSaved(list);
+      } catch {
+        if (cancelled) return;
+        // Browser storage is a preference cache. A rejected custom/remote
+        // store must not strand the analytical grid behind a permanent loader.
+        setView(defaultView(props.entity, props.campaignId));
+        setSaved([]);
       }
-      else setView(defaultView(props.entity, null));
-      setSaved(list);
       setSelectedTargetId(null);
       // This is deliberately later than hydration alone. An interaction that
       // lands after React attaches but before the saved layout resolves can be
@@ -466,14 +493,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const experimentHref = useMemo(() => {
     const mapping = SCOPE_PARAM[props.entity];
     if (mapping === undefined) return null;
-    const ids = Array.from(
-      new Set(
-        model.matchedRows
-          .map((row) => row.dimensions[mapping.key])
-          .filter((value): value is string | number => value !== null && value !== undefined)
-          .map((value) => String(value)),
-      ),
-    ).slice(0, 100);
+    const ids = experimentScopeIds(model.matchedRows, mapping.key);
     if (ids.length === 0) return null;
     const params = new URLSearchParams({ profile: props.profileId, entity: props.entity });
     params.set(mapping.param, ids.join(','));

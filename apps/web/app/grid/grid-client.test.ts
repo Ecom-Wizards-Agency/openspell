@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it } from 'vitest';
 import { columnsFor } from '@wizard-ads/ui';
 import type { EntityLevel, GridRow, SavedView, ViewStore } from '@wizard-ads/ui';
-import { GridWorkspace, withValidGrouping } from './grid-client';
+import { GridWorkspace, experimentScopeIds, withValidGrouping } from './grid-client';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const mounted: Array<{ unmount: () => void }> = [];
@@ -100,6 +100,31 @@ class DeferredViewStore implements ViewStore {
     if (resolve === undefined) throw new Error(`No pending restoration for ${entity}`);
     this.pending.delete(entity);
     resolve(layout);
+  }
+}
+
+class RejectingViewStore implements ViewStore {
+  private readonly pending = new Map<EntityLevel, (error: Error) => void>();
+
+  async list(): Promise<SavedView[]> {
+    return [];
+  }
+
+  async save(): Promise<void> {}
+
+  async remove(): Promise<void> {}
+
+  lastLayout(entity: EntityLevel): Promise<SavedView | null> {
+    return new Promise((_resolve, reject) => this.pending.set(entity, reject));
+  }
+
+  async rememberLayout(): Promise<void> {}
+
+  fail(entity: EntityLevel): void {
+    const reject = this.pending.get(entity);
+    if (reject === undefined) throw new Error(`No pending restoration for ${entity}`);
+    this.pending.delete(entity);
+    reject(new Error(`Synthetic ${entity} store failure`));
   }
 }
 
@@ -218,6 +243,43 @@ describe('grid saved-view grouping', () => {
     expect(store.remembered.at(-1)?.sort).toEqual([{ columnId: 'spend', direction: 'asc' }]);
   });
 
+  it('falls open to the exact default scope and ignores rejection from a cancelled scope', async () => {
+    const store = new RejectingViewStore();
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    mounted.push(root);
+
+    act(() => root.render(createElement(GridWorkspace, workspaceProps('campaigns', store))));
+    await act(async () => {
+      store.fail('campaigns');
+      await Promise.resolve();
+    });
+
+    expect(host.querySelector('[data-testid="grid-workspace"]')?.getAttribute('data-ready')).toBe('true');
+    expect(host.querySelector('[role="grid"]')).not.toBeNull();
+    expect(host.querySelector('[role="columnheader"][aria-label="Spend"]')?.getAttribute('aria-sort')).toBe('descending');
+    expect(host.querySelector<HTMLAnchorElement>('[data-testid="grid-start-experiment"]')?.getAttribute('href')).toContain('campaigns=c-1');
+
+    act(() => root.render(createElement(GridWorkspace, workspaceProps('targets', store))));
+    act(() => root.render(createElement(GridWorkspace, workspaceProps('ad_groups', store))));
+    expect(host.querySelector('[data-testid="grid-workspace"]')?.getAttribute('data-ready')).toBe('false');
+
+    await act(async () => {
+      store.fail('targets');
+      await Promise.resolve();
+    });
+    expect(host.querySelector('[data-testid="grid-workspace"]')?.getAttribute('data-ready')).toBe('false');
+    expect(host.querySelector('[data-testid="grid-scroller"]')).toBeNull();
+
+    await act(async () => {
+      store.fail('ad_groups');
+      await Promise.resolve();
+    });
+    expect(host.querySelector('[data-testid="grid-workspace"]')?.getAttribute('data-ready')).toBe('true');
+    expect(host.querySelector('[role="grid"]')).not.toBeNull();
+  });
+
   it('preserves three valid levels in their saved order', () => {
     const normalized = withValidGrouping(
       view(['campaign_name', 'ad_group_name', 'match_type']),
@@ -235,5 +297,29 @@ describe('grid saved-view grouping', () => {
 
     const malformed = { ...view([]), groupBy: undefined } as unknown as SavedView;
     expect(withValidGrouping(malformed, columnsFor('search_terms')).groupBy).toEqual([]);
+  });
+
+  it('keeps first-seen experiment ids stable and stops after 100 unique values', () => {
+    const ordered = ['scope-b', 'scope-a', 'scope-b', ...Array.from({ length: 98 }, (_, index) => `scope-${index}`)];
+    const rows: GridRow[] = ordered.map((campaignId, index) => ({
+      ...row('campaigns'),
+      id: `campaign-row-${index}`,
+      dimensions: { ...row('campaigns').dimensions, campaign_id: campaignId },
+    }));
+    rows.push({
+      ...row('campaigns'),
+      id: 'must-not-be-read',
+      dimensions: new Proxy<Record<string, string | number | boolean | null>>({}, {
+        get: () => {
+          throw new Error('scope collection read beyond its 100-id bound');
+        },
+      }),
+    });
+
+    expect(experimentScopeIds(rows, 'campaign_id')).toEqual([
+      'scope-b',
+      'scope-a',
+      ...Array.from({ length: 98 }, (_, index) => `scope-${index}`),
+    ]);
   });
 });

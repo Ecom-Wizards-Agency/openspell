@@ -21,6 +21,7 @@
  * would implement and stops there rather than inventing a schema across an
  * ownership line.
  */
+import { ENTITY_LEVELS } from './columns.js';
 import type { EntityLevel } from './columns.js';
 import type { FilterSet } from './filter.js';
 import type { SortRule } from './sort.js';
@@ -95,6 +96,68 @@ export class MemoryViewStore implements ViewStore {
 
 const NAMED_KEY = 'wizard-ads:views:v1';
 const LAYOUT_KEY = 'wizard-ads:layout:v1';
+const FILTER_OPERATORS = new Set([
+  '>', '<', '>=', '<=', '=', '<>', 'IN', 'NOT_IN', 'LIKE', 'NOT_LIKE', 'IS_NULL', 'IS_NOT_NULL',
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function isFilterSet(value: unknown): value is FilterSet {
+  if (!isRecord(value) || !Array.isArray(value['groups'])) return false;
+  return value['groups'].every((group) => {
+    if (!isRecord(group) || !Array.isArray(group['filters'])) return false;
+    return group['filters'].every((filter) => {
+      if (!isRecord(filter) || typeof filter['key'] !== 'string' || !Array.isArray(filter['conditions'])) {
+        return false;
+      }
+      if (
+        filter['logical_operator'] !== undefined &&
+        filter['logical_operator'] !== 'AND' &&
+        filter['logical_operator'] !== 'OR'
+      ) {
+        return false;
+      }
+      return filter['conditions'].every((condition) =>
+        isRecord(condition) &&
+        isStringArray(condition['values']) &&
+        (condition['operator'] === undefined || FILTER_OPERATORS.has(String(condition['operator']))),
+      );
+    });
+  });
+}
+
+function isSavedView(value: unknown): value is SavedView {
+  if (!isRecord(value)) return false;
+  const widths = value['widths'];
+  const sort = value['sort'];
+  const dateRange = value['dateRange'];
+  return (
+    typeof value['id'] === 'string' &&
+    typeof value['name'] === 'string' &&
+    ENTITY_LEVELS.includes(value['entity'] as EntityLevel) &&
+    isStringArray(value['columns']) &&
+    isStringArray(value['pinned']) &&
+    isRecord(widths) &&
+    Object.values(widths).every((width) => typeof width === 'number' && Number.isFinite(width)) &&
+    isFilterSet(value['filter']) &&
+    Array.isArray(sort) &&
+    sort.every((rule) =>
+      isRecord(rule) &&
+      typeof rule['columnId'] === 'string' &&
+      (rule['direction'] === 'asc' || rule['direction'] === 'desc'),
+    ) &&
+    isStringArray(value['groupBy']) &&
+    (dateRange === null ||
+      (isRecord(dateRange) && typeof dateRange['start'] === 'string' && typeof dateRange['end'] === 'string')) &&
+    typeof value['updatedAt'] === 'string'
+  );
+}
 
 /** Minimal shape of `window.localStorage`, so this file needs no DOM lib at rest. */
 export interface KeyValueStorage {
@@ -112,14 +175,23 @@ export interface KeyValueStorage {
 export class LocalViewStore implements ViewStore {
   constructor(private readonly storage: KeyValueStorage) {}
 
-  private read<T>(key: string, fallback: T): T {
+  private readRecord(key: string): Record<string, unknown> {
     try {
       const raw = this.storage.getItem(key);
-      if (raw === null) return fallback;
-      return JSON.parse(raw) as T;
+      if (raw === null) return {};
+      const parsed: unknown = JSON.parse(raw);
+      return isRecord(parsed) ? parsed : {};
     } catch {
-      return fallback;
+      return {};
     }
+  }
+
+  private readViews(key: string): Record<string, SavedView> {
+    const valid: Record<string, SavedView> = {};
+    for (const [id, candidate] of Object.entries(this.readRecord(key))) {
+      if (isSavedView(candidate)) valid[id] = candidate;
+    }
+    return valid;
   }
 
   private write(key: string, value: unknown): void {
@@ -132,31 +204,31 @@ export class LocalViewStore implements ViewStore {
   }
 
   async list(entity: EntityLevel): Promise<SavedView[]> {
-    const all = this.read<Record<string, SavedView>>(NAMED_KEY, {});
+    const all = this.readViews(NAMED_KEY);
     return Object.values(all)
       .filter((view) => view.entity === entity)
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async save(view: SavedView): Promise<void> {
-    const all = this.read<Record<string, SavedView>>(NAMED_KEY, {});
+    const all = this.readViews(NAMED_KEY);
     all[view.id] = view;
     this.write(NAMED_KEY, all);
   }
 
   async remove(id: string): Promise<void> {
-    const all = this.read<Record<string, SavedView>>(NAMED_KEY, {});
+    const all = this.readViews(NAMED_KEY);
     delete all[id];
     this.write(NAMED_KEY, all);
   }
 
   async lastLayout(entity: EntityLevel): Promise<SavedView | null> {
-    const all = this.read<Partial<Record<EntityLevel, SavedView>>>(LAYOUT_KEY, {});
-    return all[entity] ?? null;
+    const candidate = this.readRecord(LAYOUT_KEY)[entity];
+    return isSavedView(candidate) && candidate.entity === entity ? candidate : null;
   }
 
   async rememberLayout(view: SavedView): Promise<void> {
-    const all = this.read<Partial<Record<EntityLevel, SavedView>>>(LAYOUT_KEY, {});
+    const all = this.readViews(LAYOUT_KEY);
     all[view.entity] = view;
     this.write(LAYOUT_KEY, all);
   }

@@ -33,6 +33,12 @@
  *   pnpm --filter @wizard-ads/web test:e2e:tags-goto   # just WP-08
  *   pnpm --filter @wizard-ads/web test:e2e:grid-performance
  *   pnpm --filter @wizard-ads/web test:e2e:auth        # auth/roles without the isolated Grid load
+ *   WIZARD_ADS_E2E_CPU_RATE=10 pnpm --filter @wizard-ads/web test:e2e:auth
+ *
+ * `WIZARD_ADS_E2E_CPU_RATE` accepts whole numbers from 1 through 10. That is
+ * the shared hydration-race contract; stronger stress needs a separate
+ * Playwright configuration so an accidental environment value cannot turn the
+ * standard suite into an unbounded timeout exercise.
  *
  * Anything after the suite name is forwarded to Playwright (`--grep`, `-x`, …).
  */

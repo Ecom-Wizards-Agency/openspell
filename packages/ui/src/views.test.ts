@@ -30,6 +30,9 @@ class FakeStorage implements KeyValueStorage {
   poison(key: string): void {
     this.map.set(key, '{not json');
   }
+  put(key: string, value: unknown): void {
+    this.map.set(key, JSON.stringify(value));
+  }
 }
 
 describe.each([
@@ -102,6 +105,31 @@ describe('LocalViewStore resilience', () => {
 
     await expect(store.list('campaigns')).resolves.toEqual([]);
     await expect(store.lastLayout('campaigns')).resolves.toBeNull();
+  });
+
+  it.each([
+    ['null root', null, null],
+    ['array root', [], []],
+    ['null member', { bad: null }, { campaigns: null }],
+    ['wrong view shape', { bad: { entity: 'campaigns' } }, { campaigns: { entity: 'campaigns' } }],
+    ['wrong layout entity', {}, { campaigns: view({ entity: 'targets' }) }],
+  ])('treats %s as empty local state', async (_case, named, layouts) => {
+    const storage = new FakeStorage();
+    storage.put('wizard-ads:views:v1', named);
+    storage.put('wizard-ads:layout:v1', layouts);
+    const store = new LocalViewStore(storage);
+
+    await expect(store.list('campaigns')).resolves.toEqual([]);
+    await expect(store.lastLayout('campaigns')).resolves.toBeNull();
+  });
+
+  it('keeps valid named views while dropping malformed siblings', async () => {
+    const storage = new FakeStorage();
+    const valid = view({ id: 'valid-view' });
+    storage.put('wizard-ads:views:v1', { valid, bad: null });
+    const store = new LocalViewStore(storage);
+
+    await expect(store.list('campaigns')).resolves.toEqual([valid]);
   });
 
   it('survives a storage that refuses to write', async () => {
