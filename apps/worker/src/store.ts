@@ -6,6 +6,7 @@ import {
   factSbDaily,
   factSdDaily,
   finishSyncJob,
+  ensureFactPartitions,
   keywords,
   negatives,
   portfolios,
@@ -13,6 +14,7 @@ import {
   recordEntityChanges,
   reconcileEntityChangeLinks,
   reportRequests,
+  promoteReportDate as promoteDbReportDate,
   requeueStaleSyncJobs,
   targets,
   upsertMirrorRows,
@@ -24,6 +26,8 @@ import {
   type DbHandle,
   type JobOutcome,
   type NewEntityChange,
+  type ReportDatePromotionResult,
+  type StagedReportDate,
 } from '@wizard-ads/db';
 import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
 import type { EntityRow, JobPayload, JobType, ReportType } from '@wizard-ads/shared';
@@ -33,10 +37,21 @@ import { defaultSchedules, type ScheduleSpec } from './schedules.js';
 
 export interface ReportRequestState {
   id: string;
+  orgId: string;
+  profileId: string;
   reportType: ReportType;
+  startDate: string;
+  endDate: string;
+  source: string;
   amazonReportId: string | null;
   requestedAt: Date;
   pollAttempts: number;
+}
+
+export interface ReportPartitionCounts {
+  expectedMonths: number;
+  matchedMonths: number;
+  createdMonths: number;
 }
 
 /**
@@ -126,7 +141,7 @@ export interface WorkerStore {
   ): Promise<EntitySyncCounts>;
   ensureReportRequest(jobId: string, payload: Extract<JobPayload, { type: 'report.request' }>): Promise<ReportRequestState>;
   setReportCreated(reportRequestId: string, amazonReportId: string, nextPollAt: Date): Promise<void>;
-  getReportRequest(reportRequestId: string): Promise<ReportRequestState>;
+  getReportRequest(reportRequestId: string, orgId: string, profileId: string): Promise<ReportRequestState>;
   updateReportPoll(
     reportRequestId: string,
     values: {
@@ -160,6 +175,13 @@ export interface WorkerStore {
   repairOverlongLookbacks(profileId?: string): Promise<number>;
   /** Reconcile provider schedules from active integration connections. */
   ensureIntegrationSchedules(): Promise<number>;
+  ensureReportPartitions(
+    reportType: ReportType,
+    startDate: string,
+    endDate: string,
+  ): Promise<ReportPartitionCounts>;
+  promoteReportDate(input: StagedReportDate): Promise<ReportDatePromotionResult>;
+  failReport(reportRequestId: string, error: string): Promise<void>;
   loadFacts(batch: ParsedFactBatch): Promise<number>;
   completeReport(
     reportRequestId: string,
@@ -376,7 +398,7 @@ export class PostgresWorkerStore implements WorkerStore {
       startDate: payload.startDate,
       endDate: payload.endDate,
     }).onConflictDoNothing();
-    return this.getReportRequest(jobId);
+    return this.getReportRequest(jobId, payload.orgId, payload.profileId);
   }
 
   async setReportCreated(reportRequestId: string, amazonReportId: string, nextPollAt: Date): Promise<void> {
@@ -387,22 +409,40 @@ export class PostgresWorkerStore implements WorkerStore {
     `;
   }
 
-  async getReportRequest(reportRequestId: string): Promise<ReportRequestState> {
+  async getReportRequest(
+    reportRequestId: string,
+    orgId: string,
+    profileId: string,
+  ): Promise<ReportRequestState> {
     const rows = await this.handle.sql<{
       id: string;
+      org_id: string;
+      profile_id: string;
       report_type: ReportType;
+      start_date: string;
+      end_date: string;
+      source: string;
       amazon_report_id: string | null;
       requested_at: Date | string;
       poll_attempts: number;
     }[]>`
-      select id, report_type, amazon_report_id, requested_at, poll_attempts
-        from public.report_requests where id = ${reportRequestId}
+      select id, org_id, profile_id, report_type, start_date::text, end_date::text,
+             source, amazon_report_id, requested_at, poll_attempts
+        from public.report_requests
+       where id = ${reportRequestId}
+         and org_id = ${orgId}
+         and profile_id = ${profileId}
     `;
     const row = rows[0];
     if (!row) throw new Error(`report request ${reportRequestId} does not exist`);
     return {
       id: row.id,
+      orgId: row.org_id,
+      profileId: row.profile_id,
       reportType: row.report_type,
+      startDate: row.start_date,
+      endDate: row.end_date,
+      source: row.source,
       amazonReportId: row.amazon_report_id,
       requestedAt: asDate(row.requested_at),
       pollAttempts: Number(row.poll_attempts),
@@ -601,6 +641,46 @@ export class PostgresWorkerStore implements WorkerStore {
     return rows.map((row) => ({ orgId: row.org_id, profileId: row.id }));
   }
 
+  async ensureReportPartitions(
+    reportType: ReportType,
+    startDate: string,
+    endDate: string,
+  ): Promise<ReportPartitionCounts> {
+    const expectedMonths = monthRange(startDate, endDate);
+    const actions = await ensureFactPartitions(this.handle, expectedMonths[0] as string, expectedMonths.length - 1);
+    const table = reportFactTable(reportType);
+    const matched = actions.filter((action) => action.tableName === table);
+    const matchedMonths = new Set(matched.map((action) => action.month));
+    if (
+      matched.length !== expectedMonths.length ||
+      expectedMonths.some((month) => !matchedMonths.has(month))
+    ) {
+      throw new Error(
+        `${reportType} partition preparation expected ${expectedMonths.length} months, matched ${matched.length}`,
+      );
+    }
+    return {
+      expectedMonths: expectedMonths.length,
+      matchedMonths: matched.length,
+      createdMonths: matched.filter((action) => action.created).length,
+    };
+  }
+
+  promoteReportDate(input: StagedReportDate): Promise<ReportDatePromotionResult> {
+    return promoteDbReportDate(this.handle, input);
+  }
+
+  async failReport(reportRequestId: string, error: string): Promise<void> {
+    const rows = await this.handle.sql<{ id: string }[]>`
+      update public.report_requests
+         set status = 'failed'::public.report_status,
+             completed_at = now(), next_poll_at = null, error = ${error}
+       where id = ${reportRequestId}
+       returning id
+    `;
+    if (rows.length !== 1) throw new Error(`failed report update matched ${rows.length} rows`);
+  }
+
   async loadFacts(batch: ParsedFactBatch): Promise<number> {
     switch (batch.kind) {
       case 'sp_target': return (await upsertSpTargetFacts(this.handle, batch.rows)).written;
@@ -616,7 +696,7 @@ export class PostgresWorkerStore implements WorkerStore {
     reportRequestId: string,
     counts: { parsed: number; loaded: number; bytesDownloaded: number },
   ): Promise<void> {
-    await this.handle.sql`
+    const rows = await this.handle.sql<{ id: string }[]>`
       update public.report_requests
          set status = ${counts.parsed === counts.loaded ? 'completed' : 'failed'}::public.report_status,
              completed_at = now(), next_poll_at = null,
@@ -624,7 +704,9 @@ export class PostgresWorkerStore implements WorkerStore {
              bytes_downloaded = ${counts.bytesDownloaded},
              error = ${counts.parsed === counts.loaded ? null : `parsed ${counts.parsed}, loaded ${counts.loaded}`}
        where id = ${reportRequestId}
+       returning id
     `;
+    if (rows.length !== 1) throw new Error(`complete report update matched ${rows.length} rows`);
     if (counts.parsed !== counts.loaded) throw new ParsedLoadedMismatch(counts.parsed, counts.loaded);
   }
 
@@ -687,6 +769,42 @@ export class PostgresWorkerStore implements WorkerStore {
       case 'negative': return (await upsertMirrorRows(this.handle, negatives, rows.filter(isType('negative')).map((row) => ({ ...baseMirror(profile, row, syncedAt), campaignId: row.campaignId, adGroupId: row.adGroupId, scope: row.scope, keywordText: row.keywordText, expression: row.expression, matchType: row.matchType })))).upserted;
     }
   }
+}
+
+const REPORT_FACT_TABLE: Readonly<Record<ReportType, string>> = {
+  spCampaigns: 'fact_profile_daily',
+  spTargeting: 'fact_sp_target_daily',
+  spSearchTerm: 'fact_search_term_daily',
+  spPlacement: 'fact_placement_daily',
+  sbCampaigns: 'fact_sb_daily',
+  sdCampaigns: 'fact_sd_daily',
+};
+
+function reportFactTable(reportType: ReportType): string {
+  return REPORT_FACT_TABLE[reportType];
+}
+
+function monthRange(startDate: string, endDate: string): string[] {
+  const start = calendarDate(startDate, 'startDate');
+  const end = calendarDate(endDate, 'endDate');
+  if (start > end) throw new Error('startDate must not be after endDate');
+  const months: string[] = [];
+  let cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
+  const last = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1));
+  while (cursor <= last) {
+    months.push(cursor.toISOString().slice(0, 10));
+    cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 1));
+  }
+  return months;
+}
+
+function calendarDate(value: string, name: string): Date {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error(`${name} must be YYYY-MM-DD`);
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.valueOf()) || date.toISOString().slice(0, 10) !== value) {
+    throw new Error(`${name} must be a real calendar date`);
+  }
+  return date;
 }
 
 /**

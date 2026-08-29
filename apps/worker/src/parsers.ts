@@ -1,6 +1,11 @@
 import { createGunzip } from 'node:zlib';
 import { Readable } from 'node:stream';
-import { parseSpSearchTermReport, parseSpTargetingReport } from '@wizard-ads/ads-api';
+import {
+  parseSpCampaignReport,
+  parseSpPlacementReport,
+  parseSpSearchTermReport,
+  parseSpTargetingReport,
+} from '@wizard-ads/ads-api';
 import type { SkippedReportRow } from '@wizard-ads/ads-api';
 import type {
   NewPlacementFact,
@@ -8,24 +13,17 @@ import type {
   NewSearchTermFact,
   NewSpTargetFact,
 } from '@wizard-ads/db';
-import {
-  Placement,
-  type Placement as PlacementValue,
-  type ReportType,
-} from '@wizard-ads/shared';
+import type { ReportType } from '@wizard-ads/shared';
 import type { AdsProfileContext } from './ads-api.js';
 
 /**
- * How much of a report may be refused before the load is treated as schema
- * drift rather than a handful of odd rows. One percent: Amazon's own reports
- * occasionally carry a row with a dimension it never filled, and losing those
- * silently is acceptable where losing a whole grain is not.
+ * Legacy SB/SD refusal threshold. Sponsored Products replacement is stricter:
+ * one refused source row blocks the complete-date replacement.
  */
 export const SKIP_FAILURE_RATIO = 0.01;
 
 interface CommonRow { date: string; impressions: number; clicks: number; cost: number }
 interface SpCampaignRow extends CommonRow { campaignId: string; purchases7d: number; sales7d: number; unitsSoldClicks7d: number }
-interface PlacementRow extends CommonRow { campaignId: string; placementClassification: string; purchases7d: number; sales7d: number }
 interface CampaignRow extends SpCampaignRow { adGroupId: string | null }
 
 export interface CampaignFactRow {
@@ -92,19 +90,6 @@ export async function gunzipJson(source: AsyncIterable<Uint8Array>): Promise<Dow
   return { value: JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown, bytesDownloaded };
 }
 
-function placement(value: string): PlacementValue {
-  const normalized: Record<string, PlacementValue> = {
-    'Placement Top': 'top_of_search',
-    'Top of Search on-Amazon': 'top_of_search',
-    'Placement Rest Of Search': 'rest_of_search',
-    'Rest of Search on-Amazon': 'rest_of_search',
-    'Placement Product Page': 'product_pages',
-    'Detail Page on-Amazon': 'product_pages',
-    'Off Amazon': 'off_amazon',
-  };
-  return normalized[value] ?? (Placement.safeParse(value).data ?? 'other');
-}
-
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('report row must be an object');
   return value as Record<string, unknown>;
@@ -134,11 +119,6 @@ function parseCommon(value: unknown): [Record<string, unknown>, CommonRow] {
 function parseSpCampaign(value: unknown): SpCampaignRow {
   const [row, commonRow] = parseCommon(value);
   return { ...commonRow, campaignId: stringField(row, 'campaignId') as string, purchases7d: numberField(row, 'purchases7d', true), sales7d: numberField(row, 'sales7d'), unitsSoldClicks7d: numberField(row, 'unitsSoldClicks7d', true) };
-}
-
-function parsePlacement(value: unknown): PlacementRow {
-  const [row, commonRow] = parseCommon(value);
-  return { ...commonRow, campaignId: stringField(row, 'campaignId') as string, placementClassification: stringField(row, 'placementClassification') as string, purchases7d: numberField(row, 'purchases7d', true), sales7d: numberField(row, 'sales7d') };
 }
 
 function parseCampaign(value: unknown): CampaignRow {
@@ -189,27 +169,15 @@ export function parseReportRows(
         rows: result.rows.map((row): NewSearchTermFact => ({ ...row, ...base })),
       };
     }
-    case 'spPlacement':
+    case 'spPlacement': {
+      const result = parseSpPlacementReport(raw);
       return {
-        sourceRows: raw.length,
-        skipped: [],
+        sourceRows: result.input,
+        skipped: result.skipped,
         kind: 'placement',
-        rows: raw.map((item) => {
-          const row = parsePlacement(item);
-          return {
-            ...base,
-            date: row.date,
-            adProduct: 'SP' as const,
-            campaignId: row.campaignId,
-            placement: placement(row.placementClassification),
-            impressions: row.impressions,
-            clicks: row.clicks,
-            cost: row.cost,
-            purchases7d: row.purchases7d,
-            sales7d: row.sales7d,
-          };
-        }),
+        rows: result.rows.map((row): NewPlacementFact => ({ ...row, ...base })),
       };
+    }
     case 'spCampaigns': {
       // The campaign report arrives one row per campaign per day, and
       // `fact_profile_daily` is one row per profile per day. Summing here is
@@ -219,8 +187,8 @@ export function parseReportRows(
       // is supposed to hold.
       const byDate = new Map<string, Required<Pick<NewProfileFact,
         'impressions' | 'clicks' | 'cost' | 'purchases7d' | 'sales7d' | 'unitsSold7d'>>>();
-      for (const item of raw) {
-        const row = parseSpCampaign(item);
+      const result = parseSpCampaignReport(raw);
+      for (const row of result.rows) {
         const running = byDate.get(row.date);
         if (running) {
           running.impressions += row.impressions;
@@ -228,7 +196,7 @@ export function parseReportRows(
           running.cost += row.cost;
           running.purchases7d += row.purchases7d;
           running.sales7d += row.sales7d;
-          running.unitsSold7d += row.unitsSoldClicks7d;
+          running.unitsSold7d += row.unitsSold7d;
           continue;
         }
         byDate.set(row.date, {
@@ -237,7 +205,7 @@ export function parseReportRows(
           cost: row.cost,
           purchases7d: row.purchases7d,
           sales7d: row.sales7d,
-          unitsSold7d: row.unitsSoldClicks7d,
+          unitsSold7d: row.unitsSold7d,
         });
       }
       const rows = [...byDate.entries()].map(([date, totals]): NewProfileFact => ({
@@ -247,7 +215,7 @@ export function parseReportRows(
         provisional: false,
         ...totals,
       }));
-      return { sourceRows: raw.length, skipped: [], kind: 'profile', rows };
+      return { sourceRows: result.input, skipped: result.skipped, kind: 'profile', rows };
     }
     case 'sbCampaigns':
     case 'sdCampaigns': {

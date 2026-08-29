@@ -24,6 +24,8 @@ import {
   enqueueDueSchedules,
   revokeIntegrationSecret,
   storeIntegrationSecret,
+  type ReportDatePromotionResult,
+  type StagedReportDate,
 } from '@wizard-ads/db';
 import { AdsApiHttpError, MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
 import type { DataDiveQuota, RankRadarData, RankRadarList } from '@wizard-ads/datadive-api';
@@ -42,7 +44,6 @@ import type {
 import { PostgresBidSeriesStore } from './bid-series.js';
 import { createCrosscheckIngest } from './crosscheck.js';
 import { createDataDiveRankSyncHandler, type DataDiveRankClient } from './datadive.js';
-import type { ParsedFactBatch } from './parsers.js';
 import { RegionTokenBuckets } from './region-token-buckets.js';
 import {
   PostgresRecommendationRunStore,
@@ -633,11 +634,32 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     expect({ count: Number(restated?.n), cost: Number(restated?.cost) }).toEqual({ count: 1, cost: 30 });
   }, 60_000);
 
-  it('fails a fetch whose parsed and loaded counts differ', async () => {
+  it('fails closed when promotion write counts differ from the staged date', async () => {
     const api = new FakeAdsApi();
     api.reportRows = [reportRow(today, 'c-1', 5)];
     const store = new class extends PostgresWorkerStore {
-      override async loadFacts(_batch: ParsedFactBatch): Promise<number> { return 0; }
+      override async promoteReportDate(input: StagedReportDate): Promise<ReportDatePromotionResult> {
+        return {
+          status: 'promoted',
+          deletedRows: 0,
+          insertedRows: 0,
+          observationRows: 0,
+          watermark: {
+            profileId: input.profileId,
+            reportType: input.reportType,
+            date: input.reportDate,
+            source: input.source,
+            reportRequestId: input.reportRequestId,
+            requestedAt: input.requestedAt.toISOString(),
+            promotedAt: input.observedAt.toISOString(),
+            sourceRows: input.sourceRows,
+            parsedRows: input.parsedRows,
+            refusedRows: input.refusedRows,
+            promotedRows: input.promotedRows,
+            canonicalRows: 0,
+          },
+        };
+      }
     }(database);
     const [report] = await database.sql<{ id: string }[]>`
       insert into public.report_requests
@@ -657,8 +679,8 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     const [ledger] = await database.sql<{ counts_match: boolean; status: string }[]>`
       select counts_match, status from public.report_requests where id = ${reportId}
     `;
-    expect(job?.status).toBe('queued');
-    expect(job?.last_error).toContain('parsed 1 rows but loaded 0');
+    expect(job?.status).toBe('dead');
+    expect(job?.last_error).toContain('accepted promotion counts do not match the staged date');
     expect(ledger).toEqual({ counts_match: false, status: 'failed' });
   });
 
