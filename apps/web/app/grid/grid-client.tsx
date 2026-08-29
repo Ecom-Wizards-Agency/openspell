@@ -330,6 +330,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const available = useMemo(() => columnsFor(props.entity), [props.entity]);
   const [view, setView] = useState<SavedView>(() => defaultView(props.entity, props.campaignId));
   const [saved, setSaved] = useState<readonly SavedView[]>([]);
+  const [viewReady, setViewReady] = useState(false);
   const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
   const [store] = useState(() =>
     typeof window === 'undefined' ? null : new LocalViewStore(window.localStorage),
@@ -338,7 +339,11 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   // Restore the implicit layout AdLabs remembers per user, and list the named
   // views we have that they do not.
   useEffect(() => {
-    if (store === null) return;
+    setViewReady(false);
+    if (store === null) {
+      setViewReady(true);
+      return;
+    }
     let cancelled = false;
     void (async () => {
       const [layout, list] = await Promise.all([store.lastLayout(props.entity), store.list(props.entity)]);
@@ -349,6 +354,11 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       }
       else setView(defaultView(props.entity, null));
       setSaved(list);
+      // This is deliberately later than hydration alone. An interaction that
+      // lands after React attaches but before the saved layout resolves can be
+      // overwritten by the restoration above just as surely as a pre-hydration
+      // interaction can be lost. The toolbar opens only once both are done.
+      setViewReady(true);
     })();
     return () => {
       cancelled = true;
@@ -456,31 +466,43 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     // WP-06 ships without an inline palette (inputs, selects, toolbar buttons).
     // The grid's own cells need nothing here: `packages/ui` writes
     // `var(--wa-*, <literal>)` and reads the tokens directly.
-    <div data-testid="grid-data-ready" style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(3) }}>
-      <GridToolbar
-        entity={props.entity}
-        onEntityChange={(entity) => {
-          const params = new URLSearchParams({
-            profile: props.profileId,
-            entity,
-            from: props.period.start,
-            to: props.period.end,
-          });
-          router.push(`/grid?${params.toString()}`);
-        }}
-        available={available}
-        visible={view.columns}
-        onVisibleChange={(columns) => update({ columns })}
-        filter={view.filter}
-        onFilterChange={(filter) => update({ filter })}
-        groupBy={model.groupBy}
-        onGroupByChange={(groupBy) => update({ groupBy })}
-        model={model}
-        onExport={handleExport}
-        views={saved}
-        onApplyView={(applied) => setView(withValidGrouping(applied, available))}
-        onSaveView={handleSaveView}
-      />
+    <div
+      data-testid="grid-data-ready"
+      data-ready={viewReady ? 'true' : 'false'}
+      aria-busy={!viewReady}
+      style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(3) }}
+    >
+      <fieldset
+        disabled={!viewReady}
+        data-testid="grid-toolbar-readiness"
+        style={{ border: 0, margin: 0, minWidth: 0, padding: 0 }}
+      >
+        <legend className="wa-sr-only">Grid view controls</legend>
+        <GridToolbar
+          entity={props.entity}
+          onEntityChange={(entity) => {
+            const params = new URLSearchParams({
+              profile: props.profileId,
+              entity,
+              from: props.period.start,
+              to: props.period.end,
+            });
+            router.push(`/grid?${params.toString()}`);
+          }}
+          available={available}
+          visible={view.columns}
+          onVisibleChange={(columns) => update({ columns })}
+          filter={view.filter}
+          onFilterChange={(filter) => update({ filter })}
+          groupBy={model.groupBy}
+          onGroupByChange={(groupBy) => update({ groupBy })}
+          model={model}
+          onExport={handleExport}
+          views={saved}
+          onApplyView={(applied) => setView(withValidGrouping(applied, available))}
+          onSaveView={handleSaveView}
+        />
+      </fieldset>
 
       {experimentHref === null ? null : (
         <div className="wa-row" style={{ justifyContent: 'flex-end' }}>

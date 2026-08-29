@@ -8,6 +8,10 @@ test('grid adds, reorders, and removes truthful nested grouping levels', async (
   await page.goto('/grid?entity=campaigns');
   await expect(page.getByRole('heading', { name: 'Campaigns', exact: true })).toBeVisible();
   await expectDateRangePresets(page);
+  // Server-rendered controls are visible before React owns them. The grid only
+  // becomes ready after hydration and saved-layout restoration, either of
+  // which could otherwise discard an early grouping change.
+  await expect(page.getByTestId('grid-workspace')).toHaveAttribute('data-ready', 'true');
 
   const addLevel = page.getByLabel('Add grouping level');
   await addLevel.selectOption({ label: 'State' });

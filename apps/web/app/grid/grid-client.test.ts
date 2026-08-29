@@ -1,7 +1,9 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { columnsFor } from '@wizard-ads/ui';
 import type { SavedView } from '@wizard-ads/ui';
-import { withValidGrouping } from './grid-client';
+import { GridWorkspace, withValidGrouping } from './grid-client';
 
 function view(groupBy: readonly string[]): SavedView {
   return {
@@ -20,6 +22,33 @@ function view(groupBy: readonly string[]): SavedView {
 }
 
 describe('grid saved-view grouping', () => {
+  it('renders the toolbar disabled until the saved layout is restored', () => {
+    const markup = renderToStaticMarkup(
+      createElement(GridWorkspace, {
+        entity: 'campaigns',
+        rows: [],
+        currencyCode: 'USD',
+        profileId: 'synthetic-profile',
+        period: { start: '2026-08-01', end: '2026-08-29' },
+        comparisonPeriod: { start: '2026-07-03', end: '2026-07-31' },
+        freshness: {
+          tone: 'muted',
+          headline: 'Synthetic report state',
+          details: [],
+          staleTypes: [],
+          lossyTypes: [],
+          coversThrough: null,
+        },
+        campaignId: null,
+      }),
+    );
+
+    expect(markup).toContain('data-testid="grid-workspace"');
+    expect(markup).toContain('data-ready="false"');
+    expect(markup).toContain('data-testid="grid-toolbar-readiness"');
+    expect(markup).toContain('disabled=""');
+  });
+
   it('preserves three valid levels in their saved order', () => {
     const normalized = withValidGrouping(
       view(['campaign_name', 'ad_group_name', 'match_type']),
