@@ -19,13 +19,13 @@ export function instructionsDocument(orgSlug: string, profileCount: number): str
     .map(([name, descriptor]) => `- \`${name}\` = ${descriptor.description}`)
     .join('\n');
 
-  return `# wizard-ads MCP — read-only
+  return `# OpenSpell MCP — read-only
 
 You are connected to **${orgSlug}** with a read-only key covering ${profileCount} profile${
     profileCount === 1 ? '' : 's'
   }.
 Every call you make is written to the audit log with its parameters. Nothing you can call
-changes an Amazon account or wizard-ads product data. The production catalog contains
+changes an Amazon account or OpenSpell product data. The production catalog contains
 analytical reads only.
 
 ## The pipeline
@@ -98,7 +98,7 @@ Three keys are not columns:
 ## Per-profile context
 
 Read \`wizardads://profiles/{profile_id}\` for a profile's settings, the doctrine document's
-shape, its entity counts, its freshness, and the changes somebody made outside wizard-ads
+shape, its entity counts, its freshness, and the changes somebody made outside OpenSpell
 recently. It is the context you need before proposing anything, and it arrives with the data
 rather than as a separate step you have to remember.
 `;

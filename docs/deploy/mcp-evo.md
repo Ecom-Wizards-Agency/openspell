@@ -107,10 +107,10 @@ HTTP MCP servers. With `WIZARD_ADS_MCP_TOKEN` already supplied by the operator's
 secret/session manager:
 
 ```bash
-codex mcp add wizard-ads \
+codex mcp add openspell \
   --url https://mcp.ecomwizards.agency/mcp \
   --bearer-token-env-var WIZARD_ADS_MCP_TOKEN
-codex mcp get wizard-ads
+codex mcp get openspell
 ```
 
 This stores the environment variable name, not its value. The official OpenAI
@@ -125,7 +125,7 @@ private or approved project MCP configuration; it contains only a reference:
 ```json
 {
   "mcpServers": {
-    "wizard-ads": {
+    "openspell": {
       "type": "http",
       "url": "https://mcp.ecomwizards.agency/mcp",
       "headers": {
@@ -136,7 +136,7 @@ private or approved project MCP configuration; it contains only a reference:
 }
 ```
 
-Use `claude mcp get wizard-ads` and `/mcp` to confirm the connection. Claude
+Use `claude mcp get openspell` and `/mcp` to confirm the connection. Claude
 Code's official MCP documentation describes environment expansion in `headers`:
 https://code.claude.com/docs/en/mcp
 

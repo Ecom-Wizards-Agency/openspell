@@ -1,7 +1,7 @@
-# wizard-ads MCP
+# OpenSpell MCP
 
 The production MCP endpoint is a stateless, analytical-read-only view of one
-wizard-ads organization. It accepts Streamable HTTP at `POST /mcp`; `GET
+OpenSpell organization. It accepts Streamable HTTP at `POST /mcp`; `GET
 /healthz` reports database readiness plus a sanitized Git revision.
 
 ## Usage
@@ -17,7 +17,7 @@ The production catalog contains only these analytical tools:
 - `get_recommendations`, `get_flags`, `get_pacing`
 - `list_experiments`, `get_experiment`
 
-Amazon-write stubs and wizard-ads mutation tools are deliberately absent from
+Amazon-write stubs and OpenSpell mutation tools are deliberately absent from
 discovery. There is no environment switch that can add them accidentally.
 
 ## Shape
@@ -51,8 +51,8 @@ Three shapes were considered:
   add mutation tools.
 
 We accept that mutation-tool protocol sketches are no longer discoverable in
-exchange for making the deployed capability claim exact. Future write support
-must enter through a separately reviewed endpoint after the global write gate.
+exchange for making the deployed capability claim exact. Amazon changes remain
+an operator-approved web-and-worker workflow; MCP cannot approve itself.
 
 Deployment and client configuration are in
 [`docs/deploy/mcp-evo.md`](../../docs/deploy/mcp-evo.md).
