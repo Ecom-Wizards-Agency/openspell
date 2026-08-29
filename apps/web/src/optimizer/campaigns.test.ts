@@ -28,7 +28,7 @@ describe('optimizer campaign workspace', () => {
     const groups = [{
       group: { id: 'group-one', orgId: 'org', profileId: 'profile', name: 'Rank set', role: 'rank' },
       campaignIds: ['one'],
-      nextRunAt: null,
+      nextReviewAt: null,
       lastRun: { runId: 'run', status: 'succeeded', proposalsCount: 1, createdAt: '2026-08-28T10:00:00.000Z', finishedAt: null },
     }] as OptimizationGroupRecord[];
     const proposals = [{ campaignId: 'one' }, { campaignId: 'one' }, { campaignId: null }] as ProposalView[];

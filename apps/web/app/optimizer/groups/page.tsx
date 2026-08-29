@@ -55,7 +55,7 @@ export default async function OptimizationGroupsPage({ searchParams }: PageProps
     <main style={page}>
       <PageHeader
         title="Optimization Groups"
-        subtitle={`${profile.label} · one policy and evidence cadence per campaign`}
+        subtitle={`${profile.label} · review schedules use ${profile.timezone} local time`}
         actions={<a className="wa-btn wa-btn--sm" href={`/optimizer?profile=${profile.id}`}>Open optimizer →</a>}
       />
       <OptimizationGroupsManager

@@ -24,11 +24,13 @@ const workspace: OptimizationWorkspace = {
       placementDecreaseCap: 0.11,
       exclusions: [],
       cadence: '7 days',
+      reviewSchedule: { weekdays: ['monday', 'thursday'], localTime: '09:30' },
+      scheduleMigrationState: 'native',
       prioritization: 'growth_first',
       enabled: true,
     },
     campaignIds: ['campaign-a'],
-    nextRunAt: '2026-09-01T00:00:00.000Z',
+    nextReviewAt: '2026-09-01T00:00:00.000Z',
     lastRun: null,
   }],
   campaigns: [
@@ -49,6 +51,7 @@ const workspace: OptimizationWorkspace = {
       groupId: null,
     },
   ],
+  profileTimezone: 'Europe/Berlin',
   assignedCampaigns: 1,
   unassignedCampaigns: 1,
 };
@@ -82,10 +85,12 @@ describe('optimization groups manager', () => {
     expect(markup).toContain('Target ACOS 23.0%');
     expect(markup).toContain('Assigned campaign');
     expect(markup).toContain('Unassigned campaign');
-    expect(markup).toContain('OpenSpell settings only');
-    expect(markup).toContain('does not update Amazon');
-    expect(markup).toContain('Run group preview');
-    expect(markup).toContain('Review every');
+    expect(markup).toContain('Neither action updates Amazon');
+    expect(markup).toContain('Run preview now');
+    expect(markup).toContain('Review schedule');
+    expect(markup).toContain('Mon, Thu at 09:30');
+    expect(markup).toContain('Europe/Berlin');
+    expect(markup).toContain('separate, explicitly enabled apply cadence');
     expect(markup).toContain('Select all');
     expect(markup).toContain('Select all applies only to campaigns matching the current search filter');
   });
@@ -100,6 +105,35 @@ describe('optimization groups manager', () => {
     expect(markup).not.toContain('New group');
     expect(markup).toContain('disabled=""');
     expect(markup).toContain('Save group');
+  });
+
+  it('keeps Run now available when scheduled previews are disabled', () => {
+    const disabled: OptimizationWorkspace = {
+      ...workspace,
+      groups: workspace.groups.map((record) => ({
+        ...record,
+        group: { ...record.group, enabled: false },
+        nextReviewAt: null,
+      })),
+    };
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    mounted.push(root);
+    act(() => {
+      root.render(createElement(OptimizationGroupsManager, {
+        profileId: disabled.groups[0]?.group.profileId ?? '',
+        initial: disabled,
+        canManage: true,
+      }));
+    });
+
+    const runNow = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === 'Run preview now');
+    expect(runNow).toBeDefined();
+    expect(runNow?.disabled).toBe(false);
+    expect(host.querySelectorAll('.wa-weekday-chip')).toHaveLength(7);
+    expect(host.querySelector('[data-testid="review-timezone"]')?.textContent).toContain('Europe/Berlin');
   });
 
   it('selects and clears only campaigns matching the active filter', () => {

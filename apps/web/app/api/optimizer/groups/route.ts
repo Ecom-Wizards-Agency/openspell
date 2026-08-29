@@ -6,6 +6,7 @@ import {
 import {
   OptimizationGroupRole,
   OptimizationPrioritization,
+  OptimizationReviewSchedule,
 } from '@wizard-ads/shared';
 import { openWebDatabase, requestActor, errorResponse } from '../../../../src/server/request-context';
 import { requireCapability, requireOrgRole } from '../../../../src/server/org-role';
@@ -54,7 +55,10 @@ export async function POST(request: Request): Promise<Response> {
         'placementDecreaseCapPercent',
       ),
       exclusions: stringArray(body['exclusions'], 'exclusions'),
-      cadence: `${positiveInteger(body['cadenceDays'], 'cadenceDays')} days`,
+      reviewSchedule: OptimizationReviewSchedule.parse({
+        weekdays: body['reviewWeekdays'],
+        localTime: body['reviewLocalTime'],
+      }),
       prioritization: OptimizationPrioritization.parse(body['prioritization']),
       enabled: body['enabled'] !== false,
     };
@@ -104,12 +108,6 @@ function optionalNonnegative(value: unknown, field: string): number | null {
   if (value === null || value === undefined || value === '') return null;
   const parsed = finiteNumber(value, field);
   if (parsed < 0) throw new Error(`${field} must be nonnegative`);
-  return parsed;
-}
-
-function positiveInteger(value: unknown, field: string): number {
-  const parsed = finiteNumber(value, field);
-  if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${field} must be a positive integer`);
   return parsed;
 }
 
