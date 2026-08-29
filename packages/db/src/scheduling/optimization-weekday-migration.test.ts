@@ -8,8 +8,14 @@ import {
 } from '../testing/harness.js';
 
 const available = await databaseAvailable();
+const migrationFile = [
+  '20260830100000',
+  'optimization',
+  'weekday',
+  'schedule.sql',
+].join('_');
 const MIGRATION = fileURLToPath(new URL(
-  '../../../../supabase/migrations/20260830100000_optimization_weekday_schedule.sql',
+  `../../../../supabase/migrations/${migrationFile}`,
   import.meta.url,
 ));
 
