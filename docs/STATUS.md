@@ -1,8 +1,8 @@
-# wizard-ads — program status board
+# OpenSpell — program status board
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated`.
 
-Reconciled 2026-08-29 against `origin/main` at `fc254bc`. Here, **merged** means the implementation is
+Reconciled 2026-08-29 against `origin/main` at `7fbdb23`. Here, **merged** means the implementation is
 reachable from the recorded main revision. It does not by itself mean live-data verified,
 deployed, or accepted by an operator. Full original evidence and source pointers are in
 `docs/workpackages/WP-52-reconciliation.md`; the post-release capability design is in
@@ -26,10 +26,10 @@ deployed, or accepted by an operator. Full original evidence and source pointers
 | 09 | MCP server | merged | read tools, scoped keys and audit log; deployment not implied |
 | 10 | Crosscheck harness | merged | ingest, verdict and exit-report tooling |
 | 11 | AdLabs recon | merged | tagged specs and 13 redacted screenshots under `tools/recon` |
-| 12 | Staged Amazon apply | gated | opens only after the v1 parity gate |
+| 12 | Staged Amazon apply | superseded | replaced by the WP-93 guarded write-gateway contract; runtime work remains open |
 | 13 | Headless analyst | merged | deterministic read-only analysis surface |
 | 14a | Campaign creation engine | merged | pure generator and export writer |
-| 14b | Campaign creation via API | gated | gated behind live connection and write approval |
+| 14b | Campaign creation via API | planned | authorized direction under WP-93; guarded runtime and product support remain open |
 | 15 | Feedback and roadmap | merged | intake, voting and roadmap data model |
 | 16 | AMC lane | gated | opens when the required account and storage prerequisites exist |
 | 17 | AI skills library | merged | four read-only MCP-connected skills and lint contract |
@@ -39,7 +39,7 @@ deployed, or accepted by an operator. Full original evidence and source pointers
 | 22 | Worker ↔ Ads API integration | merged | real client adapter and queue-backoff mapping; merge `085bc91` |
 | 23 | Cron sync and profile UX | merged | scheduled queue pump and profile scheduling controls |
 | 24 | AdLabs-fidelity UI | merged | dense operator surfaces derived from recon and an operator recording |
-| 25 | Ads API write endpoints | merged | client capability only; global product write gate still applies |
+| 25 | Ads API write endpoints | merged | client capability only; WP-93 still needs the immutable approval and worker execution gateway |
 | 26 | Bidding corridor engine | merged | pure bid-boundary calculations |
 | 27 | Suggested bids and SB media | merged | read-side suggested bids and SB media/creative client surfaces |
 | 28 | Bid corridor series and charts | merged | daily corridor observations and first chart surface |
@@ -111,15 +111,17 @@ implementation brief in `docs/workpackages/`.
 | 83 | SB Video contract probe | merged; live gated | non-persisting readers and count-only reconciliation prove documented shapes; no authorized live probe has run |
 | 84 | Transactional SP report promotion | merged; live gated | complete-date replacement is wired for four SP report grains; live worker count review remains open |
 | 85 | Observed SB Video ingestion | merged; migration and deployment gated | current-snapshot ad/version-to-Asset-ID mapping and same-day fact gates are code-complete; hosted application and live parity remain open |
+| 93 | Guarded Amazon write gateway policy | review | manual API writes and active-cadence automation are authorized as a product direction; no runtime write path is live yet |
 
 ## Milestone gates
 
 - **v0 close:** OAuth and profile discovery; entity and campaign-fact sync on pilot profiles;
   minimal grid; generated goldens; recon specs. Current live satisfaction was not rechecked by
   WP-52.
-- **v1 exit (gates WP-12):** 14 consecutive verified crosscheck days on at least five pilot
+- **v1 evidence criterion:** 14 consecutive verified crosscheck days on at least five pilot
   profiles; campaign-grain tolerance for at least 95% of spending campaigns over a week; explained
-  optimizer parity spot-check. No current evidence closes this gate.
+  optimizer parity spot-check. No current evidence closes this criterion; it gates scaled
+  automation, while individual manually approved batches use the stricter WP-93 action gates.
 
 ## Dated live and deployed evidence
 

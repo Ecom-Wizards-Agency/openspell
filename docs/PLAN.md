@@ -1,4 +1,4 @@
-# wizard-ads — In-house Amazon Advertising Tool (AdLabs clone + differentiators)
+# OpenSpell — In-house Amazon Advertising Operator
 
 ## Context
 
@@ -12,6 +12,9 @@ authorization, an MCP server, and a daily headless-AI analyst.
 working parallel work packages. Every work package gets a **handover brief as an md file** in
 `docs/workpackages/WP-XX-<name>.md` — Victor kicks off an implementer with a one-line prompt
 ("read docs/workpackages/WP-05 and implement it"), never a long prompt.
+
+The public repository and package identifiers remain `wizard-ads` and `@wizard-ads/*` until a
+separate infrastructure migration is planned. User-facing product copy uses **OpenSpell**.
 
 **Key facts established during research (2026-08-13):**
 
@@ -54,10 +57,10 @@ working parallel work packages. Every work package gets a **handover brief as an
 | Decision | Choice |
 |---|---|
 | Location | `~/os/wizard-ads` (sixth ~/os project; register in root `AGENTS.md` + `company-ai-skills/docs/dependencies.md`) |
-| Name | **wizard-ads** |
+| Name | **OpenSpell**; repository and package identifiers remain stable initially |
 | Tenancy | Internal-first, SaaS-ready (multi-tenant schema/auth day one; no signup/billing in v1) |
 | Stack | Next.js (Vercel) + Supabase (Postgres/Auth/pg_cron) + long-lived job worker; MCP on the always-on operator host behind Cloudflare Tunnel; **all TypeScript** monorepo |
-| v1 posture | Read-only: sync, reporting, analytics, recommendations. Writes only after AdLabs crosscheck passes |
+| Apply posture | Preview by default; exact operator-approved batches may write through the worker. Unattended writes require an explicitly enabled cadence |
 | AdLabs recon | Yes — logged-in Chrome UI walkthrough + MCP surface → specs (Victor logs in) |
 | Costs | Supabase free → Pro only when measured storage/compute requires it; MCP uses the existing operator host and Cloudflare Zero Trust free tier. Any separate job-worker hosting is approved from measured need. |
 | Handover | One md brief per work package in `docs/workpackages/`; agents launched with one-liners |
@@ -161,7 +164,7 @@ Supabase Postgres; all tenant tables carry `org_id` + RLS; worker uses service r
 - **Ramp deliberately**: pilot profiles daily, long tail weekly/on-demand; 211×5 reports at
   once is how you find the invisible quota (429-only, no headers).
 
-## v1 module scope (read-only)
+## Operator-managed module scope
 
 1. Auth + orgs (Supabase Auth, seeded Ecom Wizards org, roles; no signup).
 2. Connections & profiles (OAuth, roster, per-profile sync_enabled + targets editable).
@@ -175,18 +178,20 @@ Supabase Postgres; all tenant tables carry `org_id` + RLS; worker uses service r
    (RPC × Target ACOS, four reasons, confidence hierarchy, ceilings incl. 50% budget cap for
    SD, caps as clamps, placement adj computed separately on ≥30d windows; Rank/SKW never cut on
    ACOS alone; goal lenses honored). Output = proposals with full inputs provenance.
-   **v1 apply path = export, not API write**: accepted proposals export as (a) Bulk Operations
-   XLSX and (b) rows JSON byte-compatible with `batches.py`, so the existing `/ppc-manage`
-   staged-apply flow is the executor — "v1 proposes, the operator applies", literally.
+   The apply path supports both export and an immutable worker-executed Advertising API batch.
+   API application requires an exact preview, separately recorded approval, profile write
+   enablement, idempotent row identities, per-row response counts, and post-write resynchronization.
 7. N-gram explorer (uni/bi/tri over search terms; negative candidates as proposals).
 8. Nested tags (also the client-grouping mechanism for 211 profiles) + tag-scoped views.
 9. Goto links (`/go/[token]` → route + filter state).
-10. MCP server read-only (ships inside v1 — lets Claude agents QA the data layer during
-    crosscheck; modeled on the AdLabs MCP surface; every call → audit_log).
+10. MCP server with analytical reads plus approval-gated batch triggering. MCP may draft a batch
+    or trigger one approved elsewhere; it cannot approve its own mutation, create a cadence, or
+    call Amazon directly. Every call is audited.
 11. Crosscheck harness: nightly per-profile facts vs AdLabs MCP `download_data` exports,
     ±7% tolerance (crosscheck.py port), same-day-provisional exclusion, results dashboard.
 
-**v1 exit criterion (gates all writes):** on ≥5 pilot profiles across NA+EU: (a) 14 consecutive
+**v1 evidence criterion (gates scaled automation, not explicitly approved manual batches):** on
+≥5 pilot profiles across NA+EU: (a) 14 consecutive
 days of `verified` profile-grain verdicts, (b) campaign-grain spend/sales within ±7% for ≥95% of
 spending campaigns over a week, (c) one-week optimizer parity spot-check — our proposals match
 White Box math exactly; divergence from AdLabs preview only where their trade-secret weighting
@@ -198,12 +203,13 @@ The sequence below is the original architecture plan, not a current status board
 labels and duration estimates are retained as history. `docs/STATUS.md` is authoritative for what
 is merged, deployed, live-gated or still open.
 
-As of 2026-08-29, the read-only parts of several originally v2 lanes have been pulled forward:
+As of 2026-08-29, the analytical parts of several originally v2 lanes have been pulled forward:
 Asset-ID creative storage and its operator surface, weekly SQP/query intelligence, Marketing
-Stream/dayparting storage and UI, and stock-aware strategy context now exist without enabling an
-Amazon write. Their provider authentication, subscription and live parity gates remain explicit.
-The v1 exit criterion above still gates direct apply, automatic rollback, automatic dayparting and
-MCP mutation tools.
+Stream/dayparting storage and UI, and stock-aware strategy context now exist. Their provider
+authentication, subscription and live parity gates remain explicit. Direct apply is now an
+approved product direction under `AGENTS.md`, but it is not implemented or live merely because
+the policy changed. Scaled automation, unattended dayparting, and MCP mutation still require the
+evidence criterion plus their action-specific gates.
 
 - **v0 (~2 wks)** — skeleton proves the loop: scaffold + frozen contracts, ~/os registration,
   Supabase project + migrations + RLS, OAuth live with 211 profiles listed, entity sync +
@@ -211,10 +217,11 @@ MCP mutation tools.
   generator producing Python goldens. **AdLabs recon runs in parallel during v0** (feeds UI
   specs). Supabase Pro decision at v0 close.
 - **v1 (~6 wks after v0)** — everything above; exit = crosscheck criterion.
-- **v1.x (gated on v1 exit)** — staged-apply write engine (batches.py port: preview → approve →
+- **v1.x (active implementation lane)** — staged-apply write engine (batches.py port: preview → approve →
   apply via Ads API, snapshot/revert/cooldown, scoring) · harvesting via campaign maps incl.
-  destination auto-creation (campaign_model.py port) · N-gram → negatives push · MCP write
-  tools (every write = an apply_batch, reversible) · **headless analyst** (Claude Agent SDK
+  destination auto-creation (campaign_model.py port) · N-gram → negatives push · approval-gated
+  MCP batch triggers (every mutation = an audited apply batch; only legal inverse changes are
+  restorable) · **headless analyst** (Claude Agent SDK
   scheduled run, reads via MCP only, writes `insights` + Slack digest via the guarded Wizards
   AI helper; per-profile Context-Manager-equivalent doc as MCP resource; optional amazon-agent
   context on the operator-machine variant) · white-label shareable dashboards.
@@ -242,10 +249,10 @@ files to read, interfaces, acceptance checks) — written by Fable in v0 step 2.
 | 6 | Data grid + dashboard UI | **Codex** | 50k-row grid smooth; group-by ACOS verified vs SQL; visual review vs recon screenshots |
 | 7 | Recommendations/N-gram UI + export bridge | **Codex** | Exported rows JSON passes `batches.py validate`; XLSX opens in campaign-builder update flow unmodified |
 | 8 | Tags + goto links | **Codex** | Tag → filter grid+dashboard; goto round-trips filter state; expired token 404s |
-| 9 | MCP server (read-only) | **Opus** | Claude session answers "top 10 wasted-spend targets last week" correctly vs SQL; calls in audit_log |
+| 9 | MCP analytical server | **Opus** | Claude session answers "top 10 wasted-spend targets last week" correctly vs SQL; calls in audit_log |
 | 10 | Crosscheck harness + exit-report generator | **Opus** | Corrupted fixture → `mismatch`; live pilot run produces verdict table matching AdLabs UI |
 | 11 | AdLabs recon (Chrome walkthrough, Victor logs in) | **Opus** + operator | Spec per screen w/ screenshots; coverage checked vs AdLabs nav map |
-| 12 | Staged-apply write engine (v1.x) | **Opus** | Cooldown blocks; revert restores exact old values; over-cap delta rejected |
+| 12 | Guarded Advertising API write engine (v1.x) | **Opus** | Exact approval, idempotency and conflict gates hold; restore verifies the expected old value; over-cap delta is refused |
 | 13 | Headless analyst (v1.x) | **Opus** | Daily insight with correct figures; audit_log proves zero write calls |
 
 Day-1 parallel set after WP-0 (~2 days): WP-1, 2, 3, 4, 5, 11 simultaneously — six agents, no
