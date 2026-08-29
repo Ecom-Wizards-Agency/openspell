@@ -71,7 +71,7 @@ describe.skipIf(!available)('recommendation observation reconciler + Postgres', 
          source, apply_batch_id, apply_row_id, observed_at)
       values (${orgId}, ${profileId}, 'keyword', 'kw-1', 'bid', '0.90'::jsonb,
               '1.01'::jsonb, 'sync', ${seeded.batchId}, ${seeded.applyRowId},
-              ${`${dates.post1}T01:00:00Z`})
+              ${`${dates.pre2}T01:00:00Z`})
     `;
     await upsertCoverage(dates.post1);
 
@@ -122,7 +122,7 @@ describe.skipIf(!available)('recommendation observation reconciler + Postgres', 
          source, apply_batch_id, apply_row_id, observed_at)
       values (${orgId}, ${profileId}, 'keyword', 'kw-1', 'bid', '0.90'::jsonb,
               '1.01'::jsonb, 'sync', ${seeded.batchId}, ${seeded.applyRowId},
-              ${`${dates.post1}T01:00:00Z`})
+              ${`${dates.pre2}T01:00:00Z`})
     `;
     await insertFact(dates.pre1, 4);
     await insertFact(dates.pre2, 6);
@@ -198,7 +198,7 @@ describe.skipIf(!available)('recommendation observation reconciler + Postgres', 
         (org_id, profile_id, tag, opt_group, lever, note, status, exported_at,
          artifact_sha256, exported_proposals, reversible_rows, unsupported_rows)
       values (${orgId}, ${profileId}, 'synthetic-observer', 'profit', 'bid', 'synthetic',
-              'staged', ${`${dates.post1}T00:00:00Z`}, ${'a'.repeat(64)}, 1, 1, 0)
+              'staged', ${`${dates.pre2}T00:00:00Z`}, ${'a'.repeat(64)}, 1, 1, 0)
       returning id
     `;
     const batchId = batch?.id ?? '';

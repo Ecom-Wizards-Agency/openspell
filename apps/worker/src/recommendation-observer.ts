@@ -15,6 +15,7 @@ interface CandidateRow {
   recommendation_id: string;
   org_id: string;
   profile_id: string;
+  profile_timezone: string;
   group_id: string | null;
   group_role: string | null;
   group_snapshot: unknown;
@@ -257,7 +258,19 @@ function prepareCandidate(candidate: CandidateRow): PreparedCandidate | { ok: fa
   if (candidate.campaign_id === null || candidate.ad_group_id === null) return { ok: false, reason: 'missing_fact_grain' };
 
   const synchronizedAt = candidate.synchronized_at === null ? null : toDate(candidate.synchronized_at).toISOString();
-  const start = (synchronizedAt ?? toDate(candidate.exported_at).toISOString()).slice(0, 10) as IsoDate;
+  let anchorDate: IsoDate;
+  try {
+    anchorDate = nextCompleteProfileDate(
+      synchronizedAt ?? toDate(candidate.exported_at).toISOString(),
+      candidate.profile_timezone,
+    );
+  } catch {
+    return { ok: false, reason: 'invalid_profile_timezone' };
+  }
+  // A synchronization timestamp can occur after the day's traffic has already
+  // accumulated. Start on the next complete profile-local day so post-change
+  // volume never mixes pre- and post-change auctions.
+  const start = anchorDate;
   const end = addDays(start, candidate.lookback_days - 1);
   const synchronizedValue = candidate.synchronized_at === null ? null : numericJson(candidate.synchronized_value);
   return {
@@ -295,6 +308,7 @@ async function queryCandidates(
   return await sql<CandidateRow[]>`
     select recommendation.id as recommendation_id,
            recommendation.org_id, recommendation.profile_id,
+           coalesce(profile.timezone, 'UTC') as profile_timezone,
            run.group_id, run.group_role::text as group_role, run.group_snapshot,
            run.id as run_id, run.due_at, run.window_start::text as window_start,
            run.window_end::text as window_end, run.lookback_days, run.strategy_snapshot,
@@ -308,6 +322,9 @@ async function queryCandidates(
         on run.org_id = recommendation.org_id
        and run.profile_id = recommendation.profile_id
        and run.id = recommendation.run_id
+      join public.ad_profiles profile
+        on profile.org_id = recommendation.org_id
+       and profile.id = recommendation.profile_id
       join lateral (
         select candidate.*, count(*) over ()::int as apply_row_count
           from public.apply_rows candidate
@@ -500,6 +517,26 @@ function toDate(value: Date | string): Date {
   const date = value instanceof Date ? value : new Date(value);
   if (!Number.isFinite(date.getTime())) throw new Error('Recommendation observation received an invalid timestamp');
   return date;
+}
+
+function localIsoDate(value: Date | string, timeZone: string): IsoDate {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(toDate(value));
+  const part = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((candidate) => candidate.type === type)?.value ?? '';
+  const date = `${part('year')}-${part('month')}-${part('day')}`;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error('Recommendation observation could not derive a profile-local date');
+  }
+  return date as IsoDate;
+}
+
+export function nextCompleteProfileDate(value: Date | string, timeZone: string): IsoDate {
+  return addDays(localIsoDate(value, timeZone), 1);
 }
 
 function nullableIso(value: Date | string | null): string | null {

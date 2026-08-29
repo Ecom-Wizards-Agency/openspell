@@ -1,6 +1,7 @@
 import type { DbHandle } from '@wizard-ads/db';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  nextCompleteProfileDate,
   RecommendationObservationPass,
   type RecommendationObservationReconcileCounts,
 } from './recommendation-observer.js';
@@ -15,6 +16,14 @@ const emptyCounts: RecommendationObservationReconcileCounts = {
 };
 
 describe('RecommendationObservationPass', () => {
+  it('starts after the next complete profile-local day across time zones', () => {
+    const instant = '2026-08-29T18:30:00Z';
+
+    expect(nextCompleteProfileDate(instant, 'Asia/Bangkok')).toBe('2026-08-31');
+    expect(nextCompleteProfileDate(instant, 'America/New_York')).toBe('2026-08-30');
+    expect(() => nextCompleteProfileDate(instant, 'Invalid/Profile')).toThrow();
+  });
+
   it('contains a reconciliation failure so the always-on worker remains available', async () => {
     const error = vi.fn();
     const pass = new RecommendationObservationPass(
