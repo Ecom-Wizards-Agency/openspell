@@ -4,9 +4,12 @@ import {
   rollupQueryCategories,
   verifySpendConservation,
 } from '@wizard-ads/core';
-import type { WeeklyPpcQueryRecord } from '@wizard-ads/db';
 import type {
-  ContextualNegativeProposal,
+  ContextualNegativeExportSummary,
+  ContextualNegativeProposalRecord,
+  WeeklyPpcQueryRecord,
+} from '@wizard-ads/db';
+import type {
   QueryCategory,
   QueryJoinAttribution,
   QueryVocabularyEntry,
@@ -53,7 +56,8 @@ export interface QueryIntelligenceSource {
   facts: SqpWeeklyFact[];
   ppc: WeeklyPpcQueryRecord[];
   vocabulary: QueryVocabularyEntry[];
-  proposals: ContextualNegativeProposal[];
+  proposals: ContextualNegativeProposalRecord[];
+  negativeExports: ContextualNegativeExportSummary[];
   promotionRuns: SqpPromotionEvidence[];
 }
 
@@ -111,7 +115,8 @@ export interface QueryIntelligenceModel {
   vocabulary: QueryVocabularyEntry[];
   approvedVocabulary: number;
   pendingVocabulary: number;
-  proposals: ContextualNegativeProposal[];
+  proposals: ContextualNegativeProposalRecord[];
+  negativeExports: ContextualNegativeExportSummary[];
   promotionRuns: SqpPromotionEvidence[];
   promotionReconciled: boolean | null;
   assertions: {
@@ -292,6 +297,7 @@ export function buildQueryIntelligenceModel(
       (left, right) =>
         left.status.localeCompare(right.status) || left.searchTerm.localeCompare(right.searchTerm),
     ),
+    negativeExports: source.negativeExports,
     promotionRuns: source.promotionRuns,
     promotionReconciled:
       source.promotionRuns.length === 0

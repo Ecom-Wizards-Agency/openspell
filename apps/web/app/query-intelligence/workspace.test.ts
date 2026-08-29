@@ -39,6 +39,7 @@ const model: QueryIntelligenceModel = {
   approvedVocabulary: 0,
   pendingVocabulary: 1,
   proposals: [],
+  negativeExports: [],
   promotionRuns: [],
   promotionReconciled: null,
   assertions: {
@@ -58,6 +59,9 @@ describe('/query-intelligence workspace', () => {
         currencyCode: 'USD',
         selectedCategory: null,
         search: '',
+        profileId: '00000000-0000-4000-8000-000000000079',
+        marketplaceId: 'SYNTHETIC_MARKET',
+        role: 'owner',
       }),
     );
 
@@ -77,13 +81,18 @@ describe('/query-intelligence workspace', () => {
         currencyCode: 'USD',
         selectedCategory: null,
         search: '',
+        profileId: '00000000-0000-4000-8000-000000000079',
+        marketplaceId: 'SYNTHETIC_MARKET',
+        role: 'owner',
       }),
     );
 
     expect(markup).toContain('Profile-only');
     expect(markup).toContain('Ambiguous');
     expect(markup).toContain('never duplicates that spend');
-    expect(markup).toContain('Review/export queue');
+    expect(markup).toContain('Decide a compact queue, then export');
+    expect(markup).toContain('Yes, export negatives');
+    expect(markup).toContain('exported means a file was created—not that Amazon changed');
     expect(markup).toContain('No Amazon writes');
     expect(markup).not.toContain('Apply to Amazon');
   });

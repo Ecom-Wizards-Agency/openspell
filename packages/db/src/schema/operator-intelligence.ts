@@ -444,6 +444,8 @@ export const contextualNegativeProposals = pgTable(
     matchType: text('match_type').$type<'negative_exact' | 'negative_phrase'>().notNull(),
     reason: text('reason').notNull(),
     status: text('status').$type<'proposed' | 'accepted' | 'dismissed' | 'exported'>().notNull().default('proposed'),
+    decidedAt: ts('decided_at'),
+    decidedBy: uuid('decided_by').references(() => authUsers.id, { onDelete: 'set null' }),
     createdAt: ts('created_at').notNull().defaultNow(),
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
@@ -458,6 +460,76 @@ export const contextualNegativeProposals = pgTable(
       t.matchType,
     ),
     index('contextual_negative_review_idx').on(t.profileId, t.status, t.category, t.createdAt),
+    uniqueIndex('contextual_negative_proposals_org_profile_id_key').on(t.orgId, t.profileId, t.id),
+  ],
+);
+
+export const contextualNegativeExports = pgTable(
+  'contextual_negative_exports',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull(),
+    marketplaceId: text('marketplace_id').notNull(),
+    note: text('note').notNull(),
+    rowCount: integer('row_count').notNull(),
+    artifactSha256: text('artifact_sha256').notNull(),
+    createdBy: uuid('created_by').references(() => authUsers.id, { onDelete: 'set null' }),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.orgId, t.profileId], foreignColumns: [adProfiles.orgId, adProfiles.id] })
+      .onDelete('cascade'),
+    uniqueIndex('contextual_negative_exports_org_profile_id_key').on(t.orgId, t.profileId, t.id),
+    index('contextual_negative_exports_profile_time_idx').on(
+      t.profileId,
+      t.marketplaceId,
+      t.createdAt,
+    ),
+  ],
+);
+
+export const contextualNegativeExportItems = pgTable(
+  'contextual_negative_export_items',
+  {
+    exportId: uuid('export_id').notNull(),
+    ordinal: integer('ordinal').notNull(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull(),
+    proposalId: uuid('proposal_id').notNull(),
+    marketplaceId: text('marketplace_id').notNull(),
+    campaignId: text('campaign_id').notNull(),
+    adGroupId: text('ad_group_id').notNull(),
+    searchTerm: text('search_term').notNull(),
+    normalizedQuery: text('normalized_query').notNull(),
+    category: queryCategory('category').notNull(),
+    sourceGroupRole: text('source_group_role').$type<'rank' | 'discovery' | 'profit' | 'shield'>().notNull(),
+    matchType: text('match_type').$type<'negative_exact' | 'negative_phrase'>().notNull(),
+    reason: text('reason').notNull(),
+    decisionNote: text('decision_note'),
+    snapshotSha256: text('snapshot_sha256').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.exportId, t.ordinal] }),
+    foreignKey({
+      columns: [t.orgId, t.profileId, t.exportId],
+      foreignColumns: [
+        contextualNegativeExports.orgId,
+        contextualNegativeExports.profileId,
+        contextualNegativeExports.id,
+      ],
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [t.orgId, t.profileId, t.proposalId],
+      foreignColumns: [
+        contextualNegativeProposals.orgId,
+        contextualNegativeProposals.profileId,
+        contextualNegativeProposals.id,
+      ],
+    }).onDelete('restrict'),
+    unique('contextual_negative_export_items_proposal_id_key').on(t.proposalId),
+    index('contextual_negative_export_items_org_export_idx').on(t.orgId, t.exportId, t.ordinal),
   ],
 );
 

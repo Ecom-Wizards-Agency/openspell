@@ -35,6 +35,8 @@ declare
   v_recommendation uuid;
   v_group uuid;
   v_creative_snapshot uuid;
+  v_contextual_negative uuid;
+  v_contextual_negative_export uuid;
   v_strategy jsonb := jsonb_build_object(
     'schema', 'wizard-ads.tenant-strategy.v1',
     'pacing', '{}'::jsonb,
@@ -325,7 +327,26 @@ begin
     (org_id, profile_id, marketplace_id, campaign_id, ad_group_id, search_term,
      normalized_query, category, source_group_role, match_type, reason)
   values (v_org, v_profile, p_slug || '-market', 'c-1', 'ag-1', 'fixture excluded',
-          'fixture excluded', 'excluded', 'discovery', 'negative_exact', 'fixture');
+          'fixture excluded', 'excluded', 'discovery', 'negative_exact', 'fixture')
+  returning id into v_contextual_negative;
+
+  update public.contextual_negative_proposals
+     set status = 'exported', decided_at = now(), decided_by = p_user_id
+   where id = v_contextual_negative;
+
+  insert into public.contextual_negative_exports
+    (org_id, profile_id, marketplace_id, note, row_count, artifact_sha256, created_by)
+  values (v_org, v_profile, p_slug || '-market', 'fixture export', 1, repeat('a', 64), p_user_id)
+  returning id into v_contextual_negative_export;
+
+  insert into public.contextual_negative_export_items
+    (export_id, ordinal, org_id, profile_id, proposal_id, marketplace_id,
+     campaign_id, ad_group_id, search_term, normalized_query, category,
+     source_group_role, match_type, reason, snapshot_sha256)
+  values (v_contextual_negative_export, 1, v_org, v_profile, v_contextual_negative,
+          p_slug || '-market', 'c-1', 'ag-1', 'fixture excluded',
+          'fixture excluded', 'excluded', 'discovery', 'negative_exact',
+          'fixture', repeat('b', 64));
 
   insert into public.optimization_groups
     (org_id, profile_id, name, role, target_acos,

@@ -6,8 +6,8 @@ import {
   isUnauthenticated,
   openWebDatabase,
   requestActor,
-  requireOrgMembership,
 } from '../../src/server/request-context';
+import { requireOrgRole } from '../../src/server/org-role';
 import { listOrgProfiles, selectOrgProfile } from '../../src/recommendations/data';
 import {
   listQueryIntelligenceScopes,
@@ -49,7 +49,7 @@ export default async function QueryIntelligencePage({
   const database = openWebDatabase();
   try {
     const actor = await requestActor(await headers());
-    await requireOrgMembership(database, actor);
+    const role = await requireOrgRole(database, actor);
     const query = await searchParams;
     const profiles = await listOrgProfiles(database, actor.orgId);
     const profile = selectOrgProfile(profiles, one(query['profile']));
@@ -178,6 +178,9 @@ export default async function QueryIntelligencePage({
           currencyCode={profile.currencyCode}
           selectedCategory={category}
           search={search}
+          profileId={profile.id}
+          marketplaceId={scope.marketplaceId}
+          role={role}
         />
       </main>
     );

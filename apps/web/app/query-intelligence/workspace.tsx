@@ -6,6 +6,7 @@ import type {
   QueryEvidenceRow,
   QueryIntelligenceModel,
 } from '../../src/query-intelligence/model';
+import { NegativeProposalReview } from './negative-review';
 import styles from './query-intelligence.module.css';
 
 const INTEGER = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
@@ -78,6 +79,9 @@ export interface QueryIntelligenceWorkspaceProps {
   currencyCode: string;
   selectedCategory: QueryCategory | null;
   search: string;
+  profileId: string;
+  marketplaceId: string;
+  role: string;
 }
 
 export function QueryIntelligenceWorkspace({
@@ -85,6 +89,9 @@ export function QueryIntelligenceWorkspace({
   currencyCode,
   selectedCategory,
   search,
+  profileId,
+  marketplaceId,
+  role,
 }: QueryIntelligenceWorkspaceProps): ReactNode {
   const money = currencyFormatter(currencyCode);
   const normalizedSearch = search.trim().toLocaleLowerCase('und');
@@ -240,8 +247,7 @@ export function QueryIntelligenceWorkspace({
         )}
       </section>
 
-      <div className={styles.reviewGrid}>
-        <section className="wa-card" aria-labelledby="vocabulary-title">
+      <section className="wa-card" aria-labelledby="vocabulary-title">
           <header className="wa-card__head">
             <div>
               <span className="wa-label">Marketplace vocabulary</span>
@@ -286,62 +292,15 @@ export function QueryIntelligenceWorkspace({
               </div>
             )}
           </div>
-        </section>
+      </section>
 
-        <section className="wa-card" aria-labelledby="negatives-title">
-          <header className="wa-card__head">
-            <div>
-              <span className="wa-label">Contextual negatives</span>
-              <h2 id="negatives-title" className="wa-card__title">Review/export queue</h2>
-            </div>
-            <span className="wa-card__sub">No Amazon writes</span>
-          </header>
-          <div className="wa-card__body wa-card__body--flush">
-            {model.proposals.length === 0 ? (
-              <div className={styles.compactEmpty}>
-                No contextual negative proposals are waiting for this marketplace. Core and Generic
-                Head terms are never negated merely because of their category.
-              </div>
-            ) : (
-              <div className={styles.innerTableWrap}>
-                <table className="wa-table wa-table--dense">
-                  <thead>
-                    <tr>
-                      <th>Search term</th>
-                      <th>Route</th>
-                      <th>Ad group</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {model.proposals.slice(0, 100).map((proposal) => (
-                      <tr key={proposal.id ?? `${proposal.adGroupId}:${proposal.normalizedQuery}`}>
-                        <td>
-                          <strong>{proposal.searchTerm}</strong>
-                          <small className={styles.cellSub}>
-                            {QUERY_CATEGORY_LABELS[proposal.category]} · {proposal.matchType.replace('_', ' ')}
-                          </small>
-                        </td>
-                        <td>{ROLE_LABELS[proposal.sourceGroupRole]}</td>
-                        <td>{proposal.adGroupId}</td>
-                        <td>
-                          <span className={proposal.status === 'proposed' ? 'wa-badge wa-badge--warn' : 'wa-badge'}>
-                            {proposal.status}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            <p className={styles.cardNote}>
-              Own Brand remains valid in Shield. Competitor terms remain valid in conquest. Every
-              proposal targets an ad group and still requires human review before export.
-            </p>
-          </div>
-        </section>
-      </div>
+      <NegativeProposalReview
+        proposals={model.proposals}
+        exports={model.negativeExports}
+        profileId={profileId}
+        marketplaceId={marketplaceId}
+        role={role}
+      />
 
       <section className="wa-card" aria-labelledby="coverage-title">
         <header className="wa-card__head">

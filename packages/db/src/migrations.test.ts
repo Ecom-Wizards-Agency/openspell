@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260829160100_sb_video_observed_ingestion.sql');
+    expect(files.at(-1)).toBe('20260829170000_query_negative_review_exports.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -173,6 +173,7 @@ describe.skipIf(!available)('migrations', () => {
       'ad_creative_asset_mappings', 'fact_creative_daily',
       'creative_sync_snapshots',
       'sqp_promotion_runs', 'query_vocabulary', 'contextual_negative_proposals',
+      'contextual_negative_exports', 'contextual_negative_export_items',
       'optimization_groups', 'campaign_optimization_assignments',
       'recommendation_observations', 'marketing_stream_events',
       'marketing_stream_hourly_facts', 'dayparting_schedule_proposals',

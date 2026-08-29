@@ -378,15 +378,38 @@ describe.skipIf(!available)('WP-59 SQP database persistence', () => {
     })).toEqual({ offered: 1, upserts: 1, readBack: 1, preservedHumanDecisions: 0 });
     await database.sql`
       update public.contextual_negative_proposals
-         set status = 'accepted'
+         set status = 'accepted', decided_at = now(), decided_by = ${OWNER}
        where org_id = ${orgId} and profile_id = ${profileId}
          and campaign_id = 'campaign-synthetic'
     `;
     expect(await persistContextualNegativeProposals(database, {
       orgId,
       profileId,
-      proposals: [{ ...proposal, reason: 'Synthetic refreshed reason.' }],
+      proposals: [{
+        ...proposal,
+        searchTerm: 'Synthetic changed term',
+        category: 'competitor',
+        sourceGroupRole: 'discovery',
+        reason: 'Synthetic refreshed reason.',
+      }],
     })).toEqual({ offered: 1, upserts: 1, readBack: 1, preservedHumanDecisions: 1 });
+    const [preserved] = await database.sql<{
+      search_term: string;
+      category: string;
+      source_group_role: string;
+      reason: string;
+    }[]>`
+      select search_term, category::text as category, source_group_role, reason
+        from public.contextual_negative_proposals
+       where org_id = ${orgId} and profile_id = ${profileId}
+         and campaign_id = 'campaign-synthetic'
+    `;
+    expect(preserved).toEqual({
+      search_term: 'Synthetic Exclusion',
+      category: 'excluded',
+      source_group_role: 'profit',
+      reason: 'Synthetic approved exclusion; review at this ad group.',
+    });
   });
 
   it('aggregates PPC before ASIN resolution so ambiguous ad groups do not multiply spend', async () => {

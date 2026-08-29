@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { WeeklyPpcQueryRecord } from '@wizard-ads/db';
+import type { ContextualNegativeProposalRecord, WeeklyPpcQueryRecord } from '@wizard-ads/db';
 import type {
-  ContextualNegativeProposal,
   QueryCategory,
   QueryVocabularyEntry,
   SqpWeeklyFact,
@@ -109,7 +108,7 @@ const vocabulary: QueryVocabularyEntry[] = [
   },
 ];
 
-const proposal: ContextualNegativeProposal = {
+const proposal: ContextualNegativeProposalRecord = {
   id: '00000000-0000-4000-8000-000000000075',
   profileId: PROFILE,
   marketplaceId: MARKET,
@@ -122,6 +121,11 @@ const proposal: ContextualNegativeProposal = {
   matchType: 'negative_exact',
   reason: 'Synthetic approved exclusion.',
   status: 'proposed',
+  decidedAt: null,
+  decidedBy: null,
+  decisionNote: null,
+  exportId: null,
+  exportedAt: null,
 };
 
 describe('Query Intelligence view model', () => {
@@ -131,6 +135,7 @@ describe('Query Intelligence view model', () => {
       ppc: [],
       vocabulary,
       proposals: [proposal],
+      negativeExports: [],
       promotionRuns: [],
     });
 
@@ -165,6 +170,7 @@ describe('Query Intelligence view model', () => {
       ppc: ppcRows,
       vocabulary,
       proposals: [],
+      negativeExports: [],
       promotionRuns: [],
     });
 
@@ -200,6 +206,7 @@ describe('Query Intelligence view model', () => {
       ppc: [],
       vocabulary,
       proposals: [proposal],
+      negativeExports: [],
       promotionRuns: [
         {
           id: '00000000-0000-4000-8000-000000000076',

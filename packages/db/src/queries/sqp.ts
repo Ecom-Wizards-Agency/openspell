@@ -705,11 +705,15 @@ export async function persistContextualNegativeProposals(
             contextualNegativeProposals.matchType,
           ],
           set: {
-            marketplaceId: sql`excluded.marketplace_id`,
-            searchTerm: sql`excluded.search_term`,
-            category: sql`excluded.category`,
-            sourceGroupRole: sql`excluded.source_group_role`,
-            reason: sql`excluded.reason`,
+            // Once a human has decided, preserve the exact explanation and
+            // route they reviewed. A later classifier refresh may update a
+            // still-proposed row, but it cannot silently rewrite history under
+            // an accepted, dismissed, or exported status.
+            marketplaceId: sql`case when ${contextualNegativeProposals.status} = 'proposed' then excluded.marketplace_id else ${contextualNegativeProposals.marketplaceId} end`,
+            searchTerm: sql`case when ${contextualNegativeProposals.status} = 'proposed' then excluded.search_term else ${contextualNegativeProposals.searchTerm} end`,
+            category: sql`case when ${contextualNegativeProposals.status} = 'proposed' then excluded.category else ${contextualNegativeProposals.category} end`,
+            sourceGroupRole: sql`case when ${contextualNegativeProposals.status} = 'proposed' then excluded.source_group_role else ${contextualNegativeProposals.sourceGroupRole} end`,
+            reason: sql`case when ${contextualNegativeProposals.status} = 'proposed' then excluded.reason else ${contextualNegativeProposals.reason} end`,
             // A refreshed suggestion never erases an accepted/dismissed/exported decision.
             status: sql`case when ${contextualNegativeProposals.status} = 'proposed' then 'proposed' else ${contextualNegativeProposals.status} end`,
             updatedAt: new Date(),
