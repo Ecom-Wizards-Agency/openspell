@@ -174,7 +174,9 @@ implementation brief in `docs/workpackages/`.
 - The same artifact check proves the branding drift directly: the source SVG matches the approved
   Wizards AI symbol byte-for-byte, but a fresh authenticated production navigation serves the
   legacy `wizard-ads` label with a `w` placeholder, has no brand-mark background image, and returns
-  HTTP 404 for the tracked SVG path. PR #35 adds a
+  HTTP 404 for the tracked SVG path. A local Next.js server from the reviewed release branch serves
+  that exact tracked asset as `image/svg+xml` with HTTP 200 and an identical content hash, isolating
+  the defect to release drift rather than asset packaging. PR #35 adds a
   candidate asset request and authenticated DOM marker gate so a heading match cannot hide this
   class of stale deployment again.
 - A later production-target candidate inherited malformed database/runtime secret metadata and
