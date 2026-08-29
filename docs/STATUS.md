@@ -2,8 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated`.
 
-Reconciled 2026-08-29 against `origin/main` at `48b9625`; the WP-81 evidence-only
-candidate follows that implementation revision. Here, **merged** means the implementation is
+Reconciled 2026-08-29 against `origin/main` at `fc254bc`. Here, **merged** means the implementation is
 reachable from the recorded main revision. It does not by itself mean live-data verified,
 deployed, or accepted by an operator. Full original evidence and source pointers are in
 `docs/workpackages/WP-52-reconciliation.md`; the post-release capability design is in
@@ -104,10 +103,14 @@ implementation brief in `docs/workpackages/`.
 | 75 | Durable weekly SQP worker | merged; live gated | report identity/checkpoint reuse and pending deferral survive retry/restart; WP-79 adds the missing authentication and scheduler path, while hosted provider configuration remains gated |
 | 76 | Grid cold start | merged | crosscheck evidence streams outside the row critical path; the 3,597-row server query and mapping fixture completes under two seconds |
 | 77 | Recommendation observation reconciler | merged | exact synchronized bid evidence and settled matched pre/post facts drive hold, continue or exact reversion without compounding |
-| 78 | Release evidence and status reconciliation | merged and deployed | combined-tree verification and the operator-workspace web deployment completed; authenticated final-revision QA remains gated by the browser session |
+| 78 | Release evidence and status reconciliation | merged and deployed | combined-tree verification and the operator-workspace deployment completed; current-revision QA is recorded below |
 | 79 | SP-API profile binding and SQP scheduling | merged; live gated | exact profile/marketplace binding, Vault custody, LWA refresh and weekly due-work scheduling; hosted migration, tenant binding and live report parity remain gated |
 | 80 | Web database pool HMR reuse | merged and deployed | one non-production pool survives Next.js route recompilation; the prior PostgreSQL client-exhaustion Playwright failure is covered by module-reload and full browser tests |
-| 81 | Current release status reconciliation | review | records the exact web deployment, current CI, live authentication gate, MCP outage and remaining production gates without changing runtime behavior |
+| 81 | Current release status reconciliation | merged | evidence-only baseline at `48b9625`; merge `d6a1e6b` |
+| 82 | Quiet public application shell | merged and deployed | anonymous routes use the compact public frame and server-gate feedback controls; authenticated operator navigation is unchanged |
+| 83 | SB Video contract probe | merged; live gated | non-persisting readers and count-only reconciliation prove documented shapes; no authorized live probe has run |
+| 84 | Transactional SP report promotion | merged; live gated | complete-date replacement is wired for four SP report grains; live worker count review remains open |
+| 85 | Observed SB Video ingestion | merged; migration and deployment gated | current-snapshot ad/version-to-Asset-ID mapping and same-day fact gates are code-complete; hosted application and live parity remain open |
 
 ## Milestone gates
 
@@ -123,45 +126,53 @@ implementation brief in `docs/workpackages/`.
 - The pre-release full-route production QA is `docs/design/QA-2026-08-27.md`. Its second round
   records the brand system, settling presentation, comparison-flow repairs, target bid columns,
   and Bugs/Roadmap split as live on that date.
-- WP-54 retains the historical MCP acceptance evidence: Codex and Claude Code each discovered the
-  same 11 analytical tools, completed a permitted real read, produced audit and last-used evidence,
-  and received a not-found result outside the key's profile allowlist. That evidence is not current
-  availability. On 2026-08-29 the public hostname returned Cloudflare HTTP 530 while the local MCP
-  container returned ready/HTTP 200 at revision `677dbf8`; the tunnel is intentionally not restarted
-  until its credential is rotated. No mutation tool is exposed.
+- The MCP tunnel credential was rotated and the connector was restarted. On 2026-08-29 the public
+  health endpoint returned HTTP 200 with database ready at application revision `b5c210d`. Codex
+  and Claude Code each discovered the same 11 analytical tools, found no write-like tool, completed
+  a permitted profile-list read and produced two recent audit records while advancing key
+  last-used state. MCP matches the deployed web revision but intentionally trails current main
+  while WP-85 remains migration/deployment gated. Durable 1Password custody could not be verified
+  from the available CLI session, so secret-manager reconciliation remains open. No mutation tool
+  is exposed.
 - Production was revision-stamped and verified at `bfce504` after the first release merge. The dashboard,
   campaign builder, 3,597-row nested grid, optimizer, recommendations, Time Machine, Sync Status
   and Connect AI routes completed an authenticated click-through without page, console or HTTP
   errors. The larger operator-workspace release at `c16022b` was then deployed successfully and
-  returned HTTP 200 on the production custom domain. The current shared browser is at the login
-  route, so authenticated click-through of that later revision remains unverified rather than
-  inferred from its successful deployment.
-- The current implementation tree at `48b9625` was deployed from a clean `origin/main` worktree to
-  Vercel deployment `dpl_6Y9nvFBgELuGFca9DLXRNPzSnvXH`. Vercel reported ready, assigned the custom
-  production domain and returned HTTP 200 on `/login`. The normal shared Chrome session loaded the
-  same deployment without console errors, but `/dashboard` redirected to `/login`; authenticated
-  route/data verification is therefore still open.
+  returned HTTP 200 on the production custom domain. It was superseded before an authenticated
+  click-through of that exact revision was recorded.
+- GitHub CI run `33255581804` passed typecheck, lint, tests, hygiene, migrations, build and
+  Playwright for exact main revision `b5c210d`. That revision was deployed from a clean worktree to
+  Vercel deployment `dpl_7LsXivUy6XMqgYCtwagQZBEqCxrp`; Vercel reports ready and assigns the custom
+  production domain. Anonymous `/login` returns HTTP 200 without the feedback control, while an
+  anonymous `/dashboard` request redirects to `/login`.
+- Exact-main CI run `33256509372` passed both jobs after WP-85 merged at `fc254bc`. No WP-85
+  migration or deployment followed that merge: production web and MCP intentionally remain at
+  `b5c210d` until the hosted schema and live provider gates are authorized and satisfied.
 - The hosted migration ledger contains the operator-intelligence foundation followed by Time
   Machine v2. Both exact tracked files were hash-checked before application; all new tables retain
   tenant RLS.
-- The normal Chrome connector is now available. Its existing Wizard Ads tab is unauthenticated at
-  `/login`, and a direct `/dashboard` navigation returns to that route. No credential was entered
-  and no competitor data or dashboard configuration was changed.
+- The authenticated normal Chrome session reloaded the dashboard with the feedback control present
+  and no application error. A post-deploy pass covered 21 of 21 routes with HTTP 200 and no page
+  error. First loads of Grid (4.27 seconds) and Time Machine (5.36 seconds) remain measured
+  performance gaps rather than functional failures. No competitor data or dashboard configuration
+  was changed.
 
-## Reconciled production behavior before the operator-upgrade release
+## Reconciled ingestion behavior
 
 - New schedule provisioning requests a 3-day recent window, a 32-day restatement window, and the
   preceding 32-day comparison window. The recent window overlaps the restatement window: distinct
   scheduled history is about 64 contiguous days.
 - Entity tables are current-state mirrors with post-connection diffs in `entity_changes`.
-- Fact reports upsert the canonical grain. Previous values are not versioned, rows omitted from a
-  later report are not removed, and no request-order promotion watermark exists.
+- Accepted complete Sponsored Products campaign, targeting, search-term and placement report dates
+  now replace their canonical snapshots transactionally under request-order watermarks. Sponsored
+  Brands and Sponsored Display remain on the prior upsert loader, and canonical metric revisions
+  are not otherwise versioned.
 - Most daily facts retain 26 months; search terms retain 13 months. Older detail is rolled up
   monthly before its partitions are dropped.
-- The UI uses a generic 14-day settling rule. There is no account-specific attribution-maturity
-  model or observation history.
-- Unified reporting, maximum-history bootstrap, exact coverage matrices, stale-row reconciliation,
-  and attribution observations are absent from this `main` revision.
+- The UI uses a generic 14-day settling rule. Accepted SP promotions retain pre-promotion
+  observations, but there is no validated account-specific attribution-maturity curve.
+- Unified reporting, maximum-history bootstrap and a live-verified coverage matrix remain absent.
+  Stale-row reconciliation now applies only to accepted complete SP report dates.
 
 ## Released data foundations
 
@@ -172,16 +183,17 @@ implementation brief in `docs/workpackages/`.
   proposals, optimization groups and observations, and Marketing Stream/dayparting storage.
   Migration and RLS tests use synthetic data on disposable PostgreSQL; the migration is also present
   in the verified hosted ledger.
-- Report promotion now has a transaction boundary, exact staged/promoted/canonical counts, a
+- SP report promotion now has a transaction boundary, exact staged/promoted/canonical counts, a
   newer-evidence watermark, stale-row removal for a complete report-date snapshot, and a retained
-  pre-promotion attribution observation.
-- The existing live parser cannot assign every refused source row to an exact date. The new
-  replacement path is therefore not connected to production ingestion yet; deleting an old
-  report-date snapshot before proving complete date-level input would be unsafe.
-- The creative backend uses `(profile, Amazon Asset ID)` identity and explicit ad-to-creative-to-
-  asset mappings. It records ambiguous, legacy, unsupported and unmapped states instead of
-  attributing an ad group's facts to one guessed asset. The external Amazon report adapter and live
-  count crosscheck remain gated on an authoritative response fixture.
+  pre-promotion attribution observation. The four SP parsers fail the report before deletion when
+  any source row or requested date is unaccounted for. SB and SD are deliberately unchanged; one
+  read-only production report per supported SP grain still needs a sanitized count crosscheck.
+- The creative backend uses `(profile, Amazon Asset ID)` identity and explicit ad/version-to-asset
+  mappings while keeping `creativeId` nullable. WP-85 adds counted current-snapshot observations,
+  mapping-only default behavior and an explicit profile-local same-day gate before ad-level facts.
+  It records ambiguous, legacy, unsupported and unmapped states instead of attributing an ad
+  group's facts to one guessed asset. The required migrations, runtime deployment and live count
+  crosscheck have not occurred.
 - SQP now has strict Sunday-Saturday planning, one-marketplace requests, canonical ASIN batching,
   resumable exact-identity checkpoints, provider report-ID reuse across retry/process restart,
   pending-result deferral without failure-budget consumption, strict document parsing, counted
@@ -223,13 +235,19 @@ implementation brief in `docs/workpackages/`.
   The negatives mirror still retains its cross-scope key-collision risk.
 - Unknown match-type spellings remain target rows with a null match type.
 - Report ingest does not create missing historical partitions before a backfill write.
+- Loading speed is an open priority acceptance gap. Grid and Time Machine first became usable in
+  4.27 seconds and 5.36 seconds respectively, missing the under-two-second target. Grid filter and
+  grouping must also demonstrate p95 response below 150 ms on the reference development machine;
+  synthetic fixture success does not close either live performance gate.
 - Hosted SQP configuration and the SB Video provider adapter remain open. The new product surfaces are complete for
   stored evidence, but cannot establish live Amazon parity until those adapters produce counted,
-  authoritative rows. The SB adapter must first prove the current `adId` to creative and Asset-ID
-  response path plus the accepted ad-level video report columns in a non-persisting live probe;
-  ad-group performance must never be guessed onto one asset. Time Machine v2 is hosted and
-  deployed, but a live reversion cannot be end-to-end verified until an eligible export batch
-  exists.
+  authoritative rows. WP-83 proves the documented `adId`, nested creative, Asset-ID and `sbAds`
+  shapes without persistence; WP-85 implements the current-snapshot `adId + creativeVersion`
+  observation model without inventing `creativeId`. Its hosted migrations, deployment and an
+  authorized live count probe remain required, and the snapshot does not establish historical
+  mapping authority. Ad-group performance must never be guessed onto one asset. Time Machine v2 is
+  hosted and deployed, but a live reversion cannot be end-to-end verified until an eligible export
+  batch exists.
 - Optimization-group free-text exclusions are explicitly reference metadata. Typed, enforceable
   exclusion rules remain a separate contract/work package rather than silently matching names.
 
@@ -252,14 +270,19 @@ implementation brief in `docs/workpackages/`.
 - [x] Full hosted PR gate passed for the WP-80 implementation tree: typecheck, lint, tests and
       hygiene completed in 5m33s; serial Playwright completed in 12m42s. Exact merge-main run
       `33248703627` also completed successfully at `48b9625`.
-- [x] The web implementation tree at `48b9625` is deployed and ready on the custom production domain.
-- [ ] Restore public MCP only after the Cloudflare tunnel credential is rotated, then repeat Codex
-      and Claude discovery/read/audit/last-used/allowlist checks at the deployed revision.
+- [x] Exact-main CI run `33255581804` passed both jobs at `b5c210d`; that web tree is deployed and
+      ready on the custom production domain.
+- [x] Public MCP restored after tunnel-credential rotation; both clients repeated tool discovery,
+      one real read, audit-log and last-used checks with no write-like tool exposed at `b5c210d`.
+- [x] Exact-main CI run `33256509372` passed both jobs at repository revision `fc254bc`.
+- [ ] Keep the explicit deployment drift: production web and MCP remain at `b5c210d` until WP-85's
+      migrations and live provider gates are authorized. Durable 1Password reconciliation remains
+      open.
 - [x] Hosted ledger verified for the two newly authorized additive migrations.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [x] Full authenticated Wizard Ads route/state click-through at `bfce504`.
-- [ ] Authenticated click-through at the final release revision. The shared Chrome tab is
-      currently at `/login`; no successful session is inferred from anonymous HTTP checks.
+- [x] Authenticated click-through at `b5c210d`: 21 of 21 production routes returned HTTP 200 with
+      no application error; live first-load performance gaps remain recorded separately.
 - [x] Local Playwright release suites: 27 production-build workflows and 27 authenticated-dev
       workflows passed, including dashboard, nested grid, campaign export, recommendations,
       experiments, Time Machine, tenancy, OAuth safety and every guarded route.
@@ -273,5 +296,10 @@ implementation brief in `docs/workpackages/`.
       `20260829150000_spapi_profile_bindings.sql` only after exact hosted authorization. SQS and
       weekly SQP provider execution remain disabled without their deployment configuration, so
       deploying code first is safe.
+- [ ] Apply `20260829160000_sb_video_report_type.sql` and
+      `20260829160100_sb_video_observed_ingestion.sql` only after exact hosted authorization, then
+      deploy WP-85 and prove mapping/fact counts with an authorized read-only profile.
+- [ ] Run the authorized, non-persisting SB Video probe and review one read-only SP report per
+      supported grain with source, promoted, superseded and canonical counts.
 - [ ] v1 crosscheck exit gate: consecutive verified days, campaign-grain parity, and explained
       optimizer spot-check.
