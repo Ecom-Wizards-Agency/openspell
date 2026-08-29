@@ -16,7 +16,7 @@
  */
 import type { CSSProperties } from 'react';
 import { headers } from 'next/headers';
-import { redirect } from 'next/navigation';
+import { redirect, unstable_rethrow } from 'next/navigation';
 import {
   getRecommendationRun,
   listRecommendationRuns,
@@ -29,10 +29,12 @@ import {
   requireOrgMembership,
 } from '../../src/server/request-context';
 import { requireOrgRole } from '../../src/server/org-role';
+import { canonicalProfilePath } from '../../src/data/active-profile';
 import { listOrgProfiles, selectOrgProfile } from '../../src/recommendations/data';
 import { toProposalView } from '../../src/recommendations/view';
 import { selectRecommendationRun } from '../../src/recommendations/runs';
 import { EmptyState } from '../../src/ui/primitives';
+import { requestedProfileId } from '../_lib/profiles';
 import { ReviewWorkspace } from './review';
 
 export const runtime = 'nodejs';
@@ -53,7 +55,8 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
     const query = await searchParams;
 
     const profiles = await listOrgProfiles(database, actor.orgId);
-    const profile = selectOrgProfile(profiles, one(query['profile']));
+    const requested = await requestedProfileId(one(query['profile']));
+    const profile = selectOrgProfile(profiles, requested);
     if (profile === null) {
       return (
         <main style={main}>
@@ -70,6 +73,8 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
         </main>
       );
     }
+    const canonical = canonicalProfilePath('/recommendations', query, profile.id);
+    if (canonical !== null) redirect(canonical);
 
     const runs = await listRecommendationRuns(database, {
       orgId: actor.orgId,
@@ -197,6 +202,7 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
       </main>
     );
   } catch (error) {
+    unstable_rethrow(error);
     // Nobody is signed in. A page is not an API: the answer to "who are you" is
     // the login screen, not a 200 that says "Authentication required" and
     // leaves the visitor to find `/login` themselves.

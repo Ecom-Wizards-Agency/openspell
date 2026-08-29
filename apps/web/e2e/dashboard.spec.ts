@@ -1,10 +1,12 @@
 /** Four-series operator chart controls through a production build and migrated fixture. */
 import { expect, test } from '@playwright/test';
 import { signIn } from './support/auth';
+import { readState } from './support/fixture';
 
 test('dashboard keeps four KPIs primary and configures four independent chart series', async ({ page }) => {
   await signIn(page, 'admin');
-  await page.goto('/dashboard');
+  const { fixtureProfileId } = await readState();
+  await page.goto(`/dashboard?profile=${fixtureProfileId}`);
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
 
   const primary = page.getByRole('listbox', { name: /Primary metrics/ });

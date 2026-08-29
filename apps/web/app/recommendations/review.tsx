@@ -17,7 +17,7 @@
  * unattended on a schedule. Ours is preview-first by design — nothing leaves
  * this screen without a human, a note, and a confirmation.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { ProposalView } from '../../src/recommendations/view';
 import { groupByDecision, groupByReason } from '../../src/recommendations/view';
@@ -45,6 +45,8 @@ interface Filters {
   text: string;
 }
 
+type ReviewPanel = 'dismiss' | 'export' | null;
+
 const EMPTY_FILTERS: Filters = { reason: '', status: '', objective: '', text: '' };
 
 function matches(proposal: ProposalView, filters: Filters): boolean {
@@ -68,7 +70,9 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [note, setNote] = useState('');
+  const [activePanel, setActivePanel] = useState<ReviewPanel>(null);
+  const [dismissalNote, setDismissalNote] = useState('');
+  const [exportNote, setExportNote] = useState('');
   const [confirmed, setConfirmed] = useState(false);
   const [optGroup, setOptGroup] = useState(
     () => props.runGroupName ?? props.proposals.find((proposal) => proposal.strategy.optGroup !== null)?.strategy.optGroup ?? 'ungrouped',
@@ -77,6 +81,10 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const dismissalNoteRef = useRef<HTMLTextAreaElement>(null);
+  const exportNoteRef = useRef<HTMLTextAreaElement>(null);
+  const dismissButtonRef = useRef<HTMLButtonElement>(null);
+  const exportButtonRef = useRef<HTMLButtonElement>(null);
 
   const visible = useMemo(
     () => props.proposals.filter((proposal) => matches(proposal, filters)),
@@ -109,6 +117,11 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
   );
   const exportCount = selectedIds.length > 0 ? acceptedSelected : (props.counts['accepted'] ?? 0);
 
+  useEffect(() => {
+    if (activePanel === 'dismiss') dismissalNoteRef.current?.focus();
+    if (activePanel === 'export') exportNoteRef.current?.focus();
+  }, [activePanel]);
+
   const toggle = useCallback((id: string) => {
     setSelected((current) => {
       const next = new Set(current);
@@ -122,6 +135,18 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
     setSelected(new Set(visible.map((proposal) => proposal.id)));
   }, [visible]);
 
+  const clearSelection = useCallback(() => {
+    setSelected(new Set());
+    setActivePanel(null);
+    setConfirmed(false);
+  }, []);
+
+  const closePanel = useCallback((panel: Exclude<ReviewPanel, null>) => {
+    if (panel === 'dismiss') dismissButtonRef.current?.focus();
+    else exportButtonRef.current?.focus();
+    setActivePanel(null);
+  }, []);
+
   const post = useCallback(async (url: string, body: unknown): Promise<Record<string, unknown>> => {
     const response = await fetch(url, {
       method: 'POST',
@@ -134,14 +159,14 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
   }, []);
 
   const decide = useCallback(
-    async (decision: 'accepted' | 'dismissed' | 'proposed') => {
+    async (decision: 'accepted' | 'dismissed' | 'proposed', decisionNote = '') => {
       setError(null);
       setMessage(null);
       if (selectedIds.length === 0) {
         setError('Select at least one proposal first.');
         return;
       }
-      if (decision === 'dismissed' && note.trim().length === 0) {
+      if (decision === 'dismissed' && decisionNote.trim().length === 0) {
         setError('A dismissal needs a note: record why this proposal is not being taken.');
         return;
       }
@@ -150,7 +175,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         const result = await post('/api/recommendations/decide', {
           ids: selectedIds,
           decision,
-          note,
+          note: decisionNote,
         });
         setMessage(
           `${String(result['updated'])} of ${String(result['offered'])} proposals moved to ${decision}.`,
@@ -162,8 +187,30 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         setBusy(false);
       }
     },
-    [note, post, selectedIds],
+    [post, selectedIds],
   );
+
+  const openDismissal = useCallback(() => {
+    setError(null);
+    setMessage(null);
+    if (selectedIds.length === 0) {
+      setError('Select at least one proposal first.');
+      return;
+    }
+    setActivePanel('dismiss');
+    setConfirmed(false);
+  }, [selectedIds.length]);
+
+  const openExport = useCallback(() => {
+    setError(null);
+    setMessage(null);
+    if (exportCount === 0) {
+      setError('Select accepted proposals, or clear the selection to export every accepted proposal.');
+      return;
+    }
+    setActivePanel('export');
+    setConfirmed(false);
+  }, [exportCount]);
 
   const exportBatch = useCallback(async () => {
     setError(null);
@@ -172,7 +219,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
       setError('Tick "Yes, export changes" before exporting.');
       return;
     }
-    if (note.trim().length === 0) {
+    if (exportNote.trim().length === 0) {
       setError('An export needs a note: it is the note the staged apply carries.');
       return;
     }
@@ -184,7 +231,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         client: props.client,
         optGroup,
         lever,
-        note,
+        note: exportNote,
         ids: selectedIds.length > 0 ? selectedIds : null,
       });
       const downloads = result['downloads'] as Record<string, string>;
@@ -198,7 +245,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
     } finally {
       setBusy(false);
     }
-  }, [confirmed, lever, note, optGroup, post, props.client, props.profileId, props.runId, selectedIds]);
+  }, [confirmed, exportNote, lever, optGroup, post, props.client, props.profileId, props.runId, selectedIds]);
 
   return (
     <section className="wa-review" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
@@ -236,10 +283,20 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         </p>
       )}
 
-      <fieldset className="wa-review__toolbar" style={panel}>
-        <legend style={legend}>Find and select</legend>
-        <label style={label}>
-          Reason
+      <div
+        className="wa-review__filterbar"
+        role="search"
+        aria-label="Filter recommendations"
+        data-testid="review-filters"
+      >
+        <div className="wa-review__filter-heading">
+          <strong>Recommendation queue</strong>
+          <span>
+            {visible.length} of {props.proposals.length} shown
+          </span>
+        </div>
+        <label className="wa-review__filter">
+          <span>Reason</span>
           <select
             className="wa-select wa-select--sm"
             value={filters.reason}
@@ -253,8 +310,8 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
             ))}
           </select>
         </label>
-        <label style={label}>
-          Status
+        <label className="wa-review__filter">
+          <span>Status</span>
           <select
             className="wa-select wa-select--sm"
             value={filters.status}
@@ -268,8 +325,8 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
             ))}
           </select>
         </label>
-        <label style={label}>
-          Objective
+        <label className="wa-review__filter">
+          <span>Objective</span>
           <select
             className="wa-select wa-select--sm"
             value={filters.objective}
@@ -283,98 +340,224 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
             ))}
           </select>
         </label>
-        <label style={label}>
-          Search
+        <label className="wa-review__filter wa-review__filter--search">
+          <span>Search</span>
           <input
             className="wa-input wa-input--sm"
             type="text"
             value={filters.text}
             onChange={(event) => setFilters({ ...filters, text: event.target.value })}
+            placeholder="Campaign, target, or ID"
           />
         </label>
         <button className="wa-btn wa-btn--ghost wa-btn--sm" type="button" onClick={() => setFilters(EMPTY_FILTERS)}>
-          Clear
+          Clear filters
         </button>
-      </fieldset>
+      </div>
 
-      <fieldset style={panel}>
-        <legend style={legend}>Decide</legend>
-        <label style={{ ...label, flex: '1 1 24rem' }}>
-          Note (required to dismiss, and to export)
-          <textarea
-            className="wa-textarea"
-            value={note}
-            onChange={(event) => setNote(event.target.value)}
-            rows={2}
-            aria-label="Decision note"
-          />
-        </label>
-        <button className="wa-btn wa-btn--sm" type="button" onClick={selectAllVisible} disabled={busy}>
-          Select all {visible.length} filtered
-        </button>
-        <button className="wa-btn wa-btn--ghost wa-btn--sm" type="button" onClick={() => setSelected(new Set())} disabled={busy}>
-          Clear selection
-        </button>
-        <button className="wa-btn wa-btn--primary wa-btn--sm" type="button" onClick={() => void decide('accepted')} disabled={busy}>
-          Accept selected
-        </button>
-        <button className="wa-btn wa-btn--sm" type="button" onClick={() => void decide('dismissed')} disabled={busy}>
-          Dismiss selected
-        </button>
-        <button className="wa-btn wa-btn--ghost wa-btn--sm" type="button" onClick={() => void decide('proposed')} disabled={busy}>
-          Re-open selected
-        </button>
-        <span style={muted} data-testid="selection-count">
-          {selectedIds.length} selected ({acceptedSelected} accepted)
-        </span>
-      </fieldset>
+      <div
+        className="wa-review__actionbar"
+        aria-label="Selection and decisions"
+        data-testid="review-actionbar"
+      >
+        <div className="wa-review__selection">
+          <span className="wa-review__selection-count" data-testid="selection-count" aria-live="polite">
+            <strong>{selectedIds.length}</strong> of {visible.length} filtered selected
+            {selectedIds.length === 0 ? '' : ` · ${acceptedSelected} accepted`}
+          </span>
+          <button
+            className="wa-btn wa-btn--sm"
+            type="button"
+            onClick={selectAllVisible}
+            disabled={busy || visible.length === 0}
+          >
+            Select all {visible.length} filtered
+          </button>
+          <button
+            className="wa-btn wa-btn--ghost wa-btn--sm"
+            type="button"
+            onClick={clearSelection}
+            disabled={busy || selectedIds.length === 0}
+          >
+            Clear selection
+          </button>
+        </div>
+        <div className="wa-review__decisions">
+          <button
+            className="wa-btn wa-btn--primary wa-btn--sm"
+            type="button"
+            onClick={() => void decide('accepted')}
+            disabled={busy || selectedIds.length === 0}
+          >
+            {selectedIds.length > 0 ? `Accept ${selectedIds.length} selected` : 'Accept selected'}
+          </button>
+          <button
+            ref={dismissButtonRef}
+            className="wa-btn wa-btn--sm"
+            type="button"
+            onClick={openDismissal}
+            disabled={busy || selectedIds.length === 0}
+            aria-expanded={activePanel === 'dismiss'}
+            aria-controls="dismissal-controls"
+          >
+            {selectedIds.length > 0 ? `Dismiss ${selectedIds.length} selected` : 'Dismiss selected'}
+          </button>
+          <button
+            className="wa-btn wa-btn--ghost wa-btn--sm"
+            type="button"
+            onClick={() => void decide('proposed')}
+            disabled={busy || selectedIds.length === 0}
+          >
+            {selectedIds.length > 0 ? `Re-open ${selectedIds.length} selected` : 'Re-open selected'}
+          </button>
+          <span className="wa-review__action-divider" aria-hidden="true" />
+          <button
+            ref={exportButtonRef}
+            className="wa-btn wa-btn--sm"
+            type="button"
+            onClick={openExport}
+            disabled={busy || !canExport || exportCount === 0}
+            aria-expanded={activePanel === 'export'}
+            aria-controls="export-controls"
+          >
+            Prepare export · {exportCount}
+          </button>
+        </div>
+      </div>
 
-      <fieldset style={panel}>
-        <legend style={legend}>Export accepted changes</legend>
-        <label style={label}>
-          Strategy group for export
-          <select className="wa-select wa-select--sm" value={optGroup} onChange={(event) => setOptGroup(event.target.value)}>
-            <option value="ungrouped">Ungrouped</option>
-            {strategyGroups.map((group) => (
-              <option key={group} value={group}>{group}</option>
-            ))}
-          </select>
-          <span style={muted}>Selects caps from this run’s snapshot; it is not a persisted campaign assignment.</span>
-        </label>
-        <label style={label}>
-          Lever
-          <select className="wa-select wa-select--sm" value={lever} onChange={(event) => setLever(event.target.value)}>
-            {LEVERS.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label style={{ ...label, flexDirection: 'row', alignItems: 'center', gap: '0.375rem' }}>
-          <input
-            className="wa-checkbox"
-            type="checkbox"
-            checked={confirmed}
-            onChange={(event) => setConfirmed(event.target.checked)}
-          />
-          Yes, export changes
-        </label>
-        <button
-          className="wa-btn wa-btn--primary wa-btn--sm"
-          type="button"
-          onClick={() => void exportBatch()}
-          disabled={busy || !canExport}
-          data-testid="export-accepted"
+      {activePanel === 'dismiss' ? (
+        <section
+          className="wa-review__composer"
+          id="dismissal-controls"
+          aria-labelledby="dismissal-title"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') closePanel('dismiss');
+          }}
         >
-          Export {exportCount} accepted change{exportCount === 1 ? '' : 's'}
-        </button>
-        <span style={muted}>
-          {canExport
-            ? 'Creates review files only. OpenSpell does not update Amazon.'
-            : `role ${props.role} may review but not export.`}
-        </span>
-      </fieldset>
+          <div className="wa-review__composer-copy">
+            <h2 id="dismissal-title">
+              Dismiss {selectedIds.length} selected proposal{selectedIds.length === 1 ? '' : 's'}
+            </h2>
+            <p>Record why these recommendations should not move forward.</p>
+          </div>
+          <label className="wa-review__composer-field">
+            Dismissal note
+            <textarea
+              ref={dismissalNoteRef}
+              className="wa-textarea"
+              value={dismissalNote}
+              onChange={(event) => setDismissalNote(event.target.value)}
+              rows={2}
+              aria-label="Dismissal note"
+            />
+          </label>
+          <div className="wa-review__composer-actions">
+            <button className="wa-btn wa-btn--ghost wa-btn--sm" type="button" onClick={() => closePanel('dismiss')}>
+              Cancel
+            </button>
+            <button
+              className="wa-btn wa-btn--primary wa-btn--sm"
+              type="button"
+              onClick={() => void decide('dismissed', dismissalNote)}
+              disabled={busy || selectedIds.length === 0}
+            >
+              Confirm dismissal · {selectedIds.length}
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      {activePanel === 'export' ? (
+        <section
+          className="wa-review__composer wa-review__composer--export"
+          id="export-controls"
+          aria-labelledby="export-title"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') closePanel('export');
+          }}
+        >
+          <div className="wa-review__composer-copy">
+            <h2 id="export-title">
+              Review export · {exportCount} accepted change{exportCount === 1 ? '' : 's'}
+            </h2>
+            <p>
+              {selectedIds.length > 0
+                ? `${acceptedSelected} accepted proposal${acceptedSelected === 1 ? '' : 's'} in the current selection.`
+                : `Every accepted proposal in this run (${exportCount}).`}
+              {' '}
+              Creates review files only. OpenSpell does not update Amazon.
+            </p>
+          </div>
+          <div className="wa-review__export-fields">
+            <label className="wa-review__composer-field">
+              Strategy group for export
+              <select
+                className="wa-select wa-select--sm"
+                value={optGroup}
+                onChange={(event) => setOptGroup(event.target.value)}
+              >
+                <option value="ungrouped">Ungrouped</option>
+                {strategyGroups.map((group) => (
+                  <option key={group} value={group}>{group}</option>
+                ))}
+              </select>
+              <span>Selects caps from this run’s snapshot; it is not a persisted campaign assignment.</span>
+            </label>
+            <label className="wa-review__composer-field">
+              Lever
+              <select
+                className="wa-select wa-select--sm"
+                value={lever}
+                onChange={(event) => setLever(event.target.value)}
+              >
+                {LEVERS.map((value) => (
+                  <option key={value} value={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="wa-review__composer-field wa-review__composer-field--note">
+              Export note
+              <textarea
+                ref={exportNoteRef}
+                className="wa-textarea"
+                value={exportNote}
+                onChange={(event) => setExportNote(event.target.value)}
+                rows={2}
+                aria-label="Export note"
+              />
+            </label>
+          </div>
+          <div className="wa-review__composer-actions wa-review__composer-actions--confirm">
+            <label className="wa-review__confirmation">
+              <input
+                className="wa-checkbox"
+                type="checkbox"
+                checked={confirmed}
+                onChange={(event) => setConfirmed(event.target.checked)}
+              />
+              Yes, export changes
+            </label>
+            <button className="wa-btn wa-btn--ghost wa-btn--sm" type="button" onClick={() => closePanel('export')}>
+              Cancel
+            </button>
+            <button
+              className="wa-btn wa-btn--primary wa-btn--sm"
+              type="button"
+              onClick={() => void exportBatch()}
+              disabled={busy || !canExport || exportCount === 0}
+              data-testid="export-accepted"
+            >
+              Export {exportCount} accepted change{exportCount === 1 ? '' : 's'}
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      {canExport ? null : (
+        <p style={muted}>Role {props.role} may review recommendations but not export changes.</p>
+      )}
 
       {error === null ? null : (
         <p role="alert" style={warning} data-testid="review-error">
@@ -557,17 +740,6 @@ function ProposalRow({
   );
 }
 
-const panel: CSSProperties = {
-  alignItems: 'flex-end',
-  border: '1px solid var(--wa-border)',
-  borderRadius: '0.5rem',
-  display: 'flex',
-  flexWrap: 'wrap',
-  gap: '0.75rem',
-  padding: '0.75rem',
-};
-const legend: CSSProperties = { fontSize: '0.8125rem', fontWeight: 600, padding: '0 0.25rem' };
-const label: CSSProperties = { display: 'flex', flexDirection: 'column', fontSize: '0.8125rem', gap: '0.25rem' };
 const muted: CSSProperties = { color: 'var(--wa-text-muted)', fontSize: '0.8125rem' };
 const table: CSSProperties = { borderCollapse: 'collapse', fontSize: '0.8125rem', width: '100%' };
 const th: CSSProperties = {

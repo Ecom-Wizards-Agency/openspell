@@ -1,14 +1,16 @@
 /** `/campaigns` — guided planning, preflight, and manual bulksheet export. */
 import { headers } from 'next/headers';
-import { redirect } from 'next/navigation';
+import { redirect, unstable_rethrow } from 'next/navigation';
 import {
   isUnauthenticated,
   openWebDatabase,
   requestActor,
   requireOrgMembership,
 } from '../../src/server/request-context';
+import { canonicalProfilePath } from '../../src/data/active-profile';
 import { listOrgProfiles, selectOrgProfile } from '../../src/recommendations/data';
 import { PageHeader } from '../../src/ui/primitives';
+import { requestedProfileId } from '../_lib/profiles';
 import { CampaignBuilder } from './builder';
 
 export const runtime = 'nodejs';
@@ -27,7 +29,12 @@ export default async function CampaignsPage({ searchParams }: { searchParams: Se
     await requireOrgMembership(database, actor);
     const query = await searchParams;
     const profiles = await listOrgProfiles(database, actor.orgId);
-    const profile = selectOrgProfile(profiles, one(query['profile']));
+    const requested = await requestedProfileId(one(query['profile']));
+    const profile = selectOrgProfile(profiles, requested);
+    if (profile !== null) {
+      const canonical = canonicalProfilePath('/campaigns', query, profile.id);
+      if (canonical !== null) redirect(canonical);
+    }
     const label = profile?.label ?? 'Selected profile';
     const marketplace = profile?.countryCode ?? 'US';
 
@@ -52,6 +59,7 @@ export default async function CampaignsPage({ searchParams }: { searchParams: Se
       </main>
     );
   } catch (error) {
+    unstable_rethrow(error);
     if (isUnauthenticated(error)) redirect('/login');
     const message = error instanceof Error ? error.message : 'Campaign Builder is unavailable';
     return (

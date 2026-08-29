@@ -23,6 +23,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { PROFILE_COOKIE } from '../cookies';
+import { resolveActiveProfile } from '../data/active-profile';
 import { THEME_KEY } from './theme-script';
 
 export interface NavProfile {
@@ -59,7 +60,9 @@ export function filterNavProfiles(
 }
 
 export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] }): ReactNode {
-  const [selected, setSelected] = useState('');
+  const [selected, setSelected] = useState(
+    () => resolveActiveProfile(profiles, undefined)?.id ?? '',
+  );
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [showAll, setShowAll] = useState(false);
@@ -67,8 +70,9 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
   const searchRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    setSelected(new URL(window.location.href).searchParams.get('profile') ?? '');
-  }, []);
+    const requested = new URL(window.location.href).searchParams.get('profile') ?? undefined;
+    setSelected(resolveActiveProfile(profiles, requested)?.id ?? '');
+  }, [profiles]);
 
   // Close on an outside click or Escape — a popover that only closes by
   // re-clicking the trigger is a popover an operator fights.
@@ -99,15 +103,8 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
 
   const go = (profileId: string): void => {
     const url = new URL(window.location.href);
-    if (profileId === '') {
-      url.searchParams.delete('profile');
-      // Chosen "All profiles" is a choice too; leaving a stale cookie behind
-      // would quietly re-narrow the next visit.
-      document.cookie = `${PROFILE_COOKIE}=; path=/; max-age=0; SameSite=Lax`;
-    } else {
-      url.searchParams.set('profile', profileId);
-      document.cookie = `${PROFILE_COOKIE}=${encodeURIComponent(profileId)}; path=/; max-age=31536000; SameSite=Lax`;
-    }
+    url.searchParams.set('profile', profileId);
+    document.cookie = `${PROFILE_COOKIE}=${encodeURIComponent(profileId)}; path=/; max-age=31536000; SameSite=Lax`;
     window.location.href = `${url.pathname}${url.search}`;
   };
 
@@ -127,7 +124,7 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
         onClick={() => setOpen((value) => !value)}
       >
         <span className="wa-profile-trigger-label">
-          {active === null ? 'All profiles' : `${active.label} · ${active.countryCode}`}
+          {active === null ? 'Advertising profile' : `${active.label} · ${active.countryCode}`}
         </span>
         <svg aria-hidden="true" viewBox="0 0 10 10" className="wa-profile-caret">
           <path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
@@ -146,18 +143,6 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
             onChange={(event) => setQuery(event.target.value)}
           />
           <ul className="wa-profile-list" role="listbox" aria-label="Advertising profiles">
-            <li>
-              <button
-                type="button"
-                className="wa-profile-option"
-                aria-selected={selected === ''}
-                role="option"
-                onClick={() => go('')}
-              >
-                <span>All profiles</span>
-                {selected === '' ? <span aria-hidden="true">✓</span> : null}
-              </button>
-            </li>
             {matches.map((profile) => (
               <li key={profile.id}>
                 <button
@@ -193,11 +178,7 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
           {/* Leaves the popover for another screen; it should not also leave
               the profile behind. */}
           <a
-            href={
-              selected === ''
-                ? '/settings/profiles'
-                : `/settings/profiles?profile=${encodeURIComponent(selected)}`
-            }
+            href={`/settings/profiles?profile=${encodeURIComponent(selected)}`}
             className="wa-profile-manage"
           >
             Manage Profiles

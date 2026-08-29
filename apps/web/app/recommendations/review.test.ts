@@ -44,7 +44,7 @@ function proposal(id: string, status: string, reason: string): ProposalView {
 }
 
 describe('ReviewWorkspace operator queue', () => {
-  it('groups by next decision, then reason, while keeping export explicitly read-only', () => {
+  it('puts the populated queue and compact selection bar ahead of progressive decision details', () => {
     const markup = renderToStaticMarkup(
       createElement(ReviewWorkspace, {
         proposals: [
@@ -65,10 +65,22 @@ describe('ReviewWorkspace operator queue', () => {
     expect(markup).toContain('decision-lane-ready_to_export');
     expect(markup).toContain('decision-lane-completed');
     expect(markup).toContain('reason-group-needs_review-high_acos');
-    expect(markup).toContain('Yes, export changes');
-    expect(markup).toContain('OpenSpell does not update Amazon');
-    expect(markup).toContain(
-      'Selects caps from this run’s snapshot; it is not a persisted campaign assignment.',
-    );
+    expect(markup).toContain('Recommendation queue');
+    expect(markup).toContain('3 of 3 shown');
+    expect(markup).toContain('0</strong> of 3 filtered selected');
+    expect(markup).toContain('Select all 3 filtered');
+    expect(markup).toContain('Prepare export · 1');
+
+    const filters = markup.indexOf('Recommendation queue');
+    const selection = markup.indexOf('Selection and decisions');
+    const lanes = markup.indexOf('decision-lane-needs_review');
+    expect(filters).toBeLessThan(selection);
+    expect(selection).toBeLessThan(lanes);
+
+    // Notes and the irreversible-looking confirmation do not compete with the
+    // queue until the operator intentionally opens that action.
+    expect(markup).not.toContain('Dismissal note');
+    expect(markup).not.toContain('Yes, export changes');
+    expect(markup).not.toContain('Strategy group for export');
   });
 });

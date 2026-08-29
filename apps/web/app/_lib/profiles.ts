@@ -11,11 +11,12 @@
  * to actually be written down: `orgId` comes from `gate()` and travels into the
  * SQL.
  */
-import { asc, eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { cache } from 'react';
 import { adProfiles } from '@wizard-ads/db';
 import type { AdProfile, DbHandle } from '@wizard-ads/db';
 import { PROFILE_COOKIE } from '../../src/cookies';
+import { orderActiveProfiles, resolveActiveProfile } from '../../src/data/active-profile';
 
 export interface ProfileRecord
   extends Pick<
@@ -39,24 +40,23 @@ async function readProfiles(handle: DbHandle, orgId: string): Promise<ProfileRec
   const rows = await handle.db
     .select()
     .from(adProfiles)
-    .where(eq(adProfiles.orgId, orgId))
-    // Lead with the human name, falling back to the Amazon id when a profile has
-    // none, so the switcher reads the way the roster does.
-    .orderBy(asc(sql`coalesce(${adProfiles.accountName}, ${adProfiles.amazonProfileId})`));
+    .where(eq(adProfiles.orgId, orgId));
 
-  return rows.map((row) => ({
-    id: row.id,
-    amazonProfileId: row.amazonProfileId,
-    label: row.accountName ?? row.amazonProfileId,
-    region: row.region,
-    countryCode: row.countryCode,
-    currencyCode: row.currencyCode,
-    syncEnabled: row.syncEnabled,
-    targetAcos: row.targetAcos,
-    monthlyBudget: row.monthlyBudget,
-    goalLens: row.goalLens,
-    timezone: row.timezone,
-  }));
+  return orderActiveProfiles(
+    rows.map((row) => ({
+      id: row.id,
+      amazonProfileId: row.amazonProfileId,
+      label: row.accountName ?? row.amazonProfileId,
+      region: row.region,
+      countryCode: row.countryCode,
+      currencyCode: row.currencyCode,
+      syncEnabled: row.syncEnabled,
+      targetAcos: row.targetAcos,
+      monthlyBudget: row.monthlyBudget,
+      goalLens: row.goalLens,
+      timezone: row.timezone,
+    })),
+  );
 }
 
 /**
@@ -99,9 +99,5 @@ export function selectProfile(
   profiles: readonly ProfileRecord[],
   requested: string | undefined,
 ): ProfileRecord | null {
-  if (profiles.length === 0) return null;
-  const match = requested === undefined ? undefined : profiles.find((p) => p.id === requested);
-  if (match) return match;
-  const firstSynced = profiles.find((p) => p.syncEnabled);
-  return firstSynced ?? (profiles[0] as ProfileRecord);
+  return resolveActiveProfile(profiles, requested);
 }

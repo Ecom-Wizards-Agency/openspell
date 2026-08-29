@@ -1,6 +1,8 @@
 import { Suspense } from 'react';
+import { redirect } from 'next/navigation';
 import { readCreativePerformance } from '@wizard-ads/db';
 import { gate } from '../../src/auth/guard';
+import { canonicalProfilePath } from '../../src/data/active-profile';
 import { gateMessage } from '../../src/ui/gate-message';
 import { Badge, EmptyState, PageHeader } from '../../src/ui/primitives';
 import { OperatorContext } from '../../src/ui/operator-context';
@@ -66,6 +68,8 @@ export default async function CreativePerformancePage({ searchParams }: PageProp
       </main>
     );
   }
+  const canonical = canonicalProfilePath('/creative', query, profile.id);
+  if (canonical !== null) redirect(canonical);
 
   const rows = readCreativePerformance(entry.handle, {
     orgId,

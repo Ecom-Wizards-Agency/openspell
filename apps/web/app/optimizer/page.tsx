@@ -17,9 +17,11 @@
  * every read below is scoped by the org the gate resolved.
  */
 import type { ReactNode } from 'react';
+import { redirect } from 'next/navigation';
 import { assessFreshness } from '@wizard-ads/ui';
 import { gate } from '../../src/auth/guard';
 import { can } from '../../src/auth/roles';
+import { canonicalProfilePath } from '../../src/data/active-profile';
 import { gateMessage } from '../../src/ui/gate-message';
 import { Button, EmptyState, PageHeader } from '../../src/ui/primitives';
 import { FreshnessBar } from '../../src/ui/dashboard';
@@ -86,6 +88,8 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
       </main>
     );
   }
+  const canonical = canonicalProfilePath('/optimizer', { ...params }, profile.id);
+  if (canonical !== null) redirect(canonical);
 
   const {
     runs,

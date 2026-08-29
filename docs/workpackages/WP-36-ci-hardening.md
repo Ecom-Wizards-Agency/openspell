@@ -26,9 +26,13 @@ it claims. Land this early.
 3. **Guards list**: `apps/web/e2e/guards.spec.ts` `GUARDED` — add `/optimizer`,
    `/optimizer/groups`, `/experiments`, `/connect-claude`. (Do NOT add
    `/settings/members` — that route lands in WP-39; leave a comment placeholder.)
-4. **Smoke spec** `apps/web/e2e/smoke.spec.ts`: authenticated load of `/optimizer`,
-   `/dashboard`, `/crosscheck`, `/connect-claude`, asserting each renders its heading OR
-   its known empty state (`data-testid`s exist; no data assertions).
+4. **Authenticated artifact smoke**: the original standalone
+   `apps/web/e2e/smoke.spec.ts` was consolidated into the authenticated half of
+   `apps/web/e2e/guards.spec.ts` in WP-102. The guarded-route loop now asserts the
+   primary data-backed pages render their expected headings while it already visits
+   them. This preserves the artifact check without compiling and rendering the same
+   large route set a third time in one `next dev` process, which exhausted the CI
+   runner heap as the product surface grew.
 
 ## Constraints
 
