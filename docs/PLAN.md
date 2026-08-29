@@ -194,6 +194,17 @@ layer is (explained, not eliminated).
 
 ## Phase plan
 
+The sequence below is the original architecture plan, not a current status board. The dated owner
+labels and duration estimates are retained as history. `docs/STATUS.md` is authoritative for what
+is merged, deployed, live-gated or still open.
+
+As of 2026-08-29, the read-only parts of several originally v2 lanes have been pulled forward:
+Asset-ID creative storage and its operator surface, weekly SQP/query intelligence, Marketing
+Stream/dayparting storage and UI, and stock-aware strategy context now exist without enabling an
+Amazon write. Their provider authentication, subscription and live parity gates remain explicit.
+The v1 exit criterion above still gates direct apply, automatic rollback, automatic dayparting and
+MCP mutation tools.
+
 - **v0 (~2 wks)** — skeleton proves the loop: scaffold + frozen contracts, ~/os registration,
   Supabase project + migrations + RLS, OAuth live with 211 profiles listed, entity sync +
   spCampaigns daily report for 2 pilot profiles end-to-end into facts, minimal grid, fixtures
