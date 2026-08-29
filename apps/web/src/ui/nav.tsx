@@ -1,6 +1,7 @@
 /**
- * The application frame: a left sidebar, a top bar, and the only place the app
- * says whether anybody is signed in.
+ * The authenticated application frame: a left sidebar, a top bar, and the only
+ * place the app says which operator is signed in. Anonymous screens use a quiet
+ * public header rather than advertising an operator navigation they cannot open.
  *
  * Before this existed the product had no visible way in — `/login` was reachable
  * only by typing it — and then, briefly, a flat bar of ten equal links. Neither
@@ -48,8 +49,27 @@ export interface NavBarProps {
 }
 
 export function NavBar({ user, profiles = [], orgName = null }: NavBarProps): ReactNode {
+  if (user === null) {
+    return (
+      <div data-testid="app-nav" data-auth-state="anonymous">
+        <a className="wa-skip" href="#wa-main">
+          Skip to content
+        </a>
+
+        <header className="wa-public-topbar">
+          <ProfileAwareBrand />
+          <span className="wa-topbar-spacer" />
+          <ThemeToggle />
+          <a href="/login" className="wa-btn wa-btn--sm" data-testid="nav-signin">
+            Sign in
+          </a>
+        </header>
+      </div>
+    );
+  }
+
   return (
-    <div data-testid="app-nav">
+    <div data-testid="app-nav" data-auth-state="authenticated">
       <a className="wa-skip" href="#wa-main">
         Skip to content
       </a>
@@ -77,13 +97,7 @@ export function NavBar({ user, profiles = [], orgName = null }: NavBarProps): Re
         <ProfileSwitcher profiles={profiles} />
         <ThemeToggle />
 
-        {user === null ? (
-          <a href="/login" className="wa-btn wa-btn--sm" data-testid="nav-signin">
-            Sign in
-          </a>
-        ) : (
-          <IdentityMenu email={user.email} />
-        )}
+        <IdentityMenu email={user.email} />
       </header>
     </div>
   );
