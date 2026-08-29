@@ -13,7 +13,9 @@
  * this preflight proves the protected server artifact before alias movement.
  *
  * Usage:
- *   pnpm --filter @wizard-ads/web verify:release-candidate -- "$CANDIDATE_URL" "$(git rev-parse HEAD)"
+ *   OPENSPELL_RELEASE_CANDIDATE_URL="$CANDIDATE_URL" \
+ *   OPENSPELL_RELEASE_EXPECTED_REVISION="$RELEASE_REVISION" \
+ *     pnpm --silent --filter @wizard-ads/web verify:release-candidate
  */
 import { spawn } from 'node:child_process';
 import { chromium } from '@playwright/test';
@@ -24,7 +26,10 @@ import {
   type ReleaseRouteCheck,
 } from '../src/release/candidate-artifacts';
 import {
+  connectToCdpSafely,
   inspectCandidateRevision,
+  publicReleaseFailure,
+  ReleaseVerifierError,
   requiredExpectedRevision,
   runRevisionFirstGate,
 } from '../src/release/candidate-revision';
@@ -45,20 +50,21 @@ interface RouteResult {
 }
 
 async function main(): Promise<void> {
-  const suppliedArguments = process.argv.slice(2).filter((argument) => argument !== '--');
-  const candidate = candidateOrigin(suppliedArguments[0]);
-  const expectedRevision = requiredExpectedRevision(suppliedArguments[1]);
-  if (suppliedArguments.length !== 2) {
-    throw new Error('Pass only the immutable candidate URL and expected full Git commit SHA.');
+  if (process.argv.slice(2).some((argument) => argument !== '--')) {
+    throw new ReleaseVerifierError('arguments_not_allowed');
   }
-  const production = new URL(PRODUCTION_ORIGIN);
+  const candidate = candidateOrigin(process.env['OPENSPELL_RELEASE_CANDIDATE_URL']);
+  const expectedRevision = expectedReleaseRevision(
+    process.env['OPENSPELL_RELEASE_EXPECTED_REVISION'],
+  );
+  const production = productionOrigin(PRODUCTION_ORIGIN);
   if (candidate.origin === production.origin) {
-    throw new Error('Candidate must be an immutable deployment URL, not the production alias.');
+    throw new ReleaseVerifierError('candidate_is_production');
   }
 
   const gate = await runRevisionFirstGate({
     checkRevision: async () => verifyRevision(candidate, expectedRevision),
-    checkRoutes: async () => verifyAuthenticatedRoutes(candidate, production),
+    checkRoutes: async () => verifyAuthenticatedRoutes(candidate, production, CDP_URL),
     routePassed: (route) => route.passed,
   });
 
@@ -84,17 +90,26 @@ async function verifyRevision(candidate: URL, expectedRevision: string) {
 async function verifyAuthenticatedRoutes(
   candidate: URL,
   production: URL,
+  cdpEndpoint: string,
 ): Promise<readonly RouteResult[]> {
-  const browser = await chromium.connectOverCDP(CDP_URL);
+  const browser = await connectToCdpSafely(
+    cdpEndpoint,
+    async (validatedEndpoint) => chromium.connectOverCDP(validatedEndpoint),
+  );
   const sourceContext = browser.contexts()[0];
   if (sourceContext === undefined) {
-    throw new Error('No Chrome context is available through CDP.');
+    throw new ReleaseVerifierError('cdp_session_unavailable');
   }
 
-  const sourceCookies = (await sourceContext.cookies(production.origin))
-    .filter((cookie) => AUTH_COOKIE.test(cookie.name));
+  let sourceCookies: Awaited<ReturnType<typeof sourceContext.cookies>>;
+  try {
+    sourceCookies = (await sourceContext.cookies(production.origin))
+      .filter((cookie) => AUTH_COOKIE.test(cookie.name));
+  } catch {
+    throw new ReleaseVerifierError('cdp_session_unavailable');
+  }
   if (sourceCookies.length === 0) {
-    throw new Error('The Chrome session has no reusable OpenSpell authentication cookies.');
+    throw new ReleaseVerifierError('authentication_missing');
   }
   const cookieHeader = sourceCookies
     .map((cookie) => `${cookie.name}=${cookie.value}`)
@@ -166,7 +181,7 @@ function curlConfig(cookieHeader?: string): string {
   // curl config uses double-quoted values. Auth cookie values are URL-safe, but
   // escaping both special characters keeps this stdin boundary correct.
   if (/[\r\n]/.test(cookieHeader)) {
-    throw new Error('Authentication cookie shape is invalid.');
+    throw new ReleaseVerifierError('authentication_invalid');
   }
   const escaped = cookieHeader.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
   return `header = "Cookie: ${escaped}"\nmax-time = 30\n`;
@@ -180,7 +195,7 @@ function spawnWithInput(
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: process.cwd(),
-      env: process.env,
+      env: sanitizedChildEnvironment(),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -191,19 +206,33 @@ function spawnWithInput(
     // Drain stderr without retaining it. Neither CLI diagnostics nor future
     // curl changes can accidentally echo a sensitive header into this report.
     child.stderr.resume();
-    child.on('error', () => reject(new Error('Could not start the Vercel candidate check.')));
+    child.on('error', () => reject(new ReleaseVerifierError('vercel_cli_unavailable')));
     child.on('close', (exitCode) => resolve({ exitCode, stdout }));
     child.stdin.end(input);
   });
 }
 
+function sanitizedChildEnvironment(): NodeJS.ProcessEnv {
+  const environment = { ...process.env };
+  delete environment['OPENSPELL_RELEASE_CANDIDATE_URL'];
+  delete environment['OPENSPELL_RELEASE_EXPECTED_REVISION'];
+  delete environment['OPENSPELL_CDP_URL'];
+  delete environment['OPENSPELL_PRODUCTION_ORIGIN'];
+  return environment;
+}
+
 function candidateOrigin(input: string | undefined): URL {
   if (input === undefined) {
-    throw new Error('Pass the immutable candidate deployment URL as the first argument.');
+    throw new ReleaseVerifierError('candidate_missing');
   }
-  const candidate = new URL(input);
+  let candidate: URL;
+  try {
+    candidate = new URL(input);
+  } catch {
+    throw new ReleaseVerifierError('invalid_candidate');
+  }
   if (candidate.protocol !== 'https:') {
-    throw new Error('Candidate deployment URL must use HTTPS.');
+    throw new ReleaseVerifierError('invalid_candidate');
   }
   if (
     !CANDIDATE_HOST.test(candidate.hostname)
@@ -211,14 +240,39 @@ function candidateOrigin(input: string | undefined): URL {
     || candidate.password !== ''
     || candidate.port !== ''
   ) {
-    throw new Error('Candidate must be an immutable deployment owned by the OpenSpell project.');
+    throw new ReleaseVerifierError('invalid_candidate');
   }
   return candidate;
+}
+
+function expectedReleaseRevision(input: string | undefined): string {
+  try {
+    return requiredExpectedRevision(input);
+  } catch {
+    throw new ReleaseVerifierError('expected_revision_invalid');
+  }
+}
+
+function productionOrigin(input: string): URL {
+  let production: URL;
+  try {
+    production = new URL(input);
+  } catch {
+    throw new ReleaseVerifierError('production_origin_invalid');
+  }
+  if (
+    !['http:', 'https:'].includes(production.protocol)
+    || production.username !== ''
+    || production.password !== ''
+  ) {
+    throw new ReleaseVerifierError('production_origin_invalid');
+  }
+  return production;
 }
 
 void main()
   .then(() => process.exit(process.exitCode ?? 0))
   .catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : 'Release candidate verification failed.');
+    console.error(publicReleaseFailure(error));
     process.exit(1);
   });

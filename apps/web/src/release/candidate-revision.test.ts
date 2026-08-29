@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  connectToCdpSafely,
   inspectCandidateRevision,
+  publicReleaseFailure,
+  ReleaseVerifierError,
   requiredExpectedRevision,
   runRevisionFirstGate,
   type CandidateRevisionCheck,
@@ -93,5 +96,35 @@ describe('release candidate revision verification', () => {
     expect(checkRoutes).toHaveBeenCalledOnce();
     expect(result.passed).toBe(false);
     expect(result.routes).toHaveLength(2);
+  });
+
+  it('does not expose a credentialed CDP endpoint when the connector fails', async () => {
+    const username = ['synthetic', 'cdp', 'user'].join('-');
+    const password = ['synthetic', 'cdp', 'password'].join('-');
+    const hostname = ['private', 'cdp', 'host'].join('-') + '.test';
+    const endpoint = `https://${username}:${password}@${hostname}:9222`;
+    let failure: unknown;
+
+    try {
+      await connectToCdpSafely(endpoint, async (validatedEndpoint) => {
+        throw new Error(`Playwright could not connect to ${validatedEndpoint}`);
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(ReleaseVerifierError);
+    const output = publicReleaseFailure(failure);
+    expect(output).toBe('OPENSPELL_RELEASE_ERROR:cdp_unavailable');
+    expect(output).not.toContain(username);
+    expect(output).not.toContain(password);
+    expect(output).not.toContain(hostname);
+  });
+
+  it('uses one fixed diagnostic for unexpected exception values', () => {
+    const sensitive = ['private', 'runtime', 'detail'].join('-');
+    const output = publicReleaseFailure(new Error(sensitive));
+    expect(output).toBe('OPENSPELL_RELEASE_ERROR:unexpected_failure');
+    expect(output).not.toContain(sensitive);
   });
 });

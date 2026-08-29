@@ -1,5 +1,60 @@
 import { normalizePublicGitRevision } from './public-revision';
 
+export type ReleaseVerifierErrorCode =
+  | 'arguments_not_allowed'
+  | 'candidate_missing'
+  | 'invalid_candidate'
+  | 'expected_revision_invalid'
+  | 'production_origin_invalid'
+  | 'candidate_is_production'
+  | 'cdp_endpoint_invalid'
+  | 'cdp_unavailable'
+  | 'cdp_session_unavailable'
+  | 'authentication_missing'
+  | 'authentication_invalid'
+  | 'vercel_cli_unavailable'
+  | 'unexpected_failure';
+
+export class ReleaseVerifierError extends Error {
+  readonly code: ReleaseVerifierErrorCode;
+
+  constructor(code: ReleaseVerifierErrorCode) {
+    super(code);
+    this.name = 'ReleaseVerifierError';
+    this.code = code;
+  }
+}
+
+export function publicReleaseFailure(error: unknown): string {
+  const code = error instanceof ReleaseVerifierError ? error.code : 'unexpected_failure';
+  return `OPENSPELL_RELEASE_ERROR:${code}`;
+}
+
+export function requiredCdpEndpoint(value: string): string {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(value);
+  } catch {
+    throw new ReleaseVerifierError('cdp_endpoint_invalid');
+  }
+  if (!['http:', 'https:', 'ws:', 'wss:'].includes(endpoint.protocol)) {
+    throw new ReleaseVerifierError('cdp_endpoint_invalid');
+  }
+  return endpoint.href;
+}
+
+export async function connectToCdpSafely<Browser>(
+  endpoint: string,
+  connect: (validatedEndpoint: string) => Promise<Browser>,
+): Promise<Browser> {
+  const validatedEndpoint = requiredCdpEndpoint(endpoint);
+  try {
+    return await connect(validatedEndpoint);
+  } catch {
+    throw new ReleaseVerifierError('cdp_unavailable');
+  }
+}
+
 export type RevisionCheckReason =
   | 'matched'
   | 'request_failed'

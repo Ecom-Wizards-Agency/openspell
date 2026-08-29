@@ -41,14 +41,24 @@ test "${#release_revision}" = 40
 candidate_url="$(vercel deploy --prod --skip-domain \
   --build-env "OPENSPELL_APP_VERSION=$release_revision" \
   --env "OPENSPELL_APP_VERSION=$release_revision")"
-pnpm --filter @wizard-ads/web verify:release-candidate -- \
-  "$candidate_url" "$release_revision"
+OPENSPELL_RELEASE_CANDIDATE_URL="$candidate_url" \
+OPENSPELL_RELEASE_EXPECTED_REVISION="$release_revision" \
+  pnpm --silent --filter @wizard-ads/web verify:release-candidate
 ```
 
 The report identifies the target only as `immutable-candidate`; it includes the
 public expected and observed Git revisions plus named route assertions, but not
 the candidate hostname. Vercel CLI diagnostics are drained rather than retained
 because future CLI output could include protected request details.
+
+Candidate, expected-revision, and optional `OPENSPELL_CDP_URL` inputs are read
+from validated environment variables. They are never package-script arguments,
+so pnpm cannot repeat them in its command banner or failure summary. The verifier
+removes those variables before starting the Vercel child process. Candidate URLs
+with a username, password, port, or unexpected host fail before that process
+starts. Any Playwright, CDP, URL-parser, or child-process exception becomes one
+fixed `OPENSPELL_RELEASE_ERROR:<code>` diagnostic; dependency error messages are
+never printed.
 
 Only after the command exits successfully may the operator promote that same
 in-memory candidate value:

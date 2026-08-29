@@ -14,8 +14,13 @@ generic headings.
   full Git commit revision from Vercel build metadata or an explicit non-secret
   app-version fallback.
 - The verifier requires the expected full commit SHA as a separate explicit
-  release argument. Missing, malformed, or mismatched revisions fail before it
+  release input. Missing, malformed, or mismatched revisions fail before it
   opens CDP or requests authenticated routes.
+- Candidate, expected-revision, and CDP inputs never enter package-manager
+  arguments. The verifier validates environment inputs and removes them before
+  starting its Vercel child process.
+- Dependency and unexpected exceptions map to fixed diagnostic codes. Their
+  messages, endpoints, usernames, passwords, and hostnames are never printed.
 - Authentication cookies remain in memory and enter curl through stdin config;
   response bodies, cookie names, and cookie values never enter the report.
 - Every route requires all named artifacts and rejects application, login, and
@@ -42,6 +47,8 @@ It never reports the authenticated response body or immutable candidate hostname
 - A stale recommendations response with only the heading fails.
 - Exact revision match passes; mismatch, missing revision, and malformed revision
   each fail with no authenticated route QA.
+- A real pnpm subprocess regression proves a rejected credentialed candidate and
+  credentialed CDP endpoint never appear in stdout or stderr.
 - Current grid server markup, official brand marker, and focused recommendations marker pass.
 - An authenticated error surface fails even when all required strings appear.
 - Typecheck, lint, unit tests, and public-repository hygiene pass.
