@@ -16,6 +16,7 @@ in the repo talks to the Amazon Ads API — `apps/web` reads the database the wo
 | `schedules.ts` | The default cadences, as rows rather than as a comment. |
 | `ads-api.ts` | The narrow client interface the worker needs, plus `DbAdsApiClient` — the adapter that maps it onto the real `@wizard-ads/ads-api` client (per-connection/per-region, Vault-backed refresh token). |
 | `main.ts` | Process entry: config, health server, the two passes, graceful shutdown. |
+| `marketing-stream-sqs.ts` | Optional SQS long-poll ingress. It acknowledges only after the raw ledger and hourly projection counts reconcile. |
 
 ## The job pipeline
 
@@ -127,6 +128,28 @@ all. `variant` joins the key; existing rows default to `default` and keep the un
 | `WORKER_AUTH_HEALTHCHECK_MINUTES` | `60` | Auth probe interval. |
 | `WORKER_STALE_CLAIM_AFTER` | `30 minutes` | How long a `running` claim may go quiet. |
 | `CROSSCHECK_INBOX_DIR` | unset | Root of the AdLabs export inbox. Never a tracked default. |
+| `MARKETING_STREAM_SQS_QUEUE_URL` | unset | Enables Marketing Stream SQS ingestion. Kept out of health and logs. AWS credentials and region use the standard SDK provider chain. |
+
+### Marketing Stream
+
+When `MARKETING_STREAM_SQS_QUEUE_URL` is set, the same always-on process starts
+an independent 20-second SQS long poll. It accepts the shared
+`MarketingStreamBatchEnvelope` directly or inside an SNS notification, loads
+timezone/currency from the profile and settling/budget-cap policy from tenant
+strategy data, then invokes the existing counted ledger and hourly normalizer.
+No dayparting number is defaulted in source.
+
+The SQS message is deleted only after the envelope count, ledger count,
+normalization count, and canonical read-back count agree with zero refusals.
+Malformed, unconfigured, stale-race, database, and acknowledgement failures are
+left for SQS retry and the queue's DLQ/redrive policy. `/healthz` reports only
+sanitized counters and timestamps.
+
+The queue producer must map the subscribed Amazon dataset version into
+`wizard-ads.marketing-stream-batch.v1`; the worker deliberately refuses unknown
+provider payloads rather than guessing fields. AWS queue/DLQ provisioning,
+subscription confirmation, hosted migration application, and live count
+crosschecks remain operator-gated prerequisites.
 
 Region concurrency is capped in code at 2 concurrent report creates per region (NA/EU/FE
 independently), which is the conservative starting point the plan asks for.

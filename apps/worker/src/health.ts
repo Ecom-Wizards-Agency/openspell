@@ -1,13 +1,27 @@
 import { createServer, type Server } from 'node:http';
 import type { SyncWorker } from './worker.js';
 
-export function startHealthServer(worker: SyncWorker, port: number): Promise<Server> {
+export interface WorkerHealthComponents {
+  marketingStream?: { status(): object };
+}
+
+export function startHealthServer(
+  worker: SyncWorker,
+  port: number,
+  components: WorkerHealthComponents = {},
+): Promise<Server> {
   const server = createServer((request, response) => {
     if (request.method !== 'GET' || request.url !== '/healthz') {
       response.writeHead(404).end();
       return;
     }
-    const body = JSON.stringify({ status: 'ok', ...worker.status() });
+    const body = JSON.stringify({
+      status: 'ok',
+      ...worker.status(),
+      components: {
+        marketingStream: components.marketingStream?.status() ?? { enabled: false },
+      },
+    });
     response.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) });
     response.end(body);
   });

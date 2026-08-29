@@ -7,6 +7,7 @@ export * from './datadive.js';
 export * from './dayparting.js';
 export * from './health.js';
 export * from './keepa.js';
+export * from './marketing-stream-sqs.js';
 export * from './mrp.js';
 export * from './parsers.js';
 export * from './region-token-buckets.js';

@@ -20,6 +20,8 @@ export interface WorkerConfig {
   authHealthcheckIntervalMs: number;
   /** How long a `running` job may hold its claim before another worker may take it. */
   staleClaimAfter: string;
+  /** Enables the independent long-poll consumer when present. Never logged. */
+  marketingStreamQueueUrl: string | undefined;
 }
 
 function positiveInteger(value: string | undefined, fallback: number, name: string): number {
@@ -56,5 +58,6 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     authHealthcheckIntervalMs:
       positiveInteger(env['WORKER_AUTH_HEALTHCHECK_MINUTES'], 60, 'WORKER_AUTH_HEALTHCHECK_MINUTES') * 60_000,
     staleClaimAfter: env['WORKER_STALE_CLAIM_AFTER'] ?? '30 minutes',
+    marketingStreamQueueUrl: env['MARKETING_STREAM_SQS_QUEUE_URL']?.trim() || undefined,
   };
 }
