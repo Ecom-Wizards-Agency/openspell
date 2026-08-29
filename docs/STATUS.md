@@ -1,7 +1,7 @@
 # OpenSpell — program status board
 
 Snapshot cut 2026-08-30 from `origin/main` at
-`705ea4325dee86dcea72d6febb471ea6e924a388`. Here, **merged** means the implementation is
+`f1b9efc1813247ab72a36dbeca56e1e96bf069d1`. Here, **merged** means the implementation is
 reachable from that revision. It does not by itself mean live-data verified, deployed, or
 accepted by an operator. Full original evidence and source pointers are in
 `docs/workpackages/WP-52-reconciliation.md`; the post-release capability design is in
@@ -11,15 +11,16 @@ accepted by an operator. Full original evidence and source pointers are in
 
 | Surface | Verified state at the snapshot |
 |---|---|
-| Repository | `origin/main` is `705ea43` and includes merged PRs #30 and #32. Both passed typecheck, lint, tests, hygiene and Playwright before merge; the last exact-main run remains the successful `9717c8b` run. |
-| Production web | Healthy and intentionally held at `caff194`. Nine authenticated operator routes returned HTTP 200 with no page or console error after rollback. Main is ahead and is not yet deployed. |
+| Repository | `origin/main` is `f1b9efc` and includes merged PRs #36 and #37. Both passed typecheck, lint, tests, hygiene and Playwright on their exact PR heads before merge. Exact-main Actions jobs now fail before a runner starts because the organization reports failed payments or an insufficient Actions spending limit; this is an infrastructure block, not code execution evidence. The last successful exact-main run remains `6795fee`. |
+| Production web | Healthy and intentionally held at `caff194`. Nine authenticated operator routes returned HTTP 200 with no page or console error after rollback. Main is ahead and is not yet deployed. The live shell still renders the obsolete placeholder letter and `/brand/wizards-ai-icon.svg` returns HTTP 404 even though current main contains the verified official asset. |
 | Deployment environment | Newer candidates consumed corrupted or malformed production runtime-secret metadata after the healthy build. The authoritative 1Password service-account session is unavailable, so values have not been safely restored. No further production promotion is allowed until an immutable candidate passes the release gate. |
 | Hosted database | The production migration ledger is applied exactly through `20260829160100_sb_video_observed_ingestion.sql`. No unmerged write-gateway migration has been applied. |
 | MCP | The public read-only service was verified from Codex and Claude Code on an older application revision. Exact-main activation on the always-on host is blocked on authoritative server environment recovery from 1Password. |
 | Amazon writes | No production migration or Amazon write from the open SP write-gateway PR has run. PR #24 remains open and is not merge-safe pending independent safety review. |
 
-Since the prior status cut, the first-parent history adds merged PRs #18–23 and #25–32.
-PR #24 remains open; a gap in PR numbers is not treated as merged work.
+Since the prior status cut, the first-parent history adds merged PRs #18–23, #25–32, #34,
+#36 and #37. PRs #24, #33, #35 and #38 remain open; a gap in PR numbers is not treated as
+merged work.
 
 ## Repository state
 
@@ -130,9 +131,9 @@ implementation brief in `docs/workpackages/`.
 | 93 | Guarded Amazon write-gateway policy | merged | operator-approved worker-only writes are authorized by policy; no runtime write path from this package is live |
 | 94 | Operator authorization policy | merged | package boundaries and bounded live-test authorization were updated without tracking profiles or credentials |
 | 95 | Web critical-path performance | merged and deployed | request-local identity reuse, process-owned database pooling, streamed secondary evidence and concurrent optimizer reads |
-| 96 | Guarded SP write runtime | open; not merge-safe | PR #24 has green CI but remains under independent safety review; its migration is unapplied and no Amazon call has run |
+| 96 | Guarded SP write runtime | open; not merge-safe | PR #24 is frozen at a locally verified repair candidate and remains under independent adversarial safety review. Hosted jobs cannot start because of the Actions billing block; its migration is unapplied and no Amazon call has run. |
 | 97 | Freshness-ledger compatibility | merged and deployed | the web selects only fields available in the hosted report ledger |
-| 98 | OpenSpell brand mark | merged and deployed | approved Wizards AI symbol replaces the placeholder letter while stable package names remain unchanged |
+| 98 | OpenSpell brand mark | merged; live artifact stale | the tracked SVG is byte-for-byte identical to the approved Wizards AI symbol and source replaces the placeholder letter. Production still renders the old letter and returns HTTP 404 for the SVG, proving the current artifact is not deployed. |
 | 99 | Vercel environment boundary | merged and deployed | server runtime variable names pass through Turborepo without committing values |
 | 100 | Query and loader performance | merged; not deployed | opt-in sanitized timings, campaign-grain preaggregation, parallel newest-run evidence and an exact grid overflow sentinel |
 | 101 | Frankfurt function placement | superseded | the setting was tested but reverted before promotion after the candidate failed full-route QA |
@@ -141,6 +142,11 @@ implementation brief in `docs/workpackages/`.
 | 104 | Safe region rollback | merged | main again uses the previously verified Vercel function-region configuration |
 | 105 | Immutable release-candidate gate | merged | GET-only authenticated verification covers eleven critical routes and fails before production promotion on bad status, content or application errors |
 | 106 | Focused recommendation review | merged; not deployed | compact filters, exact filtered selection and one action bar replace three equal-weight prequeue panels while preserving exact export confirmation |
+| 110 | Task-focused navigation | merged; not deployed | the shell removes low-value filler navigation and keeps the operator workspace primary |
+| 112 | Release artifact assertions | open | PR #35 adds current-revision logo, active-account/date-range and focused-review assertions; local gates pass, but hosted jobs cannot start because of the Actions billing block |
+| 113 | OpenSpell MCP identity | merged; host activation gated | setup and operator copy use OpenSpell while stable environment-variable and package identifiers remain compatible |
+| 114 | Date-range browser gate | merged; not deployed | Dashboard and Grid exercise all seven preset ranges through authenticated Playwright |
+| 116 | Hydration/readiness reliability | open; not merge-safe | PR #38 fixes several cold-load races, but independent review found the Grid readiness boundary incomplete; repair and regression coverage are in progress and hosted jobs are billing-blocked |
 
 ## Milestone gates
 
@@ -165,6 +171,11 @@ implementation brief in `docs/workpackages/`.
   latency, consumed most of the wait. One synthetic no-match filter transition completed in 71 ms,
   which is encouraging interaction evidence but not a p95 benchmark. Candidate verification must
   therefore assert distinctive current UI artifacts as well as headings and status codes.
+- The same artifact check proves the branding drift directly: the source SVG matches the approved
+  Wizards AI sygnets byte-for-byte, but the deployed shell still contains the placeholder letter,
+  has no brand-mark background image, and returns HTTP 404 for the tracked SVG path. PR #35 adds a
+  candidate asset request and authenticated DOM marker gate so a heading match cannot hide this
+  class of stale deployment again.
 - A later production-target candidate inherited malformed database/runtime secret metadata and
   returned HTTP 500 on four database-backed routes. The healthy and failing builds had 1,147
   byte-identical artifact files; the relevant production secret metadata had changed after the
@@ -301,11 +312,14 @@ implementation brief in `docs/workpackages/`.
       profile-scope refusal were verified from both supported clients on its deployed revision.
 - [ ] Restore the authoritative production runtime values from 1Password, then validate a
       production-target immutable candidate before moving any alias.
+- [ ] Repair the GitHub organization payment or Actions spending-limit state. Current required
+      jobs terminate before any runner or repository step begins, so newer PR heads cannot earn
+      hosted release evidence.
 - [ ] Deploy a reviewed current-main descendant only after the immutable gate passes, then repeat
       full authenticated route, error, data and timing QA on the production domain.
 - [x] Active-profile canonicalization passed both hosted gates and merged through PR #30.
 - [ ] Resolve PR #24's independent write-safety review. Preview its exact migration separately;
-      do not apply it or call Amazon merely because CI is green.
+      do not apply it or call Amazon merely because local checks are green.
 - [ ] Prove one authoritative SB Video Asset-ID mapping/fact count crosscheck and one read-only SP
       report per supported grain without putting profile data in Git.
 - [ ] Configure and verify the weekly SQP provider path and the Marketing Stream subscription;
