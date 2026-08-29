@@ -3,10 +3,10 @@
 OpenSpell is an in-house Amazon Advertising platform: it syncs advertising profiles and entities,
 ingests Reporting v3 asynchronously, stores facts at target, search-term, placement
 and profile grain, and produces bid and budget recommendations that show their work.
-Preview is the default. An operator may explicitly approve a supported batch for the
-worker to send through the Amazon Advertising API; every write must be bounded,
-idempotent, audited, resynchronized, and conflict checked. The MCP service remains an
-analytical read surface and cannot approve itself. Built as a TypeScript monorepo:
+Preview is the default. Supported mutations use an operator-approved, worker-only
+contract: every write must be bounded, idempotent, audited, resynchronized, and conflict
+checked. See `docs/STATUS.md` for current runtime availability. The MCP service remains
+an analytical read surface and cannot approve itself. Built as a TypeScript monorepo:
 Next.js on Vercel, Supabase for Postgres, auth and scheduling, and a small always-on
 worker for the parts of Amazon's API that take hours rather than milliseconds.
 
