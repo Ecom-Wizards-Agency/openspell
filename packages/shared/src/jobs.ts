@@ -239,6 +239,8 @@ export const AmazonObserveJob = z.object({
   ...jobBase,
   type: z.literal(JobType.enum['amazon.observe']),
   executionId: Uuid,
+  /** One immutable provider dispatch cycle; every follow-up attempt retains it. */
+  generation: Uuid,
   attempt: z.number().int().nonnegative().default(0),
 });
 

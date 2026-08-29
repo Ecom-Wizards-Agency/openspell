@@ -25,17 +25,33 @@ const numericAction = {
   inverseValue: z.number().finite(),
 };
 
+function requireCurrencyMinorUnits(
+  value: { expectedValue: number; requestedValue: number; inverseValue: number },
+  context: z.RefinementCtx,
+): void {
+  for (const field of ['expectedValue', 'requestedValue', 'inverseValue'] as const) {
+    const scaled = value[field] * 100;
+    if (Math.abs(scaled - Math.round(scaled)) > 1e-8) {
+      context.addIssue({
+        code: 'custom',
+        path: [field],
+        message: 'Sponsored Products bids require exact currency-minor-unit precision',
+      });
+    }
+  }
+}
+
 export const SpKeywordBidWriteAction = z.object({
   ...numericAction,
   actionType: z.literal(AmazonWriteActionType.enum.sp_keyword_bid),
   field: z.literal('bid'),
-});
+}).superRefine(requireCurrencyMinorUnits);
 
 export const SpTargetBidWriteAction = z.object({
   ...numericAction,
   actionType: z.literal(AmazonWriteActionType.enum.sp_target_bid),
   field: z.literal('bid'),
-});
+}).superRefine(requireCurrencyMinorUnits);
 
 /**
  * Placement writes replace a campaign's complete dynamic-bidding object. The
@@ -174,14 +190,16 @@ export const AmazonWriteProviderCallEvidence = z.object({
 });
 export type AmazonWriteProviderCallEvidence = z.infer<typeof AmazonWriteProviderCallEvidence>;
 
-/** Input to the service-role approval transaction used by the future web route. */
+/**
+ * Operator-supplied approval facts. The approval boundary derives the actor
+ * and approval timestamp from the authenticated database session; accepting
+ * either value from request JSON would permit service-role actor spoofing.
+ */
 export const ApproveAmazonWriteExecution = z.object({
   orgId: Uuid,
   profileId: Uuid,
   applyBatchId: Uuid,
-  approvedBy: Uuid,
   approvalMode: AmazonWriteApprovalMode,
-  approvedAt: z.iso.datetime(),
   expiresAt: z.iso.datetime(),
   previewSha256: z.string().regex(/^[a-f0-9]{64}$/),
   expectedCount: z.number().int().positive(),
@@ -189,7 +207,7 @@ export const ApproveAmazonWriteExecution = z.object({
   authorizationSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable().default(null),
   /** Stored for a bounded test; it never bypasses the synchronized-state gate. */
   inversePreapproved: z.boolean().default(false),
-}).superRefine((value, context) => {
+}).strict().superRefine((value, context) => {
   if (value.approvalMode === 'manual' && value.inversePreapproved) {
     context.addIssue({
       code: 'custom',

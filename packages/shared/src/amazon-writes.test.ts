@@ -10,6 +10,21 @@ import {
 const ROW_ID = '11111111-1111-4111-8111-111111111111';
 
 describe('guarded Amazon write contracts', () => {
+  it.each(['sp_keyword_bid', 'sp_target_bid'] as const)(
+    'refuses fractional currency-minor units for %s',
+    (actionType) => {
+      expect(() => AmazonWriteAction.parse({
+        actionType,
+        applyRowId: ROW_ID,
+        amazonEntityId: 'entity-1',
+        field: 'bid',
+        expectedValue: 0.901,
+        requestedValue: 0.914,
+        inverseValue: 0.901,
+      })).toThrow(/currency-minor-unit/i);
+    },
+  );
+
   it('freezes the complete placement context beside the exact inverse', () => {
     const action = AmazonWriteAction.parse({
       actionType: 'sp_campaign_placement',
@@ -109,8 +124,6 @@ describe('guarded Amazon write contracts', () => {
       orgId: ROW_ID,
       profileId: '22222222-2222-4222-8222-222222222222',
       applyBatchId: '33333333-3333-4333-8333-333333333333',
-      approvedBy: '44444444-4444-4444-8444-444444444444',
-      approvedAt: '2026-08-29T12:00:00.000Z',
       expiresAt: '2026-08-29T13:00:00.000Z',
       previewSha256: 'a'.repeat(64),
       expectedCount: 1,
@@ -122,5 +135,10 @@ describe('guarded Amazon write contracts', () => {
       .toThrow(/fresh inverse approval/i);
     expect(ApproveAmazonWriteExecution.parse({ ...base, approvalMode: 'bounded_live_test' }))
       .toMatchObject({ inversePreapproved: true });
+    expect(() => ApproveAmazonWriteExecution.parse({
+      ...base,
+      approvalMode: 'bounded_live_test',
+      approvedBy: '44444444-4444-4444-8444-444444444444',
+    })).toThrow();
   });
 });

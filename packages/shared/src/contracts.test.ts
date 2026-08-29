@@ -638,6 +638,20 @@ describe('JobPayload', () => {
         type: 'marketing_stream.normalize',
         messageIds: ['message-1'],
       },
+      {
+        orgId: ORG_ID,
+        profileId: PROFILE_ID,
+        type: 'amazon.apply',
+        executionId: RUN_ID,
+      },
+      {
+        orgId: ORG_ID,
+        profileId: PROFILE_ID,
+        type: 'amazon.observe',
+        executionId: RUN_ID,
+        generation: REQUEST_ID,
+        attempt: 2,
+      },
     ];
 
     const seen = jobs.map((j) => roundTrip(JobPayload, j).type);
@@ -657,7 +671,13 @@ describe('JobPayload', () => {
       'history.bootstrap',
       'report.promote',
       'marketing_stream.normalize',
+      'amazon.apply',
+      'amazon.observe',
     ]);
+    expect(JobPayload.safeParse({
+      orgId: ORG_ID, profileId: PROFILE_ID, type: 'amazon.observe',
+      executionId: RUN_ID, attempt: 0,
+    }).success).toBe(false);
   });
 
   it('rejects an unknown job type and a payload missing its tenant scope', () => {

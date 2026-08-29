@@ -511,12 +511,14 @@ describe('DbAdsApiClient guarded Sponsored Products writes', () => {
     });
   });
 
-  it('rejects a targeted observation that omits a requested identity', async () => {
+  it('returns an explicit incomplete identity result when a targeted observation omits an entity', async () => {
     const listSpKeywords = vi.fn(async () => emptyList());
     const { adapter } = makeAdapter(underlying({ listSpKeywords }));
     await expect(adapter.observeSpWriteEntities(profile, {
       keywordIds: ['keyword-1'], targetIds: [], campaignIds: [],
-    })).rejects.toThrow(/exact requested identity set/i);
+    })).resolves.toMatchObject({
+      requested: 1, returned: 0, identityComplete: false, rows: [], apiCalls: 1,
+    });
   });
 
   it('chunks targeted observations at the provider batch limit and counts every read', async () => {

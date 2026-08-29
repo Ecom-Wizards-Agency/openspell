@@ -37,6 +37,7 @@ export interface ApprovedAmazonWriteExecution {
  */
 export function amazonWriteExecutionIdempotencyKey(
   input: ApproveAmazonWriteExecutionInput,
+  actorId: string,
 ): string {
   const parsed = ApproveAmazonWriteExecution.parse(input);
   return createHash('sha256').update(JSON.stringify([
@@ -44,9 +45,8 @@ export function amazonWriteExecutionIdempotencyKey(
     parsed.orgId,
     parsed.profileId,
     parsed.applyBatchId,
-    parsed.approvedBy,
+    actorId,
     parsed.approvalMode,
-    parsed.approvedAt,
     parsed.expiresAt,
     parsed.previewSha256,
     parsed.expectedCount,
@@ -114,6 +114,10 @@ export function canonicalAmazonPlacementField(field: string): AmazonPlacementFie
 function validateActionValue(action: 'bid' | 'placement', oldValue: number, newValue: number): void {
   if (action === 'bid') {
     if (oldValue <= 0 || newValue <= 0) throw new Error('Sponsored Products bids must be positive');
+    if ([oldValue, newValue].some((value) =>
+      Math.abs(value * 100 - Math.round(value * 100)) > 1e-8)) {
+      throw new Error('Sponsored Products bids require exact currency-minor-unit precision');
+    }
     return;
   }
   if (!Number.isInteger(oldValue) || !Number.isInteger(newValue) || oldValue < 0 || oldValue > 900 || newValue < 0 || newValue > 900) {
@@ -233,19 +237,33 @@ function materializeInverseActions(actions: readonly AmazonWriteAction[]): Amazo
  * counted in the same transaction.
  */
 export async function approveAmazonWriteExecution(
-  handle: AmazonWriteQueryHandle,
+  serviceHandle: AmazonWriteQueryHandle,
+  authenticatedHandle: AmazonWriteQueryHandle,
   rawInput: ApproveAmazonWriteExecutionInput,
 ): Promise<ApprovedAmazonWriteExecution> {
   const input = ApproveAmazonWriteExecution.parse(rawInput);
-  const idempotencyKey = amazonWriteExecutionIdempotencyKey(input);
-  return handle.sql.begin(async (sql) => {
+  const [session] = await authenticatedHandle.sql<{ actor_id: string | null }[]>`
+    select auth.uid()::text as actor_id
+  `;
+  if (!session?.actor_id) {
+    throw new Error('Amazon write approval requires an authenticated operator session');
+  }
+  const actorId = session.actor_id;
+  return serviceHandle.sql.begin(async (sql) => {
     await sql`select pg_advisory_xact_lock(hashtextextended(${
       `amazon-write:${input.orgId}:${input.profileId}`
     }, 0))`;
 
+    const [clock] = await sql<{ approved_at: Date | string }[]>`
+      select clock_timestamp() as approved_at
+    `;
+    if (!clock) throw new Error('Amazon write approval clock is unavailable');
+    const approvedAt = toDate(clock.approved_at);
+    const idempotencyKey = amazonWriteExecutionIdempotencyKey(input, actorId);
+
     const [approver] = await sql<{ role: string }[]>`
       select role::text as role from public.org_members
-       where org_id = ${input.orgId} and user_id = ${input.approvedBy}
+       where org_id = ${input.orgId} and user_id = ${actorId}
          and role in ('owner', 'admin')
     `;
     if (!approver) throw new Error('Amazon write approval requires an owner or admin in this organization');
@@ -296,7 +314,7 @@ export async function approveAmazonWriteExecution(
     if (batch.artifact_sha256 !== input.previewSha256) throw new Error('Amazon write preview fingerprint changed');
     if (batch.unsupported_rows !== 0) throw new Error('Amazon write preview contains unsupported rows');
     if (batch.reversible_rows !== input.expectedCount) throw new Error('Amazon write approval count does not match the preview');
-    if (toDate(input.expiresAt).getTime() <= toDate(input.approvedAt).getTime()) {
+    if (toDate(input.expiresAt).getTime() <= approvedAt.getTime()) {
       throw new Error('Amazon write approval expires before it is valid');
     }
 
@@ -374,8 +392,8 @@ export async function approveAmazonWriteExecution(
          approved_by, approved_at, expires_at, inverse_preapproved, authorization_id,
          authorization_sha256)
       values (${input.orgId}, ${input.profileId}, ${input.applyBatchId}, ${input.approvalMode},
-              ${input.previewSha256}, ${input.expectedCount}, ${input.approvedBy},
-              ${input.approvedAt}, ${input.expiresAt}, ${input.inversePreapproved},
+              ${input.previewSha256}, ${input.expectedCount}, ${actorId},
+              ${approvedAt.toISOString()}, ${input.expiresAt}, ${input.inversePreapproved},
               ${input.authorizationId}, ${input.authorizationSha256})
       returning id
     `;
@@ -446,6 +464,60 @@ interface StoredWriteRow {
   attempt_count: number;
 }
 
+async function currentAmazonWriteConflicts(
+  sql: QuerySql,
+  input: {
+    orgId: string;
+    profileId: string;
+    actions: readonly { id: string; action: AmazonWriteAction }[];
+  },
+): Promise<string[]> {
+  const targets = input.actions.map(({ id, action }) => ({
+    key: id,
+    entityType: action.actionType === 'sp_campaign_placement' ? 'placement' as const
+      : action.actionType === 'sp_keyword_bid' ? 'keyword' as const : 'target' as const,
+    entityId: action.amazonEntityId,
+    field: action.field,
+  }));
+  await lockCurrentApplyStates({ sql }, {
+    orgId: input.orgId, profileId: input.profileId, targets,
+  });
+  const current = await resolveCurrentApplyStates({ sql }, {
+    orgId: input.orgId, profileId: input.profileId, targets,
+  });
+  const currentByRow = new Map(current.map((state) => [state.key, state] as const));
+  const conflicts: string[] = [];
+  for (const { id, action } of input.actions) {
+    const state = currentByRow.get(id);
+    if (!state?.supported || !state.present || !sameNumber(state.currentValue, action.expectedValue)) {
+      conflicts.push(id);
+    }
+  }
+  const placementActions = input.actions.filter((entry): entry is typeof entry & {
+    action: Extract<AmazonWriteAction, { actionType: 'sp_campaign_placement' }>;
+  } => entry.action.actionType === 'sp_campaign_placement');
+  if (placementActions.length > 0) {
+    const campaignIds = [...new Set(placementActions.map((entry) => entry.action.amazonEntityId))];
+    const contexts = await sql<{
+      amazon_id: string;
+      campaign_write_context: CampaignWriteContext | null;
+    }[]>`
+      select amazon_id, campaign_write_context from public.campaigns
+       where org_id = ${input.orgId} and profile_id = ${input.profileId}
+         and amazon_id = any(${campaignIds}::text[])
+       for share
+    `;
+    const contextByCampaign = new Map(contexts.map((row) => [row.amazon_id, row.campaign_write_context] as const));
+    for (const entry of placementActions) {
+      if (!isDeepStrictEqual(
+        contextByCampaign.get(entry.action.amazonEntityId) ?? null,
+        entry.action.campaignContext.providerState,
+      )) conflicts.push(entry.id);
+    }
+  }
+  return [...new Set(conflicts)];
+}
+
 async function loadExecutionActions(
   sql: QuerySql,
   orgId: string,
@@ -480,6 +552,7 @@ export interface PreparedAmazonWriteExecution {
   replayed: boolean;
   recoveryObservation: boolean;
   direction: 'forward' | 'inverse';
+  retryAfterSeconds?: number;
 }
 
 interface ExecutionHeader {
@@ -497,6 +570,7 @@ interface ExecutionHeader {
   batch_status: string;
   dispatch_lease_token: string | null;
   dispatch_lease_expires_at: Date | string | null;
+  created_at: Date | string;
 }
 
 /** Recheck every unresolved row under lock immediately before provider I/O. */
@@ -528,7 +602,8 @@ export async function prepareAmazonWriteExecution(
              approval.inverse_preapproved, approval.authorization_id,
              approval.authorization_sha256, execution.direction::text as direction,
              batch.status::text as batch_status,
-             execution.dispatch_lease_token, execution.dispatch_lease_expires_at
+             execution.dispatch_lease_token, execution.dispatch_lease_expires_at,
+             execution.created_at
         from public.amazon_write_executions execution
         join public.amazon_write_approvals approval
           on approval.org_id = execution.org_id
@@ -665,6 +740,10 @@ export async function prepareAmazonWriteExecution(
           expiresAt: toDate(execution.expires_at), status: execution.status,
           requested: execution.requested_count, rows: [], replayed: true, recoveryObservation: false,
           direction: execution.direction,
+          retryAfterSeconds: Math.max(
+            1,
+            Math.ceil((leaseExpiresAt.getTime() - input.now.getTime()) / 1_000),
+          ),
         };
       }
       if (stored.some((row) => row.row_status === 'dispatched')) {
@@ -681,6 +760,38 @@ export async function prepareAmazonWriteExecution(
           requested: execution.requested_count, rows: [], replayed: true, recoveryObservation: true,
           direction: execution.direction,
         };
+      }
+    }
+    if (execution.direction === 'forward') {
+      const [earlierCycle] = await sql<{ id: string }[]>`
+        select prior.id
+          from public.amazon_write_executions prior
+          join public.amazon_write_approvals prior_approval
+            on prior_approval.id = prior.approval_id
+          left join public.amazon_write_inverse_reservations reservation
+            on reservation.forward_execution_id = prior.id
+          left join public.amazon_write_executions inverse
+            on inverse.id = reservation.inverse_execution_id
+         where prior.org_id = ${input.orgId}
+           and prior.profile_id = ${input.profileId}
+           and prior.direction = 'forward'
+           and prior.id <> ${execution.id}
+           and (prior.created_at, prior.id) <
+               (${toDate(execution.created_at).toISOString()}::timestamptz, ${execution.id}::uuid)
+           and (
+             prior.status in ('queued', 'running', 'awaiting_sync', 'conflict')
+             or (
+               prior.status in ('succeeded', 'partial')
+               and prior.succeeded_count > 0
+               and coalesce(inverse.status::text, 'missing') <> 'succeeded'
+             )
+           )
+         order by prior.created_at
+         limit 1
+         for share of prior
+      `;
+      if (earlierCycle) {
+        throw new Error('an earlier bounded Amazon write cycle is still unresolved for this profile');
       }
     }
     const [active] = await sql<{ count: number }[]>`
@@ -702,47 +813,11 @@ export async function prepareAmazonWriteExecution(
       };
     }
     const actions = unresolved.map((row) => ({ row, action: AmazonWriteAction.parse(row.action) }));
-    const targets = actions.map(({ row, action }) => ({
-      key: row.id,
-      entityType: action.actionType === 'sp_campaign_placement' ? 'placement' as const
-        : action.actionType === 'sp_keyword_bid' ? 'keyword' as const : 'target' as const,
-      entityId: action.amazonEntityId,
-      field: action.field,
-    }));
-    await lockCurrentApplyStates({ sql }, { orgId: input.orgId, profileId: input.profileId, targets });
-    const current = await resolveCurrentApplyStates(
-      { sql }, { orgId: input.orgId, profileId: input.profileId, targets },
-    );
-    const currentByRow = new Map(current.map((state) => [state.key, state] as const));
-    const conflicts: string[] = [];
-    for (const { row, action } of actions) {
-      const state = currentByRow.get(row.id);
-      if (!state?.supported || !state.present || !sameNumber(state.currentValue, action.expectedValue)) {
-        conflicts.push(row.id);
-      }
-    }
-    const placementActions = actions.filter((entry): entry is typeof entry & {
-      action: Extract<AmazonWriteAction, { actionType: 'sp_campaign_placement' }>;
-    } => entry.action.actionType === 'sp_campaign_placement');
-    if (placementActions.length > 0) {
-      const campaignIds = [...new Set(placementActions.map((entry) => entry.action.amazonEntityId))];
-      const contexts = await sql<{
-        amazon_id: string;
-        campaign_write_context: CampaignWriteContext | null;
-      }[]>`
-        select amazon_id, campaign_write_context from public.campaigns
-         where org_id = ${input.orgId} and profile_id = ${input.profileId}
-           and amazon_id = any(${campaignIds}::text[])
-         for share
-      `;
-      const contextByCampaign = new Map(contexts.map((row) => [row.amazon_id, row.campaign_write_context] as const));
-      for (const entry of placementActions) {
-        if (!isDeepStrictEqual(
-          contextByCampaign.get(entry.action.amazonEntityId) ?? null,
-          entry.action.campaignContext.providerState,
-        )) conflicts.push(entry.row.id);
-      }
-    }
+    const conflicts = await currentAmazonWriteConflicts(sql, {
+      orgId: input.orgId,
+      profileId: input.profileId,
+      actions: actions.map(({ row, action }) => ({ id: row.id, action })),
+    });
     if (conflicts.length > 0) {
       const conflictCount = new Set(conflicts).size;
       await refuseExecutionRows(sql, input.executionId, `current synchronized state changed for ${conflictCount} row(s)`);
@@ -779,6 +854,53 @@ export async function prepareAmazonWriteExecution(
   });
 }
 
+/** Recheck a targeted provider refresh before any mutation request is emitted. */
+export async function recheckAmazonWriteCurrentState(
+  handle: AmazonWriteQueryHandle,
+  input: {
+    orgId: string;
+    profileId: string;
+    executionId: string;
+    leaseToken: string;
+    rowIds: readonly string[];
+  },
+): Promise<boolean> {
+  return handle.sql.begin(async (sql) => {
+    const [execution] = await sql<{ id: string }[]>`
+      select id from public.amazon_write_executions
+       where org_id = ${input.orgId} and profile_id = ${input.profileId}
+         and id = ${input.executionId} and status = 'running'
+         and dispatch_lease_token = ${input.leaseToken}
+         and dispatch_lease_expires_at > clock_timestamp()
+       for update
+    `;
+    if (!execution) throw new Error('Amazon write freshness gate is unavailable');
+    const stored = await sql<{ id: string; action: unknown }[]>`
+      select id, action from public.amazon_write_rows
+       where org_id = ${input.orgId} and profile_id = ${input.profileId}
+         and execution_id = ${input.executionId}
+         and id = any(${[...input.rowIds]}::uuid[])
+         and row_status in ('pending', 'retryable')
+       for update
+    `;
+    if (stored.length !== input.rowIds.length) {
+      throw new Error('Amazon write freshness gate did not lock every offered row');
+    }
+    const conflicts = await currentAmazonWriteConflicts(sql, {
+      orgId: input.orgId,
+      profileId: input.profileId,
+      actions: stored.map((row) => ({ id: row.id, action: AmazonWriteAction.parse(row.action) })),
+    });
+    if (conflicts.length === 0) return true;
+    await refuseExecutionRows(
+      sql,
+      execution.id,
+      `targeted Amazon refresh changed synchronized state for ${conflicts.length} row(s)`,
+    );
+    return false;
+  });
+}
+
 /** Persist intent before the provider call so a process crash recovers by observing first. */
 export async function markAmazonWriteRowsDispatched(
   handle: AmazonWriteQueryHandle,
@@ -795,8 +917,9 @@ export async function markAmazonWriteRowsDispatched(
     authorizationId: string;
     authorizationSha256: string;
     leaseExpiresAt: Date;
+    minimumExecutionExpiresAt: Date;
   },
-): Promise<void> {
+): Promise<boolean> {
   if (input.rowIds.length === 0 || new Set(input.rowIds).size !== input.rowIds.length) {
     throw new Error('Amazon write dispatch requires unique rows');
   }
@@ -804,7 +927,7 @@ export async function markAmazonWriteRowsDispatched(
     || new Set(input.requestedEntityIds).size !== input.requestedEntityIds.length) {
     throw new Error('Amazon provider dispatch requires unique entity identities');
   }
-  await handle.sql.begin(async (sql) => {
+  return handle.sql.begin(async (sql) => {
     const [execution] = await sql<{
       id: string;
       inverse_preapproved: boolean;
@@ -824,6 +947,7 @@ export async function markAmazonWriteRowsDispatched(
          and approval.authorization_sha256 = ${input.authorizationSha256}
          and approval.approved_at <= clock_timestamp()
          and approval.expires_at > clock_timestamp()
+         and approval.expires_at >= ${input.minimumExecutionExpiresAt.toISOString()}
          and batch.status = 'staged'
        for update of execution
     `;
@@ -860,42 +984,16 @@ export async function markAmazonWriteRowsDispatched(
     if (!isDeepStrictEqual(storedEntityIds, [...input.requestedEntityIds])) {
       throw new Error('Amazon write dispatch entity identities do not match the locked rows');
     }
-    const targets = actions.map(({ id, action }) => ({
-      key: id,
-      entityType: action.actionType === 'sp_campaign_placement' ? 'placement' as const
-        : action.actionType === 'sp_keyword_bid' ? 'keyword' as const : 'target' as const,
-      entityId: action.amazonEntityId,
-      field: action.field,
-    }));
-    await lockCurrentApplyStates({ sql }, { orgId: input.orgId, profileId: input.profileId, targets });
-    const current = await resolveCurrentApplyStates(
-      { sql }, { orgId: input.orgId, profileId: input.profileId, targets },
-    );
-    const currentByRow = new Map(current.map((state) => [state.key, state] as const));
-    for (const { id, action } of actions) {
-      const state = currentByRow.get(id);
-      if (!state?.supported || !state.present || !sameNumber(state.currentValue, action.expectedValue)) {
-        throw new Error(`Amazon write final dispatch conflict for row ${id}`);
-      }
-    }
-    const placementActions = actions.filter((entry): entry is typeof entry & {
-      action: Extract<AmazonWriteAction, { actionType: 'sp_campaign_placement' }>;
-    } => entry.action.actionType === 'sp_campaign_placement');
-    if (placementActions.length > 0) {
-      const campaignIds = [...new Set(placementActions.map(({ action }) => action.amazonEntityId))];
-      const contexts = await sql<{ amazon_id: string; campaign_write_context: CampaignWriteContext | null }[]>`
-        select amazon_id, campaign_write_context from public.campaigns
-         where org_id = ${input.orgId} and profile_id = ${input.profileId}
-           and amazon_id = any(${campaignIds}::text[])
-         for share
-      `;
-      const contextByCampaign = new Map(contexts.map((row) => [row.amazon_id, row.campaign_write_context] as const));
-      for (const { action } of placementActions) {
-        if (!isDeepStrictEqual(
-          contextByCampaign.get(action.amazonEntityId) ?? null,
-          action.campaignContext.providerState,
-        )) throw new Error(`Amazon write placement context changed for ${action.amazonEntityId}`);
-      }
+    const conflicts = await currentAmazonWriteConflicts(sql, {
+      orgId: input.orgId, profileId: input.profileId, actions,
+    });
+    if (conflicts.length > 0) {
+      await refuseExecutionRows(
+        sql,
+        execution.id,
+        `Amazon write final dispatch conflict for ${conflicts.length} row(s)`,
+      );
+      return false;
     }
     await sql`
       insert into public.amazon_write_provider_call_events
@@ -922,9 +1020,9 @@ export async function markAmazonWriteRowsDispatched(
         (org_id, profile_id, job_type, payload, run_after, dedupe_key)
       values (${input.orgId}, ${input.profileId}, 'amazon.observe',
               ${json({ type: 'amazon.observe', orgId: input.orgId, profileId: input.profileId,
-                executionId: input.executionId, attempt: 0 })}::jsonb,
+                executionId: input.executionId, generation: input.callId, attempt: 0 })}::jsonb,
               clock_timestamp() + interval '15 seconds',
-              ${`amazon.observe:${input.executionId}:dispatch:${input.callId}`})
+              ${`amazon.observe:${input.executionId}:${input.callId}:0`})
       on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
     `;
     await sql`
@@ -932,6 +1030,7 @@ export async function markAmazonWriteRowsDispatched(
          set dispatch_lease_expires_at = ${input.leaseExpiresAt.toISOString()}
        where id = ${input.executionId}
     `;
+    return true;
   });
 }
 

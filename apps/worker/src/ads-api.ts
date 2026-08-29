@@ -147,6 +147,8 @@ export interface SpWriteObservationResult {
   rows: readonly EntityRow[];
   requested: number;
   returned: number;
+  /** False when Amazon completed the list request without an exact identity set. */
+  identityComplete?: boolean;
   /** Logical Amazon list requests made across keywords, targets, and campaigns. */
   apiCalls: number;
 }
@@ -499,6 +501,7 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
     const requested = keywordIds.length + targetIds.length + campaignIds.length;
     const rows: EntityRow[] = [];
     let apiCalls = 0;
+    let identityComplete = true;
     const collect = async <T extends { amazonId: string }>(
       run: () => Promise<{ items: T[]; truncated: boolean; skipped: unknown[] }>,
       expectedIds: ReadonlySet<string>,
@@ -506,11 +509,11 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
       apiCalls += 1;
       const listed = await this.guard(profile.region, run);
       if (listed.truncated || listed.skipped.length > 0) {
-        throw new Error('targeted Sponsored Products observation was truncated or refused provider rows');
+        identityComplete = false;
       }
       for (const item of listed.items) {
         if (!expectedIds.has(item.amazonId)) {
-          throw new Error('targeted Sponsored Products observation returned an unrequested entity');
+          identityComplete = false;
         }
         rows.push({ ...item, profileId: profile.id } as unknown as EntityRow);
       }
@@ -532,7 +535,7 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
     }
     const uniqueReturned = new Set(rows.map((row) => `${row.entityType}:${row.amazonId}`));
     if (uniqueReturned.size !== rows.length) {
-      throw new Error('targeted Sponsored Products observation returned duplicate entities');
+      identityComplete = false;
     }
     const expected = new Set([
       ...keywordIds.map((id) => `keyword:${id}`),
@@ -541,9 +544,9 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
     ]);
     if (uniqueReturned.size !== expected.size
       || [...expected].some((identity) => !uniqueReturned.has(identity))) {
-      throw new Error('targeted Sponsored Products observation did not return the exact requested identity set');
+      identityComplete = false;
     }
-    return { rows, requested, returned: rows.length, apiCalls };
+    return { rows, requested, returned: rows.length, identityComplete, apiCalls };
   }
 
   private async writeEvidence(

@@ -5,8 +5,8 @@ import type {
   BoundedAmazonWriteAuthorization,
   EntityRow,
 } from '@wizard-ads/shared';
-import type { AdsProfileContext, SpWriteClient } from './ads-api.js';
-import { SpWriteAmbiguousError, SpWriteRetryableError } from './ads-api.js';
+import type { AdsProfileContext, SpWriteClient, SpWriteObservationRequest } from './ads-api.js';
+import { AdsApiRetryableError, SpWriteAmbiguousError, SpWriteRetryableError } from './ads-api.js';
 import {
   GuardedAmazonWriteRuntime,
   classifyAmazonWriteObservations,
@@ -115,7 +115,8 @@ function fakeStore(overrides: Partial<AmazonWriteRuntimeStore> = {}): AmazonWrit
     prepare: vi.fn(async () => prepared([bidAction()])),
     refuse: vi.fn(async () => accounting({ attempted: 0, succeeded: 0, refused: 1, resyncRequested: 0 })),
     releaseForRetry: vi.fn(async () => {}),
-    markDispatched: vi.fn(async () => {}),
+    markDispatched: vi.fn(async () => true),
+    recheckCurrentState: vi.fn(async () => true),
     recordOutcomes: vi.fn(async (input: Parameters<AmazonWriteRuntimeStore['recordOutcomes']>[0]) => {
       const succeeded = input.outcomes.filter((row) => row.evidence.outcome === 'accepted').length;
       const ambiguous = input.outcomes.filter((row) => row.evidence.outcome === 'ambiguous').length;
@@ -158,7 +159,44 @@ function fakeProvider(overrides: Partial<SpWriteClient> = {}): SpWriteClient {
     updateSpKeywordBids: vi.fn(async (_profile: AdsProfileContext, items: Parameters<SpWriteClient['updateSpKeywordBids']>[1]) => ({ evidence: items.map((item) => accepted(item.keywordId)), apiCalls: 1 })),
     updateSpTargetBids: vi.fn(async (_profile: AdsProfileContext, items: Parameters<SpWriteClient['updateSpTargetBids']>[1]) => ({ evidence: items.map((item) => accepted(item.targetId)), apiCalls: 1 })),
     updateSpCampaignPlacements: vi.fn(async (_profile: AdsProfileContext, items: Parameters<SpWriteClient['updateSpCampaignPlacements']>[1]) => ({ evidence: items.map((item) => accepted(item.campaignId)), apiCalls: 1 })),
-    observeSpWriteEntities: vi.fn(async () => ({ rows: [], requested: 0, returned: 0, apiCalls: 0 })),
+    observeSpWriteEntities: vi.fn(async (
+      _profile: AdsProfileContext,
+      request: SpWriteObservationRequest,
+    ) => {
+      const rows: EntityRow[] = [
+        ...request.keywordIds.map((amazonId) => ({
+          entityType: 'keyword' as const, profileId: PROFILE_ID, amazonId,
+          adProduct: 'SP' as const, name: 'synthetic', state: 'enabled' as const,
+          campaignId: 'campaign-1', adGroupId: 'group-1', keywordText: 'synthetic',
+          matchType: 'exact' as const, bid: 0.7,
+        })),
+        ...request.targetIds.map((amazonId) => ({
+          entityType: 'target' as const, profileId: PROFILE_ID, amazonId,
+          adProduct: 'SP' as const, name: 'synthetic', state: 'enabled' as const,
+          campaignId: 'campaign-1', adGroupId: 'group-1', expression: [],
+          resolvedExpression: null, bid: 0.6,
+        })),
+        ...request.campaignIds.map((amazonId) => ({
+          entityType: 'campaign' as const, profileId: PROFILE_ID, amazonId,
+          adProduct: 'SP' as const, name: 'synthetic', state: 'enabled' as const,
+          portfolioId: null, budgetAmount: 10, budgetType: 'daily' as const,
+          targetingType: 'manual' as const, biddingStrategy: 'auto_for_sales' as const,
+          placementBidding: { topOfSearch: 20, productPages: 5, restOfSearch: 0 },
+          campaignWriteContext: {
+            strategy: 'auto_for_sales' as const,
+            placementBidding: [
+              { placement: 'PLACEMENT_PRODUCT_PAGE' as const, percentage: 5 },
+              { placement: 'PLACEMENT_REST_OF_SEARCH' as const, percentage: 0 },
+              { placement: 'PLACEMENT_TOP' as const, percentage: 20 },
+            ],
+            shopperCohortBidding: null,
+            offAmazonSettings: null,
+          },
+          startDate: null, endDate: null,
+        })),
+      ];
+      return { rows, requested: rows.length, returned: rows.length, apiCalls: 1 };
+    }),
     ...overrides,
   };
 }
@@ -203,6 +241,27 @@ describe('guarded Amazon write runtime', () => {
     expect(provider.updateSpKeywordBids).not.toHaveBeenCalled();
   });
 
+  it('defers a live pre-dispatch lease instead of completing the only recovery job', async () => {
+    const store = fakeStore({
+      prepare: vi.fn(async () => ({
+        ...prepared([bidAction()]),
+        rows: [],
+        status: 'running' as const,
+        replayed: true,
+        retryAfterSeconds: 300,
+      })),
+    });
+    const provider = fakeProvider();
+    const runtime = new GuardedAmazonWriteRuntime({
+      enabled: true, loadAuthorization: async () => authorization, provider, store, now: () => NOW,
+    });
+    await expect(runtime.apply(job, profile)).rejects.toMatchObject({
+      name: 'SpWriteRetryableError', retryAfterSeconds: 300, apiCalls: 0,
+    });
+    expect(provider.observeSpWriteEntities).not.toHaveBeenCalled();
+    expect(provider.updateSpKeywordBids).not.toHaveBeenCalled();
+  });
+
   it('compares bounded bid deltas in canonical cents', async () => {
     const action = { ...bidAction(), requestedValue: 0.72 };
     const store = fakeStore({ prepare: vi.fn(async () => prepared([action])) });
@@ -217,6 +276,130 @@ describe('guarded Amazon write runtime', () => {
       reason: expect.stringMatching(/exceeds/i),
     }));
     expect(provider.updateSpKeywordBids).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['keyword fractional-cent escape', {
+      ...bidAction(), expectedValue: 0.901, requestedValue: 0.914, inverseValue: 0.901,
+    }, authorization],
+    ['target round-to-zero escape', {
+      actionType: 'sp_target_bid' as const,
+      applyRowId: '55555555-5555-4555-8555-555555555552',
+      amazonEntityId: 'target-1', field: 'bid' as const,
+      expectedValue: 0.601, requestedValue: 0.604, inverseValue: 0.601,
+    }, {
+      ...authorization,
+      allowed_tests: {
+        ...authorization.allowed_tests,
+        bid: { ...authorization.allowed_tests.bid, max_absolute_delta: 0.001 },
+      },
+    }],
+  ])('refuses %s before any provider read or mutation', async (_name, action, bounded) => {
+    const store = fakeStore({ prepare: vi.fn(async () => prepared([action])) });
+    const provider = fakeProvider();
+    const runtime = new GuardedAmazonWriteRuntime({
+      enabled: true,
+      loadAuthorization: async () => bounded,
+      provider,
+      store,
+      now: () => NOW,
+    });
+    await expect(runtime.apply(job, profile)).resolves.toMatchObject({
+      status: 'refused', amazonApiCalls: 0,
+    });
+    expect(store.refuse).toHaveBeenCalledWith(expect.objectContaining({
+      reason: expect.stringMatching(/minor units/i),
+    }));
+    expect(provider.observeSpWriteEntities).not.toHaveBeenCalled();
+    expect(provider.updateSpKeywordBids).not.toHaveBeenCalled();
+    expect(provider.updateSpTargetBids).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['forward', 4 * 60 * 60_000 - 1, /reversal runway/i],
+    ['inverse', 2 * 60 * 60_000 - 1, /observation runway/i],
+  ] as const)('refuses %s dispatch when normal expiry leaves no complete recovery runway', async (
+    direction,
+    remaining,
+    reason,
+  ) => {
+    const expiresAt = new Date(NOW.getTime() + remaining);
+    const bounded = { ...authorization, expires_at: expiresAt.toISOString() };
+    const preparedExecution = {
+      ...prepared([bidAction()]),
+      direction,
+      inversePreapproved: direction === 'forward',
+      expiresAt,
+    };
+    const store = fakeStore({ prepare: vi.fn(async () => preparedExecution) });
+    const provider = fakeProvider();
+    const runtime = new GuardedAmazonWriteRuntime({
+      enabled: true,
+      loadAuthorization: async () => bounded,
+      provider,
+      store,
+      now: () => NOW,
+    });
+    await expect(runtime.apply(job, profile)).resolves.toMatchObject({
+      status: 'refused', amazonApiCalls: 0,
+    });
+    expect(store.refuse).toHaveBeenCalledWith(expect.objectContaining({
+      reason: expect.stringMatching(reason),
+    }));
+    expect(provider.observeSpWriteEntities).not.toHaveBeenCalled();
+    expect(provider.updateSpKeywordBids).not.toHaveBeenCalled();
+  });
+
+  it('refreshes exact provider IDs and refuses a stale mirror before any mutation call', async () => {
+    const store = fakeStore({ recheckCurrentState: vi.fn(async () => false) });
+    const provider = fakeProvider();
+    const runtime = new GuardedAmazonWriteRuntime({
+      enabled: true,
+      loadAuthorization: async () => authorization,
+      provider,
+      store,
+      now: () => NOW,
+    });
+    await expect(runtime.apply(job, profile)).resolves.toMatchObject({
+      status: 'refused', amazonApiCalls: 1,
+    });
+    expect(provider.observeSpWriteEntities).toHaveBeenCalledTimes(1);
+    expect(store.syncEntities).toHaveBeenCalledTimes(1);
+    expect(store.recheckCurrentState).toHaveBeenCalledTimes(1);
+    expect(store.markDispatched).not.toHaveBeenCalled();
+    expect(provider.updateSpKeywordBids).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the targeted freshness read returns a different entity identity', async () => {
+    const store = fakeStore();
+    const provider = fakeProvider({
+      observeSpWriteEntities: vi.fn(async () => ({
+        requested: 1,
+        returned: 1,
+        apiCalls: 1,
+        rows: [{
+          entityType: 'keyword', profileId: PROFILE_ID, amazonId: 'different-keyword',
+          adProduct: 'SP', name: 'synthetic', state: 'enabled', campaignId: 'campaign-1',
+          adGroupId: 'group-1', keywordText: 'synthetic', matchType: 'exact', bid: 0.7,
+        } satisfies EntityRow],
+      })),
+    });
+    const runtime = new GuardedAmazonWriteRuntime({
+      enabled: true, loadAuthorization: async () => authorization, provider, store, now: () => NOW,
+    });
+
+    await expect(runtime.apply(job, profile)).resolves.toMatchObject({
+      status: 'refused', amazonApiCalls: 1,
+    });
+    expect(store.refuse).toHaveBeenCalledWith(expect.objectContaining({
+      reason: expect.stringMatching(/exact entity identity/i),
+    }));
+    expect(store.syncEntities).not.toHaveBeenCalled();
+    expect(store.recheckCurrentState).not.toHaveBeenCalled();
+    expect(store.markDispatched).not.toHaveBeenCalled();
+    expect(provider.updateSpKeywordBids).not.toHaveBeenCalled();
+    expect(provider.updateSpTargetBids).not.toHaveBeenCalled();
+    expect(provider.updateSpCampaignPlacements).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -250,7 +433,7 @@ describe('guarded Amazon write runtime', () => {
     const result = await runtime.apply(job, profile);
     expect(result).toMatchObject({
       attempted: 2, succeeded: 1, failed: 1, refused: 0,
-      resyncRequested: 1, amazonApiCalls: 1, observationEnqueued: true,
+      resyncRequested: 1, amazonApiCalls: 2, observationEnqueued: true,
     });
     const recorded = vi.mocked(store.recordOutcomes).mock.calls[0]?.[0];
     expect(recorded?.outcomes).toHaveLength(2);
@@ -288,7 +471,7 @@ describe('guarded Amazon write runtime', () => {
       enabled: true, loadAuthorization: async () => authorization, provider, store, now: () => NOW,
     });
     await expect(runtime.apply(job, profile)).rejects.toMatchObject({
-      retryAfterSeconds: 4, apiCalls: 2,
+      retryAfterSeconds: 4, apiCalls: 3,
     });
     expect(store.recordOutcomes).toHaveBeenCalledTimes(1);
     expect(vi.mocked(store.recordOutcomes).mock.calls[0]?.[0].outcomes).toEqual([
@@ -321,7 +504,7 @@ describe('guarded Amazon write runtime', () => {
     });
     await expect(runtime.apply(job, profile)).resolves.toMatchObject({
       status: 'awaiting_sync', attempted: 1, succeeded: 1, refused: 1,
-      amazonApiCalls: 1, observationEnqueued: true,
+      amazonApiCalls: 2, observationEnqueued: true,
     });
     expect(provider.updateSpKeywordBids).toHaveBeenCalledTimes(1);
     expect(provider.updateSpTargetBids).not.toHaveBeenCalled();
@@ -353,7 +536,7 @@ describe('guarded Amazon write runtime', () => {
       enabled: true, loadAuthorization, provider, store, now: () => NOW,
     });
     await expect(runtime.apply(job, profile)).resolves.toMatchObject({
-      amazonApiCalls: 1, succeeded: 1, refused: 1, observationEnqueued: true,
+      amazonApiCalls: 2, succeeded: 1, refused: 1, observationEnqueued: true,
     });
     expect(provider.updateSpTargetBids).not.toHaveBeenCalled();
   });
@@ -386,7 +569,9 @@ describe('guarded Amazon write runtime', () => {
     });
     expect(provider.updateSpKeywordBids).toHaveBeenCalledTimes(1);
     expect(store.markDispatched).toHaveBeenCalledTimes(1);
-    expect(store.enqueue).toHaveBeenCalledTimes(1);
+    // markDispatched owns the observation job in the same database transaction;
+    // runtime recovery must not create a second, generation-less job.
+    expect(store.enqueue).not.toHaveBeenCalled();
     expect(store.refuse).not.toHaveBeenCalled();
     expect(store.releaseForRetry).not.toHaveBeenCalled();
   });
@@ -404,7 +589,7 @@ describe('guarded Amazon write runtime', () => {
     });
     await expect(runtime.apply(job, profile)).resolves.toMatchObject({
       status: 'failed', attempted: 1, succeeded: 0, failed: 1,
-      amazonApiCalls: 1, observationEnqueued: true,
+      amazonApiCalls: 2, observationEnqueued: true,
     });
     expect(store.enqueue).not.toHaveBeenCalled();
   });
@@ -424,10 +609,44 @@ describe('guarded Amazon write runtime', () => {
       enabled: true, loadAuthorization: async () => authorization, provider, store, now: () => NOW,
     });
     await expect(runtime.apply(job, profile)).resolves.toMatchObject({
-      status: 'awaiting_sync', ambiguous: 1, amazonApiCalls: 1, observationEnqueued: true,
+      status: 'awaiting_sync', ambiguous: 1, amazonApiCalls: 2, observationEnqueued: true,
     });
     expect(vi.mocked(store.recordOutcomes).mock.calls[0]?.[0].outcomes[0]?.evidence)
       .toMatchObject({ outcome: 'ambiguous', providerEntityId: null });
+  });
+
+  it('records a mismatched provider result as ambiguous and never calls a later mutation group', async () => {
+    const target: AmazonWriteAction = {
+      actionType: 'sp_target_bid', applyRowId: '77777777-7777-4777-8777-777777777779',
+      amazonEntityId: 'target-1', field: 'bid', expectedValue: 0.6,
+      requestedValue: 0.61, inverseValue: 0.6,
+    };
+    const store = fakeStore({
+      prepare: vi.fn(async () => prepared([bidAction(), target])),
+      refuse: vi.fn(async () => accounting({
+        requested: 2, attempted: 1, succeeded: 0, ambiguous: 1,
+        refused: 1, resyncRequested: 1,
+      })),
+    });
+    const provider = fakeProvider({
+      updateSpKeywordBids: vi.fn(async () => ({
+        evidence: [accepted('different-keyword')], apiCalls: 1,
+      })),
+    });
+    const runtime = new GuardedAmazonWriteRuntime({
+      enabled: true, loadAuthorization: async () => authorization, provider, store, now: () => NOW,
+    });
+
+    await expect(runtime.apply(job, profile)).resolves.toMatchObject({
+      status: 'awaiting_sync', attempted: 1, ambiguous: 1, refused: 1,
+      amazonApiCalls: 2, observationEnqueued: true,
+    });
+    expect(provider.updateSpKeywordBids).toHaveBeenCalledTimes(1);
+    expect(provider.updateSpTargetBids).not.toHaveBeenCalled();
+    expect(store.refuse).toHaveBeenCalledWith(expect.objectContaining({
+      reason: expect.stringMatching(/ambiguous/i),
+    }));
+    expect(store.markDispatched).toHaveBeenCalledTimes(1);
   });
 
   it('does not call Amazon again when a replay has no unresolved rows', async () => {
@@ -474,7 +693,7 @@ describe('guarded Amazon write runtime', () => {
       enabled: true, loadAuthorization: async () => authorization, provider, store, now: () => NOW,
     });
     const result = await runtime.apply(job, profile);
-    expect(result).toMatchObject({ amazonApiCalls: 1, observationEnqueued: true });
+    expect(result).toMatchObject({ amazonApiCalls: 2, observationEnqueued: true });
     expect(provider.updateSpTargetBids).not.toHaveBeenCalled();
     expect(store.refuse).toHaveBeenCalledWith(expect.objectContaining({
       reason: expect.stringMatching(/ambiguous/i),
@@ -494,7 +713,7 @@ describe('guarded Amazon write runtime', () => {
       enabled: true, loadAuthorization: async () => authorization, provider, store, now: () => NOW,
     });
     const result = await runtime.apply(job, profile);
-    expect(result).toMatchObject({ amazonApiCalls: 1, observationEnqueued: true });
+    expect(result).toMatchObject({ amazonApiCalls: 2, observationEnqueued: true });
     expect(provider.updateSpKeywordBids).toHaveBeenCalledTimes(1);
     expect(vi.mocked(provider.updateSpKeywordBids).mock.calls.map((call) => call[1].length))
       .toEqual([100]);
@@ -568,7 +787,12 @@ describe('guarded Amazon write runtime', () => {
     const runtime = new GuardedAmazonWriteRuntime({
       enabled: true, loadAuthorization: async () => authorization, provider, store, now: () => NOW,
     });
-    const result = await runtime.observe({ ...job, type: 'amazon.observe', attempt: 0 }, profile);
+    const result = await runtime.observe({
+      ...job,
+      type: 'amazon.observe',
+      generation: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      attempt: 0,
+    }, profile);
     expect(result).toMatchObject({
       status: 'succeeded', targetedEntities: 1, returnedEntities: 1,
       upsertedEntities: 1, amazonApiCalls: 1, inverseReady: true,
@@ -576,5 +800,143 @@ describe('guarded Amazon write runtime', () => {
     expect(store.syncEntities).toHaveBeenCalledWith(profile, expect.arrayContaining([
       expect.objectContaining({ amazonId: 'keyword-1', bid: 0.71 }),
     ]));
+  });
+
+  it('turns an exact-entity omission across the observation horizon into a recoverable conflict', async () => {
+    const action = bidAction();
+    const row = {
+      writeRowId: '66666666-6666-4666-8666-666666666661', action, rowStatus: 'accepted',
+    };
+    const store = fakeStore({
+      observationRows: vi.fn(async () => [row]),
+      resolveObservation: vi.fn(async (input) => classifyAmazonWriteObservations(input)),
+      recordObservations: vi.fn(async (input) => {
+        const terminal = input.attempt >= 5;
+        expect(input.observations).toEqual([expect.objectContaining({
+          writeRowId: row.writeRowId,
+          state: terminal ? 'conflict' : 'pending',
+          currentValue: null,
+        })]);
+        return {
+          status: terminal ? 'conflict' as const : 'awaiting_sync' as const,
+          accounting: accounting({ resynchronized: 0 }),
+          pending: terminal ? 0 : 1,
+          inverseReady: false,
+          retryApply: false,
+          inverseExecutionId: null,
+        };
+      }),
+    });
+    const provider = fakeProvider({
+      observeSpWriteEntities: vi.fn(async () => ({
+        requested: 1, returned: 0, identityComplete: false, rows: [], apiCalls: 1,
+      })),
+    });
+    const runtime = new GuardedAmazonWriteRuntime({
+      enabled: true, loadAuthorization: async () => authorization, provider, store, now: () => NOW,
+    });
+    const generation = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+
+    for (let attempt = 0; attempt <= 6; attempt += 1) {
+      const result = await runtime.observe({
+        ...job, type: 'amazon.observe', generation, attempt,
+      }, profile);
+      expect(result).toMatchObject({
+        status: attempt >= 5 ? 'conflict' : 'awaiting_sync',
+        observationIdentityComplete: false,
+        upsertedEntities: 0,
+        inverseReady: false,
+        requeued: attempt < 6,
+      });
+    }
+    expect(store.recordObservations).toHaveBeenCalledTimes(7);
+    expect(store.syncEntities).not.toHaveBeenCalled();
+    expect(store.enqueue).toHaveBeenCalledTimes(6);
+    expect(provider.updateSpKeywordBids).not.toHaveBeenCalled();
+    expect(provider.updateSpTargetBids).not.toHaveBeenCalled();
+    expect(provider.updateSpCampaignPlacements).not.toHaveBeenCalled();
+  });
+
+  it('retries a transient observation transport failure and recovers with the same generation', async () => {
+    const action = bidAction();
+    const store = fakeStore({
+      observationRows: vi.fn(async () => [{
+        writeRowId: '66666666-6666-4666-8666-666666666661', action, rowStatus: 'accepted',
+      }]),
+      resolveObservation: vi.fn(async (input) => classifyAmazonWriteObservations(input)),
+    });
+    const successful = vi.mocked(fakeProvider().observeSpWriteEntities).getMockImplementation();
+    if (!successful) throw new Error('synthetic observation implementation is missing');
+    const provider = fakeProvider({
+      observeSpWriteEntities: vi.fn()
+        .mockRejectedValueOnce(new AdsApiRetryableError('synthetic read throttle', 3))
+        .mockImplementation(successful),
+    });
+    const runtime = new GuardedAmazonWriteRuntime({
+      enabled: true, loadAuthorization: async () => authorization, provider, store, now: () => NOW,
+    });
+    const payload = {
+      ...job, type: 'amazon.observe' as const,
+      generation: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', attempt: 0,
+    };
+
+    await expect(runtime.observe(payload, profile)).rejects.toMatchObject({
+      name: 'AdsApiRetryableError', retryAfterSeconds: 3,
+    });
+    expect(store.recordObservations).not.toHaveBeenCalled();
+    await expect(runtime.observe(payload, profile)).resolves.toMatchObject({
+      status: 'succeeded', observationIdentityComplete: true,
+      amazonApiCalls: 1, inverseReady: true,
+    });
+    expect(provider.observeSpWriteEntities).toHaveBeenCalledTimes(2);
+    expect(store.recordObservations).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues one generation-bound long-tail reconciliation after a final conflict', async () => {
+    const action = bidAction();
+    const store = fakeStore({
+      observationRows: vi.fn(async () => [{
+        writeRowId: '66666666-6666-4666-8666-666666666661', action, rowStatus: 'accepted',
+      }]),
+      resolveObservation: vi.fn(async () => [{
+        writeRowId: '66666666-6666-4666-8666-666666666661',
+        state: 'conflict' as const,
+        currentValue: 0.72,
+      }]),
+      recordObservations: vi.fn()
+        .mockResolvedValueOnce({
+          status: 'conflict' as const,
+          accounting: accounting({ resynchronized: 0 }),
+          pending: 0,
+          inverseReady: false,
+          retryApply: false,
+          inverseExecutionId: null,
+        })
+        .mockResolvedValueOnce({
+          status: 'succeeded' as const,
+          accounting: accounting({ resynchronized: 1 }),
+          pending: 0,
+          inverseReady: true,
+          retryApply: false,
+          inverseExecutionId: '99999999-9999-4999-8999-999999999999',
+        }),
+    });
+    const provider = fakeProvider();
+    const runtime = new GuardedAmazonWriteRuntime({
+      enabled: true, loadAuthorization: async () => authorization, provider, store, now: () => NOW,
+    });
+    const generation = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    await expect(runtime.observe({
+      ...job, type: 'amazon.observe', generation, attempt: 5,
+    }, profile)).resolves.toMatchObject({ status: 'conflict', requeued: true });
+    expect(store.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'amazon.observe', generation, attempt: 6 }),
+      expect.any(Date),
+      ['amazon.observe', EXECUTION_ID, generation, '6'].join(':'),
+    );
+    await expect(runtime.observe({
+      ...job, type: 'amazon.observe', generation, attempt: 6,
+    }, profile)).resolves.toMatchObject({ status: 'succeeded', inverseReady: true });
+    expect(store.enqueue).toHaveBeenCalledTimes(1);
   });
 });
