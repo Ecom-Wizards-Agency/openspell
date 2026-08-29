@@ -1,4 +1,4 @@
-# wizard-ads
+# OpenSpell (`wizard-ads` repository)
 
 This file is the single source of truth for agent behavior in this repository, for
 every assistant. It routes and it rules. Each work package brief in
@@ -7,17 +7,28 @@ disagree about a boundary, this file wins and the brief is wrong.
 
 ## What this is
 
-**wizard-ads** is an in-house Amazon Advertising platform: profile and entity sync,
+**OpenSpell** is an in-house Amazon Advertising platform: profile and entity sync,
 Reporting v3 ingestion, analytics, and bid recommendations, plus the pieces the
 commercial tools do not have (search-query-versus-PPC analysis, rank reconciliation,
 BSR proximity alerts, a creative hub, off-Amazon placement control).
 
-Two facts shape every design decision in here:
+The public repository and package scope remain `wizard-ads` / `@wizard-ads/*` until a
+separately planned infrastructure migration changes those stable identifiers. User-facing
+product copy, metadata, and connection guidance use **OpenSpell**.
 
-1. **v1 is read-only.** It proposes; the operator applies. Accepted proposals leave
-   as an export, not as an API write. Writes unlock only after our numbers match the
-   incumbent tool side by side for a sustained period, on real profiles.
-2. **This repository is public.** Everything below about hygiene follows from that.
+Three facts shape every design decision in here:
+
+1. **OpenSpell may write through the Amazon Advertising API.** Supported campaign
+   creation and approved bid, budget, placement, targeting, and state changes may be
+   applied directly by the worker. Read-only preview remains the default; no write is
+   implicit in viewing, analysing, syncing, or generating a recommendation.
+2. **Every write is an operator-approved batch.** Before execution the UI shows the
+   exact profile, entities, old/new values, guardrails, and change count. The operator
+   explicitly confirms the batch; the worker then applies it idempotently, records every
+   response, resynchronizes the affected entities, and exposes conflicts or failures.
+   Automatic execution exists only for a deliberately configured and enabled cadence with
+   its own bounds and kill switch. Without an active cadence, no unattended batch is pushed.
+3. **This repository is public.** Everything below about hygiene follows from that.
 
 Architecture and phase plan: `docs/PLAN.md`. Program status: `docs/STATUS.md`.
 
@@ -38,7 +49,7 @@ never need the same file.
 | `packages/ui` | DataGrid, charts, tiles. | WP-06 |
 | `apps/web` | Next.js App Router: auth, OAuth, dashboard, grid, settings. | WP-04, 06, 07, 08 |
 | `apps/worker` | Job worker. Every Amazon API call in the system happens here. | WP-03 |
-| `apps/mcp` | Read-only MCP server. | WP-09 |
+| `apps/mcp` | Approval-gated MCP interface; no direct Amazon credentials or calls. | WP-09, WP-93 |
 | `supabase/` | Migrations, RLS, partitions, seed. | WP-01 |
 | `fixtures/` | Python-to-TypeScript parity harness. | WP-05 |
 | `tools/crosscheck-cli` | Crosscheck CLI and exit-report generator. | WP-10 |
@@ -81,6 +92,10 @@ more than a day of waiting.
 Adding a genuinely new shape that no other package touches yet is the one cheap case,
 and it still goes through the same door.
 
+The manager decision dated 2026-08-29 authorizes additive contract widening required for
+the guarded Amazon write gateway and SP/SB/SB Video/SD campaign creation. Keep those changes
+in explicit WP-00-owned commits and serialize dependent package work against them.
+
 ## Program rules
 
 1. **Own your package only.** Never edit files another work package owns. Cross-package
@@ -103,6 +118,52 @@ and it still goes through the same door.
    credentials, unless the operator authorizes that exact action in the current task.
    Branch databases and local stacks are the default target; say which one you are on
    before any schema or data change.
+
+## Amazon write contract
+
+Amazon writes are allowed only through this contract:
+
+1. **Worker-only execution.** `apps/web` may validate, preview, approve, and enqueue a
+   batch, but it never imports `packages/ads-api` and never receives Amazon credentials.
+   `apps/mcp` may create drafts and trigger an already approved batch, but it never calls
+   Amazon directly and cannot approve its own change in the same operation.
+2. **Explicit profile enablement.** Production writes require both an environment-level
+   write gate and a tenant/profile allowlist. Missing, expired, or mismatched authorization
+   fails closed. A read credential or successful sync never implies write permission.
+3. **Preview before approval.** The immutable preview records the exact requested action,
+   Amazon entity identity, current synchronized value, proposed value, guardrails,
+   provenance, and total count. Campaign creation also records that Amazon resources cannot
+   be deleted by a rollback after creation.
+4. **Unambiguous confirmation.** The final control names Amazon and the exact count, for
+   example **“Yes, apply 24 changes to Amazon”** or **“Yes, create 6 campaigns in Amazon.”**
+   Selection, confirmation, and execution are separate acts. Stale or changed previews
+   require a new approval.
+5. **Idempotent, conflict-aware batches.** Every batch and row carries a stable idempotency
+   identity. The worker checks the latest synchronized state before mutation, never retries
+   a successful row as a new write, and records partial success without presenting the whole
+   batch as applied.
+6. **Count and response assertions.** Requested, accepted, attempted, succeeded, failed,
+   refused, and resynchronized rows are counted and reconciled. An HTTP success without
+   entity-level response agreement is not completion evidence.
+7. **Audit and observation.** Store actor, approval time, request identity, sanitized Amazon
+   response, before/after values, and timestamps. Resynchronize affected entities after the
+   write and distinguish requested, accepted by Amazon, observed in sync, conflicting, and
+   failed states.
+8. **Reversion is another guarded write.** Time Machine may restore prior values through the
+   Advertising API after it previews the exact inverse against
+   current synchronized state. It refuses blind inversion on conflicts and requires a fresh
+   explicit confirmation. Creation has no delete rollback; any pause/archive proposal is a
+   separate reviewed action.
+9. **No automatic execution by accident.** Schedules, optimization cadence, dayparting, AI,
+   and webhooks may execute only when the operator deliberately creates and enables a cadence
+   for that profile and action class. The cadence carries its own caps, approval provenance,
+   next-run visibility, pause control, and kill switch. Without an active cadence, these
+   surfaces may generate previews but cannot push. MCP cannot create or enable a cadence and
+   cannot mutate Amazon without a separately recorded approval.
+10. **Live tests need exact authorization.** Unit and integration tests use fake providers and
+    synthetic fixtures. A live Amazon write smoke test must name the target profile, entity set,
+    action, and rollback plan in the current operator-approved task. Never use a live account
+    merely because credentials are available.
 
 ## Public-repo hygiene
 
