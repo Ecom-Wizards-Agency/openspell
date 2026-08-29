@@ -10,8 +10,9 @@
  *
  * No Postgres required — the point is a connection that cannot be made.
  */
-import { afterEach, describe, expect, it } from 'vitest';
-import { withDatabase } from './db.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { DbHandle } from '@wizard-ads/db';
+import { withDatabase, withExistingDatabase } from './db.js';
 
 /** Port 1 is privileged and nothing listens on it: a refusal, not a timeout. */
 const NOWHERE = 'postgres://nobody@127.0.0.1:1/nothing';
@@ -46,5 +47,29 @@ describe('withDatabase', () => {
         throw new TypeError('rows is not iterable');
       }),
     ).rejects.toThrow(/not iterable/);
+  });
+});
+
+describe('withExistingDatabase', () => {
+  it('uses the authenticated page handle without closing the process pool', async () => {
+    const close = vi.fn(async () => {});
+    const handle = { close } as unknown as DbHandle;
+    const run = vi.fn(async (received: DbHandle) => {
+      expect(received).toBe(handle);
+      return 'shared';
+    });
+
+    await expect(withExistingDatabase(handle, run)).resolves.toBe('shared');
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it('does not disguise a page bug as a database outage', async () => {
+    const handle = { close: vi.fn(async () => {}) } as unknown as DbHandle;
+    await expect(
+      withExistingDatabase(handle, async () => {
+        throw new TypeError('synthetic page bug');
+      }),
+    ).rejects.toThrow(/synthetic page bug/);
   });
 });

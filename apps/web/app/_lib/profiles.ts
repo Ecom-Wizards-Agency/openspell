@@ -12,6 +12,7 @@
  * SQL.
  */
 import { asc, eq, sql } from 'drizzle-orm';
+import { cache } from 'react';
 import { adProfiles } from '@wizard-ads/db';
 import type { AdProfile, DbHandle } from '@wizard-ads/db';
 import { PROFILE_COOKIE } from '../../src/cookies';
@@ -34,7 +35,7 @@ export interface ProfileRecord
   /** Doctrine values, per profile. Absent means the widget that needs one is off. */
 }
 
-export async function listProfiles(handle: DbHandle, orgId: string): Promise<ProfileRecord[]> {
+async function readProfiles(handle: DbHandle, orgId: string): Promise<ProfileRecord[]> {
   const rows = await handle.db
     .select()
     .from(adProfiles)
@@ -57,6 +58,13 @@ export async function listProfiles(handle: DbHandle, orgId: string): Promise<Pro
     timezone: row.timezone,
   }));
 }
+
+/**
+ * The top-bar switcher and the active page need the same org-scoped roster.
+ * React cache shares the query only inside the current server render; profile
+ * edits and later navigations therefore still see fresh database state.
+ */
+export const listProfiles = cache(readProfiles);
 
 /** The URL wins when it names a profile; the cookie only fills an absent parameter. */
 export function profilePreference(

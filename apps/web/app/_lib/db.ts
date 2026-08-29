@@ -13,9 +13,10 @@
  * `withDatabase` catches that class of error too and returns the same null. Only
  * that class: a syntax error or a missing column is a bug here and still throws.
  *
- * One connection, not a pool: a request handler wants exactly one, and
- * `prepare: false` (set inside `createDb`) is what makes it safe behind
- * Supabase's transaction-mode pooler.
+ * Legacy read surfaces can still use the short-lived handle below. Guarded
+ * pages already hold the process-wide handle from `gate()` and must use
+ * `withExistingDatabase` instead: opening another pool after authentication is
+ * redundant connection setup on every navigation.
  */
 import { connectionStringFromEnv, createDb } from '@wizard-ads/db';
 import type { DbHandle } from '@wizard-ads/db';
@@ -42,5 +43,24 @@ export async function withDatabase<T>(run: (handle: DbHandle) => Promise<T>): Pr
     // Closing a pool that never connected is a no-op that can still reject;
     // failing to hang up must not replace the answer the caller is owed.
     await handle.close().catch(() => {});
+  }
+}
+
+/**
+ * Run a guarded page read on the handle it already owns.
+ *
+ * The handle belongs to the process cache, so this helper never closes it. It
+ * preserves `withDatabase`'s graceful unreachable-database behavior while
+ * making pool ownership explicit at the call site.
+ */
+export async function withExistingDatabase<T>(
+  handle: DbHandle,
+  run: (handle: DbHandle) => Promise<T>,
+): Promise<T | null> {
+  try {
+    return await run(handle);
+  } catch (error) {
+    if (isDatabaseUnreachable(error)) return null;
+    throw error;
   }
 }

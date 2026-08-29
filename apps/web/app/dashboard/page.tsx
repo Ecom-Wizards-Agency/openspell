@@ -39,7 +39,7 @@ import { page } from '../../src/ui/tokens';
 import { OperatorContext } from '../../src/ui/operator-context';
 import { readStrategyEvidence } from '../../src/strategy/overview';
 import { loadCampaignDailyRows, loadProfileDailyRows, loadReportLedger } from '../_lib/dashboard-data';
-import { withDatabase } from '../_lib/db';
+import { withExistingDatabase } from '../_lib/db';
 import { addDays, periodFromParams, settledComparisonWindows, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
 
@@ -68,7 +68,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const settled = settledComparisonWindows(period, today);
   const analysisWindow = { start: addDays(period.start, -8), end: period.end };
 
-  const data = await withDatabase(async (handle) => {
+  const data = await withExistingDatabase(entry.handle, async (handle) => {
     const profiles = await listProfiles(handle, orgId);
     const profile = selectProfile(profiles, profileId);
     if (profile === null) return { profiles, profile: null };
@@ -80,14 +80,12 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           : analysisWindow.start,
       end: period.end,
     };
-    const [ledger, accountRows, campaignRows, crosscheck] = await Promise.all([
+    const [ledger, accountRows] = await Promise.all([
       loadReportLedger(handle, orgId, profile.id),
       loadProfileDailyRows(handle, orgId, profile.id, profile.label, accountWindow),
-      loadCampaignDailyRows(handle, orgId, profile.id, profile.label, analysisWindow),
-      loadCrosscheckPanel(handle, { profileId: profile.id }).catch(() => null),
     ]);
 
-    return { profiles, profile, ledger, accountRows, campaignRows, crosscheck };
+    return { profiles, profile, ledger, accountRows };
   });
 
   if (data === null) {
@@ -119,15 +117,9 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const {
     profile,
     accountRows = [],
-    campaignRows = [],
     ledger = [],
   } = data;
   const context = { currencyCode: profile.currencyCode };
-
-  const categorised: DailyRow[] = campaignRows.map((row) => ({
-    ...row,
-    category: classifyCampaignCategory(row.campaignName),
-  }));
 
   const analysisRows = accountRows.filter(
     (row) => row.date >= analysisWindow.start && row.date <= analysisWindow.end,
@@ -136,16 +128,12 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     analysisRows.length > 0
       ? (analysisRows[analysisRows.length - 1] as DailyRow).date
       : period.end;
-  const analysis = analyzeAccount(profile.label, reportDate, analysisRows, categorised);
-  const flags = evaluate(analysis, null, profile.goalLens);
-
   const pacing = computePacing(
     analysisRows.map((row) => ({ date: row.date, spend: row.spend })),
     reportDate,
     profile.monthlyBudget,
   );
   const pacingAlert = pacingFlag(pacing, null);
-  const activeFlags: Flag[] = pacingAlert === null ? flags.active : [pacingAlert, ...flags.active];
 
   const freshness = assessFreshness(ledger, { now: new Date() });
   const inPeriod = accountRows.filter((row) => row.date >= period.start && row.date <= period.end);
@@ -189,26 +177,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     comparisonRows.length === 0 ? null : totalsOf(comparisonRows),
   );
 
-  const byCampaign = new Map<string, { name: string; category: string; spend: number; sales: number; clicks: number; orders: number }>();
-  for (const row of categorised) {
-    const name = row.campaignName ?? '(unknown campaign)';
-    const acc = byCampaign.get(name) ?? {
-      name,
-      category: String(row.category ?? classifyCampaignCategory(name)),
-      spend: 0,
-      sales: 0,
-      clicks: 0,
-      orders: 0,
-    };
-    acc.spend += row.spend;
-    acc.sales += row.sales;
-    acc.clicks += row.clicks;
-    acc.orders += row.orders;
-    byCampaign.set(name, acc);
-  }
-  const campaignSummary = [...byCampaign.values()].sort((a, b) => b.spend - a.spend).slice(0, 12);
-
-
   return (
     <main style={page}>
       <PageHeader
@@ -238,7 +206,9 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         </details>
 
         <FreshnessBar assessment={freshness}>
-          {data.crosscheck ? <CrosscheckChip chip={data.crosscheck.chip} /> : null}
+          <Suspense fallback={null}>
+            <DashboardCrosscheck handle={entry.handle} profileId={profile.id} />
+          </Suspense>
         </FreshnessBar>
 
         <Cockpit
@@ -261,12 +231,135 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           </Suspense>
         </section>
 
-        <FlagsCard active={activeFlags as FlagView[]} suppressed={flags.suppressed as FlagView[]} />
-
-        <CampaignTable rows={campaignSummary} currencyCode={profile.currencyCode} profileId={profile.id} period={period} />
+        <Suspense fallback={<CampaignInsightsLoading />}>
+          <DashboardCampaignInsights
+            handle={entry.handle}
+            orgId={orgId}
+            profileId={profile.id}
+            profileLabel={profile.label}
+            goalLens={profile.goalLens}
+            analysisRows={analysisRows}
+            analysisWindow={analysisWindow}
+            reportDate={reportDate}
+            pacingAlert={pacingAlert}
+            currencyCode={profile.currencyCode}
+            period={period}
+          />
+        </Suspense>
 
       </div>
     </main>
+  );
+}
+
+async function DashboardCrosscheck({
+  handle,
+  profileId,
+}: {
+  handle: DbHandle;
+  profileId: string;
+}) {
+  const model = await loadCrosscheckPanel(handle, { profileId }).catch(() => null);
+  return model === null ? null : <CrosscheckChip chip={model.chip} />;
+}
+
+async function DashboardCampaignInsights({
+  handle,
+  orgId,
+  profileId,
+  profileLabel,
+  goalLens,
+  analysisRows,
+  analysisWindow,
+  reportDate,
+  pacingAlert,
+  currencyCode,
+  period,
+}: {
+  handle: DbHandle;
+  orgId: string;
+  profileId: string;
+  profileLabel: string;
+  goalLens: string | null;
+  analysisRows: DailyRow[];
+  analysisWindow: { start: string; end: string };
+  reportDate: string;
+  pacingAlert: Flag | null;
+  currencyCode: string;
+  period: { start: string; end: string };
+}) {
+  const campaignRows = await loadCampaignDailyRows(
+    handle,
+    orgId,
+    profileId,
+    profileLabel,
+    analysisWindow,
+  );
+  const categorised: DailyRow[] = campaignRows.map((row) => ({
+    ...row,
+    category: classifyCampaignCategory(row.campaignName),
+  }));
+  const analysis = analyzeAccount(profileLabel, reportDate, analysisRows, categorised);
+  const flags = evaluate(analysis, null, goalLens);
+  const activeFlags: Flag[] =
+    pacingAlert === null ? flags.active : [pacingAlert, ...flags.active];
+
+  const byCampaign = new Map<
+    string,
+    {
+      name: string;
+      category: string;
+      spend: number;
+      sales: number;
+      clicks: number;
+      orders: number;
+    }
+  >();
+  for (const row of categorised) {
+    const name = row.campaignName ?? '(unknown campaign)';
+    const acc = byCampaign.get(name) ?? {
+      name,
+      category: String(row.category ?? classifyCampaignCategory(name)),
+      spend: 0,
+      sales: 0,
+      clicks: 0,
+      orders: 0,
+    };
+    acc.spend += row.spend;
+    acc.sales += row.sales;
+    acc.clicks += row.clicks;
+    acc.orders += row.orders;
+    byCampaign.set(name, acc);
+  }
+  const campaignSummary = [...byCampaign.values()]
+    .sort((left, right) => right.spend - left.spend)
+    .slice(0, 12);
+
+  return (
+    <>
+      <FlagsCard active={activeFlags as FlagView[]} suppressed={flags.suppressed as FlagView[]} />
+      <CampaignTable
+        rows={campaignSummary}
+        currencyCode={currencyCode}
+        profileId={profileId}
+        period={period}
+      />
+    </>
+  );
+}
+
+function CampaignInsightsLoading() {
+  return (
+    <Card title="Campaign signals" subtitle="Loading campaign-level alerts and spend concentration…">
+      <div className="wa-operating-status" aria-busy="true" aria-label="Campaign signals loading">
+        {['Alert groups', 'Spend concentration', 'Campaign coverage'].map((label) => (
+          <div className="wa-operating-signal" key={label}>
+            <span>{label}</span>
+            <strong>—</strong>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 

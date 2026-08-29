@@ -26,11 +26,12 @@ import {
   tokens,
 } from '@wizard-ads/ui';
 import type { EntityLevel } from '@wizard-ads/ui';
+import type { DbHandle } from '@wizard-ads/db';
 import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 import { gate } from '../../src/auth/guard';
 import { gateMessage } from '../../src/ui/gate-message';
 import { loadReportLedger } from '../_lib/dashboard-data';
-import { withDatabase } from '../_lib/db';
+import { withExistingDatabase } from '../_lib/db';
 import { ROW_CAP, loadGridRows } from '../_lib/grid-data';
 import { periodFromParams, precedingPeriod, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
@@ -72,7 +73,7 @@ export default async function GridPage({ searchParams }: PageProps) {
   const period = periodFromParams(params, todayIso());
   const comparison = precedingPeriod(period);
 
-  const data = await withDatabase(async (handle) => {
+  const data = await withExistingDatabase(entry.handle, async (handle) => {
     const profiles = await listProfiles(handle, orgId);
     const profile = selectProfile(profiles, profileId);
     if (profile === null) return { profiles, profile: null };
@@ -162,7 +163,7 @@ export default async function GridPage({ searchParams }: PageProps) {
         freshness={freshness}
         crosscheck={
           <Suspense fallback={<span style={crosscheckPending}>Crosscheck loading…</span>}>
-            <GridCrosscheck profileId={profile.id} />
+            <GridCrosscheck handle={entry.handle} profileId={profile.id} />
           </Suspense>
         }
         campaignId={entity === 'campaigns' ? params.campaign ?? null : null}
@@ -186,10 +187,14 @@ export default async function GridPage({ searchParams }: PageProps) {
  * path so a slow or unavailable comparison source cannot delay filtering,
  * grouping, or export.
  */
-async function GridCrosscheck({ profileId }: { profileId: string }) {
-  const model = await withDatabase((handle) =>
-    loadCrosscheckPanel(handle, { profileId }).catch(() => null),
-  );
+async function GridCrosscheck({
+  handle,
+  profileId,
+}: {
+  handle: DbHandle;
+  profileId: string;
+}) {
+  const model = await loadCrosscheckPanel(handle, { profileId }).catch(() => null);
   return model === null ? null : <CrosscheckChip chip={model.chip} />;
 }
 
