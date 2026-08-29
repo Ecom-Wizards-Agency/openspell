@@ -6,6 +6,7 @@ import {
   saveOptimizationGroup,
   type OptimizationGroupSettings,
 } from './optimization-groups.js';
+import { getRecommendationRun, listRecommendationRuns } from './recommendations.js';
 
 const available = await databaseAvailable();
 const USER_A = '69696969-6969-4969-8969-696969696969';
@@ -164,5 +165,36 @@ describe.skipIf(!available)('optimization-group workspace', () => {
       select count(*)::int as count from public.optimization_groups where org_id = ${orgB}
     `;
     expect(otherCount?.count).toBe(1);
+  });
+
+  it('returns immutable group context with recommendation run summaries and details', async () => {
+    const saved = await saveOptimizationGroup(database, {
+      orgId: orgA,
+      profileId: profileA,
+      actorId: USER_A,
+      settings: { ...settings, name: 'Shield evidence', role: 'shield' },
+      campaignIds: [],
+    });
+    const [run] = await database.sql<{ id: string }[]>`
+      insert into public.recommendation_runs (
+        org_id, profile_id, status, lookback_days, engine_version,
+        group_id, group_role, group_snapshot, due_at
+      ) values (
+        ${orgA}, ${profileA}, 'succeeded', 7, 'synthetic-engine',
+        ${saved.record.group.id}, 'shield', ${JSON.stringify(saved.record.group)}::text::jsonb,
+        '2026-08-20T00:00:00.000Z'::timestamptz
+      ) returning id
+    `;
+    const summaries = await listRecommendationRuns(database, { orgId: orgA, profileId: profileA });
+    const summary = summaries.find((candidate) => candidate.id === run?.id);
+    expect(summary).toMatchObject({
+      groupId: saved.record.group.id,
+      groupRole: 'shield',
+      groupSnapshot: { id: saved.record.group.id, name: 'Shield evidence', role: 'shield' },
+    });
+    expect(summary?.dueAt?.toISOString()).toBe('2026-08-20T00:00:00.000Z');
+
+    const detail = await getRecommendationRun(database, { orgId: orgA, runId: run?.id ?? '' });
+    expect(detail?.groupSnapshot).toEqual(saved.record.group);
   });
 });

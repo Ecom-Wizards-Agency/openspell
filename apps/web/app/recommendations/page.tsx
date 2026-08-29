@@ -113,22 +113,26 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
               <p>
                 Engine {run.engineVersion ?? 'unversioned'} · status {run.status} · created{' '}
                 {run.createdAt.toISOString().replace('T', ' ').slice(0, 16)} UTC
+                {run.groupSnapshot ? ` · group ${run.groupSnapshot.name} (${run.groupSnapshot.role})` : ' · legacy profile run'}
               </p>
             </details>
           )}
           {runs.length > 1 ? (
-            <nav style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }} aria-label="Runs">
-              {runs.map((option) => (
-                <a
-                  key={option.id}
-                  href={`/recommendations?profile=${profile.id}&run=${option.id}`}
-                  style={{ ...pill, fontWeight: option.id === run?.id ? 600 : 400 }}
-                >
-                  {option.createdAt.toISOString().slice(0, 10)} ·{' '}
-                  {option.finishedAt === null ? option.status : option.proposalsCount}
-                </a>
-              ))}
-            </nav>
+            <details className="wa-dashboard-context" style={{ marginTop: 0 }}>
+              <summary>Choose run · {run?.groupSnapshot?.name ?? 'Legacy profile run'}</summary>
+              <nav style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }} aria-label="Runs">
+                {runs.map((option) => (
+                  <a
+                    key={option.id}
+                    href={`/recommendations?profile=${profile.id}&run=${option.id}`}
+                    style={{ ...pill, fontWeight: option.id === run?.id ? 600 : 400 }}
+                  >
+                    {option.groupSnapshot?.name ?? 'Legacy profile'} · {option.createdAt.toISOString().slice(0, 10)} ·{' '}
+                    {option.finishedAt === null ? option.status : option.proposalsCount}
+                  </a>
+                ))}
+              </nav>
+            </details>
           ) : null}
         </header>
 
@@ -181,6 +185,7 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
               counts={run.counts}
               role={role}
               hasStrategySnapshot={run.strategySnapshot !== null}
+              runGroupName={run.groupSnapshot?.name}
             />
           </div>
         )}

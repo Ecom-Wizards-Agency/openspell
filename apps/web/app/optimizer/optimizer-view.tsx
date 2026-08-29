@@ -16,6 +16,7 @@ import { Badge } from '../../src/ui/primitives';
 import { BidHistoryModal } from '../../src/ui/bid-history-modal';
 import type { CampaignReviewGroup, SettingsSummary } from '../../src/optimizer/view';
 import type { ReasonCoverage } from '../../src/recommendations/view';
+import type { OptimizationGroup } from '@wizard-ads/shared';
 
 function percent(value: number | null): string {
   if (value === null) return '—';
@@ -27,7 +28,21 @@ function acosLabel(value: number | null): string | null {
 }
 
 /** The run's policy, collapsed into one chip: `Target ACOS 30% · Balanced`. */
-export function SettingsChip({ summary }: { summary: SettingsSummary }): ReactNode {
+export function SettingsChip({
+  summary,
+  group,
+}: {
+  summary: SettingsSummary;
+  group?: OptimizationGroup | null;
+}): ReactNode {
+  if (group) {
+    return (
+      <span className="wa-badge wa-badge--info" data-testid="optimizer-settings" title="Immutable optimization-group policy stored with this run">
+        <span aria-hidden="true">⚙</span>
+        {group.name} · {group.role} · Target ACOS {acosLabel(group.targetAcos)}
+      </span>
+    );
+  }
   const acos = acosLabel(summary.targetAcos);
   return (
     <span className="wa-badge wa-badge--info" data-testid="optimizer-settings" title="The policy this run was computed under">
@@ -80,7 +95,7 @@ export interface BidHistoryContext {
   currencyCode: string;
 }
 
-/** One campaign review group: a scannable bucket, not a persisted policy object. */
+/** One campaign drill-down inside a persisted group run or legacy profile run. */
 export function OptimizerGroupTable({
   group,
   bidHistoryContext,

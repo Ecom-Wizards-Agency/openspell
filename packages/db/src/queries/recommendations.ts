@@ -26,7 +26,7 @@
  * and unless every proposal it touched actually changed status.
  */
 import { createHash } from 'node:crypto';
-import { serializeApplyRows } from '@wizard-ads/shared';
+import { OptimizationGroup, serializeApplyRows } from '@wizard-ads/shared';
 import type { ApplyRow, RecommendationInputs } from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
 import { lockCurrentApplyStates, resolveCurrentApplyStates } from './apply-state.js';
@@ -116,6 +116,10 @@ export interface RecommendationRunSummary {
   proposalsCount: number;
   createdAt: Date;
   finishedAt: Date | null;
+  groupId: string | null;
+  groupRole: OptimizationGroup['role'] | null;
+  groupSnapshot: OptimizationGroup | null;
+  dueAt: Date | null;
   /** Live counts per status, so "exported N of M accepted" needs no second query. */
   counts: Record<RecommendationStatusName, number>;
 }
@@ -227,6 +231,10 @@ interface RunRow {
   proposals_count: number;
   created_at: Date | string;
   finished_at: Date | string | null;
+  group_id: string | null;
+  group_role: OptimizationGroup['role'] | null;
+  group_snapshot: unknown;
+  due_at: Date | string | null;
   counts: Record<string, number> | null;
 }
 
@@ -236,6 +244,12 @@ function toRunSummary(row: RunRow): RecommendationRunSummary {
     if ((RECOMMENDATION_STATUSES as readonly string[]).includes(status)) {
       counts[status as RecommendationStatusName] = Number(value);
     }
+  }
+  const groupSnapshot = row.group_snapshot === null
+    ? null
+    : OptimizationGroup.parse(row.group_snapshot);
+  if (groupSnapshot !== null && groupSnapshot.id !== row.group_id) {
+    throw new Error('recommendation run group snapshot does not match group_id');
   }
   return {
     id: row.id,
@@ -249,6 +263,10 @@ function toRunSummary(row: RunRow): RecommendationRunSummary {
     proposalsCount: row.proposals_count,
     createdAt: toDate(row.created_at),
     finishedAt: toDateOrNull(row.finished_at),
+    groupId: row.group_id,
+    groupRole: row.group_role,
+    groupSnapshot,
+    dueAt: toDateOrNull(row.due_at),
     counts,
   };
 }
@@ -266,6 +284,7 @@ export async function listRecommendationRuns(
     select r.id, r.org_id, r.profile_id, r.status::text as status, r.lookback_days,
            r.window_start::text as window_start, r.window_end::text as window_end,
            r.engine_version, r.proposals_count, r.created_at, r.finished_at,
+           r.group_id, r.group_role::text as group_role, r.group_snapshot, r.due_at,
            (
              select jsonb_object_agg(s.status, s.count)
                from (
@@ -293,6 +312,7 @@ export async function getRecommendationRun(
     select r.id, r.org_id, r.profile_id, r.status::text as status, r.lookback_days,
            r.window_start::text as window_start, r.window_end::text as window_end,
            r.engine_version, r.proposals_count, r.created_at, r.finished_at,
+           r.group_id, r.group_role::text as group_role, r.group_snapshot, r.due_at,
            r.strategy_snapshot,
            (
              select jsonb_object_agg(s.status, s.count)
