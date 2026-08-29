@@ -113,6 +113,12 @@
     "max_sv": "<int monthly search volume>"
   },
 
+  "dayparting": {
+    "_comment": "Marketing Stream evidence policy. Both values are tenant-owned and the worker refuses to acknowledge deliveries until they are filled and seeded.",
+    "settling_window_hours": "<non-negative number of hours before evidence is settled>",
+    "budget_capped_at_percent": "<non-negative budget-usage percentage that marks a capped hour>"
+  },
+
   "naming": {
     "_comment": "Campaign naming. Mirrors the bulk-creator naming settings so proposed names match what gets created. goal: Discovery|Rank|Profit; match_type: EXACT|BROAD|PHRASE|ASIN_EXACT; campaign_type: SKW|Halo|BMM|Phrase|PAT. descriptor placeholders: {keyword} {root} {counter}.",
     "variable_order": ["Goal", "SP", "MatchType", "ProductName", "TargetDescriptor", "Suffix"],

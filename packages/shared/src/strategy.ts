@@ -243,6 +243,20 @@ export const NamingStrategy = z.object({
 });
 export type NamingStrategy = z.infer<typeof NamingStrategy>;
 
+/**
+ * Tenant-owned policy for Marketing Stream evidence.
+ *
+ * There are deliberately no defaults for either value. A worker with no
+ * approved policy leaves the SQS delivery unacknowledged so the queue's
+ * redrive policy can surface the configuration gap instead of silently
+ * applying public-repository numbers to a tenant.
+ */
+export const DaypartingStrategy = z.object({
+  settling_window_hours: z.number().nonnegative(),
+  budget_capped_at_percent: z.number().nonnegative(),
+});
+export type DaypartingStrategy = z.infer<typeof DaypartingStrategy>;
+
 export const TenantStrategy = z.object({
   schema: z.literal('wizard-ads.tenant-strategy.v1'),
   refreshed_at: IsoDate.optional(),
@@ -262,6 +276,7 @@ export const TenantStrategy = z.object({
    */
   discovery: DiscoveryStrategy.optional(),
   expanded_candidate_filter: ExpandedCandidateFilterStrategy.optional(),
+  dayparting: DaypartingStrategy.optional(),
 });
 export type TenantStrategy = z.infer<typeof TenantStrategy>;
 

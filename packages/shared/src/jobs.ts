@@ -21,10 +21,15 @@ export const JobType = z.enum([
   'rank.sync',
   'economics.sync',
   'sqp.categorize',
+  'creative.sync',
+  'sqp.request',
+  'history.bootstrap',
+  'report.promote',
+  'marketing_stream.normalize',
 ]);
 export type JobType = z.infer<typeof JobType>;
 
-/** New worker jobs are separate until their dispatcher handlers land. */
+/** The feature subset, retained for consumers that only enumerate this wave. */
 export const FeatureJobType = z.enum([
   'creative.sync',
   'sqp.request',
@@ -184,6 +189,11 @@ export const JobPayload = z.discriminatedUnion('type', [
   RankSyncJob,
   EconomicsSyncJob,
   SqpCategorizeJob,
+  CreativeSyncJob,
+  SqpRequestJob,
+  HistoryBootstrapJob,
+  ReportPromoteJob,
+  MarketingStreamNormalizeJob,
 ]);
 export type JobPayload = z.infer<typeof JobPayload>;
 

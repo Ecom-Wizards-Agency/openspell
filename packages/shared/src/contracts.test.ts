@@ -574,6 +574,45 @@ describe('JobPayload', () => {
         type: 'sqp.categorize',
         weekStart: '2026-07-26',
       },
+      {
+        orgId: ORG_ID,
+        profileId: PROFILE_ID,
+        type: 'creative.sync',
+        startDate: '2026-07-01',
+        endDate: '2026-07-31',
+        adProduct: 'SB',
+      },
+      {
+        orgId: ORG_ID,
+        profileId: PROFILE_ID,
+        type: 'sqp.request',
+        marketplaceId: 'marketplace-1',
+        asins: ['B000000001'],
+        weekStart: '2026-07-19',
+        weekEnd: '2026-07-25',
+      },
+      {
+        orgId: ORG_ID,
+        profileId: PROFILE_ID,
+        type: 'history.bootstrap',
+        reportType: 'sbAds',
+        source: 'amazon_unified_reporting',
+        cursorDate: null,
+      },
+      {
+        orgId: ORG_ID,
+        profileId: PROFILE_ID,
+        type: 'report.promote',
+        reportRequestId: REQUEST_ID,
+        reportType: 'sbAds',
+        date: '2026-07-31',
+      },
+      {
+        orgId: ORG_ID,
+        profileId: PROFILE_ID,
+        type: 'marketing_stream.normalize',
+        messageIds: ['message-1'],
+      },
     ];
 
     const seen = jobs.map((j) => roundTrip(JobPayload, j).type);
@@ -588,6 +627,11 @@ describe('JobPayload', () => {
       'rank.sync',
       'economics.sync',
       'sqp.categorize',
+      'creative.sync',
+      'sqp.request',
+      'history.bootstrap',
+      'report.promote',
+      'marketing_stream.normalize',
     ]);
   });
 
