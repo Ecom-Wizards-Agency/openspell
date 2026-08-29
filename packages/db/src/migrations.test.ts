@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260829150000_spapi_profile_bindings.sql');
+    expect(files.at(-1)).toBe('20260829160100_sb_video_observed_ingestion.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -76,6 +76,41 @@ describe.skipIf(!available)('migrations', () => {
     expect(constraint?.definition).toContain('(report_type IS NOT NULL)');
   });
 
+  it('adds sbAds only to the durable worker report ledger enum', async () => {
+    const labels = await database.sql<{ enumlabel: string }[]>`
+      select e.enumlabel
+        from pg_catalog.pg_enum e
+        join pg_catalog.pg_type t on t.oid = e.enumtypid
+       where t.typname = 'report_type'
+       order by e.enumsortorder
+    `;
+    expect(labels.map((row) => row.enumlabel).at(-1)).toBe('sbAds');
+  });
+
+  it('keeps one report-pending creative observation and complete report counts', async () => {
+    const [pendingIndex] = await database.sql<{ indexdef: string }[]>`
+      select indexdef
+        from pg_catalog.pg_indexes
+       where schemaname = 'public'
+         and indexname = 'creative_sync_snapshots_one_report_pending_idx'
+    `;
+    expect(pendingIndex?.indexdef).toContain('UNIQUE INDEX');
+    expect(pendingIndex?.indexdef).toContain("WHERE (status = 'report_pending'::text)");
+
+    const [reportCounts] = await database.sql<{ definition: string }[]>`
+      select pg_catalog.pg_get_constraintdef(oid) as definition
+        from pg_catalog.pg_constraint
+       where conname = 'creative_sync_snapshots_report_counts'
+    `;
+    const definition = reportCounts?.definition.toLowerCase() ?? '';
+    expect(definition).toContain('report_source_rows is null');
+    expect(definition).toContain('report_parsed_rows is null');
+    expect(definition).toContain('report_refused_rows is null');
+    expect(definition).toContain('report_source_rows is not null');
+    expect(definition).toContain('report_parsed_rows is not null');
+    expect(definition).toContain('report_refused_rows is not null');
+  });
+
   it('creates every table the plan names', async () => {
     const rows = await database.sql<{ relname: string }[]>`
       select c.relname
@@ -114,6 +149,7 @@ describe.skipIf(!available)('migrations', () => {
       'report_coverage', 'historical_bootstrap_progress',
       'report_promotion_watermarks', 'attribution_observations',
       'ad_creative_asset_mappings', 'fact_creative_daily',
+      'creative_sync_snapshots',
       'sqp_promotion_runs', 'query_vocabulary', 'contextual_negative_proposals',
       'optimization_groups', 'campaign_optimization_assignments',
       'recommendation_observations', 'marketing_stream_events',

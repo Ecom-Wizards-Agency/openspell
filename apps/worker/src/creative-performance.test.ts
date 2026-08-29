@@ -128,7 +128,11 @@ describe('SB Video creative staging', () => {
 
   it('uses a stable source key across an observed asset revision', () => {
     const before = mapping({ assetId: 'asset-one' });
-    const after = mapping({ assetId: 'asset-two', observedAt: '2026-08-29T02:00:00Z' });
+    const after = mapping({
+      assetId: 'asset-two',
+      creativeVersion: 'version_v2',
+      observedAt: '2026-08-29T02:00:00Z',
+    });
     expect(creativeMappingSourceKey(before)).toBe(creativeMappingSourceKey(after));
   });
 });
@@ -144,6 +148,8 @@ describe('SB Video creative ingestion', () => {
         assetsReadBack: batch.assets.length,
         mappingsReadBack: batch.mappings.length,
         factsReadBack: batch.facts.length,
+        snapshotsUpserted: batch.snapshot === undefined ? 0 : 1,
+        snapshotsReadBack: batch.snapshot === undefined ? 0 : 1,
       }),
     };
     const result = await ingestCreativePerformanceBatch(store, {
@@ -171,6 +177,8 @@ describe('SB Video creative ingestion', () => {
         assetsReadBack: 1,
         mappingsReadBack: 1,
         factsReadBack: 0,
+        snapshotsUpserted: 0,
+        snapshotsReadBack: 0,
       }),
     };
     await expect(ingestCreativePerformanceBatch(store, {
@@ -203,9 +211,12 @@ function mapping(overrides: Partial<AdCreativeAssetMapping> = {}): AdCreativeAss
     adGroupId: 'ad-group-one',
     adId: 'ad-one',
     creativeId: 'creative-one',
+    creativeVersion: null,
     assetId: 'asset-one',
     placement: 'top_of_search',
     attributionState: 'mapped',
+    mappingProvenance: null,
+    creativeSyncSnapshotId: null,
     observedAt: '2026-08-29T01:00:00Z',
     ...overrides,
   };
@@ -220,9 +231,12 @@ function fact(overrides: Partial<CreativeDailyFact> = {}): CreativeDailyFact {
     adGroupId: 'ad-group-one',
     adId: 'ad-one',
     creativeId: 'creative-one',
+    creativeVersion: null,
     assetId: 'asset-one',
     placement: 'top_of_search',
     attributionState: 'mapped',
+    mappingProvenance: null,
+    creativeSyncSnapshotId: null,
     impressions: 100,
     clicks: 10,
     cost: 5,

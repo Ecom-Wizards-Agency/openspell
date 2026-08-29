@@ -35,7 +35,7 @@ const ROUTES = [
   {
     href: '/creative',
     title: 'Creative Performance',
-    body: 'Compare Sponsored Brands Video by authoritative Amazon Asset ID, campaign type and placement.',
+    body: 'Compare Sponsored Brands Video using current observed Amazon Asset ID mappings, with historical validity kept explicit.',
   },
   {
     href: '/dayparting',

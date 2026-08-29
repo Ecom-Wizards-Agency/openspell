@@ -3,6 +3,7 @@ export * from './bid-series.js';
 export * from './config.js';
 export * from './crosscheck.js';
 export * from './creative-performance.js';
+export * from './sb-video-ingestion.js';
 export * from './datadive.js';
 export * from './dayparting.js';
 export * from './health.js';

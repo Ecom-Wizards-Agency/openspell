@@ -34,6 +34,7 @@ import {
   RecommendationStatus,
   Region,
   ReportType,
+  WorkerReportType,
   SearchTermFact,
   TENANT_STRATEGY_SCHEMA,
   TenantStrategy,
@@ -74,6 +75,8 @@ describe('enums', () => {
     expect(CvrSourceLevel.options).toEqual(['keyword', 'ad_group', 'campaign', 'profile']);
     expect(RecommendationStatus.options).toContain('proposed');
     expect(ReportType.options).toContain('spSearchTerm');
+    expect(ReportType.options).not.toContain('sbAds');
+    expect(WorkerReportType.options).toContain('sbAds');
   });
 
   it('rejects a value outside the vocabulary', () => {

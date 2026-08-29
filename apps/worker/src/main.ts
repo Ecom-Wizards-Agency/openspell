@@ -15,6 +15,10 @@ import {
 } from './recommendations-run.js';
 import { RecommendationObservationPass } from './recommendation-observer.js';
 import { PostgresWorkerStore } from './store.js';
+import {
+  ObservedSbVideoIngestion,
+  PostgresSbVideoIngestionStore,
+} from './sb-video-ingestion.js';
 import { createMrpEconomicsSync } from './mrp.js';
 import {
   AuthHealthMonitor,
@@ -30,6 +34,7 @@ const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
   'report.request',
   'report.poll',
   'report.fetch',
+  'creative.sync',
 ]);
 
 const config = configFromEnv();
@@ -45,6 +50,12 @@ const runsAmazonJobs = config.jobTypes === undefined
 // One client instance serves both the queue worker and bid-corridor sync.
 const adsApi = runsAmazonJobs ? createAdsApiClientFromEnv(handle) : undefined;
 const recommendationRuns = new PostgresRecommendationRunStore(handle);
+const sbVideo = adsApi
+  ? new ObservedSbVideoIngestion(
+      adsApi,
+      new PostgresSbVideoIngestionStore(handle, store),
+    )
+  : undefined;
 const runsSqpJobs = config.jobTypes === undefined || config.jobTypes.includes('sqp.request');
 const sqpRequest = runsSqpJobs && config.spApiClientId && config.spApiClientSecret
   ? createSpApiSqpRequestHandler({
@@ -64,6 +75,7 @@ const worker = new SyncWorker({
   jobTypes: config.jobTypes,
   crosscheckIngest: createCrosscheckIngest(handle, { inboxDir: config.crosscheckInboxDir }),
   recommendationsRun: createRecommendationsRunner(recommendationRuns),
+  sbVideo,
   integrations: {
     economicsSync: createMrpEconomicsSync(handle),
     rankSync: createDataDiveRankSyncHandler({ handle }),

@@ -54,7 +54,7 @@ export default async function CreativePerformancePage({ searchParams }: PageProp
       <main style={page}>
         <PageHeader
           title="Creative Performance"
-          subtitle="Sponsored Brands Video · authoritative Amazon Asset ID reporting"
+          subtitle="Sponsored Brands Video · current observed Amazon Asset ID mappings"
         />
         <EmptyState
           title="No profiles yet"
@@ -81,6 +81,7 @@ export default async function CreativePerformancePage({ searchParams }: PageProp
           <>
             <Badge tone="info">Sponsored Brands Video · v1</Badge>
             <Badge>Identity · Amazon Asset ID</Badge>
+            <Badge>Historical mapping validity · not established</Badge>
             <Badge>{rows.length} attribution row{rows.length === 1 ? '' : 's'}</Badge>
           </>
         }

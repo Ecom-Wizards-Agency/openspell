@@ -30,23 +30,25 @@ import {
   type StagedReportDate,
 } from '@wizard-ads/db';
 import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
-import type { EntityRow, JobPayload, JobType, ReportType } from '@wizard-ads/shared';
+import type {
+  EntityRow,
+  JobPayload,
+  JobType,
+  ReportType,
+  WorkerReportLedger,
+} from '@wizard-ads/shared';
 import type { AdsProfileContext } from './ads-api.js';
 import type { CampaignFactRow, ParsedFactBatch } from './parsers.js';
 import { defaultSchedules, type ScheduleSpec } from './schedules.js';
 
-export interface ReportRequestState {
-  id: string;
-  orgId: string;
-  profileId: string;
-  reportType: ReportType;
-  startDate: string;
-  endDate: string;
-  source: string;
-  amazonReportId: string | null;
+export type ReportRequestState = Omit<
+  WorkerReportLedger,
+  'requestedAt' | 'creativeSyncSnapshotId'
+> & {
   requestedAt: Date;
-  pollAttempts: number;
-}
+  /** Absent on base-report test adapters; production always returns null or a UUID. */
+  creativeSyncSnapshotId?: string | null;
+};
 
 export interface ReportPartitionCounts {
   expectedMonths: number;
@@ -397,6 +399,7 @@ export class PostgresWorkerStore implements WorkerStore {
       reportType: payload.reportType,
       startDate: payload.startDate,
       endDate: payload.endDate,
+      creativeSyncSnapshotId: payload.creativeSyncSnapshotId ?? null,
     }).onConflictDoNothing();
     return this.getReportRequest(jobId, payload.orgId, payload.profileId);
   }
@@ -418,16 +421,18 @@ export class PostgresWorkerStore implements WorkerStore {
       id: string;
       org_id: string;
       profile_id: string;
-      report_type: ReportType;
+      report_type: WorkerReportLedger['reportType'];
       start_date: string;
       end_date: string;
       source: string;
       amazon_report_id: string | null;
       requested_at: Date | string;
       poll_attempts: number;
+      creative_sync_snapshot_id: string | null;
     }[]>`
       select id, org_id, profile_id, report_type, start_date::text, end_date::text,
-             source, amazon_report_id, requested_at, poll_attempts
+             source, amazon_report_id, requested_at, poll_attempts,
+             creative_sync_snapshot_id
         from public.report_requests
        where id = ${reportRequestId}
          and org_id = ${orgId}
@@ -446,6 +451,7 @@ export class PostgresWorkerStore implements WorkerStore {
       amazonReportId: row.amazon_report_id,
       requestedAt: asDate(row.requested_at),
       pollAttempts: Number(row.poll_attempts),
+      creativeSyncSnapshotId: row.creative_sync_snapshot_id,
     };
   }
 

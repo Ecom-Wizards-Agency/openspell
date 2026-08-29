@@ -10,6 +10,7 @@
 import {
   boolean,
   date,
+  foreignKey,
   index,
   integer,
   interval,
@@ -22,6 +23,7 @@ import type { JobPayload } from '@wizard-ads/shared';
 import { count, ts } from './columns.js';
 import { reportStatus, reportType, syncJobStatus, syncJobType } from './enums.js';
 import { adProfiles, orgs } from './tenancy.js';
+import { creativeSyncSnapshots } from './operator-intelligence.js';
 
 export const syncSchedules = pgTable(
   'sync_schedules',
@@ -127,10 +129,17 @@ export const reportRequests = pgTable(
     countsMatch: boolean('counts_match'),
     bytesDownloaded: count('bytes_downloaded'),
     error: text('error'),
+    creativeSyncSnapshotId: uuid('creative_sync_snapshot_id'),
     createdAt: ts('created_at').notNull().defaultNow(),
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
-  (t) => [index('report_requests_profile_idx').on(t.profileId, t.reportType)],
+  (t) => [
+    index('report_requests_profile_idx').on(t.profileId, t.reportType),
+    foreignKey({
+      columns: [t.orgId, t.profileId, t.creativeSyncSnapshotId],
+      foreignColumns: [creativeSyncSnapshots.orgId, creativeSyncSnapshots.profileId, creativeSyncSnapshots.id],
+    }).onDelete('restrict'),
+  ],
 );
 
 export type SyncSchedule = typeof syncSchedules.$inferSelect;
