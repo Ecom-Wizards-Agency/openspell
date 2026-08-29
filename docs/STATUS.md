@@ -12,7 +12,7 @@ accepted by an operator. Full original evidence and source pointers are in
 | Surface | Verified state at the snapshot |
 |---|---|
 | Repository | `origin/main` is `f1b9efc` and includes merged PRs #36 and #37. Both passed typecheck, lint, tests, hygiene and Playwright on their exact PR heads before merge. Exact-main Actions jobs now fail before a runner starts because the organization reports failed payments or an insufficient Actions spending limit; this is an infrastructure block, not code execution evidence. The last successful exact-main run remains `6795fee`. |
-| Production web | Healthy and intentionally held at `caff194`. Nine authenticated operator routes returned HTTP 200 with no page or console error after rollback. Main is ahead and is not yet deployed. The live shell still renders the obsolete placeholder letter and `/brand/wizards-ai-icon.svg` returns HTTP 404 even though current main contains the verified official asset. |
+| Production web | Healthy and intentionally held at `caff194`. Nine authenticated operator routes returned HTTP 200 with no page or console error after rollback. Main is ahead and is not yet deployed. A fresh authenticated navigation now serves the legacy `wizard-ads` label and `w` placeholder, while `/brand/wizards-ai-icon.svg` returns HTTP 404 even though current main contains the verified official asset. |
 | Deployment environment | Newer candidates consumed corrupted or malformed production runtime-secret metadata after the healthy build. The authoritative 1Password service-account session is unavailable, so values have not been safely restored. No further production promotion is allowed until an immutable candidate passes the release gate. |
 | Hosted database | The production migration ledger is applied exactly through `20260829160100_sb_video_observed_ingestion.sql`. No unmerged write-gateway migration has been applied. |
 | MCP | The public read-only service was verified from Codex and Claude Code on an older application revision. Exact-main activation on the always-on host is blocked on authoritative server environment recovery from 1Password. |
@@ -133,7 +133,7 @@ implementation brief in `docs/workpackages/`.
 | 95 | Web critical-path performance | merged and deployed | request-local identity reuse, process-owned database pooling, streamed secondary evidence and concurrent optimizer reads |
 | 96 | Guarded SP write runtime | open; not merge-safe | PR #24 is frozen at a locally verified repair candidate and remains under independent adversarial safety review. Hosted jobs cannot start because of the Actions billing block; its migration is unapplied and no Amazon call has run. |
 | 97 | Freshness-ledger compatibility | merged and deployed | the web selects only fields available in the hosted report ledger |
-| 98 | OpenSpell brand mark | merged; live artifact stale | the tracked SVG is byte-for-byte identical to the approved Wizards AI symbol and source replaces the placeholder letter. Production still renders the old letter and returns HTTP 404 for the SVG, proving the current artifact is not deployed. |
+| 98 | OpenSpell brand mark | merged; live artifact stale | the tracked SVG is byte-for-byte identical to the approved Wizards AI symbol and source replaces the placeholder letter. A fresh production navigation still renders the legacy `wizard-ads`/`w` shell and returns HTTP 404 for the SVG, proving the current artifact is not deployed. |
 | 99 | Vercel environment boundary | merged and deployed | server runtime variable names pass through Turborepo without committing values |
 | 100 | Query and loader performance | merged; not deployed | opt-in sanitized timings, campaign-grain preaggregation, parallel newest-run evidence and an exact grid overflow sentinel |
 | 101 | Frankfurt function placement | superseded | the setting was tested but reverted before promotion after the candidate failed full-route QA |
@@ -172,8 +172,9 @@ implementation brief in `docs/workpackages/`.
   which is encouraging interaction evidence but not a p95 benchmark. Candidate verification must
   therefore assert distinctive current UI artifacts as well as headings and status codes.
 - The same artifact check proves the branding drift directly: the source SVG matches the approved
-  Wizards AI sygnets byte-for-byte, but the deployed shell still contains the placeholder letter,
-  has no brand-mark background image, and returns HTTP 404 for the tracked SVG path. PR #35 adds a
+  Wizards AI symbol byte-for-byte, but a fresh authenticated production navigation serves the
+  legacy `wizard-ads` label with a `w` placeholder, has no brand-mark background image, and returns
+  HTTP 404 for the tracked SVG path. PR #35 adds a
   candidate asset request and authenticated DOM marker gate so a heading match cannot hide this
   class of stale deployment again.
 - A later production-target candidate inherited malformed database/runtime secret metadata and
