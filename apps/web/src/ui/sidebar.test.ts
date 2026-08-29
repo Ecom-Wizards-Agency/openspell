@@ -106,4 +106,23 @@ describe('the sidebar and the chosen profile', () => {
     );
     expect(current).toEqual(['/settings?profile=ENTITY1TEST']);
   });
+
+  it('opens only the current workflow group by default and keeps utilities quiet', () => {
+    window.history.replaceState(null, '', '/optimizer?profile=ENTITY1TEST');
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    act(() => {
+      root.render(createElement(SidebarNav));
+    });
+    mounted.push(root);
+
+    const openGroups = [...host.querySelectorAll('details.wa-navgroup[open] summary')].map(
+      (summary) => summary.textContent?.trim(),
+    );
+    expect(openGroups).toEqual(['Optimize']);
+    expect(host.querySelectorAll('details.wa-navgroup')).toHaveLength(3);
+    expect(host.querySelector('footer.wa-sidebar-utilities')?.textContent).toContain('Connect AI');
+    expect(host.querySelector('footer.wa-sidebar-utilities')?.textContent).toContain('Settings');
+  });
 });
