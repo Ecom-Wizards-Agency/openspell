@@ -63,6 +63,28 @@ test.describe('recommendations review', () => {
 
   });
 
+  test('keeps filtered selection and progressive decisions keyboard-accessible on mobile', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openReview(page);
+
+    await expect(page.getByTestId('review-filters')).toBeVisible();
+    await expect(page.getByTestId('review-actionbar')).toBeVisible();
+    await page.getByRole('combobox', { name: 'Reason' }).selectOption('high_acos');
+    await page.getByRole('button', { name: 'Select all 1 filtered' }).click();
+    await expect(page.getByTestId('selection-count')).toContainText(
+      '1 of 1 filtered selected · 0 accepted',
+    );
+
+    const dismiss = page.getByRole('button', { name: 'Dismiss 1 selected' });
+    await dismiss.click();
+    await expect(page.getByLabel('Dismissal note')).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(page.getByLabel('Dismissal note')).toHaveCount(0);
+    await expect(dismiss).toBeFocused();
+  });
+
   test('accept, dismiss and export: the three-act gesture, and dismissed rows never export', async ({
     page,
   }) => {
@@ -73,22 +95,27 @@ test.describe('recommendations review', () => {
     await lowVisibilityGroup.locator('summary').click();
     const lowVisibility = lowVisibilityGroup.locator('tr[data-testid^="proposal-"]').first();
     await lowVisibility.getByRole('checkbox').check();
-    await page.getByLabel('Decision note').fill('Rank target: never cut on ACOS alone.');
-    await page.getByRole('button', { name: 'Dismiss selected' }).click();
+    await expect(page.getByTestId('selection-count')).toContainText('1 of');
+    await page.getByRole('button', { name: 'Dismiss 1 selected' }).click();
+    await page.getByLabel('Dismissal note').fill('Rank target: never cut on ACOS alone.');
+    await page.getByRole('button', { name: 'Confirm dismissal · 1' }).click();
     await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
     await expect(page.getByTestId('run-counts')).toContainText('1 dismissed');
 
     // Accept everything still proposed.
     await page.getByRole('combobox', { name: 'Status' }).selectOption('proposed');
     await page.getByRole('button', { name: /Select all \d+ filtered/ }).click();
-    await page.getByLabel('Decision note').fill('Formula results, ceilings stated.');
-    await page.getByRole('button', { name: 'Accept selected' }).click();
+    await expect(page.getByTestId('selection-count')).toContainText(
+      `${PROPOSALS - 1} of ${PROPOSALS - 1} filtered selected · 0 accepted`,
+    );
+    await page.getByRole('button', { name: `Accept ${PROPOSALS - 1} selected` }).click();
     await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
     await expect(page.getByTestId('run-counts')).toContainText(`${PROPOSALS - 1} accepted`);
 
     // Act two of the gesture is separate from act three: pressing Export
     // without the confirmation is refused.
-    await page.getByLabel('Decision note').fill('Weekly rank batch.');
+    await page.getByRole('button', { name: `Prepare export · ${PROPOSALS - 1}` }).click();
+    await page.getByLabel('Export note').fill('Weekly rank batch.');
     await page.getByLabel('Strategy group for export').selectOption('Rank');
     await page.getByTestId('export-accepted').click();
     await expect(page.getByTestId('review-error')).toContainText('Yes, export changes');
