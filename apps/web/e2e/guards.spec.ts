@@ -60,6 +60,17 @@ const PROFILE_CANONICAL = new Set([
   '/creative',
 ]);
 
+/** Primary data-backed routes whose artifact, not only URL, must render. */
+const PRODUCT_HEADINGS = new Map<string, string>([
+  ['/optimizer', 'Campaign Optimizer'],
+  ['/dashboard', 'Dashboard'],
+  ['/query-intelligence', 'Query Intelligence'],
+  ['/creative', 'Creative Performance'],
+  ['/dayparting', 'Dayparting'],
+  ['/crosscheck', 'Crosscheck'],
+  ['/connect-claude', 'Connect AI (MCP)'],
+]);
+
 test.describe.configure({ mode: 'serial' });
 
 test('the index sends an anonymous visitor directly to sign in', async ({ page }) => {
@@ -139,6 +150,10 @@ test('the same screens open once there is a session', async ({ page }) => {
       await page.waitForURL(
         (url) => url.pathname === expectedPath && url.searchParams.has('profile'),
       );
+    }
+    const expectedHeading = PRODUCT_HEADINGS.get(expectedPath);
+    if (expectedHeading !== undefined) {
+      await expect(page.getByRole('heading', { name: expectedHeading, exact: true })).toBeVisible();
     }
     landed.push(new URL(page.url()).pathname);
   }
