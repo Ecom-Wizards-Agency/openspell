@@ -285,6 +285,61 @@ describe('observed SB Video snapshot ingestion', () => {
     expect(store.lastBatch).toMatchObject({ assets: [], mappings: [], facts: [] });
   });
 
+  it('replays durable blocked counts after a crash before ledger accounting', async () => {
+    const store = new MemoryStore();
+    const runtime = new ObservedSbVideoIngestion(
+      client(adsPage([ad('ad-one')]), assetsPage([asset(ASSET_ONE, 'VIDEO')])),
+      store,
+      fixedNow,
+    );
+    await runtime.syncSnapshot({
+      jobId: SNAPSHOT_ID,
+      profile: PROFILE,
+      payload: {
+        type: 'creative.sync', orgId: ORG_ID, profileId: PROFILE_ID, adProduct: 'SB',
+        startDate: '2026-08-29', endDate: '2026-08-29',
+        allowObservedAttributionFacts: true,
+      },
+    });
+
+    const persisted = await runtime.ingestReport({
+      profile: PROFILE,
+      ledger: ledger(),
+      rawRows: [reportRow(), reportRow()],
+    });
+    expect(persisted).toMatchObject({
+      blocked: true,
+      idempotentReplay: false,
+      reportSourceRows: 2,
+      reportParsedRows: 2,
+      reportRefusedRows: 0,
+      mappedFactRows: 0,
+      unpromotedReportRows: 2,
+      factsReadBack: 0,
+    });
+
+    // The first call models the durable snapshot commit. A worker process may
+    // die before copying these counts to report_requests; the retry must use
+    // the snapshot instead of attempting promotion again.
+    const retry = await runtime.ingestReport({
+      profile: PROFILE,
+      ledger: ledger(),
+      rawRows: [],
+    });
+    expect(retry).toMatchObject({
+      blocked: true,
+      idempotentReplay: true,
+      reportSourceRows: 2,
+      reportParsedRows: 2,
+      reportRefusedRows: 0,
+      mappedFactRows: 0,
+      unpromotedReportRows: 2,
+      factsUpserted: 0,
+      factsReadBack: 0,
+      reasons: ['persisted_blocked_snapshot'],
+    });
+  });
+
   it('refuses the observed-fact gate for a multi-day backfill before any Amazon read', async () => {
     let reads = 0;
     const api: SbVideoContractProbeClient = {
@@ -343,6 +398,40 @@ describe('observed SB Video snapshot ingestion', () => {
       },
     });
     expect(result.status).toBe('report_pending');
+  });
+
+  it('fails closed when provider reads cross the profile-local date boundary', async () => {
+    const store = new MemoryStore();
+    let reads = 0;
+    const api: SbVideoContractProbeClient = {
+      probeSbAdsPage: async () => (reads += 1, adsPage([ad('ad-one')])),
+      probeCreativeAssetsPage: async () => (
+        reads += 1,
+        assetsPage([asset(ASSET_ONE, 'VIDEO')])
+      ),
+    };
+    const times = [
+      new Date('2026-08-29T23:59:59Z'),
+      new Date('2026-08-30T00:00:01Z'),
+    ];
+    const runtime = new ObservedSbVideoIngestion(
+      api,
+      store,
+      () => times.shift() ?? new Date('2026-08-30T00:00:01Z'),
+    );
+
+    await expect(runtime.syncSnapshot({
+      jobId: SNAPSHOT_ID,
+      profile: PROFILE,
+      payload: {
+        type: 'creative.sync', orgId: ORG_ID, profileId: PROFILE_ID, adProduct: 'SB',
+        startDate: '2026-08-29', endDate: '2026-08-29',
+        allowObservedAttributionFacts: true,
+      },
+    })).rejects.toThrow(/profile-local date changed/);
+    expect(reads).toBe(2);
+    expect(store.lastBatch).toBeUndefined();
+    expect(store.enqueued).toEqual([]);
   });
 });
 

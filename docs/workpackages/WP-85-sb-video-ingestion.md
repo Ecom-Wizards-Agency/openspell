@@ -64,9 +64,10 @@ into a mapped asset.
   and current mappings.
 - Mapping-only is the default. It writes no report request.
 - `allowObservedAttributionFacts: true` is an explicit gate and is accepted only when
-  `startDate === endDate` and that date equals `observedAt` in the profile timezone. Earlier and
-  later dates are rejected before any Amazon read. The gate enqueues an `sbAds` `report.request`
-  tied to the snapshot.
+  `startDate === endDate` and that date equals the profile-local date both before and after the two
+  Amazon reads. Earlier and later dates are rejected before any Amazon read; a local-midnight
+  rollover during the reads fails before persistence or report enqueue. The gate enqueues an
+  `sbAds` `report.request` tied to the snapshot only after both checks pass.
 - Only one report-pending creative snapshot may exist per profile. Profile-scoped transaction
   serialization rejects any different mapping observation while that report is pending, so a later
   current-key upsert cannot move the evidence before promotion. A terminal failed, cancelled or
@@ -89,7 +90,8 @@ into a mapped asset.
 - Retries upsert the same snapshot, Asset IDs, mapping source keys and ad/date fact grain. A later
   observed mapping replaces that ad/date fact rather than retaining both Asset IDs. A fetch retry
   after successful promotion reuses the snapshot's already-reconciled durable counts and does not
-  rewrite the fact.
+  rewrite the fact. A retry after count-only blocking likewise replays the durable refused and
+  unpromoted counts, so a crash between snapshot persistence and ledger completion cannot hide them.
 
 ### Read-only surface
 
@@ -115,7 +117,8 @@ Before success:
 - No Amazon advertising write method is called or exposed by the ingestion adapter.
 - No `sbAds` schedule or historical-bootstrap handler is enabled.
 - Multi-day, earlier-day and later-day observed-fact requests are rejected before an Amazon read;
-  only the profile-local observation date can pass the gate.
+  only the profile-local observation date can pass the gate, and that date must remain unchanged
+  through both provider reads.
 - Overlapping current observations are blocked while an explicitly gated report is in flight.
 - This package does not claim historical Asset-ID attribution is authoritative.
 - Historical backfill remains blocked until an operator authorizes a live, read-only probe that proves
@@ -133,9 +136,11 @@ Before success:
 - retries remain idempotent;
 - earlier and later fact dates fail before any Amazon read, while timezone-local observation dates
   are resolved from the profile timezone;
+- a synthetic profile-local midnight rollover fails before persistence or report enqueue;
 - a current mapping change leaves one canonical fact;
 - incomplete pagination writes no canonical asset, mapping or fact;
 - report refusals and duplicate ad/date grains promote zero facts;
+- a crash after durable count-only blocking replays those counts into the report ledger on retry;
 - all facts retain null placement and observed provenance;
 - partial attribution retains truthful source/parsed/refused/promoted/unpromoted/canonical ledger
   counts and a distinct complete-accounting Sync Status label;

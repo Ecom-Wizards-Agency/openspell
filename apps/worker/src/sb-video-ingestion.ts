@@ -145,9 +145,9 @@ export class ObservedSbVideoIngestion implements SbVideoIngestionRuntime {
     ) {
       throw new Error('observed SB attribution facts are limited to one day; historical backfill is disabled');
     }
-    const observedAt = this.now();
+    const observationStartedAt = this.now();
     if (input.payload.allowObservedAttributionFacts) {
-      const observedDate = profileLocalDate(observedAt, input.profile.timezone);
+      const observedDate = profileLocalDate(observationStartedAt, input.profile.timezone);
       if (input.payload.startDate !== observedDate) {
         throw new Error(
           `observed SB attribution facts require the profile-local observation date ${observedDate}; historical or future dates are disabled`,
@@ -157,6 +157,15 @@ export class ObservedSbVideoIngestion implements SbVideoIngestionRuntime {
 
     const adsPage = await this.client.probeSbAdsPage(input.profile);
     const assetsPage = await this.client.probeCreativeAssetsPage(input.profile);
+    const observedAt = this.now();
+    if (
+      input.payload.allowObservedAttributionFacts &&
+      profileLocalDate(observedAt, input.profile.timezone) !== input.payload.startDate
+    ) {
+      throw new Error(
+        'profile-local date changed during the SB creative observation; fact attribution is disabled for this snapshot',
+      );
+    }
     const staged = stageCurrentSnapshot({
       snapshotId: input.jobId,
       orgId: input.payload.orgId,
@@ -240,7 +249,7 @@ export class ObservedSbVideoIngestion implements SbVideoIngestionRuntime {
       throw new Error('sbAds fact promotion is not explicitly allowed by this complete single-day snapshot');
     }
 
-    if (evidence.snapshot.status === 'completed') {
+    if (evidence.snapshot.status === 'completed' || evidence.snapshot.status === 'blocked') {
       const reportSourceRows = evidence.snapshot.reportSourceRows;
       const reportParsedRows = evidence.snapshot.reportParsedRows;
       const reportRefusedRows = evidence.snapshot.reportRefusedRows;
@@ -250,10 +259,11 @@ export class ObservedSbVideoIngestion implements SbVideoIngestionRuntime {
         reportRefusedRows === null ||
         evidence.persistence.factsReadBack !== evidence.snapshot.mappedFactRows
       ) {
-        throw new Error('completed sbAds snapshot is missing its reconciled durable counts');
+        throw new Error(`${evidence.snapshot.status} sbAds snapshot is missing its reconciled durable counts`);
       }
+      const blocked = evidence.snapshot.status === 'blocked';
       return {
-        blocked: false,
+        blocked,
         idempotentReplay: true,
         reportSourceRows,
         reportParsedRows,
@@ -263,7 +273,7 @@ export class ObservedSbVideoIngestion implements SbVideoIngestionRuntime {
         factsUpserted: 0,
         factsReadBack: evidence.persistence.factsReadBack,
         amazonWriteCalls: 0,
-        reasons: [],
+        reasons: blocked ? ['persisted_blocked_snapshot'] : [],
       };
     }
     if (evidence.snapshot.status !== 'report_pending') {
