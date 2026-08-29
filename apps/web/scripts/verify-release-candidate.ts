@@ -19,6 +19,7 @@ import { spawn } from 'node:child_process';
 import { chromium } from '@playwright/test';
 import {
   inspectReleaseArtifact,
+  releaseResponsePassed,
   RELEASE_ROUTE_CHECKS,
   type ReleaseRouteCheck,
 } from '../src/release/candidate-artifacts';
@@ -105,7 +106,7 @@ async function verifyRoute(
     route: check.route,
     status,
     checkDurationMs: Math.round(performance.now() - startedAt),
-    passed: result.exitCode === 0 && status === 200 && inspection.matched,
+    passed: releaseResponsePassed(result.exitCode, status, inspection),
     missingArtifacts: inspection.missingArtifacts,
     rejectedBody: inspection.rejectedBody,
   };

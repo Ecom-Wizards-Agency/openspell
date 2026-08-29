@@ -1,9 +1,14 @@
+import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { OperatorContext } from '../ui/operator-context';
 import { RECOMMENDATION_REVIEW_ARTIFACT } from '../ui/artifact-markers';
-import { inspectReleaseArtifact, RELEASE_ROUTE_CHECKS } from './candidate-artifacts';
+import {
+  inspectReleaseArtifact,
+  releaseResponsePassed,
+  RELEASE_ROUTE_CHECKS,
+} from './candidate-artifacts';
 
 function routeCheck(route: string) {
   const check = RELEASE_ROUTE_CHECKS.find((candidate) => candidate.route === route);
@@ -12,6 +17,34 @@ function routeCheck(route: string) {
 }
 
 describe('release candidate artifact checks', () => {
+  it('matches the tracked official brand icon and still requires a successful response', () => {
+    const body = readFileSync(
+      new URL('../../public/brand/wizards-ai-icon.svg', import.meta.url),
+      'utf8',
+    );
+    const inspection = inspectReleaseArtifact(
+      body,
+      routeCheck('/brand/wizards-ai-icon.svg').artifacts,
+    );
+
+    expect(inspection).toEqual({ matched: true, missingArtifacts: [], rejectedBody: false });
+    expect(releaseResponsePassed(0, 200, inspection)).toBe(true);
+    expect(releaseResponsePassed(0, 404, inspection)).toBe(false);
+  });
+
+  it('rejects a successful non-SVG response at the official brand asset path', () => {
+    const inspection = inspectReleaseArtifact(
+      '<html><h1>Not found</h1></html>',
+      routeCheck('/brand/wizards-ai-icon.svg').artifacts,
+    );
+
+    expect(releaseResponsePassed(0, 200, inspection)).toBe(false);
+    expect(inspection.missingArtifacts).toEqual([
+      'official-openspell-brand-icon',
+      'official-openspell-brand-palette',
+    ]);
+  });
+
   it('rejects the stale grid artifact even when its old heading remains', () => {
     const inspection = inspectReleaseArtifact('<main><h1>Campaigns</h1></main>', routeCheck('/grid').artifacts);
 
@@ -67,5 +100,6 @@ describe('release candidate artifact checks', () => {
       missingArtifacts: [],
       rejectedBody: true,
     });
+    expect(releaseResponsePassed(0, 200, inspectReleaseArtifact(body, check.artifacts))).toBe(false);
   });
 });

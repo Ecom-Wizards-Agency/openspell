@@ -24,6 +24,19 @@ const REJECTED_BODY = /role=["']alert["']|Application error|Internal Server Erro
  * pass merely because its navigation and page title still render.
  */
 export const RELEASE_ROUTE_CHECKS: readonly ReleaseRouteCheck[] = [
+  {
+    route: '/brand/wizards-ai-icon.svg',
+    artifacts: [
+      {
+        id: 'official-openspell-brand-icon',
+        text: '<svg width="378" height="378" viewBox="0 0 378 378"',
+      },
+      {
+        id: 'official-openspell-brand-palette',
+        text: '<radialGradient id="paint0_radial_577_551"',
+      },
+    ],
+  },
   { route: '/', artifacts: [{ id: 'dashboard-link', text: 'Open the dashboard' }] },
   { route: '/dashboard', artifacts: [{ id: 'dashboard-heading', text: 'Dashboard' }] },
   {
@@ -76,4 +89,12 @@ export function inspectReleaseArtifact(
     missingArtifacts,
     rejectedBody,
   };
+}
+
+export function releaseResponsePassed(
+  exitCode: number | null,
+  status: number | null,
+  inspection: ArtifactInspection,
+): boolean {
+  return exitCode === 0 && status === 200 && inspection.matched;
 }
