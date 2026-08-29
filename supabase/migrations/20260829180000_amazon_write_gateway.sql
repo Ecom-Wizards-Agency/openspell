@@ -16,9 +16,9 @@ create type public.amazon_write_execution_status as enum (
   'queued', 'running', 'awaiting_sync', 'succeeded', 'partial', 'refused', 'failed', 'conflict'
 );
 create type public.amazon_write_row_status as enum (
-  'pending', 'retryable', 'accepted', 'failed', 'refused', 'ambiguous'
+  'pending', 'dispatched', 'retryable', 'accepted', 'failed', 'refused', 'ambiguous'
 );
-create type public.amazon_write_observation_status as enum ('pending', 'observed', 'conflict');
+create type public.amazon_write_observation_status as enum ('pending', 'not_applied', 'observed', 'conflict');
 create type public.amazon_write_attempt_outcome as enum (
   'accepted', 'failed', 'retryable', 'ambiguous'
 );
@@ -35,12 +35,19 @@ create table public.amazon_write_approvals (
   approved_at timestamptz not null,
   expires_at timestamptz not null,
   inverse_preapproved boolean not null default false,
+  authorization_id uuid,
   created_at timestamptz not null default now(),
   constraint amazon_write_approvals_valid_window check (expires_at > approved_at),
+  constraint amazon_write_approvals_authorization_mode check (
+    (mode = 'manual' and authorization_id is null)
+    or (mode = 'bounded_live_test' and authorization_id is not null)
+  ),
   unique (org_id, profile_id, id)
 );
 create index amazon_write_approvals_profile_idx
   on public.amazon_write_approvals (org_id, profile_id, approved_at desc);
+create index amazon_write_approvals_authorization_idx
+  on public.amazon_write_approvals (authorization_id) where authorization_id is not null;
 select app.install_tenant_rls('public.amazon_write_approvals');
 
 create table public.amazon_write_executions (
@@ -64,6 +71,8 @@ create table public.amazon_write_executions (
   inverse_ready_at timestamptz,
   started_at timestamptz,
   completed_at timestamptz,
+  dispatch_lease_token uuid,
+  dispatch_lease_expires_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint amazon_write_executions_counts check (
@@ -127,6 +136,7 @@ create table public.amazon_write_rows (
   expected_value jsonb not null,
   requested_value jsonb not null,
   inverse_value jsonb not null,
+  inverse_action jsonb not null,
   row_status public.amazon_write_row_status not null default 'pending',
   observation_status public.amazon_write_observation_status not null default 'pending',
   attempt_count integer not null default 0 check (attempt_count >= 0),
@@ -135,6 +145,8 @@ create table public.amazon_write_rows (
   provider_accepted_at timestamptz,
   current_observed_value jsonb,
   observed_at timestamptz,
+  dispatch_token uuid,
+  dispatched_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint amazon_write_rows_action_shape check (
@@ -143,6 +155,8 @@ create table public.amazon_write_rows (
     and action->'expectedValue' = expected_value
     and action->'requestedValue' = requested_value
     and action->'inverseValue' = inverse_value
+    and inverse_action->>'actionType' = action_type::text
+    and inverse_action->'applyRowId' = to_jsonb(apply_row_id::text)
   ),
   unique (org_id, profile_id, id),
   unique (execution_id, apply_row_id)
@@ -242,6 +256,7 @@ begin
      or new.expected_value is distinct from old.expected_value
      or new.requested_value is distinct from old.requested_value
      or new.inverse_value is distinct from old.inverse_value
+     or new.inverse_action is distinct from old.inverse_action
      or new.created_at is distinct from old.created_at then
     raise exception 'amazon write row identity is immutable';
   end if;
@@ -267,7 +282,16 @@ declare
   v_batch_id uuid;
 begin
   if tg_table_name = 'apply_rows' then
-    v_batch_id := case when tg_op = 'DELETE' then old.batch_id else new.batch_id end;
+    if tg_op = 'UPDATE' then
+      if exists (
+        select 1 from public.amazon_write_approvals approval
+         where approval.apply_batch_id in (old.batch_id, new.batch_id)
+      ) then
+        raise exception 'approved apply rows are immutable';
+      end if;
+      return new;
+    end if;
+    v_batch_id := case when tg_op = 'INSERT' then new.batch_id else old.batch_id end;
   else
     v_batch_id := case when tg_op = 'DELETE' then old.id else new.id end;
   end if;
@@ -436,3 +460,8 @@ grant execute on function app.canonical_apply_field(text, text)
   to authenticated, service_role;
 grant execute on function app.resolve_apply_current_value(uuid, uuid, public.apply_entity_type, text, text)
   to authenticated, service_role;
+
+-- Full provider-owned dynamic-bidding state is retained separately from the
+-- three display modifiers. Placement mutation is blocked when this is null.
+alter table public.campaigns
+  add column campaign_write_context jsonb;

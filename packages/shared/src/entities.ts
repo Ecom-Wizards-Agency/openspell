@@ -46,6 +46,45 @@ export const PlacementBidding = z.object({
 });
 export type PlacementBidding = z.infer<typeof PlacementBidding>;
 
+export const ProviderPlacement = z.enum([
+  'PLACEMENT_TOP',
+  'PLACEMENT_PRODUCT_PAGE',
+  'PLACEMENT_REST_OF_SEARCH',
+  'SITE_AMAZON_BUSINESS',
+]);
+
+const ProviderPlacementAdjustment = z.object({
+  placement: ProviderPlacement,
+  percentage: z.number().int().min(0).max(900),
+}).strict();
+
+const ProviderAudienceSegment = z.object({
+  audienceId: z.string().min(1),
+  audienceSegmentType: z.string().min(1),
+}).strict();
+
+const ProviderShopperCohortAdjustment = z.object({
+  shopperCohortType: z.string().min(1),
+  percentage: z.number().int().min(0).max(900),
+  audienceSegments: z.array(ProviderAudienceSegment).optional(),
+}).strict();
+
+/**
+ * Complete provider state required for a safe dynamic-bidding replacement.
+ * A campaign without this exact context remains readable but placement writes
+ * are refused: sending only our three visible placement numbers could erase a
+ * shopper-cohort or off-Amazon setting that Amazon stores beside them.
+ */
+export const CampaignWriteContext = z.object({
+  strategy: BiddingStrategy,
+  placementBidding: z.array(ProviderPlacementAdjustment),
+  shopperCohortBidding: z.array(ProviderShopperCohortAdjustment).nullable(),
+  offAmazonSettings: z.object({
+    offAmazonBudgetControlStrategy: z.string().min(1),
+  }).strict().nullable(),
+}).strict();
+export type CampaignWriteContext = z.infer<typeof CampaignWriteContext>;
+
 /** One clause of a product-targeting expression. */
 export const TargetExpression = z.object({
   type: MatchType,
@@ -69,6 +108,7 @@ export const CampaignRow = z.object({
   targetingType: TargetingType.nullable(),
   biddingStrategy: BiddingStrategy.nullable(),
   placementBidding: PlacementBidding.nullable(),
+  campaignWriteContext: CampaignWriteContext.nullable().optional(),
   startDate: z.string().nullable(),
   endDate: z.string().nullable(),
 });

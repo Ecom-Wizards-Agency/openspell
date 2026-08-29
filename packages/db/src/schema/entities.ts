@@ -20,7 +20,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { TargetExpression } from '@wizard-ads/shared';
+import type { CampaignWriteContext, TargetExpression } from '@wizard-ads/shared';
 import { money, ts } from './columns.js';
 import {
   adProduct,
@@ -79,6 +79,7 @@ export const campaigns = pgTable(
     targetingType: targetingType('targeting_type'),
     biddingStrategy: biddingStrategy('bidding_strategy'),
     placementBidding: jsonb('placement_bidding').$type<PlacementBiddingJson>(),
+    campaignWriteContext: jsonb('campaign_write_context').$type<CampaignWriteContext>(),
     startDate: date('start_date'),
     endDate: date('end_date'),
   },

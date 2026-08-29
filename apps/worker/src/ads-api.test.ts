@@ -22,6 +22,7 @@ import {
   DbAdsApiClient,
   DownloadUrlExpiredError,
   SpWriteAmbiguousError,
+  SpWriteFailedError,
   SpWriteRetryableError,
   createAdsApiClientFromEnv,
   type AdsApiAdapterDeps,
@@ -429,13 +430,14 @@ describe('DbAdsApiClient guarded Sponsored Products writes', () => {
     }));
     const { adapter } = makeAdapter(underlying({ updateSpKeywords }));
 
-    const evidence = await adapter.updateSpKeywordBids(profile, [
+    const result = await adapter.updateSpKeywordBids(profile, [
       { keywordId: 'keyword-1', bid: 0.71 },
       { keywordId: 'keyword-2', bid: 0.72 },
     ]);
 
-    expect(evidence.map((row) => row.outcome)).toEqual(['accepted', 'failed']);
-    expect(JSON.stringify(evidence)).not.toContain('not persisted');
+    expect(result.evidence.map((row) => row.outcome)).toEqual(['accepted', 'failed']);
+    expect(result.apiCalls).toBe(1);
+    expect(JSON.stringify(result)).not.toContain('not persisted');
     expect(updateSpKeywords).toHaveBeenCalledTimes(1);
   });
 
@@ -463,6 +465,17 @@ describe('DbAdsApiClient guarded Sponsored Products writes', () => {
     await expect(adapter.updateSpKeywordBids(profile, [{ keywordId: 'keyword-1', bid: 0.71 }]))
       .rejects.toBeInstanceOf(SpWriteAmbiguousError);
     expect(updateSpKeywords).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts a deterministic whole-request Amazon rejection as one failed provider call', async () => {
+    const updateSpKeywords = vi.fn(async () => {
+      throw new AdsApiHttpError('synthetic request rejection', 400, '', 1);
+    });
+    const { adapter } = makeAdapter(underlying({ updateSpKeywords }));
+    await expect(adapter.updateSpKeywordBids(profile, [{ keywordId: 'keyword-1', bid: 0.71 }]))
+      .rejects.toMatchObject({ name: 'SpWriteFailedError', apiCalls: 1 });
+    await expect(adapter.updateSpKeywordBids(profile, [{ keywordId: 'keyword-1', bid: 0.71 }]))
+      .rejects.toBeInstanceOf(SpWriteFailedError);
   });
 
   it('uses targeted id filters and rejects duplicate observation rows', async () => {

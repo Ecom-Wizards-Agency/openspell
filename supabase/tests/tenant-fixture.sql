@@ -204,7 +204,7 @@ begin
   returning id into v_write_execution;
   insert into public.amazon_write_rows
     (org_id, profile_id, execution_id, apply_row_id, action_type, action,
-     expected_value, requested_value, inverse_value, row_status,
+     expected_value, requested_value, inverse_value, inverse_action, row_status,
      observation_status, attempt_count, provider_evidence, provider_accepted_at)
   values (
     v_org, v_profile, v_write_execution, v_apply_row, 'sp_keyword_bid',
@@ -213,7 +213,13 @@ begin
       'amazonEntityId', 'kw-1', 'field', 'bid',
       'expectedValue', 0.90, 'requestedValue', 0.70, 'inverseValue', 0.90
     ),
-    '0.90'::jsonb, '0.70'::jsonb, '0.90'::jsonb, 'accepted',
+    '0.90'::jsonb, '0.70'::jsonb, '0.90'::jsonb,
+    jsonb_build_object(
+      'actionType', 'sp_keyword_bid', 'applyRowId', v_apply_row::text,
+      'amazonEntityId', 'kw-1', 'field', 'bid',
+      'expectedValue', 0.70, 'requestedValue', 0.90, 'inverseValue', 0.70
+    ),
+    'accepted',
     'pending', 1,
     jsonb_build_object('outcome', 'accepted', 'providerEntityId', 'kw-1',
                        'code', null, 'message', null), now()

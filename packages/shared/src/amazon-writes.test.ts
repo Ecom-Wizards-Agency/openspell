@@ -19,13 +19,21 @@ describe('guarded Amazon write contracts', () => {
       requestedValue: 21,
       inverseValue: 20,
       campaignContext: {
-        strategy: 'auto_for_sales',
-        placementBidding: { topOfSearch: 20, productPages: 5, restOfSearch: 0 },
+        providerState: {
+          strategy: 'auto_for_sales',
+          placementBidding: [
+            { placement: 'PLACEMENT_TOP', percentage: 20 },
+            { placement: 'PLACEMENT_PRODUCT_PAGE', percentage: 5 },
+            { placement: 'PLACEMENT_REST_OF_SEARCH', percentage: 0 },
+          ],
+          shopperCohortBidding: null,
+          offAmazonSettings: null,
+        },
       },
     });
     expect(action.actionType).toBe('sp_campaign_placement');
     if (action.actionType !== 'sp_campaign_placement') throw new Error('expected placement action');
-    expect(action.campaignContext.placementBidding.productPages).toBe(5);
+    expect(action.campaignContext.providerState.placementBidding[1]?.percentage).toBe(5);
     expect(action.inverseValue).toBe(20);
   });
 
@@ -45,8 +53,15 @@ describe('guarded Amazon write contracts', () => {
   it('parses the gitignored bounded authorization shape and requires fail-closed constraints', () => {
     const authorization = BoundedAmazonWriteAuthorization.parse({
       schema: 'openspell.amazon-write-authorization.v1',
+      authorization_id: '99999999-9999-4999-8999-999999999999',
       expires_at: '2026-09-01T00:00:00.000Z',
-      profiles: [{ account_label: 'Synthetic account', marketplace: 'US' }],
+      profiles: [{
+        org_id: ROW_ID,
+        profile_id: '22222222-2222-4222-8222-222222222222',
+        account_label: 'Synthetic account',
+        marketplace: 'US',
+        allowed_entities: [{ action_type: 'sp_keyword_bid', amazon_entity_id: 'keyword-1', field: 'bid' }],
+      }],
       allowed_tests: {
         bid: { enabled: true, max_absolute_delta: 0.01, require_immediate_inverse: true },
         placement: { enabled: true, max_absolute_percentage_points: 1, require_immediate_inverse: true },
@@ -54,6 +69,8 @@ describe('guarded Amazon write contracts', () => {
       },
       constraints: {
         max_concurrent_mutations: 1,
+        max_rows_per_execution: 1,
+        max_total_executions: 1,
         require_current_value_match: true,
         require_amazon_acceptance: true,
         require_sync_observation_before_inverse: true,
@@ -77,7 +94,7 @@ describe('guarded Amazon write contracts', () => {
       expiresAt: '2026-08-29T13:00:00.000Z',
       previewSha256: 'a'.repeat(64),
       expectedCount: 1,
-      idempotencyKey: 'b'.repeat(64),
+      authorizationId: '99999999-9999-4999-8999-999999999999',
       inversePreapproved: true,
     };
     expect(() => ApproveAmazonWriteExecution.parse({ ...base, approvalMode: 'manual' }))

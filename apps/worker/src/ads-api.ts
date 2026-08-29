@@ -150,20 +150,25 @@ export interface SpWriteObservationResult {
   apiCalls: number;
 }
 
+export interface SpWriteMutationResult {
+  evidence: AmazonWriteProviderEvidence[];
+  apiCalls: number;
+}
+
 /** Worker-only mutation and targeted observation surface. */
 export interface SpWriteClient {
   updateSpKeywordBids(
     profile: AdsProfileContext,
     items: readonly SpKeywordUpdateInput[],
-  ): Promise<AmazonWriteProviderEvidence[]>;
+  ): Promise<SpWriteMutationResult>;
   updateSpTargetBids(
     profile: AdsProfileContext,
     items: readonly SpTargetUpdateInput[],
-  ): Promise<AmazonWriteProviderEvidence[]>;
+  ): Promise<SpWriteMutationResult>;
   updateSpCampaignPlacements(
     profile: AdsProfileContext,
     items: readonly SpCampaignPlacementUpdateInput[],
-  ): Promise<AmazonWriteProviderEvidence[]>;
+  ): Promise<SpWriteMutationResult>;
   observeSpWriteEntities(
     profile: AdsProfileContext,
     request: SpWriteObservationRequest,
@@ -172,7 +177,7 @@ export interface SpWriteClient {
 
 /** A throttle explicitly rejected the mutation before Amazon applied it. */
 export class SpWriteRetryableError extends Error {
-  constructor(message: string, readonly retryAfterSeconds?: number) {
+  constructor(message: string, readonly retryAfterSeconds?: number, readonly apiCalls = 1) {
     super(message);
     this.name = 'SpWriteRetryableError';
   }
@@ -180,9 +185,17 @@ export class SpWriteRetryableError extends Error {
 
 /** A timeout or 5xx cannot prove whether Amazon applied the request. */
 export class SpWriteAmbiguousError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly apiCalls = 1) {
     super(message);
     this.name = 'SpWriteAmbiguousError';
+  }
+}
+
+/** Amazon deterministically rejected the whole HTTP mutation request. */
+export class SpWriteFailedError extends Error {
+  constructor(message: string, readonly apiCalls = 1) {
+    super(message);
+    this.name = 'SpWriteFailedError';
   }
 }
 
@@ -450,7 +463,7 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
   async updateSpKeywordBids(
     profile: AdsProfileContext,
     items: readonly SpKeywordUpdateInput[],
-  ): Promise<AmazonWriteProviderEvidence[]> {
+  ): Promise<SpWriteMutationResult> {
     const client = await this.clientForProfile(profile);
     if (!client.updateSpKeywords) throw new Error('Sponsored Products keyword writes are unavailable');
     return this.writeEvidence(() => client.updateSpKeywords!(profile.amazonProfileId, items));
@@ -459,7 +472,7 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
   async updateSpTargetBids(
     profile: AdsProfileContext,
     items: readonly SpTargetUpdateInput[],
-  ): Promise<AmazonWriteProviderEvidence[]> {
+  ): Promise<SpWriteMutationResult> {
     const client = await this.clientForProfile(profile);
     if (!client.updateSpTargets) throw new Error('Sponsored Products target writes are unavailable');
     return this.writeEvidence(() => client.updateSpTargets!(profile.amazonProfileId, items));
@@ -468,7 +481,7 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
   async updateSpCampaignPlacements(
     profile: AdsProfileContext,
     items: readonly SpCampaignPlacementUpdateInput[],
-  ): Promise<AmazonWriteProviderEvidence[]> {
+  ): Promise<SpWriteMutationResult> {
     const client = await this.clientForProfile(profile);
     if (!client.updateSpCampaignPlacementBidding) throw new Error('Sponsored Products placement writes are unavailable');
     return this.writeEvidence(() => client.updateSpCampaignPlacementBidding!(profile.amazonProfileId, items));
@@ -525,10 +538,10 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
 
   private async writeEvidence(
     run: () => Promise<SpBatchWriteResult>,
-  ): Promise<AmazonWriteProviderEvidence[]> {
+  ): Promise<SpWriteMutationResult> {
     try {
       const result = toSpWriteEvidence(await run());
-      return result.evidence.map((evidence) => {
+      const evidence = result.evidence.map((evidence) => {
         const parsed = AmazonWriteProviderEvidence.safeParse({
           outcome: evidence.outcome,
           providerEntityId: evidence.providerEntityId,
@@ -540,6 +553,7 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
         }
         return parsed.data;
       });
+      return { evidence, apiCalls: result.batches };
     } catch (error) {
       if (error instanceof AdsThrottleError) {
         throw new SpWriteRetryableError(
@@ -557,6 +571,9 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
         || (error instanceof AdsApiHttpError && (error.status === 0 || error.status >= 500))
       ) {
         throw new SpWriteAmbiguousError(error instanceof Error ? error.message : String(error));
+      }
+      if (error instanceof AdsApiHttpError) {
+        throw new SpWriteFailedError(error.message);
       }
       throw error;
     }

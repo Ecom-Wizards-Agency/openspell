@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { BiddingStrategy, PlacementBidding } from './entities.js';
+import { CampaignWriteContext } from './entities.js';
 import { AmazonId, Uuid } from './primitives.js';
 
 /** Mutation classes implemented by the first guarded worker gateway. */
@@ -47,9 +47,8 @@ export const SpCampaignPlacementWriteAction = z.object({
   actionType: z.literal(AmazonWriteActionType.enum.sp_campaign_placement),
   field: AmazonPlacementField,
   campaignContext: z.object({
-    strategy: BiddingStrategy,
-    placementBidding: PlacementBidding,
-  }),
+    providerState: CampaignWriteContext,
+  }).strict(),
 });
 
 export const AmazonWriteAction = z.discriminatedUnion('actionType', [
@@ -76,6 +75,7 @@ export type AmazonWriteExecutionStatus = z.infer<typeof AmazonWriteExecutionStat
 
 export const AmazonWriteRowStatus = z.enum([
   'pending',
+  'dispatched',
   'retryable',
   'accepted',
   'failed',
@@ -86,6 +86,7 @@ export type AmazonWriteRowStatus = z.infer<typeof AmazonWriteRowStatus>;
 
 export const AmazonWriteObservationStatus = z.enum([
   'pending',
+  'not_applied',
   'observed',
   'conflict',
 ]);
@@ -136,7 +137,7 @@ export const ApproveAmazonWriteExecution = z.object({
   expiresAt: z.iso.datetime(),
   previewSha256: z.string().regex(/^[a-f0-9]{64}$/),
   expectedCount: z.number().int().positive(),
-  idempotencyKey: z.string().regex(/^[a-f0-9]{64}$/),
+  authorizationId: Uuid.nullable().default(null),
   /** Stored for a bounded test; it never bypasses the synchronized-state gate. */
   inversePreapproved: z.boolean().default(false),
 }).superRefine((value, context) => {
@@ -147,16 +148,45 @@ export const ApproveAmazonWriteExecution = z.object({
       message: 'manual writes require a fresh inverse approval',
     });
   }
+  if (value.approvalMode === 'manual' && value.authorizationId !== null) {
+    context.addIssue({ code: 'custom', path: ['authorizationId'], message: 'manual approval cannot use a bounded authorization' });
+  }
+  if (value.approvalMode === 'bounded_live_test' && value.authorizationId === null) {
+    context.addIssue({ code: 'custom', path: ['authorizationId'], message: 'bounded live tests require an authorization ID' });
+  }
 });
 export type ApproveAmazonWriteExecution = z.infer<typeof ApproveAmazonWriteExecution>;
+
+export const AuthorizedAmazonWriteEntity = z.discriminatedUnion('action_type', [
+  z.object({
+    action_type: z.literal('sp_keyword_bid'),
+    amazon_entity_id: AmazonId,
+    field: z.literal('bid'),
+  }).strict(),
+  z.object({
+    action_type: z.literal('sp_target_bid'),
+    amazon_entity_id: AmazonId,
+    field: z.literal('bid'),
+  }).strict(),
+  z.object({
+    action_type: z.literal('sp_campaign_placement'),
+    amazon_entity_id: AmazonId,
+    field: AmazonPlacementField,
+  }).strict(),
+]);
+export type AuthorizedAmazonWriteEntity = z.infer<typeof AuthorizedAmazonWriteEntity>;
 
 /** Gitignored operator authorization file; values never belong in source. */
 export const BoundedAmazonWriteAuthorization = z.object({
   schema: z.literal('openspell.amazon-write-authorization.v1'),
+  authorization_id: Uuid,
   expires_at: z.iso.datetime(),
   profiles: z.array(z.object({
+    org_id: Uuid,
+    profile_id: Uuid,
     account_label: z.string().min(1),
     marketplace: z.string().min(2).max(32),
+    allowed_entities: z.array(AuthorizedAmazonWriteEntity).min(1),
   })).min(1),
   allowed_tests: z.object({
     bid: z.object({
@@ -178,6 +208,8 @@ export const BoundedAmazonWriteAuthorization = z.object({
   }),
   constraints: z.object({
     max_concurrent_mutations: z.number().int().positive(),
+    max_rows_per_execution: z.number().int().positive().max(100),
+    max_total_executions: z.number().int().positive().max(100),
     require_current_value_match: z.literal(true),
     require_amazon_acceptance: z.literal(true),
     require_sync_observation_before_inverse: z.literal(true),

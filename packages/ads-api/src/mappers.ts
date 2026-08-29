@@ -35,6 +35,7 @@ import type {
   TargetRow,
   TargetingType,
 } from '@wizard-ads/shared';
+import { CampaignWriteContext } from '@wizard-ads/shared';
 import {
   isRecord,
   normalizeEnum,
@@ -222,6 +223,87 @@ function readPlacementBidding(raw: Record<string, unknown>): PlacementBidding | 
   return bidding;
 }
 
+const PROVIDER_PLACEMENTS = {
+  placementtop: 'PLACEMENT_TOP',
+  placementproductpage: 'PLACEMENT_PRODUCT_PAGE',
+  placementrestofsearch: 'PLACEMENT_REST_OF_SEARCH',
+  siteamazonbusiness: 'SITE_AMAZON_BUSINESS',
+} as const;
+
+function exactKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allow = new Set(allowed);
+  return Object.keys(value).every((key) => allow.has(key));
+}
+
+/** Return null rather than risk a sparse replacement when Amazon widens this object. */
+function readCampaignWriteContext(raw: Record<string, unknown>) {
+  const dynamic = readRecord(raw, 'dynamicBidding');
+  if (dynamic === null || !exactKeys(dynamic, ['strategy', 'placementBidding', 'shopperCohortBidding'])) return null;
+  const strategyRaw = readString(dynamic, 'strategy');
+  const strategy = strategyRaw === null ? null : BIDDING_STRATEGIES[normalizeEnum(strategyRaw)] ?? null;
+  const placementRaw = dynamic['placementBidding'];
+  if (strategy === null || !Array.isArray(placementRaw)) return null;
+  const placementBidding: Array<{ placement: (typeof PROVIDER_PLACEMENTS)[keyof typeof PROVIDER_PLACEMENTS]; percentage: number }> = [];
+  for (const candidate of placementRaw) {
+    if (!isRecord(candidate) || !exactKeys(candidate, ['placement', 'percentage'])) return null;
+    const placementRawValue = readString(candidate, 'placement');
+    const percentage = readNumber(candidate, 'percentage');
+    const placement = placementRawValue === null ? undefined : PROVIDER_PLACEMENTS[normalizeEnum(placementRawValue) as keyof typeof PROVIDER_PLACEMENTS];
+    if (placement === undefined || percentage === null || !Number.isInteger(percentage)) return null;
+    placementBidding.push({ placement, percentage });
+  }
+  if (new Set(placementBidding.map((entry) => entry.placement)).size !== placementBidding.length) return null;
+  placementBidding.sort((left, right) => left.placement.localeCompare(right.placement));
+
+  const shopperRaw = dynamic['shopperCohortBidding'];
+  const shopperCohortBidding: Array<{
+    shopperCohortType: string;
+    percentage: number;
+    audienceSegments?: Array<{ audienceId: string; audienceSegmentType: string }>;
+  }> = [];
+  if (shopperRaw !== undefined) {
+    if (!Array.isArray(shopperRaw)) return null;
+    for (const candidate of shopperRaw) {
+      if (!isRecord(candidate) || !exactKeys(candidate, ['shopperCohortType', 'percentage', 'audienceSegments'])) return null;
+      const shopperCohortType = readString(candidate, 'shopperCohortType');
+      const percentage = readNumber(candidate, 'percentage');
+      if (shopperCohortType === null || percentage === null || !Number.isInteger(percentage)) return null;
+      const audienceRaw = candidate['audienceSegments'];
+      if (audienceRaw !== undefined && !Array.isArray(audienceRaw)) return null;
+      const audienceSegments: Array<{ audienceId: string; audienceSegmentType: string }> = [];
+      for (const segment of audienceRaw ?? []) {
+        if (!isRecord(segment) || !exactKeys(segment, ['audienceId', 'audienceSegmentType'])) return null;
+        const audienceId = readString(segment, 'audienceId');
+        const audienceSegmentType = readString(segment, 'audienceSegmentType');
+        if (audienceId === null || audienceSegmentType === null) return null;
+        audienceSegments.push({ audienceId, audienceSegmentType });
+      }
+      shopperCohortBidding.push({
+        shopperCohortType,
+        percentage,
+        ...(audienceRaw === undefined ? {} : { audienceSegments }),
+      });
+    }
+    shopperCohortBidding.sort((left, right) => left.shopperCohortType.localeCompare(right.shopperCohortType));
+  }
+
+  const offAmazonRaw = raw['offAmazonSettings'];
+  let offAmazonSettings: { offAmazonBudgetControlStrategy: string } | null = null;
+  if (offAmazonRaw !== undefined) {
+    if (!isRecord(offAmazonRaw) || !exactKeys(offAmazonRaw, ['offAmazonBudgetControlStrategy'])) return null;
+    const strategyValue = readString(offAmazonRaw, 'offAmazonBudgetControlStrategy');
+    if (strategyValue === null) return null;
+    offAmazonSettings = { offAmazonBudgetControlStrategy: strategyValue };
+  }
+  const parsed = CampaignWriteContext.safeParse({
+    strategy,
+    placementBidding,
+    shopperCohortBidding: shopperRaw === undefined ? null : shopperCohortBidding,
+    offAmazonSettings,
+  });
+  return parsed.success ? parsed.data : null;
+}
+
 function commonName(raw: Record<string, unknown>): string | null {
   return readString(raw, 'name') ?? readString(raw, 'campaignName');
 }
@@ -268,6 +350,7 @@ export function mapCampaigns(
       targetingType: mapTargetingType(readString(entry, 'targetingType')),
       biddingStrategy: strategy === null ? null : (BIDDING_STRATEGIES[normalizeEnum(strategy)] ?? null),
       placementBidding: readPlacementBidding(entry),
+      campaignWriteContext: adProduct === 'SP' ? readCampaignWriteContext(entry) : null,
       startDate: readString(entry, 'startDate'),
       endDate: readString(entry, 'endDate'),
     });

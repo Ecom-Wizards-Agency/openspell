@@ -95,6 +95,7 @@ export interface SpCampaignPlacementUpdateInput {
   campaignId: AmazonId;
   strategy: SpDynamicBidding['strategy'];
   placementBidding: readonly SpPlacementBidAdjustment[];
+  shopperCohortBidding?: readonly SpShopperCohortBidAdjustment[];
   offAmazonSettings?: SpOffAmazonSettings;
 }
 

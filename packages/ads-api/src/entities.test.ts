@@ -120,9 +120,33 @@ describe('Sponsored Products campaigns', () => {
       endDate: null,
     });
     expect(first?.placementBidding).toEqual({ topOfSearch: 50, productPages: 0, restOfSearch: null });
+    expect(first?.campaignWriteContext).toEqual({
+      strategy: 'auto_for_sales',
+      placementBidding: [
+        { placement: 'PLACEMENT_PRODUCT_PAGE', percentage: 0 },
+        { placement: 'PLACEMENT_TOP', percentage: 50 },
+      ],
+      shopperCohortBidding: null,
+      offAmazonSettings: null,
+    });
     // `enabling` is a transient Amazon state and collapses into `enabled`.
     expect(second?.state).toBe('enabled');
     expect(second?.targetingType).toBe('auto');
+  });
+
+  it('blocks placement replacement context when Amazon adds an unrecognized provider field', async () => {
+    const widened = structuredClone(SP_CAMPAIGNS_PAGE_1);
+    const campaign = widened.campaigns[0];
+    if (!campaign?.dynamicBidding) throw new Error('fixture campaign has no dynamic bidding');
+    Object.assign(campaign.dynamicBidding, { providerFieldAddedLater: true });
+    const { client } = clientFor([
+      { method: 'POST', match: '/sp/campaigns/list', responses: [{ status: 200, json: widened }] },
+    ]);
+    const result = await client.listSpCampaigns(PROFILE_ID, { maxPages: 1 });
+    expect(result.items[0]).toMatchObject({
+      amazonId: '100000000000001', campaignWriteContext: null,
+    });
+    expectAccountedFor(result);
   });
 
   it('stops at maxPages and says the walk was truncated', async () => {

@@ -46,9 +46,6 @@ const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
 const config = configFromEnv();
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
 const store = new PostgresWorkerStore(handle);
-const amazonWriteAuthorization = config.amazonWritesEnabled
-  ? await loadBoundedAmazonWriteAuthorization(config.amazonWriteAuthorizationPath)
-  : null;
 const marketingStream = config.marketingStreamQueueUrl
   ? createMarketingStreamSqsConsumer({ handle, queueUrl: config.marketingStreamQueueUrl })
   : undefined;
@@ -65,7 +62,9 @@ const amazonWrites = adsApi
       workerStore: store,
       provider: adsApi,
       enabled: config.amazonWritesEnabled,
-      authorization: amazonWriteAuthorization,
+      loadAuthorization: () => config.amazonWritesEnabled
+        ? loadBoundedAmazonWriteAuthorization(config.amazonWriteAuthorizationPath)
+        : Promise.resolve(null),
     })
   : undefined;
 const sbVideo = adsApi

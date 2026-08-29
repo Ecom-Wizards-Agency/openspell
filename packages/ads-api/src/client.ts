@@ -539,6 +539,9 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
         dynamicBidding: {
           strategy: item.strategy,
           placementBidding: item.placementBidding,
+          ...(item.shopperCohortBidding === undefined ? {} : {
+            shopperCohortBidding: item.shopperCohortBidding,
+          }),
         },
         ...(item.offAmazonSettings === undefined ? {} : { offAmazonSettings: item.offAmazonSettings }),
       })),

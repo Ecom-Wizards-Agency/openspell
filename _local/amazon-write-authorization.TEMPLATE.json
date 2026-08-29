@@ -1,10 +1,20 @@
 {
   "schema": "openspell.amazon-write-authorization.v1",
+  "authorization_id": "<single-use authorization UUID>",
   "expires_at": "<ISO-8601 timestamp>",
   "profiles": [
     {
+      "org_id": "<internal organization UUID>",
+      "profile_id": "<internal advertising profile UUID>",
       "account_label": "<local account label>",
-      "marketplace": "<marketplace code>"
+      "marketplace": "<marketplace code>",
+      "allowed_entities": [
+        {
+          "action_type": "<sp_keyword_bid | sp_target_bid | sp_campaign_placement>",
+          "amazon_entity_id": "<exact Amazon entity ID>",
+          "field": "<bid | top_of_search | product_pages | rest_of_search>"
+        }
+      ]
     }
   ],
   "allowed_tests": {
@@ -27,6 +37,8 @@
   },
   "constraints": {
     "max_concurrent_mutations": 1,
+    "max_rows_per_execution": 1,
+    "max_total_executions": 2,
     "require_current_value_match": true,
     "require_amazon_acceptance": true,
     "require_sync_observation_before_inverse": true,
