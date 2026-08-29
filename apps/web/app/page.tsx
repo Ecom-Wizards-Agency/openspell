@@ -6,6 +6,7 @@
  * crosscheck page is the evidence behind the chip on both.
  */
 import type { CSSProperties } from 'react';
+import { redirect } from 'next/navigation';
 import { currentUser } from '../src/auth/session';
 
 export const dynamic = 'force-dynamic';
@@ -49,10 +50,8 @@ const ROUTES = [
 ];
 
 export default async function Page() {
-  // Every route below this one is per-tenant and signs the visitor in on
-  // arrival. Saying so here, once, is cheaper than five redirects that look
-  // like the product is broken.
   const user = await currentUser();
+  if (user === null) redirect('/login');
 
   return (
     <main style={main}>
@@ -61,23 +60,13 @@ export default async function Page() {
         Read-only Amazon advertising operator workspace.
       </p>
 
-      {user === null ? (
-        <p style={cta} data-testid="home-signin">
-          Every screen below is per-account and needs a session.{' '}
-          <a href="/login" style={{ fontWeight: 600 }}>
-            Sign in
-          </a>{' '}
-          to continue. There is no public signup: accounts are created by invitation.
-        </p>
-      ) : (
-        <p style={cta} data-testid="home-signed-in">
-          Signed in as {user.email ?? 'your account'}.{' '}
-          <a href="/dashboard" style={{ fontWeight: 600 }}>
-            Open the dashboard
-          </a>
-          .
-        </p>
-      )}
+      <p style={cta} data-testid="home-signed-in">
+        Signed in as {user.email ?? 'your account'}.{' '}
+        <a href="/dashboard" style={{ fontWeight: 600 }}>
+          Open the dashboard
+        </a>
+        .
+      </p>
 
       <ul style={list}>
         {ROUTES.map((route) => (

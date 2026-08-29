@@ -515,7 +515,8 @@ button {
   padding: 0.75rem 0.5rem 0;
 }
 
-.wa-topbar {
+.wa-topbar,
+.wa-public-topbar {
   align-items: center;
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
@@ -524,11 +525,18 @@ button {
   display: flex;
   gap: 0.75rem;
   height: var(--wa-topbar-h);
-  margin-left: var(--wa-sidebar-w);
   padding: 0 1.25rem;
   position: sticky;
   top: 0;
   z-index: 25;
+}
+
+.wa-topbar {
+  margin-left: var(--wa-sidebar-w);
+}
+
+.wa-public-topbar .wa-brand {
+  margin: 0;
 }
 
 .wa-topbar-spacer {
@@ -620,6 +628,10 @@ button {
 .wa-content {
   margin-left: var(--wa-sidebar-w);
   padding: 1.75rem 1.75rem 5rem;
+}
+
+.wa-content--public {
+  margin-left: 0;
 }
 
 @media (max-width: 60rem) {

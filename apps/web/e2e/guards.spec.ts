@@ -51,19 +51,18 @@ const GUARDED = [
 
 test.describe.configure({ mode: 'serial' });
 
-test('the index offers a way in when nobody is signed in', async ({ page }) => {
+test('the index sends an anonymous visitor directly to sign in', async ({ page }) => {
   await signOut(page);
   await page.goto('/');
+  await expect(page).toHaveURL(/\/login$/);
 
   const nav = page.getByTestId('app-nav');
   await expect(nav).toBeVisible();
   await expect(nav.getByTestId('nav-signin')).toBeVisible();
   await expect(nav.getByTestId('nav-signout')).toHaveCount(0);
-  await expect(page.getByTestId('home-signin')).toBeVisible();
-
-  // And it is a real link, not a label: clicking it lands on the login screen.
-  await nav.getByTestId('nav-signin').click();
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(nav.getByRole('navigation', { name: 'Primary' })).toHaveCount(0);
+  await expect(nav.getByRole('link', { name: 'Dashboard' })).toHaveCount(0);
+  await expect(page.getByTestId('home-signin')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'wizard-ads' })).toBeVisible();
 });
 

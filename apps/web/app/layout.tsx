@@ -45,14 +45,16 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
       <body>
         <ToastProvider>
           {/*
-            The frame, on every screen including `/login`: it is the only place
-            the app offers a way in and a way out, so it cannot be a per-screen
-            decision. The layout reads the session once for navigation and
-            authenticated-only controls, which makes every route dynamic —
-            correct for a tool whose every page is per-tenant.
+            The layout reads the session once for the frame. Anonymous screens
+            get a quiet public header and no unreachable operator navigation;
+            authenticated screens get the complete operator frame. Every route
+            remains dynamic, which is correct for a per-tenant tool.
           */}
           <AppNav user={user} />
-          <div className="wa-content" id="wa-main">
+          <div
+            className={user === null ? 'wa-content wa-content--public' : 'wa-content'}
+            id="wa-main"
+          >
             {children}
           </div>
           {/*
