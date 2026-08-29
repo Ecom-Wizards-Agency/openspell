@@ -36,6 +36,7 @@ const GUARDED = [
   '/connect-claude',
   '/time-machine',
   '/recommendations',
+  '/campaigns',
   '/ngrams',
   '/tags',
   '/feedback/new',
@@ -48,6 +49,27 @@ const GUARDED = [
   '/settings/account',
   '/sync-status',
 ] as const;
+
+const PROFILE_CANONICAL = new Set([
+  '/dashboard',
+  '/grid',
+  '/optimizer',
+  '/optimizer/groups',
+  '/recommendations',
+  '/campaigns',
+  '/creative',
+]);
+
+/** Primary data-backed routes whose artifact, not only URL, must render. */
+const PRODUCT_HEADINGS = new Map<string, string>([
+  ['/optimizer', 'Campaign Optimizer'],
+  ['/dashboard', 'Dashboard'],
+  ['/query-intelligence', 'Query Intelligence'],
+  ['/creative', 'Creative Performance'],
+  ['/dayparting', 'Dayparting'],
+  ['/crosscheck', 'Crosscheck'],
+  ['/connect-claude', 'Connect AI (MCP)'],
+]);
 
 test.describe.configure({ mode: 'serial' });
 
@@ -118,7 +140,21 @@ test('the same screens open once there is a session', async ({ page }) => {
 
   const landed: string[] = [];
   for (const route of GUARDED) {
-    await page.goto(route);
+    const expectedPath = new URL(route, 'https://example.test').pathname;
+    await page.goto(route).catch((error: unknown) => {
+      if (!PROFILE_CANONICAL.has(expectedPath) || !String(error).includes('is interrupted by')) {
+        throw error;
+      }
+    });
+    if (PROFILE_CANONICAL.has(expectedPath)) {
+      await page.waitForURL(
+        (url) => url.pathname === expectedPath && url.searchParams.has('profile'),
+      );
+    }
+    const expectedHeading = PRODUCT_HEADINGS.get(expectedPath);
+    if (expectedHeading !== undefined) {
+      await expect(page.getByRole('heading', { name: expectedHeading, exact: true })).toBeVisible();
+    }
     landed.push(new URL(page.url()).pathname);
   }
 

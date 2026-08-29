@@ -18,6 +18,7 @@
  * the org the gate resolved rather than by a profile id anybody could paste.
  */
 import { Suspense, type CSSProperties } from 'react';
+import { redirect } from 'next/navigation';
 import {
   ENTITY_LABELS,
   ENTITY_LEVELS,
@@ -29,6 +30,7 @@ import type { EntityLevel } from '@wizard-ads/ui';
 import type { DbHandle } from '@wizard-ads/db';
 import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 import { gate } from '../../src/auth/guard';
+import { canonicalProfilePath } from '../../src/data/active-profile';
 import { gateMessage } from '../../src/ui/gate-message';
 import { loadReportLedger } from '../_lib/dashboard-data';
 import { withExistingDatabase } from '../_lib/db';
@@ -77,6 +79,8 @@ export default async function GridPage({ searchParams }: PageProps) {
     const profiles = await listProfiles(handle, orgId);
     const profile = selectProfile(profiles, profileId);
     if (profile === null) return { profiles, profile: null };
+    const canonical = canonicalProfilePath('/grid', { ...params }, profile.id);
+    if (canonical !== null) redirect(canonical);
 
     const [payload, ledger] = await Promise.all([
       loadGridRows(handle, entity, {

@@ -21,6 +21,7 @@
  * by the org the gate resolved.
  */
 import { Suspense } from 'react';
+import { redirect } from 'next/navigation';
 import { analyzeAccount, classifyCampaignCategory, computePacing, evaluate, pacingFlag } from '@wizard-ads/core';
 import type { DailyRow, Flag } from '@wizard-ads/core';
 import { readOptimizationWorkspace } from '@wizard-ads/db';
@@ -42,6 +43,7 @@ import { loadCampaignDailyRows, loadProfileDailyRows, loadReportLedger } from '.
 import { withExistingDatabase } from '../_lib/db';
 import { addDays, periodFromParams, settledComparisonWindows, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
+import { canonicalProfilePath } from '../../src/data/active-profile';
 
 export const dynamic = 'force-dynamic';
 
@@ -72,6 +74,8 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     const profiles = await listProfiles(handle, orgId);
     const profile = selectProfile(profiles, profileId);
     if (profile === null) return { profiles, profile: null };
+    const canonical = canonicalProfilePath('/dashboard', { ...params }, profile.id);
+    if (canonical !== null) redirect(canonical);
 
     const accountWindow = {
       start:

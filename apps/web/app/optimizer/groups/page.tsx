@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react';
+import { redirect } from 'next/navigation';
 import { readOptimizationWorkspace } from '@wizard-ads/db';
 import { gate } from '../../../src/auth/guard';
 import { can } from '../../../src/auth/roles';
+import { canonicalProfilePath } from '../../../src/data/active-profile';
 import { gateMessage } from '../../../src/ui/gate-message';
 import { EmptyState, PageHeader } from '../../../src/ui/primitives';
 import { page } from '../../../src/ui/tokens';
@@ -44,6 +46,8 @@ export default async function OptimizationGroupsPage({ searchParams }: PageProps
       </main>
     );
   }
+  const canonical = canonicalProfilePath('/optimizer/groups', { ...params }, profile.id);
+  if (canonical !== null) redirect(canonical);
 
   const workspace = await readOptimizationWorkspace(handle, { orgId, profileId: profile.id });
 
