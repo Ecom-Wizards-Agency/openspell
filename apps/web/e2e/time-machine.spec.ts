@@ -78,7 +78,7 @@ test('reviews uniquely synchronized evidence and exports an exact inverse file',
   await expect(row).toHaveAttribute('data-state', 'ready');
   await expect(row).toContainText('0.9');
   await expect(row).toContainText('0.71');
-  await expect(preview).toContainText('Wizard Ads does not update Amazon');
+  await expect(preview).toContainText('OpenSpell does not update Amazon');
   if (process.env['WIZARD_ADS_VISUAL_PATH']) {
     await page.screenshot({ path: process.env['WIZARD_ADS_VISUAL_PATH'], fullPage: true });
   }

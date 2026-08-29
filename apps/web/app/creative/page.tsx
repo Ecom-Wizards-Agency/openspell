@@ -2,6 +2,7 @@ import { readCreativePerformance } from '@wizard-ads/db';
 import { gate } from '../../src/auth/guard';
 import { gateMessage } from '../../src/ui/gate-message';
 import { Badge, EmptyState, PageHeader } from '../../src/ui/primitives';
+import { OperatorContext } from '../../src/ui/operator-context';
 import { page } from '../../src/ui/tokens';
 import { periodFromParams, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
@@ -76,49 +77,39 @@ export default async function CreativePerformancePage({ searchParams }: PageProp
     <main style={{ ...page, maxWidth: '96rem' }}>
       <PageHeader
         title="Creative Performance"
-        subtitle={`${profile.label} · ${period.start} to ${period.end} · ${profile.currencyCode}`}
+        subtitle="Sponsored Brands Video performance by authoritative Amazon Asset ID"
         meta={
           <>
             <Badge tone="info">Sponsored Brands Video · v1</Badge>
             <Badge>Identity · Amazon Asset ID</Badge>
-            <Badge>Historical mapping validity · not established</Badge>
-            <Badge>{rows.length} attribution row{rows.length === 1 ? '' : 's'}</Badge>
+            <Badge>{rows.length} mapped asset{rows.length === 1 ? '' : 's'}</Badge>
           </>
         }
       />
 
-      <form method="get" className={styles.scopeBar} aria-label="Creative performance scope">
-        <label>
-          <span>Profile</span>
-          <select name="profile" defaultValue={profile.id} className="wa-select">
-            {profiles.map((option) => (
-              <option key={option.id} value={option.id}>{option.label} · {option.countryCode}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>From</span>
-          <input name="from" type="date" defaultValue={period.start} className="wa-input" />
-        </label>
-        <label>
-          <span>To</span>
-          <input name="to" type="date" defaultValue={period.end} className="wa-input" />
-        </label>
-        <button className="wa-btn wa-btn--primary" type="submit">Apply range</button>
-        <a className="wa-btn wa-btn--ghost" href={`/creative?profile=${profile.id}`}>Last 30 days</a>
-      </form>
+      <OperatorContext
+        account={profile.label}
+        marketplace={profile.countryCode}
+        currencyCode={profile.currencyCode}
+        timezone={profile.timezone}
+        path="/creative"
+        period={period}
+        today={todayIso()}
+        preserved={{ profile: profile.id }}
+      />
 
       {rows.length === 0 ? (
         <div className={styles.emptyWrap}>
           <EmptyState
-            title="No SB Video data in this window"
+            title="No mapped SB Video creatives yet"
             body={
               <>
-                The sync has not loaded ad-level creative facts for these dates. Widen the range or
-                check Sync status. Ad-group totals are never assigned to a single creative.
+                OpenSpell has no ad → creative → Amazon Asset ID performance mapping for this
+                account and date range. Creative names and ad-group totals are not used as
+                substitutes; mappings and metrics may arrive in separate sync cycles.
               </>
             }
-            meta={`${period.start} to ${period.end} · ${profile.label}`}
+            meta="Historical mapping validity remains unproven until an observed Asset-ID snapshot covers the report window."
             action={<a className="wa-btn wa-btn--sm" href={`/sync-status?profile=${profile.id}`}>Check Sync status</a>}
             data-testid="creative-source-empty"
           />

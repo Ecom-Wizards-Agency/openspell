@@ -180,7 +180,7 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
           <h1 style={heading}>Time Machine</h1>
           <p style={muted}>
             {profile.label}{' · '}{profile.countryCode}{' · '}exported batches, synchronized evidence, and
-            external account changes. Wizard Ads does not write to Amazon.
+            external account changes. OpenSpell does not write to Amazon in the current release.
           </p>
           {profiles.length > 1 ? (
             <nav style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }} aria-label="Profiles">

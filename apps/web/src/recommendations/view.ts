@@ -26,6 +26,8 @@ export interface ProposalView {
   limitReason: string | null;
   entityType: string;
   entityId: string;
+  /** Stable Amazon campaign identity when the source proposal carries one. */
+  campaignId: string | null;
   /** Keyword text or campaign name; the entity id when the mirror knows no name. */
   entityLabel: string;
   /** Campaign, and ad group where there is one. */
@@ -90,6 +92,7 @@ export function toProposalView(
     limitReason: limitReason(record.inputs),
     entityType: record.entityType,
     entityId: record.entityId,
+    campaignId: record.campaignId,
     entityLabel: record.entityName ?? record.entityId,
     scope: scopeParts.length > 0 ? scopeParts.join(' › ') : 'account',
     field: record.field,
@@ -137,7 +140,7 @@ const DECISION_LANES: ReadonlyArray<{
   {
     id: 'ready_to_export',
     label: 'Ready to export',
-    description: 'Accepted proposals that can leave Wizard Ads as files.',
+    description: 'Accepted proposals that can leave OpenSpell as files.',
     statuses: new Set(['accepted']),
   },
   {

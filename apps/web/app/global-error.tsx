@@ -33,7 +33,7 @@ export default function GlobalError({
             Something failed on our side
           </h1>
           <p style={{ color: 'var(--wa-text-muted)', fontSize: '0.875rem', margin: '0 0 0.75rem' }}>
-            wizard-ads could not render this page at all. Nothing was changed by it.
+            OpenSpell could not render this page at all. Nothing was changed by it.
           </p>
           {error.digest ? (
             <p style={{ color: 'var(--wa-text-muted)', fontSize: '0.875rem', margin: '0 0 0.75rem' }}>

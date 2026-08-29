@@ -30,6 +30,7 @@ import { can } from '../../src/auth/roles';
 import { gateMessage } from '../../src/ui/gate-message';
 import { Button, EmptyState, PageHeader } from '../../src/ui/primitives';
 import { FreshnessBar } from '../../src/ui/dashboard';
+import { OperatorContext } from '../../src/ui/operator-context';
 import { Cockpit } from '../../src/ui/cockpit';
 import { page } from '../../src/ui/tokens';
 import { toProposalView } from '../../src/recommendations/view';
@@ -40,10 +41,13 @@ import {
   settingsSummary,
   totalsOf,
 } from '../../src/optimizer/view';
+import { buildOptimizerCampaignRows } from '../../src/optimizer/campaigns';
 import { loadProfileDailyRows, loadReportLedger } from '../_lib/dashboard-data';
-import { periodFromParams, settledComparisonWindows, todayIso } from '../_lib/periods';
+import { loadOptimizerCampaignFacts } from '../_lib/optimizer-campaigns';
+import { periodFromParams, precedingPeriod, settledComparisonWindows, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
 import { OptimizerGroupTable, ReasonCoverageRow, SettingsChip } from './optimizer-view';
+import { CampaignWorkspace } from './campaign-workspace';
 import { runOptimizerNow } from './actions';
 
 export const dynamic = 'force-dynamic';
@@ -104,12 +108,18 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
     toProposalView(record, { strategySnapshot: run?.strategySnapshot ?? null }),
   );
 
-  const [periodRows, comparisonRows, ledger] = await Promise.all([
+  const [periodRows, comparisonRows, ledger, campaignFacts] = await Promise.all([
     loadProfileDailyRows(handle, orgId, profile.id, profile.label, period),
     settled.comparison === null
       ? Promise.resolve([])
       : loadProfileDailyRows(handle, orgId, profile.id, profile.label, settled.comparison),
     loadReportLedger(handle, orgId, profile.id),
+    loadOptimizerCampaignFacts(handle, {
+      orgId,
+      profileId: profile.id,
+      period,
+      comparison: precedingPeriod(period),
+    }),
   ]);
 
   // Same clamp the dashboard applies: never claim settled days that have no
@@ -119,8 +129,6 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
     settled.current !== null && coverageStart !== null && coverageStart > settled.current.start
       ? { start: coverageStart, end: settled.current.end }
       : settled.current;
-  const coverageClamped =
-    settled.current !== null && currentWindow !== null && currentWindow.start !== settled.current.start;
   const settledRows =
     currentWindow === null
       ? []
@@ -134,6 +142,11 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
   const campaignGroups = campaignReviewGroups(proposals);
   const coverage = reasonCoverage(proposals);
   const summary = settingsSummary(proposals);
+  const campaignRows = buildOptimizerCampaignRows(
+    campaignFacts,
+    optimizationWorkspace.groups,
+    proposals,
+  );
   const freshness = assessFreshness(ledger, { now: new Date() });
 
   const cockpitDays = periodRows.map((row) => ({
@@ -149,7 +162,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
     <main style={page}>
       <PageHeader
         title="Campaign Optimizer"
-        subtitle={`${profile.label} · ${period.start} to ${period.end} · ${currentWindow === null || settled.comparison === null ? 'no settled KPI comparison yet' : `settled KPIs ${currentWindow.start} to ${currentWindow.end}${coverageClamped ? ' (first synced day)' : ''} vs ${settled.comparison.start} to ${settled.comparison.end}`} · all figures in ${profile.currencyCode}`}
+        subtitle="Campaign performance, group context, and read-only recommendation previews"
         actions={
           <div className="wa-row" style={{ gap: '0.5rem' }}>
             {mayRunOptimizer && optimizationWorkspace.groups.length === 0 ? (
@@ -183,12 +196,31 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
       />
 
       <div className="wa-stack">
+        <OperatorContext
+          account={profile.label}
+          marketplace={profile.countryCode}
+          currencyCode={profile.currencyCode}
+          timezone={profile.timezone}
+          path="/optimizer"
+          period={period}
+          today={today}
+          preserved={{ profile: profile.id, ...(run === null ? {} : { run: run.id }) }}
+        />
+
         <FreshnessBar assessment={freshness} />
 
         {runs.length > 1 ? (
-          <details className="wa-dashboard-context" style={{ marginTop: 0 }}>
+          <details className="wa-run-history">
             <summary>
-              Run history · {run?.groupSnapshot?.name ?? 'Legacy profile run'} · {run?.status ?? 'none'}
+              <span aria-hidden="true" className="wa-run-history__icon">↺</span>
+              <span className="wa-run-history__label">Run history</span>
+              <span className="wa-run-history__meta">
+                {run?.groupSnapshot?.name ?? 'Legacy profile run'}
+              </span>
+              <span className="wa-run-history__status" data-status={run?.status ?? 'none'}>
+                {formatRunStatus(run?.status ?? 'none')}
+              </span>
+              <span className="wa-run-history__count">{runs.length} runs</span>
             </summary>
             <nav className="wa-row" aria-label="Optimizer runs" style={{ marginTop: '0.625rem' }}>
               {runs.slice(0, 20).map((candidate) => (
@@ -211,50 +243,32 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
           currencyCode={profile.currencyCode}
           settlingStart={settled.settling.start}
           coverageStart={coverageStart}
+          preferenceKey={profile.id}
+        />
+
+        <CampaignWorkspace
+          rows={campaignRows}
+          currencyCode={profile.currencyCode}
+          profileId={profile.id}
+          period={period}
+          run={run === null ? null : { id: run.id, status: run.status }}
         />
 
         {run === null ? (
-          <EmptyState
-            title="No recommendations run yet"
-            body="The weekly engine writes a recommendation run for this profile; until it does there is nothing to preview here. That is not the same as nothing to do — the grid and dashboard read the same facts today."
-            action={
-              <a className="wa-btn wa-btn--sm" href={`/grid?profile=${profile.id}`}>
-                Open the grid
-              </a>
-            }
-          />
+          <p className="wa-page-sub">No recommendation preview has run yet. Campaigns remain visible above; queue a preview when the group settings are ready.</p>
         ) : run.status !== 'succeeded' ? (
-          <EmptyState
-            title={
-              run.status === 'queued'
-                ? 'Recommendations run queued'
-                : run.status === 'running'
-                  ? 'Recommendations run in progress'
-                  : 'Recommendations run failed'
-            }
-            body={
-              run.status === 'queued'
-                ? 'The preview is in the worker queue. It will use the last complete seven-day window in this profile’s timezone.'
-                : run.status === 'running'
-                  ? 'The worker is assembling facts, doctrine, pacing, and bid corridors now. Refresh shortly to see the preview.'
-                  : 'The worker recorded this run as failed. Queue a new preview after checking sync freshness and strategy settings.'
-            }
-          />
+          <p className="wa-page-sub" role="status">
+            {run.status === 'queued'
+              ? 'Recommendation preview queued. It will use the last complete profile-local evidence window.'
+              : run.status === 'running'
+                ? 'Recommendation preview is assembling facts, strategy, pacing, and bid corridors.'
+                : 'The recommendation preview failed. Campaign performance above remains available; check Sync status before retrying.'}
+          </p>
         ) : (
           <>
             <ReasonCoverageRow coverage={coverage} total={proposals.length} />
 
-            {campaignGroups.length === 0 ? (
-              <EmptyState
-                title="This run proposed nothing"
-                body="The engine found no bid, budget or targeting change worth proposing for this profile in this window. On a healthy account that is the expected result more weeks than not."
-                meta={
-                  <time dateTime={run.createdAt.toISOString()}>
-                    Run created {run.createdAt.toISOString().replace('T', ' ').slice(0, 16)} UTC
-                  </time>
-                }
-              />
-            ) : (
+            {campaignGroups.length === 0 ? null : (
               <section aria-label="Campaign drill-down" className="wa-stack">
                 <h2 className="wa-section-title" style={{ margin: 0 }}>
                   {run.groupSnapshot ? `${run.groupSnapshot.name} campaign drill-down` : 'Legacy campaign drill-down'} · {campaignGroups.length}
@@ -282,4 +296,8 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
       </div>
     </main>
   );
+}
+
+function formatRunStatus(status: string): string {
+  return status.replaceAll('_', ' ').replace(/^./, (letter) => letter.toUpperCase());
 }

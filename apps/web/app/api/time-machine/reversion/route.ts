@@ -77,7 +77,7 @@ export async function POST(request: Request): Promise<Response> {
           rows: `/api/recommendations/export/${result.batchId}?format=rows`,
         },
         amazonUpdated: false,
-        guardrail: 'This is a review file only. Wizard Ads did not update Amazon.',
+        guardrail: 'This is a review file only. OpenSpell did not update Amazon.',
       },
       { status: 201 },
     );

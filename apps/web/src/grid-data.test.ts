@@ -156,6 +156,7 @@ suite('grid and roster reads against SQL aggregates', () => {
       suggested_bid: 0.9,
       suggested_bid_low: 0.7,
       suggested_bid_high: 1.2,
+      bid_corridor_position: 'Within range',
       max_potential_cpc: 1.4,
       rpc_category: 'Rank',
     });

@@ -322,6 +322,8 @@ async function loadTargets(
     const series = latestByTarget.get(row.target_id);
     const bid = row.bid === null ? null : num(row.bid);
     const suggestedBid = series?.suggestedBidMedian ?? null;
+    const suggestedBidLow = series?.suggestedBidLow ?? null;
+    const suggestedBidHigh = series?.suggestedBidHigh ?? null;
     return {
       id: `target:${row.target_id}`,
       dimensions: {
@@ -332,8 +334,9 @@ async function loadTargets(
         match_type: row.match_type,
         bid,
         suggested_bid: suggestedBid,
-        suggested_bid_low: series?.suggestedBidLow ?? null,
-        suggested_bid_high: series?.suggestedBidHigh ?? null,
+        suggested_bid_low: suggestedBidLow,
+        suggested_bid_high: suggestedBidHigh,
+        bid_corridor_position: bidCorridorPosition(bid, suggestedBidLow, suggestedBidHigh),
         max_potential_cpc: series?.maxPotentialCpc ?? null,
         diff_from_suggested_bid:
           bid === null || suggestedBid === null ? null : bid - suggestedBid,
@@ -347,6 +350,17 @@ async function loadTargets(
       currencyCode: options.currencyCode,
     };
   });
+}
+
+function bidCorridorPosition(
+  bid: number | null,
+  low: number | null,
+  high: number | null,
+): 'Below range' | 'Within range' | 'Above range' | 'Unavailable' {
+  if (bid === null || low === null || high === null) return 'Unavailable';
+  if (bid < low) return 'Below range';
+  if (bid > high) return 'Above range';
+  return 'Within range';
 }
 
 // ---------------------------------------------------------------------------

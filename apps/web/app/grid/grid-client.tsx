@@ -282,6 +282,13 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
         </div>
       )}
 
+      {props.entity === 'targets' ? (
+        <p className="wa-grid-context-hint">
+          Select a target row to open its bid-corridor history, including the current bid,
+          Amazon’s suggested range, realized CPC, and maximum potential CPC.
+        </p>
+      ) : null}
+
       {filterError === null ? null : (
         <p role="alert" style={filterErrorStyle}>
           Filter not applied — {filterError}. Every row is shown until the filter is fixed or

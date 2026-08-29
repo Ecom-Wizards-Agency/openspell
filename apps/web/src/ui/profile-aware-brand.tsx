@@ -19,9 +19,9 @@ export function ProfileAwareBrand(): React.ReactElement {
   return (
     <a className="wa-brand" href={href}>
       <span aria-hidden="true" className="wa-brand-mark">
-        w
+        O
       </span>
-      <span className="wa-brand-label">wizard-ads</span>
+      <span className="wa-brand-label">OpenSpell</span>
     </a>
   );
 }

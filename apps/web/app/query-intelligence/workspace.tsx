@@ -225,7 +225,7 @@ export function QueryIntelligenceWorkspace({
           ))}
         </div>
         <p className="wa-banner wa-banner--warn">
-          Profile-only and ambiguous rows keep their spend at profile level. Wizard Ads never
+          Profile-only and ambiguous rows keep their spend at profile level. OpenSpell never
           duplicates that spend across candidate ASINs, and these rows cannot support an ASIN-level
           action. Current product-ad mirrors are not dated, so historical live PPC remains
           profile-only until an authoritative weekly ad-to-ASIN mapping exists.

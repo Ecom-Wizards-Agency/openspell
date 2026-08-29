@@ -371,7 +371,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         </button>
         <span style={muted}>
           {canExport
-            ? 'Creates review files only. Wizard Ads does not update Amazon.'
+            ? 'Creates review files only. OpenSpell does not update Amazon.'
             : `role ${props.role} may review but not export.`}
         </span>
       </fieldset>

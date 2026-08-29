@@ -12,7 +12,6 @@ import { signIn } from './support/auth';
 const SURFACES = [
   { route: '/optimizer', heading: 'Campaign Optimizer' },
   { route: '/dashboard', heading: 'Dashboard' },
-  { route: '/strategy', heading: 'Strategy Overview' },
   { route: '/query-intelligence', heading: 'Query Intelligence' },
   { route: '/creative', heading: 'Creative Performance' },
   { route: '/dayparting', heading: 'Dayparting' },

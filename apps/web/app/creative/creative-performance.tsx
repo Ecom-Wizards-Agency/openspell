@@ -188,7 +188,7 @@ export function CreativePerformanceExplorer({ rows, currencyCode }: Props) {
       <p className={styles.footnote}>
         Amazon Asset ID is the asset identity. The mapping is a current observation and does not prove
         which asset was attached on an earlier date. Recent orders and sales can restate; “—” means the
-        source did not report complete metric coverage. Wizard Ads never assigns an ad group’s total
+        source did not report complete metric coverage. OpenSpell never assigns an ad group’s total
         to one creative and does not write changes to Amazon.
       </p>
     </div>

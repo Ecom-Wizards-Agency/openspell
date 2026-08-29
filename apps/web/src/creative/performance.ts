@@ -42,7 +42,7 @@ export const ATTRIBUTION_EXPLANATIONS: Record<CreativeAttributionState, string> 
   mapped: 'A current observed ad-to-version-to-Amazon-Asset-ID mapping supports these metrics; historical validity is not established.',
   legacy: 'The source predates authoritative asset mapping, so this row stays separate.',
   unsupported: 'The source report cannot attribute this performance to an Amazon Asset ID.',
-  ambiguous: 'More than one creative mapping is possible, so Wizard Ads does not choose one.',
+  ambiguous: 'More than one creative mapping is possible, so OpenSpell does not choose one.',
   unmapped: 'No authoritative Amazon Asset ID mapping is available for this ad yet.',
 };
 

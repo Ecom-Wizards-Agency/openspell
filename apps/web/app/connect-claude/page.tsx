@@ -78,7 +78,7 @@ export default async function ConnectClaudePage(): Promise<ReactNode> {
             </p>
             <p className="wa-hint" style={{ marginTop: '0.5rem' }}>
               Every new key is read-only, expires automatically, and has a hard profile allowlist.
-              Wizard Ads exposes no Amazon write tools through MCP.
+              OpenSpell currently exposes no Amazon write tools through MCP.
             </p>
           </div>
         </section>

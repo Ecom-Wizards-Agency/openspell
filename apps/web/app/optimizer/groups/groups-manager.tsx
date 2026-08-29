@@ -75,6 +75,11 @@ export function OptimizationGroupsManager({
       `${campaign.name} ${campaign.campaignId} ${campaign.adProduct}`.toLowerCase().includes(query),
     );
   }, [campaignQuery, workspace.campaigns]);
+  const selectedVisibleCampaigns = visibleCampaigns.filter((campaign) =>
+    draft.campaignIds.includes(campaign.campaignId),
+  ).length;
+  const allVisibleCampaignsSelected = visibleCampaigns.length > 0
+    && selectedVisibleCampaigns === visibleCampaigns.length;
 
   const selectedRecord = draft.id === null
     ? null
@@ -104,6 +109,16 @@ export function OptimizationGroupsManager({
       campaignIds: current.campaignIds.includes(campaignId)
         ? current.campaignIds.filter((id) => id !== campaignId)
         : [...current.campaignIds, campaignId],
+    }));
+  }
+
+  function toggleVisibleCampaigns(): void {
+    const visibleIds = new Set(visibleCampaigns.map((campaign) => campaign.campaignId));
+    setDraft((current) => ({
+      ...current,
+      campaignIds: allVisibleCampaignsSelected
+        ? current.campaignIds.filter((campaignId) => !visibleIds.has(campaignId))
+        : Array.from(new Set([...current.campaignIds, ...visibleIds])),
     }));
   }
 
@@ -179,7 +194,7 @@ export function OptimizationGroupsManager({
       const body = await response.json() as { error?: string; runId?: string };
       if (!response.ok || !body.runId) throw new Error(body.error ?? 'Could not queue preview');
       await refresh(draft.id);
-      setMessage('Preview queued. Wizard Ads will evaluate this group only; Amazon is unchanged.');
+      setMessage('Preview queued. OpenSpell will evaluate this group only; Amazon is unchanged.');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not queue preview');
     } finally {
@@ -277,7 +292,11 @@ export function OptimizationGroupsManager({
             <Field label="Target ACOS" suffix="%">
               <input type="number" min="0" step="0.1" value={draft.targetAcosPercent} onChange={(event) => patch('targetAcosPercent', event.target.value)} required disabled={!canManage} />
             </Field>
-            <Field label="Cadence" suffix="days">
+            <Field
+              label="Review every"
+              suffix="days"
+              info="How often this group becomes due for a new read-only recommendation preview. It does not apply changes to Amazon."
+            >
               <input type="number" min="1" step="1" value={draft.cadenceDays} onChange={(event) => patch('cadenceDays', event.target.value)} required disabled={!canManage} />
             </Field>
             <label className="wa-check-field">
@@ -314,6 +333,31 @@ export function OptimizationGroupsManager({
             value={campaignQuery}
             onChange={(event) => setCampaignQuery(event.target.value)}
           />
+          <div className="wa-campaign-picker-toolbar">
+            <span className="wa-hint">
+              {visibleCampaigns.length} shown · {selectedVisibleCampaigns} selected in this view
+            </span>
+            <span
+              aria-label="Select all applies only to campaigns matching the current search filter."
+              className="wa-info-mark"
+              role="img"
+              tabIndex={0}
+              title="Select all applies only to campaigns matching the current search filter. Selections outside the filter stay unchanged."
+            >
+              i
+            </span>
+            <button
+              aria-label={allVisibleCampaignsSelected
+                ? 'Deselect all campaigns matching the current filter'
+                : 'Select all campaigns matching the current filter'}
+              className="wa-btn wa-btn--ghost wa-btn--sm"
+              disabled={!canManage || visibleCampaigns.length === 0}
+              onClick={toggleVisibleCampaigns}
+              type="button"
+            >
+              {allVisibleCampaignsSelected ? 'Deselect all' : 'Select all'}
+            </button>
+          </div>
           <div className="wa-campaign-picker">
             {visibleCampaigns.map((campaign) => (
               <CampaignChoice
@@ -340,7 +384,7 @@ export function OptimizationGroupsManager({
           {message ? <p role="status" className="wa-notice">{message}</p> : null}
 
           <div className="wa-editor-actions">
-            <p className="wa-hint">Wizard Ads settings only. Saving or running a preview does not update Amazon.</p>
+            <p className="wa-hint">OpenSpell settings only. Saving or running a preview does not update Amazon.</p>
             <div className="wa-row">
               {draft.id !== null ? (
                 <button
@@ -372,17 +416,25 @@ function Field({
   suffix,
   optional = false,
   hint,
+  info,
   children,
 }: {
   label: string;
   suffix?: string;
   optional?: boolean;
   hint?: string;
+  info?: string;
   children: ReactNode;
 }): ReactNode {
   return (
     <label className="wa-field">
-      <span>{label}{optional ? <small>Optional</small> : null}</span>
+      <span>
+        {label}
+        {info ? (
+          <span aria-label={info} className="wa-info-mark" role="img" tabIndex={0} title={info}>i</span>
+        ) : null}
+        {optional ? <small>Optional</small> : null}
+      </span>
       <span className="wa-input-suffix">{children}{suffix ? <b>{suffix}</b> : null}</span>
       {hint ? <small>{hint}</small> : null}
     </label>

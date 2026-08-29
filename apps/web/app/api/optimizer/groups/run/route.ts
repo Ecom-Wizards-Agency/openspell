@@ -5,7 +5,7 @@ import { requireCapability } from '../../../../../src/server/org-role';
 
 export const runtime = 'nodejs';
 
-/** Queue a Wizard Ads preview for one group. No Amazon write occurs. */
+/** Queue an OpenSpell preview for one group. No Amazon write occurs. */
 export async function POST(request: Request): Promise<Response> {
   const connectionString = process.env['DATABASE_URL'];
   if (!connectionString) return Response.json({ error: 'Database is not configured' }, { status: 503 });

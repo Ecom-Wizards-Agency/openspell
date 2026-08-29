@@ -79,10 +79,6 @@ export function NavBar({ user, profiles = [], orgName = null }: NavBarProps): Re
 
         <SidebarNav />
 
-        <p className="wa-sidebar-foot">
-          Amazon Advertising, in house. Every number on every screen is only as
-          fresh as the last sync.
-        </p>
       </aside>
 
       <header className="wa-topbar">

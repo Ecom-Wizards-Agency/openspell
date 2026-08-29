@@ -6,7 +6,7 @@ import { page } from '../../src/ui/tokens';
 export default function StrategyError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   return (
     <main style={page}>
-      <PageHeader title="Strategy Overview" />
+      <PageHeader title="Dashboard" />
       <div className="wa-empty" role="alert">
         <p className="wa-empty__title">Strategy evidence could not be loaded.</p>
         <p className="wa-empty__body">No decision was produced and no Amazon change ran.</p>
