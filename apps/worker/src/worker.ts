@@ -1,5 +1,9 @@
 import type { SkippedReportRow } from '@wizard-ads/ads-api';
-import type { ClaimedJob } from '@wizard-ads/db';
+import {
+  DuplicateFactGrain,
+  InvalidReportDatePromotion,
+  type ClaimedJob,
+} from '@wizard-ads/db';
 import {
   JobPayload,
   type EconomicsSyncJob,
@@ -31,10 +35,14 @@ import type {
 } from './recommendations-run.js';
 import { SKIP_FAILURE_RATIO, gunzipJson, parseReportRows } from './parsers.js';
 import {
+  UnsafeSponsoredProductsReport,
+  prepareSponsoredProductsReportDates,
+} from './report-promotion.js';
+import {
   defaultRegionTokenBuckets,
   type RegionTokenBuckets,
 } from './region-token-buckets.js';
-import type { WorkerStore } from './store.js';
+import type { ReportRequestState, WorkerStore } from './store.js';
 import {
   SqpWorkflowPendingError,
   SqpWorkflowPermanentError,
@@ -45,6 +53,7 @@ import type { WeeklySqpScheduleProducer } from './sqp-scheduler.js';
 const MINUTE_MS = 60_000;
 const FOUR_HOURS_MS = 4 * 60 * MINUTE_MS;
 const POLL_DELAYS_MINUTES = [5, 10, 20, 30] as const;
+const SP_REPORT_TYPES = new Set(['spCampaigns', 'spTargeting', 'spSearchTerm', 'spPlacement']);
 
 /** A failure retrying cannot fix. Goes straight to `dead` with its attempts unspent. */
 export class PermanentJobError extends Error {
@@ -481,7 +490,12 @@ export class SyncWorker {
     payload: Extract<JobPayload, { type: 'report.poll' }>,
   ): Promise<Record<string, unknown>> {
     const adsApi = this.requireAdsApi();
-    const ledger = await this.store.getReportRequest(payload.reportRequestId);
+    const ledger = await this.store.getReportRequest(
+      payload.reportRequestId,
+      payload.orgId,
+      payload.profileId,
+    );
+    assertAmazonReportId(ledger, payload.amazonReportId);
     const status = await this.buckets.run(profile.region, () => adsApi.getReport(profile, payload.amazonReportId));
     if (status.status === 'PENDING' || status.status === 'PROCESSING') {
       if (this.now().getTime() - ledger.requestedAt.getTime() >= FOUR_HOURS_MS) {
@@ -512,7 +526,11 @@ export class SyncWorker {
       reportRequestId: ledger.id, amazonReportId: payload.amazonReportId,
       downloadUrl: status.downloadUrl,
     };
-    const enqueued = await this.store.enqueue(fetchPayload, this.now(), `report.fetch:${ledger.id}`);
+    const enqueued = await this.store.enqueue(
+      fetchPayload,
+      this.now(),
+      `report.fetch:${ledger.id}:${payload.attempt}`,
+    );
     return { status: 'COMPLETED', fetchEnqueued: enqueued };
   }
 
@@ -521,22 +539,50 @@ export class SyncWorker {
     payload: Extract<JobPayload, { type: 'report.fetch' }>,
   ): Promise<Record<string, unknown>> {
     const adsApi = this.requireAdsApi();
-    const ledger = await this.store.getReportRequest(payload.reportRequestId);
+    const ledger = await this.store.getReportRequest(
+      payload.reportRequestId,
+      payload.orgId,
+      payload.profileId,
+    );
+    assertAmazonReportId(ledger, payload.amazonReportId);
     let downloaded;
     try {
       const source = await adsApi.downloadReport(payload.downloadUrl);
       downloaded = await gunzipJson(source);
     } catch (error) {
       if (!(error instanceof DownloadUrlExpiredError)) throw error;
+      if (this.now().getTime() - ledger.requestedAt.getTime() >= FOUR_HOURS_MS) {
+        const detail = 'report download URL remained expired beyond the 4-hour request horizon';
+        await this.store.failReport(ledger.id, detail);
+        throw new PermanentJobError(detail);
+      }
       const attempt = ledger.pollAttempts;
       const pollPayload: Extract<JobPayload, { type: 'report.poll' }> = {
         type: 'report.poll', orgId: payload.orgId, profileId: payload.profileId,
         reportRequestId: ledger.id, amazonReportId: payload.amazonReportId, attempt,
       };
-      await this.store.enqueue(pollPayload, this.now(), `report.repoll:${ledger.id}:${attempt}`);
-      return { downloadExpired: true, repollEnqueued: true };
+      const enqueued = await this.store.enqueue(
+        pollPayload,
+        this.now(),
+        `report.repoll:${ledger.id}:${attempt}`,
+      );
+      return { downloadExpired: true, repollEnqueued: enqueued };
+    }
+    if (!Array.isArray(downloaded.value)) {
+      const detail = 'report payload must be a JSON array';
+      await this.store.failReport(ledger.id, detail);
+      throw new PermanentJobError(detail);
     }
     const batch = parseReportRows(ledger.reportType, downloaded.value, profile, ledger.id);
+    if (SP_REPORT_TYPES.has(ledger.reportType)) {
+      return this.promoteSponsoredProductsReport(
+        profile,
+        ledger,
+        downloaded.value,
+        downloaded.bytesDownloaded,
+        batch,
+      );
+    }
     const parsed = batch.rows.length;
     const skipped = batch.skipped.length;
     const reasons = skipReasons(batch.skipped);
@@ -573,9 +619,212 @@ export class SyncWorker {
     };
   }
 
+  private async promoteSponsoredProductsReport(
+    profile: AdsProfileContext,
+    ledger: ReportRequestState,
+    rawRows: readonly unknown[],
+    bytesDownloaded: number,
+    batch: ReturnType<typeof parseReportRows>,
+  ): Promise<Record<string, unknown>> {
+    const skipped = batch.skipped.length;
+    const reasons = skipReasons(batch.skipped);
+    if (batch.sourceRows !== rawRows.length) {
+      const detail = `${batch.sourceRows} parser source rows do not match ${rawRows.length} payload rows`;
+      await this.store.failReport(ledger.id, detail);
+      throw new PermanentJobError(`${ledger.reportType} ${detail}`);
+    }
+    if (skipped > 0) {
+      const detail = `replacement parser refused ${skipped} of ${batch.sourceRows} rows: ${formatReasons(reasons)}`;
+      await this.store.failReport(ledger.id, detail);
+      throw new PermanentJobError(`${ledger.reportType} ${detail}`);
+    }
+
+    const observedAt = this.now();
+    let staged;
+    try {
+      staged = prepareSponsoredProductsReportDates({
+        orgId: profile.orgId,
+        profileId: profile.id,
+        reportType: ledger.reportType,
+        source: 'amazon_reporting_v3',
+        reportRequestId: ledger.id,
+        requestedAt: ledger.requestedAt,
+        observedAt,
+        attributionWindowDays: 7,
+        batch,
+        rawRows,
+        startDate: ledger.startDate,
+        endDate: ledger.endDate,
+        profileTimeZone: profile.timezone,
+      });
+    } catch (error) {
+      if (
+        !(error instanceof UnsafeSponsoredProductsReport) &&
+        !(error instanceof InvalidReportDatePromotion) &&
+        !(error instanceof DuplicateFactGrain)
+      ) throw error;
+      const detail = errorMessage(error).slice(0, 4_000);
+      await this.store.failReport(ledger.id, detail);
+      throw new PermanentJobError(`${ledger.reportType} ${detail}`);
+    }
+
+    const partitions = await this.store.ensureReportPartitions(
+      ledger.reportType,
+      ledger.startDate,
+      ledger.endDate,
+    );
+    if (partitions.expectedMonths !== partitions.matchedMonths) {
+      const detail = `prepared ${partitions.matchedMonths} of ${partitions.expectedMonths} partition months`;
+      await this.store.failReport(ledger.id, detail);
+      throw new PermanentJobError(`${ledger.reportType} ${detail}`);
+    }
+    const sourceRows = staged.reduce((total, date) => total + date.sourceRows, 0);
+    const parsedSourceRows = staged.reduce((total, date) => total + date.parsedRows, 0);
+    const refusedRows = staged.reduce((total, date) => total + date.refusedRows, 0);
+    const factRows = staged.reduce((total, date) => total + date.promotedRows, 0);
+    if (sourceRows !== batch.sourceRows || sourceRows !== parsedSourceRows + refusedRows) {
+      throw new Error(
+        `report ${ledger.id} source accounting drifted: ${sourceRows} source, ` +
+        `${parsedSourceRows} parsed, ${refusedRows} refused`,
+      );
+    }
+
+    let promotedDates = 0;
+    let alreadyPromotedDates = 0;
+    let supersededDates = 0;
+    let acceptedFactRows = 0;
+    let supersededFactRows = 0;
+    let canonicalRows = 0;
+    let deletedRows = 0;
+    let observationRows = 0;
+    try {
+      for (const date of staged) {
+        const result = await this.store.promoteReportDate(date);
+        assertPromotionResult(ledger, date, result);
+        deletedRows += result.deletedRows;
+        observationRows += result.observationRows;
+        if (result.status === 'superseded') {
+          supersededDates += 1;
+          supersededFactRows += date.promotedRows;
+          continue;
+        }
+        if (result.status === 'promoted') promotedDates += 1;
+        else alreadyPromotedDates += 1;
+        acceptedFactRows += date.promotedRows;
+        canonicalRows += result.watermark.canonicalRows;
+      }
+    } catch (error) {
+      if (!(error instanceof InvalidReportDatePromotion) && !(error instanceof DuplicateFactGrain)) {
+        throw error;
+      }
+      const detail = errorMessage(error).slice(0, 4_000);
+      await this.store.failReport(ledger.id, detail);
+      throw new PermanentJobError(`${ledger.reportType} ${detail}`);
+    }
+
+    if (staged.length !== promotedDates + alreadyPromotedDates + supersededDates) {
+      throw new Error('report date outcomes do not reconcile');
+    }
+    if (factRows !== acceptedFactRows + supersededFactRows) {
+      throw new Error('report fact outcomes do not reconcile');
+    }
+    if (acceptedFactRows !== canonicalRows) {
+      throw new Error(
+        `accepted ${acceptedFactRows} fact rows but verified ${canonicalRows} canonical rows`,
+      );
+    }
+
+    await this.store.completeReport(ledger.id, {
+      parsed: acceptedFactRows,
+      loaded: canonicalRows,
+      bytesDownloaded,
+    });
+    const result = {
+      reportRows: sourceRows,
+      parsedSourceRows,
+      refusedRows,
+      factRows,
+      acceptedFactRows,
+      supersededFactRows,
+      canonicalRows,
+      reportDates: staged.length,
+      promotedDates,
+      alreadyPromotedDates,
+      supersededDates,
+      deletedRows,
+      observationRows,
+      partitionMonths: partitions.expectedMonths,
+      partitionsCreated: partitions.createdMonths,
+      bytesDownloaded,
+    };
+    this.logger.info('Sponsored Products report promoted', {
+      reportRequestId: ledger.id,
+      reportType: ledger.reportType,
+      ...result,
+    });
+    return result;
+  }
+
   private requireAdsApi(): AdsApiClient {
     if (!this.adsApi) throw new PermanentJobError('Amazon Ads API not deployed in this runtime');
     return this.adsApi;
+  }
+}
+
+function assertAmazonReportId(ledger: ReportRequestState, amazonReportId: string): void {
+  if (ledger.source !== 'amazon_api') {
+    throw new PermanentJobError('Reporting v3 job references a non-Amazon report request');
+  }
+  if (ledger.amazonReportId !== amazonReportId) {
+    throw new PermanentJobError('job Amazon report id does not match its report request ledger');
+  }
+}
+
+function assertPromotionResult(
+  ledger: ReportRequestState,
+  staged: ReturnType<typeof prepareSponsoredProductsReportDates>[number],
+  result: Awaited<ReturnType<WorkerStore['promoteReportDate']>>,
+): void {
+  const watermark = result.watermark;
+  if (
+    watermark.profileId !== ledger.profileId ||
+    watermark.reportType !== ledger.reportType ||
+    watermark.date !== staged.reportDate
+  ) {
+    throw new InvalidReportDatePromotion('promotion result watermark is outside the report scope');
+  }
+  if (result.status === 'superseded') {
+    if (result.deletedRows !== 0 || result.insertedRows !== 0 || result.observationRows !== 0) {
+      throw new InvalidReportDatePromotion('a superseded promotion must not mutate canonical facts');
+    }
+    const watermarkRequestedAt = Date.parse(watermark.requestedAt);
+    if (
+      !Number.isFinite(watermarkRequestedAt) ||
+      watermarkRequestedAt <= ledger.requestedAt.getTime()
+    ) {
+      throw new InvalidReportDatePromotion('a superseded promotion did not return newer evidence');
+    }
+    return;
+  }
+  if (
+    watermark.reportRequestId !== ledger.id ||
+    watermark.source !== staged.source ||
+    watermark.sourceRows !== staged.sourceRows ||
+    watermark.parsedRows !== staged.parsedRows ||
+    watermark.refusedRows !== staged.refusedRows ||
+    watermark.promotedRows !== staged.promotedRows ||
+    watermark.canonicalRows !== staged.promotedRows
+  ) {
+    throw new InvalidReportDatePromotion('accepted promotion counts do not match the staged date');
+  }
+  if (result.status === 'promoted') {
+    if (result.insertedRows !== staged.promotedRows || result.observationRows !== 1) {
+      throw new InvalidReportDatePromotion('promoted date write counts do not match the staged date');
+    }
+    return;
+  }
+  if (result.deletedRows !== 0 || result.insertedRows !== 0 || result.observationRows !== 0) {
+    throw new InvalidReportDatePromotion('an idempotent promotion retry must not mutate canonical facts');
   }
 }
 

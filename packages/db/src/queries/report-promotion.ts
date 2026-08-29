@@ -7,15 +7,16 @@
  * attempts for the same scope, appends attribution evidence, replaces the
  * canonical day, and records counts only after reading them back.
  *
- * Nothing here schedules or calls Amazon. The worker must first prove that it
- * can attribute every source and refused row to a date; until then the legacy
- * loader remains the active path.
+ * Nothing here schedules or calls Amazon. The worker proves source accounting
+ * first; Sponsored Products Reporting v3 now uses this path, while SB and SD
+ * retain their prior loader.
  */
 import {
   and,
   count as countRows,
   desc,
   eq,
+  getTableColumns,
   isNull,
   sql,
 } from 'drizzle-orm';
@@ -34,6 +35,7 @@ import {
   factSdDaily,
   factSearchTermDaily,
   factSpTargetDaily,
+  reportRequests,
   reportPromotionWatermarks,
   type NewPlacementFact,
   type NewProfileFact,
@@ -42,6 +44,8 @@ import {
   type NewSearchTermFact,
   type NewSpTargetFact,
 } from '../schema/index.js';
+import { chunkForInsert } from './chunk.js';
+import { assertUniqueFactGrain } from './facts.js';
 
 export type PromotableReportFactBatch =
   | { kind: 'sp_target'; rows: readonly NewSpTargetFact[] }
@@ -87,7 +91,7 @@ export interface StagedReportDate extends ReportDatePromotionInput {
 }
 
 export interface ReportDatePromotionResult {
-  status: 'promoted' | 'already_promoted';
+  status: 'promoted' | 'already_promoted' | 'superseded';
   deletedRows: number;
   insertedRows: number;
   observationRows: number;
@@ -123,6 +127,12 @@ const REPORT_KIND: Readonly<Record<ReportType, PromotableReportFactBatch['kind']
   sbCampaigns: 'sb',
   sdCampaigns: 'sd',
 };
+const SP_REPORT_TYPES = new Set<ReportType>([
+  'spCampaigns',
+  'spTargeting',
+  'spSearchTerm',
+  'spPlacement',
+]);
 
 /** Validate and aggregate a complete date without touching the database. */
 export function stageReportDate(input: ReportDatePromotionInput): StagedReportDate {
@@ -150,6 +160,11 @@ export function stageReportDate(input: ReportDatePromotionInput): StagedReportDa
     throw new InvalidReportDatePromotion(
       `source rows do not reconcile: ${input.sourceRows} != ` +
         `${input.parsedRows} parsed + ${input.refusedRows} refused`,
+    );
+  }
+  if (SP_REPORT_TYPES.has(input.reportType) && input.refusedRows !== 0) {
+    throw new InvalidReportDatePromotion(
+      `canonical replacement requires zero refused rows, received ${input.refusedRows}`,
     );
   }
   if (REPORT_KIND[input.reportType] !== input.batch.kind) {
@@ -180,6 +195,7 @@ export function stageReportDate(input: ReportDatePromotionInput): StagedReportDa
       throw new InvalidReportDatePromotion(`row ${index} has the wrong report request provenance`);
     }
   }
+  if (SP_REPORT_TYPES.has(input.reportType)) assertUniquePromotionGrain(input.batch);
 
   const observation = aggregateObservation(input.batch, input.attribution.attributionWindowDays);
   assertCount('impressions', observation.impressions);
@@ -210,6 +226,40 @@ export async function promoteReportDate(
   return handle.db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
 
+    if (SP_REPORT_TYPES.has(staged.reportType) && staged.source === 'amazon_reporting_v3') {
+      const [request] = await tx
+        .select({
+          orgId: reportRequests.orgId,
+          profileId: reportRequests.profileId,
+          reportType: reportRequests.reportType,
+          startDate: reportRequests.startDate,
+          endDate: reportRequests.endDate,
+          source: reportRequests.source,
+          requestedAt: reportRequests.requestedAt,
+        })
+        .from(reportRequests)
+        .where(eq(reportRequests.id, staged.reportRequestId))
+        .limit(1);
+      if (!request) {
+        throw new InvalidReportDatePromotion('Reporting v3 promotion has no report request ledger');
+      }
+      if (request.orgId !== staged.orgId || request.profileId !== staged.profileId) {
+        throw new InvalidReportDatePromotion('report request belongs to another tenant/profile');
+      }
+      if (request.reportType !== staged.reportType) {
+        throw new InvalidReportDatePromotion('report request type does not match the promotion');
+      }
+      if (request.source !== 'amazon_api') {
+        throw new InvalidReportDatePromotion('only an Amazon API report request may promote Reporting v3 facts');
+      }
+      if (staged.reportDate < request.startDate || staged.reportDate > request.endDate) {
+        throw new InvalidReportDatePromotion('promoted date is outside the report request window');
+      }
+      if (request.requestedAt.getTime() !== staged.requestedAt.getTime()) {
+        throw new InvalidReportDatePromotion('report request timestamp does not match the promotion');
+      }
+    }
+
     const currentRows = await tx
       .select()
       .from(reportPromotionWatermarks)
@@ -230,7 +280,22 @@ export async function promoteReportDate(
     }
     if (current) {
       if (staged.requestedAt < current.requestedAt) {
-        throw new StaleReportDatePromotion(staged.reportDate, staged.requestedAt, current.requestedAt);
+        if (!SP_REPORT_TYPES.has(staged.reportType)) {
+          throw new StaleReportDatePromotion(staged.reportDate, staged.requestedAt, current.requestedAt);
+        }
+        const canonicalRows = await countBatchCanonical(tx, staged);
+        if (canonicalRows !== current.canonicalRows) {
+          throw new InvalidReportDatePromotion(
+            `newer canonical count drifted from ${current.canonicalRows} to ${canonicalRows}`,
+          );
+        }
+        return {
+          status: 'superseded',
+          deletedRows: 0,
+          insertedRows: 0,
+          observationRows: 0,
+          watermark: toWatermark(current),
+        };
       }
       if (staged.requestedAt.getTime() === current.requestedAt.getTime()) {
         if (staged.reportRequestId !== current.reportRequestId) {
@@ -385,11 +450,15 @@ async function replaceCanonicalDate(
           eq(factSpTargetDaily.date, staged.reportDate),
         ))
         .returning({ profileId: factSpTargetDaily.profileId });
-      const inserted = staged.batch.rows.length === 0 ? [] : await tx.insert(factSpTargetDaily)
-        .values(staged.batch.rows.map((row) => ({ ...row, loadedAt: staged.observedAt })))
-        .returning({ profileId: factSpTargetDaily.profileId });
+      let insertedRows = 0;
+      for (const rows of chunkForInsert(staged.batch.rows, columnCount(factSpTargetDaily))) {
+        const inserted = await tx.insert(factSpTargetDaily)
+          .values(rows.map((row) => ({ ...row, loadedAt: staged.observedAt })))
+          .returning({ profileId: factSpTargetDaily.profileId });
+        insertedRows += inserted.length;
+      }
       const canonicalRows = await countCanonical(tx, factSpTargetDaily, staged.profileId, staged.reportDate);
-      return { deletedRows: deleted.length, insertedRows: inserted.length, canonicalRows };
+      return { deletedRows: deleted.length, insertedRows, canonicalRows };
     }
     case 'search_term': {
       const deleted = await tx.delete(factSearchTermDaily)
@@ -398,11 +467,15 @@ async function replaceCanonicalDate(
           eq(factSearchTermDaily.date, staged.reportDate),
         ))
         .returning({ profileId: factSearchTermDaily.profileId });
-      const inserted = staged.batch.rows.length === 0 ? [] : await tx.insert(factSearchTermDaily)
-        .values(staged.batch.rows.map((row) => ({ ...row, loadedAt: staged.observedAt })))
-        .returning({ profileId: factSearchTermDaily.profileId });
+      let insertedRows = 0;
+      for (const rows of chunkForInsert(staged.batch.rows, columnCount(factSearchTermDaily))) {
+        const inserted = await tx.insert(factSearchTermDaily)
+          .values(rows.map((row) => ({ ...row, loadedAt: staged.observedAt })))
+          .returning({ profileId: factSearchTermDaily.profileId });
+        insertedRows += inserted.length;
+      }
       const canonicalRows = await countCanonical(tx, factSearchTermDaily, staged.profileId, staged.reportDate);
-      return { deletedRows: deleted.length, insertedRows: inserted.length, canonicalRows };
+      return { deletedRows: deleted.length, insertedRows, canonicalRows };
     }
     case 'placement': {
       const deleted = await tx.delete(factPlacementDaily)
@@ -411,11 +484,15 @@ async function replaceCanonicalDate(
           eq(factPlacementDaily.date, staged.reportDate),
         ))
         .returning({ profileId: factPlacementDaily.profileId });
-      const inserted = staged.batch.rows.length === 0 ? [] : await tx.insert(factPlacementDaily)
-        .values(staged.batch.rows.map((row) => ({ ...row, loadedAt: staged.observedAt })))
-        .returning({ profileId: factPlacementDaily.profileId });
+      let insertedRows = 0;
+      for (const rows of chunkForInsert(staged.batch.rows, columnCount(factPlacementDaily))) {
+        const inserted = await tx.insert(factPlacementDaily)
+          .values(rows.map((row) => ({ ...row, loadedAt: staged.observedAt })))
+          .returning({ profileId: factPlacementDaily.profileId });
+        insertedRows += inserted.length;
+      }
       const canonicalRows = await countCanonical(tx, factPlacementDaily, staged.profileId, staged.reportDate);
-      return { deletedRows: deleted.length, insertedRows: inserted.length, canonicalRows };
+      return { deletedRows: deleted.length, insertedRows, canonicalRows };
     }
     case 'profile': {
       const deleted = await tx.delete(factProfileDaily)
@@ -424,11 +501,15 @@ async function replaceCanonicalDate(
           eq(factProfileDaily.date, staged.reportDate),
         ))
         .returning({ profileId: factProfileDaily.profileId });
-      const inserted = staged.batch.rows.length === 0 ? [] : await tx.insert(factProfileDaily)
-        .values(staged.batch.rows.map((row) => ({ ...row, loadedAt: staged.observedAt })))
-        .returning({ profileId: factProfileDaily.profileId });
+      let insertedRows = 0;
+      for (const rows of chunkForInsert(staged.batch.rows, columnCount(factProfileDaily))) {
+        const inserted = await tx.insert(factProfileDaily)
+          .values(rows.map((row) => ({ ...row, loadedAt: staged.observedAt })))
+          .returning({ profileId: factProfileDaily.profileId });
+        insertedRows += inserted.length;
+      }
       const canonicalRows = await countCanonical(tx, factProfileDaily, staged.profileId, staged.reportDate);
-      return { deletedRows: deleted.length, insertedRows: inserted.length, canonicalRows };
+      return { deletedRows: deleted.length, insertedRows, canonicalRows };
     }
     case 'sb': {
       const deleted = await tx.delete(factSbDaily)
@@ -480,6 +561,10 @@ type FactTable =
   | typeof factProfileDaily
   | typeof factSbDaily
   | typeof factSdDaily;
+
+function columnCount(table: FactTable): number {
+  return Object.keys(getTableColumns(table)).length;
+}
 
 async function countCanonical(
   tx: PromotionTransaction,
@@ -564,6 +649,58 @@ function aggregateObservation(
       break;
   }
   return { adProduct, impressions, clicks, cost, purchases, sales };
+}
+
+function assertUniquePromotionGrain(batch: PromotableReportFactBatch): void {
+  switch (batch.kind) {
+    case 'sp_target':
+      assertUniqueFactGrain('fact_sp_target_daily', batch.rows, (row) => [
+        row.profileId,
+        row.date,
+        row.adProduct,
+        row.campaignId,
+        row.adGroupId,
+        row.targetId,
+      ]);
+      return;
+    case 'search_term':
+      assertUniqueFactGrain('fact_search_term_daily', batch.rows, (row) => [
+        row.profileId,
+        row.date,
+        row.campaignId,
+        row.adGroupId,
+        row.targetId,
+        row.searchTerm,
+      ]);
+      return;
+    case 'placement':
+      assertUniqueFactGrain('fact_placement_daily', batch.rows, (row) => [
+        row.profileId,
+        row.date,
+        row.adProduct,
+        row.campaignId,
+        row.placement,
+      ]);
+      return;
+    case 'profile':
+      assertUniqueFactGrain('fact_profile_daily', batch.rows, (row) => [row.profileId, row.date]);
+      return;
+    case 'sb':
+      assertUniqueFactGrain('fact_sb_daily', batch.rows, (row) => [
+        row.profileId,
+        row.date,
+        row.campaignId,
+        row.adGroupId,
+      ]);
+      return;
+    case 'sd':
+      assertUniqueFactGrain('fact_sd_daily', batch.rows, (row) => [
+        row.profileId,
+        row.date,
+        row.campaignId,
+        row.adGroupId,
+      ]);
+  }
 }
 
 function requireSevenDayWindow(kind: PromotableReportFactBatch['kind'], days: number): void {

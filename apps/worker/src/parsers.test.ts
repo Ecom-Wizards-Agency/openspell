@@ -1,6 +1,6 @@
 /**
- * The worker's report-row parsing, with the two grains that matter most
- * delegated to `@wizard-ads/ads-api`.
+ * The worker's Sponsored Products report-row parsing delegates every grain to
+ * `@wizard-ads/ads-api`, then adds database provenance and profile aggregation.
  *
  * The regression these cover is not hypothetical: the worker's own strict
  * parser demanded a `targetId` column the `spTargeting` report has never sent
@@ -182,7 +182,7 @@ describe('spSearchTerm delegation', () => {
   });
 });
 
-describe('the branches the worker still parses itself', () => {
+describe('SP campaign and placement delegation', () => {
   it('still aggregates spCampaigns onto the profile grain, per date', () => {
     const rows = [
       { date: '2026-08-14', campaignId: 'c-1', impressions: 10, clicks: 2, cost: 1, purchases7d: 1, sales7d: 5, unitsSoldClicks7d: 1 },
@@ -211,6 +211,22 @@ describe('the branches the worker still parses itself', () => {
     expect(batch.skipped).toEqual([]);
     expect(batch.rows[0]).toMatchObject({ placement: 'top_of_search' });
   });
+
+  it.each(['spCampaigns', 'spPlacement'] as const)(
+    'retains refusal indices for fail-closed %s replacement',
+    (reportType) => {
+      const batch = parseReportRows(
+        reportType,
+        [{ date: '2026-08-14', impressions: 1, clicks: 1, cost: 1 }],
+        profile,
+        reportRequestId,
+      );
+
+      expect(batch.sourceRows).toBe(1);
+      expect(batch.rows).toEqual([]);
+      expect(batch.skipped).toEqual([{ index: 0, reason: 'no campaignId' }]);
+    },
+  );
 
   it.each(['sbCampaigns', 'sdCampaigns'] as const)('reports no skipped rows for %s', (reportType) => {
     const batch = parseReportRows(

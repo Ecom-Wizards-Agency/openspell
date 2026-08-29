@@ -1,10 +1,21 @@
 import { gzipSync } from 'node:zlib';
-import type { ClaimedJob, DbHandle, JobOutcome } from '@wizard-ads/db';
+import type {
+  ClaimedJob,
+  DbHandle,
+  JobOutcome,
+  StagedReportDate,
+} from '@wizard-ads/db';
 import type { JobPayload, Region } from '@wizard-ads/shared';
 import { describe, expect, it } from 'vitest';
 import type { CrosscheckIngestResult } from '@wizard-ads/crosscheck-cli';
 import { SpApiAuthError } from '@wizard-ads/sp-api';
-import type { AdsApiClient, AdsProfileContext, AdsReportStatus, CreateReportInput } from './ads-api.js';
+import {
+  DownloadUrlExpiredError,
+  type AdsApiClient,
+  type AdsProfileContext,
+  type AdsReportStatus,
+  type CreateReportInput,
+} from './ads-api.js';
 import { resolveSourcePath } from './crosscheck.js';
 import type { ParsedFactBatch } from './parsers.js';
 import { RegionTokenBuckets } from './region-token-buckets.js';
@@ -36,26 +47,16 @@ describe('fetch handler count assertion', () => {
     let outcome: JobOutcome | undefined;
     let completedCounts: { parsed: number; loaded: number } | undefined;
     const report: ReportRequestState = {
-      id: reportRequestId, reportType: 'spCampaigns', amazonReportId: 'amazon-report',
+      id: reportRequestId, orgId, profileId, reportType: 'sbCampaigns',
+      startDate: '2026-08-14', endDate: '2026-08-14', source: 'amazon_api',
+      amazonReportId: 'amazon-report',
       requestedAt: new Date(), pollAttempts: 0,
     };
     const store: WorkerStore = {
+      ...stubStore(),
       claim: async () => claimed ? [] : (claimed = true, [job]),
       finish: async (_id, nextOutcome) => { outcome = nextOutcome; },
-      deadLetter: async () => {},
-      release: async () => 0,
-      requeueStale: async () => 0,
-      profile: async () => profile(),
-      syncEntities: async () => ({ listed: 0, upserted: 0, duplicates: 0, changes: 0, tombstoned: 0 }),
-      provisionSchedules: async () => 0,
-      unscheduledProfiles: async () => [],
-      repairOverlongLookbacks: async () => 0,
-      ensureIntegrationSchedules: async () => 0,
-      ensureReportRequest: async () => report,
-      setReportCreated: async () => {},
       getReportRequest: async () => report,
-      updateReportPoll: async () => {},
-      enqueue: async () => true,
       loadFacts: async (_batch: ParsedFactBatch) => 0,
       completeReport: async (_id, counts) => {
         completedCounts = counts;
@@ -93,6 +94,47 @@ describe('queue deferral', () => {
   });
 });
 
+describe('historical report partition preparation', () => {
+  it('requests every historical month and verifies the report fact table exactly', async () => {
+    const sql = (async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      expect(values).toEqual(['2024-01-01', 2]);
+      return [
+        { table_name: 'fact_sp_target_daily', partition_name: 'sp_2024_01', month: '2024-01-01', created: true },
+        { table_name: 'fact_sp_target_daily', partition_name: 'sp_2024_02', month: '2024-02-01', created: false },
+        { table_name: 'fact_sp_target_daily', partition_name: 'sp_2024_03', month: '2024-03-01', created: true },
+      ];
+    }) as unknown as DbHandle['sql'];
+    const store = new PostgresWorkerStore({
+      sql,
+      db: {} as DbHandle['db'],
+      close: async () => {},
+    });
+
+    await expect(store.ensureReportPartitions(
+      'spTargeting',
+      '2024-01-31',
+      '2024-03-01',
+    )).resolves.toEqual({ expectedMonths: 3, matchedMonths: 3, createdMonths: 2 });
+  });
+
+  it('fails when partition preparation omits a required month', async () => {
+    const sql = (async () => [
+      { table_name: 'fact_profile_daily', partition_name: 'profile_2024_01', month: '2024-01-01', created: true },
+    ]) as unknown as DbHandle['sql'];
+    const store = new PostgresWorkerStore({
+      sql,
+      db: {} as DbHandle['db'],
+      close: async () => {},
+    });
+
+    await expect(store.ensureReportPartitions(
+      'spCampaigns',
+      '2024-01-01',
+      '2024-02-29',
+    )).rejects.toThrow(/expected 2 months, matched 1/);
+  });
+});
+
 /**
  * A parser that refuses rows is the honest answer to a report that changed
  * shape. What must not happen is the refusal passing silently, or a
@@ -111,15 +153,18 @@ describe('fetch handler skip accounting', () => {
       attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
     };
     const report: ReportRequestState = {
-      id: reportRequestId, reportType: 'spTargeting', amazonReportId: 'amazon-report',
+      id: reportRequestId, orgId, profileId, reportType: 'spTargeting',
+      startDate: '2026-08-14', endDate: '2026-08-14', source: 'amazon_api',
+      amazonReportId: 'amazon-report',
       requestedAt: new Date(), pollAttempts: 0,
     };
     const calls: {
       finish: { outcome: JobOutcome; result?: unknown }[];
       dead: string[];
       polls: { status: string; error?: string | null }[];
+      failed: string[];
       completed: { parsed: number; loaded: number }[];
-    } = { finish: [], dead: [], polls: [], completed: [] };
+    } = { finish: [], dead: [], polls: [], failed: [], completed: [] };
     let claimed = false;
     const store: WorkerStore = {
       ...stubStore(),
@@ -128,6 +173,7 @@ describe('fetch handler skip accounting', () => {
       deadLetter: async (_id, error) => { calls.dead.push(error); },
       getReportRequest: async () => report,
       updateReportPoll: async (_id, values) => { calls.polls.push({ status: values.status, error: values.error }); },
+      failReport: async (_id, error) => { calls.failed.push(error); },
       loadFacts: async (batch: ParsedFactBatch) => batch.rows.length,
       completeReport: async (_id, counts) => { calls.completed.push({ parsed: counts.parsed, loaded: counts.loaded }); },
     };
@@ -138,7 +184,7 @@ describe('fetch handler skip accounting', () => {
     return { worker, calls };
   }
 
-  it('succeeds, and reports what it refused, when the refusals are under the threshold', async () => {
+  it('fails closed before replacement when even one source row is refused', async () => {
     const rows: unknown[] = [];
     for (let index = 0; index < 200; index += 1) rows.push(targetingRow(`kw-${index}`));
     const { campaignId: _dropped, ...noCampaign } = targetingRow('kw-bad');
@@ -146,14 +192,12 @@ describe('fetch handler skip accounting', () => {
     const { worker, calls } = run(rows);
 
     expect(await worker.drainOnce()).toBe(1);
-    expect(calls.finish.map((call) => call.outcome)).toEqual(['succeeded']);
-    expect(calls.completed).toEqual([{ parsed: 200, loaded: 200 }]);
-    expect(calls.finish[0]?.result).toMatchObject({
-      reportRows: 201, parsed: 200, loaded: 200, skipped: 1,
-      skipReasons: { 'no campaignId': 1 },
-    });
-    // Nothing was marked failed on the way through.
-    expect(calls.polls).toEqual([]);
+    expect(calls.finish).toEqual([]);
+    expect(calls.completed).toEqual([]);
+    expect(calls.failed).toEqual([
+      'replacement parser refused 1 of 201 rows: no campaignId (1)',
+    ]);
+    expect(calls.dead[0]).toContain('spTargeting replacement parser refused 1 of 201 rows');
   });
 
   it('fails the ledger and dead-letters when the parser refuses everything', async () => {
@@ -164,12 +208,12 @@ describe('fetch handler skip accounting', () => {
     // No fact write was attempted, and the ledger says why rather than sitting
     // in `processing` until somebody notices.
     expect(calls.completed).toEqual([]);
-    expect(calls.polls).toEqual([
-      { status: 'failed', error: 'parser refused 2 of 2 rows: no campaignId (2)' },
+    expect(calls.failed).toEqual([
+      'replacement parser refused 2 of 2 rows: no campaignId (2)',
     ]);
     // Dead, not retried: five attempts would refuse the same two rows.
     expect(calls.finish).toEqual([]);
-    expect(calls.dead[0]).toContain('spTargeting parser refused 2 of 2 rows');
+    expect(calls.dead[0]).toContain('spTargeting replacement parser refused 2 of 2 rows');
   });
 
   it('dead-letters when the refused share exceeds the threshold', async () => {
@@ -183,7 +227,170 @@ describe('fetch handler skip accounting', () => {
 
     expect(await worker.drainOnce()).toBe(1);
     expect(calls.finish).toEqual([]);
+    expect(calls.failed).toEqual([
+      'replacement parser refused 10 of 100 rows: no campaignId (10)',
+    ]);
     expect(calls.dead[0]).toContain('refused 10 of 100 rows');
+  });
+});
+
+describe('Sponsored Products report promotion', () => {
+  const payload: Extract<JobPayload, { type: 'report.fetch' }> = {
+    type: 'report.fetch', orgId, profileId, reportRequestId,
+    amazonReportId: 'amazon-report', downloadUrl: 'https://reports.invalid/report',
+  };
+
+  it('promotes every complete date, including an empty day, with exact counts', async () => {
+    const job: ClaimedJob = {
+      id: jobId, orgId, profileId, jobType: payload.type, payload,
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+    };
+    const report: ReportRequestState = {
+      id: reportRequestId, orgId, profileId, reportType: 'spTargeting',
+      startDate: '2026-08-14', endDate: '2026-08-16', source: 'amazon_api',
+      amazonReportId: 'amazon-report', requestedAt: new Date('2026-08-17T01:00:00Z'),
+      pollAttempts: 2,
+    };
+    const promoted: StagedReportDate[] = [];
+    const completed: { parsed: number; loaded: number; bytesDownloaded: number }[] = [];
+    const outcomes: { outcome: JobOutcome; result: unknown }[] = [];
+    let claimed = false;
+    const store = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      finish: async (_id: string, outcome: JobOutcome, options?: { result?: unknown }) => {
+        outcomes.push({ outcome, result: options?.result });
+      },
+      getReportRequest: async () => report,
+      ensureReportPartitions: async () => ({ expectedMonths: 1, matchedMonths: 1, createdMonths: 1 }),
+      promoteReportDate: async (date: StagedReportDate) => {
+        promoted.push(date);
+        return {
+          status: 'promoted' as const,
+          deletedRows: 0,
+          insertedRows: date.promotedRows,
+          observationRows: 1,
+          watermark: {
+            profileId,
+            reportType: report.reportType,
+            date: date.reportDate,
+            source: date.source,
+            reportRequestId,
+            requestedAt: report.requestedAt.toISOString(),
+            promotedAt: '2026-08-17T02:00:00.000Z',
+            sourceRows: date.sourceRows,
+            parsedRows: date.parsedRows,
+            refusedRows: 0,
+            promotedRows: date.promotedRows,
+            canonicalRows: date.promotedRows,
+          },
+        };
+      },
+      completeReport: async (_id: string, counts: typeof completed[number]) => { completed.push(counts); },
+    } satisfies WorkerStore;
+    const rows = [targetingRow('kw-1', '2026-08-14'), targetingRow('kw-2', '2026-08-16')];
+    const worker = new SyncWorker({
+      workerId: 'unit-worker', store, adsApi: new PayloadApi(rows),
+      now: () => new Date('2026-08-17T02:00:00Z'),
+      buckets: new RegionTokenBuckets(2), logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(promoted.map((date) => [date.reportDate, date.sourceRows, date.promotedRows])).toEqual([
+      ['2026-08-14', 1, 1],
+      ['2026-08-15', 0, 0],
+      ['2026-08-16', 1, 1],
+    ]);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({ parsed: 2, loaded: 2 });
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      outcome: 'succeeded',
+      result: {
+        reportRows: 2,
+        parsedSourceRows: 2,
+        refusedRows: 0,
+        factRows: 2,
+        canonicalRows: 2,
+        reportDates: 3,
+        promotedDates: 3,
+        partitionsCreated: 1,
+      },
+    });
+  });
+
+  it('re-polls an expired download URL only while the report request is recoverable', async () => {
+    const now = new Date('2026-08-17T04:00:00Z');
+    const report: ReportRequestState = {
+      id: reportRequestId, orgId, profileId, reportType: 'spTargeting',
+      startDate: '2026-08-14', endDate: '2026-08-14', source: 'amazon_api',
+      amazonReportId: 'amazon-report', requestedAt: new Date('2026-08-17T01:00:01Z'),
+      pollAttempts: 3,
+    };
+    const enqueued: { payload: JobPayload; dedupeKey: string }[] = [];
+    const outcomes: { outcome: JobOutcome; result: unknown }[] = [];
+    let claimed = false;
+    const store = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [{
+        id: jobId, orgId, profileId, jobType: payload.type, payload,
+        attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+      }]),
+      finish: async (_id: string, outcome: JobOutcome, options?: { result?: unknown }) => {
+        outcomes.push({ outcome, result: options?.result });
+      },
+      getReportRequest: async () => report,
+      enqueue: async (nextPayload: JobPayload, _runAt: Date, dedupeKey: string) => {
+        enqueued.push({ payload: nextPayload, dedupeKey });
+        return true;
+      },
+    } satisfies WorkerStore;
+    const worker = new SyncWorker({
+      workerId: 'unit-worker', store, adsApi: new ExpiredDownloadApi(), now: () => now,
+      buckets: new RegionTokenBuckets(2), logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]).toMatchObject({
+      payload: { type: 'report.poll', reportRequestId, amazonReportId: 'amazon-report', attempt: 3 },
+      dedupeKey: `report.repoll:${reportRequestId}:3`,
+    });
+    expect(outcomes).toEqual([{
+      outcome: 'succeeded',
+      result: { downloadExpired: true, repollEnqueued: true },
+    }]);
+  });
+
+  it('fails the ledger and dead-letters an expired URL beyond the request horizon', async () => {
+    const now = new Date('2026-08-17T05:00:00Z');
+    const report: ReportRequestState = {
+      id: reportRequestId, orgId, profileId, reportType: 'spTargeting',
+      startDate: '2026-08-14', endDate: '2026-08-14', source: 'amazon_api',
+      amazonReportId: 'amazon-report', requestedAt: new Date('2026-08-17T01:00:00Z'),
+      pollAttempts: 3,
+    };
+    const failed: string[] = [];
+    const dead: string[] = [];
+    let claimed = false;
+    const store = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [{
+        id: jobId, orgId, profileId, jobType: payload.type, payload,
+        attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+      }]),
+      getReportRequest: async () => report,
+      failReport: async (_id: string, error: string) => { failed.push(error); },
+      deadLetter: async (_id: string, error: string) => { dead.push(error); },
+    } satisfies WorkerStore;
+    const worker = new SyncWorker({
+      workerId: 'unit-worker', store, adsApi: new ExpiredDownloadApi(), now: () => now,
+      buckets: new RegionTokenBuckets(2), logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(failed).toEqual(['report download URL remained expired beyond the 4-hour request horizon']);
+    expect(dead).toEqual(['report download URL remained expired beyond the 4-hour request horizon']);
   });
 });
 
@@ -599,15 +806,18 @@ function stubStore(): WorkerStore {
     getReportRequest: async () => { throw new Error('unused'); },
     updateReportPoll: async () => {},
     enqueue: async () => true,
+    ensureReportPartitions: async () => ({ expectedMonths: 0, matchedMonths: 0, createdMonths: 0 }),
+    promoteReportDate: async () => { throw new Error('unused'); },
+    failReport: async () => {},
     loadFacts: async () => 0,
     completeReport: async () => {},
   };
 }
 
 /** A synthetic `spTargeting` row in the shape Amazon sends: `keywordId`, no `targetId`. */
-function targetingRow(keywordId: string): Record<string, unknown> {
+function targetingRow(keywordId: string, date = '2026-08-14'): Record<string, unknown> {
   return {
-    date: '2026-08-14', campaignId: 'c-1', adGroupId: 'ag-1', keywordId,
+    date, campaignId: 'c-1', adGroupId: 'ag-1', keywordId,
     matchType: 'EXACT', impressions: 10, clicks: 1, cost: 0.5,
     purchases7d: 0, sales7d: 0, unitsSoldClicks7d: 0,
   };
@@ -635,6 +845,12 @@ class OneRowApi implements AdsApiClient {
     return (async function* stream() { yield bytes; })();
   }
   async listProfiles(_region: Region) { return []; }
+}
+
+class ExpiredDownloadApi extends OneRowApi {
+  override async downloadReport(): Promise<AsyncIterable<Uint8Array>> {
+    throw new DownloadUrlExpiredError('synthetic expired URL');
+  }
 }
 
 function profile(): AdsProfileContext {

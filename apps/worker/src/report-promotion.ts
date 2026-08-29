@@ -1,10 +1,9 @@
 /**
  * Safe worker handoff from a parsed report range to complete report dates.
  *
- * The parser does not yet retain the date of every refused raw row, so callers
- * must supply exact per-date accounting derived from the source payload. This
- * helper refuses totals that do not reconcile and is intentionally not wired
- * into `fetchReport` until that source accounting exists for every report.
+ * The strict Sponsored Products path derives exact per-date accounting from the
+ * source payload before any canonical date is touched. Generic callers may still
+ * supply their own accounting for future report sources.
  */
 import {
   stageReportDate,
@@ -34,6 +33,83 @@ export interface StageParsedReportInput {
   attributionWindowDays: number;
   batch: ParsedFactBatch;
   dates: readonly ReportDateAccounting[];
+}
+
+export interface PrepareSponsoredProductsReportInput
+  extends Omit<StageParsedReportInput, 'dates'> {
+  rawRows: readonly unknown[];
+  startDate: string;
+  endDate: string;
+  profileTimeZone: string;
+}
+
+export class UnsafeSponsoredProductsReport extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsafeSponsoredProductsReport';
+  }
+}
+
+/** Build and stage a complete SP report window, including explicit empty days. */
+export function prepareSponsoredProductsReportDates(
+  input: PrepareSponsoredProductsReportInput,
+): StagedReportDate[] {
+  if (input.batch.kind === 'sb' || input.batch.kind === 'sd') {
+    throw new UnsafeSponsoredProductsReport('Sponsored Products promotion cannot stage SB or SD facts');
+  }
+  if (input.batch.sourceRows !== input.rawRows.length) {
+    throw new UnsafeSponsoredProductsReport(
+      `parser source rows ${input.batch.sourceRows} do not match payload rows ${input.rawRows.length}`,
+    );
+  }
+
+  const reportDates = inclusiveDateRange(input.startDate, input.endDate);
+  const accounting = new Map<string, ReportDateAccounting>();
+  const observedDate = profileDate(input.profileTimeZone, input.observedAt);
+  for (const reportDate of reportDates) {
+    accounting.set(reportDate, {
+      reportDate,
+      sourceRows: 0,
+      parsedRows: 0,
+      refusedRows: 0,
+      eventDateAgeDays: daysBetween(reportDate, observedDate),
+    });
+  }
+
+  const skipped = new Set<number>();
+  for (const refusal of input.batch.skipped) {
+    if (!Number.isSafeInteger(refusal.index) || refusal.index < 0 || refusal.index >= input.rawRows.length) {
+      throw new UnsafeSponsoredProductsReport(`parser returned invalid skipped index ${refusal.index}`);
+    }
+    if (skipped.has(refusal.index)) {
+      throw new UnsafeSponsoredProductsReport(`parser returned duplicate skipped index ${refusal.index}`);
+    }
+    skipped.add(refusal.index);
+  }
+
+  input.rawRows.forEach((row, index) => {
+    const reportDate = sourceRowDate(row, index);
+    const date = accounting.get(reportDate);
+    if (!date) {
+      throw new UnsafeSponsoredProductsReport(
+        `source row ${index} belongs to ${reportDate}, outside ${input.startDate}..${input.endDate}`,
+      );
+    }
+    date.sourceRows += 1;
+    if (skipped.has(index)) date.refusedRows += 1;
+    else date.parsedRows += 1;
+  });
+
+  if (skipped.size > 0) {
+    throw new UnsafeSponsoredProductsReport(
+      `replacement refused: parser rejected ${skipped.size} of ${input.rawRows.length} source rows`,
+    );
+  }
+
+  return stageParsedReportDates({
+    ...input,
+    dates: reportDates.map((date) => accounting.get(date) as ReportDateAccounting),
+  });
 }
 
 export function stageParsedReportDates(input: StageParsedReportInput): StagedReportDate[] {
@@ -72,24 +148,35 @@ export function stageParsedReportDates(input: StageParsedReportInput): StagedRep
     if (!accounting.has(date)) throw new Error(`parsed facts for ${date} have no source accounting`);
   }
 
-  return input.dates.map((date) => stageReportDate({
-    orgId: input.orgId,
-    profileId: input.profileId,
-    reportType: input.reportType,
-    reportDate: date.reportDate,
-    source: input.source,
-    reportRequestId: input.reportRequestId,
-    requestedAt: input.requestedAt,
-    observedAt: input.observedAt,
-    sourceRows: date.sourceRows,
-    parsedRows: date.parsedRows,
-    refusedRows: date.refusedRows,
-    attribution: {
-      attributionWindowDays: input.attributionWindowDays,
-      eventDateAgeDays: date.eventDateAgeDays,
-    },
-    batch: rowsByDate.get(date.reportDate) ?? emptyBatch(input.batch.kind),
-  }));
+  return input.dates.map((date) => {
+    const batch = rowsByDate.get(date.reportDate) ?? emptyBatch(input.batch.kind);
+    if (batch.kind === 'profile') {
+      const expectedFacts = date.parsedRows === 0 ? 0 : 1;
+      if (batch.rows.length !== expectedFacts) {
+        throw new Error(
+          `profile source rows for ${date.reportDate} must produce ${expectedFacts} profile fact`,
+        );
+      }
+    }
+    return stageReportDate({
+      orgId: input.orgId,
+      profileId: input.profileId,
+      reportType: input.reportType,
+      reportDate: date.reportDate,
+      source: input.source,
+      reportRequestId: input.reportRequestId,
+      requestedAt: input.requestedAt,
+      observedAt: input.observedAt,
+      sourceRows: date.sourceRows,
+      parsedRows: date.parsedRows,
+      refusedRows: date.refusedRows,
+      attribution: {
+        attributionWindowDays: input.attributionWindowDays,
+        eventDateAgeDays: date.eventDateAgeDays,
+      },
+      batch,
+    });
+  });
 }
 
 function groupRowsByDate(batch: ParsedFactBatch): Map<string, PromotableReportFactBatch> {
@@ -143,4 +230,72 @@ function emptyBatch(kind: PromotableReportFactBatch['kind']): PromotableReportFa
 
 function sum<T>(rows: readonly T[], value: (row: T) => number): number {
   return rows.reduce((total, row) => total + value(row), 0);
+}
+
+function inclusiveDateRange(startDate: string, endDate: string): string[] {
+  const start = isoDay(startDate, 'startDate');
+  const end = isoDay(endDate, 'endDate');
+  if (start > end) throw new UnsafeSponsoredProductsReport('startDate must not be after endDate');
+  const dates: string[] = [];
+  for (let cursor = start; cursor <= end; cursor = addDays(cursor, 1)) dates.push(cursor);
+  return dates;
+}
+
+function sourceRowDate(value: unknown, index: number): string {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new UnsafeSponsoredProductsReport(`source row ${index} is not an object with a daily date`);
+  }
+  const date = (value as Record<string, unknown>)['date'];
+  if (typeof date !== 'string') {
+    throw new UnsafeSponsoredProductsReport(`source row ${index} has no daily date`);
+  }
+  return isoDay(date, `source row ${index} date`);
+}
+
+function profileDate(timeZone: string, value: Date): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(value);
+    const read = (type: Intl.DateTimeFormatPartTypes): string | undefined =>
+      parts.find((part) => part.type === type)?.value;
+    const year = read('year');
+    const month = read('month');
+    const day = read('day');
+    if (!year || !month || !day) throw new Error('formatter omitted a calendar part');
+    return `${year}-${month}-${day}`;
+  } catch (cause) {
+    throw new UnsafeSponsoredProductsReport(
+      `invalid profile timezone: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+}
+
+function daysBetween(earlier: string, later: string): number {
+  const difference = Date.parse(`${later}T00:00:00.000Z`) - Date.parse(`${earlier}T00:00:00.000Z`);
+  const days = difference / 86_400_000;
+  if (!Number.isSafeInteger(days) || days < 0) {
+    throw new UnsafeSponsoredProductsReport(`${earlier} is after profile-local observation date ${later}`);
+  }
+  return days;
+}
+
+function isoDay(value: string, name: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new UnsafeSponsoredProductsReport(`${name} must be YYYY-MM-DD`);
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.valueOf()) || parsed.toISOString().slice(0, 10) !== value) {
+    throw new UnsafeSponsoredProductsReport(`${name} must be a real calendar date`);
+  }
+  return value;
+}
+
+function addDays(value: string, amount: number): string {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + amount);
+  return date.toISOString().slice(0, 10);
 }
