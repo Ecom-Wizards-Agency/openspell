@@ -17,19 +17,35 @@
 import { connectionStringFromEnv, createDb } from '@wizard-ads/db';
 import type { DbHandle } from '@wizard-ads/db';
 
-let handle: DbHandle | null = null;
-let attempted = false;
+interface DatabaseState {
+  handle: DbHandle | null;
+  attempted: boolean;
+}
+
+type DatabaseGlobal = typeof globalThis & {
+  __wizardAdsDatabaseState?: DatabaseState;
+};
+
+const freshState = (): DatabaseState => ({ handle: null, attempted: false });
+const databaseGlobal = globalThis as DatabaseGlobal;
+// Next dev invalidates module instances while compiling routes. A module-local
+// cache leaves every invalidated postgres.js pool alive until process exit,
+// which eventually exhausts Postgres during a full operator click-through.
+// Production modules are stable and keep the narrower module-owned lifecycle.
+const state = process.env['NODE_ENV'] === 'production'
+  ? freshState()
+  : (databaseGlobal.__wizardAdsDatabaseState ??= freshState());
 
 /** The handle, or null when `DATABASE_URL` is absent (a page then says so). */
 export function database(): DbHandle | null {
-  if (attempted) return handle;
-  attempted = true;
+  if (state.attempted) return state.handle;
+  state.attempted = true;
   try {
-    handle = createDb({ connectionString: connectionStringFromEnv(), max: 3 });
+    state.handle = createDb({ connectionString: connectionStringFromEnv(), max: 3 });
   } catch {
-    handle = null;
+    state.handle = null;
   }
-  return handle;
+  return state.handle;
 }
 
 /** The handle, or a thrown error naming the missing variable. For write paths. */
@@ -43,8 +59,8 @@ export function requireDatabase(): DbHandle {
 
 /** Test seam: drop the memoised handle so a suite can point at another database. */
 export async function resetDatabase(): Promise<void> {
-  const current = handle;
-  handle = null;
-  attempted = false;
+  const current = state.handle;
+  state.handle = null;
+  state.attempted = false;
   if (current) await current.close();
 }
