@@ -281,6 +281,8 @@ describe('recommendations runner', () => {
       placementDecreaseCap: 0.2,
       exclusions: [],
       cadence: '7 days',
+      reviewSchedule: { weekdays: ['monday'], localTime: '04:00' },
+      scheduleMigrationState: 'native',
       prioritization: 'efficiency_first',
       enabled: true,
     };
@@ -336,6 +338,8 @@ describe('recommendations runner', () => {
       placementDecreaseCap: 0.2,
       exclusions: [],
       cadence: '7 days',
+      reviewSchedule: { weekdays: ['monday'], localTime: '04:00' },
+      scheduleMigrationState: 'native',
       prioritization: 'efficiency_first',
       enabled: true,
     };

@@ -146,9 +146,11 @@ describe.skipIf(!available)('recommendation observation reconciler + Postgres', 
       insert into public.optimization_groups
         (org_id, profile_id, name, role, target_acos, bid_increase_cap,
          bid_decrease_cap, placement_increase_cap, placement_decrease_cap,
-         cadence, prioritization)
+         cadence, review_weekdays, review_local_time, schedule_migration_state,
+         prioritization)
       values (${orgId}, ${profileId}, 'Synthetic observer group', 'profit', 0.3,
-              0.2, 0.2, 0.2, 0.2, interval '7 days', 'balanced')
+              0.2, 0.2, 0.2, 0.2, interval '7 days', array['monday'],
+              time '04:00', 'native', 'balanced')
       returning id
     `;
     const groupId = group?.id ?? '';
@@ -156,7 +158,9 @@ describe.skipIf(!available)('recommendation observation reconciler + Postgres', 
       id: groupId, orgId, profileId, name: 'Synthetic observer group', role: 'profit',
       targetAcos: 0.3, bidFloor: null, bidCeiling: null, bidIncreaseCap: 0.2,
       bidDecreaseCap: 0.2, placementIncreaseCap: 0.2, placementDecreaseCap: 0.2,
-      exclusions: [], cadence: '7 days', prioritization: 'balanced', enabled: true,
+      exclusions: [], cadence: '7 days',
+      reviewSchedule: { weekdays: ['monday'], localTime: '04:00' },
+      scheduleMigrationState: 'native', prioritization: 'balanced', enabled: true,
     };
     const strategy = {
       schema: 'wizard-ads.tenant-strategy.v1', pacing: {}, opt_groups: {}, rank_lifecycle: {},

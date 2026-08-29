@@ -285,7 +285,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     });
   });
 
-  it('mints one delayed weekly run/job per due optimization group', async () => {
+  it('claims one overdue local-weekday occurrence with immutable preview-only provenance', async () => {
     await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
     // N-gram proposals share recommendation_runs but are not weekly optimizer
     // executions, so a recent one must not suppress this profile's due run.
@@ -294,11 +294,29 @@ describe.skipIf(!available)('worker + real Postgres', () => {
         (org_id, profile_id, status, lookback_days, engine_version, started_at, finished_at)
       values (${orgId}, ${profileId}, 'succeeded', 7, 'ngram-explorer', now(), now())
     `;
-    const store = new PostgresRecommendationRunStore(database);
-    const now = new Date();
+    const [scheduledGroup] = await database.sql<{ id: string }[]>`
+      update public.optimization_groups
+         set review_weekdays = array['monday', 'thursday'],
+             review_local_time = time '09:00',
+             schedule_migration_state = 'native',
+             enabled = true,
+             next_review_at = '2026-08-03T09:00:00.000Z'::timestamptz
+       where org_id = ${orgId} and profile_id = ${profileId}
+      returning id
+    `;
+    if (!scheduledGroup) throw new Error('seeded optimization group missing');
+    const [beforeApply] = await database.sql<{ count: number }[]>`
+      select count(*)::int as count from public.apply_batches where org_id = ${orgId}
+    `;
+    const now = new Date('2026-08-31T10:00:00.000Z');
+    const stores = [
+      new PostgresRecommendationRunStore(database),
+      new PostgresRecommendationRunStore(database),
+    ];
 
-    expect(await store.enqueueDueRecommendationRuns(now)).toBe(1);
-    expect(await store.enqueueDueRecommendationRuns(now)).toBe(0);
+    expect((await Promise.all(stores.map((store) => store.enqueueDueRecommendationRuns(now)))).sort())
+      .toEqual([0, 1]);
+    expect(await stores[0]!.enqueueDueRecommendationRuns(now)).toBe(0);
 
     const [job] = await database.sql<{
       run_id: string;
@@ -309,6 +327,13 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       priority: number;
       delay_seconds: number;
       engine_version: string;
+      run_trigger: string;
+      context_trigger: string;
+      context_timezone: string;
+      context_weekdays: string[];
+      context_scheduled_for: string;
+      due_at: string;
+      next_review_at: string;
     }[]>`
       select r.id as run_id,
              j.payload ->> 'runId' as payload_run_id,
@@ -316,10 +341,18 @@ describe.skipIf(!available)('worker + real Postgres', () => {
              j.payload ->> 'groupId' as payload_group_id,
              r.group_snapshot ->> 'id' as group_snapshot_id,
              r.engine_version,
+             r.run_trigger,
+             r.schedule_context ->> 'trigger' as context_trigger,
+             r.schedule_context ->> 'profileTimezone' as context_timezone,
+             array(select jsonb_array_elements_text(r.schedule_context->'reviewSchedule'->'weekdays')) as context_weekdays,
+             r.schedule_context ->> 'scheduledFor' as context_scheduled_for,
+             r.due_at::text as due_at,
+             g.next_review_at::text as next_review_at,
              j.priority,
              extract(epoch from (j.run_after - ${now.toISOString()}::timestamptz)) as delay_seconds
         from public.recommendation_runs r
         join public.sync_jobs j on j.payload ->> 'runId' = r.id::text
+        join public.optimization_groups g on g.id = r.group_id
        where r.org_id = ${orgId}
        order by r.created_at desc
        limit 1
@@ -329,8 +362,127 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     expect(job?.payload_group_id).toBe(job?.group_id);
     expect(job?.group_snapshot_id).toBe(job?.group_id);
     expect(job?.engine_version).toBe(RECOMMENDATIONS_ENGINE_VERSION);
+    expect(job?.run_trigger).toBe('schedule');
+    expect(job?.context_trigger).toBe('schedule');
+    expect(job?.context_timezone).toBe('UTC');
+    expect(job?.context_weekdays).toEqual(['monday', 'thursday']);
+    expect(new Date(job?.context_scheduled_for ?? '').toISOString()).toBe('2026-08-03T09:00:00.000Z');
+    expect(new Date(job?.due_at ?? '').toISOString()).toBe('2026-08-03T09:00:00.000Z');
+    expect(new Date(job?.next_review_at ?? '').toISOString()).toBe('2026-09-03T09:00:00.000Z');
     expect(job?.priority).toBe(RECOMMENDATION_SCHEDULE_PRIORITY);
     expect(Number(job?.delay_seconds)).toBe(5 * 60 * 60);
+
+    const [afterApply] = await database.sql<{ count: number }[]>`
+      select count(*)::int as count from public.apply_batches where org_id = ${orgId}
+    `;
+    expect(afterApply?.count).toBe(beforeApply?.count);
+    await expect(database.sql`
+      update public.recommendation_runs
+         set schedule_context = jsonb_set(schedule_context, '{trigger}', '"manual"'::jsonb)
+       where id = ${job?.run_id ?? ''}
+    `).rejects.toThrow(/schedule evidence is immutable/);
+
+    await database.sql`delete from public.sync_jobs where payload ->> 'runId' = ${job?.run_id ?? ''}`;
+    await database.sql`
+      update public.recommendation_runs
+         set status = 'succeeded', started_at = now(), finished_at = now()
+       where id = ${job?.run_id ?? ''}
+    `;
+    await database.sql`
+      update public.optimization_groups
+         set next_review_at = '2026-08-03T09:00:00.000Z'::timestamptz
+       where id = ${scheduledGroup.id}
+    `;
+    expect(await stores[0]!.enqueueDueRecommendationRuns(now)).toBe(0);
+    const [replayed] = await database.sql<{ runs: number; next_review_at: string }[]>`
+      select count(r.id)::int as runs, max(g.next_review_at)::text as next_review_at
+        from public.optimization_groups g
+        left join public.recommendation_runs r
+          on r.group_id = g.id and r.run_trigger = 'schedule'
+       where g.id = ${scheduledGroup.id}
+       group by g.id
+    `;
+    expect(replayed?.runs).toBe(1);
+    expect(new Date(replayed?.next_review_at ?? '').toISOString()).toBe('2026-09-03T09:00:00.000Z');
+  });
+
+  it('allows a manual group preview while its review schedule is disabled', async () => {
+    await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+    const [group] = await database.sql<{ id: string }[]>`
+      update public.optimization_groups
+         set enabled = false, next_review_at = null
+       where org_id = ${orgId} and profile_id = ${profileId}
+      returning id
+    `;
+    if (!group) throw new Error('seeded optimization group missing');
+    const store = new PostgresRecommendationRunStore(database);
+    const queued = await store.enqueueRecommendationRun({
+      orgId,
+      profileId,
+      groupId: group.id,
+      source: 'web',
+    });
+    const [run] = await database.sql<{
+      run_trigger: string;
+      schedule_enabled: boolean;
+      scheduled_for: unknown;
+      job_type: string;
+    }[]>`
+      select r.run_trigger,
+             (r.schedule_context ->> 'scheduleEnabled')::boolean as schedule_enabled,
+             r.schedule_context -> 'scheduledFor' as scheduled_for,
+             j.job_type::text as job_type
+        from public.recommendation_runs r
+        join public.sync_jobs j on j.id = ${queued.jobId}
+       where r.id = ${queued.runId}
+    `;
+    expect(run).toEqual({
+      run_trigger: 'manual',
+      schedule_enabled: false,
+      scheduled_for: null,
+      job_type: 'recommendations.run',
+    });
+    await database.sql`delete from public.sync_jobs where id = ${queued.jobId}`;
+    await database.sql`delete from public.recommendation_runs where id = ${queued.runId}`;
+  });
+
+  it('rolls back a failed due claim and succeeds once the profile timezone is repaired', async () => {
+    await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
+    await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+    const [group] = await database.sql<{ id: string }[]>`
+      update public.optimization_groups
+         set review_weekdays = array['monday'], review_local_time = time '09:00',
+             schedule_migration_state = 'native', enabled = true,
+             next_review_at = '2026-08-31T09:00:00.000Z'::timestamptz
+       where org_id = ${orgId} and profile_id = ${profileId}
+      returning id
+    `;
+    if (!group) throw new Error('seeded optimization group missing');
+    await database.sql`
+      update public.ad_profiles set timezone = 'invalid/timezone'
+       where org_id = ${orgId} and id = ${profileId}
+    `;
+    const store = new PostgresRecommendationRunStore(database);
+    const now = new Date('2026-08-31T10:00:00.000Z');
+    await expect(store.enqueueDueRecommendationRuns(now)).rejects.toThrow(/IANA timezone/);
+    const [rolledBack] = await database.sql<{ next_review_at: string; runs: number }[]>`
+      select g.next_review_at::text as next_review_at,
+             count(r.id)::int as runs
+        from public.optimization_groups g
+        left join public.recommendation_runs r on r.group_id = g.id
+       where g.id = ${group.id}
+       group by g.id
+    `;
+    expect(new Date(rolledBack?.next_review_at ?? '').toISOString()).toBe('2026-08-31T09:00:00.000Z');
+    expect(rolledBack?.runs).toBe(0);
+
+    await database.sql`
+      update public.ad_profiles set timezone = 'UTC'
+       where org_id = ${orgId} and id = ${profileId}
+    `;
+    expect(await store.enqueueDueRecommendationRuns(now)).toBe(1);
+    await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
+    await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
   });
 
   it('refuses overlapping group previews and holds after export until complete continue evidence', async () => {

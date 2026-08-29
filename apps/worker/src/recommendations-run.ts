@@ -15,7 +15,7 @@
  * in the run-level audit payload. This is intentional: inventing an entity ref
  * for an account-wide note would turn narrative into an exportable fake action.
  */
-import type { DbHandle, QuerySql } from '@wizard-ads/db';
+import { nextReviewAt, type DbHandle, type QuerySql } from '@wizard-ads/db';
 import {
   buildRecommendations,
   CATEGORY_UNKNOWN,
@@ -36,10 +36,12 @@ import {
 } from '@wizard-ads/core';
 import {
   OptimizationGroup,
+  RecommendationScheduleContext,
   type AdProduct,
   type EntityRef,
   type Recommendation,
   type RecommendationReason,
+  type RecommendationScheduleContext as RecommendationScheduleContextValue,
   type RecommendationsRunJob,
   type TenantStrategy,
 } from '@wizard-ads/shared';
@@ -228,7 +230,7 @@ export interface QueueRecommendationRunInput extends ProfileScope {
   lookbackDays?: number;
   groupId?: string;
   runAt?: Date;
-  source: 'schedule' | 'web';
+  source: 'web';
 }
 
 export interface QueuedRecommendationRun {
@@ -767,6 +769,11 @@ function optimizationGroupFromWire(row: OptimizationGroupWireRow): OptimizationG
     placementDecreaseCap: Number(row.placement_decrease_cap),
     exclusions: row.exclusions,
     cadence: row.cadence,
+    reviewSchedule: {
+      weekdays: row.review_weekdays,
+      localTime: row.review_local_time.slice(0, 5),
+    },
+    scheduleMigrationState: row.schedule_migration_state,
     prioritization: row.prioritization,
     enabled: row.enabled,
   });
@@ -859,9 +866,14 @@ interface OptimizationGroupWireRow {
   placement_decrease_cap: string | number;
   exclusions: string[];
   cadence: string;
+  review_weekdays: NonNullable<OptimizationGroup['reviewSchedule']>['weekdays'];
+  review_local_time: string;
+  schedule_migration_state: OptimizationGroup['scheduleMigrationState'];
   prioritization: OptimizationGroup['prioritization'];
   enabled: boolean;
   next_run_at: Date | string | null;
+  next_review_at: Date | string | null;
+  profile_timezone: string;
 }
 
 /** Postgres implementation: storage representations never leave this class. */
@@ -1439,20 +1451,24 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       throw new Error('lookbackDays must be a positive integer');
     }
     return this.handle.sql.begin(async (sql) => {
-      const profiles = await sql<{ id: string }[]>`
-        select id from public.ad_profiles
+      const profiles = await sql<{ id: string; timezone: string }[]>`
+        select id, timezone from public.ad_profiles
          where org_id = ${input.orgId} and id = ${input.profileId}
          for update
       `;
       if (profiles.length !== 1) throw new Error('Advertising profile not found');
+      const profile = profiles[0]!;
       const groupRows = input.groupId === undefined
         ? []
         : await sql<OptimizationGroupWireRow[]>`
             select id, org_id, profile_id, name, role::text as role, target_acos,
                    bid_floor, bid_ceiling, bid_increase_cap, bid_decrease_cap,
                    placement_increase_cap, placement_decrease_cap, exclusions,
-                   cadence::text as cadence, prioritization::text as prioritization,
-                   enabled, next_run_at
+                   cadence::text as cadence, review_weekdays,
+                   review_local_time::text, schedule_migration_state,
+                   prioritization::text as prioritization,
+                   enabled, next_run_at, next_review_at,
+                   ${profile.timezone}::text as profile_timezone
               from public.optimization_groups
              where org_id = ${input.orgId}
                and profile_id = ${input.profileId}
@@ -1462,9 +1478,6 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       const group = groupRows[0] === undefined ? null : optimizationGroupFromWire(groupRows[0]);
       if (input.groupId !== undefined && group === null) {
         throw new Error('Optimization group not found');
-      }
-      if (group !== null && !group.enabled) {
-        throw new Error('Disabled optimization groups cannot be queued');
       }
       if (group !== null) {
         const active = await sql<{ id: string }[]>`
@@ -1483,15 +1496,25 @@ implements RecommendationRunStore, RecommendationScheduleStore {
         if (!safety.mayPropose) throw new Error(safety.reason);
       }
       const dueAt = (input.runAt ?? new Date()).toISOString();
+      const scheduleContext = RecommendationScheduleContext.parse({
+        trigger: 'manual',
+        profileTimezone: profile.timezone,
+        reviewSchedule: group?.reviewSchedule ?? null,
+        scheduleEnabled: group?.enabled ?? false,
+        queuedAt: new Date().toISOString(),
+        scheduledFor: null,
+      });
       const runs = await sql<{ id: string }[]>`
         insert into public.recommendation_runs
           (org_id, profile_id, status, lookback_days, engine_version,
-           group_id, group_role, group_snapshot, due_at)
+           group_id, group_role, group_snapshot, due_at, run_trigger,
+           schedule_context)
         values (${input.orgId}, ${input.profileId}, 'queued', ${lookbackDays},
                 ${RECOMMENDATIONS_ENGINE_VERSION}, ${group?.id ?? null},
                 ${group?.role ?? null}::public.optimization_group_role,
                 ${group === null ? null : serializeJson(group)}::text::jsonb,
-                ${group === null ? null : dueAt}::timestamptz)
+                ${group === null ? null : dueAt}::timestamptz,
+                'manual', ${serializeJson(scheduleContext)}::text::jsonb)
         returning id
       `;
       const runId = runs[0]?.id;
@@ -1509,7 +1532,7 @@ implements RecommendationRunStore, RecommendationScheduleStore {
           (org_id, profile_id, job_type, payload, priority, dedupe_key, run_after)
         values (${input.orgId}, ${input.profileId}, 'recommendations.run',
                 ${serializeJson(payload)}::text::jsonb,
-                ${input.source === 'schedule' ? RECOMMENDATION_SCHEDULE_PRIORITY : 100},
+                100,
                 ${`recommendations.run:${runId}`},
                 ${(input.runAt ?? new Date()).toISOString()}::timestamptz)
         returning id
@@ -1529,13 +1552,17 @@ implements RecommendationRunStore, RecommendationScheduleStore {
                g.bid_increase_cap, g.bid_decrease_cap,
                g.placement_increase_cap, g.placement_decrease_cap,
                g.exclusions, g.cadence::text as cadence,
-               g.prioritization::text as prioritization, g.enabled, g.next_run_at
+               g.review_weekdays, g.review_local_time::text,
+               g.schedule_migration_state,
+               g.prioritization::text as prioritization, g.enabled,
+               g.next_run_at, g.next_review_at, p.timezone as profile_timezone
           from public.optimization_groups g
           join public.ad_profiles p
             on p.org_id = g.org_id and p.id = g.profile_id
          where p.sync_enabled
            and g.enabled
-           and (g.next_run_at is null or g.next_run_at <= ${nowIso}::timestamptz)
+           and g.schedule_migration_state <> 'needs_review'
+           and (g.next_review_at is null or g.next_review_at <= ${nowIso}::timestamptz)
            and not exists (
              select 1 from public.recommendation_runs r
               where r.org_id = g.org_id
@@ -1545,40 +1572,73 @@ implements RecommendationRunStore, RecommendationScheduleStore {
            )
          order by case g.role when 'rank' then 1 when 'profit' then 2
                               when 'discovery' then 3 else 4 end,
-                  g.next_run_at nulls first, g.id
+                  g.next_review_at nulls first, g.id
          for update of g skip locked
       `;
       let enqueued = 0;
-      let heldGroups = 0;
+      let handled = 0;
       for (const row of dueGroups) {
         const group = optimizationGroupFromWire(row);
+        if (group.reviewSchedule === null) {
+          throw new Error('Due optimization group has no review schedule');
+        }
+        const dueAt = row.next_review_at === null
+          ? nowIso
+          : toTimestamp(row.next_review_at, 'next_review_at');
+        const followingReview = nextReviewAt({
+          after: now,
+          schedule: group.reviewSchedule,
+          timeZone: row.profile_timezone,
+        }).toISOString();
         const safety = await readGroupRecommendationSafety(sql, group, group.id);
         if (!safety.mayPropose) {
           const advanced = await sql<{ id: string }[]>`
             update public.optimization_groups
-               set next_run_at = ${nowIso}::timestamptz + cadence
+               set next_review_at = ${followingReview}::timestamptz
              where org_id = ${group.orgId}
                and profile_id = ${group.profileId}
                and id = ${group.id}
             returning id
           `;
           if (advanced.length !== 1) throw new Error('Advanced 0 of 1 held group schedules');
-          heldGroups += 1;
+          handled += 1;
           continue;
         }
-        const dueAt = row.next_run_at === null ? nowIso : toTimestamp(row.next_run_at, 'next_run_at');
+        const scheduleContext: RecommendationScheduleContextValue = RecommendationScheduleContext.parse({
+          trigger: 'schedule',
+          profileTimezone: row.profile_timezone,
+          reviewSchedule: group.reviewSchedule,
+          scheduleEnabled: group.enabled,
+          queuedAt: nowIso,
+          scheduledFor: dueAt,
+        });
         const runs = await sql<{ id: string }[]>`
           insert into public.recommendation_runs
             (org_id, profile_id, status, lookback_days, engine_version,
-             group_id, group_role, group_snapshot, due_at)
+             group_id, group_role, group_snapshot, due_at, run_trigger,
+             schedule_context)
           values (${group.orgId}, ${group.profileId}, 'queued',
                   ${DEFAULT_RECOMMENDATION_LOOKBACK_DAYS}, ${RECOMMENDATIONS_ENGINE_VERSION},
                   ${group.id}, ${group.role}::public.optimization_group_role,
-                  ${serializeJson(group)}::text::jsonb, ${dueAt}::timestamptz)
+                  ${serializeJson(group)}::text::jsonb, ${dueAt}::timestamptz,
+                  'schedule', ${serializeJson(scheduleContext)}::text::jsonb)
+          on conflict (group_id, due_at) where run_trigger = 'schedule' do nothing
           returning id
         `;
         const runId = runs[0]?.id;
-        if (!runId) throw new Error('Minted 0 of 1 group recommendation runs');
+        if (!runId) {
+          const advanced = await sql<{ id: string }[]>`
+            update public.optimization_groups
+               set next_review_at = ${followingReview}::timestamptz
+             where org_id = ${group.orgId}
+               and profile_id = ${group.profileId}
+               and id = ${group.id}
+            returning id
+          `;
+          if (advanced.length !== 1) throw new Error('Advanced 0 of 1 replayed group schedules');
+          handled += 1;
+          continue;
+        }
         const payload = {
           type: 'recommendations.run' as const,
           orgId: group.orgId,
@@ -1600,7 +1660,7 @@ implements RecommendationRunStore, RecommendationScheduleStore {
         if (jobs.length !== 1) throw new Error('Enqueued 0 of 1 group recommendation jobs');
         const advanced = await sql<{ id: string }[]>`
           update public.optimization_groups
-             set next_run_at = ${nowIso}::timestamptz + cadence
+             set next_review_at = ${followingReview}::timestamptz
            where org_id = ${group.orgId}
              and profile_id = ${group.profileId}
              and id = ${group.id}
@@ -1608,62 +1668,10 @@ implements RecommendationRunStore, RecommendationScheduleStore {
         `;
         if (advanced.length !== 1) throw new Error('Advanced 0 of 1 group schedules');
         enqueued += 1;
+        handled += 1;
       }
-
-      // Migration compatibility: profiles without a single persisted group
-      // keep their prior weekly run until the operator assigns them.
-      const dueProfiles = await sql<{ org_id: string; profile_id: string }[]>`
-        select p.org_id, p.id as profile_id
-          from public.ad_profiles p
-         where p.sync_enabled
-           and not exists (
-             select 1 from public.optimization_groups g
-              where g.org_id = p.org_id and g.profile_id = p.id
-           )
-           and not exists (
-             select 1
-               from public.recommendation_runs r
-              where r.org_id = p.org_id
-                and r.profile_id = p.id
-                and r.created_at > ${nowIso}::timestamptz - ${RECOMMENDATION_SCHEDULE_CADENCE}::interval
-                and r.engine_version = ${RECOMMENDATIONS_ENGINE_VERSION}
-           )
-         order by p.id
-         for update of p skip locked
-      `;
-      for (const profile of dueProfiles) {
-        const runs = await sql<{ id: string }[]>`
-          insert into public.recommendation_runs
-            (org_id, profile_id, status, lookback_days, engine_version)
-          values (${profile.org_id}, ${profile.profile_id}, 'queued',
-                  ${DEFAULT_RECOMMENDATION_LOOKBACK_DAYS}, ${RECOMMENDATIONS_ENGINE_VERSION})
-          returning id
-        `;
-        const runId = runs[0]?.id;
-        if (!runId) throw new Error('Minted 0 of 1 scheduled recommendation runs');
-        const payload = {
-          type: 'recommendations.run' as const,
-          orgId: profile.org_id,
-          profileId: profile.profile_id,
-          runId,
-          lookbackDays: DEFAULT_RECOMMENDATION_LOOKBACK_DAYS,
-        };
-        const jobs = await sql<{ id: string }[]>`
-          insert into public.sync_jobs
-            (org_id, profile_id, job_type, payload, priority, dedupe_key, run_after)
-          values (${profile.org_id}, ${profile.profile_id}, 'recommendations.run',
-                  ${serializeJson(payload)}::text::jsonb,
-                  ${RECOMMENDATION_SCHEDULE_PRIORITY},
-                  ${`recommendations.run:${runId}`},
-                  ${nowIso}::timestamptz + ${RECOMMENDATION_SCHEDULE_DELAY}::interval)
-          returning id
-        `;
-        if (jobs.length !== 1) throw new Error('Enqueued 0 of 1 scheduled recommendation jobs');
-        enqueued += jobs.length;
-      }
-      const offered = dueGroups.length - heldGroups + dueProfiles.length;
-      if (enqueued !== offered) {
-        throw new Error(`Found ${offered} due recommendation scopes, enqueued ${enqueued}`);
+      if (handled !== dueGroups.length) {
+        throw new Error(`Claimed ${dueGroups.length} due group occurrences, handled ${handled}`);
       }
       return enqueued;
     });
