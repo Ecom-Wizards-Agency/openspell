@@ -61,6 +61,9 @@ export type AmazonWriteAction = z.infer<typeof AmazonWriteAction>;
 export const AmazonWriteApprovalMode = z.enum(['manual', 'bounded_live_test']);
 export type AmazonWriteApprovalMode = z.infer<typeof AmazonWriteApprovalMode>;
 
+export const AmazonWriteExecutionDirection = z.enum(['forward', 'inverse']);
+export type AmazonWriteExecutionDirection = z.infer<typeof AmazonWriteExecutionDirection>;
+
 export const AmazonWriteExecutionStatus = z.enum([
   'queued',
   'running',
@@ -126,6 +129,51 @@ export const AmazonWriteProviderEvidence = z.object({
 });
 export type AmazonWriteProviderEvidence = z.infer<typeof AmazonWriteProviderEvidence>;
 
+export const AmazonWriteProviderCallOutcome = z.enum([
+  'accepted',
+  'mixed',
+  'throttled',
+  'rejected',
+  'ambiguous',
+]);
+export type AmazonWriteProviderCallOutcome = z.infer<typeof AmazonWriteProviderCallOutcome>;
+
+export const AmazonWriteProviderCallEventType = z.enum(['dispatch', 'result']);
+export type AmazonWriteProviderCallEventType = z.infer<typeof AmazonWriteProviderCallEventType>;
+
+/** Sanitized completion evidence for one outbound Amazon mutation request. */
+export const AmazonWriteProviderCallEvidence = z.object({
+  outcome: AmazonWriteProviderCallOutcome,
+  requested: z.number().int().positive().max(100),
+  accepted: z.number().int().nonnegative().max(100),
+  failed: z.number().int().nonnegative().max(100),
+  code: z.string().max(160).nullable(),
+  message: z.string().max(512).nullable(),
+}).superRefine((value, context) => {
+  if (value.accepted + value.failed > value.requested) {
+    context.addIssue({ code: 'custom', message: 'provider completion exceeds requested rows' });
+  }
+  if (['accepted', 'mixed', 'rejected'].includes(value.outcome)
+    && value.accepted + value.failed !== value.requested) {
+    context.addIssue({ code: 'custom', message: 'deterministic provider completion must account for every row' });
+  }
+  if (value.outcome === 'accepted'
+    && (value.accepted !== value.requested || value.failed !== 0)) {
+    context.addIssue({ code: 'custom', message: 'accepted provider completion must accept every row' });
+  }
+  if (value.outcome === 'mixed' && (value.accepted === 0 || value.failed === 0)) {
+    context.addIssue({ code: 'custom', message: 'mixed provider completion requires accepted and failed rows' });
+  }
+  if (value.outcome === 'rejected'
+    && (value.accepted !== 0 || value.failed !== value.requested)) {
+    context.addIssue({ code: 'custom', message: 'rejected provider completion must fail every row' });
+  }
+  if (value.outcome === 'throttled' && (value.accepted !== 0 || value.failed !== 0)) {
+    context.addIssue({ code: 'custom', message: 'throttled provider completion cannot classify rows' });
+  }
+});
+export type AmazonWriteProviderCallEvidence = z.infer<typeof AmazonWriteProviderCallEvidence>;
+
 /** Input to the service-role approval transaction used by the future web route. */
 export const ApproveAmazonWriteExecution = z.object({
   orgId: Uuid,
@@ -138,6 +186,7 @@ export const ApproveAmazonWriteExecution = z.object({
   previewSha256: z.string().regex(/^[a-f0-9]{64}$/),
   expectedCount: z.number().int().positive(),
   authorizationId: Uuid.nullable().default(null),
+  authorizationSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable().default(null),
   /** Stored for a bounded test; it never bypasses the synchronized-state gate. */
   inversePreapproved: z.boolean().default(false),
 }).superRefine((value, context) => {
@@ -151,8 +200,14 @@ export const ApproveAmazonWriteExecution = z.object({
   if (value.approvalMode === 'manual' && value.authorizationId !== null) {
     context.addIssue({ code: 'custom', path: ['authorizationId'], message: 'manual approval cannot use a bounded authorization' });
   }
+  if (value.approvalMode === 'manual' && value.authorizationSha256 !== null) {
+    context.addIssue({ code: 'custom', path: ['authorizationSha256'], message: 'manual approval cannot use a bounded authorization fingerprint' });
+  }
   if (value.approvalMode === 'bounded_live_test' && value.authorizationId === null) {
     context.addIssue({ code: 'custom', path: ['authorizationId'], message: 'bounded live tests require an authorization ID' });
+  }
+  if (value.approvalMode === 'bounded_live_test' && value.authorizationSha256 === null) {
+    context.addIssue({ code: 'custom', path: ['authorizationSha256'], message: 'bounded live tests require an authorization fingerprint' });
   }
 });
 export type ApproveAmazonWriteExecution = z.infer<typeof ApproveAmazonWriteExecution>;
@@ -215,5 +270,19 @@ export const BoundedAmazonWriteAuthorization = z.object({
     require_sync_observation_before_inverse: z.literal(true),
     stop_on_conflict: z.literal(true),
   }),
+}).superRefine((value, context) => {
+  const requiresInverse = (value.allowed_tests.bid.enabled
+      && value.allowed_tests.bid.require_immediate_inverse)
+    || (value.allowed_tests.placement.enabled
+      && value.allowed_tests.placement.require_immediate_inverse)
+    || (value.allowed_tests.cadence.enabled
+      && value.allowed_tests.cadence.require_immediate_inverse);
+  if (requiresInverse && value.constraints.max_total_executions < 2) {
+    context.addIssue({
+      code: 'custom',
+      path: ['constraints', 'max_total_executions'],
+      message: 'immediate inverse requires at least two reserved execution slots',
+    });
+  }
 });
 export type BoundedAmazonWriteAuthorization = z.infer<typeof BoundedAmazonWriteAuthorization>;

@@ -484,6 +484,8 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
         // An explicit 429 means Amazon rejected the request before mutation.
         // Ambiguous transport and 5xx failures are never re-sent.
         idempotent: false,
+        singleAttempt: true,
+        timeoutMs: 30_000,
         expectedStatuses: [425],
       });
       apiCalls += result.attempts;

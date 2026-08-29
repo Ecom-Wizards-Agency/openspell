@@ -511,17 +511,33 @@ describe('DbAdsApiClient guarded Sponsored Products writes', () => {
     });
   });
 
+  it('rejects a targeted observation that omits a requested identity', async () => {
+    const listSpKeywords = vi.fn(async () => emptyList());
+    const { adapter } = makeAdapter(underlying({ listSpKeywords }));
+    await expect(adapter.observeSpWriteEntities(profile, {
+      keywordIds: ['keyword-1'], targetIds: [], campaignIds: [],
+    })).rejects.toThrow(/exact requested identity set/i);
+  });
+
   it('chunks targeted observations at the provider batch limit and counts every read', async () => {
     const listSpKeywords = vi.fn(async (
       _profileId: string,
-      _options?: { entityIdFilter?: readonly string[] },
-    ) => emptyList());
+      options?: { entityIdFilter?: readonly string[] },
+    ) => ({
+      ...emptyList(),
+      items: (options?.entityIdFilter ?? []).map((amazonId) => ({
+        entityType: 'keyword' as const, amazonId, adProduct: 'SP' as const,
+        name: 'synthetic', state: 'enabled' as const, campaignId: 'campaign-1',
+        adGroupId: 'group-1', keywordText: 'synthetic', matchType: 'exact' as const,
+        bid: 0.71,
+      })),
+    }));
     const { adapter } = makeAdapter(underlying({ listSpKeywords }));
     const keywordIds = Array.from({ length: 101 }, (_unused, index) => `keyword-${index + 1}`);
     const observed = await adapter.observeSpWriteEntities(profile, {
       keywordIds, targetIds: [], campaignIds: [],
     });
-    expect(observed).toMatchObject({ requested: 101, returned: 0, apiCalls: 2 });
+    expect(observed).toMatchObject({ requested: 101, returned: 101, apiCalls: 2 });
     expect(listSpKeywords).toHaveBeenCalledTimes(2);
     expect(listSpKeywords.mock.calls.map((call) => call[1]?.entityIdFilter?.length))
       .toEqual([100, 1]);

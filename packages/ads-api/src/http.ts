@@ -35,6 +35,10 @@ export interface HttpRequestSpec {
    * check.
    */
   idempotent: boolean;
+  /** Mutations use one durable worker-level attempt; never retry in this client. */
+  singleAttempt?: boolean;
+  /** Optional hard wall-clock bound for one network attempt. */
+  timeoutMs?: number;
   /** Statuses the caller handles itself, returned rather than thrown. */
   expectedStatuses?: readonly number[];
 }
@@ -150,8 +154,9 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
   let tokenRefreshed = false;
   let lastError: unknown = null;
 
-  for (let attempt = 1; attempt <= ctx.retry.maxAttempts; attempt += 1) {
-    const isLast = attempt === ctx.retry.maxAttempts;
+  const maxAttempts = spec.singleAttempt ? 1 : ctx.retry.maxAttempts;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const isLast = attempt === maxAttempts;
     let response: Response;
 
     try {
@@ -159,6 +164,7 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
         method: spec.method,
         headers: await spec.headers(false),
         ...(spec.body === undefined ? {} : { body: spec.body }),
+        ...(spec.timeoutMs === undefined ? {} : { signal: AbortSignal.timeout(spec.timeoutMs) }),
       });
     } catch (cause) {
       lastError = cause;
@@ -234,7 +240,7 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
   }
 
   /* c8 ignore next 3 -- the loop always returns or throws; this satisfies the compiler. */
-  throw new AdsApiHttpError(`${spec.method} ${spec.path} exhausted retries`, 0, '', ctx.retry.maxAttempts, lastError);
+  throw new AdsApiHttpError(`${spec.method} ${spec.path} exhausted retries`, 0, '', maxAttempts, lastError);
 }
 
 function emit(

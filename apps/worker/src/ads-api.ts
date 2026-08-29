@@ -534,6 +534,15 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
     if (uniqueReturned.size !== rows.length) {
       throw new Error('targeted Sponsored Products observation returned duplicate entities');
     }
+    const expected = new Set([
+      ...keywordIds.map((id) => `keyword:${id}`),
+      ...targetIds.map((id) => `target:${id}`),
+      ...campaignIds.map((id) => `campaign:${id}`),
+    ]);
+    if (uniqueReturned.size !== expected.size
+      || [...expected].some((identity) => !uniqueReturned.has(identity))) {
+      throw new Error('targeted Sponsored Products observation did not return the exact requested identity set');
+    }
     return { rows, requested, returned: rows.length, apiCalls };
   }
 

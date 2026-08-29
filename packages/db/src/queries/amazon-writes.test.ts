@@ -1,9 +1,13 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  serializeApplyRows,
+  type AmazonWriteAction,
+  type AmazonWriteProviderCallEvidence,
+} from '@wizard-ads/shared';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   approveAmazonWriteExecution,
   amazonWriteExecutionIdempotencyKey,
-  createAmazonWriteInverseBatch,
   getAmazonWriteInversePreview,
   listAmazonWriteObservationRows,
   markAmazonWriteRowsDispatched,
@@ -17,11 +21,12 @@ import { createTestDatabase, databaseAvailable, type TestDatabase } from '../tes
 
 const available = await databaseAvailable();
 const USER_ID = '11111111-1111-4111-8111-111111111111';
-const APPROVED_AT = '2026-08-29T12:00:00.000Z';
-const EXPIRES_AT = '2026-08-30T12:00:00.000Z';
+const APPROVED_AT = new Date(Date.now() - 60_000).toISOString();
+const EXPIRES_AT = new Date(Date.now() + 86_400_000).toISOString();
 const AUTHORIZATION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const BUDGET_AUTHORIZATION_ID = 'abababab-abab-4bab-8bab-abababababab';
 const DISPATCH_TOKEN = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const AUTHORIZATION_SHA256 = createHash('sha256').update('synthetic-authorization').digest('hex');
 
 function sha(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -32,6 +37,7 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
   let orgId: string;
   let profileId: string;
   let sequence = 0;
+  const callByWriteRow = new Map<string, string>();
 
   beforeAll(async () => {
     database = await createTestDatabase('amazon_writes');
@@ -76,7 +82,13 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     newValue: number;
   }>) {
     sequence += 1;
-    const artifact = sha(`artifact-${sequence}`);
+    const artifact = sha(serializeApplyRows(rows.map((row) => ({
+      entityType: row.entityType,
+      entityId: row.entityId,
+      field: row.field,
+      old: row.oldValue,
+      new: row.newValue,
+    }))));
     const [batch] = await database.sql<{ id: string }[]>`
       insert into public.apply_batches
         (org_id, profile_id, tag, opt_group, lever, note, artifact_sha256,
@@ -115,13 +127,14 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
       previewSha256: artifact,
       expectedCount,
       authorizationId,
+      authorizationSha256: AUTHORIZATION_SHA256,
       inversePreapproved: true,
     });
   }
 
   async function prepare(
     executionId: string,
-    now = new Date(APPROVED_AT),
+    now = new Date(),
     dispatchLeaseToken = DISPATCH_TOKEN,
     authorizationId = AUTHORIZATION_ID,
   ) {
@@ -132,10 +145,11 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
       now,
       maxConcurrentMutations: 1,
       authorizationId,
+      authorizationSha256: AUTHORIZATION_SHA256,
       maxRowsPerExecution: 100,
       maxTotalExecutions: 100,
       dispatchLeaseToken,
-      dispatchLeaseExpiresAt: new Date(now.getTime() + 300_000),
+      dispatchLeaseExpiresAt: new Date(Date.now() + 300_000),
     });
   }
 
@@ -144,36 +158,109 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     rowIds: readonly string[],
     dispatchToken = DISPATCH_TOKEN,
   ) {
-    return markAmazonWriteRowsDispatched(database, {
+    const stored = await database.sql<{ id: string; action: { actionType: 'sp_keyword_bid' | 'sp_target_bid' | 'sp_campaign_placement'; amazonEntityId: string } }[]>`
+      select id, action from public.amazon_write_rows where id = any(${[...rowIds]}::uuid[])
+    `;
+    const operations = new Set(stored.map((row) => row.action.actionType));
+    if (stored.length !== rowIds.length || operations.size !== 1) {
+      throw new Error('test dispatch must contain one provider operation');
+    }
+    const providerOperation = [...operations][0];
+    if (!providerOperation) throw new Error('test dispatch has no provider operation');
+    const callId = randomUUID();
+    await markAmazonWriteRowsDispatched(database, {
       orgId,
       profileId,
       executionId,
       leaseToken: dispatchToken,
       rowIds,
-      dispatchedAt: new Date(APPROVED_AT),
-      leaseExpiresAt: new Date('2026-08-29T12:05:00.000Z'),
+      callId,
+      providerOperation,
+      requestFingerprint: sha(`call:${callId}`),
+      requestedEntityIds: [...new Set(stored.map((row) => row.action.amazonEntityId))],
+      authorizationId: AUTHORIZATION_ID,
+      authorizationSha256: AUTHORIZATION_SHA256,
+      leaseExpiresAt: new Date(Date.now() + 120_000),
+    });
+    rowIds.forEach((rowId) => callByWriteRow.set(rowId, callId));
+    return callId;
+  }
+
+  async function recordOutcomes(
+    input: Omit<Parameters<typeof recordAmazonWriteOutcomes>[1], 'callId' | 'callEvidence'>,
+  ) {
+    const callIds = new Set(input.outcomes.map((outcome) => callByWriteRow.get(outcome.writeRowId)));
+    if (callIds.size !== 1 || callIds.has(undefined)) throw new Error('outcomes lack one test provider call');
+    const callId = [...callIds][0] as string;
+    const [dispatchEvent] = await database.sql<{ requested_count: number }[]>`
+      select requested_count from public.amazon_write_provider_call_events
+       where call_id = ${callId} and event_type = 'dispatch'
+    `;
+    if (!dispatchEvent) throw new Error('test provider call is missing');
+    const hasAmbiguous = input.outcomes.some((row) => row.evidence.outcome === 'ambiguous');
+    const acceptedRows = input.outcomes.filter((row) => row.evidence.outcome === 'accepted').length;
+    const accepted = hasAmbiguous ? 0 : Math.min(dispatchEvent.requested_count, acceptedRows);
+    const failed = hasAmbiguous ? 0 : dispatchEvent.requested_count - accepted;
+    const callEvidence: AmazonWriteProviderCallEvidence = {
+      outcome: hasAmbiguous ? 'ambiguous'
+        : accepted === dispatchEvent.requested_count ? 'accepted'
+          : accepted > 0 ? 'mixed' : 'rejected',
+      requested: dispatchEvent.requested_count,
+      accepted,
+      failed,
+      code: null,
+      message: null,
+    };
+    return recordAmazonWriteOutcomes(database, { ...input, callId, callEvidence });
+  }
+
+  async function releaseForRetry(input: {
+    orgId: string; profileId: string; executionId: string; leaseToken: string; rowIds: readonly string[];
+  }) {
+    const callId = callByWriteRow.get(input.rowIds[0] ?? '');
+    if (!callId) throw new Error('retry rows lack a test provider call');
+    const [event] = await database.sql<{ requested_count: number }[]>`
+      select requested_count from public.amazon_write_provider_call_events
+       where call_id = ${callId} and event_type = 'dispatch'
+    `;
+    if (!event) throw new Error('retry provider call is missing');
+    return releaseAmazonWriteExecutionForRetry(database, {
+      ...input,
+      callId,
+      callEvidence: {
+        outcome: 'throttled', requested: event.requested_count,
+        accepted: 0, failed: 0, code: 'THROTTLED', message: 'synthetic throttle',
+      },
     });
   }
 
-  it('materializes an immutable bid action once and replays its derived approval identity without duplicates', async () => {
+  it('materializes immutable bid actions once and replays them in artifact order without duplicates', async () => {
     const batch = await createBatch([
       { entityType: 'keyword', entityId: 'kw-1', field: 'bid', oldValue: 0.9, newValue: 0.91 },
+      { entityType: 'target', entityId: 'tg-1', field: 'bid', oldValue: 0.6, newValue: 0.61 },
     ]);
-    const first = await approve(batch.batchId, batch.artifact, 1);
-    const replay = await approve(batch.batchId, batch.artifact, 1);
-    expect(first).toMatchObject({ requested: 1, replayed: false });
-    expect(first.actions[0]).toMatchObject({
-      actionType: 'sp_keyword_bid', expectedValue: 0.9,
-      requestedValue: 0.91, inverseValue: 0.9,
-    });
+    const first = await approve(batch.batchId, batch.artifact, 2);
+    const replay = await approve(batch.batchId, batch.artifact, 2);
+    expect(first).toMatchObject({ requested: 2, replayed: false });
+    expect(first.actions).toEqual([
+      expect.objectContaining({
+        actionType: 'sp_keyword_bid', expectedValue: 0.9,
+        requestedValue: 0.91, inverseValue: 0.9,
+      }),
+      expect.objectContaining({
+        actionType: 'sp_target_bid', expectedValue: 0.6,
+        requestedValue: 0.61, inverseValue: 0.6,
+      }),
+    ]);
     expect(replay).toMatchObject({ executionId: first.executionId, replayed: true });
+    expect(replay.actions).toEqual(first.actions);
     const [counts] = await database.sql<{ approvals: number; executions: number; rows: number }[]>`
       select
         (select count(*)::int from public.amazon_write_approvals where apply_batch_id = ${batch.batchId}) as approvals,
         (select count(*)::int from public.amazon_write_executions where apply_batch_id = ${batch.batchId}) as executions,
         (select count(*)::int from public.amazon_write_rows where execution_id = ${first.executionId}) as rows
     `;
-    expect(counts).toEqual({ approvals: 1, executions: 1, rows: 1 });
+    expect(counts).toEqual({ approvals: 1, executions: 1, rows: 2 });
   });
 
   it('derives replay identity from every immutable tenant and approval input', () => {
@@ -188,6 +275,7 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
       previewSha256: sha('preview'),
       expectedCount: 1,
       authorizationId: null,
+      authorizationSha256: null,
       inversePreapproved: false,
     };
     const key = amazonWriteExecutionIdempotencyKey(base);
@@ -208,6 +296,21 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     expect(count?.count).toBe(0);
   });
 
+  it('recomputes the canonical artifact from locked rows before approval', async () => {
+    const batch = await createBatch([
+      { entityType: 'keyword', entityId: 'kw-1', field: 'bid', oldValue: 0.9, newValue: 0.91 },
+    ]);
+    await database.sql`
+      update public.apply_rows set new_value = '0.92'::jsonb where batch_id = ${batch.batchId}
+    `;
+    await expect(approve(batch.batchId, batch.artifact, 1)).rejects.toThrow(/locked rows/i);
+    const [count] = await database.sql<{ count: number }[]>`
+      select count(*)::int as count from public.amazon_write_approvals
+       where apply_batch_id = ${batch.batchId}
+    `;
+    expect(count?.count).toBe(0);
+  });
+
   it('requires an owner or admin of the exact organization to approve', async () => {
     const batch = await createBatch([
       { entityType: 'keyword', entityId: 'kw-1', field: 'bid', oldValue: 0.9, newValue: 0.91 },
@@ -217,7 +320,8 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
       approvedBy: '99999999-9999-4999-8999-999999999999',
       approvalMode: 'bounded_live_test', approvedAt: APPROVED_AT, expiresAt: EXPIRES_AT,
       previewSha256: batch.artifact, expectedCount: 1,
-      authorizationId: AUTHORIZATION_ID, inversePreapproved: true,
+      authorizationId: AUTHORIZATION_ID, authorizationSha256: AUTHORIZATION_SHA256,
+      inversePreapproved: true,
     })).rejects.toThrow(/owner or admin/i);
   });
 
@@ -262,29 +366,54 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     const keyword = prepared.rows.find((row) => row.action.actionType === 'sp_keyword_bid');
     const target = prepared.rows.find((row) => row.action.actionType === 'sp_target_bid');
     if (!keyword || !target) throw new Error('expected two prepared rows');
-    await dispatch(approved.executionId, [keyword.writeRowId, target.writeRowId]);
-    const result = await recordAmazonWriteOutcomes(database, {
+    const keywordCallId = await dispatch(approved.executionId, [keyword.writeRowId]);
+    await expect(recordAmazonWriteOutcomes(database, {
+      orgId, profileId, executionId: approved.executionId,
+      callId: keywordCallId,
+      callEvidence: {
+        outcome: 'accepted', requested: 1, accepted: 1, failed: 0,
+        code: null, message: null,
+      },
+      attemptedAt: new Date(APPROVED_AT),
+      outcomes: [{
+        writeRowId: keyword.writeRowId, attemptNumber: 1,
+        requestFingerprint: sha('wrong-provider-identity'),
+        evidence: { outcome: 'accepted', providerEntityId: 'another-keyword', code: null, message: null },
+      }],
+    })).rejects.toThrow(/provider identity/i);
+    await recordOutcomes({
       orgId, profileId, executionId: approved.executionId,
       attemptedAt: new Date(APPROVED_AT),
-      outcomes: [
-        {
+      outcomes: [{
           writeRowId: keyword.writeRowId, attemptNumber: 1,
           requestFingerprint: sha('attempt-keyword'),
-          dispatchToken: DISPATCH_TOKEN,
           evidence: { outcome: 'accepted', providerEntityId: 'kw-1', code: null, message: null },
-        },
-        {
+        }],
+    });
+    await dispatch(approved.executionId, [target.writeRowId]);
+    const result = await recordOutcomes({
+      orgId, profileId, executionId: approved.executionId,
+      attemptedAt: new Date(APPROVED_AT),
+      outcomes: [{
           writeRowId: target.writeRowId, attemptNumber: 1,
           requestFingerprint: sha('attempt-target'),
-          dispatchToken: DISPATCH_TOKEN,
           evidence: { outcome: 'failed', providerEntityId: null, code: 'INVALID_ARGUMENT', message: 'synthetic rejection' },
-        },
-      ],
+        }],
     });
     expect(result).toMatchObject({
       status: 'awaiting_sync',
       accounting: { requested: 2, attempted: 2, succeeded: 1, failed: 1, refused: 0, resyncRequested: 1 },
     });
+    const [providerCalls] = await database.sql<{ events: number; api_calls: number }[]>`
+      select count(*)::int as events, sum(api_call_count)::int as api_calls
+        from public.amazon_write_provider_call_events
+       where execution_id = ${approved.executionId}
+    `;
+    expect(providerCalls).toEqual({ events: 4, api_calls: 2 });
+    await expect(database.sql`
+      update public.amazon_write_provider_call_events set outcome = 'ambiguous'
+       where execution_id = ${approved.executionId}
+    `).rejects.toThrow(/immutable/i);
     await expect(database.sql`
       update public.amazon_write_attempts set outcome = 'failed'
        where execution_id = ${approved.executionId}
@@ -302,13 +431,59 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
       status: 'partial', inverseReady: true,
       accounting: { succeeded: 1, failed: 1, ambiguous: 0, resynchronized: 1 },
     });
-    const inverse = await createAmazonWriteInverseBatch(database, {
-      orgId, profileId, executionId: approved.executionId,
-      tag: `partial-inverse-${sequence}`, note: 'synthetic partial inverse', actorId: USER_ID,
-    });
-    expect(inverse.rows).toEqual([expect.objectContaining({
-      entityType: 'keyword', entityId: 'kw-1', old: 0.91, new: 0.9,
+    expect(settled.inverseExecutionId).toMatch(/^[a-f0-9-]{36}$/);
+    const inverseRows = await database.sql<{ action: { actionType: string; amazonEntityId: string; expectedValue: number; requestedValue: number } }[]>`
+      select write_row.action from public.amazon_write_rows write_row
+      join public.amazon_write_executions execution on execution.id = write_row.execution_id
+      where execution.source_execution_id = ${approved.executionId}
+    `;
+    expect(inverseRows.map((row) => row.action)).toEqual([expect.objectContaining({
+      actionType: 'sp_keyword_bid', amazonEntityId: 'kw-1',
+      expectedValue: 0.91, requestedValue: 0.9,
     })]);
+  });
+
+  it('persists one mixed provider-call result for a partial multi-status response', async () => {
+    const secondKeyword = `kw-mixed-${sequence + 1}`;
+    await database.sql`
+      insert into public.keywords
+        (org_id, profile_id, amazon_id, ad_product, state, campaign_id, ad_group_id,
+         keyword_text, match_type, bid, synced_at)
+      values (${orgId}, ${profileId}, ${secondKeyword}, 'SP', 'enabled', 'c-1', 'ag-1',
+              'synthetic second keyword', 'exact', 0.80, ${APPROVED_AT})
+    `;
+    const batch = await createBatch([
+      { entityType: 'keyword', entityId: 'kw-1', field: 'bid', oldValue: 0.9, newValue: 0.91 },
+      { entityType: 'keyword', entityId: secondKeyword, field: 'bid', oldValue: 0.8, newValue: 0.81 },
+    ]);
+    const approved = await approve(batch.batchId, batch.artifact, 2);
+    const prepared = await prepare(approved.executionId);
+    const callId = await dispatch(approved.executionId, prepared.rows.map((row) => row.writeRowId));
+    const result = await recordOutcomes({
+      orgId, profileId, executionId: approved.executionId,
+      attemptedAt: new Date(APPROVED_AT),
+      outcomes: prepared.rows.map((row, index) => ({
+        writeRowId: row.writeRowId,
+        attemptNumber: row.attemptNumber,
+        requestFingerprint: sha(`mixed-provider-result-${index}`),
+        evidence: index === 0
+          ? { outcome: 'accepted' as const, providerEntityId: 'kw-1', code: null, message: null }
+          : { outcome: 'failed' as const, providerEntityId: null, code: 'INVALID_ARGUMENT', message: 'synthetic' },
+      })),
+    });
+    expect(result).toMatchObject({
+      status: 'awaiting_sync', accounting: { attempted: 2, succeeded: 1, failed: 1 },
+    });
+    const [event] = await database.sql<{
+      outcome: string; requested_count: number; accepted_count: number; failed_count: number;
+    }[]>`
+      select outcome::text as outcome, requested_count, accepted_count, failed_count
+        from public.amazon_write_provider_call_events
+       where call_id = ${callId} and event_type = 'result'
+    `;
+    expect(event).toEqual({
+      outcome: 'mixed', requested_count: 2, accepted_count: 1, failed_count: 1,
+    });
   });
 
   it('refuses every unresolved row when state drifts after approval but before execution', async () => {
@@ -320,7 +495,7 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
       update public.keywords set bid = 0.95, synced_at = '2026-08-29T12:00:30.000Z'
        where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = 'kw-1'
     `;
-    const prepared = await prepare(approved.executionId, new Date('2026-08-29T12:00:31.000Z'));
+    const prepared = await prepare(approved.executionId, new Date(Date.now() + 30_000));
     expect(prepared).toMatchObject({ status: 'refused', rows: [], replayed: false });
     const [counts] = await database.sql<{
       attempted_count: number; refused_count: number; attempt_rows: number;
@@ -332,6 +507,50 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
        where execution.id = ${approved.executionId}
     `;
     expect(counts).toEqual({ attempted_count: 0, refused_count: 1, attempt_rows: 0 });
+  });
+
+  it('binds dispatch to the exact authorization fingerprint and staged batch lifecycle', async () => {
+    const changed = await createBatch([
+      { entityType: 'keyword', entityId: 'kw-1', field: 'bid', oldValue: 0.9, newValue: 0.91 },
+    ]);
+    const changedApproval = await approve(changed.batchId, changed.artifact, 1);
+    const fingerprintRefusal = await prepareAmazonWriteExecution(database, {
+      orgId, profileId, executionId: changedApproval.executionId, now: new Date(),
+      maxConcurrentMutations: 1, authorizationId: AUTHORIZATION_ID,
+      authorizationSha256: sha('changed-authorization'), maxRowsPerExecution: 100,
+      maxTotalExecutions: 100, dispatchLeaseToken: DISPATCH_TOKEN,
+      dispatchLeaseExpiresAt: new Date(Date.now() + 120_000),
+    });
+    expect(fingerprintRefusal).toMatchObject({ status: 'refused', rows: [] });
+
+    const abandoned = await createBatch([
+      { entityType: 'target', entityId: 'tg-1', field: 'bid', oldValue: 0.6, newValue: 0.61 },
+    ]);
+    const approved = await approve(abandoned.batchId, abandoned.artifact, 1);
+    const prepared = await prepare(approved.executionId);
+    const row = prepared.rows[0];
+    if (!row) throw new Error('expected staged lifecycle row');
+    await expect(markAmazonWriteRowsDispatched(database, {
+      orgId, profileId, executionId: approved.executionId,
+      leaseToken: DISPATCH_TOKEN, rowIds: [row.writeRowId],
+      callId: randomUUID(), providerOperation: 'sp_target_bid',
+      requestFingerprint: sha('wrong-dispatch-identity'),
+      requestedEntityIds: ['another-target'],
+      authorizationId: AUTHORIZATION_ID,
+      authorizationSha256: AUTHORIZATION_SHA256,
+      leaseExpiresAt: new Date(Date.now() + 120_000),
+    })).rejects.toThrow(/entity identities/i);
+    await database.sql`update public.apply_batches set status = 'abandoned' where id = ${abandoned.batchId}`;
+    await expect(dispatch(approved.executionId, [row.writeRowId]))
+      .rejects.toThrow(/final dispatch gate/i);
+    const [calls] = await database.sql<{ count: number }[]>`
+      select count(*)::int as count from public.amazon_write_provider_call_events
+       where execution_id = ${approved.executionId}
+    `;
+    expect(calls?.count).toBe(0);
+    await refuseAmazonWriteExecution(database, {
+      orgId, profileId, executionId: approved.executionId, reason: 'synthetic cleanup',
+    });
   });
 
   it('never dispatches a running execution twice and reopens only an explicit pre-mutation retry', async () => {
@@ -347,7 +566,7 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     const firstRow = first.rows[0];
     if (!firstRow) throw new Error('expected retry row');
     await dispatch(approved.executionId, [firstRow.writeRowId]);
-    await releaseAmazonWriteExecutionForRetry(database, {
+    await releaseForRetry({
       orgId, profileId, executionId: approved.executionId,
       leaseToken: DISPATCH_TOKEN,
       rowIds: [firstRow.writeRowId],
@@ -373,7 +592,7 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
 
     const recovered = await prepare(
       approved.executionId,
-      new Date('2026-08-29T12:06:00.000Z'),
+      new Date(Date.now() + 3 * 60_000),
       'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     );
     expect(recovered).toMatchObject({
@@ -385,13 +604,13 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
 
     const observed = await recordAmazonWriteObservations(database, {
       orgId, profileId, executionId: approved.executionId,
-      observedAt: new Date('2026-08-29T12:06:01.000Z'), attempt: 0,
+      observedAt: new Date('2026-08-29T12:06:01.000Z'), attempt: 5,
       observations: [{ writeRowId: row.writeRowId, state: 'not_applied', currentValue: 0.9 }],
     });
     expect(observed).toMatchObject({ status: 'queued', retryApply: true, accounting: { attempted: 1 } });
     const retry = await prepare(
       approved.executionId,
-      new Date('2026-08-29T12:06:02.000Z'),
+      new Date(Date.now() + 3 * 60_000 + 2_000),
       'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
     );
     expect(retry.rows).toEqual([expect.objectContaining({
@@ -412,6 +631,7 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
       orgId, profileId, executionId: first.executionId,
       now: new Date(APPROVED_AT), maxConcurrentMutations: 1,
       authorizationId: BUDGET_AUTHORIZATION_ID, maxRowsPerExecution: 1, maxTotalExecutions: 100,
+      authorizationSha256: AUTHORIZATION_SHA256,
       dispatchLeaseToken: DISPATCH_TOKEN,
       dispatchLeaseExpiresAt: new Date('2026-08-29T12:05:00.000Z'),
     });
@@ -442,6 +662,7 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
       orgId, profileId, executionId: second.executionId,
       now: new Date(APPROVED_AT), maxConcurrentMutations: 1,
       authorizationId: BUDGET_AUTHORIZATION_ID, maxRowsPerExecution: 100, maxTotalExecutions: 1,
+      authorizationSha256: AUTHORIZATION_SHA256,
       dispatchLeaseToken: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
       dispatchLeaseExpiresAt: new Date('2026-08-29T12:05:00.000Z'),
     });
@@ -459,14 +680,13 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     const target = first.rows.find((row) => row.action.actionType === 'sp_target_bid');
     if (!keyword || !target) throw new Error('expected prepared keyword and target rows');
     await dispatch(approved.executionId, [keyword.writeRowId]);
-    const acceptedResult = await recordAmazonWriteOutcomes(database, {
+    const acceptedResult = await recordOutcomes({
       orgId, profileId, executionId: approved.executionId,
       attemptedAt: new Date(APPROVED_AT),
       outcomes: [{
         writeRowId: keyword.writeRowId,
         attemptNumber: keyword.attemptNumber,
         requestFingerprint: sha('accepted-before-later-throttle'),
-        dispatchToken: DISPATCH_TOKEN,
         evidence: { outcome: 'accepted', providerEntityId: 'kw-1', code: null, message: null },
       }],
     });
@@ -478,11 +698,19 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     // This is the worker's response to a 429 that Amazon explicitly reports
     // before mutating the second provider group.
     await dispatch(approved.executionId, [target.writeRowId]);
-    await releaseAmazonWriteExecutionForRetry(database, {
+    await releaseForRetry({
       orgId, profileId, executionId: approved.executionId,
       leaseToken: DISPATCH_TOKEN,
       rowIds: [target.writeRowId],
     });
+    const [durable] = await database.sql<{ observation_jobs: number; result_events: number }[]>`
+      select
+        (select count(*)::int from public.sync_jobs
+          where org_id = ${orgId} and dedupe_key = ${`amazon.observe:${approved.executionId}:0`}) as observation_jobs,
+        (select count(*)::int from public.amazon_write_provider_call_events
+          where execution_id = ${approved.executionId} and event_type = 'result') as result_events
+    `;
+    expect(durable).toEqual({ observation_jobs: 1, result_events: 2 });
     const retry = await prepare(approved.executionId);
     expect(retry.rows).toHaveLength(1);
     expect(retry.rows[0]).toMatchObject({
@@ -554,13 +782,12 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     const row = prepared.rows[0];
     if (!row) throw new Error('expected prepared row');
     await dispatch(approved.executionId, [row.writeRowId]);
-    const outcome = await recordAmazonWriteOutcomes(database, {
+    const outcome = await recordOutcomes({
       orgId, profileId, executionId: approved.executionId,
       attemptedAt: new Date(APPROVED_AT),
       outcomes: [{
         writeRowId: row.writeRowId, attemptNumber: 1,
         requestFingerprint: sha(`ambiguous-${approved.executionId}`),
-        dispatchToken: DISPATCH_TOKEN,
         evidence: {
           outcome: 'ambiguous', providerEntityId: null,
           code: 'AdsApiTimeoutError', message: 'synthetic timeout',
@@ -599,13 +826,12 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     const row = prepared.rows[0];
     if (!row) throw new Error('expected late reconciliation row');
     await dispatch(approved.executionId, [row.writeRowId]);
-    await recordAmazonWriteOutcomes(database, {
+    await recordOutcomes({
       orgId, profileId, executionId: approved.executionId,
       attemptedAt: new Date(APPROVED_AT),
       outcomes: [{
         writeRowId: row.writeRowId, attemptNumber: 1,
         requestFingerprint: sha(`late-conflict-${approved.executionId}`),
-        dispatchToken: DISPATCH_TOKEN,
         evidence: { outcome: 'accepted', providerEntityId: 'kw-1', code: null, message: null },
       }],
     });
@@ -636,13 +862,12 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     const row = prepared.rows[0];
     if (!row) throw new Error('expected prepared row');
     await dispatch(approved.executionId, [row.writeRowId]);
-    await recordAmazonWriteOutcomes(database, {
+    await recordOutcomes({
       orgId, profileId, executionId: approved.executionId,
       attemptedAt: new Date(APPROVED_AT),
       outcomes: [{
         writeRowId: row.writeRowId, attemptNumber: 1,
         requestFingerprint: sha(`accepted-${approved.executionId}`),
-        dispatchToken: DISPATCH_TOKEN,
         evidence: { outcome: 'accepted', providerEntityId: 'kw-1', code: null, message: null },
       }],
     });
@@ -710,7 +935,7 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
              synced_at = '2026-08-29T12:00:30.000Z'
        where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = 'c-1'
     `;
-    const prepared = await prepare(approved.executionId, new Date('2026-08-29T12:00:31.000Z'));
+    const prepared = await prepare(approved.executionId, new Date(Date.now() + 30_000));
     expect(prepared).toMatchObject({ status: 'refused', rows: [], replayed: false });
   });
 
@@ -722,14 +947,13 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     const forward = await approve(source.batchId, source.artifact, 2);
     const prepared = await prepare(forward.executionId);
     await dispatch(forward.executionId, prepared.rows.map((row) => row.writeRowId));
-    await recordAmazonWriteOutcomes(database, {
+    await recordOutcomes({
       orgId, profileId, executionId: forward.executionId,
       attemptedAt: new Date(APPROVED_AT),
       outcomes: prepared.rows.map((row, index) => ({
         writeRowId: row.writeRowId,
         attemptNumber: row.attemptNumber,
         requestFingerprint: sha(`multi-placement-${forward.executionId}-${index}`),
-        dispatchToken: DISPATCH_TOKEN,
         evidence: { outcome: 'accepted' as const, providerEntityId: 'c-1', code: null, message: null },
       })),
     });
@@ -754,21 +978,20 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     });
     expect(observed).toMatchObject({ status: 'succeeded', inverseReady: true });
 
-    const inverse = await createAmazonWriteInverseBatch(database, {
-      orgId, profileId, executionId: forward.executionId,
-      tag: `placement-inverse-${sequence}`, note: 'synthetic multi-placement inverse', actorId: USER_ID,
-    });
-    expect(inverse.rows).toEqual(expect.arrayContaining([
-      expect.objectContaining({ entityType: 'placement', field: 'top_of_search', old: 21, new: 20 }),
-      expect.objectContaining({ entityType: 'placement', field: 'product_pages', old: 6, new: 5 }),
-    ]));
-    expect(inverse.rows).toHaveLength(2);
-    const approvedInverse = await approve(inverse.batchId, inverse.artifactSha256, 2);
-    expect(approvedInverse.actions).toEqual(expect.arrayContaining([
+    expect(observed.inverseExecutionId).toMatch(/^[a-f0-9-]{36}$/);
+    const inverseRows = await database.sql<{ action: unknown }[]>`
+      select write_row.action from public.amazon_write_rows write_row
+      join public.amazon_write_executions execution on execution.id = write_row.execution_id
+      where execution.source_execution_id = ${forward.executionId}
+      order by write_row.created_at, write_row.id
+    `;
+    const inverseActions = inverseRows.map((row) => row.action as AmazonWriteAction);
+    expect(inverseActions).toEqual(expect.arrayContaining([
       expect.objectContaining({ field: 'top_of_search', expectedValue: 21, requestedValue: 20 }),
       expect.objectContaining({ field: 'product_pages', expectedValue: 6, requestedValue: 5 }),
     ]));
-    for (const action of approvedInverse.actions) {
+    expect(inverseActions).toHaveLength(2);
+    for (const action of inverseActions) {
       if (action.actionType !== 'sp_campaign_placement') throw new Error('expected placement inverse action');
       expect(action.campaignContext.providerState.placementBidding).toEqual([
         { placement: 'PLACEMENT_PRODUCT_PAGE', percentage: 6 },
@@ -776,5 +999,63 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
         { placement: 'PLACEMENT_TOP', percentage: 21 },
       ]);
     }
+
+    const inverseExecutionId = observed.inverseExecutionId;
+    if (inverseExecutionId === null) throw new Error('expected reserved inverse execution');
+    const inversePrepared = await prepare(inverseExecutionId);
+    await dispatch(inverseExecutionId, inversePrepared.rows.map((row) => row.writeRowId));
+    await recordOutcomes({
+      orgId, profileId, executionId: inverseExecutionId,
+      attemptedAt: new Date(),
+      outcomes: inversePrepared.rows.map((row, index) => ({
+        writeRowId: row.writeRowId,
+        attemptNumber: row.attemptNumber,
+        requestFingerprint: sha(`inverse-placement-${inverseExecutionId}-${index}`),
+        evidence: { outcome: 'accepted' as const, providerEntityId: 'c-1', code: null, message: null },
+      })),
+    });
+    await database.sql`
+      update public.campaigns
+         set placement_bidding = '{"topOfSearch":20,"productPages":5,"restOfSearch":0}'::jsonb,
+             campaign_write_context = '{"strategy":"auto_for_sales","placementBidding":[{"placement":"PLACEMENT_PRODUCT_PAGE","percentage":5},{"placement":"PLACEMENT_REST_OF_SEARCH","percentage":0},{"placement":"PLACEMENT_TOP","percentage":20}],"shopperCohortBidding":null,"offAmazonSettings":null}'::jsonb,
+             synced_at = now()
+       where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = 'c-1'
+    `;
+    const inverseByField = new Map(inversePrepared.rows.map((row) => [row.action.field, row] as const));
+    const inverseTop = inverseByField.get('top_of_search');
+    const inverseProduct = inverseByField.get('product_pages');
+    if (!inverseTop || !inverseProduct) throw new Error('expected inverse placement rows');
+    const inverseObserved = await recordAmazonWriteObservations(database, {
+      orgId, profileId, executionId: inverseExecutionId,
+      observedAt: new Date(), attempt: 0,
+      observations: [
+        { writeRowId: inverseTop.writeRowId, state: 'observed', currentValue: 20 },
+        { writeRowId: inverseProduct.writeRowId, state: 'observed', currentValue: 5 },
+      ],
+    });
+    expect(inverseObserved).toMatchObject({
+      status: 'succeeded', inverseReady: true, inverseExecutionId: null,
+      accounting: { requested: 2, succeeded: 2, resynchronized: 2 },
+    });
+  });
+
+  it('allows service-role tenant teardown without bypassing direct append-only deletes', async () => {
+    const teardownUser = randomUUID();
+    const [seeded] = await database.sql<{ seed_tenant_fixture: string }[]>`
+      select app.seed_tenant_fixture(${`teardown-${sequence}`}, ${teardownUser}, 'owner')
+    `;
+    const teardownOrg = seeded?.seed_tenant_fixture;
+    if (!teardownOrg) throw new Error('teardown fixture failed');
+    await expect(database.sql`
+      delete from public.amazon_write_provider_call_events where org_id = ${teardownOrg}
+    `).rejects.toThrow(/immutable/i);
+    const deleted = await database.sql<{ id: string }[]>`
+      delete from public.orgs where id = ${teardownOrg} returning id
+    `;
+    expect(deleted).toEqual([{ id: teardownOrg }]);
+    const [remaining] = await database.sql<{ count: number }[]>`
+      select count(*)::int as count from public.amazon_write_executions where org_id = ${teardownOrg}
+    `;
+    expect(remaining?.count).toBe(0);
   });
 });

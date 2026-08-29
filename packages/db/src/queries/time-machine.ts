@@ -659,9 +659,10 @@ export async function createReversionExport(
 
     const inserted = await sql<{ id: string }[]>`
       insert into public.apply_rows
-        (batch_id, org_id, profile_id, entity_type, entity_id, entity_name,
+        (batch_id, org_id, profile_id, artifact_ordinal, entity_type, entity_id, entity_name,
          field, old_value, new_value, lever)
       select ${batchId}, ${input.orgId}, ${preview.profileId},
+             offered.artifact_ordinal,
              offered.entity_type::public.apply_entity_type, offered.entity_id,
              offered.entity_name, offered.field, offered.old_value::jsonb,
              offered.new_value::jsonb, 'revert'
@@ -672,7 +673,8 @@ export async function createReversionExport(
                ${rows.map((row) => row.field)}::text[],
                ${rows.map((row) => JSON.stringify(row.old))}::text[],
                ${rows.map((row) => JSON.stringify(row.new))}::text[]
-             ) offered(entity_type, entity_id, entity_name, field, old_value, new_value)
+             ) with ordinality offered(entity_type, entity_id, entity_name, field, old_value,
+                                        new_value, artifact_ordinal)
       returning id
     `;
     if (inserted.length !== rows.length) {

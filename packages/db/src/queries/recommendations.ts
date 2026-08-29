@@ -697,9 +697,10 @@ export async function exportAcceptedRecommendations(
         ? []
         : await sql<{ id: string }[]>`
             insert into public.apply_rows
-              (batch_id, org_id, profile_id, recommendation_id, entity_type, entity_id,
+              (batch_id, org_id, profile_id, recommendation_id, artifact_ordinal, entity_type, entity_id,
                entity_name, field, old_value, new_value, lever, clicks, revenue)
             select ${batchId}, ${options.orgId}, ${options.profileId}, r.recommendation_id::uuid,
+                   r.artifact_ordinal,
                    r.entity_type::public.apply_entity_type, r.entity_id, r.entity_name,
                    r.field, r.old_value::jsonb, r.new_value::jsonb,
                    ${options.lever}, r.clicks::bigint, r.revenue::numeric
@@ -713,8 +714,8 @@ export async function exportAcceptedRecommendations(
                      ${rows.map((row) => serializeJson(row.new))}::text[],
                      ${rows.map((row) => (row.clicks === undefined ? null : String(row.clicks)))}::text[],
                      ${rows.map((row) => (row.revenue === undefined ? null : String(row.revenue)))}::text[]
-                   ) as r(recommendation_id, entity_type, entity_id, entity_name, field,
-                          old_value, new_value, clicks, revenue)
+                   ) with ordinality as r(recommendation_id, entity_type, entity_id, entity_name, field,
+                          old_value, new_value, clicks, revenue, artifact_ordinal)
             returning id
           `;
     // Program rule 4: count outputs against inputs rather than trusting the
@@ -811,7 +812,7 @@ export async function getExportBatch(
            old_value, new_value, clicks, revenue
       from public.apply_rows
      where org_id = ${options.orgId} and batch_id = ${options.batchId}
-     order by created_at, id
+     order by artifact_ordinal
   `;
 
   const rows: ApplyRow[] = rowRecords.map((row) => {

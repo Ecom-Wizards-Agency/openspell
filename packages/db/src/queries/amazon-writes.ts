@@ -4,6 +4,7 @@ import {
   AmazonWriteAction,
   AmazonWriteAccounting,
   AmazonWriteProviderEvidence,
+  AmazonWriteProviderCallEvidence,
   ApproveAmazonWriteExecution,
   serializeApplyRows,
   type AmazonPlacementField,
@@ -51,6 +52,7 @@ export function amazonWriteExecutionIdempotencyKey(
     parsed.expectedCount,
     parsed.inversePreapproved,
     parsed.authorizationId,
+    parsed.authorizationSha256,
   ])).digest('hex');
 }
 
@@ -69,6 +71,9 @@ interface ApplyRowForApproval {
   field: string;
   old_value: unknown;
   new_value: unknown;
+  entity_name: string | null;
+  clicks: number | null;
+  revenue: number | null;
 }
 
 interface CampaignContextRow {
@@ -296,15 +301,33 @@ export async function approveAmazonWriteExecution(
     }
 
     const rows = await sql<ApplyRowForApproval[]>`
-      select id, entity_type::text as entity_type, entity_id, field, old_value, new_value
+      select id, entity_type::text as entity_type, entity_id, field, old_value, new_value,
+             entity_name, clicks::float8 as clicks, revenue::float8 as revenue
         from public.apply_rows
        where org_id = ${input.orgId} and profile_id = ${input.profileId}
          and batch_id = ${input.applyBatchId}
-       order by created_at, id
+       order by artifact_ordinal
        for update
     `;
     if (rows.length !== input.expectedCount) {
       throw new Error(`Amazon write approval offered ${input.expectedCount} rows but loaded ${rows.length}`);
+    }
+    const artifactRows: ApplyRow[] = rows.map((row) => ({
+      entityType: row.entity_type,
+      entityId: row.entity_id,
+      field: row.field,
+      old: row.old_value as ApplyValue,
+      new: row.new_value as ApplyValue,
+      ...(row.entity_name === null ? {} : { name: row.entity_name }),
+      ...(row.clicks === null ? {} : { clicks: row.clicks }),
+      ...(row.revenue === null ? {} : { revenue: row.revenue }),
+    }));
+    const lockedArtifactSha256 = createHash('sha256')
+      .update(serializeApplyRows(artifactRows))
+      .digest('hex');
+    if (lockedArtifactSha256 !== batch.artifact_sha256
+      || lockedArtifactSha256 !== input.previewSha256) {
+      throw new Error('Amazon write preview fingerprint does not match its locked rows');
     }
 
     const targets = rows.map((row) => ({
@@ -348,11 +371,12 @@ export async function approveAmazonWriteExecution(
     const [approval] = await sql<{ id: string }[]>`
       insert into public.amazon_write_approvals
         (org_id, profile_id, apply_batch_id, mode, preview_sha256, approved_count,
-         approved_by, approved_at, expires_at, inverse_preapproved, authorization_id)
+         approved_by, approved_at, expires_at, inverse_preapproved, authorization_id,
+         authorization_sha256)
       values (${input.orgId}, ${input.profileId}, ${input.applyBatchId}, ${input.approvalMode},
               ${input.previewSha256}, ${input.expectedCount}, ${input.approvedBy},
               ${input.approvedAt}, ${input.expiresAt}, ${input.inversePreapproved},
-              ${input.authorizationId})
+              ${input.authorizationId}, ${input.authorizationSha256})
       returning id
     `;
     if (!approval) throw new Error('Amazon write approval was not recorded');
@@ -365,6 +389,18 @@ export async function approveAmazonWriteExecution(
       returning id
     `;
     if (!execution) throw new Error('Amazon write execution was not recorded');
+
+    if (input.inversePreapproved) {
+      if (input.authorizationId === null || input.authorizationSha256 === null) {
+        throw new Error('preapproved inverse requires a bounded authorization fingerprint');
+      }
+      await sql`
+        insert into public.amazon_write_inverse_reservations
+          (org_id, profile_id, forward_execution_id, authorization_id, authorization_sha256)
+        values (${input.orgId}, ${input.profileId}, ${execution.id},
+                ${input.authorizationId}, ${input.authorizationSha256})
+      `;
+    }
 
     const inserted = await sql<{ id: string }[]>`
       insert into public.amazon_write_rows
@@ -417,9 +453,11 @@ async function loadExecutionActions(
   executionId: string,
 ): Promise<AmazonWriteAction[]> {
   const rows = await sql<{ action: unknown }[]>`
-    select action from public.amazon_write_rows
-     where org_id = ${orgId} and profile_id = ${profileId} and execution_id = ${executionId}
-     order by created_at, id
+    select write_row.action from public.amazon_write_rows write_row
+    join public.apply_rows apply_row on apply_row.id = write_row.apply_row_id
+     where write_row.org_id = ${orgId} and write_row.profile_id = ${profileId}
+       and write_row.execution_id = ${executionId}
+     order by apply_row.artifact_ordinal
   `;
   return rows.map((row) => AmazonWriteAction.parse(row.action));
 }
@@ -441,6 +479,7 @@ export interface PreparedAmazonWriteExecution {
   rows: PreparedAmazonWriteRow[];
   replayed: boolean;
   recoveryObservation: boolean;
+  direction: 'forward' | 'inverse';
 }
 
 interface ExecutionHeader {
@@ -453,6 +492,9 @@ interface ExecutionHeader {
   inverse_preapproved: boolean;
   approved_at: Date | string;
   authorization_id: string | null;
+  authorization_sha256: string | null;
+  direction: 'forward' | 'inverse';
+  batch_status: string;
   dispatch_lease_token: string | null;
   dispatch_lease_expires_at: Date | string | null;
 }
@@ -467,6 +509,7 @@ export async function prepareAmazonWriteExecution(
     now: Date;
     maxConcurrentMutations: number;
     authorizationId: string | null;
+    authorizationSha256: string | null;
     maxRowsPerExecution: number;
     maxTotalExecutions: number;
     dispatchLeaseToken: string;
@@ -483,12 +526,18 @@ export async function prepareAmazonWriteExecution(
              execution.status::text as status, execution.requested_count,
              approval.mode::text as mode, approval.approved_at, approval.expires_at,
              approval.inverse_preapproved, approval.authorization_id,
+             approval.authorization_sha256, execution.direction::text as direction,
+             batch.status::text as batch_status,
              execution.dispatch_lease_token, execution.dispatch_lease_expires_at
         from public.amazon_write_executions execution
         join public.amazon_write_approvals approval
           on approval.org_id = execution.org_id
          and approval.profile_id = execution.profile_id
          and approval.id = execution.approval_id
+        join public.apply_batches batch
+          on batch.org_id = execution.org_id
+         and batch.profile_id = execution.profile_id
+         and batch.id = execution.apply_batch_id
        where execution.org_id = ${input.orgId}
          and execution.profile_id = ${input.profileId}
          and execution.id = ${input.executionId}
@@ -501,15 +550,29 @@ export async function prepareAmazonWriteExecution(
         approvalMode: execution.mode, inversePreapproved: execution.inverse_preapproved,
         expiresAt: toDate(execution.expires_at), status: execution.status,
         requested: execution.requested_count, rows: [], replayed: true, recoveryObservation: false,
+        direction: execution.direction,
       };
     }
-    if (execution.mode !== 'bounded_live_test' || execution.authorization_id !== input.authorizationId) {
+    if (execution.batch_status !== 'staged') {
+      await refuseExecutionRows(sql, execution.id, 'apply batch is no longer staged');
+      return {
+        executionId: execution.id, applyBatchId: execution.apply_batch_id,
+        approvalMode: execution.mode, inversePreapproved: execution.inverse_preapproved,
+        expiresAt: toDate(execution.expires_at), status: 'refused',
+        requested: execution.requested_count, rows: [], replayed: false,
+        recoveryObservation: false, direction: execution.direction,
+      };
+    }
+    if (execution.mode !== 'bounded_live_test'
+      || execution.authorization_id !== input.authorizationId
+      || execution.authorization_sha256 !== input.authorizationSha256) {
       await refuseExecutionRows(sql, execution.id, 'execution is not bound to the active bounded authorization');
       return {
         executionId: execution.id, applyBatchId: execution.apply_batch_id,
         approvalMode: execution.mode, inversePreapproved: execution.inverse_preapproved,
         expiresAt: toDate(execution.expires_at), status: 'refused',
         requested: execution.requested_count, rows: [], replayed: false, recoveryObservation: false,
+        direction: execution.direction,
       };
     }
     if (execution.requested_count > input.maxRowsPerExecution) {
@@ -519,24 +582,50 @@ export async function prepareAmazonWriteExecution(
         approvalMode: execution.mode, inversePreapproved: execution.inverse_preapproved,
         expiresAt: toDate(execution.expires_at), status: 'refused',
         requested: execution.requested_count, rows: [], replayed: false, recoveryObservation: false,
+        direction: execution.direction,
       };
     }
+    if (execution.direction === 'forward' && execution.inverse_preapproved) {
+      const [reservation] = await sql<{ id: string }[]>`
+        select id from public.amazon_write_inverse_reservations
+         where org_id = ${input.orgId} and profile_id = ${input.profileId}
+           and forward_execution_id = ${execution.id}
+           and authorization_id = ${input.authorizationId}
+           and authorization_sha256 = ${input.authorizationSha256}
+         for update
+      `;
+      if (!reservation) {
+        await refuseExecutionRows(sql, execution.id, 'preapproved inverse reservation is missing');
+        return {
+          executionId: execution.id, applyBatchId: execution.apply_batch_id,
+          approvalMode: execution.mode, inversePreapproved: execution.inverse_preapproved,
+          expiresAt: toDate(execution.expires_at), status: 'refused',
+          requested: execution.requested_count, rows: [], replayed: false,
+          recoveryObservation: false, direction: execution.direction,
+        };
+      }
+    }
     const [authorizationUse] = await sql<{ count: number }[]>`
-      select count(*)::int as count
-        from public.amazon_write_executions used_execution
-        join public.amazon_write_approvals used_approval
-          on used_approval.id = used_execution.approval_id
-       where used_approval.authorization_id = ${input.authorizationId}
-         and used_execution.id <> ${execution.id}
-         and used_execution.started_at is not null
+      select (
+        (select count(*) from public.amazon_write_executions used_execution
+          join public.amazon_write_approvals used_approval on used_approval.id = used_execution.approval_id
+         where used_approval.authorization_id = ${input.authorizationId}
+           and used_approval.authorization_sha256 = ${input.authorizationSha256})
+        +
+        (select count(*) from public.amazon_write_inverse_reservations reservation
+         where reservation.authorization_id = ${input.authorizationId}
+           and reservation.authorization_sha256 = ${input.authorizationSha256}
+           and reservation.inverse_execution_id is null)
+      )::int as count
     `;
-    if ((authorizationUse?.count ?? 0) >= input.maxTotalExecutions) {
+    if ((authorizationUse?.count ?? 0) > input.maxTotalExecutions) {
       await refuseExecutionRows(sql, execution.id, 'bounded authorization execution budget is exhausted');
       return {
         executionId: execution.id, applyBatchId: execution.apply_batch_id,
         approvalMode: execution.mode, inversePreapproved: execution.inverse_preapproved,
         expiresAt: toDate(execution.expires_at), status: 'refused',
         requested: execution.requested_count, rows: [], replayed: false, recoveryObservation: false,
+        direction: execution.direction,
       };
     }
     if (
@@ -549,16 +638,20 @@ export async function prepareAmazonWriteExecution(
         approvalMode: execution.mode, inversePreapproved: execution.inverse_preapproved,
         expiresAt: toDate(execution.expires_at), status: 'refused',
         requested: execution.requested_count, rows: [], replayed: false, recoveryObservation: false,
+        direction: execution.direction,
       };
     }
     const stored = await sql<StoredWriteRow[]>`
-      select id, apply_row_id, action, row_status::text as row_status,
-             observation_status::text as observation_status, attempt_count
-        from public.amazon_write_rows
-       where org_id = ${input.orgId} and profile_id = ${input.profileId}
-         and execution_id = ${input.executionId}
-       order by created_at, id
-       for update
+      select write_row.id, write_row.apply_row_id, write_row.action,
+             write_row.row_status::text as row_status,
+             write_row.observation_status::text as observation_status,
+             write_row.attempt_count
+        from public.amazon_write_rows write_row
+        join public.apply_rows apply_row on apply_row.id = write_row.apply_row_id
+       where write_row.org_id = ${input.orgId} and write_row.profile_id = ${input.profileId}
+         and write_row.execution_id = ${input.executionId}
+       order by apply_row.artifact_ordinal
+       for update of write_row
     `;
     if (stored.length !== execution.requested_count) {
       throw new Error(`Amazon write execution requested ${execution.requested_count} rows but loaded ${stored.length}`);
@@ -571,6 +664,7 @@ export async function prepareAmazonWriteExecution(
           approvalMode: execution.mode, inversePreapproved: execution.inverse_preapproved,
           expiresAt: toDate(execution.expires_at), status: execution.status,
           requested: execution.requested_count, rows: [], replayed: true, recoveryObservation: false,
+          direction: execution.direction,
         };
       }
       if (stored.some((row) => row.row_status === 'dispatched')) {
@@ -585,6 +679,7 @@ export async function prepareAmazonWriteExecution(
           approvalMode: execution.mode, inversePreapproved: execution.inverse_preapproved,
           expiresAt: toDate(execution.expires_at), status: 'awaiting_sync',
           requested: execution.requested_count, rows: [], replayed: true, recoveryObservation: true,
+          direction: execution.direction,
         };
       }
     }
@@ -603,6 +698,7 @@ export async function prepareAmazonWriteExecution(
         approvalMode: execution.mode, inversePreapproved: execution.inverse_preapproved,
         expiresAt: toDate(execution.expires_at), status: execution.status,
         requested: execution.requested_count, rows: [], replayed: true, recoveryObservation: false,
+        direction: execution.direction,
       };
     }
     const actions = unresolved.map((row) => ({ row, action: AmazonWriteAction.parse(row.action) }));
@@ -655,6 +751,7 @@ export async function prepareAmazonWriteExecution(
         approvalMode: execution.mode, inversePreapproved: execution.inverse_preapproved,
         expiresAt: toDate(execution.expires_at), status: 'refused',
         requested: execution.requested_count, rows: [], replayed: false, recoveryObservation: false,
+        direction: execution.direction,
       };
     }
     await sql`
@@ -677,6 +774,7 @@ export async function prepareAmazonWriteExecution(
       })),
       replayed: false,
       recoveryObservation: false,
+      direction: execution.direction,
     };
   });
 }
@@ -690,34 +788,145 @@ export async function markAmazonWriteRowsDispatched(
     executionId: string;
     leaseToken: string;
     rowIds: readonly string[];
-    dispatchedAt: Date;
+    callId: string;
+    providerOperation: AmazonWriteAction['actionType'];
+    requestFingerprint: string;
+    requestedEntityIds: readonly string[];
+    authorizationId: string;
+    authorizationSha256: string;
     leaseExpiresAt: Date;
   },
 ): Promise<void> {
   if (input.rowIds.length === 0 || new Set(input.rowIds).size !== input.rowIds.length) {
     throw new Error('Amazon write dispatch requires unique rows');
   }
+  if (input.requestedEntityIds.length === 0
+    || new Set(input.requestedEntityIds).size !== input.requestedEntityIds.length) {
+    throw new Error('Amazon provider dispatch requires unique entity identities');
+  }
   await handle.sql.begin(async (sql) => {
-    const [execution] = await sql<{ id: string }[]>`
-      select id from public.amazon_write_executions
-       where org_id = ${input.orgId} and profile_id = ${input.profileId}
-         and id = ${input.executionId} and status = 'running'
-         and dispatch_lease_token = ${input.leaseToken}
-       for update
+    const [execution] = await sql<{
+      id: string;
+      inverse_preapproved: boolean;
+      direction: 'forward' | 'inverse';
+    }[]>`
+      select execution.id, approval.inverse_preapproved,
+             execution.direction::text as direction
+        from public.amazon_write_executions execution
+        join public.amazon_write_approvals approval on approval.id = execution.approval_id
+        join public.apply_batches batch on batch.id = execution.apply_batch_id
+       where execution.org_id = ${input.orgId} and execution.profile_id = ${input.profileId}
+         and execution.id = ${input.executionId} and execution.status = 'running'
+         and execution.dispatch_lease_token = ${input.leaseToken}
+         and execution.dispatch_lease_expires_at > clock_timestamp()
+         and approval.mode = 'bounded_live_test'
+         and approval.authorization_id = ${input.authorizationId}
+         and approval.authorization_sha256 = ${input.authorizationSha256}
+         and approval.approved_at <= clock_timestamp()
+         and approval.expires_at > clock_timestamp()
+         and batch.status = 'staged'
+       for update of execution
     `;
-    if (!execution) throw new Error('Amazon write dispatch lease is unavailable');
+    if (!execution) throw new Error('Amazon write final dispatch gate is unavailable');
+    if (execution.direction === 'forward' && execution.inverse_preapproved) {
+      const [reservation] = await sql<{ id: string }[]>`
+        select id from public.amazon_write_inverse_reservations
+         where org_id = ${input.orgId} and profile_id = ${input.profileId}
+           and forward_execution_id = ${execution.id}
+           and authorization_id = ${input.authorizationId}
+           and authorization_sha256 = ${input.authorizationSha256}
+         for update
+      `;
+      if (!reservation) throw new Error('Amazon write inverse reservation changed before dispatch');
+    }
+    const stored = await sql<{ id: string; action: unknown }[]>`
+      select write_row.id, write_row.action from public.amazon_write_rows write_row
+      join public.apply_rows apply_row on apply_row.id = write_row.apply_row_id
+       where write_row.org_id = ${input.orgId} and write_row.profile_id = ${input.profileId}
+         and write_row.execution_id = ${input.executionId}
+         and write_row.id = any(${[...input.rowIds]}::uuid[])
+         and write_row.row_status in ('pending', 'retryable')
+       order by apply_row.artifact_ordinal
+       for update of write_row
+    `;
+    if (stored.length !== input.rowIds.length) {
+      throw new Error(`Amazon write dispatch offered ${input.rowIds.length} rows but locked ${stored.length}`);
+    }
+    const actions = stored.map((row) => ({ id: row.id, action: AmazonWriteAction.parse(row.action) }));
+    if (actions.some(({ action }) => action.actionType !== input.providerOperation)) {
+      throw new Error('Amazon write dispatch mixes provider operations');
+    }
+    const storedEntityIds = [...new Set(actions.map(({ action }) => action.amazonEntityId))];
+    if (!isDeepStrictEqual(storedEntityIds, [...input.requestedEntityIds])) {
+      throw new Error('Amazon write dispatch entity identities do not match the locked rows');
+    }
+    const targets = actions.map(({ id, action }) => ({
+      key: id,
+      entityType: action.actionType === 'sp_campaign_placement' ? 'placement' as const
+        : action.actionType === 'sp_keyword_bid' ? 'keyword' as const : 'target' as const,
+      entityId: action.amazonEntityId,
+      field: action.field,
+    }));
+    await lockCurrentApplyStates({ sql }, { orgId: input.orgId, profileId: input.profileId, targets });
+    const current = await resolveCurrentApplyStates(
+      { sql }, { orgId: input.orgId, profileId: input.profileId, targets },
+    );
+    const currentByRow = new Map(current.map((state) => [state.key, state] as const));
+    for (const { id, action } of actions) {
+      const state = currentByRow.get(id);
+      if (!state?.supported || !state.present || !sameNumber(state.currentValue, action.expectedValue)) {
+        throw new Error(`Amazon write final dispatch conflict for row ${id}`);
+      }
+    }
+    const placementActions = actions.filter((entry): entry is typeof entry & {
+      action: Extract<AmazonWriteAction, { actionType: 'sp_campaign_placement' }>;
+    } => entry.action.actionType === 'sp_campaign_placement');
+    if (placementActions.length > 0) {
+      const campaignIds = [...new Set(placementActions.map(({ action }) => action.amazonEntityId))];
+      const contexts = await sql<{ amazon_id: string; campaign_write_context: CampaignWriteContext | null }[]>`
+        select amazon_id, campaign_write_context from public.campaigns
+         where org_id = ${input.orgId} and profile_id = ${input.profileId}
+           and amazon_id = any(${campaignIds}::text[])
+         for share
+      `;
+      const contextByCampaign = new Map(contexts.map((row) => [row.amazon_id, row.campaign_write_context] as const));
+      for (const { action } of placementActions) {
+        if (!isDeepStrictEqual(
+          contextByCampaign.get(action.amazonEntityId) ?? null,
+          action.campaignContext.providerState,
+        )) throw new Error(`Amazon write placement context changed for ${action.amazonEntityId}`);
+      }
+    }
+    await sql`
+      insert into public.amazon_write_provider_call_events
+        (org_id, profile_id, execution_id, call_id, event_type, provider_operation,
+         request_fingerprint, requested_entity_ids, requested_count, accepted_count,
+         failed_count, api_call_count, outcome, occurred_at)
+      values (${input.orgId}, ${input.profileId}, ${input.executionId}, ${input.callId},
+              'dispatch', ${input.providerOperation}, ${input.requestFingerprint},
+              ${json([...input.requestedEntityIds])}::jsonb, ${input.requestedEntityIds.length},
+              0, 0, 1, 'dispatched', clock_timestamp())
+    `;
     const rows = await sql<{ id: string }[]>`
       update public.amazon_write_rows
-         set row_status = 'dispatched', dispatch_token = ${input.leaseToken},
-             dispatched_at = ${input.dispatchedAt.toISOString()}
+         set row_status = 'dispatched', dispatch_token = ${input.callId},
+             dispatched_at = clock_timestamp()
        where execution_id = ${input.executionId}
          and id = any(${[...input.rowIds]}::uuid[])
          and row_status in ('pending', 'retryable')
       returning id
     `;
-    if (rows.length !== input.rowIds.length) {
-      throw new Error(`Amazon write dispatch offered ${input.rowIds.length} rows but marked ${rows.length}`);
-    }
+    if (rows.length !== input.rowIds.length) throw new Error('Amazon write dispatch transition was incomplete');
+    await sql`
+      insert into public.sync_jobs
+        (org_id, profile_id, job_type, payload, run_after, dedupe_key)
+      values (${input.orgId}, ${input.profileId}, 'amazon.observe',
+              ${json({ type: 'amazon.observe', orgId: input.orgId, profileId: input.profileId,
+                executionId: input.executionId, attempt: 0 })}::jsonb,
+              clock_timestamp() + interval '15 seconds',
+              ${`amazon.observe:${input.executionId}:0`})
+      on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+    `;
     await sql`
       update public.amazon_write_executions
          set dispatch_lease_expires_at = ${input.leaseExpiresAt.toISOString()}
@@ -734,23 +943,56 @@ export async function releaseAmazonWriteExecutionForRetry(
     profileId: string;
     executionId: string;
     leaseToken: string;
+    callId: string;
+    callEvidence: AmazonWriteProviderCallEvidence;
     rowIds: readonly string[];
   },
 ): Promise<void> {
   await handle.sql.begin(async (sql) => {
+    const callEvidence = AmazonWriteProviderCallEvidence.parse(input.callEvidence);
     const [execution] = await sql<{ id: string }[]>`
       select id from public.amazon_write_executions
        where org_id = ${input.orgId} and profile_id = ${input.profileId}
          and id = ${input.executionId} and status = 'running'
+         and dispatch_lease_token = ${input.leaseToken}
        for update
     `;
     if (!execution) throw new Error('running Amazon write execution is unavailable for retry release');
+    const [call] = await sql<{
+      provider_operation: AmazonWriteAction['actionType'];
+      request_fingerprint: string;
+      requested_entity_ids: string[];
+      requested_count: number;
+    }[]>`
+      select provider_operation::text as provider_operation, request_fingerprint,
+             requested_entity_ids, requested_count
+        from public.amazon_write_provider_call_events
+       where org_id = ${input.orgId} and profile_id = ${input.profileId}
+         and execution_id = ${input.executionId} and call_id = ${input.callId}
+         and event_type = 'dispatch'
+       for share
+    `;
+    if (!call || call.requested_count !== callEvidence.requested) {
+      throw new Error('Amazon write retry result does not match its durable provider call');
+    }
+    await sql`
+      insert into public.amazon_write_provider_call_events
+        (org_id, profile_id, execution_id, call_id, event_type, provider_operation,
+         request_fingerprint, requested_entity_ids, requested_count, accepted_count,
+         failed_count, api_call_count, outcome, code, message, occurred_at)
+      values (${input.orgId}, ${input.profileId}, ${input.executionId}, ${input.callId},
+              'result', ${call.provider_operation}, ${call.request_fingerprint},
+              ${json(call.requested_entity_ids)}::jsonb, ${call.requested_count},
+              ${callEvidence.accepted}, ${callEvidence.failed}, 0, ${callEvidence.outcome},
+              ${callEvidence.code}, ${callEvidence.message}, clock_timestamp())
+      on conflict (call_id, event_type) do nothing
+    `;
     const released = await sql<{ id: string }[]>`
       update public.amazon_write_rows
          set row_status = 'retryable', dispatch_token = null
        where execution_id = ${execution.id}
          and id = any(${[...input.rowIds]}::uuid[])
-         and row_status = 'dispatched' and dispatch_token = ${input.leaseToken}
+         and row_status = 'dispatched' and dispatch_token = ${input.callId}
       returning id
     `;
     if (released.length !== input.rowIds.length) {
@@ -806,7 +1048,6 @@ export interface AmazonWriteRowOutcome {
   attemptNumber: number;
   requestFingerprint: string;
   evidence: AmazonWriteProviderEvidence;
-  dispatchToken: string;
 }
 
 export interface RecordedAmazonWriteOutcomes {
@@ -822,12 +1063,15 @@ export async function recordAmazonWriteOutcomes(
     orgId: string;
     profileId: string;
     executionId: string;
+    callId: string;
+    callEvidence: AmazonWriteProviderCallEvidence;
     attemptedAt: Date;
     outcomes: readonly AmazonWriteRowOutcome[];
   },
 ): Promise<RecordedAmazonWriteOutcomes> {
   if (input.outcomes.length === 0) throw new Error('Amazon write outcome list is empty');
   return handle.sql.begin(async (sql) => {
+    const callEvidence = AmazonWriteProviderCallEvidence.parse(input.callEvidence);
     const [execution] = await sql<{ id: string; requested_count: number }[]>`
       select id, requested_count from public.amazon_write_executions
        where org_id = ${input.orgId} and profile_id = ${input.profileId}
@@ -837,6 +1081,59 @@ export async function recordAmazonWriteOutcomes(
     if (!execution) throw new Error('Amazon write execution does not exist in this profile');
     const unique = new Set(input.outcomes.map((outcome) => outcome.writeRowId));
     if (unique.size !== input.outcomes.length) throw new Error('Amazon write outcomes repeat a row');
+
+    const [call] = await sql<{
+      provider_operation: AmazonWriteAction['actionType'];
+      request_fingerprint: string;
+      requested_entity_ids: string[];
+      requested_count: number;
+    }[]>`
+      select provider_operation::text as provider_operation, request_fingerprint,
+             requested_entity_ids, requested_count
+        from public.amazon_write_provider_call_events
+       where org_id = ${input.orgId} and profile_id = ${input.profileId}
+         and execution_id = ${input.executionId} and call_id = ${input.callId}
+         and event_type = 'dispatch'
+       for share
+    `;
+    if (!call || call.requested_count !== callEvidence.requested) {
+      throw new Error('Amazon write result does not match its durable provider call');
+    }
+    const outcomeRows = await sql<{ id: string; action: unknown }[]>`
+      select id, action from public.amazon_write_rows
+       where org_id = ${input.orgId} and profile_id = ${input.profileId}
+         and execution_id = ${input.executionId}
+         and id = any(${[...unique]}::uuid[])
+         and row_status = 'dispatched' and dispatch_token = ${input.callId}
+       for update
+    `;
+    if (outcomeRows.length !== input.outcomes.length) {
+      throw new Error('Amazon write result rows do not match the durable provider call');
+    }
+    const actionByRow = new Map(outcomeRows.map((row) => [
+      row.id, AmazonWriteAction.parse(row.action),
+    ] as const));
+    for (const outcome of input.outcomes) {
+      const evidence = AmazonWriteProviderEvidence.parse(outcome.evidence);
+      const action = actionByRow.get(outcome.writeRowId);
+      if (!action) throw new Error(`Amazon write result names unknown row ${outcome.writeRowId}`);
+      if (evidence.outcome === 'accepted'
+        && evidence.providerEntityId !== action.amazonEntityId) {
+        throw new Error('Amazon write provider identity does not match its locked action');
+      }
+    }
+    await sql`
+      insert into public.amazon_write_provider_call_events
+        (org_id, profile_id, execution_id, call_id, event_type, provider_operation,
+         request_fingerprint, requested_entity_ids, requested_count, accepted_count,
+         failed_count, api_call_count, outcome, code, message, occurred_at)
+      values (${input.orgId}, ${input.profileId}, ${input.executionId}, ${input.callId},
+              'result', ${call.provider_operation}, ${call.request_fingerprint},
+              ${json(call.requested_entity_ids)}::jsonb, ${call.requested_count},
+              ${callEvidence.accepted}, ${callEvidence.failed}, 0, ${callEvidence.outcome},
+              ${callEvidence.code}, ${callEvidence.message}, clock_timestamp())
+      on conflict (call_id, event_type) do nothing
+    `;
 
     for (const outcome of input.outcomes) {
       const evidence = AmazonWriteProviderEvidence.parse(outcome.evidence);
@@ -864,7 +1161,7 @@ export async function recordAmazonWriteOutcomes(
          where org_id = ${input.orgId} and profile_id = ${input.profileId}
            and execution_id = ${input.executionId} and id = ${outcome.writeRowId}
            and attempt_count + 1 = ${outcome.attemptNumber}
-           and row_status = 'dispatched' and dispatch_token = ${outcome.dispatchToken}
+           and row_status = 'dispatched' and dispatch_token = ${input.callId}
         returning id
       `;
       if (updated.length !== 1) throw new Error(`Amazon write outcome could not transition row ${outcome.writeRowId}`);
@@ -972,15 +1269,19 @@ export async function listAmazonWriteObservationRows(
   input: { orgId: string; profileId: string; executionId: string },
 ): Promise<AmazonWriteObservationRow[]> {
   const rows = await handle.sql<{ id: string; action: unknown; row_status: string }[]>`
-    select id, action, row_status::text as row_status from public.amazon_write_rows
-     where org_id = ${input.orgId} and profile_id = ${input.profileId}
-       and execution_id = ${input.executionId}
+    select write_row.id, write_row.action, write_row.row_status::text as row_status
+      from public.amazon_write_rows write_row
+      join public.apply_rows apply_row on apply_row.id = write_row.apply_row_id
+     where write_row.org_id = ${input.orgId} and write_row.profile_id = ${input.profileId}
+       and write_row.execution_id = ${input.executionId}
        and (
-         (row_status in ('accepted', 'ambiguous', 'dispatched') and observation_status = 'pending')
-         or (observation_status = 'conflict'
-             and (row_status = 'accepted' or provider_evidence->>'outcome' = 'ambiguous'))
+         (write_row.row_status in ('accepted', 'ambiguous', 'dispatched')
+          and write_row.observation_status = 'pending')
+         or (write_row.observation_status = 'conflict'
+             and (write_row.row_status = 'accepted'
+                  or write_row.provider_evidence->>'outcome' = 'ambiguous'))
        )
-     order by created_at, id
+     order by apply_row.artifact_ordinal
   `;
   return rows.map((row) => ({
     writeRowId: row.id,
@@ -1001,6 +1302,178 @@ export interface RecordedAmazonWriteObservation {
   pending: number;
   inverseReady: boolean;
   retryApply: boolean;
+  inverseExecutionId: string | null;
+}
+
+async function materializeReservedAmazonWriteInverse(
+  sql: QuerySql,
+  input: {
+    orgId: string;
+    profileId: string;
+    forwardExecutionId: string;
+    observedAt: Date;
+  },
+): Promise<string | null> {
+  const [reservation] = await sql<{
+    id: string;
+    inverse_execution_id: string | null;
+    authorization_id: string;
+    authorization_sha256: string;
+    apply_batch_id: string;
+    approval_id: string;
+    approved_by: string;
+    approved_at: Date | string;
+    expires_at: Date | string;
+    opt_group: string;
+  }[]>`
+    select reservation.id, reservation.inverse_execution_id,
+           reservation.authorization_id, reservation.authorization_sha256,
+           execution.apply_batch_id, execution.approval_id,
+           approval.approved_by, approval.approved_at, approval.expires_at,
+           batch.opt_group
+      from public.amazon_write_inverse_reservations reservation
+      join public.amazon_write_executions execution
+        on execution.id = reservation.forward_execution_id
+      join public.amazon_write_approvals approval on approval.id = execution.approval_id
+      join public.apply_batches batch on batch.id = execution.apply_batch_id
+     where reservation.org_id = ${input.orgId}
+       and reservation.profile_id = ${input.profileId}
+       and reservation.forward_execution_id = ${input.forwardExecutionId}
+     for update of reservation
+  `;
+  if (!reservation) return null;
+  if (reservation.inverse_execution_id !== null) return reservation.inverse_execution_id;
+
+  const stored = await sql<{
+    inverse_action: unknown;
+    entity_name: string | null;
+    clicks: number | null;
+    revenue: number | null;
+  }[]>`
+    select write_row.inverse_action, apply_row.entity_name,
+           apply_row.clicks::float8 as clicks, apply_row.revenue::float8 as revenue
+      from public.amazon_write_rows write_row
+      join public.apply_rows apply_row on apply_row.id = write_row.apply_row_id
+     where write_row.org_id = ${input.orgId}
+       and write_row.profile_id = ${input.profileId}
+       and write_row.execution_id = ${input.forwardExecutionId}
+       and write_row.row_status = 'accepted'
+       and write_row.observation_status = 'observed'
+     order by apply_row.artifact_ordinal
+     for share of write_row, apply_row
+  `;
+  if (stored.length === 0) return null;
+  const reservedActions = stored.map((row) => AmazonWriteAction.parse(row.inverse_action));
+  const artifactRows: ApplyRow[] = reservedActions.map((action, index) => ({
+    entityType: action.actionType === 'sp_campaign_placement' ? 'placement'
+      : action.actionType === 'sp_keyword_bid' ? 'keyword' : 'target',
+    entityId: action.amazonEntityId,
+    field: action.field,
+    old: action.expectedValue,
+    new: action.requestedValue,
+    ...(stored[index]?.entity_name === null ? {} : { name: stored[index]?.entity_name }),
+    ...(stored[index]?.clicks === null ? {} : { clicks: stored[index]?.clicks }),
+    ...(stored[index]?.revenue === null ? {} : { revenue: stored[index]?.revenue }),
+  }));
+  const artifactSha256 = createHash('sha256').update(serializeApplyRows(artifactRows)).digest('hex');
+  const [batch] = await sql<{ id: string }[]>`
+    insert into public.apply_batches
+      (org_id, profile_id, tag, opt_group, lever, note, status, source_batch_id,
+       exported_at, artifact_sha256, exported_proposals, reversible_rows, unsupported_rows,
+       created_by)
+    values (${input.orgId}, ${input.profileId},
+            ${`amazon-inverse:${input.forwardExecutionId}`}, ${reservation.opt_group}, 'revert',
+            'Preapproved exact inverse of synchronized Amazon write results', 'staged',
+            ${reservation.apply_batch_id}, ${input.observedAt.toISOString()}, ${artifactSha256},
+            ${artifactRows.length}, ${artifactRows.length}, 0, ${reservation.approved_by})
+    returning id
+  `;
+  if (!batch) throw new Error('reserved Amazon inverse batch was not created');
+
+  const inverseApplyRowIds: string[] = [];
+  for (const [index, row] of artifactRows.entries()) {
+    const [inserted] = await sql<{ id: string }[]>`
+      insert into public.apply_rows
+        (batch_id, org_id, profile_id, entity_type, entity_id, entity_name,
+         field, old_value, new_value, lever, clicks, revenue)
+      values (${batch.id}, ${input.orgId}, ${input.profileId}, ${row.entityType},
+              ${row.entityId}, ${row.name ?? null}, ${row.field}, ${json(row.old)}::jsonb,
+              ${json(row.new)}::jsonb, 'revert', ${row.clicks ?? null}, ${row.revenue ?? null})
+      returning id
+    `;
+    if (!inserted) throw new Error(`reserved Amazon inverse omitted row ${index}`);
+    inverseApplyRowIds.push(inserted.id);
+  }
+  const inverseActions = reservedActions.map((action, index) => AmazonWriteAction.parse({
+    ...action,
+    applyRowId: inverseApplyRowIds[index],
+  }));
+  const inverseOfInverse = materializeInverseActions(inverseActions);
+  const [approval] = await sql<{ id: string }[]>`
+    insert into public.amazon_write_approvals
+      (org_id, profile_id, apply_batch_id, mode, preview_sha256, approved_count,
+       approved_by, approved_at, expires_at, inverse_preapproved, authorization_id,
+       authorization_sha256)
+    values (${input.orgId}, ${input.profileId}, ${batch.id}, 'bounded_live_test',
+            ${artifactSha256}, ${artifactRows.length}, ${reservation.approved_by},
+            ${toDate(reservation.approved_at).toISOString()},
+            ${toDate(reservation.expires_at).toISOString()}, false,
+            ${reservation.authorization_id}, ${reservation.authorization_sha256})
+    returning id
+  `;
+  if (!approval) throw new Error('reserved Amazon inverse approval was not recorded');
+  const idempotencyKey = createHash('sha256').update(JSON.stringify([
+    'openspell.amazon-write-inverse.v1', input.orgId, input.profileId,
+    input.forwardExecutionId, artifactSha256, reservation.authorization_id,
+    reservation.authorization_sha256,
+  ])).digest('hex');
+  const [execution] = await sql<{ id: string }[]>`
+    insert into public.amazon_write_executions
+      (org_id, profile_id, apply_batch_id, approval_id, idempotency_key,
+       direction, source_execution_id, requested_count)
+    values (${input.orgId}, ${input.profileId}, ${batch.id}, ${approval.id},
+            ${idempotencyKey}, 'inverse', ${input.forwardExecutionId}, ${artifactRows.length})
+    returning id
+  `;
+  if (!execution) throw new Error('reserved Amazon inverse execution was not recorded');
+  const written = await sql<{ id: string }[]>`
+    insert into public.amazon_write_rows
+      (org_id, profile_id, execution_id, apply_row_id, action_type, action,
+       expected_value, requested_value, inverse_value, inverse_action)
+    select ${input.orgId}, ${input.profileId}, ${execution.id}, offered.apply_row_id::uuid,
+           offered.action_type::public.amazon_write_action_type, offered.action::jsonb,
+           offered.expected_value::jsonb, offered.requested_value::jsonb,
+           offered.inverse_value::jsonb, offered.inverse_action::jsonb
+      from unnest(
+        ${inverseApplyRowIds}::text[],
+        ${inverseActions.map((action) => action.actionType)}::text[],
+        ${inverseActions.map((action) => json(action))}::text[],
+        ${inverseActions.map((action) => json(action.expectedValue))}::text[],
+        ${inverseActions.map((action) => json(action.requestedValue))}::text[],
+        ${inverseActions.map((action) => json(action.inverseValue))}::text[],
+        ${inverseOfInverse.map((action) => json(action))}::text[]
+      ) offered(apply_row_id, action_type, action, expected_value, requested_value,
+                inverse_value, inverse_action)
+    returning id
+  `;
+  if (written.length !== artifactRows.length) {
+    throw new Error(`reserved Amazon inverse wrote ${written.length} of ${artifactRows.length} rows`);
+  }
+  await sql`
+    update public.amazon_write_inverse_reservations
+       set inverse_execution_id = ${execution.id}, materialized_at = ${input.observedAt.toISOString()}
+     where id = ${reservation.id} and inverse_execution_id is null
+  `;
+  await sql`
+    insert into public.sync_jobs
+      (org_id, profile_id, job_type, payload, run_after, dedupe_key)
+    values (${input.orgId}, ${input.profileId}, 'amazon.apply',
+            ${json({ type: 'amazon.apply', orgId: input.orgId, profileId: input.profileId,
+              executionId: execution.id })}::jsonb,
+            ${input.observedAt.toISOString()}, ${`amazon.apply:${execution.id}:reserved-inverse`})
+    on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+  `;
+  return execution.id;
 }
 
 export async function recordAmazonWriteObservations(
@@ -1054,6 +1527,9 @@ export async function recordAmazonWriteObservations(
       const row = offeredById.get(observation.writeRowId);
       if (!row) throw new Error(`Amazon observation names unknown row ${observation.writeRowId}`);
       const action = AmazonWriteAction.parse(row.action);
+      if (observation.state === 'not_applied' && input.attempt < 5) {
+        throw new Error('Amazon write cannot retry before the complete observation window');
+      }
       const recoveryEvidence = row.row_status === 'dispatched'
         ? AmazonWriteProviderEvidence.parse({
             outcome: 'ambiguous', providerEntityId: null,
@@ -1100,8 +1576,8 @@ export async function recordAmazonWriteObservations(
            set row_status = case
                  when row_status in ('ambiguous', 'dispatched') and ${observation.state} = 'observed'
                    then 'accepted'::public.amazon_write_row_status
-                 when row_status in ('ambiguous', 'dispatched') and ${observation.state} = 'conflict'
-                   then 'failed'::public.amazon_write_row_status
+                 when row_status = 'dispatched' and ${observation.state} = 'conflict'
+                   then 'ambiguous'::public.amazon_write_row_status
                  else row_status
                end,
                observation_status = ${observation.state}::public.amazon_write_observation_status,
@@ -1176,7 +1652,7 @@ export async function recordAmazonWriteObservations(
              resynchronized_count = ${counts.observed},
              observation_attempts = greatest(observation_attempts, ${input.attempt + 1}),
              inverse_ready_at = case when ${inverseReady} then ${input.observedAt.toISOString()}::timestamptz else null end,
-             completed_at = case when ${status} in ('succeeded', 'partial', 'conflict', 'failed', 'refused')
+             completed_at = case when ${status} in ('succeeded', 'partial', 'failed', 'refused')
                then ${input.observedAt.toISOString()}::timestamptz else null end,
              dispatch_lease_token = null, dispatch_lease_expires_at = null
        where id = ${execution.id}
@@ -1189,12 +1665,21 @@ export async function recordAmazonWriteObservations(
          where id = ${execution.apply_batch_id} and status = 'staged'
       `;
     }
+    const inverseExecutionId = inverseReady
+      ? await materializeReservedAmazonWriteInverse(sql, {
+          orgId: input.orgId,
+          profileId: input.profileId,
+          forwardExecutionId: execution.id,
+          observedAt: input.observedAt,
+        })
+      : null;
     return {
       status,
       accounting: await readAccounting(sql, execution.id),
       pending: counts.pending,
       inverseReady,
       retryApply: counts.retryable > 0,
+      inverseExecutionId,
     };
   });
 }
@@ -1237,11 +1722,12 @@ export async function getAmazonWriteInversePreview(
     throw new Error('Amazon write inverse is blocked until every accepted value is synchronized');
   }
   const rows = await handle.sql<{ inverse_action: unknown }[]>`
-    select inverse_action from public.amazon_write_rows
-     where org_id = ${input.orgId} and profile_id = ${input.profileId}
-       and execution_id = ${input.executionId}
-       and row_status = 'accepted' and observation_status = 'observed'
-     order by created_at, id
+    select write_row.inverse_action from public.amazon_write_rows write_row
+    join public.apply_rows apply_row on apply_row.id = write_row.apply_row_id
+     where write_row.org_id = ${input.orgId} and write_row.profile_id = ${input.profileId}
+       and write_row.execution_id = ${input.executionId}
+       and write_row.row_status = 'accepted' and write_row.observation_status = 'observed'
+     order by apply_row.artifact_ordinal
   `;
   const actions = rows.map((row) => AmazonWriteAction.parse(row.inverse_action));
   if (actions.length === 0) throw new Error('Amazon write inverse has no synchronized successful rows');
@@ -1318,7 +1804,7 @@ export async function createAmazonWriteInverseBatch(
          and write_row.execution_id = ${input.executionId}
          and write_row.row_status = 'accepted'
          and write_row.observation_status = 'observed'
-       order by write_row.created_at, write_row.id
+       order by apply_row.artifact_ordinal
        for share of write_row, apply_row
     `;
     const actions = stored.map((row) => AmazonWriteAction.parse(row.inverse_action));
@@ -1391,9 +1877,10 @@ export async function createAmazonWriteInverseBatch(
     if (!batch) throw new Error('Amazon write inverse batch was not created');
     const inserted = await sql<{ id: string }[]>`
       insert into public.apply_rows
-        (batch_id, org_id, profile_id, entity_type, entity_id, entity_name,
+        (batch_id, org_id, profile_id, artifact_ordinal, entity_type, entity_id, entity_name,
          field, old_value, new_value, lever)
       select ${batch.id}, ${input.orgId}, ${input.profileId},
+             offered.artifact_ordinal,
              offered.entity_type::public.apply_entity_type, offered.entity_id,
              offered.entity_name, offered.field, offered.old_value::jsonb,
              offered.new_value::jsonb, 'revert'
@@ -1404,7 +1891,8 @@ export async function createAmazonWriteInverseBatch(
           ${rows.map((row) => row.field)}::text[],
           ${rows.map((row) => json(row.old))}::text[],
           ${rows.map((row) => json(row.new))}::text[]
-        ) offered(entity_type, entity_id, entity_name, field, old_value, new_value)
+        ) with ordinality offered(entity_type, entity_id, entity_name, field, old_value, new_value,
+                                   artifact_ordinal)
       returning id
     `;
     if (inserted.length !== rows.length) {

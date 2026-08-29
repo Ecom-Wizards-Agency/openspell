@@ -7,6 +7,7 @@
  */
 import {
   boolean,
+  bigint,
   date,
   index,
   integer,
@@ -24,8 +25,11 @@ import {
   amazonWriteActionType,
   amazonWriteApprovalMode,
   amazonWriteAttemptOutcome,
+  amazonWriteExecutionDirection,
   amazonWriteExecutionStatus,
   amazonWriteObservationStatus,
+  amazonWriteProviderCallEventType,
+  amazonWriteProviderCallOutcome,
   amazonWriteRowStatus,
   applyBatchStatus,
   applyEntityType,
@@ -92,6 +96,7 @@ export const applyRows = pgTable(
       .notNull()
       .references(() => adProfiles.id, { onDelete: 'cascade' }),
     recommendationId: uuid('recommendation_id'),
+    artifactOrdinal: bigint('artifact_ordinal', { mode: 'number' }).notNull().generatedByDefaultAsIdentity(),
     entityType: applyEntityType('entity_type').notNull(),
     entityId: text('entity_id').notNull(),
     entityName: text('entity_name'),
@@ -123,7 +128,7 @@ export const amazonWriteApprovals = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
     profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
-    applyBatchId: uuid('apply_batch_id').notNull().references(() => applyBatches.id, { onDelete: 'restrict' }),
+    applyBatchId: uuid('apply_batch_id').notNull().references(() => applyBatches.id, { onDelete: 'cascade' }),
     mode: amazonWriteApprovalMode('mode').notNull(),
     previewSha256: text('preview_sha256').notNull(),
     approvedCount: integer('approved_count').notNull(),
@@ -132,6 +137,7 @@ export const amazonWriteApprovals = pgTable(
     expiresAt: ts('expires_at').notNull(),
     inversePreapproved: boolean('inverse_preapproved').notNull().default(false),
     authorizationId: uuid('authorization_id'),
+    authorizationSha256: text('authorization_sha256'),
     createdAt: ts('created_at').notNull().defaultNow(),
   },
   (t) => [
@@ -147,9 +153,11 @@ export const amazonWriteExecutions = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
     profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
-    applyBatchId: uuid('apply_batch_id').notNull().references(() => applyBatches.id, { onDelete: 'restrict' }),
-    approvalId: uuid('approval_id').notNull().references(() => amazonWriteApprovals.id, { onDelete: 'restrict' }),
+    applyBatchId: uuid('apply_batch_id').notNull().references(() => applyBatches.id, { onDelete: 'cascade' }),
+    approvalId: uuid('approval_id').notNull().references(() => amazonWriteApprovals.id, { onDelete: 'cascade' }),
     idempotencyKey: text('idempotency_key').notNull(),
+    direction: amazonWriteExecutionDirection('direction').notNull().default('forward'),
+    sourceExecutionId: uuid('source_execution_id'),
     status: amazonWriteExecutionStatus('status').notNull().default('queued'),
     requestedCount: integer('requested_count').notNull(),
     attemptedCount: integer('attempted_count').notNull().default(0),
@@ -178,6 +186,28 @@ export const amazonWriteExecutions = pgTable(
   ],
 );
 
+/** One already-approved execution slot reserved for an exact rollback subset. */
+export const amazonWriteInverseReservations = pgTable(
+  'amazon_write_inverse_reservations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
+    forwardExecutionId: uuid('forward_execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'cascade' }),
+    authorizationId: uuid('authorization_id').notNull(),
+    authorizationSha256: text('authorization_sha256').notNull(),
+    inverseExecutionId: uuid('inverse_execution_id').references(() => amazonWriteExecutions.id, { onDelete: 'cascade' }),
+    reservedAt: ts('reserved_at').notNull().defaultNow(),
+    materializedAt: ts('materialized_at'),
+  },
+  (t) => [
+    uniqueIndex('amazon_write_inverse_reservations_forward_key').on(t.forwardExecutionId),
+    uniqueIndex('amazon_write_inverse_reservations_inverse_key').on(t.inverseExecutionId),
+    uniqueIndex('amazon_write_inverse_reservations_org_profile_id_key').on(t.orgId, t.profileId, t.id),
+    index('amazon_write_inverse_reservations_authorization_idx').on(t.authorizationId, t.authorizationSha256),
+  ],
+);
+
 /** Materialized provider actions and precomputed exact inverses. */
 export const amazonWriteRows = pgTable(
   'amazon_write_rows',
@@ -185,8 +215,8 @@ export const amazonWriteRows = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
     profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
-    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'restrict' }),
-    applyRowId: uuid('apply_row_id').notNull().references(() => applyRows.id, { onDelete: 'restrict' }),
+    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'cascade' }),
+    applyRowId: uuid('apply_row_id').notNull().references(() => applyRows.id, { onDelete: 'cascade' }),
     actionType: amazonWriteActionType('action_type').notNull(),
     action: jsonb('action').$type<AmazonWriteAction>().notNull(),
     expectedValue: jsonb('expected_value').$type<ApplyValue>().notNull(),
@@ -220,8 +250,8 @@ export const amazonWriteAttempts = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
     profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
-    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'restrict' }),
-    writeRowId: uuid('write_row_id').notNull().references(() => amazonWriteRows.id, { onDelete: 'restrict' }),
+    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'cascade' }),
+    writeRowId: uuid('write_row_id').notNull().references(() => amazonWriteRows.id, { onDelete: 'cascade' }),
     attemptNumber: integer('attempt_number').notNull(),
     requestFingerprint: text('request_fingerprint').notNull(),
     outcome: amazonWriteAttemptOutcome('outcome').notNull(),
@@ -233,6 +263,36 @@ export const amazonWriteAttempts = pgTable(
     uniqueIndex('amazon_write_attempts_row_attempt_key').on(t.writeRowId, t.attemptNumber),
     uniqueIndex('amazon_write_attempts_request_key').on(t.requestFingerprint),
     index('amazon_write_attempts_execution_idx').on(t.executionId, t.attemptedAt),
+  ],
+);
+
+/** Append-only dispatch/result events for every outbound Amazon request. */
+export const amazonWriteProviderCallEvents = pgTable(
+  'amazon_write_provider_call_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
+    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'cascade' }),
+    callId: uuid('call_id').notNull(),
+    eventType: amazonWriteProviderCallEventType('event_type').notNull(),
+    providerOperation: amazonWriteActionType('provider_operation').notNull(),
+    requestFingerprint: text('request_fingerprint').notNull(),
+    requestedEntityIds: jsonb('requested_entity_ids').$type<string[]>().notNull(),
+    requestedCount: integer('requested_count').notNull(),
+    acceptedCount: integer('accepted_count').notNull().default(0),
+    failedCount: integer('failed_count').notNull().default(0),
+    apiCallCount: integer('api_call_count').notNull(),
+    outcome: amazonWriteProviderCallOutcome('outcome').notNull(),
+    code: text('code'),
+    message: text('message'),
+    occurredAt: ts('occurred_at').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('amazon_write_provider_call_events_call_event_key').on(t.callId, t.eventType),
+    uniqueIndex('amazon_write_provider_call_events_org_profile_id_key').on(t.orgId, t.profileId, t.id),
+    index('amazon_write_provider_call_events_execution_idx').on(t.executionId, t.occurredAt),
   ],
 );
 
@@ -269,3 +329,5 @@ export type AmazonWriteApprovalDb = typeof amazonWriteApprovals.$inferSelect;
 export type AmazonWriteExecutionDb = typeof amazonWriteExecutions.$inferSelect;
 export type AmazonWriteRowDb = typeof amazonWriteRows.$inferSelect;
 export type AmazonWriteAttemptDb = typeof amazonWriteAttempts.$inferSelect;
+export type AmazonWriteInverseReservationDb = typeof amazonWriteInverseReservations.$inferSelect;
+export type AmazonWriteProviderCallEventDb = typeof amazonWriteProviderCallEvents.$inferSelect;

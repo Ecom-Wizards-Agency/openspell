@@ -35,9 +35,12 @@ import {
   WorkerReportType,
   AmazonWriteActionType,
   AmazonWriteApprovalMode,
+  AmazonWriteExecutionDirection,
   AmazonWriteExecutionStatus,
   AmazonWriteObservationStatus,
   AmazonWriteRowStatus,
+  AmazonWriteProviderCallEventType,
+  AmazonWriteProviderCallOutcome,
 } from '@wizard-ads/shared';
 
 /**
@@ -145,6 +148,10 @@ export const amazonWriteApprovalMode = pgEnum(
   'amazon_write_approval_mode',
   tuple(AmazonWriteApprovalMode.options),
 );
+export const amazonWriteExecutionDirection = pgEnum(
+  'amazon_write_execution_direction',
+  tuple(AmazonWriteExecutionDirection.options),
+);
 export const amazonWriteExecutionStatus = pgEnum(
   'amazon_write_execution_status',
   tuple(AmazonWriteExecutionStatus.options),
@@ -163,6 +170,14 @@ export const amazonWriteAttemptOutcome = pgEnum('amazon_write_attempt_outcome', 
   'retryable',
   'ambiguous',
 ]);
+export const amazonWriteProviderCallEventType = pgEnum(
+  'amazon_write_provider_call_event_type',
+  tuple(AmazonWriteProviderCallEventType.options),
+);
+export const amazonWriteProviderCallOutcome = pgEnum(
+  'amazon_write_provider_call_outcome',
+  ['dispatched', ...AmazonWriteProviderCallOutcome.options],
+);
 
 export const auditActorType = pgEnum('audit_actor_type', ['user', 'service', 'mcp', 'system']);
 export const supaRule = pgEnum('supa_rule', ['P1', 'P2', 'P3', 'O1', 'O2', 'E1']);

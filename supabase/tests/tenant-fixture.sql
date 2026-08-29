@@ -30,6 +30,7 @@ declare
   v_write_approval uuid;
   v_write_execution uuid;
   v_write_row uuid;
+  v_write_authorization uuid := gen_random_uuid();
   v_tag uuid;
   v_feedback uuid;
   v_experiment uuid;
@@ -190,9 +191,11 @@ begin
   returning id into v_apply_row;
   insert into public.amazon_write_approvals
     (org_id, profile_id, apply_batch_id, mode, preview_sha256, approved_count,
-     approved_by, approved_at, expires_at)
-  values (v_org, v_profile, v_batch, 'manual', repeat('a', 64), 1,
-          p_user_id, now() - interval '2 minutes', now() + interval '1 hour')
+     approved_by, approved_at, expires_at, inverse_preapproved,
+     authorization_id, authorization_sha256)
+  values (v_org, v_profile, v_batch, 'bounded_live_test', repeat('a', 64), 1,
+          p_user_id, now() - interval '2 minutes', now() + interval '1 hour', true,
+          v_write_authorization, repeat('b', 64))
   returning id into v_write_approval;
   insert into public.amazon_write_executions
     (org_id, profile_id, apply_batch_id, approval_id, idempotency_key, status,
@@ -234,6 +237,16 @@ begin
     jsonb_build_object('outcome', 'accepted', 'providerEntityId', 'kw-1',
                        'code', null, 'message', null), now()
   );
+  insert into public.amazon_write_inverse_reservations
+    (org_id, profile_id, forward_execution_id, authorization_id, authorization_sha256)
+  values (v_org, v_profile, v_write_execution, v_write_authorization, repeat('b', 64));
+  insert into public.amazon_write_provider_call_events
+    (org_id, profile_id, execution_id, call_id, event_type, provider_operation,
+     request_fingerprint, requested_entity_ids, requested_count, accepted_count,
+     failed_count, api_call_count, outcome, occurred_at)
+  values (v_org, v_profile, v_write_execution, gen_random_uuid(), 'dispatch',
+          'sp_keyword_bid', md5(p_slug || '-provider-call') || md5(p_slug || '-provider-call-2'),
+          '["kw-1"]'::jsonb, 1, 0, 0, 1, 'dispatched', now());
   insert into public.campaign_maps (org_id, profile_id, name)
   values (v_org, v_profile, 'harvest map');
 

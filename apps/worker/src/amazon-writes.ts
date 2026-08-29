@@ -11,13 +11,13 @@ import {
   recordAmazonWriteOutcomes,
   releaseAmazonWriteExecutionForRetry,
   refuseAmazonWriteExecution,
-  resolveCurrentApplyStates,
   type AmazonWriteObservation,
   type AmazonWriteRowOutcome,
   type DbHandle,
 } from '@wizard-ads/db';
 import {
   AmazonWriteProviderEvidence,
+  AmazonWriteProviderCallEvidence,
   BoundedAmazonWriteAuthorization,
   type AmazonApplyJob,
   type AmazonObserveJob,
@@ -40,6 +40,8 @@ import {
 import { PostgresWorkerStore, type WorkerStore } from './store.js';
 
 const OBSERVATION_DELAYS_SECONDS = [15, 60, 300, 900, 1_800] as const;
+// Longer than the Ads client timeout and its maximum honored Retry-After.
+const WRITE_DISPATCH_LEASE_MS = 5 * 60_000;
 
 export async function loadBoundedAmazonWriteAuthorization(
   path: string | undefined,
@@ -65,6 +67,7 @@ export interface AmazonWriteRuntimeStore {
     now: Date;
     maxConcurrentMutations: number;
     authorizationId: string | null;
+    authorizationSha256: string | null;
     maxRowsPerExecution: number;
     maxTotalExecutions: number;
     dispatchLeaseToken: string;
@@ -82,6 +85,8 @@ export interface AmazonWriteRuntimeStore {
     executionId: string;
     leaseToken: string;
     rowIds: readonly string[];
+    callId: string;
+    callEvidence: AmazonWriteProviderCallEvidence;
   }): Promise<void>;
   markDispatched(input: {
     orgId: string;
@@ -89,13 +94,20 @@ export interface AmazonWriteRuntimeStore {
     executionId: string;
     leaseToken: string;
     rowIds: readonly string[];
-    dispatchedAt: Date;
+    callId: string;
+    providerOperation: AmazonWriteAction['actionType'];
+    requestFingerprint: string;
+    requestedEntityIds: readonly string[];
+    authorizationId: string;
+    authorizationSha256: string;
     leaseExpiresAt: Date;
   }): Promise<void>;
   recordOutcomes(input: {
     orgId: string;
     profileId: string;
     executionId: string;
+    callId: string;
+    callEvidence: AmazonWriteProviderCallEvidence;
     attemptedAt: Date;
     outcomes: readonly AmazonWriteRowOutcome[];
   }): ReturnType<typeof recordAmazonWriteOutcomes>;
@@ -112,6 +124,7 @@ export interface AmazonWriteRuntimeStore {
     orgId: string;
     profileId: string;
     actions: readonly { writeRowId: string; action: AmazonWriteAction; rowStatus: string }[];
+    observedRows: readonly EntityRow[];
     finalAttempt: boolean;
   }): Promise<AmazonWriteObservation[]>;
   recordObservations(input: {
@@ -163,68 +176,7 @@ export class PostgresAmazonWriteStore implements AmazonWriteRuntimeStore {
   async resolveObservation(
     input: Parameters<AmazonWriteRuntimeStore['resolveObservation']>[0],
   ): Promise<AmazonWriteObservation[]> {
-    const targets = input.actions.map(({ writeRowId, action }) => ({
-      key: writeRowId,
-      entityType: action.actionType === 'sp_campaign_placement' ? 'placement' as const
-        : action.actionType === 'sp_keyword_bid' ? 'keyword' as const : 'target' as const,
-      entityId: action.amazonEntityId,
-      field: action.field,
-    }));
-    const resolved = await resolveCurrentApplyStates(
-      this.handle,
-      { orgId: input.orgId, profileId: input.profileId, targets },
-    );
-    if (resolved.length !== input.actions.length) {
-      throw new Error(`Amazon observation offered ${input.actions.length} rows but resolved ${resolved.length}`);
-    }
-    const actionByRow = new Map(input.actions.map((row) => [row.writeRowId, row] as const));
-    const placementCampaigns = [...new Set(input.actions
-      .filter((row) => row.action.actionType === 'sp_campaign_placement')
-      .map((row) => row.action.amazonEntityId))];
-    const contexts = placementCampaigns.length === 0 ? [] : await this.handle.sql<{
-      amazon_id: string;
-      campaign_write_context: CampaignWriteContext | null;
-    }[]>`
-      select amazon_id, campaign_write_context from public.campaigns
-       where org_id = ${input.orgId} and profile_id = ${input.profileId}
-         and amazon_id = any(${placementCampaigns}::text[])
-    `;
-    const contextByCampaign = new Map(contexts.map((row) => [row.amazon_id, row.campaign_write_context] as const));
-    const expectedContextByCampaign = new Map<string, CampaignWriteContext>();
-    for (const campaignId of placementCampaigns) {
-      const actions = input.actions.filter((row): row is typeof row & {
-        action: Extract<AmazonWriteAction, { actionType: 'sp_campaign_placement' }>;
-      } => row.action.actionType === 'sp_campaign_placement' && row.action.amazonEntityId === campaignId);
-      const first = actions[0];
-      if (!first) continue;
-      expectedContextByCampaign.set(campaignId, placementProviderStateAfter(first.action.campaignContext.providerState, actions));
-    }
-    return resolved.map((state) => {
-      const row = actionByRow.get(state.key);
-      if (!row) throw new Error(`Amazon observation resolved unknown row ${state.key}`);
-      const action = row.action;
-      const contextObserved = action.actionType === 'sp_campaign_placement'
-        ? isDeepStrictEqual(
-          contextByCampaign.get(action.amazonEntityId) ?? null,
-          expectedContextByCampaign.get(action.amazonEntityId) ?? null,
-        )
-        : null;
-      const observed = contextObserved ?? (typeof state.currentValue === 'number'
-        && Object.is(state.currentValue, action.requestedValue));
-      const stillOriginal = action.actionType === 'sp_campaign_placement'
-        ? isDeepStrictEqual(
-          contextByCampaign.get(action.amazonEntityId) ?? null,
-          action.campaignContext.providerState,
-        )
-        : typeof state.currentValue === 'number' && Object.is(state.currentValue, action.expectedValue);
-      return {
-        writeRowId: state.key,
-        state: observed ? 'observed'
-          : row.rowStatus === 'dispatched' && stillOriginal ? 'not_applied'
-            : input.finalAttempt ? 'conflict' : 'pending',
-        currentValue: state.currentValue,
-      };
-    });
+    return classifyAmazonWriteObservations(input);
   }
 
   recordObservations(input: Parameters<AmazonWriteRuntimeStore['recordObservations']>[0]) {
@@ -236,8 +188,81 @@ export class PostgresAmazonWriteStore implements AmazonWriteRuntimeStore {
   }
 }
 
+export function classifyAmazonWriteObservations(
+  input: Parameters<AmazonWriteRuntimeStore['resolveObservation']>[0],
+): AmazonWriteObservation[] {
+    const observedByEntity = new Map(input.observedRows.map((row) => [
+      `${row.entityType}:${row.amazonId}`, row,
+    ] as const));
+    const placementCampaigns = [...new Set(input.actions
+      .filter((row) => row.action.actionType === 'sp_campaign_placement')
+      .map((row) => row.action.amazonEntityId))];
+    const expectedContextByCampaign = new Map<string, CampaignWriteContext>();
+    for (const campaignId of placementCampaigns) {
+      const actions = input.actions.filter((row): row is typeof row & {
+        action: Extract<AmazonWriteAction, { actionType: 'sp_campaign_placement' }>;
+      } => row.action.actionType === 'sp_campaign_placement' && row.action.amazonEntityId === campaignId);
+      const first = actions[0];
+      if (!first) continue;
+      expectedContextByCampaign.set(campaignId, placementProviderStateAfter(first.action.campaignContext.providerState, actions));
+    }
+    return input.actions.map((row) => {
+      const { action } = row;
+      const entityType = action.actionType === 'sp_campaign_placement' ? 'campaign'
+        : action.actionType === 'sp_keyword_bid' ? 'keyword' : 'target';
+      const providerRow = observedByEntity.get(`${entityType}:${action.amazonEntityId}`);
+      if (!providerRow) throw new Error(`Amazon observation omitted ${entityType}:${action.amazonEntityId}`);
+      const contextObserved = action.actionType === 'sp_campaign_placement'
+        ? isDeepStrictEqual(
+          providerRow.entityType === 'campaign' ? providerRow.campaignWriteContext ?? null : null,
+          expectedContextByCampaign.get(action.amazonEntityId) ?? null,
+        )
+        : null;
+      const currentValue = action.actionType === 'sp_campaign_placement'
+        ? (providerRow.entityType === 'campaign'
+            ? providerRow.placementBidding?.[
+                action.field === 'top_of_search' ? 'topOfSearch'
+                  : action.field === 'product_pages' ? 'productPages' : 'restOfSearch'
+              ] ?? null
+            : null)
+        : action.actionType === 'sp_keyword_bid'
+          ? (providerRow.entityType === 'keyword' ? providerRow.bid : null)
+          : (providerRow.entityType === 'target' ? providerRow.bid : null);
+      const observed = contextObserved ?? (typeof currentValue === 'number'
+        && Object.is(currentValue, action.requestedValue));
+      const stillOriginal = action.actionType === 'sp_campaign_placement'
+        ? isDeepStrictEqual(
+          providerRow.entityType === 'campaign' ? providerRow.campaignWriteContext ?? null : null,
+          action.campaignContext.providerState,
+        )
+        : typeof currentValue === 'number' && Object.is(currentValue, action.expectedValue);
+      return {
+        writeRowId: row.writeRowId,
+        state: observed ? 'observed'
+          : row.rowStatus === 'dispatched' && stillOriginal && input.finalAttempt ? 'not_applied'
+            : input.finalAttempt ? 'conflict' : 'pending',
+        currentValue,
+      };
+    });
+}
+
 function normalized(value: string): string {
   return value.trim().toLocaleLowerCase('en-US');
+}
+
+/** Stable across harmless JSON array reordering; binds every authorization rule. */
+export function boundedAmazonWriteAuthorizationFingerprint(
+  authorization: BoundedAuthorization,
+): string {
+  const profiles = authorization.profiles
+    .map((profile) => ({
+      ...profile,
+      allowed_entities: [...profile.allowed_entities].sort((left, right) =>
+        `${left.action_type}:${left.amazon_entity_id}:${left.field}`
+          .localeCompare(`${right.action_type}:${right.amazon_entity_id}:${right.field}`)),
+    }))
+    .sort((left, right) => `${left.org_id}:${left.profile_id}`.localeCompare(`${right.org_id}:${right.profile_id}`));
+  return createHash('sha256').update(JSON.stringify({ ...authorization, profiles })).digest('hex');
 }
 
 function allowedProfile(profile: AdsProfileContext, authorization: BoundedAuthorization) {
@@ -269,14 +294,12 @@ function outcomeFor(
   executionId: string,
   row: { writeRowId: string; attemptNumber: number; action: AmazonWriteAction },
   evidence: AmazonWriteProviderEvidence,
-  dispatchToken: string,
 ): AmazonWriteRowOutcome {
   return {
     writeRowId: row.writeRowId,
     attemptNumber: row.attemptNumber,
     requestFingerprint: fingerprint(executionId, row.writeRowId, row.attemptNumber, row.action),
     evidence,
-    dispatchToken,
   };
 }
 
@@ -345,6 +368,7 @@ export class GuardedAmazonWriteRuntime {
     }
     const authorization = initial.authorization;
     const allowed = initial.allowed;
+    const authorizationSha256 = boundedAmazonWriteAuthorizationFingerprint(authorization);
     const now = this.now();
     const leaseToken = randomUUID();
     const prepared = await this.store.prepare({
@@ -354,10 +378,11 @@ export class GuardedAmazonWriteRuntime {
       now,
       maxConcurrentMutations: authorization.constraints.max_concurrent_mutations,
       authorizationId: authorization.authorization_id,
+      authorizationSha256,
       maxRowsPerExecution: authorization.constraints.max_rows_per_execution,
       maxTotalExecutions: authorization.constraints.max_total_executions,
       dispatchLeaseToken: leaseToken,
-      dispatchLeaseExpiresAt: new Date(now.getTime() + 5 * 60_000),
+      dispatchLeaseExpiresAt: new Date(now.getTime() + WRITE_DISPATCH_LEASE_MS),
     });
     if (prepared.recoveryObservation) {
       const observationEnqueued = await this.enqueueObservation(payload, 0, now);
@@ -390,12 +415,14 @@ export class GuardedAmazonWriteRuntime {
     let shouldObserve = false;
     let latestAccounting: AmazonWriteAccounting | null = null;
     let latestStatus = prepared.status;
+    let durableObservation = false;
     const groups = this.providerGroups(profile, prepared.rows);
     for (const group of groups) {
       const refreshed = await this.authorized(profile);
       const refreshedRefusal = 'reason' in refreshed
         ? refreshed.reason
-        : refreshed.authorization.authorization_id !== authorization.authorization_id
+        : (refreshed.authorization.authorization_id !== authorization.authorization_id
+          || boundedAmazonWriteAuthorizationFingerprint(refreshed.authorization) !== authorizationSha256)
           ? 'bounded Amazon write authorization was replaced during execution'
           : this.boundedRefusal(group.rows, prepared.inversePreapproved, refreshed.authorization, refreshed.allowed);
       if (refreshedRefusal !== null) {
@@ -405,16 +432,78 @@ export class GuardedAmazonWriteRuntime {
         break;
       }
       const dispatchedAt = this.now();
+      const callId = randomUUID();
+      const requestFingerprint = createHash('sha256').update(JSON.stringify({
+        executionId: prepared.executionId,
+        callId,
+        providerOperation: group.providerOperation,
+        entityIds: group.expectedEntityIds,
+        actions: group.rows.map((row) => row.action),
+      })).digest('hex');
       await this.store.markDispatched({
         orgId: payload.orgId, profileId: payload.profileId,
         executionId: payload.executionId, leaseToken,
-        rowIds: group.rows.map((row) => row.writeRowId), dispatchedAt,
-        leaseExpiresAt: new Date(dispatchedAt.getTime() + 5 * 60_000),
+        rowIds: group.rows.map((row) => row.writeRowId), callId,
+        providerOperation: group.providerOperation, requestFingerprint,
+        requestedEntityIds: group.expectedEntityIds,
+        authorizationId: authorization.authorization_id, authorizationSha256,
+        leaseExpiresAt: new Date(dispatchedAt.getTime() + WRITE_DISPATCH_LEASE_MS),
       });
+      durableObservation = true;
+      let providerResult: Awaited<ReturnType<typeof group.run>> | null = null;
+      let providerError: unknown = null;
       try {
-        const providerResult = await group.run();
-        amazonApiCalls += providerResult.apiCalls;
-        const evidences = providerResult.evidence;
+        providerResult = await group.run();
+      } catch (error) {
+        providerError = error;
+      }
+      if (providerError !== null) {
+        const providerCalls = providerError instanceof SpWriteRetryableError
+          || providerError instanceof SpWriteAmbiguousError
+          || providerError instanceof SpWriteFailedError
+          ? providerError.apiCalls : 1;
+        amazonApiCalls += providerCalls;
+        const callEvidence = this.providerErrorCallEvidence(providerError, group.providerRows.length);
+        if (providerError instanceof SpWriteRetryableError) {
+          await this.store.releaseForRetry({
+            ...payload, leaseToken, callId, callEvidence,
+            rowIds: group.rows.map((row) => row.writeRowId),
+          });
+          retryRequested = true;
+          retryAfterSeconds = providerError.retryAfterSeconds;
+          break;
+        }
+        const ambiguous = providerError instanceof SpWriteAmbiguousError
+          || !(providerError instanceof SpWriteFailedError);
+        const evidence = failureEvidence(providerError, ambiguous ? 'ambiguous' : 'failed');
+        const outcomes = group.rows.map((row) => outcomeFor(
+          prepared.executionId, row, evidence,
+        ));
+        const recorded = await this.store.recordOutcomes({
+          orgId: payload.orgId, profileId: payload.profileId,
+          executionId: payload.executionId, callId, callEvidence,
+          attemptedAt: this.now(), outcomes,
+        });
+        shouldObserve ||= recorded.shouldObserve;
+        latestAccounting = recorded.accounting;
+        latestStatus = recorded.status;
+        if (ambiguous) {
+          latestAccounting = await this.store.refuse({
+            ...payload,
+            reason: 'later rows refused after an ambiguous Amazon mutation outcome',
+          });
+          break;
+        }
+        continue;
+      }
+
+      if (providerResult === null) throw new Error('Amazon mutation returned no result');
+      amazonApiCalls += providerResult.apiCalls;
+      let evidences = providerResult.evidence;
+      try {
+        if (providerResult.apiCalls !== 1) {
+          throw new SpWriteAmbiguousError('one durable provider call must make exactly one HTTP request', 0);
+        }
         if (evidences.length !== group.providerRows.length) {
           throw new SpWriteAmbiguousError(
             `provider accounted for ${evidences.length} of ${group.providerRows.length} mutations`,
@@ -427,50 +516,23 @@ export class GuardedAmazonWriteRuntime {
             throw new SpWriteAmbiguousError('provider returned a different entity identity', 0);
           }
         });
-        const outcomes = group.expandEvidence(evidences).map(({ row, evidence }) =>
-          outcomeFor(prepared.executionId, row, evidence, leaseToken),
-        );
-        const recorded = await this.store.recordOutcomes({
-          orgId: payload.orgId, profileId: payload.profileId,
-          executionId: payload.executionId, attemptedAt: now, outcomes,
-        });
-        shouldObserve ||= recorded.shouldObserve;
-        latestAccounting = recorded.accounting;
-        latestStatus = recorded.status;
       } catch (error) {
-        amazonApiCalls += error instanceof SpWriteRetryableError
-          || error instanceof SpWriteAmbiguousError
-          || error instanceof SpWriteFailedError
-          ? error.apiCalls : 0;
-        if (error instanceof SpWriteRetryableError) {
-          await this.store.releaseForRetry({
-            ...payload, leaseToken, rowIds: group.rows.map((row) => row.writeRowId),
-          });
-          retryRequested = true;
-          retryAfterSeconds = error.retryAfterSeconds;
-          break;
-        }
-        const ambiguous = error instanceof SpWriteAmbiguousError;
-        const evidence = failureEvidence(
-          error,
-          ambiguous ? 'ambiguous' : 'failed',
-        );
-        const outcomes = group.rows.map((row) => outcomeFor(prepared.executionId, row, evidence, leaseToken));
-        const recorded = await this.store.recordOutcomes({
-          orgId: payload.orgId, profileId: payload.profileId,
-          executionId: payload.executionId, attemptedAt: now, outcomes,
-        });
-        shouldObserve ||= recorded.shouldObserve;
-        latestAccounting = recorded.accounting;
-        latestStatus = recorded.status;
-        if (ambiguous) {
-          latestAccounting = await this.store.refuse({
-            ...payload,
-            reason: 'later rows refused after an ambiguous Amazon mutation outcome',
-          });
-          break;
-        }
+        evidences = group.providerRows.map(() => failureEvidence(error, 'ambiguous'));
       }
+      const callEvidence = this.providerResultCallEvidence(evidences);
+      const outcomes = group.expandEvidence(evidences).map(({ row, evidence }) =>
+        outcomeFor(prepared.executionId, row, evidence),
+      );
+      // Deliberately outside the provider try/catch: a persistence failure after
+      // Amazon answered leaves the durable dispatch ambiguous and observation-led.
+      const recorded = await this.store.recordOutcomes({
+        orgId: payload.orgId, profileId: payload.profileId,
+        executionId: payload.executionId, callId, callEvidence,
+        attemptedAt: this.now(), outcomes,
+      });
+      shouldObserve ||= recorded.shouldObserve;
+      latestAccounting = recorded.accounting;
+      latestStatus = recorded.status;
     }
     if (retryRequested) {
       throw new SpWriteRetryableError(
@@ -479,14 +541,14 @@ export class GuardedAmazonWriteRuntime {
         amazonApiCalls,
       );
     }
-    if (shouldObserve) {
+    if (shouldObserve && !durableObservation) {
       await this.enqueueObservation(payload, 0, now);
     }
     return {
       status: shouldObserve ? 'awaiting_sync' : latestStatus,
       ...(latestAccounting ?? {}),
       amazonApiCalls,
-      observationEnqueued: shouldObserve,
+      observationEnqueued: shouldObserve || durableObservation,
     };
   }
 
@@ -511,7 +573,8 @@ export class GuardedAmazonWriteRuntime {
     }
     const finalAttempt = payload.attempt >= OBSERVATION_DELAYS_SECONDS.length;
     const classifications = await this.store.resolveObservation({
-      orgId: payload.orgId, profileId: payload.profileId, actions: rows, finalAttempt,
+      orgId: payload.orgId, profileId: payload.profileId, actions: rows,
+      observedRows: observed.rows, finalAttempt,
     });
     const recorded = await this.store.recordObservations({
       orgId: payload.orgId, profileId: payload.profileId,
@@ -579,7 +642,12 @@ export class GuardedAmazonWriteRuntime {
           && entity.field === action.field,
       );
       if (!entityAllowed) return 'entity field is absent from the exact Amazon write allowlist';
-      const delta = Number(Math.abs(action.requestedValue - action.expectedValue).toFixed(6));
+      const delta = action.actionType === 'sp_campaign_placement'
+        ? Math.abs(action.requestedValue - action.expectedValue)
+        : Math.abs(
+            Math.round(action.requestedValue * 100)
+              - Math.round(action.expectedValue * 100),
+          ) / 100;
       if (action.actionType === 'sp_campaign_placement') {
         if (!authorization.allowed_tests.placement.enabled) return 'placement mutation is not authorized';
         if (delta > authorization.allowed_tests.placement.max_absolute_percentage_points) {
@@ -601,12 +669,49 @@ export class GuardedAmazonWriteRuntime {
     return null;
   }
 
+  private providerErrorCallEvidence(
+    error: unknown,
+    requested: number,
+  ): AmazonWriteProviderCallEvidence {
+    const outcome = error instanceof SpWriteRetryableError ? 'throttled'
+      : error instanceof SpWriteFailedError ? 'rejected' : 'ambiguous';
+    return AmazonWriteProviderCallEvidence.parse({
+      outcome,
+      requested,
+      accepted: 0,
+      failed: outcome === 'rejected' ? requested : 0,
+      code: error instanceof Error ? error.name.slice(0, 160) : 'ProviderError',
+      message: safeMessage(error),
+    });
+  }
+
+  private providerResultCallEvidence(
+    evidence: readonly AmazonWriteProviderEvidence[],
+  ): AmazonWriteProviderCallEvidence {
+    const accepted = evidence.filter((row) => row.outcome === 'accepted').length;
+    const deterministicFailed = evidence.filter((row) => row.outcome === 'failed').length;
+    const uncertain = evidence.length - accepted - deterministicFailed;
+    const outcome = uncertain > 0 ? 'ambiguous'
+      : accepted === evidence.length ? 'accepted'
+        : accepted > 0 ? 'mixed' : 'rejected';
+    const firstFailure = evidence.find((row) => row.outcome !== 'accepted');
+    return AmazonWriteProviderCallEvidence.parse({
+      outcome,
+      requested: evidence.length,
+      accepted,
+      failed: uncertain > 0 ? deterministicFailed : evidence.length - accepted,
+      code: firstFailure?.code ?? null,
+      message: firstFailure?.message ?? null,
+    });
+  }
+
   private providerGroups(
     profile: AdsProfileContext,
     rows: readonly { writeRowId: string; attemptNumber: number; action: AmazonWriteAction }[],
   ) {
     const groups: Array<{
       rows: typeof rows;
+      providerOperation: AmazonWriteAction['actionType'];
       providerRows: readonly unknown[];
       expectedEntityIds: readonly string[];
       run: () => Promise<{ evidence: AmazonWriteProviderEvidence[]; apiCalls: number }>;
@@ -617,7 +722,7 @@ export class GuardedAmazonWriteRuntime {
     const keyword = rows.filter((row) => row.action.actionType === 'sp_keyword_bid');
     for (const chunk of chunks(keyword, SP_WRITE_BATCH_SIZE)) {
       const providerRows = chunk.map((row) => ({ keywordId: row.action.amazonEntityId, bid: row.action.requestedValue }));
-      groups.push({ rows: chunk, providerRows, expectedEntityIds: chunk.map((row) => row.action.amazonEntityId),
+      groups.push({ rows: chunk, providerOperation: 'sp_keyword_bid', providerRows, expectedEntityIds: chunk.map((row) => row.action.amazonEntityId),
         run: () => this.provider.updateSpKeywordBids(profile, providerRows),
         expandEvidence: (evidence) => chunk.map((row, index) => ({ row, evidence: evidence[index] as AmazonWriteProviderEvidence })),
       });
@@ -625,7 +730,7 @@ export class GuardedAmazonWriteRuntime {
     const targets = rows.filter((row) => row.action.actionType === 'sp_target_bid');
     for (const chunk of chunks(targets, SP_WRITE_BATCH_SIZE)) {
       const providerRows = chunk.map((row) => ({ targetId: row.action.amazonEntityId, bid: row.action.requestedValue }));
-      groups.push({ rows: chunk, providerRows, expectedEntityIds: chunk.map((row) => row.action.amazonEntityId),
+      groups.push({ rows: chunk, providerOperation: 'sp_target_bid', providerRows, expectedEntityIds: chunk.map((row) => row.action.amazonEntityId),
         run: () => this.provider.updateSpTargetBids(profile, providerRows),
         expandEvidence: (evidence) => chunk.map((row, index) => ({ row, evidence: evidence[index] as AmazonWriteProviderEvidence })),
       });
@@ -643,31 +748,31 @@ export class GuardedAmazonWriteRuntime {
       const campaigns = [...byCampaign.entries()];
       for (const campaignChunk of chunks(campaigns, SP_WRITE_BATCH_SIZE)) {
         const providerRows = campaignChunk.map(([campaignId, campaignRows]) => {
-        const first = campaignRows[0];
-        if (!first) throw new Error('placement campaign has no rows');
-        for (const row of campaignRows) {
-          if (!isDeepStrictEqual(row.action.campaignContext, first.action.campaignContext)) {
-            throw new Error('placement rows for one campaign carry different current contexts');
+          const first = campaignRows[0];
+          if (!first) throw new Error('placement campaign has no rows');
+          for (const row of campaignRows) {
+            if (!isDeepStrictEqual(row.action.campaignContext, first.action.campaignContext)) {
+              throw new Error('placement rows for one campaign carry different current contexts');
+            }
           }
-        }
-        const providerState = placementProviderStateAfter(
-          first.action.campaignContext.providerState,
-          campaignRows,
-        );
-        return {
-          campaignId,
-          strategy: AMAZON_STRATEGY[providerState.strategy],
-          placementBidding: providerState.placementBidding,
-          ...(providerState.shopperCohortBidding === null ? {} : {
-            shopperCohortBidding: providerState.shopperCohortBidding,
-          }),
-          ...(providerState.offAmazonSettings === null ? {} : {
-            offAmazonSettings: providerState.offAmazonSettings,
-          }),
-        };
+          const providerState = placementProviderStateAfter(
+            first.action.campaignContext.providerState,
+            campaignRows,
+          );
+          return {
+            campaignId,
+            strategy: AMAZON_STRATEGY[providerState.strategy],
+            placementBidding: providerState.placementBidding,
+            ...(providerState.shopperCohortBidding === null ? {} : {
+              shopperCohortBidding: providerState.shopperCohortBidding,
+            }),
+            ...(providerState.offAmazonSettings === null ? {} : {
+              offAmazonSettings: providerState.offAmazonSettings,
+            }),
+          };
         });
         const chunkRows = campaignChunk.flatMap(([, campaignRows]) => campaignRows);
-        groups.push({ rows: chunkRows, providerRows, expectedEntityIds: campaignChunk.map(([campaignId]) => campaignId),
+        groups.push({ rows: chunkRows, providerOperation: 'sp_campaign_placement', providerRows, expectedEntityIds: campaignChunk.map(([campaignId]) => campaignId),
           run: () => this.provider.updateSpCampaignPlacements(profile, providerRows),
           expandEvidence: (evidence) => campaignChunk.flatMap(([, campaignRows], index) =>
             campaignRows.map((row) => ({ row, evidence: evidence[index] as AmazonWriteProviderEvidence })),

@@ -14,7 +14,7 @@ import {
   AdsApiHttpError,
   AdsApiNotImplementedError,
   AdsApiParseError,
-  AdsApiWriteResponseError,
+  AdsThrottleError,
   DuplicateWriteError,
 } from './errors.js';
 import type { SpBatchWriteResult } from './writes.js';
@@ -271,7 +271,7 @@ describe('batching and write failure mapping', () => {
     expect(result.items.length + result.errors.length).toBe(result.submitted);
   });
 
-  it('retries a write only on 429 and honors Retry-After', async () => {
+  it('never retries a throttled write inside the HTTP client', async () => {
     const endpoint = SP_WRITE_ENDPOINTS.campaigns;
     const responses: RecordedResponse[] = [
       { status: 429, headers: { 'retry-after': '3' }, json: { message: 'slow down' } },
@@ -281,12 +281,13 @@ describe('batching and write failure mapping', () => {
       { method: 'PUT', match: endpoint.path, responses },
     ]);
 
-    const result = await client.updateSpCampaigns(PROFILE_ID, [{ campaignId: ID_1, state: 'PAUSED' }]);
+    const error = await client.updateSpCampaigns(PROFILE_ID, [{ campaignId: ID_1, state: 'PAUSED' }])
+      .catch((cause: unknown) => cause);
 
-    expect(result.items).toHaveLength(1);
-    expect(result.apiCalls).toBe(2);
-    expect(server.requestsFor(endpoint.path)).toHaveLength(2);
-    expect(effects.slept).toEqual([3_000]);
+    expect(error).toBeInstanceOf(AdsThrottleError);
+    expect(error).toMatchObject({ attempts: 1, retryAfterMs: 3_000 });
+    expect(server.requestsFor(endpoint.path)).toHaveLength(1);
+    expect(effects.slept).toEqual([]);
     expect(client.throttleState.totalThrottles).toBe(1);
   });
 
@@ -333,7 +334,7 @@ describe('batching and write failure mapping', () => {
     ])).rejects.toBeInstanceOf(AdsApiParseError);
   });
 
-  it('retains every outbound attempt when a retried response is ambiguous', async () => {
+  it('returns the first 429 without consuming the later ambiguous response', async () => {
     const endpoint = SP_WRITE_ENDPOINTS.targets;
     const { client } = clientFor([
       { method: 'PUT', match: endpoint.path, responses: [
@@ -346,8 +347,8 @@ describe('batching and write failure mapping', () => {
       { targetId: ID_1, bid: 0.6 },
     ]).catch((cause: unknown) => cause);
 
-    expect(error).toBeInstanceOf(AdsApiWriteResponseError);
-    expect(error).toMatchObject({ apiCalls: 2 });
+    expect(error).toBeInstanceOf(AdsThrottleError);
+    expect(error).toMatchObject({ attempts: 1 });
   });
 
   it('makes no HTTP call for an empty batch', async () => {

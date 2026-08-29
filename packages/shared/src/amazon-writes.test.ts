@@ -3,6 +3,7 @@ import {
   ApproveAmazonWriteExecution,
   AmazonWriteAccounting,
   AmazonWriteAction,
+  AmazonWriteProviderCallEvidence,
   BoundedAmazonWriteAuthorization,
 } from './amazon-writes.js';
 
@@ -50,6 +51,21 @@ describe('guarded Amazon write contracts', () => {
     })).toThrow(/attempted plus refused/i);
   });
 
+  it('requires exact provider call outcome counts', () => {
+    expect(() => AmazonWriteProviderCallEvidence.parse({
+      outcome: 'accepted', requested: 2, accepted: 1, failed: 1,
+      code: null, message: null,
+    })).toThrow(/accept every row/i);
+    expect(() => AmazonWriteProviderCallEvidence.parse({
+      outcome: 'mixed', requested: 2, accepted: 2, failed: 0,
+      code: null, message: null,
+    })).toThrow(/accepted and failed/i);
+    expect(() => AmazonWriteProviderCallEvidence.parse({
+      outcome: 'throttled', requested: 1, accepted: 0, failed: 1,
+      code: null, message: null,
+    })).toThrow(/cannot classify rows/i);
+  });
+
   it('parses the gitignored bounded authorization shape and requires fail-closed constraints', () => {
     const authorization = BoundedAmazonWriteAuthorization.parse({
       schema: 'openspell.amazon-write-authorization.v1',
@@ -70,7 +86,7 @@ describe('guarded Amazon write contracts', () => {
       constraints: {
         max_concurrent_mutations: 1,
         max_rows_per_execution: 1,
-        max_total_executions: 1,
+        max_total_executions: 2,
         require_current_value_match: true,
         require_amazon_acceptance: true,
         require_sync_observation_before_inverse: true,
@@ -78,6 +94,10 @@ describe('guarded Amazon write contracts', () => {
       },
     });
     expect(authorization.allowed_tests.bid.max_absolute_delta).toBe(0.01);
+    expect(() => BoundedAmazonWriteAuthorization.parse({
+      ...authorization,
+      constraints: { ...authorization.constraints, max_total_executions: 1 },
+    })).toThrow(/two reserved execution slots/i);
     expect(() => BoundedAmazonWriteAuthorization.parse({
       ...authorization,
       constraints: { ...authorization.constraints, stop_on_conflict: false },
@@ -95,6 +115,7 @@ describe('guarded Amazon write contracts', () => {
       previewSha256: 'a'.repeat(64),
       expectedCount: 1,
       authorizationId: '99999999-9999-4999-8999-999999999999',
+      authorizationSha256: 'b'.repeat(64),
       inversePreapproved: true,
     };
     expect(() => ApproveAmazonWriteExecution.parse({ ...base, approvalMode: 'manual' }))
