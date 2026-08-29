@@ -15,7 +15,7 @@
  * in the run-level audit payload. This is intentional: inventing an entity ref
  * for an account-wide note would turn narrative into an exportable fake action.
  */
-import type { DbHandle } from '@wizard-ads/db';
+import type { DbHandle, QuerySql } from '@wizard-ads/db';
 import {
   buildRecommendations,
   CATEGORY_UNKNOWN,
@@ -155,6 +155,15 @@ export interface RecommendationGroupRun {
   dueAt: string;
 }
 
+export interface GroupRecommendationSafety {
+  mayPropose: boolean;
+  exportedRecommendations: number;
+  incompleteObservations: number;
+  holdDecisions: number;
+  revertDecisions: number;
+  reason: string;
+}
+
 export interface StartRunResult {
   alreadySucceeded: boolean;
   proposalsCount: number;
@@ -183,6 +192,7 @@ export interface RecommendationRunNarrative {
   qualitative: RecommendationsResult;
   pacing: PacingResult | null;
   diagnostics: ProposalDiagnostics;
+  groupSafety: GroupRecommendationSafety | null;
 }
 
 /** Shared recommendation plus core-only notes persisted through audit_log. */
@@ -206,6 +216,10 @@ export interface RecommendationRunStore {
     window: DateWindow,
     groupId?: string,
   ): Promise<RecommendationRunInputs>;
+  loadGroupRecommendationSafety(
+    scope: ProfileScope,
+    groupId: string,
+  ): Promise<GroupRecommendationSafety>;
   succeedRun(completion: RunCompletion): Promise<number>;
   failRun(scope: RunScope, error: string): Promise<void>;
 }
@@ -289,6 +303,9 @@ export async function runRecommendations(
     const profile = await store.loadProfile(scope);
     const window = recommendationWindow(profile.timezone, lookbackDays, now);
     const inputs = await store.loadInputs(scope, window, started.groupRun?.group.id);
+    const groupSafety = started.groupRun === null || started.groupRun === undefined
+      ? null
+      : await store.loadGroupRecommendationSafety(scope, started.groupRun.group.id);
     const resolved = resolveStrategy({
       goal: profile.goal,
       tenant: inputs.tenantStrategy,
@@ -308,7 +325,7 @@ export async function runRecommendations(
       pacing,
       rankRadar: rankRadarFrom(inputs),
     });
-    const { proposals, diagnostics } = bidProposals({
+    const evaluated = bidProposals({
       scope,
       window,
       profile,
@@ -318,11 +335,19 @@ export async function runRecommendations(
       pacing,
       group: started.groupRun?.group ?? null,
     });
+    const proposals = groupSafety?.mayPropose === false ? [] : evaluated.proposals;
+    const diagnostics = groupSafety?.mayPropose === false
+      ? suppressForGroupSafety(evaluated.diagnostics, evaluated.proposals.length, groupSafety.reason)
+      : evaluated.diagnostics;
+    const safeQualitative = groupSafety?.mayPropose === false
+      ? { ...qualitative, notes: [...qualitative.notes, groupSafety.reason] }
+      : qualitative;
     const narrative: RecommendationRunNarrative = {
       window,
-      qualitative,
+      qualitative: safeQualitative,
       pacing,
       diagnostics,
+      groupSafety,
     };
     const written = await store.succeedRun({
       ...scope,
@@ -340,6 +365,22 @@ export async function runRecommendations(
     await store.failRun(scope, errorMessage(error).slice(0, 4_000));
     throw error;
   }
+}
+
+function suppressForGroupSafety(
+  diagnostics: ProposalDiagnostics,
+  proposals: number,
+  reason: string,
+): ProposalDiagnostics {
+  return {
+    ...diagnostics,
+    proposed: 0,
+    suppressed: diagnostics.suppressed + proposals,
+    examples: [
+      ...diagnostics.examples,
+      { entity: 'optimization-group', outcome: 'held', detail: reason },
+    ].slice(0, 20),
+  };
 }
 
 interface BidProposalInput {
@@ -1222,6 +1263,13 @@ implements RecommendationRunStore, RecommendationScheduleStore {
     };
   }
 
+  async loadGroupRecommendationSafety(
+    scope: ProfileScope,
+    groupId: string,
+  ): Promise<GroupRecommendationSafety> {
+    return readGroupRecommendationSafety(this.handle.sql, scope, groupId);
+  }
+
   async succeedRun(completion: RunCompletion): Promise<number> {
     return this.handle.sql.begin(async (sql) => {
       const runs = await sql<{ status: string; proposals_count: number }[]>`
@@ -1418,6 +1466,22 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       if (group !== null && !group.enabled) {
         throw new Error('Disabled optimization groups cannot be queued');
       }
+      if (group !== null) {
+        const active = await sql<{ id: string }[]>`
+          select id
+            from public.recommendation_runs
+           where org_id = ${input.orgId}
+             and profile_id = ${input.profileId}
+             and group_id = ${group.id}
+             and status in ('queued', 'running')
+           limit 1
+        `;
+        if (active.length > 0) {
+          throw new Error('Optimization group already has a queued or running preview');
+        }
+        const safety = await readGroupRecommendationSafety(sql, input, group.id);
+        if (!safety.mayPropose) throw new Error(safety.reason);
+      }
       const dueAt = (input.runAt ?? new Date()).toISOString();
       const runs = await sql<{ id: string }[]>`
         insert into public.recommendation_runs
@@ -1485,8 +1549,23 @@ implements RecommendationRunStore, RecommendationScheduleStore {
          for update of g skip locked
       `;
       let enqueued = 0;
+      let heldGroups = 0;
       for (const row of dueGroups) {
         const group = optimizationGroupFromWire(row);
+        const safety = await readGroupRecommendationSafety(sql, group, group.id);
+        if (!safety.mayPropose) {
+          const advanced = await sql<{ id: string }[]>`
+            update public.optimization_groups
+               set next_run_at = ${nowIso}::timestamptz + cadence
+             where org_id = ${group.orgId}
+               and profile_id = ${group.profileId}
+               and id = ${group.id}
+            returning id
+          `;
+          if (advanced.length !== 1) throw new Error('Advanced 0 of 1 held group schedules');
+          heldGroups += 1;
+          continue;
+        }
         const dueAt = row.next_run_at === null ? nowIso : toTimestamp(row.next_run_at, 'next_run_at');
         const runs = await sql<{ id: string }[]>`
           insert into public.recommendation_runs
@@ -1582,11 +1661,101 @@ implements RecommendationRunStore, RecommendationScheduleStore {
         if (jobs.length !== 1) throw new Error('Enqueued 0 of 1 scheduled recommendation jobs');
         enqueued += jobs.length;
       }
-      const offered = dueGroups.length + dueProfiles.length;
+      const offered = dueGroups.length - heldGroups + dueProfiles.length;
       if (enqueued !== offered) {
         throw new Error(`Found ${offered} due recommendation scopes, enqueued ${enqueued}`);
       }
       return enqueued;
     });
   }
+}
+
+async function readGroupRecommendationSafety(
+  sql: QuerySql,
+  scope: ProfileScope,
+  groupId: string,
+): Promise<GroupRecommendationSafety> {
+  const [row] = await sql<{
+    exported_recommendations: number | string;
+    incomplete_observations: number | string;
+    hold_decisions: number | string;
+    revert_decisions: number | string;
+  }[]>`
+    with exported as (
+      select distinct recommendation.id
+        from public.recommendations recommendation
+        join public.recommendation_runs run
+          on run.id = recommendation.run_id
+         and run.org_id = ${scope.orgId}
+         and run.profile_id = ${scope.profileId}
+         and run.group_id = ${groupId}
+        join public.apply_rows apply_row
+          on apply_row.org_id = ${scope.orgId}
+         and apply_row.profile_id = ${scope.profileId}
+         and apply_row.recommendation_id = recommendation.id
+        join public.apply_batches batch
+          on batch.org_id = ${scope.orgId}
+         and batch.profile_id = ${scope.profileId}
+         and batch.id = apply_row.batch_id
+         and batch.status in ('staged', 'applied')
+       where recommendation.org_id = ${scope.orgId}
+         and recommendation.profile_id = ${scope.profileId}
+    ), evidence as (
+      select exported.id, observation.evidence_state, observation.decision
+        from exported
+        left join lateral (
+          select candidate.evidence_state::text as evidence_state,
+                 candidate.decision::text as decision
+            from public.recommendation_observations candidate
+           where candidate.org_id = ${scope.orgId}
+             and candidate.profile_id = ${scope.profileId}
+             and candidate.group_id = ${groupId}
+             and candidate.recommendation_id = exported.id
+           order by candidate.observed_at desc, candidate.id desc
+           limit 1
+        ) observation on true
+    )
+    select count(*)::int as exported_recommendations,
+           count(*) filter (
+             where evidence_state is null or evidence_state <> 'complete'
+           )::int as incomplete_observations,
+           count(*) filter (where decision = 'hold')::int as hold_decisions,
+           count(*) filter (where decision = 'revert')::int as revert_decisions
+      from evidence
+  `;
+  const exportedRecommendations = Number(row?.exported_recommendations ?? 0);
+  const incompleteObservations = Number(row?.incomplete_observations ?? 0);
+  const holdDecisions = Number(row?.hold_decisions ?? 0);
+  const revertDecisions = Number(row?.revert_decisions ?? 0);
+  if (revertDecisions > 0) {
+    return {
+      mayPropose: false,
+      exportedRecommendations,
+      incompleteObservations,
+      holdDecisions,
+      revertDecisions,
+      reason: `${revertDecisions} exported recommendation${revertDecisions === 1 ? ' requires' : 's require'} reversion review before another group preview`,
+    };
+  }
+  if (incompleteObservations > 0 || holdDecisions > 0) {
+    const blocked = Math.max(incompleteObservations, holdDecisions);
+    return {
+      mayPropose: false,
+      exportedRecommendations,
+      incompleteObservations,
+      holdDecisions,
+      revertDecisions,
+      reason: `${blocked} exported recommendation${blocked === 1 ? ' is' : 's are'} awaiting complete synchronized evidence; hold and do not compound`,
+    };
+  }
+  return {
+    mayPropose: true,
+    exportedRecommendations,
+    incompleteObservations,
+    holdDecisions,
+    revertDecisions,
+    reason: exportedRecommendations === 0
+      ? 'No prior exported recommendation requires observation.'
+      : 'Every active exported recommendation has complete continue evidence.',
+  };
 }

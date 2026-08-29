@@ -328,7 +328,11 @@ export function OptimizationGroupsManager({
             {visibleCampaigns.length === 0 ? <p className="wa-hint">No campaigns match this search.</p> : null}
           </div>
 
-          <Field label="Exclusions" optional hint="One operator-readable exclusion per line.">
+          <Field
+            label="Exclusion notes"
+            optional
+            hint="Reference metadata only. These notes do not suppress recommendations until typed exclusion rules are available."
+          >
             <textarea rows={3} value={draft.exclusions} onChange={(event) => patch('exclusions', event.target.value)} disabled={!canManage} />
           </Field>
 

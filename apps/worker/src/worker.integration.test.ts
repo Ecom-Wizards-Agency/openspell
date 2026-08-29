@@ -332,6 +332,88 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     expect(Number(job?.delay_seconds)).toBe(5 * 60 * 60);
   });
 
+  it('refuses overlapping group previews and holds after export until complete continue evidence', async () => {
+    await database.sql`delete from public.apply_batches where org_id = ${orgId}`;
+    await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+    const [group] = await database.sql<{ id: string }[]>`
+      select id from public.optimization_groups
+       where org_id = ${orgId} and profile_id = ${profileId}
+       order by id limit 1
+    `;
+    if (!group) throw new Error('seeded optimization group missing');
+    const store = new PostgresRecommendationRunStore(database);
+    const first = await store.enqueueRecommendationRun({
+      orgId,
+      profileId,
+      groupId: group.id,
+      source: 'web',
+    });
+    await expect(store.enqueueRecommendationRun({
+      orgId,
+      profileId,
+      groupId: group.id,
+      source: 'web',
+    })).rejects.toThrow(/queued or running preview/);
+
+    await database.sql`delete from public.sync_jobs where id = ${first.jobId}`;
+    await database.sql`
+      update public.recommendation_runs
+         set status = 'succeeded', started_at = now(), finished_at = now()
+       where id = ${first.runId}
+    `;
+    const [recommendation] = await database.sql<{ id: string }[]>`
+      insert into public.recommendations
+        (run_id, org_id, profile_id, reason, entity_type, entity_id, ad_product,
+         campaign_id, ad_group_id, field, current_value, proposed_value, inputs, status)
+      values (${first.runId}, ${orgId}, ${profileId}, 'high_acos', 'keyword',
+              'kw-evidence', 'SP', 'c-1', 'ag-1', 'bid', '1'::jsonb, '0.9'::jsonb,
+              '{}'::jsonb, 'accepted')
+      returning id
+    `;
+    if (!recommendation) throw new Error('synthetic recommendation missing');
+    const [batch] = await database.sql<{ id: string }[]>`
+      insert into public.apply_batches
+        (org_id, profile_id, tag, opt_group, lever, note, status)
+      values (${orgId}, ${profileId}, 'synthetic-evidence', 'Profit', 'bids',
+              'synthetic evidence gate', 'staged')
+      returning id
+    `;
+    if (!batch) throw new Error('synthetic apply batch missing');
+    await database.sql`
+      insert into public.apply_rows
+        (batch_id, org_id, profile_id, recommendation_id, entity_type, entity_id,
+         field, old_value, new_value)
+      values (${batch.id}, ${orgId}, ${profileId}, ${recommendation.id}, 'keyword',
+              'kw-evidence', 'bid', '1'::jsonb, '0.9'::jsonb)
+    `;
+
+    await expect(store.enqueueRecommendationRun({
+      orgId,
+      profileId,
+      groupId: group.id,
+      source: 'web',
+    })).rejects.toThrow(/awaiting complete synchronized evidence/);
+
+    await database.sql`
+      insert into public.recommendation_observations
+        (org_id, profile_id, recommendation_id, group_id, expected_value,
+         synchronized_value, synchronized_at, observation_window_start,
+         observation_window_end, evidence_state, decision, evidence_note)
+      values (${orgId}, ${profileId}, ${recommendation.id}, ${group.id}, 0.9,
+              0.9, now(), current_date - 8, current_date - 1, 'complete',
+              'continue', 'synthetic complete lift evidence')
+    `;
+    await expect(store.enqueueRecommendationRun({
+      orgId,
+      profileId,
+      groupId: group.id,
+      source: 'web',
+    })).resolves.toMatchObject({ runId: expect.any(String), jobId: expect.any(String) });
+    await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
+    await database.sql`delete from public.apply_batches where id = ${batch.id}`;
+    await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+  });
+
   // -------------------------------------------------------------------------
   // entity.sync
   // -------------------------------------------------------------------------

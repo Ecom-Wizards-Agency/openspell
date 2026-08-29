@@ -113,6 +113,14 @@ class FakeStore implements RecommendationRunStore {
   failed: Array<{ scope: RunScope; error: string }> = [];
   startResult: StartRunResult = { alreadySucceeded: false, proposalsCount: 0 };
   loadError: Error | null = null;
+  groupSafety = {
+    mayPropose: true,
+    exportedRecommendations: 0,
+    incompleteObservations: 0,
+    holdDecisions: 0,
+    revertDecisions: 0,
+    reason: 'No prior exported recommendation requires observation.',
+  };
 
   constructor(
     readonly profile: RecommendationProfile = PROFILE,
@@ -137,6 +145,10 @@ class FakeStore implements RecommendationRunStore {
     this.loadedGroupIds.push(groupId);
     if (this.loadError) throw this.loadError;
     return this.inputs;
+  }
+
+  async loadGroupRecommendationSafety() {
+    return this.groupSafety;
   }
 
   async succeedRun(completion: RunCompletion): Promise<number> {
@@ -306,6 +318,53 @@ describe('recommendations runner', () => {
         },
       },
     });
+  });
+
+  it('holds every group proposal while an exported recommendation is awaiting evidence', async () => {
+    const group: OptimizationGroup = {
+      id: GROUP_ID,
+      orgId: ORG_ID,
+      profileId: PROFILE_ID,
+      name: 'Profit evidence',
+      role: 'profit',
+      targetAcos: 0.3,
+      bidFloor: 0.2,
+      bidCeiling: 0.55,
+      bidIncreaseCap: 0.25,
+      bidDecreaseCap: 0.5,
+      placementIncreaseCap: 0.2,
+      placementDecreaseCap: 0.2,
+      exclusions: [],
+      cadence: '7 days',
+      prioritization: 'efficiency_first',
+      enabled: true,
+    };
+    const store = new FakeStore();
+    store.startResult = {
+      alreadySucceeded: false,
+      proposalsCount: 0,
+      groupRun: { group, dueAt: '2026-08-27T00:00:00.000Z' },
+    };
+    store.groupSafety = {
+      mayPropose: false,
+      exportedRecommendations: 1,
+      incompleteObservations: 1,
+      holdDecisions: 0,
+      revertDecisions: 0,
+      reason: '1 exported recommendation is awaiting complete synchronized evidence; hold and do not compound',
+    };
+
+    const result = await runRecommendations(
+      store,
+      { ...JOB, groupId: GROUP_ID },
+      new Date('2026-08-27T12:00:00Z'),
+    );
+
+    expect(result.proposals).toBe(0);
+    expect(store.completed[0]?.proposals).toEqual([]);
+    expect(store.completed[0]?.narrative.groupSafety).toEqual(store.groupSafety);
+    expect(store.completed[0]?.narrative.diagnostics).toMatchObject({ proposed: 0, suppressed: 1 });
+    expect(store.completed[0]?.narrative.qualitative.notes.at(-1)).toContain('do not compound');
   });
 
   it('blocks an out-of-stock target before composing a bid proposal', async () => {
