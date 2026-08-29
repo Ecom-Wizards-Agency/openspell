@@ -341,6 +341,17 @@ suite('grid and roster reads against SQL aggregates', () => {
 
   it('marks a search term as harvested when a keyword with that text exists', async () => {
     await database.sql`
+      insert into public.keywords
+        (org_id, profile_id, amazon_id, ad_product, name, state, campaign_id, ad_group_id,
+         keyword_text, match_type, bid, deleted_at)
+      values
+        (${orgId}, ${profileId}, 'case-duplicate-keyword', 'SP', 'case duplicate', 'enabled',
+         'c-skew-a', 'c-skew-a-ag', 'WIDGET', 'exact', 1.00, null),
+        (${orgId}, ${profileId}, 'deleted-keyword', 'SP', 'deleted keyword', 'archived',
+         'c-skew-a', 'c-skew-a-ag', 'never harvested widget', 'exact', 1.00, now())
+      on conflict (profile_id, amazon_id) do nothing
+    `;
+    await database.sql`
       insert into public.fact_search_term_daily
         (org_id, profile_id, date, ad_product, campaign_id, ad_group_id, target_id, search_term,
          match_type, impressions, clicks, cost, purchases_7d, sales_7d, units_sold_7d)
@@ -362,9 +373,52 @@ suite('grid and roster reads against SQL aggregates', () => {
     // The fixture seeds a keyword whose text is exactly "widget".
     const harvested = rows.find((row) => row.dimensions['search_term'] === 'widget');
     const fresh = rows.find((row) => row.dimensions['search_term'] === 'never harvested widget');
+    // Two current keywords normalize to "widget"; the precomputed vocabulary
+    // must not duplicate the corresponding performance row.
+    expect(rows.filter((row) => row.dimensions['search_term'] === 'widget')).toHaveLength(1);
     expect(harvested?.dimensions['harvested']).toBe(true);
     expect(fresh?.dimensions['harvested']).toBe(false);
   });
+
+  it('loads and enriches the 3,597-row operator fixture within the cold server budget', async () => {
+    await database.sql`
+      insert into public.keywords
+        (org_id, profile_id, amazon_id, ad_product, name, state, campaign_id, ad_group_id,
+         keyword_text, match_type, bid)
+      select ${orgId}, ${profileId}, 'perf-keyword-' || value::text, 'SP',
+             'synthetic performance keyword', 'enabled', 'c-skew-a', 'c-skew-a-ag',
+             'performance term ' || value::text, 'exact', 1.00
+        from generate_series(1, 3597) value
+      on conflict (profile_id, amazon_id) do nothing
+    `;
+    await database.sql`
+      insert into public.fact_search_term_daily
+        (org_id, profile_id, date, ad_product, campaign_id, ad_group_id, target_id, search_term,
+         match_type, impressions, clicks, cost, purchases_7d, sales_7d, units_sold_7d)
+      select ${orgId}, ${profileId}, ${PERIOD.end}, 'SP', 'c-skew-a', 'c-skew-a-ag',
+             'c-skew-a-kw0', 'performance term ' || value::text, 'exact',
+             100 + value, 5, 5, 1, 25, 1
+        from generate_series(1, 3597) value
+    `;
+
+    const startedAt = performance.now();
+    const { rows, truncated } = await loadGridRows(database, 'search_terms', {
+      orgId,
+      profileId,
+      currencyCode: 'USD',
+      period: PERIOD,
+      comparison: COMPARISON,
+    });
+    const elapsedMs = performance.now() - startedAt;
+    const fixtureRows = rows.filter((row) =>
+      String(row.dimensions['search_term']).startsWith('performance term '),
+    );
+
+    expect(truncated).toBe(false);
+    expect(fixtureRows).toHaveLength(3597);
+    expect(fixtureRows.every((row) => row.dimensions['harvested'] === true)).toBe(true);
+    expect(elapsedMs).toBeLessThan(process.env['CI'] === undefined ? 2_000 : 5_000);
+  }, 20_000);
 
   it('renders one profile in one currency, and refuses to aggregate across two', async () => {
     const { rows } = await loadGridRows(database, 'targets', {
