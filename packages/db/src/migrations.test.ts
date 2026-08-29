@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260829160100_sb_video_observed_ingestion.sql');
+    expect(files.at(-1)).toBe('20260830100000_optimization_weekday_schedule.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -85,6 +85,66 @@ describe.skipIf(!available)('migrations', () => {
        order by e.enumsortorder
     `;
     expect(labels.map((row) => row.enumlabel).at(-1)).toBe('sbAds');
+  });
+
+  it('installs constrained weekday schedules and immutable run provenance', async () => {
+    const columns = await database.sql<{ column_name: string; is_nullable: string }[]>`
+      select column_name, is_nullable
+        from information_schema.columns
+       where table_schema = 'public'
+         and table_name = 'optimization_groups'
+         and column_name in (
+           'review_weekdays', 'review_local_time',
+           'schedule_migration_state', 'next_review_at'
+         )
+       order by column_name
+    `;
+    expect(columns).toEqual([
+      { column_name: 'next_review_at', is_nullable: 'YES' },
+      { column_name: 'review_local_time', is_nullable: 'NO' },
+      { column_name: 'review_weekdays', is_nullable: 'NO' },
+      { column_name: 'schedule_migration_state', is_nullable: 'NO' },
+    ]);
+
+    const constraints = await database.sql<{ conname: string }[]>`
+      select conname from pg_catalog.pg_constraint
+       where conname in (
+         'optimization_groups_review_weekdays_canonical',
+         'optimization_groups_needs_review_disabled',
+         'recommendation_runs_manual_occurrence_check',
+         'recommendation_runs_schedule_context_check',
+         'recommendation_runs_scheduled_due_check'
+       )
+       order by conname
+    `;
+    expect(constraints.map((row) => row.conname)).toEqual([
+      'optimization_groups_needs_review_disabled',
+      'optimization_groups_review_weekdays_canonical',
+      'recommendation_runs_manual_occurrence_check',
+      'recommendation_runs_schedule_context_check',
+      'recommendation_runs_scheduled_due_check',
+    ]);
+
+    const indexes = await database.sql<{ indexname: string }[]>`
+      select indexname from pg_catalog.pg_indexes
+       where schemaname = 'public'
+         and indexname in (
+           'optimization_groups_review_due_idx',
+           'recommendation_runs_group_schedule_occurrence_key'
+         )
+       order by indexname
+    `;
+    expect(indexes.map((row) => row.indexname)).toEqual([
+      'optimization_groups_review_due_idx',
+      'recommendation_runs_group_schedule_occurrence_key',
+    ]);
+
+    const [guard] = await database.sql<{ count: number }[]>`
+      select count(*)::int as count from pg_catalog.pg_trigger
+       where tgname = 'recommendation_runs_schedule_evidence_guard'
+         and not tgisinternal
+    `;
+    expect(guard?.count).toBe(1);
   });
 
   it('keeps one report-pending creative observation and complete report counts', async () => {

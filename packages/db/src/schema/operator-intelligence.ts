@@ -19,6 +19,7 @@ import {
   primaryKey,
   smallint,
   text,
+  time,
   unique,
   uniqueIndex,
   uuid,
@@ -478,9 +479,15 @@ export const optimizationGroups = pgTable(
     placementDecreaseCap: money('placement_decrease_cap', 9, 6).notNull(),
     exclusions: text('exclusions').array().notNull().default([]),
     cadence: interval('cadence').notNull(),
+    reviewWeekdays: text('review_weekdays').array().notNull(),
+    reviewLocalTime: time('review_local_time', { precision: 0 }).notNull(),
+    scheduleMigrationState: text('schedule_migration_state')
+      .$type<'native' | 'legacy_supported' | 'needs_review'>()
+      .notNull(),
     prioritization: optimizationPrioritization('prioritization').notNull(),
     enabled: boolean('enabled').notNull().default(true),
     nextRunAt: ts('next_run_at'),
+    nextReviewAt: ts('next_review_at'),
     createdAt: ts('created_at').notNull().defaultNow(),
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
@@ -490,6 +497,9 @@ export const optimizationGroups = pgTable(
     uniqueIndex('optimization_groups_profile_id_name_key').on(t.profileId, t.name),
     uniqueIndex('optimization_groups_org_id_profile_id_id_key').on(t.orgId, t.profileId, t.id),
     index('optimization_groups_due_idx').on(t.nextRunAt).where(sql`${t.enabled}`),
+    index('optimization_groups_review_due_idx')
+      .on(t.nextReviewAt)
+      .where(sql`${t.enabled} and ${t.scheduleMigrationState} <> 'needs_review'`),
   ],
 );
 

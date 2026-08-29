@@ -9,15 +9,18 @@
 import { randomUUID } from 'node:crypto';
 import {
   OptimizationGroup,
+  OptimizationReviewSchedule,
   type AdProduct,
   type OptimizationGroup as OptimizationGroupValue,
+  type OptimizationReviewSchedule as OptimizationReviewScheduleValue,
 } from '@wizard-ads/shared';
 import type { DbHandle, QuerySql } from '../client.js';
+import { nextReviewAt } from '../scheduling/next-review-at.js';
 
 export type OptimizationGroupSettings = Omit<
   OptimizationGroupValue,
-  'id' | 'orgId' | 'profileId'
->;
+  'id' | 'orgId' | 'profileId' | 'cadence' | 'reviewSchedule' | 'scheduleMigrationState'
+> & { reviewSchedule: OptimizationReviewScheduleValue };
 
 export interface OptimizationCampaignChoice {
   campaignId: string;
@@ -39,13 +42,14 @@ export interface OptimizationGroupRunSummary {
 export interface OptimizationGroupRecord {
   group: OptimizationGroupValue;
   campaignIds: string[];
-  nextRunAt: string | null;
+  nextReviewAt: string | null;
   lastRun: OptimizationGroupRunSummary | null;
 }
 
 export interface OptimizationWorkspace {
   groups: OptimizationGroupRecord[];
   campaigns: OptimizationCampaignChoice[];
+  profileTimezone: string | null;
   assignedCampaigns: number;
   unassignedCampaigns: number;
 }
@@ -57,6 +61,8 @@ export interface SaveOptimizationGroupInput {
   id?: string;
   settings: OptimizationGroupSettings;
   campaignIds: readonly string[];
+  /** Deterministic tests only; production callers use the transaction start time. */
+  now?: Date;
 }
 
 export interface SaveOptimizationGroupResult {
@@ -82,9 +88,13 @@ interface GroupWireRow {
   placement_decrease_cap: string | number;
   exclusions: string[];
   cadence: string;
+  review_weekdays: OptimizationReviewScheduleValue['weekdays'];
+  review_local_time: string;
+  schedule_migration_state: OptimizationGroupValue['scheduleMigrationState'];
   prioritization: OptimizationGroupValue['prioritization'];
   enabled: boolean;
   next_run_at: Date | string | null;
+  next_review_at: Date | string | null;
   campaign_ids: string[] | null;
   last_run_id: string | null;
   last_run_status: OptimizationGroupRunSummary['status'] | null;
@@ -114,14 +124,16 @@ export async function readOptimizationWorkspace(
   handle: Pick<DbHandle, 'sql'>,
   input: { orgId: string; profileId: string },
 ): Promise<OptimizationWorkspace> {
-  const [groups, campaigns] = await Promise.all([
+  const [groups, campaigns, profiles] = await Promise.all([
     handle.sql<GroupWireRow[]>`
       select g.id, g.org_id, g.profile_id, g.name, g.role::text as role,
              g.target_acos, g.bid_floor, g.bid_ceiling,
              g.bid_increase_cap, g.bid_decrease_cap,
              g.placement_increase_cap, g.placement_decrease_cap,
              g.exclusions, g.cadence::text as cadence,
-             g.prioritization::text as prioritization, g.enabled, g.next_run_at,
+             g.review_weekdays, g.review_local_time::text,
+             g.schedule_migration_state, g.prioritization::text as prioritization,
+             g.enabled, g.next_run_at, g.next_review_at,
              coalesce(assignments.campaign_ids, '{}'::text[]) as campaign_ids,
              latest.id as last_run_id, latest.status::text as last_run_status,
              latest.proposals_count as last_run_proposals,
@@ -165,6 +177,10 @@ export async function readOptimizationWorkspace(
          and c.deleted_at is null
        order by c.ad_product, lower(c.name), c.amazon_id
     `,
+    handle.sql<{ timezone: string }[]>`
+      select timezone from public.ad_profiles
+       where org_id = ${input.orgId} and id = ${input.profileId}
+    `,
   ]);
 
   const records = groups.map(groupRecordFromWire);
@@ -180,6 +196,7 @@ export async function readOptimizationWorkspace(
   return {
     groups: records,
     campaigns: campaignRows,
+    profileTimezone: profiles[0]?.timezone ?? null,
     assignedCampaigns,
     unassignedCampaigns: campaignRows.length - assignedCampaigns,
   };
@@ -194,24 +211,44 @@ export async function saveOptimizationGroup(
   input: SaveOptimizationGroupInput,
 ): Promise<SaveOptimizationGroupResult> {
   const id = input.id ?? randomUUID();
-  const group = OptimizationGroup.parse({
-    id,
-    orgId: input.orgId,
-    profileId: input.profileId,
-    ...input.settings,
-  });
+  const reviewSchedule = OptimizationReviewSchedule.parse(input.settings.reviewSchedule);
   const campaignIds = uniqueNonempty(input.campaignIds);
   if (campaignIds.length !== input.campaignIds.length) {
     throw new OptimizationGroupPersistenceError('campaign assignments must be unique and nonempty');
   }
 
   return handle.sql.begin(async (sql) => {
-    const [profile] = await sql<{ id: string }[]>`
-      select id from public.ad_profiles
+    const [profile] = await sql<{ id: string; timezone: string }[]>`
+      select id, timezone from public.ad_profiles
        where org_id = ${input.orgId} and id = ${input.profileId}
        for update
     `;
     if (!profile) throw new OptimizationGroupPersistenceError('profile not found in organisation');
+
+    const [existingGroup] = await sql<{ cadence: string }[]>`
+      select cadence::text as cadence
+        from public.optimization_groups
+       where org_id = ${input.orgId}
+         and profile_id = ${input.profileId}
+         and id = ${id}
+       for update
+    `;
+    const group = OptimizationGroup.parse({
+      id,
+      orgId: input.orgId,
+      profileId: input.profileId,
+      ...input.settings,
+      reviewSchedule,
+      scheduleMigrationState: 'native',
+      cadence: existingGroup?.cadence ?? '7 days',
+    });
+    const nextDueAt = group.enabled
+      ? nextReviewAt({
+          after: input.now ?? new Date(),
+          schedule: reviewSchedule,
+          timeZone: profile.timezone,
+        })
+      : null;
 
     const existingAssignments = await sql<{ campaign_id: string; group_id: string }[]>`
       select campaign_id, group_id
@@ -244,7 +281,8 @@ export async function saveOptimizationGroup(
         id, org_id, profile_id, name, role, target_acos,
         bid_floor, bid_ceiling, bid_increase_cap, bid_decrease_cap,
         placement_increase_cap, placement_decrease_cap, exclusions,
-        cadence, prioritization, enabled, next_run_at
+        cadence, review_weekdays, review_local_time, schedule_migration_state,
+        prioritization, enabled, next_run_at, next_review_at
       ) values (
         ${group.id}, ${group.orgId}, ${group.profileId}, ${group.name},
         ${group.role}::public.optimization_group_role, ${group.targetAcos},
@@ -252,8 +290,11 @@ export async function saveOptimizationGroup(
         ${group.bidDecreaseCap}, ${group.placementIncreaseCap},
         ${group.placementDecreaseCap}, ${group.exclusions},
         ${group.cadence}::interval,
+        ${reviewSchedule.weekdays}, ${reviewSchedule.localTime}::time,
+        'native',
         ${group.prioritization}::public.optimization_prioritization,
-        ${group.enabled}, case when ${group.enabled} then now() else null end
+        ${group.enabled}, ${nextDueAt?.toISOString() ?? null}::timestamptz,
+        ${nextDueAt?.toISOString() ?? null}::timestamptz
       )
       on conflict (id) do update set
         name = excluded.name,
@@ -266,13 +307,12 @@ export async function saveOptimizationGroup(
         placement_increase_cap = excluded.placement_increase_cap,
         placement_decrease_cap = excluded.placement_decrease_cap,
         exclusions = excluded.exclusions,
-        cadence = excluded.cadence,
+        review_weekdays = excluded.review_weekdays,
+        review_local_time = excluded.review_local_time,
+        schedule_migration_state = 'native',
         prioritization = excluded.prioritization,
         enabled = excluded.enabled,
-        next_run_at = case
-          when not excluded.enabled then null
-          else coalesce(public.optimization_groups.next_run_at, now())
-        end
+        next_review_at = excluded.next_review_at
       where public.optimization_groups.org_id = excluded.org_id
         and public.optimization_groups.profile_id = excluded.profile_id
       returning id
@@ -344,6 +384,9 @@ export async function saveOptimizationGroup(
           movedCampaigns,
           removedCampaigns: removed.length,
           enabled: group.enabled,
+          reviewSchedule,
+          profileTimezone: profile.timezone,
+          nextReviewAt: nextDueAt?.toISOString() ?? null,
         })}::jsonb,
         'web'
       )
@@ -369,7 +412,9 @@ async function readGroupRecords(
            g.bid_increase_cap, g.bid_decrease_cap,
            g.placement_increase_cap, g.placement_decrease_cap,
            g.exclusions, g.cadence::text as cadence,
-           g.prioritization::text as prioritization, g.enabled, g.next_run_at,
+           g.review_weekdays, g.review_local_time::text,
+           g.schedule_migration_state, g.prioritization::text as prioritization,
+           g.enabled, g.next_run_at, g.next_review_at,
            coalesce(assignments.campaign_ids, '{}'::text[]) as campaign_ids,
            latest.id as last_run_id, latest.status::text as last_run_status,
            latest.proposals_count as last_run_proposals,
@@ -415,6 +460,11 @@ function groupRecordFromWire(row: GroupWireRow): OptimizationGroupRecord {
     placementDecreaseCap: Number(row.placement_decrease_cap),
     exclusions: row.exclusions,
     cadence: row.cadence,
+    reviewSchedule: {
+      weekdays: row.review_weekdays,
+      localTime: row.review_local_time.slice(0, 5),
+    },
+    scheduleMigrationState: row.schedule_migration_state,
     prioritization: row.prioritization,
     enabled: row.enabled,
   });
@@ -433,7 +483,7 @@ function groupRecordFromWire(row: GroupWireRow): OptimizationGroupRecord {
   return {
     group,
     campaignIds: row.campaign_ids ?? [],
-    nextRunAt: row.next_run_at === null ? null : toIso(row.next_run_at),
+    nextReviewAt: row.next_review_at === null ? null : toIso(row.next_review_at),
     lastRun,
   };
 }

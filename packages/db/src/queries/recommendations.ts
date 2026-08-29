@@ -26,8 +26,16 @@
  * and unless every proposal it touched actually changed status.
  */
 import { createHash } from 'node:crypto';
-import { OptimizationGroup, serializeApplyRows } from '@wizard-ads/shared';
-import type { ApplyRow, RecommendationInputs } from '@wizard-ads/shared';
+import {
+  OptimizationGroup,
+  RecommendationScheduleContext,
+  serializeApplyRows,
+} from '@wizard-ads/shared';
+import type {
+  ApplyRow,
+  RecommendationInputs,
+  RecommendationScheduleContext as RecommendationScheduleContextValue,
+} from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
 import { lockCurrentApplyStates, resolveCurrentApplyStates } from './apply-state.js';
 import type { JsonValue } from './goto.js';
@@ -120,6 +128,8 @@ export interface RecommendationRunSummary {
   groupRole: OptimizationGroup['role'] | null;
   groupSnapshot: OptimizationGroup | null;
   dueAt: Date | null;
+  runTrigger: 'legacy' | 'manual' | 'schedule';
+  scheduleContext: RecommendationScheduleContextValue | null;
   /** Live counts per status, so "exported N of M accepted" needs no second query. */
   counts: Record<RecommendationStatusName, number>;
 }
@@ -235,6 +245,8 @@ interface RunRow {
   group_role: OptimizationGroup['role'] | null;
   group_snapshot: unknown;
   due_at: Date | string | null;
+  run_trigger: 'legacy' | 'manual' | 'schedule';
+  schedule_context: unknown;
   counts: Record<string, number> | null;
 }
 
@@ -250,6 +262,12 @@ function toRunSummary(row: RunRow): RecommendationRunSummary {
     : OptimizationGroup.parse(row.group_snapshot);
   if (groupSnapshot !== null && groupSnapshot.id !== row.group_id) {
     throw new Error('recommendation run group snapshot does not match group_id');
+  }
+  const scheduleContext = row.schedule_context === null
+    ? null
+    : RecommendationScheduleContext.parse(row.schedule_context);
+  if (row.run_trigger !== 'legacy' && scheduleContext?.trigger !== row.run_trigger) {
+    throw new Error('recommendation run schedule context does not match run_trigger');
   }
   return {
     id: row.id,
@@ -267,6 +285,8 @@ function toRunSummary(row: RunRow): RecommendationRunSummary {
     groupRole: row.group_role,
     groupSnapshot,
     dueAt: toDateOrNull(row.due_at),
+    runTrigger: row.run_trigger,
+    scheduleContext,
     counts,
   };
 }
@@ -285,6 +305,7 @@ export async function listRecommendationRuns(
            r.window_start::text as window_start, r.window_end::text as window_end,
            r.engine_version, r.proposals_count, r.created_at, r.finished_at,
            r.group_id, r.group_role::text as group_role, r.group_snapshot, r.due_at,
+           r.run_trigger, r.schedule_context,
            (
              select jsonb_object_agg(s.status, s.count)
                from (
@@ -313,6 +334,7 @@ export async function getRecommendationRun(
            r.window_start::text as window_start, r.window_end::text as window_end,
            r.engine_version, r.proposals_count, r.created_at, r.finished_at,
            r.group_id, r.group_role::text as group_role, r.group_snapshot, r.due_at,
+           r.run_trigger, r.schedule_context,
            r.strategy_snapshot,
            (
              select jsonb_object_agg(s.status, s.count)

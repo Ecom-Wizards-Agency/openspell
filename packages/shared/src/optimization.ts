@@ -13,6 +13,85 @@ export const OptimizationPrioritization = z.enum([
 ]);
 export type OptimizationPrioritization = z.infer<typeof OptimizationPrioritization>;
 
+export const OptimizationWeekday = z.enum([
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+]);
+export type OptimizationWeekday = z.infer<typeof OptimizationWeekday>;
+
+export const OptimizationReviewSchedule = z.object({
+  weekdays: z.array(OptimizationWeekday).min(1).superRefine((weekdays, context) => {
+    if (new Set(weekdays).size !== weekdays.length) {
+      context.addIssue({ code: 'custom', message: 'review weekdays must be unique' });
+    }
+  }),
+  /** Profile-local wall-clock time in 24-hour HH:mm form. */
+  localTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+}).transform((schedule) => ({
+  ...schedule,
+  weekdays: [...schedule.weekdays].sort(
+    (left, right) => OptimizationWeekday.options.indexOf(left) - OptimizationWeekday.options.indexOf(right),
+  ),
+}));
+export type OptimizationReviewSchedule = z.infer<typeof OptimizationReviewSchedule>;
+
+export const OptimizationScheduleMigrationState = z.enum([
+  'native',
+  'legacy_supported',
+  'needs_review',
+]);
+export type OptimizationScheduleMigrationState = z.infer<
+  typeof OptimizationScheduleMigrationState
+>;
+
+export const RecommendationRunTrigger = z.enum(['manual', 'schedule']);
+export type RecommendationRunTrigger = z.infer<typeof RecommendationRunTrigger>;
+
+/** Immutable local-schedule evidence captured when a group preview is queued. */
+export const RecommendationScheduleContext = z.object({
+  trigger: RecommendationRunTrigger,
+  profileTimezone: z.string().trim().min(1),
+  reviewSchedule: OptimizationReviewSchedule.nullable(),
+  scheduleEnabled: z.boolean(),
+  queuedAt: z.iso.datetime(),
+  scheduledFor: z.iso.datetime().nullable(),
+}).superRefine((value, context) => {
+  if (value.trigger === 'schedule' && value.scheduledFor === null) {
+    context.addIssue({
+      code: 'custom',
+      path: ['scheduledFor'],
+      message: 'scheduled previews require their claimed occurrence',
+    });
+  }
+  if (value.trigger === 'schedule' && value.reviewSchedule === null) {
+    context.addIssue({
+      code: 'custom',
+      path: ['reviewSchedule'],
+      message: 'scheduled previews require a review schedule snapshot',
+    });
+  }
+  if (value.trigger === 'schedule' && !value.scheduleEnabled) {
+    context.addIssue({
+      code: 'custom',
+      path: ['scheduleEnabled'],
+      message: 'scheduled previews require an enabled review schedule',
+    });
+  }
+  if (value.trigger === 'manual' && value.scheduledFor !== null) {
+    context.addIssue({
+      code: 'custom',
+      path: ['scheduledFor'],
+      message: 'manual previews cannot claim a scheduled occurrence',
+    });
+  }
+});
+export type RecommendationScheduleContext = z.infer<typeof RecommendationScheduleContext>;
+
 /** Values are tenant data. This contract intentionally supplies no numeric defaults. */
 export const OptimizationGroup = z.object({
   id: Uuid,
@@ -28,8 +107,12 @@ export const OptimizationGroup = z.object({
   placementIncreaseCap: z.number().nonnegative(),
   placementDecreaseCap: z.number().nonnegative(),
   exclusions: z.array(z.string().min(1)),
+  /** Rollback-only interval retained while weekday scheduling is adopted. */
   cadence: z.string().min(1),
+  reviewSchedule: OptimizationReviewSchedule.nullable().default(null),
+  scheduleMigrationState: OptimizationScheduleMigrationState.default('needs_review'),
   prioritization: OptimizationPrioritization,
+  /** Scheduled preview eligibility only; manual group previews remain available. */
   enabled: z.boolean(),
 });
 export type OptimizationGroup = z.infer<typeof OptimizationGroup>;

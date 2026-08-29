@@ -330,9 +330,13 @@ begin
   insert into public.optimization_groups
     (org_id, profile_id, name, role, target_acos,
      bid_increase_cap, bid_decrease_cap, placement_increase_cap,
-     placement_decrease_cap, cadence, prioritization)
+     placement_decrease_cap, cadence, review_weekdays, review_local_time,
+     schedule_migration_state, prioritization, next_review_at)
   values (v_org, v_profile, 'Fixture Group', 'rank', 0.2,
-          0.1, 0.1, 0.1, 0.1, interval '1 day', 'balanced')
+          0.1, 0.1, 0.1, 0.1, interval '1 day',
+          array['monday', 'tuesday', 'wednesday', 'thursday',
+                'friday', 'saturday', 'sunday'], time '04:00',
+          'native', 'balanced', now())
   returning id into v_group;
 
   insert into public.campaign_optimization_assignments

@@ -122,10 +122,12 @@ describe.skipIf(!available)('WP-56 operator-intelligence foundations', () => {
         org_id, profile_id, name, role, target_acos,
         bid_increase_cap, bid_decrease_cap,
         placement_increase_cap, placement_decrease_cap,
-        cadence, prioritization
+        cadence, review_weekdays, review_local_time, schedule_migration_state,
+        prioritization
       ) values (
         ${orgA}, ${profileA}, 'Synthetic Rank', 'rank', 0.2,
-        0.1, 0.1, 0.1, 0.1, interval '1 day', 'balanced'
+        0.1, 0.1, 0.1, 0.1, interval '1 day', array['monday'], time '04:00',
+        'native', 'balanced'
       ) returning id
     `;
     const [second] = await database.sql<{ id: string }[]>`
@@ -133,10 +135,12 @@ describe.skipIf(!available)('WP-56 operator-intelligence foundations', () => {
         org_id, profile_id, name, role, target_acos,
         bid_increase_cap, bid_decrease_cap,
         placement_increase_cap, placement_decrease_cap,
-        cadence, prioritization
+        cadence, review_weekdays, review_local_time, schedule_migration_state,
+        prioritization
       ) values (
         ${orgA}, ${profileA}, 'Synthetic Profit', 'profit', 0.2,
-        0.1, 0.1, 0.1, 0.1, interval '1 day', 'balanced'
+        0.1, 0.1, 0.1, 0.1, interval '1 day', array['monday'], time '04:00',
+        'native', 'balanced'
       ) returning id
     `;
     const firstId = first?.id ?? '';
@@ -160,10 +164,12 @@ describe.skipIf(!available)('WP-56 operator-intelligence foundations', () => {
         org_id, profile_id, name, role, target_acos,
         bid_increase_cap, bid_decrease_cap,
         placement_increase_cap, placement_decrease_cap,
-        cadence, prioritization
+        cadence, review_weekdays, review_local_time, schedule_migration_state,
+        prioritization
       ) values (
         ${orgB}, ${profileB}, 'Foreign Synthetic', 'shield', 0.2,
-        0.1, 0.1, 0.1, 0.1, interval '1 day', 'balanced'
+        0.1, 0.1, 0.1, 0.1, interval '1 day', array['monday'], time '04:00',
+        'native', 'balanced'
       ) returning id
     `;
     const foreignGroupId = foreignGroup?.id ?? '';

@@ -74,11 +74,21 @@ export interface TestDatabase extends DbHandle {
   drop(): Promise<void>;
 }
 
+export interface CreateTestDatabaseOptions {
+  /** Stop after this exact migration; useful for migration-transition tests. */
+  throughMigration?: string;
+  /** The tenant fixture is on by default. Pre-migration tests normally disable it. */
+  seed?: boolean;
+}
+
 /**
  * Create a database, apply the shim, then every migration in order, then the
  * tenant fixture. Returns a handle plus the teardown.
  */
-export async function createTestDatabase(label = 'db'): Promise<TestDatabase> {
+export async function createTestDatabase(
+  label = 'db',
+  options: CreateTestDatabaseOptions = {},
+): Promise<TestDatabase> {
   const admin = adminConnectionString();
   const name = `wizard_ads_test_${label}_${randomUUID().slice(0, 8)}`.toLowerCase();
   const adminSql = postgres(admin, { max: 1, onnotice: () => {} });
@@ -94,10 +104,18 @@ export async function createTestDatabase(label = 'db'): Promise<TestDatabase> {
 
   try {
     await applySqlFile(handle, SHIM);
+    let reachedThroughMigration = options.throughMigration === undefined;
     for (const file of await migrationFiles()) {
       await applySqlFile(handle, `${MIGRATIONS_DIR}/${file}`);
+      if (file === options.throughMigration) {
+        reachedThroughMigration = true;
+        break;
+      }
     }
-    await applySqlFile(handle, FIXTURE);
+    if (!reachedThroughMigration) {
+      throw new Error(`Migration not found: ${options.throughMigration}`);
+    }
+    if (options.seed !== false) await applySqlFile(handle, FIXTURE);
   } catch (error) {
     await handle.close();
     await dropDatabase(admin, name);

@@ -23,7 +23,7 @@ const settings: OptimizationGroupSettings = {
   placementIncreaseCap: 0.19,
   placementDecreaseCap: 0.11,
   exclusions: ['paused launch'],
-  cadence: '7 days',
+  reviewSchedule: { weekdays: ['monday', 'thursday'], localTime: '09:30' },
   prioritization: 'growth_first',
   enabled: true,
 };
@@ -90,6 +90,7 @@ describe.skipIf(!available)('optimization-group workspace', () => {
       id: fixture?.group.id,
       settings,
       campaignIds: ['c-2', 'c-1'],
+      now: new Date('2026-08-30T12:00:00.000Z'),
     });
     expect(updated).toMatchObject({
       offeredCampaigns: 2,
@@ -101,26 +102,41 @@ describe.skipIf(!available)('optimization-group workspace', () => {
       name: 'Rank focus',
       role: 'rank',
       targetAcos: 0.23,
-      cadence: '7 days',
+      cadence: '1 day',
+      reviewSchedule: { weekdays: ['monday', 'thursday'], localTime: '09:30' },
+      scheduleMigrationState: 'native',
       prioritization: 'growth_first',
     }));
     expect(updated.record.campaignIds).toEqual(['c-1', 'c-2']);
+    expect(updated.record.nextReviewAt).toBe('2026-08-31T09:30:00.000Z');
 
     const after = await readOptimizationWorkspace(database, { orgId: orgA, profileId: profileA });
     expect(after).toMatchObject({ assignedCampaigns: 2, unassignedCampaigns: 0 });
     expect(
       after.groups.find((record) => record.group.id === first.record.group.id)?.campaignIds,
     ).toEqual([]);
-    const [audit] = await database.sql<{ campaigns: number; moved: number }[]>`
+    const [audit] = await database.sql<{
+      campaigns: number;
+      moved: number;
+      weekdays: string[];
+      next_review_at: string;
+    }[]>`
       select (payload->>'campaigns')::int as campaigns,
-             (payload->>'movedCampaigns')::int as moved
+             (payload->>'movedCampaigns')::int as moved,
+             array(select jsonb_array_elements_text(payload->'reviewSchedule'->'weekdays')) as weekdays,
+             payload->>'nextReviewAt' as next_review_at
         from public.audit_log
        where org_id = ${orgA}
          and action = 'optimization_group.saved'
          and target_id = ${fixture?.group.id ?? ''}
        order by id desc limit 1
     `;
-    expect(audit).toEqual({ campaigns: 2, moved: 1 });
+    expect(audit).toEqual({
+      campaigns: 2,
+      moved: 1,
+      weekdays: ['monday', 'thursday'],
+      next_review_at: '2026-08-31T09:30:00.000Z',
+    });
   });
 
   it('rolls back settings and assignments when any campaign is outside the profile', async () => {
@@ -149,7 +165,13 @@ describe.skipIf(!available)('optimization-group workspace', () => {
     const own = await readOptimizationWorkspace(database, { orgId: orgA, profileId: profileA });
     const other = await readOptimizationWorkspace(database, { orgId: orgA, profileId: profileB });
     expect(own.groups.length).toBeGreaterThan(0);
-    expect(other).toEqual({ groups: [], campaigns: [], assignedCampaigns: 0, unassignedCampaigns: 0 });
+    expect(other).toEqual({
+      groups: [],
+      campaigns: [],
+      profileTimezone: null,
+      assignedCampaigns: 0,
+      unassignedCampaigns: 0,
+    });
 
     await expect(
       saveOptimizationGroup(database, {
@@ -178,11 +200,20 @@ describe.skipIf(!available)('optimization-group workspace', () => {
     const [run] = await database.sql<{ id: string }[]>`
       insert into public.recommendation_runs (
         org_id, profile_id, status, lookback_days, engine_version,
-        group_id, group_role, group_snapshot, due_at
+        group_id, group_role, group_snapshot, due_at, run_trigger,
+        schedule_context
       ) values (
         ${orgA}, ${profileA}, 'succeeded', 7, 'synthetic-engine',
         ${saved.record.group.id}, 'shield', ${JSON.stringify(saved.record.group)}::text::jsonb,
-        '2026-08-20T00:00:00.000Z'::timestamptz
+        '2026-08-20T00:00:00.000Z'::timestamptz, 'manual',
+        ${JSON.stringify({
+          trigger: 'manual',
+          profileTimezone: 'UTC',
+          reviewSchedule: saved.record.group.reviewSchedule,
+          scheduleEnabled: saved.record.group.enabled,
+          queuedAt: '2026-08-20T00:00:00.000Z',
+          scheduledFor: null,
+        })}::text::jsonb
       ) returning id
     `;
     const summaries = await listRecommendationRuns(database, { orgId: orgA, profileId: profileA });
@@ -191,6 +222,15 @@ describe.skipIf(!available)('optimization-group workspace', () => {
       groupId: saved.record.group.id,
       groupRole: 'shield',
       groupSnapshot: { id: saved.record.group.id, name: 'Shield evidence', role: 'shield' },
+      runTrigger: 'manual',
+      scheduleContext: {
+        trigger: 'manual',
+        profileTimezone: 'UTC',
+        reviewSchedule: { weekdays: ['monday', 'thursday'], localTime: '09:30' },
+        scheduleEnabled: true,
+        queuedAt: '2026-08-20T00:00:00.000Z',
+        scheduledFor: null,
+      },
     });
     expect(summary?.dueAt?.toISOString()).toBe('2026-08-20T00:00:00.000Z');
 

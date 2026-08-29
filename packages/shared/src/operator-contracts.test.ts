@@ -18,6 +18,7 @@ import {
   QueryCategory,
   QueryVocabularyEntry,
   RecommendationObservation,
+  RecommendationScheduleContext,
   ReportCoverage,
   ReportPromotionWatermark,
   ReversionBatchPreview,
@@ -252,6 +253,33 @@ describe('optimization observations and reversion', () => {
         assignedBy: null,
       }).groupId,
     ).toBe(GROUP_ID);
+  });
+
+  it('keeps manual and scheduled preview provenance unambiguous', () => {
+    expect(RecommendationScheduleContext.parse({
+      trigger: 'manual',
+      profileTimezone: 'UTC',
+      reviewSchedule: null,
+      scheduleEnabled: false,
+      queuedAt: '2026-08-28T00:00:00Z',
+      scheduledFor: null,
+    }).trigger).toBe('manual');
+    expect(() => RecommendationScheduleContext.parse({
+      trigger: 'schedule',
+      profileTimezone: 'UTC',
+      reviewSchedule: { weekdays: ['monday'], localTime: '09:00' },
+      scheduleEnabled: true,
+      queuedAt: '2026-08-28T00:00:00Z',
+      scheduledFor: null,
+    })).toThrow(/claimed occurrence/);
+    expect(() => RecommendationScheduleContext.parse({
+      trigger: 'manual',
+      profileTimezone: 'UTC',
+      reviewSchedule: { weekdays: ['monday'], localTime: '09:00' },
+      scheduleEnabled: false,
+      queuedAt: '2026-08-28T00:00:00Z',
+      scheduledFor: '2026-08-31T09:00:00Z',
+    })).toThrow(/cannot claim/);
   });
 
   it('holds while synchronization is incomplete', () => {
