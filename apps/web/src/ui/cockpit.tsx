@@ -87,8 +87,9 @@ const GRANULARITY_LABELS: Record<Granularity, string> = {
 export const MAX_CHART_SERIES = 4;
 const PREFERENCE_VERSION = 1;
 const PREFERENCE_PREFIX = 'openspell:performance-chart:v1';
-const BAR_METRICS = new Set(['spend', 'sales', 'orders', 'impressions', 'clicks']);
+const BAR_METRICS = new Set(['spend', 'orders', 'impressions', 'clicks']);
 const RIGHT_AXIS_METRICS = new Set([
+  'sales',
   'orders',
   'impressions',
   'clicks',
@@ -169,7 +170,11 @@ export function presentationAfterChange(
   return { ...current, [metric]: { ...previous, ...patch } };
 }
 
-/** AdLabs-style semantic preset: totals are bars; rates and unit economics are lines. */
+/**
+ * Semantic preset for a readable first view: activity totals are bars, while
+ * attributed sales, rates, and unit economics are lines on the comparison axis.
+ * Operator changes are persisted separately and always win over these defaults.
+ */
 export function defaultPresentation(metric: string): SeriesPresentation {
   return {
     mark: BAR_METRICS.has(metric) ? 'bar' : 'line',
