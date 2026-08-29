@@ -241,7 +241,7 @@ export const AmazonObserveJob = z.object({
   executionId: Uuid,
   /** One immutable provider dispatch cycle; every follow-up attempt retains it. */
   generation: Uuid,
-  attempt: z.number().int().nonnegative().default(0),
+  attempt: z.number().int().nonnegative().max(6).default(0),
 });
 
 export const JobPayload = z.discriminatedUnion('type', [

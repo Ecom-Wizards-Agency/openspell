@@ -14,7 +14,7 @@ import {
   type EntityRow,
 } from '@wizard-ads/shared';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { SpWriteClient } from './ads-api.js';
+import { AdsApiRetryableError, type SpWriteClient } from './ads-api.js';
 import {
   boundedAmazonWriteAuthorizationFingerprint,
   GuardedAmazonWriteRuntime,
@@ -146,6 +146,7 @@ describe.skipIf(!available)('guarded Amazon write forward and inverse flow', () 
     }));
 
     let visibleProviderBid = 0.9;
+    let observationFailure = false;
     const writeValues: number[] = [];
     const provider: SpWriteClient = {
       updateSpKeywordBids: vi.fn(async (_profile, items) => {
@@ -164,6 +165,9 @@ describe.skipIf(!available)('guarded Amazon write forward and inverse flow', () 
       updateSpTargetBids: vi.fn(async () => { throw new Error('unexpected target mutation'); }),
       updateSpCampaignPlacements: vi.fn(async () => { throw new Error('unexpected placement mutation'); }),
       observeSpWriteEntities: vi.fn(async (_profile, request) => {
+        if (observationFailure) {
+          throw new AdsApiRetryableError('synthetic sustained observation outage', 3);
+        }
         expect(request).toEqual({ keywordIds: ['kw-1'], targetIds: [], campaignIds: [] });
         const row: EntityRow = {
           entityType: 'keyword', profileId: tenant.profile_id, amazonId: 'kw-1',
@@ -183,6 +187,19 @@ describe.skipIf(!available)('guarded Amazon write forward and inverse flow', () 
         throw new Error('synthetic post-provider ledger outage');
       }
       return persistOutcome(input);
+    };
+    const persistObservations = store.recordObservations.bind(store);
+    let failAfterRecoveryOutbox = true;
+    store.recordObservations = async (input) => {
+      const result = await persistObservations(input);
+      if (input.executionId === approved.executionId
+        && input.attempt === 5
+        && result.retryApply
+        && failAfterRecoveryOutbox) {
+        failAfterRecoveryOutbox = false;
+        throw new Error('synthetic failure after atomic recovery outbox');
+      }
+      return result;
     };
     const runtime = new GuardedAmazonWriteRuntime({
       store,
@@ -215,13 +232,28 @@ describe.skipIf(!available)('guarded Amazon write forward and inverse flow', () 
     }, profile)).rejects.toThrow(/ledger outage/i);
     const firstGeneration = await generationFor(approved.executionId);
     for (let attempt = 0; attempt <= 5; attempt += 1) {
-      const result = await runtime.observe({
+      const observation = {
         type: 'amazon.observe', orgId: tenant.org_id, profileId: tenant.profile_id,
         executionId: approved.executionId, generation: firstGeneration, attempt,
-      }, profile);
+      } as const;
+      if (attempt < 5) {
+        await expect(runtime.observe(observation, profile)).resolves.toMatchObject({
+          status: 'awaiting_sync', requeued: true,
+        });
+      } else {
+        await expect(runtime.observe(observation, profile)).rejects.toThrow(/recovery outbox/i);
+        expect(provider.updateSpKeywordBids).toHaveBeenCalledTimes(1);
+        await expect(runtime.observe(observation, profile)).resolves.toMatchObject({
+          status: 'settled', requested: 0, replayed: true,
+        });
+        const [recovery] = await database.sql<{ count: number }[]>`
+          select count(*)::int as count from public.sync_jobs
+           where org_id = ${tenant.org_id}
+             and dedupe_key = ${`amazon.apply:${approved.executionId}:recovery:${firstGeneration}:5`}
+        `;
+        expect(recovery?.count).toBe(1);
+      }
       await completeObservationJob(approved.executionId, firstGeneration, attempt);
-      if (attempt < 5) expect(result).toMatchObject({ status: 'awaiting_sync', requeued: true });
-      else expect(result).toMatchObject({ status: 'queued', applyRequeued: true });
     }
 
     await expect(runtime.apply({
@@ -230,26 +262,54 @@ describe.skipIf(!available)('guarded Amazon write forward and inverse flow', () 
     }, profile)).resolves.toMatchObject({ status: 'awaiting_sync', amazonApiCalls: 2 });
     const secondGeneration = await generationFor(approved.executionId);
     expect(secondGeneration).not.toBe(firstGeneration);
-    const secondPending = await runtime.observe({
-      type: 'amazon.observe', orgId: tenant.org_id, profileId: tenant.profile_id,
-      executionId: approved.executionId, generation: secondGeneration, attempt: 0,
-    }, profile);
-    expect(secondPending).toMatchObject({ status: 'awaiting_sync', requeued: true });
-    await completeObservationJob(approved.executionId, secondGeneration, 0);
-    const [secondAttempt] = await database.sql<{ dedupe_key: string }[]>`
-      select dedupe_key from public.sync_jobs
-       where org_id = ${tenant.org_id}
-         and dedupe_key = ${`amazon.observe:${approved.executionId}:${secondGeneration}:1`}
+    observationFailure = true;
+    for (let attempt = 0; attempt <= 6; attempt += 1) {
+      const result = await runtime.observe({
+        type: 'amazon.observe', orgId: tenant.org_id, profileId: tenant.profile_id,
+        executionId: approved.executionId, generation: secondGeneration, attempt,
+      }, profile);
+      await completeObservationJob(approved.executionId, secondGeneration, attempt);
+      if (attempt < 5) {
+        expect(result).toMatchObject({ status: 'awaiting_sync', requeued: true });
+      } else if (attempt === 5) {
+        expect(result).toMatchObject({ status: 'conflict', requeued: true });
+      } else {
+        expect(result).toMatchObject({ status: 'conflict', requeued: false });
+      }
+      expect(result).toMatchObject({
+        observationIdentityComplete: false,
+        observationError: expect.stringMatching(/sustained observation outage/i),
+      });
+      if (attempt === 0) {
+        const [secondAttempt] = await database.sql<{ dedupe_key: string }[]>`
+          select dedupe_key from public.sync_jobs
+           where org_id = ${tenant.org_id}
+             and dedupe_key = ${`amazon.observe:${approved.executionId}:${secondGeneration}:1`}
+        `;
+        expect(secondAttempt?.dedupe_key).toBe(
+          `amazon.observe:${approved.executionId}:${secondGeneration}:1`,
+        );
+      }
+    }
+    const [unresolved] = await database.sql<{
+      status: string;
+      inverse_execution_id: string | null;
+    }[]>`
+      select execution.status::text as status, reservation.inverse_execution_id
+        from public.amazon_write_executions execution
+        left join public.amazon_write_inverse_reservations reservation
+          on reservation.forward_execution_id = execution.id
+       where execution.id = ${approved.executionId}
     `;
-    expect(secondAttempt?.dedupe_key).toBe(
-      `amazon.observe:${approved.executionId}:${secondGeneration}:1`,
-    );
+    expect(unresolved).toEqual({ status: 'conflict', inverse_execution_id: null });
+    expect(provider.updateSpKeywordBids).toHaveBeenCalledTimes(2);
+
+    observationFailure = false;
     visibleProviderBid = 0.91;
     const forwardObserved = await runtime.observe({
       type: 'amazon.observe', orgId: tenant.org_id, profileId: tenant.profile_id,
-      executionId: approved.executionId, generation: secondGeneration, attempt: 1,
+      executionId: approved.executionId, generation: secondGeneration, attempt: 6,
     }, profile);
-    await completeObservationJob(approved.executionId, secondGeneration, 1);
     expect(forwardObserved).toMatchObject({ status: 'succeeded', inverseReady: true });
     const [inverse] = await database.sql<{ inverse_execution_id: string | null }[]>`
       select inverse_execution_id from public.amazon_write_inverse_reservations
@@ -273,6 +333,6 @@ describe.skipIf(!available)('guarded Amazon write forward and inverse flow', () 
     expect(writeValues).toEqual([0.91, 0.91, 0.9]);
     expect(visibleProviderBid).toBe(0.9);
     expect(provider.updateSpKeywordBids).toHaveBeenCalledTimes(3);
-    expect(provider.observeSpWriteEntities).toHaveBeenCalledTimes(12);
+    expect(provider.observeSpWriteEntities).toHaveBeenCalledTimes(18);
   });
 });

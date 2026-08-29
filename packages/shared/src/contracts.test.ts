@@ -678,6 +678,10 @@ describe('JobPayload', () => {
       orgId: ORG_ID, profileId: PROFILE_ID, type: 'amazon.observe',
       executionId: RUN_ID, attempt: 0,
     }).success).toBe(false);
+    expect(JobPayload.safeParse({
+      orgId: ORG_ID, profileId: PROFILE_ID, type: 'amazon.observe',
+      executionId: RUN_ID, generation: REQUEST_ID, attempt: 7,
+    }).success).toBe(false);
   });
 
   it('rejects an unknown job type and a payload missing its tenant scope', () => {

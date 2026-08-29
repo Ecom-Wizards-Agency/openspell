@@ -230,6 +230,12 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     return recordAmazonWriteOutcomes(database, { ...input, callId, callEvidence });
   }
 
+  function observationGeneration(writeRowId: string): string {
+    const generation = callByWriteRow.get(writeRowId);
+    if (!generation) throw new Error('observation row lacks a test provider call generation');
+    return generation;
+  }
+
   async function releaseForRetry(input: {
     orgId: string; profileId: string; executionId: string; leaseToken: string; rowIds: readonly string[];
   }) {
@@ -496,6 +502,8 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     `;
     const settled = await recordAmazonWriteObservations(database, {
       orgId, profileId, executionId: approved.executionId,
+      generation: observationGeneration(keyword.writeRowId),
+      nextObservationAt: new Date(Date.now() + 60_000),
       observedAt: new Date('2026-08-29T12:01:00.000Z'), attempt: 0,
       observations: [{ writeRowId: keyword.writeRowId, state: 'observed', currentValue: 0.91 }],
     });
@@ -736,10 +744,13 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     });
     expect(await listAmazonWriteObservationRows(database, {
       orgId, profileId, executionId: approved.executionId,
+      generation: observationGeneration(row.writeRowId),
     })).toEqual([expect.objectContaining({ writeRowId: row.writeRowId, rowStatus: 'dispatched' })]);
 
     const observed = await recordAmazonWriteObservations(database, {
       orgId, profileId, executionId: approved.executionId,
+      generation: observationGeneration(row.writeRowId),
+      nextObservationAt: new Date(Date.now() + 60_000),
       observedAt: new Date('2026-08-29T12:06:01.000Z'), attempt: 5,
       observations: [{ writeRowId: row.writeRowId, state: 'not_applied', currentValue: 0.9 }],
     });
@@ -842,7 +853,9 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
        where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = 'kw-1'
     `;
     const forwardObserved = await recordAmazonWriteObservations(database, {
-      orgId, profileId, executionId: first.executionId, observedAt: new Date(), attempt: 0,
+      orgId, profileId, executionId: first.executionId,
+      generation: observationGeneration(row.writeRowId),
+      nextObservationAt: new Date(Date.now() + 60_000), observedAt: new Date(), attempt: 0,
       observations: [{ writeRowId: row.writeRowId, state: 'observed', currentValue: 0.91 }],
     });
     if (!forwardObserved.inverseExecutionId) throw new Error('serialized cycle has no reserved inverse');
@@ -868,9 +881,17 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     `;
     await recordAmazonWriteObservations(database, {
       orgId, profileId, executionId: forwardObserved.inverseExecutionId,
+      generation: observationGeneration(inverseRow.writeRowId),
+      nextObservationAt: new Date(Date.now() + 60_000),
       observedAt: new Date(), attempt: 0,
       observations: [{ writeRowId: inverseRow.writeRowId, state: 'observed', currentValue: 0.9 }],
     });
+    const [releaseJob] = await database.sql<{ count: number }[]>`
+      select count(*)::int as count from public.sync_jobs
+       where org_id = ${orgId}
+         and dedupe_key = ${`amazon.apply:${second.executionId}:released:${first.executionId}`}
+    `;
+    expect(releaseJob?.count).toBe(1);
     const released = await prepare(second.executionId, new Date(), secondToken);
     expect(released.rows).toHaveLength(1);
   });
@@ -967,6 +988,8 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     `;
     const observation = await recordAmazonWriteObservations(database, {
       orgId, profileId, executionId: approved.executionId,
+      generation: observationGeneration(row.writeRowId),
+      nextObservationAt: new Date(Date.now() + 60_000),
       observedAt: new Date(), attempt: 5,
       observations: [{ writeRowId: row.writeRowId, state: 'not_applied', currentValue: 0.9 }],
     });
@@ -992,6 +1015,107 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
         requestFingerprint: sha(`not-applied-cleanup-${approved.executionId}`),
         evidence: { outcome: 'failed', providerEntityId: null, code: 'SYNTHETIC', message: 'cleanup' },
       }],
+    });
+  });
+
+  it('keeps a throttled dispatch observer isolated from the redispatched call generation', async () => {
+    const batch = await createBatch([
+      { entityType: 'keyword', entityId: 'kw-1', field: 'bid', oldValue: 0.9, newValue: 0.91 },
+    ]);
+    const approved = await approve(batch.batchId, batch.artifact, 1);
+    const first = await prepare(approved.executionId);
+    const row = first.rows[0];
+    if (!row) throw new Error('expected throttled generation row');
+    const firstGeneration = await dispatch(approved.executionId, [row.writeRowId]);
+    await releaseForRetry({
+      orgId, profileId, executionId: approved.executionId,
+      leaseToken: DISPATCH_TOKEN, rowIds: [row.writeRowId],
+    });
+
+    const retryToken = randomUUID();
+    const retry = await prepare(approved.executionId, new Date(), retryToken);
+    const secondGeneration = await dispatch(
+      approved.executionId,
+      [row.writeRowId],
+      retryToken,
+    );
+    expect(secondGeneration).not.toBe(firstGeneration);
+    expect(await listAmazonWriteObservationRows(database, {
+      orgId, profileId, executionId: approved.executionId, generation: firstGeneration,
+    })).toEqual([]);
+    expect(await listAmazonWriteObservationRows(database, {
+      orgId, profileId, executionId: approved.executionId, generation: secondGeneration,
+    })).toEqual([expect.objectContaining({ writeRowId: row.writeRowId })]);
+
+    await recordOutcomes({
+      orgId, profileId, executionId: approved.executionId, attemptedAt: new Date(),
+      outcomes: [{
+        writeRowId: row.writeRowId,
+        attemptNumber: retry.rows[0]?.attemptNumber ?? 1,
+        requestFingerprint: sha(`generation-cleanup-${approved.executionId}`),
+        evidence: {
+          outcome: 'failed', providerEntityId: 'kw-1',
+          code: 'SYNTHETIC', message: 'cleanup',
+        },
+      }],
+    });
+  });
+
+  it('gives each accepted provider group an independent observation set and window', async () => {
+    const batch = await createBatch([
+      { entityType: 'keyword', entityId: 'kw-1', field: 'bid', oldValue: 0.9, newValue: 0.91 },
+      { entityType: 'target', entityId: 'tg-1', field: 'bid', oldValue: 0.6, newValue: 0.61 },
+    ]);
+    const approved = await approve(batch.batchId, batch.artifact, 2);
+    const prepared = await prepare(approved.executionId);
+    const keyword = prepared.rows.find((row) => row.action.actionType === 'sp_keyword_bid');
+    const target = prepared.rows.find((row) => row.action.actionType === 'sp_target_bid');
+    if (!keyword || !target) throw new Error('expected two provider groups');
+    const keywordGeneration = await dispatch(approved.executionId, [keyword.writeRowId]);
+    await recordOutcomes({
+      orgId, profileId, executionId: approved.executionId, attemptedAt: new Date(),
+      outcomes: [{
+        writeRowId: keyword.writeRowId, attemptNumber: keyword.attemptNumber,
+        requestFingerprint: sha('group-keyword'),
+        evidence: { outcome: 'accepted', providerEntityId: 'kw-1', code: null, message: null },
+      }],
+    });
+    const targetGeneration = await dispatch(approved.executionId, [target.writeRowId]);
+    await recordOutcomes({
+      orgId, profileId, executionId: approved.executionId, attemptedAt: new Date(),
+      outcomes: [{
+        writeRowId: target.writeRowId, attemptNumber: target.attemptNumber,
+        requestFingerprint: sha('group-target'),
+        evidence: { outcome: 'accepted', providerEntityId: 'tg-1', code: null, message: null },
+      }],
+    });
+    expect((await listAmazonWriteObservationRows(database, {
+      orgId, profileId, executionId: approved.executionId, generation: keywordGeneration,
+    })).map((row) => row.writeRowId)).toEqual([keyword.writeRowId]);
+    expect((await listAmazonWriteObservationRows(database, {
+      orgId, profileId, executionId: approved.executionId, generation: targetGeneration,
+    })).map((row) => row.writeRowId)).toEqual([target.writeRowId]);
+
+    const firstObserved = await recordAmazonWriteObservations(database, {
+      orgId, profileId, executionId: approved.executionId,
+      generation: keywordGeneration, nextObservationAt: new Date(Date.now() + 60_000),
+      observedAt: new Date(), attempt: 0,
+      observations: [{
+        writeRowId: keyword.writeRowId, state: 'observed', currentValue: 0.91,
+      }],
+    });
+    expect(firstObserved).toMatchObject({
+      status: 'awaiting_sync', inverseReady: false, observationRequeued: false,
+    });
+    expect((await listAmazonWriteObservationRows(database, {
+      orgId, profileId, executionId: approved.executionId, generation: targetGeneration,
+    })).map((row) => row.writeRowId)).toEqual([target.writeRowId]);
+
+    await recordAmazonWriteObservations(database, {
+      orgId, profileId, executionId: approved.executionId,
+      generation: targetGeneration, nextObservationAt: null,
+      observedAt: new Date(), attempt: 6,
+      observations: [{ writeRowId: target.writeRowId, state: 'conflict', currentValue: 0.6 }],
     });
   });
 
@@ -1072,6 +1196,7 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     });
     expect(await listAmazonWriteObservationRows(database, {
       orgId, profileId, executionId: approved.executionId,
+      generation: observationGeneration(row.writeRowId),
     })).toHaveLength(1);
 
     await database.sql`
@@ -1080,6 +1205,8 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     `;
     const recorded = await recordAmazonWriteObservations(database, {
       orgId, profileId, executionId: approved.executionId,
+      generation: observationGeneration(row.writeRowId),
+      nextObservationAt: new Date(Date.now() + 60_000),
       observedAt: new Date('2026-08-29T12:01:00.000Z'), attempt: 0,
       observations: [{ writeRowId: row.writeRowId, state: 'observed', currentValue: 0.91 }],
     });
@@ -1115,6 +1242,8 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     `;
     const early = await recordAmazonWriteObservations(database, {
       orgId, profileId, executionId: approved.executionId,
+      generation: observationGeneration(keyword.writeRowId),
+      nextObservationAt: new Date(Date.now() + 60_000),
       observedAt: new Date(), attempt: 0,
       observations: [{ writeRowId: keyword.writeRowId, state: 'observed', currentValue: 0.91 }],
     });
@@ -1154,6 +1283,8 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     });
     const conflict = await recordAmazonWriteObservations(database, {
       orgId, profileId, executionId: approved.executionId,
+      generation: observationGeneration(row.writeRowId),
+      nextObservationAt: new Date(Date.now() + 60_000),
       observedAt: new Date('2026-08-29T12:01:00.000Z'), attempt: 5,
       observations: [{ writeRowId: row.writeRowId, state: 'conflict', currentValue: 0.9 }],
     });
@@ -1164,6 +1295,8 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     `;
     const reconciled = await recordAmazonWriteObservations(database, {
       orgId, profileId, executionId: approved.executionId,
+      generation: observationGeneration(row.writeRowId),
+      nextObservationAt: null,
       observedAt: new Date('2026-08-29T12:02:00.000Z'), attempt: 6,
       observations: [{ writeRowId: row.writeRowId, state: 'observed', currentValue: 0.91 }],
     });
@@ -1198,11 +1331,14 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     `;
     const observationRows = await listAmazonWriteObservationRows(database, {
       orgId, profileId, executionId: approved.executionId,
+      generation: observationGeneration(row.writeRowId),
     });
     expect(observationRows).toHaveLength(1);
     const observedAt = new Date('2026-08-29T12:01:00.000Z');
     const recorded = await recordAmazonWriteObservations(database, {
-      orgId, profileId, executionId: approved.executionId, observedAt, attempt: 0,
+      orgId, profileId, executionId: approved.executionId,
+      generation: observationGeneration(row.writeRowId),
+      nextObservationAt: new Date(Date.now() + 60_000), observedAt, attempt: 0,
       observations: [{ writeRowId: row.writeRowId, state: 'observed', currentValue: 0.91 }],
     });
     expect(recorded).toMatchObject({ status: 'succeeded', inverseReady: true, accounting: { resynchronized: 1 } });
@@ -1287,6 +1423,8 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     if (!top || !product) throw new Error('expected two placement rows');
     const observed = await recordAmazonWriteObservations(database, {
       orgId, profileId, executionId: forward.executionId,
+      generation: observationGeneration(top.writeRowId),
+      nextObservationAt: new Date(Date.now() + 60_000),
       observedAt: new Date('2026-08-29T12:01:00.000Z'), attempt: 0,
       observations: [
         { writeRowId: top.writeRowId, state: 'observed', currentValue: 21 },
@@ -1344,6 +1482,8 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     if (!inverseTop || !inverseProduct) throw new Error('expected inverse placement rows');
     const inverseObserved = await recordAmazonWriteObservations(database, {
       orgId, profileId, executionId: inverseExecutionId,
+      generation: observationGeneration(inverseTop.writeRowId),
+      nextObservationAt: new Date(Date.now() + 60_000),
       observedAt: new Date(), attempt: 0,
       observations: [
         { writeRowId: inverseTop.writeRowId, state: 'observed', currentValue: 20 },

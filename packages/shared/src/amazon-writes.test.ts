@@ -53,6 +53,27 @@ describe('guarded Amazon write contracts', () => {
     expect(action.inverseValue).toBe(20);
   });
 
+  it.each([-1, 20.5, 901])(
+    'refuses unsupported placement percentage %s at the authoritative contract',
+    (requestedValue) => {
+      expect(() => AmazonWriteAction.parse({
+        actionType: 'sp_campaign_placement',
+        applyRowId: ROW_ID,
+        amazonEntityId: 'campaign-1',
+        field: 'top_of_search',
+        expectedValue: 20,
+        requestedValue,
+        inverseValue: 20,
+        campaignContext: {
+          providerState: {
+            strategy: 'auto_for_sales', placementBidding: [],
+            shopperCohortBidding: null, offAmazonSettings: null,
+          },
+        },
+      })).toThrow();
+    },
+  );
+
   it('rejects accounting that loses a requested row', () => {
     expect(() => AmazonWriteAccounting.parse({
       requested: 1,

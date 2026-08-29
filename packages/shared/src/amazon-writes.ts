@@ -59,7 +59,11 @@ export const SpTargetBidWriteAction = z.object({
  * only the changed field, so execution cannot erase an unrelated modifier.
  */
 export const SpCampaignPlacementWriteAction = z.object({
-  ...numericAction,
+  applyRowId: Uuid,
+  amazonEntityId: AmazonId,
+  expectedValue: z.number().int().min(0).max(900),
+  requestedValue: z.number().int().min(0).max(900),
+  inverseValue: z.number().int().min(0).max(900),
   actionType: z.literal(AmazonWriteActionType.enum.sp_campaign_placement),
   field: AmazonPlacementField,
   campaignContext: z.object({

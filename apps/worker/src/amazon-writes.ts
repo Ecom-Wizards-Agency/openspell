@@ -130,6 +130,7 @@ export interface AmazonWriteRuntimeStore {
     orgId: string;
     profileId: string;
     executionId: string;
+    generation: string;
   }): ReturnType<typeof listAmazonWriteObservationRows>;
   syncEntities(profile: AdsProfileContext, entities: readonly EntityRow[]): Promise<{
     listed: number;
@@ -146,8 +147,10 @@ export interface AmazonWriteRuntimeStore {
     orgId: string;
     profileId: string;
     executionId: string;
+    generation: string;
     observedAt: Date;
     attempt: number;
+    nextObservationAt: Date | null;
     observations: readonly AmazonWriteObservation[];
   }): ReturnType<typeof recordAmazonWriteObservations>;
   enqueue(payload: AmazonObserveJob | AmazonApplyJob, runAt: Date, dedupeKey: string): Promise<boolean>;
@@ -652,9 +655,15 @@ export class GuardedAmazonWriteRuntime {
     }
     const request = this.observationRequest(rows);
     const expectedEntities = request.keywordIds.length + request.targetIds.length + request.campaignIds.length;
-    const observed = await this.provider.observeSpWriteEntities(profile, request);
-    const identityComplete = this.isExactObservationResult(request, observed);
-    const trustedRows = identityComplete ? observed.rows : [];
+    let observed: Awaited<ReturnType<SpWriteClient['observeSpWriteEntities']>> | null = null;
+    let observationError: unknown = null;
+    try {
+      observed = await this.provider.observeSpWriteEntities(profile, request);
+    } catch (error) {
+      observationError = error;
+    }
+    const identityComplete = observed !== null && this.isExactObservationResult(request, observed);
+    const trustedRows = identityComplete && observed !== null ? observed.rows : [];
     const synced = trustedRows.length === 0
       ? { listed: 0, upserted: 0 }
       : await this.store.syncEntities(profile, trustedRows);
@@ -669,36 +678,23 @@ export class GuardedAmazonWriteRuntime {
     const recorded = await this.store.recordObservations({
       orgId: payload.orgId, profileId: payload.profileId,
       executionId: payload.executionId, observedAt: this.now(),
-      attempt: payload.attempt, observations: classifications,
+      generation: payload.generation, attempt: payload.attempt,
+      nextObservationAt: this.nextObservationAt(payload.attempt, this.now()),
+      observations: classifications,
     });
-    let requeued = false;
-    if (recorded.pending > 0 && !finalAttempt) {
-      requeued = await this.enqueueObservation(payload, payload.attempt + 1, this.now());
-    } else if (recorded.status === 'conflict'
-      && payload.attempt === OBSERVATION_DELAYS_SECONDS.length) {
-      // A bounded long-tail pass turns later authoritative Amazon visibility
-      // into a production recovery path without an unbounded retry loop.
-      requeued = await this.enqueueObservation(payload, LONG_TAIL_OBSERVATION_ATTEMPT, this.now());
-    }
-    const applyRequeued = recorded.retryApply
-      ? await this.store.enqueue(
-          { type: 'amazon.apply', orgId: payload.orgId, profileId: payload.profileId, executionId: payload.executionId },
-          this.now(),
-          `amazon.apply:${payload.executionId}:recovery:${payload.generation}:${payload.attempt}`,
-        )
-      : false;
     return {
       status: recorded.status,
       ...recorded.accounting,
       pending: recorded.pending,
       inverseReady: recorded.inverseReady,
       targetedEntities: expectedEntities,
-      returnedEntities: observed.returned,
+      returnedEntities: observed?.returned ?? 0,
       upsertedEntities: synced.upserted,
       observationIdentityComplete: identityComplete,
-      amazonApiCalls: observed.apiCalls,
-      requeued,
-      applyRequeued,
+      ...(observationError === null ? {} : { observationError: safeMessage(observationError) }),
+      amazonApiCalls: observed?.apiCalls ?? 1,
+      requeued: recorded.observationRequeued,
+      applyRequeued: recorded.applyRequeued,
     };
   }
 
@@ -933,18 +929,13 @@ export class GuardedAmazonWriteRuntime {
     return groups;
   }
 
-  private async enqueueObservation(
-    payload: AmazonObserveJob,
-    attempt: number,
-    now: Date,
-  ): Promise<boolean> {
-    const delaySeconds = attempt === 0 ? 0 : OBSERVATION_DELAYS_SECONDS[Math.min(attempt - 1, OBSERVATION_DELAYS_SECONDS.length - 1)] ?? 1_800;
-    return this.store.enqueue(
-      { type: 'amazon.observe', orgId: payload.orgId, profileId: payload.profileId,
-        executionId: payload.executionId, generation: payload.generation, attempt },
-      new Date(now.getTime() + delaySeconds * 1_000),
-      `amazon.observe:${payload.executionId}:${payload.generation}:${attempt}`,
-    );
+  private nextObservationAt(attempt: number, now: Date): Date | null {
+    if (attempt >= LONG_TAIL_OBSERVATION_ATTEMPT) return null;
+    const nextAttempt = attempt + 1;
+    const delaySeconds = OBSERVATION_DELAYS_SECONDS[
+      Math.min(nextAttempt - 1, OBSERVATION_DELAYS_SECONDS.length - 1)
+    ] ?? 1_800;
+    return new Date(now.getTime() + delaySeconds * 1_000);
   }
 
 }

@@ -143,6 +143,8 @@ function fakeStore(overrides: Partial<AmazonWriteRuntimeStore> = {}): AmazonWrit
     recordObservations: vi.fn(async () => ({
       status: 'succeeded' as const, accounting: accounting({ resynchronized: 1 }),
       pending: 0, inverseReady: true, retryApply: false,
+      applyRequeued: false,
+      observationRequeued: false,
       inverseExecutionId: null,
     })),
     enqueue: vi.fn(async () => true),
@@ -802,6 +804,38 @@ describe('guarded Amazon write runtime', () => {
     ]));
   });
 
+  it('does not let a stale observation generation read or advance redispatched rows', async () => {
+    const action = bidAction();
+    const firstGeneration = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const secondGeneration = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const store = fakeStore({
+      observationRows: vi.fn(async (input) => input.generation === firstGeneration ? [] : [{
+        writeRowId: '66666666-6666-4666-8666-666666666661', action, rowStatus: 'accepted',
+      }]),
+    });
+    const provider = fakeProvider();
+    const runtime = new GuardedAmazonWriteRuntime({
+      enabled: true, loadAuthorization: async () => authorization, provider, store, now: () => NOW,
+    });
+
+    await expect(runtime.observe({
+      ...job, type: 'amazon.observe', generation: firstGeneration, attempt: 0,
+    }, profile)).resolves.toMatchObject({ status: 'settled', requested: 0, replayed: true });
+    expect(provider.observeSpWriteEntities).not.toHaveBeenCalled();
+    expect(store.recordObservations).not.toHaveBeenCalled();
+
+    await runtime.observe({
+      ...job, type: 'amazon.observe', generation: secondGeneration, attempt: 0,
+    }, profile);
+    expect(provider.observeSpWriteEntities).toHaveBeenCalledTimes(1);
+    expect(store.observationRows).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      generation: firstGeneration,
+    }));
+    expect(store.observationRows).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      generation: secondGeneration,
+    }));
+  });
+
   it('turns an exact-entity omission across the observation horizon into a recoverable conflict', async () => {
     const action = bidAction();
     const row = {
@@ -823,6 +857,8 @@ describe('guarded Amazon write runtime', () => {
           pending: terminal ? 0 : 1,
           inverseReady: false,
           retryApply: false,
+          applyRequeued: false,
+          observationRequeued: input.attempt < 6,
           inverseExecutionId: null,
         };
       }),
@@ -851,19 +887,40 @@ describe('guarded Amazon write runtime', () => {
     }
     expect(store.recordObservations).toHaveBeenCalledTimes(7);
     expect(store.syncEntities).not.toHaveBeenCalled();
-    expect(store.enqueue).toHaveBeenCalledTimes(6);
+    expect(store.enqueue).not.toHaveBeenCalled();
     expect(provider.updateSpKeywordBids).not.toHaveBeenCalled();
     expect(provider.updateSpTargetBids).not.toHaveBeenCalled();
     expect(provider.updateSpCampaignPlacements).not.toHaveBeenCalled();
   });
 
-  it('retries a transient observation transport failure and recovers with the same generation', async () => {
+  it('durably advances a transient observation failure and recovers in the same generation', async () => {
     const action = bidAction();
     const store = fakeStore({
       observationRows: vi.fn(async () => [{
         writeRowId: '66666666-6666-4666-8666-666666666661', action, rowStatus: 'accepted',
       }]),
       resolveObservation: vi.fn(async (input) => classifyAmazonWriteObservations(input)),
+      recordObservations: vi.fn()
+        .mockResolvedValueOnce({
+          status: 'awaiting_sync' as const,
+          accounting: accounting({ resynchronized: 0 }),
+          pending: 1,
+          inverseReady: false,
+          retryApply: false,
+          applyRequeued: false,
+          observationRequeued: true,
+          inverseExecutionId: null,
+        })
+        .mockResolvedValueOnce({
+          status: 'succeeded' as const,
+          accounting: accounting({ resynchronized: 1 }),
+          pending: 0,
+          inverseReady: true,
+          retryApply: false,
+          applyRequeued: false,
+          observationRequeued: false,
+          inverseExecutionId: '99999999-9999-4999-8999-999999999999',
+        }),
     });
     const successful = vi.mocked(fakeProvider().observeSpWriteEntities).getMockImplementation();
     if (!successful) throw new Error('synthetic observation implementation is missing');
@@ -880,16 +937,18 @@ describe('guarded Amazon write runtime', () => {
       generation: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', attempt: 0,
     };
 
-    await expect(runtime.observe(payload, profile)).rejects.toMatchObject({
-      name: 'AdsApiRetryableError', retryAfterSeconds: 3,
-    });
-    expect(store.recordObservations).not.toHaveBeenCalled();
     await expect(runtime.observe(payload, profile)).resolves.toMatchObject({
+      status: 'awaiting_sync', observationIdentityComplete: false,
+      observationError: expect.stringMatching(/synthetic read throttle/i),
+      requeued: true, inverseReady: false,
+    });
+    await expect(runtime.observe({ ...payload, attempt: 1 }, profile)).resolves.toMatchObject({
       status: 'succeeded', observationIdentityComplete: true,
       amazonApiCalls: 1, inverseReady: true,
     });
     expect(provider.observeSpWriteEntities).toHaveBeenCalledTimes(2);
-    expect(store.recordObservations).toHaveBeenCalledTimes(1);
+    expect(store.recordObservations).toHaveBeenCalledTimes(2);
+    expect(store.enqueue).not.toHaveBeenCalled();
   });
 
   it('queues one generation-bound long-tail reconciliation after a final conflict', async () => {
@@ -910,6 +969,8 @@ describe('guarded Amazon write runtime', () => {
           pending: 0,
           inverseReady: false,
           retryApply: false,
+          applyRequeued: false,
+          observationRequeued: true,
           inverseExecutionId: null,
         })
         .mockResolvedValueOnce({
@@ -918,6 +979,8 @@ describe('guarded Amazon write runtime', () => {
           pending: 0,
           inverseReady: true,
           retryApply: false,
+          applyRequeued: false,
+          observationRequeued: false,
           inverseExecutionId: '99999999-9999-4999-8999-999999999999',
         }),
     });
@@ -929,14 +992,9 @@ describe('guarded Amazon write runtime', () => {
     await expect(runtime.observe({
       ...job, type: 'amazon.observe', generation, attempt: 5,
     }, profile)).resolves.toMatchObject({ status: 'conflict', requeued: true });
-    expect(store.enqueue).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'amazon.observe', generation, attempt: 6 }),
-      expect.any(Date),
-      ['amazon.observe', EXECUTION_ID, generation, '6'].join(':'),
-    );
     await expect(runtime.observe({
       ...job, type: 'amazon.observe', generation, attempt: 6,
     }, profile)).resolves.toMatchObject({ status: 'succeeded', inverseReady: true });
-    expect(store.enqueue).toHaveBeenCalledTimes(1);
+    expect(store.enqueue).not.toHaveBeenCalled();
   });
 });

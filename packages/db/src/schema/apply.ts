@@ -110,6 +110,7 @@ export const applyRows = pgTable(
   },
   (t) => [
     index('apply_rows_batch_idx').on(t.batchId),
+    uniqueIndex('apply_rows_batch_artifact_ordinal_key').on(t.batchId, t.artifactOrdinal),
     uniqueIndex('apply_rows_org_profile_id_key').on(t.orgId, t.profileId, t.id),
     index('apply_rows_profile_entity_idx').on(
       t.orgId,

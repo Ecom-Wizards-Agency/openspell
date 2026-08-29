@@ -6,6 +6,7 @@ import {
   AmazonWriteProviderEvidence,
   AmazonWriteProviderCallEvidence,
   ApproveAmazonWriteExecution,
+  Uuid,
   serializeApplyRows,
   type AmazonPlacementField,
   type CampaignWriteContext,
@@ -1324,6 +1325,22 @@ async function refreshExecutionCounts(
            ,dispatch_lease_expires_at = case when ${status} = 'running' then dispatch_lease_expires_at else null end
      where id = ${executionId}
   `;
+  if ((status === 'failed' || status === 'refused') && counts.succeeded === 0) {
+    const [execution] = await sql<{
+      id: string; org_id: string; profile_id: string; direction: 'forward' | 'inverse';
+    }[]>`
+      select id, org_id, profile_id, direction::text as direction
+        from public.amazon_write_executions where id = ${executionId}
+    `;
+    if (execution?.direction === 'forward') {
+      await enqueueNextAmazonWriteCycle(sql, {
+        orgId: execution.org_id,
+        profileId: execution.profile_id,
+        completedForwardExecutionId: execution.id,
+        runAt: new Date(),
+      });
+    }
+  }
   return {
     status,
     accounting: AmazonWriteAccounting.parse({
@@ -1335,6 +1352,47 @@ async function refreshExecutionCounts(
     retryable: counts.retryable,
     shouldObserve: counts.observation_pending > 0,
   };
+}
+
+async function enqueueNextAmazonWriteCycle(
+  sql: QuerySql,
+  input: {
+    orgId: string;
+    profileId: string;
+    completedForwardExecutionId: string;
+    runAt: Date;
+  },
+): Promise<boolean> {
+  const [completed] = await sql<{ created_at: Date | string }[]>`
+    select created_at from public.amazon_write_executions
+     where org_id = ${input.orgId} and profile_id = ${input.profileId}
+       and id = ${input.completedForwardExecutionId} and direction = 'forward'
+  `;
+  if (!completed) return false;
+  const [next] = await sql<{ id: string }[]>`
+    select id from public.amazon_write_executions
+     where org_id = ${input.orgId} and profile_id = ${input.profileId}
+       and direction = 'forward' and status = 'queued'
+       and (created_at, id) >
+           (${toDate(completed.created_at).toISOString()}::timestamptz,
+            ${input.completedForwardExecutionId}::uuid)
+     order by created_at, id
+     limit 1
+     for share
+  `;
+  if (!next) return false;
+  const inserted = await sql<{ id: string }[]>`
+    insert into public.sync_jobs
+      (org_id, profile_id, job_type, payload, run_after, dedupe_key)
+    values (${input.orgId}, ${input.profileId}, 'amazon.apply',
+            ${json({ type: 'amazon.apply', orgId: input.orgId, profileId: input.profileId,
+              executionId: next.id })}::jsonb,
+            ${input.runAt.toISOString()},
+            ${`amazon.apply:${next.id}:released:${input.completedForwardExecutionId}`})
+    on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+    returning id
+  `;
+  return inserted.length === 1;
 }
 
 async function readAccounting(sql: QuerySql, executionId: string): Promise<AmazonWriteAccounting> {
@@ -1365,14 +1423,16 @@ export interface AmazonWriteObservationRow {
 
 export async function listAmazonWriteObservationRows(
   handle: AmazonWriteQueryHandle,
-  input: { orgId: string; profileId: string; executionId: string },
+  input: { orgId: string; profileId: string; executionId: string; generation: string },
 ): Promise<AmazonWriteObservationRow[]> {
+  const generation = Uuid.parse(input.generation);
   const rows = await handle.sql<{ id: string; action: unknown; row_status: string }[]>`
     select write_row.id, write_row.action, write_row.row_status::text as row_status
       from public.amazon_write_rows write_row
       join public.apply_rows apply_row on apply_row.id = write_row.apply_row_id
      where write_row.org_id = ${input.orgId} and write_row.profile_id = ${input.profileId}
        and write_row.execution_id = ${input.executionId}
+       and write_row.dispatch_token = ${generation}
        and (
          (write_row.row_status in ('accepted', 'ambiguous', 'dispatched')
           and write_row.observation_status = 'pending')
@@ -1401,6 +1461,8 @@ export interface RecordedAmazonWriteObservation {
   pending: number;
   inverseReady: boolean;
   retryApply: boolean;
+  applyRequeued: boolean;
+  observationRequeued: boolean;
   inverseExecutionId: string | null;
 }
 
@@ -1581,17 +1643,22 @@ export async function recordAmazonWriteObservations(
     orgId: string;
     profileId: string;
     executionId: string;
+    generation: string;
     observedAt: Date;
     attempt: number;
+    nextObservationAt: Date | null;
     observations: readonly AmazonWriteObservation[];
   },
 ): Promise<RecordedAmazonWriteObservation> {
+  const generation = Uuid.parse(input.generation);
   return handle.sql.begin(async (sql) => {
     const [execution] = await sql<{
       id: string; apply_batch_id: string; requested_count: number;
       succeeded_count: number; failed_count: number; refused_count: number;
+      direction: 'forward' | 'inverse'; source_execution_id: string | null;
     }[]>`
-      select id, apply_batch_id, requested_count, succeeded_count, failed_count, refused_count
+      select id, apply_batch_id, requested_count, succeeded_count, failed_count, refused_count,
+             direction::text as direction, source_execution_id
         from public.amazon_write_executions
        where org_id = ${input.orgId} and profile_id = ${input.profileId}
          and id = ${input.executionId}
@@ -1611,6 +1678,7 @@ export async function recordAmazonWriteObservations(
         from public.amazon_write_rows
        where org_id = ${input.orgId} and profile_id = ${input.profileId}
          and execution_id = ${input.executionId}
+         and dispatch_token = ${generation}
          and (
            (row_status in ('accepted', 'ambiguous', 'dispatched') and observation_status = 'pending')
            or (observation_status = 'conflict'
@@ -1757,6 +1825,49 @@ export async function recordAmazonWriteObservations(
              dispatch_lease_token = null, dispatch_lease_expires_at = null
        where id = ${execution.id}
     `;
+    // Scheduling is call-generation scoped. Other provider groups and later
+    // redispatches own independent observation windows and outbox rows.
+    const applyRequeued = input.observations.some((row) => row.state === 'not_applied');
+    if (applyRequeued) {
+      await sql`
+        insert into public.sync_jobs
+          (org_id, profile_id, job_type, payload, run_after, dedupe_key)
+        values (${input.orgId}, ${input.profileId}, 'amazon.apply',
+                ${json({ type: 'amazon.apply', orgId: input.orgId, profileId: input.profileId,
+                  executionId: execution.id })}::jsonb,
+                ${input.observedAt.toISOString()},
+                ${`amazon.apply:${execution.id}:recovery:${generation}:${input.attempt}`})
+        on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+      `;
+    }
+    const [generationCounts] = await sql<{ pending: number; conflicts: number }[]>`
+      select count(*) filter (where observation_status = 'pending')::int as pending,
+             count(*) filter (where observation_status = 'conflict')::int as conflicts
+        from public.amazon_write_rows
+       where execution_id = ${execution.id}
+         and dispatch_token = ${generation}
+         and row_status in ('accepted', 'ambiguous', 'dispatched')
+    `;
+    if (!generationCounts) throw new Error('Amazon observation generation accounting is missing');
+    const observationRequeued = (generationCounts.pending > 0 && input.attempt < 5)
+      || (generationCounts.conflicts > 0 && input.attempt === 5);
+    if (observationRequeued) {
+      if (input.nextObservationAt === null) {
+        throw new Error('Amazon observation recovery requires a durable next run');
+      }
+      const nextAttempt = input.attempt + 1;
+      await sql`
+        insert into public.sync_jobs
+          (org_id, profile_id, job_type, payload, run_after, dedupe_key)
+        values (${input.orgId}, ${input.profileId}, 'amazon.observe',
+                ${json({ type: 'amazon.observe', orgId: input.orgId, profileId: input.profileId,
+                  executionId: execution.id, generation,
+                  attempt: nextAttempt })}::jsonb,
+                ${input.nextObservationAt.toISOString()},
+                ${`amazon.observe:${execution.id}:${generation}:${nextAttempt}`})
+        on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+      `;
+    }
     if (fullyObserved) {
       await sql`
         update public.apply_batches
@@ -1773,12 +1884,24 @@ export async function recordAmazonWriteObservations(
           observedAt: input.observedAt,
         })
       : null;
+    if (status === 'succeeded'
+      && execution.direction === 'inverse'
+      && execution.source_execution_id !== null) {
+      await enqueueNextAmazonWriteCycle(sql, {
+        orgId: input.orgId,
+        profileId: input.profileId,
+        completedForwardExecutionId: execution.source_execution_id,
+        runAt: input.observedAt,
+      });
+    }
     return {
       status,
       accounting: await readAccounting(sql, execution.id),
       pending: counts.pending,
       inverseReady,
       retryApply: counts.retryable > 0,
+      applyRequeued,
+      observationRequeued,
       inverseExecutionId,
     };
   });
