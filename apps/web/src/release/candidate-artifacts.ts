@@ -1,4 +1,7 @@
-import { RECOMMENDATION_REVIEW_ARTIFACT } from '../ui/artifact-markers';
+import {
+  OPENSPELL_BRAND_MARK_ARTIFACT,
+  RECOMMENDATION_REVIEW_ARTIFACT,
+} from '../ui/artifact-markers';
 
 export interface ReleaseArtifact {
   id: string;
@@ -48,6 +51,10 @@ export const RELEASE_ROUTE_CHECKS: readonly ReleaseRouteCheck[] = [
         text: 'aria-label="Active advertising account and reporting window"',
       },
       { id: 'date-range-picker', text: 'class="wa-date-range"' },
+      {
+        id: 'official-brand-mark-in-dom',
+        text: `data-release-artifact="${OPENSPELL_BRAND_MARK_ARTIFACT}"`,
+      },
     ],
   },
   { route: '/optimizer', artifacts: [{ id: 'optimizer-heading', text: 'Campaign Optimizer' }] },

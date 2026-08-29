@@ -3,7 +3,11 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { OperatorContext } from '../ui/operator-context';
-import { RECOMMENDATION_REVIEW_ARTIFACT } from '../ui/artifact-markers';
+import {
+  OPENSPELL_BRAND_MARK_ARTIFACT,
+  RECOMMENDATION_REVIEW_ARTIFACT,
+} from '../ui/artifact-markers';
+import { ProfileAwareBrand } from '../ui/profile-aware-brand';
 import {
   inspectReleaseArtifact,
   releaseResponsePassed,
@@ -50,7 +54,11 @@ describe('release candidate artifact checks', () => {
 
     expect(inspection).toEqual({
       matched: false,
-      missingArtifacts: ['active-account-context', 'date-range-picker'],
+      missingArtifacts: [
+        'active-account-context',
+        'date-range-picker',
+        'official-brand-mark-in-dom',
+      ],
       rejectedBody: false,
     });
   });
@@ -58,6 +66,7 @@ describe('release candidate artifact checks', () => {
   it('matches the operator context and date picker rendered by the current grid source', () => {
     const body = [
       '<h1>Campaigns</h1>',
+      renderToStaticMarkup(createElement(ProfileAwareBrand)),
       renderToStaticMarkup(createElement(OperatorContext, {
         account: 'Synthetic account',
         marketplace: 'US',
@@ -74,6 +83,20 @@ describe('release candidate artifact checks', () => {
       matched: true,
       missingArtifacts: [],
       rejectedBody: false,
+    });
+    expect(body).toContain(`data-release-artifact="${OPENSPELL_BRAND_MARK_ARTIFACT}"`);
+  });
+
+  it('rejects operator markup that falls back to text instead of the official mark', () => {
+    const check = routeCheck('/grid');
+    const body = check.artifacts
+      .filter((artifact) => artifact.id !== 'official-brand-mark-in-dom')
+      .map((artifact) => artifact.text)
+      .join('');
+
+    expect(inspectReleaseArtifact(body, check.artifacts)).toMatchObject({
+      matched: false,
+      missingArtifacts: ['official-brand-mark-in-dom'],
     });
   });
 

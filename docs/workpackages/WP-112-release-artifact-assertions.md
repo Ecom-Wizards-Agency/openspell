@@ -16,6 +16,8 @@ generic headings.
   alert surfaces.
 - The official public OpenSpell SVG must return HTTP 200 and match its tracked
   dimensions and distinctive gradient signature.
+- An authenticated operator route must render the versioned official-mark DOM
+  marker, proving the application uses the SVG asset instead of a text fallback.
 - The grid requires its active-account context and date-range picker, not only a
   heading.
 - Recommendations carries a non-visible version marker on every data state so
@@ -30,8 +32,9 @@ the authenticated response body.
 - A stale grid response with the old heading but without the operator context
   and date picker fails.
 - A missing, non-SVG, or non-200 official brand asset fails.
+- An operator page that omits the official brand-mark DOM marker fails.
 - A stale recommendations response with only the heading fails.
-- Current grid server markup and the focused recommendations marker pass.
+- Current grid server markup, official brand marker, and focused recommendations marker pass.
 - An authenticated error surface fails even when all required strings appear.
 - Typecheck, lint, unit tests, and public-repository hygiene pass.
 - No deployment, promotion, mutation request, migration, seed, or Amazon API

@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import { OPENSPELL_BRAND_MARK_ARTIFACT } from './artifact-markers';
 import { ProfileAwareBrand, profileAwareHomeHref } from './profile-aware-brand';
 
 describe('OpenSpell brand link', () => {
@@ -11,7 +12,10 @@ describe('OpenSpell brand link', () => {
 
   it('renders the official decorative brand mark instead of a placeholder letter', () => {
     const markup = renderToStaticMarkup(<ProfileAwareBrand />);
-    expect(markup).toContain('<span aria-hidden="true" class="wa-brand-mark"></span>');
+    expect(markup).toContain(
+      `class="wa-brand-mark" data-release-artifact="${OPENSPELL_BRAND_MARK_ARTIFACT}"`,
+    );
+    expect(markup).not.toContain('>O</span>');
     expect(markup).toContain('OpenSpell');
   });
 });
