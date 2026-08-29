@@ -43,7 +43,7 @@ candidate_url="$(vercel deploy --prod --skip-domain \
   --env "OPENSPELL_APP_VERSION=$release_revision")"
 OPENSPELL_RELEASE_CANDIDATE_URL="$candidate_url" \
 OPENSPELL_RELEASE_EXPECTED_REVISION="$release_revision" \
-  pnpm --silent --filter @wizard-ads/web verify:release-candidate
+  bash apps/web/scripts/verify-release-candidate.sh
 ```
 
 The report identifies the target only as `immutable-candidate`; it includes the
@@ -53,12 +53,27 @@ because future CLI output could include protected request details.
 
 Candidate, expected-revision, and optional `OPENSPELL_CDP_URL` inputs are read
 from validated environment variables. They are never package-script arguments,
-so pnpm cannot repeat them in its command banner or failure summary. The verifier
-removes those variables before starting the Vercel child process. Candidate URLs
-with a username, password, port, or unexpected host fail before that process
-starts. Any Playwright, CDP, URL-parser, or child-process exception becomes one
-fixed `OPENSPELL_RELEASE_ERROR:<code>` diagnostic; dependency error messages are
-never printed.
+so pnpm cannot repeat them in its command banner or failure summary. The checked-in
+launcher removes `DEBUG`, `NODE_DEBUG`, `NODE_DEBUG_NATIVE`, and `PWDEBUG` before
+pnpm starts; the TypeScript entry point removes them again before it imports
+Playwright or starts Vercel. The Vercel child receives an explicit environment
+allowlist containing only process lookup, Vercel authentication/config location,
+proxy, and certificate variables. Database, Amazon, release, CDP, debug, and
+unrelated variables are absent.
+
+The immutable candidate URL must use HTTPS on the exact project host, with no
+username, password, or explicit port. `OPENSPELL_CDP_URL` is a separate validated
+HTTP(S) or WebSocket endpoint and may use the local CDP port or authenticated remote
+transport. Neither value is printed. Any Playwright, CDP, URL-parser, stream, timeout,
+or child-process exception becomes one fixed `OPENSPELL_RELEASE_ERROR:<code>`
+diagnostic; dependency error messages are never printed.
+
+Each Vercel request disables curl's ambient configuration and runs with a private,
+known-empty `.curlrc`. Child runtime, stdout, and stderr are bounded. Health and the
+public SVG forbid redirects. Account routes start with a direct request and may follow
+only a bounded, same-candidate canonical redirect that keeps the pathname/query and
+adds one valid profile id. Cross-origin, path-changing, query-expanding, cyclic, or
+excess redirects fail without printing the `Location` value or profile id.
 
 Only after the command exits successfully may the operator promote that same
 in-memory candidate value:

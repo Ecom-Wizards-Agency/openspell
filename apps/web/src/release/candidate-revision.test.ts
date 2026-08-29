@@ -58,6 +58,7 @@ describe('release candidate revision verification', () => {
     }), EXPECTED).reason).toBe('invalid_response');
     expect(inspectCandidateRevision(1, 200, health(EXPECTED), EXPECTED).reason).toBe('request_failed');
     expect(inspectCandidateRevision(0, 404, health(EXPECTED), EXPECTED).reason).toBe('request_failed');
+    expect(inspectCandidateRevision(0, 307, health(EXPECTED), EXPECTED).reason).toBe('request_failed');
   });
 
   it.each(['missing_revision', 'malformed_revision', 'mismatched_revision'] as const)(

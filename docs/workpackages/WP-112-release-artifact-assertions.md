@@ -17,8 +17,15 @@ generic headings.
   release input. Missing, malformed, or mismatched revisions fail before it
   opens CDP or requests authenticated routes.
 - Candidate, expected-revision, and CDP inputs never enter package-manager
-  arguments. The verifier validates environment inputs and removes them before
-  starting its Vercel child process.
+  arguments. The root launcher clears Node/Playwright debug variables before
+  pnpm, and the verifier clears them again before importing Playwright or
+  starting Vercel.
+- The Vercel child gets an explicit minimal environment allowlist and a private
+  empty curl home. Runtime and output are bounded; stream failures use fixed
+  diagnostic codes.
+- Health and SVG checks forbid redirects. Account routes manually follow only
+  bounded same-candidate canonical profile redirects; `Location` and profile
+  values never enter the report.
 - Dependency and unexpected exceptions map to fixed diagnostic codes. Their
   messages, endpoints, usernames, passwords, and hostnames are never printed.
 - Authentication cookies remain in memory and enter curl through stdin config;
@@ -49,6 +56,9 @@ It never reports the authenticated response body or immutable candidate hostname
   each fail with no authenticated route QA.
 - A real pnpm subprocess regression proves a rejected credentialed candidate and
   credentialed CDP endpoint never appear in stdout or stderr.
+- Adversarial launcher tests cover debug logging, hostile curl config, unrelated
+  inherited secrets, and a Vercel child failure. Redirect tests cover accepted
+  same-origin canonicalization and rejected cross-origin/path/query redirects.
 - Current grid server markup, official brand marker, and focused recommendations marker pass.
 - An authenticated error surface fails even when all required strings appear.
 - Typecheck, lint, unit tests, and public-repository hygiene pass.

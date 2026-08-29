@@ -13,6 +13,10 @@ export type ReleaseVerifierErrorCode =
   | 'authentication_missing'
   | 'authentication_invalid'
   | 'vercel_cli_unavailable'
+  | 'vercel_cli_timeout'
+  | 'vercel_output_exceeded'
+  | 'vercel_stream_failed'
+  | 'transport_isolation_failed'
   | 'unexpected_failure';
 
 export class ReleaseVerifierError extends Error {

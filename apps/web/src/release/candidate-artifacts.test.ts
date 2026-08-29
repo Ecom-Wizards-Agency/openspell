@@ -34,6 +34,7 @@ describe('release candidate artifact checks', () => {
     expect(inspection).toEqual({ matched: true, missingArtifacts: [], rejectedBody: false });
     expect(releaseResponsePassed(0, 200, inspection)).toBe(true);
     expect(releaseResponsePassed(0, 404, inspection)).toBe(false);
+    expect(releaseResponsePassed(0, 307, inspection)).toBe(false);
   });
 
   it('rejects a successful non-SVG response at the official brand asset path', () => {

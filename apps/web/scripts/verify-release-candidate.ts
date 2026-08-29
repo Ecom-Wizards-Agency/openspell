@@ -15,9 +15,13 @@
  * Usage:
  *   OPENSPELL_RELEASE_CANDIDATE_URL="$CANDIDATE_URL" \
  *   OPENSPELL_RELEASE_EXPECTED_REVISION="$RELEASE_REVISION" \
- *     pnpm --silent --filter @wizard-ads/web verify:release-candidate
+ *     bash apps/web/scripts/verify-release-candidate.sh
  */
 import { spawn } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { chromium } from '@playwright/test';
 import {
   inspectReleaseArtifact,
@@ -25,6 +29,10 @@ import {
   RELEASE_ROUTE_CHECKS,
   type ReleaseRouteCheck,
 } from '../src/release/candidate-artifacts';
+import {
+  requestAccountRouteWithRedirects,
+  type CandidateHttpResponse,
+} from '../src/release/candidate-redirect';
 import {
   connectToCdpSafely,
   inspectCandidateRevision,
@@ -40,6 +48,10 @@ const CDP_URL = process.env['OPENSPELL_CDP_URL'] ?? 'http://127.0.0.1:9222';
 const AUTH_COOKIE = /^sb-.*-auth-token(?:\.\d+)?$/;
 const CANDIDATE_HOST = /^wizard-[a-z0-9]+-ecom-wizards\.vercel\.app$/;
 const STATUS_MARKER = 'OPENSPELL_STATUS:';
+const REDIRECT_MARKER = 'OPENSPELL_REDIRECT:';
+const CHILD_TIMEOUT_MS = 35_000;
+const MAX_STDOUT_BYTES = 2 * 1024 * 1024;
+const MAX_STDERR_BYTES = 256 * 1024;
 interface RouteResult {
   route: string;
   status: number | null;
@@ -50,6 +62,7 @@ interface RouteResult {
 }
 
 async function main(): Promise<void> {
+  clearDiagnosticEnvironment();
   if (process.argv.slice(2).some((argument) => argument !== '--')) {
     throw new ReleaseVerifierError('arguments_not_allowed');
   }
@@ -128,7 +141,13 @@ async function verifyRoute(
   cookieHeader: string,
 ): Promise<RouteResult> {
   const startedAt = performance.now();
-  const result = await requestCandidate(candidate, check.route, cookieHeader);
+  const result = check.route === '/brand/wizards-ai-icon.svg'
+    ? await requestCandidate(candidate, check.route, cookieHeader)
+    : await requestAccountRouteWithRedirects({
+      candidate,
+      route: check.route,
+      request: async (route) => requestCandidate(candidate, route, cookieHeader),
+    });
   const inspection = inspectReleaseArtifact(result.responseBody, check.artifacts);
   return {
     route: check.route,
@@ -144,35 +163,39 @@ async function requestCandidate(
   candidate: URL,
   route: string,
   cookieHeader?: string,
-): Promise<{ exitCode: number | null; status: number | null; responseBody: string }> {
+): Promise<CandidateHttpResponse> {
   const args = [
     'curl',
     route,
     '--deployment',
     candidate.origin,
     '--',
+    '--disable',
     '--config',
     '-',
     '--silent',
     '--show-error',
-    '--location',
-    '--max-redirs',
-    '5',
     '--write-out',
-    `${STATUS_MARKER}%{http_code}`,
+    `${STATUS_MARKER}%{http_code}${REDIRECT_MARKER}%{redirect_url}`,
   ];
 
   const result = await spawnWithInput('vercel', args, curlConfig(cookieHeader));
   const markerIndex = result.stdout.lastIndexOf(STATUS_MARKER);
   const responseBody = markerIndex < 0 ? '' : result.stdout.slice(0, markerIndex);
-  const statusMatch = markerIndex < 0
-    ? null
-    : result.stdout.slice(markerIndex).match(new RegExp(`${STATUS_MARKER}(\\d{3})`));
+  const metadata = markerIndex < 0 ? '' : result.stdout.slice(markerIndex);
+  const statusMatch = metadata.match(new RegExp(
+    `^${STATUS_MARKER}(\\d{3})${REDIRECT_MARKER}`,
+  ));
   const status = statusMatch?.[1] === undefined ? null : Number(statusMatch[1]);
+  const redirectMarkerIndex = metadata.indexOf(REDIRECT_MARKER);
+  const redirectUrl = redirectMarkerIndex < 0
+    ? null
+    : metadata.slice(redirectMarkerIndex + REDIRECT_MARKER.length) || null;
   return {
     exitCode: result.exitCode,
     status,
     responseBody,
+    redirectUrl,
   };
 }
 
@@ -187,37 +210,137 @@ function curlConfig(cookieHeader?: string): string {
   return `header = "Cookie: ${escaped}"\nmax-time = 30\n`;
 }
 
-function spawnWithInput(
+async function spawnWithInput(
   command: string,
   args: readonly string[],
   input: string,
 ): Promise<{ exitCode: number | null; stdout: string }> {
+  let curlHome: string | null = null;
+  try {
+    curlHome = await mkdtemp(join(tmpdir(), 'openspell-release-'));
+    await chmod(curlHome, 0o700);
+    await writeFile(join(curlHome, '.curlrc'), '', { encoding: 'utf8', mode: 0o600 });
+  } catch {
+    if (curlHome !== null) {
+      await rm(curlHome, { recursive: true, force: true }).catch(() => undefined);
+    }
+    throw new ReleaseVerifierError('transport_isolation_failed');
+  }
+
+  try {
+    return await spawnBounded(command, args, input, curlHome);
+  } finally {
+    await rm(curlHome, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+function spawnBounded(
+  command: string,
+  args: readonly string[],
+  input: string,
+  curlHome: string,
+): Promise<{ exitCode: number | null; stdout: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: process.cwd(),
-      env: sanitizedChildEnvironment(),
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(command, args, {
+        cwd: process.cwd(),
+        env: minimalChildEnvironment(curlHome),
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch {
+      reject(new ReleaseVerifierError('vercel_cli_unavailable'));
+      return;
+    }
     let stdout = '';
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let failure: ReleaseVerifierError | null = null;
+    let settled = false;
+    const timeout = setTimeout(() => fail('vercel_cli_timeout'), CHILD_TIMEOUT_MS);
+
+    function fail(code: 'vercel_cli_timeout' | 'vercel_output_exceeded' | 'vercel_stream_failed') {
+      if (failure !== null || settled) return;
+      failure = new ReleaseVerifierError(code);
+      child.kill('SIGKILL');
+    }
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBytes += chunk.byteLength;
+      if (stdoutBytes > MAX_STDOUT_BYTES) {
+        fail('vercel_output_exceeded');
+        return;
+      }
+      stdout += chunk.toString('utf8');
     });
-    // Drain stderr without retaining it. Neither CLI diagnostics nor future
-    // curl changes can accidentally echo a sensitive header into this report.
-    child.stderr.resume();
-    child.on('error', () => reject(new ReleaseVerifierError('vercel_cli_unavailable')));
-    child.on('close', (exitCode) => resolve({ exitCode, stdout }));
-    child.stdin.end(input);
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrBytes += chunk.byteLength;
+      if (stderrBytes > MAX_STDERR_BYTES) fail('vercel_output_exceeded');
+    });
+    child.stdout.on('error', () => fail('vercel_stream_failed'));
+    child.stderr.on('error', () => fail('vercel_stream_failed'));
+    child.stdin.on('error', () => fail('vercel_stream_failed'));
+    child.on('error', () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(new ReleaseVerifierError('vercel_cli_unavailable'));
+    });
+    child.on('close', (exitCode) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (failure !== null) reject(failure);
+      else resolve({ exitCode, stdout });
+    });
+    try {
+      child.stdin.end(input);
+    } catch {
+      fail('vercel_stream_failed');
+    }
   });
 }
 
-function sanitizedChildEnvironment(): NodeJS.ProcessEnv {
-  const environment = { ...process.env };
-  delete environment['OPENSPELL_RELEASE_CANDIDATE_URL'];
-  delete environment['OPENSPELL_RELEASE_EXPECTED_REVISION'];
-  delete environment['OPENSPELL_CDP_URL'];
-  delete environment['OPENSPELL_PRODUCTION_ORIGIN'];
+const CHILD_ENV_ALLOWLIST = [
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'LANG',
+  'LC_ALL',
+  'TZ',
+  'XDG_CONFIG_HOME',
+  'VERCEL_TOKEN',
+  'VERCEL_ORG_ID',
+  'VERCEL_PROJECT_ID',
+  'VERCEL_SCOPE',
+  'VERCEL_TELEMETRY_DISABLED',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+] as const;
+
+function minimalChildEnvironment(curlHome: string): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    CI: '1',
+    CURL_HOME: curlHome,
+    FORCE_COLOR: '0',
+    NODE_ENV: process.env['NODE_ENV'] ?? 'production',
+    NO_COLOR: '1',
+  };
+  for (const name of CHILD_ENV_ALLOWLIST) {
+    const value = process.env[name];
+    if (value !== undefined) environment[name] = value;
+  }
   return environment;
 }
 
@@ -239,6 +362,9 @@ function candidateOrigin(input: string | undefined): URL {
     || candidate.username !== ''
     || candidate.password !== ''
     || candidate.port !== ''
+    || candidate.pathname !== '/'
+    || candidate.search !== ''
+    || candidate.hash !== ''
   ) {
     throw new ReleaseVerifierError('invalid_candidate');
   }
@@ -270,9 +396,17 @@ function productionOrigin(input: string): URL {
   return production;
 }
 
-void main()
-  .then(() => process.exit(process.exitCode ?? 0))
-  .catch((error: unknown) => {
+export async function runReleaseCandidateCli(): Promise<void> {
+  try {
+    await main();
+  } catch (error) {
     console.error(publicReleaseFailure(error));
-    process.exit(1);
-  });
+    process.exitCode = 1;
+  }
+}
+
+function clearDiagnosticEnvironment(): void {
+  for (const name of ['DEBUG', 'NODE_DEBUG', 'NODE_DEBUG_NATIVE', 'PWDEBUG']) {
+    delete process.env[name];
+  }
+}
