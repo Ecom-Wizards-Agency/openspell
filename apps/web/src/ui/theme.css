@@ -425,6 +425,18 @@ button {
   border-radius: var(--wa-radius);
 }
 
+.wa-sidebar-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.wa-navlist--direct {
+  border-bottom: 1px solid var(--wa-border);
+  margin-bottom: 0.375rem;
+  padding-bottom: 0.5rem;
+}
+
 .wa-navgroup > summary {
   align-items: center;
   color: var(--wa-text-muted);
@@ -506,12 +518,22 @@ button {
   opacity: 1;
 }
 
-.wa-sidebar-foot {
+.wa-sidebar-foot,
+.wa-sidebar-utilities {
   border-top: 1px solid var(--wa-border);
   color: var(--wa-text-muted);
   font-size: var(--wa-fs-xs);
   margin-top: auto;
   padding: 0.75rem 0.5rem 0;
+}
+
+.wa-sidebar-utilities {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.wa-sidebar-utilities .wa-navlist {
+  margin-bottom: 0.25rem;
 }
 
 .wa-topbar,
@@ -1698,7 +1720,7 @@ button {
   display: flex;
   font-size: var(--wa-fs-xs);
   gap: 0.5rem;
-  margin-top: auto;
+  margin-top: 0.25rem;
   padding: 0.375rem 0.5rem;
   width: 100%;
 }
@@ -1743,6 +1765,10 @@ button {
   :root[data-nav-collapsed='true'] .wa-sidebar-foot,
   :root[data-nav-collapsed='true'] .wa-nav-collapse .wa-navlink-label {
     display: none;
+  }
+
+  :root[data-nav-collapsed='true'] .wa-sidebar-utilities {
+    padding-top: 0.5rem;
   }
 
   :root[data-nav-collapsed='true'] .wa-brand {

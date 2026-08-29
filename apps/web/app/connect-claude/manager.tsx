@@ -37,7 +37,7 @@ export function claudeSnippet(endpoint: string): string {
   return [
     '{',
     '  "mcpServers": {',
-    '    "wizard-ads": {',
+    '    "openspell": {',
     '      "type": "http",',
     `      "url": "${endpoint}",`,
     '      "headers": {',
@@ -52,7 +52,7 @@ export function claudeSnippet(endpoint: string): string {
 /** Codex persists only the environment-variable name through its supported flag. */
 export function codexSnippet(endpoint: string): string {
   return [
-    'codex mcp add wizard-ads \\',
+    'codex mcp add openspell \\',
     `  --url ${endpoint} \\`,
     '  --bearer-token-env-var WIZARD_ADS_MCP_TOKEN',
   ].join('\n');

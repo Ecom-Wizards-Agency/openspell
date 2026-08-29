@@ -1,11 +1,13 @@
 /** Ordered nested grouping through the real session guard and production grid model. */
 import { expect, test } from '@playwright/test';
 import { signIn } from './support/auth';
+import { expectDateRangePresets } from './support/date-range';
 
 test('grid adds, reorders, and removes truthful nested grouping levels', async ({ page }) => {
   await signIn(page, 'admin');
   await page.goto('/grid?entity=campaigns');
   await expect(page.getByRole('heading', { name: 'Campaigns', exact: true })).toBeVisible();
+  await expectDateRangePresets(page);
 
   const addLevel = page.getByLabel('Add grouping level');
   await addLevel.selectOption({ label: 'State' });

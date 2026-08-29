@@ -327,7 +327,7 @@ export function createMcpServer(context: ServerContext): McpServer {
     {
       capabilities: { tools: {}, resources: {} },
       instructions:
-        'wizard-ads: read-only Amazon Advertising analytics for one org. Read the ' +
+        'OpenSpell: read-only Amazon Advertising analytics for one org. Read the ' +
         'wizardads://instructions resource first, then list_profiles. Every call is audit-logged.',
     },
   );
@@ -766,7 +766,7 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
         "The latest successful recommendation run for a profile, with every proposal's full " +
         'inputs provenance: the RPC, the click count, which level of the confidence hierarchy ' +
         'supplied the CVR, which ceiling bound the result and whether a cap clamped it. ' +
-        'v1 proposes; the operator applies through the web app export.',
+        'MCP provides evidence only; exact operator review and any approved apply live in the web app.',
       inputSchema: {
         profile_id: profileIdSchema,
         status: z

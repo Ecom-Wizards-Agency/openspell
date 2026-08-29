@@ -25,14 +25,14 @@ export class ToolError extends Error {
   }
 }
 
-/** A write tool that exists so clients can discover the v1.x surface, and refuses. */
+/** A mutation-shaped call that the analytical MCP surface must always refuse. */
 export class GatedError extends ToolError {
   constructor(tool: string) {
     super(
       'gated',
-      `${tool} is gated until v1.x. wizard-ads v1 is read-only by design: it proposes, ` +
-        'the operator applies, and the write path unlocks only after the crosscheck exit ' +
-        'criterion is met on real profiles. Use get_recommendations and export from the web app.',
+      `${tool} is unavailable through OpenSpell MCP. This service exposes analytical reads only; ` +
+        'Amazon changes require an exact operator approval in the web app and worker-side audit. ' +
+        'Use get_recommendations here, then review the batch in OpenSpell.',
     );
     this.name = 'GatedError';
   }

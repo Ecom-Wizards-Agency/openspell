@@ -415,6 +415,7 @@ describe.skipIf(!available)('the MCP server', () => {
     try {
       const instructions = await client.readResource({ uri: 'wizardads://instructions' });
       const text = textOf(instructions.contents[0]);
+      expect(text).toContain('# OpenSpell MCP');
       expect(text).toContain('read-only');
       expect(text).toContain('never averaged');
 
