@@ -304,6 +304,9 @@ implementation brief in `docs/workpackages/`.
 
 - [x] PR #31 passed both hosted gates before merge. Exact-main CI run `33266608069` then completed
       successfully at `9717c8b`, including the fast gate and serial Playwright.
+- [x] The status branch reconciled with current main passed the full local `pnpm check` gate:
+      typecheck, lint, unit tests, UI performance tests, hygiene and MCP skill lint. This is useful
+      combined-tree evidence, but does not replace hosted Actions or browser QA.
 - [x] Production `caff194` passed a fresh authenticated nine-route click-through after rollback.
 - [x] The release-candidate verifier passed eleven of eleven routes on the healthy immutable
       candidate and rejected the known broken candidate.
