@@ -10,6 +10,12 @@ generic headings.
 
 - Candidate requests remain GET-only.
 - Only an exact immutable OpenSpell Vercel hostname is accepted.
+- Public `GET /api/healthz` returns only OpenSpell readiness and one normalized
+  full Git commit revision from Vercel build metadata or an explicit non-secret
+  app-version fallback.
+- The verifier requires the expected full commit SHA as a separate explicit
+  release argument. Missing, malformed, or mismatched revisions fail before it
+  opens CDP or requests authenticated routes.
 - Authentication cookies remain in memory and enter curl through stdin config;
   response bodies, cookie names, and cookie values never enter the report.
 - Every route requires all named artifacts and rejects application, login, and
@@ -24,8 +30,8 @@ generic headings.
   the focused filter/action workflow can be verified without depending on a
   particular profile having proposals at deployment time.
 
-The verifier reports only missing public artifact identifiers. It never reports
-the authenticated response body.
+The verifier reports only public revisions and missing public artifact identifiers.
+It never reports the authenticated response body or immutable candidate hostname.
 
 ## Acceptance checks
 
@@ -34,6 +40,8 @@ the authenticated response body.
 - A missing, non-SVG, or non-200 official brand asset fails.
 - An operator page that omits the official brand-mark DOM marker fails.
 - A stale recommendations response with only the heading fails.
+- Exact revision match passes; mismatch, missing revision, and malformed revision
+  each fail with no authenticated route QA.
 - Current grid server markup, official brand marker, and focused recommendations marker pass.
 - An authenticated error surface fails even when all required strings appear.
 - Typecheck, lint, unit tests, and public-repository hygiene pass.

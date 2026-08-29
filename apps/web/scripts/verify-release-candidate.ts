@@ -13,7 +13,7 @@
  * this preflight proves the protected server artifact before alias movement.
  *
  * Usage:
- *   pnpm --filter @wizard-ads/web verify:release-candidate -- https://candidate.example
+ *   pnpm --filter @wizard-ads/web verify:release-candidate -- "$CANDIDATE_URL" "$(git rev-parse HEAD)"
  */
 import { spawn } from 'node:child_process';
 import { chromium } from '@playwright/test';
@@ -23,6 +23,11 @@ import {
   RELEASE_ROUTE_CHECKS,
   type ReleaseRouteCheck,
 } from '../src/release/candidate-artifacts';
+import {
+  inspectCandidateRevision,
+  requiredExpectedRevision,
+  runRevisionFirstGate,
+} from '../src/release/candidate-revision';
 
 const PRODUCTION_ORIGIN = process.env['OPENSPELL_PRODUCTION_ORIGIN']
   ?? 'https://ads.ecomwizards.agency';
@@ -40,12 +45,46 @@ interface RouteResult {
 }
 
 async function main(): Promise<void> {
-  const candidate = candidateOrigin(process.argv.slice(2).find((argument) => argument !== '--'));
+  const suppliedArguments = process.argv.slice(2).filter((argument) => argument !== '--');
+  const candidate = candidateOrigin(suppliedArguments[0]);
+  const expectedRevision = requiredExpectedRevision(suppliedArguments[1]);
+  if (suppliedArguments.length !== 2) {
+    throw new Error('Pass only the immutable candidate URL and expected full Git commit SHA.');
+  }
   const production = new URL(PRODUCTION_ORIGIN);
   if (candidate.origin === production.origin) {
     throw new Error('Candidate must be an immutable deployment URL, not the production alias.');
   }
 
+  const gate = await runRevisionFirstGate({
+    checkRevision: async () => verifyRevision(candidate, expectedRevision),
+    checkRoutes: async () => verifyAuthenticatedRoutes(candidate, production),
+    routePassed: (route) => route.passed,
+  });
+
+  console.log(JSON.stringify({
+    target: 'immutable-candidate',
+    passed: gate.passed,
+    revision: gate.revision,
+    routes: gate.routes,
+  }, null, 2));
+  if (!gate.passed) process.exitCode = 1;
+}
+
+async function verifyRevision(candidate: URL, expectedRevision: string) {
+  const response = await requestCandidate(candidate, '/api/healthz');
+  return inspectCandidateRevision(
+    response.exitCode,
+    response.status,
+    response.responseBody,
+    expectedRevision,
+  );
+}
+
+async function verifyAuthenticatedRoutes(
+  candidate: URL,
+  production: URL,
+): Promise<readonly RouteResult[]> {
   const browser = await chromium.connectOverCDP(CDP_URL);
   const sourceContext = browser.contexts()[0];
   if (sourceContext === undefined) {
@@ -65,10 +104,7 @@ async function main(): Promise<void> {
   for (const check of RELEASE_ROUTE_CHECKS) {
     results.push(await verifyRoute(candidate, check, cookieHeader));
   }
-
-  const passed = results.every((result) => result.passed);
-  console.log(JSON.stringify({ candidate: candidate.origin, passed, routes: results }, null, 2));
-  if (!passed) process.exitCode = 1;
+  return results;
 }
 
 async function verifyRoute(
@@ -77,9 +113,26 @@ async function verifyRoute(
   cookieHeader: string,
 ): Promise<RouteResult> {
   const startedAt = performance.now();
+  const result = await requestCandidate(candidate, check.route, cookieHeader);
+  const inspection = inspectReleaseArtifact(result.responseBody, check.artifacts);
+  return {
+    route: check.route,
+    status: result.status,
+    checkDurationMs: Math.round(performance.now() - startedAt),
+    passed: releaseResponsePassed(result.exitCode, result.status, inspection),
+    missingArtifacts: inspection.missingArtifacts,
+    rejectedBody: inspection.rejectedBody,
+  };
+}
+
+async function requestCandidate(
+  candidate: URL,
+  route: string,
+  cookieHeader?: string,
+): Promise<{ exitCode: number | null; status: number | null; responseBody: string }> {
   const args = [
     'curl',
-    check.route,
+    route,
     '--deployment',
     candidate.origin,
     '--',
@@ -101,18 +154,15 @@ async function verifyRoute(
     ? null
     : result.stdout.slice(markerIndex).match(new RegExp(`${STATUS_MARKER}(\\d{3})`));
   const status = statusMatch?.[1] === undefined ? null : Number(statusMatch[1]);
-  const inspection = inspectReleaseArtifact(responseBody, check.artifacts);
   return {
-    route: check.route,
+    exitCode: result.exitCode,
     status,
-    checkDurationMs: Math.round(performance.now() - startedAt),
-    passed: releaseResponsePassed(result.exitCode, status, inspection),
-    missingArtifacts: inspection.missingArtifacts,
-    rejectedBody: inspection.rejectedBody,
+    responseBody,
   };
 }
 
-function curlConfig(cookieHeader: string): string {
+function curlConfig(cookieHeader?: string): string {
+  if (cookieHeader === undefined) return 'max-time = 30\n';
   // curl config uses double-quoted values. Auth cookie values are URL-safe, but
   // escaping both special characters keeps this stdin boundary correct.
   if (/[\r\n]/.test(cookieHeader)) {
