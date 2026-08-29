@@ -1,4 +1,6 @@
-const DIAGNOSTIC_ENVIRONMENT = ['DEBUG', 'NODE_DEBUG', 'NODE_DEBUG_NATIVE', 'PWDEBUG'] as const;
+const DIAGNOSTIC_ENVIRONMENT = [
+  'DEBUG', 'NODE_DEBUG', 'NODE_DEBUG_NATIVE', 'PWDEBUG', 'NODE_OPTIONS', 'NODE_V8_COVERAGE',
+] as const;
 
 for (const name of DIAGNOSTIC_ENVIRONMENT) delete process.env[name];
 

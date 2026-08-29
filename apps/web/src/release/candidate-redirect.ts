@@ -2,64 +2,41 @@ export interface CandidateHttpResponse {
   exitCode: number | null;
   status: number | null;
   responseBody: string;
-  redirectUrl: string | null;
+  rawLocation: string | null;
 }
 
-export interface AccountRouteResponse extends Omit<CandidateHttpResponse, 'redirectUrl'> {
+export interface AccountRouteResponse extends Omit<CandidateHttpResponse, 'rawLocation'> {
   redirectsFollowed: number;
   redirectRejected: boolean;
 }
 
-const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
-const PROFILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const MAX_ACCOUNT_REDIRECTS = 1;
+const PROFILE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-/**
- * Account pages may canonicalize an authenticated request by adding one profile
- * id. No other origin, path, query rewrite, fragment, or redirect loop is part
- * of that contract.
- */
 export function canonicalAccountRedirect(
   candidate: URL,
   initialRoute: string,
-  redirectValue: string | null,
+  rawLocation: string,
 ): string | null {
-  if (redirectValue === null || redirectValue === '') return null;
-
-  let initial: URL;
-  let redirected: URL;
-  try {
-    initial = new URL(initialRoute, candidate);
-    redirected = new URL(redirectValue, candidate);
-  } catch {
-    return null;
+  if (/[%\\#]/.test(rawLocation) || hasUnsafeCharacter(rawLocation) || rawLocation.startsWith('//')) return null;
+  const initial = strictRelativeRoute(initialRoute);
+  if (initial === null) return null;
+  let relative = rawLocation;
+  if (rawLocation.startsWith('https://')) {
+    const prefix = `${candidate.origin}`;
+    if (!rawLocation.startsWith(`${prefix}/`)) return null;
+    relative = rawLocation.slice(prefix.length);
   }
-
-  if (
-    initial.origin !== candidate.origin
-    || redirected.origin !== candidate.origin
-    || redirected.username !== ''
-    || redirected.password !== ''
-    || redirected.pathname !== initial.pathname
-    || redirected.hash !== ''
-    || initial.searchParams.has('profile')
-  ) {
-    return null;
-  }
-
-  const profileValues = redirected.searchParams.getAll('profile');
-  if (profileValues.length !== 1 || !PROFILE_ID.test(profileValues[0] ?? '')) return null;
-
-  const expected = entriesWithoutProfile(initial.searchParams);
-  const received = entriesWithoutProfile(redirected.searchParams);
-  if (expected.length !== received.length) return null;
-  for (let index = 0; index < expected.length; index += 1) {
-    if (expected[index]?.[0] !== received[index]?.[0] || expected[index]?.[1] !== received[index]?.[1]) {
-      return null;
-    }
-  }
-
-  return `${redirected.pathname}${redirected.search}`;
+  if (!relative.startsWith('/') || relative.startsWith('//')) return null;
+  const question = relative.indexOf('?');
+  const pathname = question < 0 ? relative : relative.slice(0, question);
+  if (pathname !== initial.pathname || pathname.split('/').some((part) => part === '.' || part === '..')) return null;
+  const rawQuery = question < 0 ? '' : relative.slice(question + 1);
+  const expectedSuffix = initial.query === '' ? '' : `&${initial.query}`;
+  if (!rawQuery.startsWith('profile=') || !rawQuery.endsWith(expectedSuffix)) return null;
+  const profile = rawQuery.slice('profile='.length, rawQuery.length - expectedSuffix.length);
+  if (!PROFILE.test(profile)) return null;
+  if (rawQuery !== `profile=${profile}${expectedSuffix}`) return null;
+  return relative;
 }
 
 export async function requestAccountRouteWithRedirects(input: {
@@ -67,33 +44,36 @@ export async function requestAccountRouteWithRedirects(input: {
   route: string;
   request: (route: string) => Promise<CandidateHttpResponse>;
 }): Promise<AccountRouteResponse> {
-  let response = await input.request(input.route);
-  let redirectsFollowed = 0;
-  const visited = new Set([input.route]);
-
-  while (
-    response.exitCode === 0
-    && response.status !== null
-    && REDIRECT_STATUS.has(response.status)
-  ) {
-    const nextRoute = canonicalAccountRedirect(input.candidate, input.route, response.redirectUrl);
-    if (
-      nextRoute === null
-      || redirectsFollowed >= MAX_ACCOUNT_REDIRECTS
-      || visited.has(nextRoute)
-    ) {
-      return accountRouteResult(response, redirectsFollowed, true);
-    }
-
-    visited.add(nextRoute);
-    redirectsFollowed += 1;
-    response = await input.request(nextRoute);
-  }
-
-  return accountRouteResult(response, redirectsFollowed, false);
+  const first = await input.request(input.route);
+  if (!isRedirect(first.status)) return sanitized(first, 0, false);
+  const destination = first.rawLocation === null
+    ? null
+    : canonicalAccountRedirect(input.candidate, input.route, first.rawLocation);
+  if (destination === null) return sanitized(first, 0, true);
+  const second = await input.request(destination);
+  return sanitized(second, 1, isRedirect(second.status));
 }
 
-function accountRouteResult(
+function strictRelativeRoute(route: string): { pathname: string; query: string } | null {
+  if (!route.startsWith('/') || route.startsWith('//') || /[%\\#]/.test(route) || hasUnsafeCharacter(route)) return null;
+  const question = route.indexOf('?');
+  const pathname = question < 0 ? route : route.slice(0, question);
+  if (pathname.split('/').some((part) => part === '.' || part === '..')) return null;
+  return { pathname, query: question < 0 ? '' : route.slice(question + 1) };
+}
+
+function hasUnsafeCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 0x20 || code === 0x7f;
+  });
+}
+
+function isRedirect(status: number | null): boolean {
+  return status !== null && status >= 300 && status < 400;
+}
+
+function sanitized(
   response: CandidateHttpResponse,
   redirectsFollowed: number,
   redirectRejected: boolean,
@@ -105,12 +85,4 @@ function accountRouteResult(
     redirectsFollowed,
     redirectRejected,
   };
-}
-
-function entriesWithoutProfile(params: URLSearchParams): [string, string][] {
-  return [...params.entries()]
-    .filter(([key]) => key !== 'profile')
-    .sort(([leftKey, leftValue], [rightKey, rightValue]) => (
-      leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue)
-    ));
 }

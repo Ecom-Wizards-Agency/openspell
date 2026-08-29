@@ -5,11 +5,11 @@ import {
   type CandidateHttpResponse,
 } from './candidate-redirect';
 
-const CANDIDATE = new URL(`https://${['wizard', 'synthetic', 'ecom', 'wizards'].join('-')}.vercel.app`);
+const CANDIDATE = new URL(`https://${['wizard', 'ads', 'synthetic'].join('-')}.vercel.app`);
 const PROFILE = '10000000-0000-4000-8000-000000000001';
 
-function response(status: number, redirectUrl: string | null = null): CandidateHttpResponse {
-  return { exitCode: 0, status, responseBody: '', redirectUrl };
+function response(status: number, rawLocation: string | null = null): CandidateHttpResponse {
+  return { exitCode: 0, status, responseBody: '', rawLocation };
 }
 
 describe('manual release-candidate redirects', () => {
@@ -40,6 +40,12 @@ describe('manual release-candidate redirects', () => {
     `${CANDIDATE.origin}/grid?profile=${PROFILE}&unexpected=1`,
     `${CANDIDATE.origin}/grid?profile=not-a-profile`,
     `${CANDIDATE.origin}/grid?profile=${PROFILE}#private-fragment`,
+    `${CANDIDATE.origin}:443/grid?profile=${PROFILE}`,
+    ['//', CANDIDATE.hostname, '/grid?profile=', PROFILE].join(''),
+    `/grid?profile=${PROFILE}%26unexpected=1`,
+    ['/grid?from=', '2026-08-01', '&profile=', PROFILE].join(''),
+    `/grid/../grid?profile=${PROFILE}`,
+    `/grid\\?profile=${PROFILE}`,
   ])('rejects a non-canonical redirect without requesting its destination', async (location) => {
     const request = vi.fn(async () => response(307, location));
 
@@ -53,7 +59,7 @@ describe('manual release-candidate redirects', () => {
     expect(result).toMatchObject({ status: 307, redirectsFollowed: 0, redirectRejected: true });
     expect(JSON.stringify(result)).not.toContain(location);
     expect(result).not.toHaveProperty('location');
-    expect(result).not.toHaveProperty('redirectUrl');
+    expect(result).not.toHaveProperty('rawLocation');
   });
 
   it('preserves an existing canonical query exactly while adding profile', () => {

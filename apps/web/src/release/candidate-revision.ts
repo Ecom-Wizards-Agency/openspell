@@ -1,4 +1,5 @@
 import { normalizePublicGitRevision } from './public-revision';
+import type { CandidateBindingReason } from './candidate-binding';
 
 export type ReleaseVerifierErrorCode =
   | 'arguments_not_allowed'
@@ -12,10 +13,14 @@ export type ReleaseVerifierErrorCode =
   | 'cdp_session_unavailable'
   | 'authentication_missing'
   | 'authentication_invalid'
-  | 'vercel_cli_unavailable'
-  | 'vercel_cli_timeout'
-  | 'vercel_output_exceeded'
-  | 'vercel_stream_failed'
+  | 'provider_environment_missing'
+  | `candidate_binding_${CandidateBindingReason}`
+  | 'invalid_candidate_route'
+  | 'transport_input_invalid'
+  | 'curl_unavailable'
+  | 'curl_timeout'
+  | 'curl_output_exceeded'
+  | 'curl_stream_failed'
   | 'transport_isolation_failed'
   | 'unexpected_failure';
 

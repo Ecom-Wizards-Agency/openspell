@@ -24,10 +24,11 @@ fallback during the product-name transition. A short hash, label, missing value,
 or non-hex value becomes `null`. The response is `no-store` and never includes a
 runtime URL, deployment identifier, environment name, database state, or secret.
 
-The release verifier requires the expected full SHA as an explicit argument.
-It checks `/api/healthz` before opening the CDP connection or requesting any
-authenticated route. Missing, malformed, or different revisions stop the gate
-with zero route checks.
+The release verifier requires the expected full SHA as an explicit environment
+input. Before health, CDP, or cookies, it asks Vercel's fixed deployment API for
+the candidate and requires an exact URL, project, owner, and `READY` match.
+It then checks `/api/healthz` before opening CDP or requesting authenticated
+routes. Any binding or revision failure stops with zero route checks.
 
 ## Candidate gate
 
@@ -48,31 +49,37 @@ OPENSPELL_RELEASE_EXPECTED_REVISION="$release_revision" \
 
 The report identifies the target only as `immutable-candidate`; it includes the
 public expected and observed Git revisions plus named route assertions, but not
-the candidate hostname. Vercel CLI diagnostics are drained rather than retained
-because future CLI output could include protected request details.
+the candidate hostname. Curl diagnostics are drained rather than retained
+because transport output could include protected request details.
 
 Candidate, expected-revision, and optional `OPENSPELL_CDP_URL` inputs are read
 from validated environment variables. They are never package-script arguments,
 so pnpm cannot repeat them in its command banner or failure summary. The checked-in
-launcher removes `DEBUG`, `NODE_DEBUG`, `NODE_DEBUG_NATIVE`, and `PWDEBUG` before
-pnpm starts; the TypeScript entry point removes them again before it imports
-Playwright or starts Vercel. The Vercel child receives an explicit environment
-allowlist containing only process lookup, Vercel authentication/config location,
-proxy, and certificate variables. Database, Amazon, release, CDP, debug, and
+launcher removes `DEBUG`, `NODE_DEBUG`, `NODE_DEBUG_NATIVE`, `PWDEBUG`,
+`NODE_OPTIONS`, and `NODE_V8_COVERAGE` before pnpm starts; the TypeScript entry
+point repeats that boundary before importing the verifier. Existing approved
+environment values named `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, `VERCEL_ORG_ID`,
+and `VERCEL_AUTOMATION_BYPASS_SECRET` are required. They are captured, removed
+from the process environment, and sent only through curl's stdin configuration.
+The curl child receives only process lookup, temporary-directory, locale, proxy,
+and certificate variables. Database, Amazon, release, CDP, provider, debug, and
 unrelated variables are absent.
 
 The immutable candidate URL must use HTTPS on the exact project host, with no
 username, password, or explicit port. `OPENSPELL_CDP_URL` is a separate validated
-HTTP(S) or WebSocket endpoint and may use the local CDP port or authenticated remote
+HTTP(S) or WebSocket endpoint and may use a local or authenticated remote
 transport. Neither value is printed. Any Playwright, CDP, URL-parser, stream, timeout,
 or child-process exception becomes one fixed `OPENSPELL_RELEASE_ERROR:<code>`
 diagnostic; dependency error messages are never printed.
 
-Each Vercel request disables curl's ambient configuration and runs with a private,
+Each request invokes system curl with the exact argv `--disable --config -`;
+URLs, authorization, bypass, and cookies are never argv values. Curl's ambient
+configuration is disabled and every request runs with a private,
 known-empty `.curlrc`. Child runtime, stdout, and stderr are bounded. Health and the
 public SVG forbid redirects. Account routes start with a direct request and may follow
-only a bounded, same-candidate canonical redirect that keeps the pathname/query and
-adds one valid profile id. Cross-origin, path-changing, query-expanding, cyclic, or
+only one raw, same-candidate canonical redirect that keeps the pathname and original
+query byte-for-byte and prepends one lowercase canonical profile id. Cross-origin,
+encoded, authority-changing, path-changing, query-reordering, cyclic, or
 excess redirects fail without printing the `Location` value or profile id.
 
 Only after the command exits successfully may the operator promote that same
