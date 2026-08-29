@@ -36,6 +36,7 @@ const GUARDED = [
   '/connect-claude',
   '/time-machine',
   '/recommendations',
+  '/campaigns',
   '/ngrams',
   '/tags',
   '/feedback/new',
@@ -48,6 +49,16 @@ const GUARDED = [
   '/settings/account',
   '/sync-status',
 ] as const;
+
+const PROFILE_CANONICAL = new Set([
+  '/dashboard',
+  '/grid',
+  '/optimizer',
+  '/optimizer/groups',
+  '/recommendations',
+  '/campaigns',
+  '/creative',
+]);
 
 test.describe.configure({ mode: 'serial' });
 
@@ -118,7 +129,17 @@ test('the same screens open once there is a session', async ({ page }) => {
 
   const landed: string[] = [];
   for (const route of GUARDED) {
-    await page.goto(route);
+    const expectedPath = new URL(route, 'https://example.test').pathname;
+    await page.goto(route).catch((error: unknown) => {
+      if (!PROFILE_CANONICAL.has(expectedPath) || !String(error).includes('is interrupted by')) {
+        throw error;
+      }
+    });
+    if (PROFILE_CANONICAL.has(expectedPath)) {
+      await page.waitForURL(
+        (url) => url.pathname === expectedPath && url.searchParams.has('profile'),
+      );
+    }
     landed.push(new URL(page.url()).pathname);
   }
 
