@@ -27,6 +27,7 @@ const ASSET_TWO = 'amzn1.assetlibrary.asset1.synthetic-two';
 const PROFILE: AdsProfileContext = {
   id: PROFILE_ID,
   orgId: ORG_ID,
+  connectionId: '90909090-9090-4090-8090-909090909090',
   amazonProfileId: '999999999999999',
   region: 'NA',
   currencyCode: 'USD',

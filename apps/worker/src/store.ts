@@ -15,6 +15,7 @@ import {
   reconcileEntityChangeLinks,
   reportRequests,
   promoteReportDate as promoteDbReportDate,
+  recoverAmazonWriteOutbox,
   requeueStaleSyncJobs,
   targets,
   upsertMirrorRows,
@@ -25,6 +26,7 @@ import {
   type ClaimedJob,
   type DbHandle,
   type JobOutcome,
+  type MirrorPromotionCounts,
   type NewEntityChange,
   type ReportDatePromotionResult,
   type StagedReportDate,
@@ -81,6 +83,14 @@ function asDate(value: Date | string): Date {
 
 export interface EntitySyncOptions {
   adProduct?: 'SP' | 'SB' | 'SD';
+  /** Provider-read start time used as an out-of-order promotion watermark. */
+  observedAt?: Date;
+  /**
+   * Gateway-targeted reads promote the mirror but attach their evidence only
+   * after call-generation classification. They must not enter the legacy
+   * source=sync Time Machine linker first.
+   */
+  recordChanges?: boolean;
   /**
    * A full pass re-lists every entity the profile has, so an id the mirror
    * holds and the listing omits really is gone and earns a tombstone. A delta
@@ -93,6 +103,8 @@ export interface EntitySyncOptions {
 export interface EntitySyncCounts {
   listed: number;
   upserted: number;
+  /** Older provider snapshots deliberately ignored by the promotion watermark. */
+  superseded?: number;
   /**
    * Listed rows collapsed away because another row in the same listing carried
    * the same `(profileId, amazonId)`. Real, not defensive: the negatives mirror
@@ -117,20 +129,25 @@ export interface WorkerStore {
   finish(
     jobId: string,
     outcome: JobOutcome,
-    options?: { error?: string; result?: unknown; retryIn?: string },
+    options?: {
+      error?: string;
+      result?: unknown;
+      retryIn?: string;
+      claimToken?: string | null;
+    },
   ): Promise<void>;
   /**
    * Return a healthy, unfinished provider job to the queue without consuming
    * its failure budget. Optional for test/adaptor stores; the Postgres runtime
    * implements it. A provider poll is waiting, not a failed attempt.
    */
-  defer?(jobId: string, retryIn: string): Promise<void>;
+  defer?(jobId: string, retryIn: string, claimToken?: string | null): Promise<void>;
   /**
    * Finish a job as `dead` without spending its remaining attempts. For
    * failures no retry can fix — a malformed export, a payload naming a profile
    * that does not exist — retrying five times only delays the human.
    */
-  deadLetter(jobId: string, error: string): Promise<void>;
+  deadLetter(jobId: string, error: string, claimToken?: string | null): Promise<void>;
   release(workerId: string): Promise<number>;
   /**
    * Requeue jobs still `running` on a worker that died without releasing them.
@@ -138,6 +155,8 @@ export interface WorkerStore {
    * SIGKILLed worker's jobs are lost until somebody sweeps them back.
    */
   requeueStale(olderThan: string): Promise<number>;
+  /** Repair missing guarded-write apply/observe outbox rows across profiles. */
+  recoverAmazonWrites(now?: Date): Promise<{ applyJobs: number; observationJobs: number }>;
   profile(profileId: string): Promise<AdsProfileContext>;
   syncEntities(
     profile: AdsProfileContext,
@@ -223,12 +242,17 @@ export class PostgresWorkerStore implements WorkerStore {
   async finish(
     jobId: string,
     outcome: JobOutcome,
-    options: { error?: string; result?: unknown; retryIn?: string } = {},
+    options: {
+      error?: string;
+      result?: unknown;
+      retryIn?: string;
+      claimToken?: string | null;
+    } = {},
   ): Promise<void> {
     await finishSyncJob(this.handle, jobId, outcome, options);
   }
 
-  async defer(jobId: string, retryIn: string): Promise<void> {
+  async defer(jobId: string, retryIn: string, claimToken?: string | null): Promise<void> {
     const rows = await this.handle.sql<{ id: string }[]>`
       update public.sync_jobs
          set status = 'queued'::public.sync_job_status,
@@ -236,9 +260,11 @@ export class PostgresWorkerStore implements WorkerStore {
              last_error = null,
              claimed_by = null,
              claimed_at = null,
+             claim_token = null,
              run_after = now() + ${retryIn}::interval
        where id = ${jobId}
          and status = 'running'::public.sync_job_status
+         and claim_token = ${claimToken ?? null}
       returning id
     `;
     if (rows.length !== 1 || rows[0]?.id !== jobId) {
@@ -246,13 +272,14 @@ export class PostgresWorkerStore implements WorkerStore {
     }
   }
 
-  async deadLetter(jobId: string, error: string): Promise<void> {
+  async deadLetter(jobId: string, error: string, claimToken?: string | null): Promise<void> {
     // `finish_sync_job` only derives `dead` from exhausted attempts, so a
     // permanent failure says the word itself and takes the function's
     // pass-through branch.
     await this.handle.sql`
       select public.finish_sync_job(
-        ${jobId}, 'dead'::public.sync_job_status, ${error}, null::jsonb, null::interval
+        ${jobId}, ${claimToken ?? null}, 'dead'::public.sync_job_status,
+        ${error}, null::jsonb, null::interval
       )
     `;
   }
@@ -260,7 +287,7 @@ export class PostgresWorkerStore implements WorkerStore {
   async release(workerId: string): Promise<number> {
     const rows = await this.handle.sql<{ id: string }[]>`
       update public.sync_jobs
-         set status = 'queued', claimed_by = null, claimed_at = null,
+         set status = 'queued', claimed_by = null, claimed_at = null, claim_token = null,
              run_after = now(), last_error = coalesce(last_error, 'released during graceful shutdown')
        where status = 'running' and claimed_by = ${workerId}
       returning id
@@ -272,10 +299,15 @@ export class PostgresWorkerStore implements WorkerStore {
     return requeueStaleSyncJobs(this.handle, olderThan);
   }
 
+  recoverAmazonWrites(now?: Date): Promise<{ applyJobs: number; observationJobs: number }> {
+    return recoverAmazonWriteOutbox(this.handle, now);
+  }
+
   async profile(profileId: string): Promise<AdsProfileContext> {
     const rows = await this.handle.sql<{
       id: string;
       org_id: string;
+      connection_id: string | null;
       amazon_profile_id: string;
       region: 'NA' | 'EU' | 'FE';
       currency_code: string;
@@ -283,7 +315,7 @@ export class PostgresWorkerStore implements WorkerStore {
       account_name: string | null;
       country_code: string;
     }[]>`
-      select id, org_id, amazon_profile_id, region, currency_code, timezone,
+      select id, org_id, connection_id, amazon_profile_id, region, currency_code, timezone,
              account_name, country_code
         from public.ad_profiles where id = ${profileId}
     `;
@@ -292,6 +324,7 @@ export class PostgresWorkerStore implements WorkerStore {
     return {
       id: row.id,
       orgId: row.org_id,
+      connectionId: row.connection_id,
       amazonProfileId: row.amazon_profile_id,
       region: row.region,
       currencyCode: row.currency_code,
@@ -306,14 +339,15 @@ export class PostgresWorkerStore implements WorkerStore {
     entities: readonly EntityRow[],
     options: EntitySyncOptions = {},
   ): Promise<EntitySyncCounts> {
-    const { adProduct, full = false } = options;
+    const { adProduct, full = false, recordChanges = true } = options;
     for (const entity of entities) {
       if (entity.profileId !== profile.id) {
         throw new Error(`entity ${entity.amazonId} belongs to profile ${entity.profileId}, expected ${profile.id}`);
       }
     }
-    const now = new Date();
+    const now = options.observedAt ?? new Date();
     let upserted = 0;
+    let superseded = 0;
     let tombstoned = 0;
     let duplicates = 0;
     const changes: NewEntityChange[] = [];
@@ -341,31 +375,47 @@ export class PostgresWorkerStore implements WorkerStore {
       const byId = new Map(existing.map((row) => [row.amazonId, row]));
       const seen = new Set<string>();
 
+      const candidateChanges: Array<{ amazonId: string; change: NewEntityChange }> = [];
       for (const entity of incoming) {
         seen.add(entity.amazonId);
         const prior = byId.get(entity.amazonId);
         const nextSnapshot = entitySnapshot(entity);
         if (!prior) {
-          changes.push(change(profile, entity, 'entity', null, nextSnapshot));
+          candidateChanges.push({
+            amazonId: entity.amazonId,
+            change: change(profile, entity, 'entity', null, nextSnapshot),
+          });
         } else {
           for (const [field, value] of Object.entries(nextSnapshot)) {
             const oldValue = prior.snapshot[field];
             if (!isDeepStrictEqual(oldValue, value)) {
-              changes.push(change(profile, entity, field, oldValue ?? null, value ?? null));
+              candidateChanges.push({
+                amazonId: entity.amazonId,
+                change: change(profile, entity, field, oldValue ?? null, value ?? null),
+              });
             }
           }
           if (prior.deletedAt) {
-            changes.push(change(profile, entity, 'deletedAt', asDate(prior.deletedAt).toISOString(), null));
+            candidateChanges.push({
+              amazonId: entity.amazonId,
+              change: change(
+                profile,
+                entity,
+                'deletedAt',
+                asDate(prior.deletedAt).toISOString(),
+                null,
+              ),
+            });
           }
         }
       }
 
       const missing = full ? existing.filter((row) => !row.deletedAt && !seen.has(row.amazonId)) : [];
-      tombstoned += missing.length;
       if (missing.length > 0) {
         const ids = missing.map((row) => row.amazonId);
-        await this.markDeleted(profile.id, entityType, ids, now);
-        for (const row of missing) {
+        const deletedIds = new Set(await this.markDeleted(profile.id, entityType, ids, now));
+        tombstoned += deletedIds.size;
+        for (const row of missing.filter((candidate) => deletedIds.has(candidate.amazonId))) {
           changes.push({
             orgId: profile.orgId,
             profileId: profile.id,
@@ -380,25 +430,45 @@ export class PostgresWorkerStore implements WorkerStore {
         }
       }
 
-      upserted += await this.upsertType(profile, entityType, incoming, now);
+      const promotion = await this.upsertType(profile, entityType, incoming, now);
+      upserted += promotion.upserted;
+      superseded += promotion.superseded ?? 0;
+      const promotedIds = new Set(promotion.promotedIds);
+      if (recordChanges) {
+        changes.push(...candidateChanges
+          .filter((candidate) => promotedIds.has(candidate.amazonId))
+          .map((candidate) => candidate.change));
+      }
     }
 
-    const writtenChanges = await recordEntityChanges(this.handle, changes);
+    const writtenChanges = recordChanges
+      ? await recordEntityChanges(this.handle, changes)
+      : 0;
     // If a prior pass persisted the change ledger but failed during evidence
     // attribution, the mirror already contains the new value and a retry will
     // produce no fresh diff. Reconcile every pass so that failure is recoverable.
-    await reconcileEntityChangeLinks(this.handle, {
-      orgId: profile.orgId,
-      profileId: profile.id,
-    });
+    if (recordChanges) {
+      await reconcileEntityChangeLinks(this.handle, {
+        orgId: profile.orgId,
+        profileId: profile.id,
+      });
+    }
     // Program rule 4: every listed row is accounted for, as a write or as a
     // collision with a row that was written.
-    if (entities.length !== upserted + duplicates) {
+    if (entities.length !== upserted + superseded + duplicates) {
       throw new Error(
-        `entity sync listed ${entities.length} rows but upserted ${upserted} (${duplicates} duplicates)`,
+        `entity sync listed ${entities.length} rows but accounted for ${upserted} writes, `
+        + `${superseded} superseded snapshots, and ${duplicates} duplicates`,
       );
     }
-    return { listed: entities.length, upserted, duplicates, changes: writtenChanges, tombstoned };
+    return {
+      listed: entities.length,
+      upserted,
+      ...(superseded === 0 ? {} : { superseded }),
+      duplicates,
+      changes: writtenChanges,
+      tombstoned,
+    };
   }
 
   async ensureReportRequest(
@@ -794,11 +864,12 @@ export class PostgresWorkerStore implements WorkerStore {
     entityType: EntityRow['entityType'],
     amazonIds: readonly string[],
     at: Date,
-  ): Promise<void> {
-    await this.handle.sql.unsafe(
-      `update public.${tableName(entityType)} set deleted_at = $1, synced_at = $1 where profile_id = $2 and amazon_id = any($3::text[])`,
+  ): Promise<string[]> {
+    const rows = await this.handle.sql.unsafe<{ amazon_id: string }[]>(
+      `update public.${tableName(entityType)} set deleted_at = $1, synced_at = $1 where profile_id = $2 and amazon_id = any($3::text[]) and synced_at <= $1 returning amazon_id`,
       [at.toISOString(), profileId, amazonIds],
     );
+    return rows.map((row) => row.amazon_id);
   }
 
   private async upsertType(
@@ -806,15 +877,15 @@ export class PostgresWorkerStore implements WorkerStore {
     entityType: EntityRow['entityType'],
     rows: readonly EntityRow[],
     syncedAt: Date,
-  ): Promise<number> {
+  ): Promise<MirrorPromotionCounts> {
     switch (entityType) {
-      case 'portfolio': return (await upsertMirrorRows(this.handle, portfolios, rows.filter(isType('portfolio')).map((row) => ({ ...baseMirror(profile, row, syncedAt), budgetAmount: row.budgetAmount, budgetPolicy: row.budgetPolicy })))).upserted;
-      case 'campaign': return (await upsertMirrorRows(this.handle, campaigns, rows.filter(isType('campaign')).map((row) => ({ ...baseMirror(profile, row, syncedAt), portfolioAmazonId: row.portfolioId, budgetAmount: row.budgetAmount, budgetType: row.budgetType, targetingType: row.targetingType, biddingStrategy: row.biddingStrategy, placementBidding: row.placementBidding, campaignWriteContext: row.campaignWriteContext ?? null, startDate: row.startDate, endDate: row.endDate })))).upserted;
-      case 'ad_group': return (await upsertMirrorRows(this.handle, adGroups, rows.filter(isType('ad_group')).map((row) => ({ ...baseMirror(profile, row, syncedAt), campaignId: row.campaignId, defaultBid: row.defaultBid })))).upserted;
-      case 'product_ad': return (await upsertMirrorRows(this.handle, productAds, rows.filter(isType('product_ad')).map((row) => ({ ...baseMirror(profile, row, syncedAt), campaignId: row.campaignId, adGroupId: row.adGroupId, asin: row.asin, sku: row.sku })))).upserted;
-      case 'keyword': return (await upsertMirrorRows(this.handle, keywords, rows.filter(isType('keyword')).map((row) => ({ ...baseMirror(profile, row, syncedAt), campaignId: row.campaignId, adGroupId: row.adGroupId, keywordText: row.keywordText, matchType: row.matchType, bid: row.bid })))).upserted;
-      case 'target': return (await upsertMirrorRows(this.handle, targets, rows.filter(isType('target')).map((row) => ({ ...baseMirror(profile, row, syncedAt), campaignId: row.campaignId, adGroupId: row.adGroupId, expression: row.expression, resolvedExpression: row.resolvedExpression, bid: row.bid })))).upserted;
-      case 'negative': return (await upsertMirrorRows(this.handle, negatives, rows.filter(isType('negative')).map((row) => ({ ...baseMirror(profile, row, syncedAt), campaignId: row.campaignId, adGroupId: row.adGroupId, scope: row.scope, keywordText: row.keywordText, expression: row.expression, matchType: row.matchType })))).upserted;
+      case 'portfolio': return upsertMirrorRows(this.handle, portfolios, rows.filter(isType('portfolio')).map((row) => ({ ...baseMirror(profile, row, syncedAt), budgetAmount: row.budgetAmount, budgetPolicy: row.budgetPolicy })), { returnPromotedIds: true });
+      case 'campaign': return upsertMirrorRows(this.handle, campaigns, rows.filter(isType('campaign')).map((row) => ({ ...baseMirror(profile, row, syncedAt), portfolioAmazonId: row.portfolioId, budgetAmount: row.budgetAmount, budgetType: row.budgetType, targetingType: row.targetingType, biddingStrategy: row.biddingStrategy, placementBidding: row.placementBidding, campaignWriteContext: row.campaignWriteContext ?? null, startDate: row.startDate, endDate: row.endDate })), { returnPromotedIds: true });
+      case 'ad_group': return upsertMirrorRows(this.handle, adGroups, rows.filter(isType('ad_group')).map((row) => ({ ...baseMirror(profile, row, syncedAt), campaignId: row.campaignId, defaultBid: row.defaultBid })), { returnPromotedIds: true });
+      case 'product_ad': return upsertMirrorRows(this.handle, productAds, rows.filter(isType('product_ad')).map((row) => ({ ...baseMirror(profile, row, syncedAt), campaignId: row.campaignId, adGroupId: row.adGroupId, asin: row.asin, sku: row.sku })), { returnPromotedIds: true });
+      case 'keyword': return upsertMirrorRows(this.handle, keywords, rows.filter(isType('keyword')).map((row) => ({ ...baseMirror(profile, row, syncedAt), campaignId: row.campaignId, adGroupId: row.adGroupId, keywordText: row.keywordText, matchType: row.matchType, bid: row.bid })), { returnPromotedIds: true });
+      case 'target': return upsertMirrorRows(this.handle, targets, rows.filter(isType('target')).map((row) => ({ ...baseMirror(profile, row, syncedAt), campaignId: row.campaignId, adGroupId: row.adGroupId, expression: row.expression, resolvedExpression: row.resolvedExpression, bid: row.bid })), { returnPromotedIds: true });
+      case 'negative': return upsertMirrorRows(this.handle, negatives, rows.filter(isType('negative')).map((row) => ({ ...baseMirror(profile, row, syncedAt), campaignId: row.campaignId, adGroupId: row.adGroupId, scope: row.scope, keywordText: row.keywordText, expression: row.expression, matchType: row.matchType })), { returnPromotedIds: true });
     }
   }
 }

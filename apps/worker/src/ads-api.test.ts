@@ -34,6 +34,7 @@ import {
 const profile: AdsProfileContext = {
   id: '22222222-2222-4222-8222-222222222222',
   orgId: '11111111-1111-4111-8111-111111111111',
+  connectionId: '99999999-9999-4999-8999-999999999999',
   amazonProfileId: 'amazon-profile-9',
   region: 'NA',
   currencyCode: 'USD',
@@ -95,7 +96,6 @@ function makeAdapter(
 ): { adapter: DbAdsApiClient; createClient: ReturnType<typeof vi.fn> } {
   const createClient = vi.fn(() => client);
   const deps: AdsApiAdapterDeps = {
-    resolveConnectionId: async () => CONNECTION_ID,
     listConnectionIds: async () => [CONNECTION_ID],
     getRefreshToken: async () => 'refresh-token',
     createClient,
@@ -204,13 +204,14 @@ describe('DbAdsApiClient.listEntities', () => {
   });
 
   it('throws when the profile has no connection', async () => {
-    const { adapter } = makeAdapter(underlying(), { resolveConnectionId: async () => null });
-    await expect(adapter.listEntities(profile, false)).rejects.toThrow(/no Amazon connection/);
+    const { adapter } = makeAdapter(underlying());
+    await expect(adapter.listEntities({ ...profile, connectionId: null }, false))
+      .rejects.toThrow(/no Amazon connection/);
   });
 
   it('throws when the connection has no stored refresh token', async () => {
     const { adapter } = makeAdapter(underlying(), { getRefreshToken: async () => null });
-    await expect(adapter.listEntities(profile, false)).rejects.toThrow(/no stored refresh token/);
+    await expect(adapter.listEntities(profile, false)).rejects.toThrow(/no stored refresh token|not active with a stored refresh token/);
   });
 
   it('does not log or expose the refresh token', async () => {
@@ -416,6 +417,61 @@ describe('DbAdsApiClient.getSpSuggestedBids', () => {
 });
 
 describe('DbAdsApiClient guarded Sponsored Products writes', () => {
+  it('bypasses a cached client and refuses a locally revoked credential before mutation I/O', async () => {
+    const updateSpKeywords = vi.fn(async () => ({
+      submitted: 1, batches: 1, apiCalls: 1,
+      items: [{ kind: 'keywords' as const, index: 0, id: 'keyword-1', entity: null, raw: {} }],
+      errors: [],
+    }));
+    const getRefreshToken = vi.fn()
+      .mockResolvedValueOnce('synthetic-first-token')
+      .mockResolvedValueOnce(null);
+    const client = underlying({ updateSpKeywords });
+    const { adapter } = makeAdapter(client, { getRefreshToken });
+
+    await adapter.listEntities(profile, false);
+    await expect(adapter.updateSpKeywordBids(profile, [{ keywordId: 'keyword-1', bid: 0.71 }]))
+      .rejects.toMatchObject({ name: 'SpWriteRetryableError', apiCalls: 0 });
+    expect(getRefreshToken).toHaveBeenCalledTimes(2);
+    expect(updateSpKeywords).not.toHaveBeenCalled();
+  });
+
+  it('evicts a cached client and refuses mutation I/O when the bound connection is inactive', async () => {
+    const updateSpKeywords = vi.fn(async () => ({
+      submitted: 1, batches: 1, apiCalls: 1,
+      items: [{ kind: 'keywords' as const, index: 0, id: 'keyword-1', entity: null, raw: {} }],
+      errors: [],
+    }));
+    const { adapter } = makeAdapter(underlying({ updateSpKeywords }), {
+      listConnectionIds: async () => [],
+    });
+    await adapter.listEntities(profile, false);
+
+    await expect(adapter.updateSpKeywordBids(profile, [{ keywordId: 'keyword-1', bid: 0.71 }]))
+      .rejects.toMatchObject({ name: 'SpWriteRetryableError', apiCalls: 0 });
+    expect(updateSpKeywords).not.toHaveBeenCalled();
+  });
+
+  it('cancels a delayed credential lookup before it can emit a late mutation', async () => {
+    const updateSpKeywords = vi.fn();
+    let resolveToken: ((value: string | null) => void) | undefined;
+    const getRefreshToken = vi.fn(() => new Promise<string | null>((resolve) => {
+      resolveToken = resolve;
+    }));
+    const { adapter } = makeAdapter(underlying({ updateSpKeywords }), { getRefreshToken });
+    const controller = new AbortController();
+    const mutation = adapter.updateSpKeywordBids(
+      profile,
+      [{ keywordId: 'keyword-1', bid: 0.71 }],
+      { signal: controller.signal },
+    );
+    controller.abort(new DOMException('synthetic timeout', 'TimeoutError'));
+    await expect(mutation).rejects.toMatchObject({ name: 'SpWriteAmbiguousError', apiCalls: 0 });
+    resolveToken?.('synthetic-late-token');
+    await Promise.resolve();
+    expect(updateSpKeywords).not.toHaveBeenCalled();
+  });
+
   it('keeps row-level Amazon success/failure accounting and drops raw envelopes', async () => {
     const updateSpKeywords = vi.fn(async () => ({
       submitted: 2,
@@ -457,9 +513,22 @@ describe('DbAdsApiClient guarded Sponsored Products writes', () => {
       .rejects.toBeInstanceOf(SpWriteRetryableError);
   });
 
+  it('caps a hostile write Retry-After so a reserved inverse keeps its runway', async () => {
+    const { adapter } = makeAdapter(underlying({
+      updateSpKeywords: async () => {
+        throw new AdsThrottleError('synthetic hostile throttle', 429, '', 1, 86_400_000);
+      },
+    }));
+    await expect(adapter.updateSpKeywordBids(profile, [{ keywordId: 'keyword-1', bid: 0.71 }]))
+      .rejects.toMatchObject({
+        name: 'SpWriteRetryableError', retryAfterSeconds: 120, apiCalls: 1,
+      });
+  });
+
   it.each([
     new AdsApiTimeoutError('synthetic timeout'),
     new AdsApiHttpError('synthetic transport failure', 0, '', 1),
+    new AdsApiHttpError('synthetic request timeout', 408, '', 1),
     new AdsApiHttpError('synthetic server failure', 503, '', 1),
     new AdsApiParseError('synthetic incomplete multi-status response'),
     new DuplicateWriteError('synthetic duplicate', 425, '', 1, 'update', '/sp/keywords'),
@@ -521,6 +590,23 @@ describe('DbAdsApiClient guarded Sponsored Products writes', () => {
     });
   });
 
+  it('bounds a targeted exact read whose provider promise never resolves', async () => {
+    const listSpKeywords = vi.fn(() => new Promise<ReturnType<typeof emptyList>>(() => {}));
+    const { adapter } = makeAdapter(underlying({ listSpKeywords }));
+    const controller = new AbortController();
+    const observation = adapter.observeSpWriteEntities(
+      profile,
+      { keywordIds: ['keyword-1'], targetIds: [], campaignIds: [] },
+      { signal: controller.signal },
+    );
+    await vi.waitFor(() => expect(listSpKeywords).toHaveBeenCalledTimes(1));
+    controller.abort(new DOMException('synthetic exact-read timeout', 'TimeoutError'));
+    await expect(observation).rejects.toMatchObject({
+      name: 'SpWriteObservationError', apiCallsLowerBound: 0,
+    });
+    expect(listSpKeywords).toHaveBeenCalledTimes(1);
+  });
+
   it('chunks targeted observations at the provider batch limit and counts every read', async () => {
     const listSpKeywords = vi.fn(async (
       _profileId: string,
@@ -543,6 +629,23 @@ describe('DbAdsApiClient guarded Sponsored Products writes', () => {
     expect(listSpKeywords).toHaveBeenCalledTimes(2);
     expect(listSpKeywords.mock.calls.map((call) => call[1]?.entityIdFilter?.length))
       .toEqual([100, 1]);
+  });
+
+  it('counts every HTTP page used by an exact targeted observation', async () => {
+    const listSpKeywords = vi.fn(async () => ({
+      ...emptyList(),
+      pages: 3,
+      items: [{
+        entityType: 'keyword' as const, amazonId: 'keyword-1', adProduct: 'SP' as const,
+        name: 'synthetic', state: 'enabled' as const, campaignId: 'campaign-1',
+        adGroupId: 'group-1', keywordText: 'synthetic', matchType: 'exact' as const, bid: 0.71,
+      }],
+    }));
+    const { adapter } = makeAdapter(underlying({ listSpKeywords }));
+
+    await expect(adapter.observeSpWriteEntities(profile, {
+      keywordIds: ['keyword-1'], targetIds: [], campaignIds: [],
+    })).resolves.toMatchObject({ requested: 1, returned: 1, apiCalls: 3 });
   });
 });
 

@@ -126,7 +126,7 @@ import {
   type SpBidRecommendationKind,
   type SpBidRecommendationResult,
 } from './suggested-bids.js';
-import type { AdsApiClientOptions, ListOptions, ListResult, ThrottleState } from './types.js';
+import type { AdsApiClientOptions, ListOptions, ListResult, MutationOptions, ThrottleState } from './types.js';
 import {
   batchSpWrites,
   buildSpArchiveBody,
@@ -313,6 +313,8 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
         ...(body === undefined ? {} : { body }),
         // A list call is a read whatever verb it uses, so a 5xx is safe to retry.
         idempotent: true,
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
       });
       pages += 1;
 
@@ -348,7 +350,10 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
   ): { rows: Record<string, unknown>[]; nextToken: string | null } {
     // Sponsored Display answers with a bare array and no pagination envelope.
     if (Array.isArray(parsed)) {
-      return { rows: parsed.filter(isRecord), nextToken: null };
+      if (!parsed.every(isRecord)) {
+        throw new AdsApiParseError(`${path} response array contains a non-object row`);
+      }
+      return { rows: parsed, nextToken: null };
     }
     if (!isRecord(parsed)) {
       throw new AdsApiParseError(`${path} returned neither an array nor an object`);
@@ -364,7 +369,10 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
     if (!Array.isArray(raw)) {
       throw new AdsApiParseError(`${path} response field '${responseKey}' is not an array`);
     }
-    return { rows: raw.filter(isRecord), nextToken: readString(parsed, 'nextToken') };
+    if (!raw.every(isRecord)) {
+      throw new AdsApiParseError(`${path} response field '${responseKey}' contains a non-object row`);
+    }
+    return { rows: raw, nextToken: readString(parsed, 'nextToken') };
   }
 
   private async listMapped<T>(
@@ -456,6 +464,7 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
     kind: K,
     operation: 'create' | 'update' | 'archive',
     values: readonly unknown[],
+    options: MutationOptions = {},
   ): Promise<SpBatchWriteResult<K>> {
     const endpoint = SP_WRITE_ENDPOINTS[kind];
     const items: SpBatchWriteResult<K>['items'] = [];
@@ -485,7 +494,8 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
         // Ambiguous transport and 5xx failures are never re-sent.
         idempotent: false,
         singleAttempt: true,
-        timeoutMs: 30_000,
+        timeoutMs: options.timeoutMs ?? 30_000,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
         expectedStatuses: [425],
       });
       apiCalls += result.attempts;
@@ -545,9 +555,12 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
   updateSpCampaignPlacementBidding(
     profileId: string,
     items: readonly SpCampaignPlacementUpdateInput[],
+    options: MutationOptions = {},
   ): Promise<SpBatchWriteResult<'campaigns'>> {
-    return this.updateSpCampaigns(
+    return this.mutateSp(
       profileId,
+      'campaigns',
+      'update',
       items.map((item) => ({
         campaignId: item.campaignId,
         dynamicBidding: {
@@ -559,6 +572,7 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
         },
         ...(item.offAmazonSettings === undefined ? {} : { offAmazonSettings: item.offAmazonSettings }),
       })),
+      options,
     );
   }
 
@@ -578,8 +592,8 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
     return this.mutateSp(profileId, 'keywords', 'create', items);
   }
 
-  updateSpKeywords(profileId: string, items: readonly SpKeywordUpdateInput[]): Promise<SpBatchWriteResult<'keywords'>> {
-    return this.mutateSp(profileId, 'keywords', 'update', items);
+  updateSpKeywords(profileId: string, items: readonly SpKeywordUpdateInput[], options: MutationOptions = {}): Promise<SpBatchWriteResult<'keywords'>> {
+    return this.mutateSp(profileId, 'keywords', 'update', items, options);
   }
 
   archiveSpKeywords(profileId: string, ids: readonly AmazonId[]): Promise<SpBatchWriteResult<'keywords'>> {
@@ -590,8 +604,8 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
     return this.mutateSp(profileId, 'targets', 'create', items);
   }
 
-  updateSpTargets(profileId: string, items: readonly SpTargetUpdateInput[]): Promise<SpBatchWriteResult<'targets'>> {
-    return this.mutateSp(profileId, 'targets', 'update', items);
+  updateSpTargets(profileId: string, items: readonly SpTargetUpdateInput[], options: MutationOptions = {}): Promise<SpBatchWriteResult<'targets'>> {
+    return this.mutateSp(profileId, 'targets', 'update', items, options);
   }
 
   archiveSpTargets(profileId: string, ids: readonly AmazonId[]): Promise<SpBatchWriteResult<'targets'>> {

@@ -7,6 +7,7 @@ import {
   AdsThrottleError,
   DuplicateReportError,
   DuplicateWriteError,
+  DEFAULT_RETRY_POLICY,
   SP_WRITE_BATCH_SIZE,
   type CreativeAssetProbePage,
   type ReportMetadata,
@@ -19,7 +20,6 @@ import {
 } from '@wizard-ads/ads-api';
 import {
   getAdsRefreshToken,
-  getProfileConnectionId,
   listActiveConnectionIdsForRegion,
   type DbHandle,
 } from '@wizard-ads/db';
@@ -34,6 +34,7 @@ import {
 export interface AdsProfileContext {
   id: string;
   orgId: string;
+  connectionId: string | null;
   amazonProfileId: string;
   region: Region;
   currencyCode: string;
@@ -158,23 +159,32 @@ export interface SpWriteMutationResult {
   apiCalls: number;
 }
 
+export interface SpWriteOperationOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
 /** Worker-only mutation and targeted observation surface. */
 export interface SpWriteClient {
   updateSpKeywordBids(
     profile: AdsProfileContext,
     items: readonly SpKeywordUpdateInput[],
+    options?: SpWriteOperationOptions,
   ): Promise<SpWriteMutationResult>;
   updateSpTargetBids(
     profile: AdsProfileContext,
     items: readonly SpTargetUpdateInput[],
+    options?: SpWriteOperationOptions,
   ): Promise<SpWriteMutationResult>;
   updateSpCampaignPlacements(
     profile: AdsProfileContext,
     items: readonly SpCampaignPlacementUpdateInput[],
+    options?: SpWriteOperationOptions,
   ): Promise<SpWriteMutationResult>;
   observeSpWriteEntities(
     profile: AdsProfileContext,
     request: SpWriteObservationRequest,
+    options?: SpWriteOperationOptions,
   ): Promise<SpWriteObservationResult>;
 }
 
@@ -212,6 +222,14 @@ export class AdsApiRetryableError extends Error {
   constructor(message: string, readonly retryAfterSeconds?: number) {
     super(message);
     this.name = 'AdsApiRetryableError';
+  }
+}
+
+/** Exact-read failure with only a proven lower bound on completed HTTP calls. */
+export class SpWriteObservationError extends Error {
+  constructor(message: string, readonly apiCallsLowerBound: number) {
+    super(message);
+    this.name = 'SpWriteObservationError';
   }
 }
 
@@ -261,8 +279,6 @@ export type UnderlyingClient = Pick<
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface AdsApiAdapterDeps {
-  /** Amazon's connection id for one of our profile uuids, or null when it has none. */
-  resolveConnectionId(profileId: string): Promise<string | null>;
   /** Active, credentialed connections that own a profile in the region. */
   listConnectionIds(region: Region): Promise<readonly string[]>;
   /** The Vault-backed refresh token for a connection. Never logged. */
@@ -466,35 +482,48 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
   async updateSpKeywordBids(
     profile: AdsProfileContext,
     items: readonly SpKeywordUpdateInput[],
+    options: SpWriteOperationOptions = {},
   ): Promise<SpWriteMutationResult> {
-    const client = await this.clientForProfile(profile);
-    if (!client.updateSpKeywords) throw new Error('Sponsored Products keyword writes are unavailable');
-    return this.writeEvidence(() => client.updateSpKeywords!(profile.amazonProfileId, items));
+    return this.writeEvidence(async () => {
+      const client = await this.clientForProfile(profile, { ...options, freshCredential: true });
+      if (!client.updateSpKeywords) throw new Error('Sponsored Products keyword writes are unavailable');
+      return raceAbort(client.updateSpKeywords(profile.amazonProfileId, items, options), options.signal);
+    });
   }
 
   async updateSpTargetBids(
     profile: AdsProfileContext,
     items: readonly SpTargetUpdateInput[],
+    options: SpWriteOperationOptions = {},
   ): Promise<SpWriteMutationResult> {
-    const client = await this.clientForProfile(profile);
-    if (!client.updateSpTargets) throw new Error('Sponsored Products target writes are unavailable');
-    return this.writeEvidence(() => client.updateSpTargets!(profile.amazonProfileId, items));
+    return this.writeEvidence(async () => {
+      const client = await this.clientForProfile(profile, { ...options, freshCredential: true });
+      if (!client.updateSpTargets) throw new Error('Sponsored Products target writes are unavailable');
+      return raceAbort(client.updateSpTargets(profile.amazonProfileId, items, options), options.signal);
+    });
   }
 
   async updateSpCampaignPlacements(
     profile: AdsProfileContext,
     items: readonly SpCampaignPlacementUpdateInput[],
+    options: SpWriteOperationOptions = {},
   ): Promise<SpWriteMutationResult> {
-    const client = await this.clientForProfile(profile);
-    if (!client.updateSpCampaignPlacementBidding) throw new Error('Sponsored Products placement writes are unavailable');
-    return this.writeEvidence(() => client.updateSpCampaignPlacementBidding!(profile.amazonProfileId, items));
+    return this.writeEvidence(async () => {
+      const client = await this.clientForProfile(profile, { ...options, freshCredential: true });
+      if (!client.updateSpCampaignPlacementBidding) throw new Error('Sponsored Products placement writes are unavailable');
+      return raceAbort(
+        client.updateSpCampaignPlacementBidding(profile.amazonProfileId, items, options),
+        options.signal,
+      );
+    });
   }
 
   async observeSpWriteEntities(
     profile: AdsProfileContext,
     request: SpWriteObservationRequest,
+    options: SpWriteOperationOptions = {},
   ): Promise<SpWriteObservationResult> {
-    const client = await this.clientForProfile(profile);
+    const client = await this.clientForProfile(profile, { ...options, freshCredential: true });
     const keywordIds = [...new Set(request.keywordIds)];
     const targetIds = [...new Set(request.targetIds)];
     const campaignIds = [...new Set(request.campaignIds)];
@@ -503,11 +532,19 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
     let apiCalls = 0;
     let identityComplete = true;
     const collect = async <T extends { amazonId: string }>(
-      run: () => Promise<{ items: T[]; truncated: boolean; skipped: unknown[] }>,
+      run: () => Promise<{ items: T[]; pages: number; truncated: boolean; skipped: unknown[] }>,
       expectedIds: ReadonlySet<string>,
     ): Promise<void> => {
-      apiCalls += 1;
-      const listed = await this.guard(profile.region, run);
+      let listed: { items: T[]; pages: number; truncated: boolean; skipped: unknown[] };
+      try {
+        listed = await raceAbort(this.guard(profile.region, run), options.signal);
+      } catch (error) {
+        throw new SpWriteObservationError(
+          error instanceof Error ? error.message : 'exact Amazon observation failed',
+          apiCalls,
+        );
+      }
+      apiCalls += listed.pages;
       if (listed.truncated || listed.skipped.length > 0) {
         identityComplete = false;
       }
@@ -521,16 +558,22 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
     for (const ids of batchSpObservationIds(keywordIds)) {
       await collect(() => client.listSpKeywords(profile.amazonProfileId, {
         entityIdFilter: ids,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       }), new Set(ids));
     }
     for (const ids of batchSpObservationIds(targetIds)) {
       await collect(() => client.listSpTargets(profile.amazonProfileId, {
         entityIdFilter: ids,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       }), new Set(ids));
     }
     for (const ids of batchSpObservationIds(campaignIds)) {
       await collect(() => client.listSpCampaigns(profile.amazonProfileId, {
         entityIdFilter: ids,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       }), new Set(ids));
     }
     const uniqueReturned = new Set(rows.map((row) => `${row.entityType}:${row.amazonId}`));
@@ -568,10 +611,18 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
       });
       return { evidence, apiCalls: result.apiCalls };
     } catch (error) {
+      if (error instanceof SpWriteRetryableError
+        || error instanceof SpWriteAmbiguousError
+        || error instanceof SpWriteFailedError) {
+        throw error;
+      }
       if (error instanceof AdsThrottleError) {
         throw new SpWriteRetryableError(
           error.message,
-          error.retryAfterMs === null ? undefined : Math.ceil(error.retryAfterMs / 1_000),
+          error.retryAfterMs === null ? undefined : Math.min(
+            Math.ceil(error.retryAfterMs / 1_000),
+            Math.ceil(DEFAULT_RETRY_POLICY.maxRetryAfterMs / 1_000),
+          ),
           error.attempts,
         );
       }
@@ -579,21 +630,31 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
         throw new SpWriteRetryableError(error.message, undefined, error.attempts);
       }
       if (
-        error instanceof AdsApiTimeoutError
+        (error instanceof DOMException && error.name === 'TimeoutError')
+        || (error instanceof DOMException && error.name === 'AbortError')
+        || error instanceof AdsApiTimeoutError
         || error instanceof AdsApiParseError
         || error instanceof DuplicateWriteError
-        || (error instanceof AdsApiHttpError && (error.status === 0 || error.status >= 500))
+        || (error instanceof AdsApiHttpError
+          && (error.status === 0 || error.status === 408 || error.status >= 500))
       ) {
         throw new SpWriteAmbiguousError(
           error instanceof Error ? error.message : String(error),
           error instanceof AdsApiWriteResponseError ? error.apiCalls
-            : error instanceof AdsApiHttpError ? error.attempts : 1,
+            : error instanceof AdsApiHttpError ? error.attempts
+              : error instanceof DOMException ? 0 : 1,
         );
       }
       if (error instanceof AdsApiHttpError) {
         throw new SpWriteFailedError(error.message, error.attempts);
       }
-      throw error;
+      // Unknown failures may have happened before an HTTP request (credential
+      // lookup/client construction) or after it. Record the durable dispatch
+      // as ambiguous, but never invent a proven provider-call count.
+      throw new SpWriteAmbiguousError(
+        error instanceof Error ? error.message : 'unknown Amazon mutation failure',
+        0,
+      );
     }
   }
 
@@ -636,20 +697,52 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
     return result;
   }
 
-  private async clientForProfile(profile: AdsProfileContext): Promise<UnderlyingClient> {
-    const connectionId = await this.deps.resolveConnectionId(profile.id);
+  private async clientForProfile(
+    profile: AdsProfileContext,
+    options: SpWriteOperationOptions & { freshCredential?: boolean } = {},
+  ): Promise<UnderlyingClient> {
+    const connectionId = profile.connectionId;
     if (!connectionId) throw new Error(`profile ${profile.id} has no Amazon connection`);
-    const client = await this.clientFor(connectionId, profile.region);
-    if (!client) throw new Error(`connection ${connectionId} has no stored refresh token`);
+    if (options.freshCredential) {
+      const active = await raceAbort(this.deps.listConnectionIds(profile.region), options.signal);
+      if (!active.includes(connectionId)) {
+        this.clients.delete(`${connectionId}:${profile.region}`);
+        throw new SpWriteRetryableError(
+          `connection ${connectionId} is not active for the bound profile region`,
+          60,
+          0,
+        );
+      }
+    }
+    const client = await this.clientFor(
+      connectionId,
+      profile.region,
+      options.signal,
+      options.freshCredential ?? false,
+    );
+    if (!client) throw new SpWriteRetryableError(
+      `connection ${connectionId} is not active with a stored refresh token`,
+      60,
+      0,
+    );
     return client;
   }
 
-  private async clientFor(connectionId: string, region: Region): Promise<UnderlyingClient | null> {
+  private async clientFor(
+    connectionId: string,
+    region: Region,
+    signal?: AbortSignal,
+    freshCredential = false,
+  ): Promise<UnderlyingClient | null> {
     const key = `${connectionId}:${region}`;
     const cached = this.clients.get(key);
-    if (cached) return cached;
-    const refreshToken = await this.deps.getRefreshToken(connectionId);
-    if (!refreshToken) return null;
+    if (cached && !freshCredential) return cached;
+    const refreshToken = await raceAbort(this.deps.getRefreshToken(connectionId), signal);
+    if (!refreshToken) {
+      this.clients.delete(key);
+      return null;
+    }
+    if (signal?.aborted) throw signal.reason;
     const client = this.deps.createClient({ connectionId, region, refreshToken });
     this.clients.set(key, client);
     return client;
@@ -681,6 +774,25 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
     }
     if (error instanceof AdsApiTimeoutError) return new AdsApiRetryableError(error.message);
     return error instanceof Error ? error : new Error(String(error));
+  }
+}
+
+async function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason : new DOMException('The operation was aborted', 'AbortError');
+  }
+  let abort: (() => void) | undefined;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(signal.reason instanceof Error
+      ? signal.reason : new DOMException('The operation was aborted', 'AbortError'));
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    return await Promise.race([promise, interrupted]);
+  } finally {
+    if (abort) signal.removeEventListener('abort', abort);
   }
 }
 
@@ -741,7 +853,6 @@ export function createAdsApiClientFromEnv(
   const userAgent = env['AMAZON_ADS_USER_AGENT'];
 
   return new DbAdsApiClient({
-    resolveConnectionId: (profileId) => getProfileConnectionId(handle, profileId),
     listConnectionIds: (region) => listActiveConnectionIdsForRegion(handle, region),
     getRefreshToken: (connectionId) => getAdsRefreshToken(handle, connectionId),
     createClient: ({ region, refreshToken }) =>

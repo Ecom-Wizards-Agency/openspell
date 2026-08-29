@@ -680,7 +680,7 @@ describe('JobPayload', () => {
     }).success).toBe(false);
     expect(JobPayload.safeParse({
       orgId: ORG_ID, profileId: PROFILE_ID, type: 'amazon.observe',
-      executionId: RUN_ID, generation: REQUEST_ID, attempt: 7,
+      executionId: RUN_ID, generation: REQUEST_ID, attempt: 8,
     }).success).toBe(false);
   });
 

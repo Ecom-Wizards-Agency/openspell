@@ -263,6 +263,7 @@ export type {
   FetchLike,
   ListOptions,
   ListResult,
+  MutationOptions,
   RetryEvent,
   RetryPolicy,
   RetryReason,

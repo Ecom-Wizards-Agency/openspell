@@ -1,10 +1,11 @@
 /**
  * `ApplyRow`: one staged old-to-new change.
  *
- * This contract crosses a language boundary. v1's apply path is an export, not
- * an API write: accepted proposals leave wizard-ads as a rows JSON that the
- * existing Python staged-apply flow (`amazon-agent/tools/amazon-ppc-management/
- * batches.py`) consumes unmodified. That file's documented row shape is
+ * This contract crosses a language boundary. The export path remains a rows
+ * JSON consumed by the existing Python staged-apply flow
+ * (`amazon-agent/tools/amazon-ppc-management/batches.py`) unmodified. Direct
+ * worker writes use the separate guarded `AmazonWriteAction` contract; they do
+ * not reinterpret this compatibility format. The Python file's row shape is
  * snake_case and its validator requires exactly `entity_type`, `entity_id`,
  * `field`, `old`, `new`, with `name` optional and `clicks`/`revenue` optional
  * (its caps-are-ceilings check reads them for the rpc x target-ACOS test).

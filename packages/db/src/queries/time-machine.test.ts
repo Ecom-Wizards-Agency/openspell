@@ -75,13 +75,13 @@ describe.skipIf(!available)('WP-30 Time Machine queries', () => {
 
   it('unions the sync-detected change with the operator apply, newest first', async () => {
     const entries = await listTimeline(database, { orgId: orgA, profileId: profileA });
-    // Two syncs (kw-1 bid + marker budget) and one apply (kw-1 bid).
-    expect(entries).toHaveLength(3);
+    // Two syncs plus the ordinary apply and the guarded-write ledger fixture.
+    expect(entries).toHaveLength(4);
     expect(entries.filter((e) => e.source === 'sync')).toHaveLength(2);
-    expect(entries.filter((e) => e.source === 'apply')).toHaveLength(1);
+    expect(entries.filter((e) => e.source === 'apply')).toHaveLength(2);
 
     // The apply entry carries its batch metadata; a sync entry never does.
-    const apply = entries.find((e) => e.source === 'apply');
+    const apply = entries.find((e) => e.source === 'apply' && e.batch?.lever === 'bid-down');
     expect(apply?.batch).not.toBeNull();
     expect(apply?.batch?.lever).toBe('bid-down');
     expect(entries.find((e) => e.source === 'sync')?.batch).toBeNull();
@@ -96,7 +96,7 @@ describe.skipIf(!available)('WP-30 Time Machine queries', () => {
 
   it('filters by source, entity type and field', async () => {
     const applyOnly = await listTimeline(database, { orgId: orgA, profileId: profileA, source: 'apply' });
-    expect(applyOnly).toHaveLength(1);
+    expect(applyOnly).toHaveLength(2);
     expect(applyOnly.every((e) => e.source === 'apply')).toBe(true);
 
     const syncOnly = await listTimeline(database, { orgId: orgA, profileId: profileA, source: 'sync' });
@@ -111,7 +111,7 @@ describe.skipIf(!available)('WP-30 Time Machine queries', () => {
     expect(campaigns[0]?.entityName).toBe('Marker campaign');
 
     const bidChanges = await listTimeline(database, { orgId: orgA, profileId: profileA, field: 'bid' });
-    expect(bidChanges).toHaveLength(2);
+    expect(bidChanges).toHaveLength(3);
     expect(bidChanges.every((e) => e.field === 'bid')).toBe(true);
   });
 
@@ -130,9 +130,9 @@ describe.skipIf(!available)('WP-30 Time Machine queries', () => {
     const foreign = await listTimeline(database, { orgId: orgB, profileId: profileA });
     expect(foreign).toHaveLength(0);
 
-    // Org B's own timeline is its fixture rows only — one sync, one apply, no marker.
+    // Org B's own timeline is one sync and two apply-ledger rows, with no marker.
     const own = await listTimeline(database, { orgId: orgB, profileId: profileB });
-    expect(own).toHaveLength(2);
+    expect(own).toHaveLength(3);
     expect(own.some((e) => e.entityName === 'Marker campaign')).toBe(false);
   });
 

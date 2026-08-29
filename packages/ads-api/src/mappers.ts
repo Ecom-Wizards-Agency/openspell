@@ -278,13 +278,21 @@ function readCampaignWriteContext(raw: Record<string, unknown>) {
         if (audienceId === null || audienceSegmentType === null) return null;
         audienceSegments.push({ audienceId, audienceSegmentType });
       }
+      audienceSegments.sort((left, right) =>
+        left.audienceId.localeCompare(right.audienceId)
+          || left.audienceSegmentType.localeCompare(right.audienceSegmentType));
       shopperCohortBidding.push({
         shopperCohortType,
         percentage,
         ...(audienceRaw === undefined ? {} : { audienceSegments }),
       });
     }
-    shopperCohortBidding.sort((left, right) => left.shopperCohortType.localeCompare(right.shopperCohortType));
+    shopperCohortBidding.sort((left, right) =>
+      left.shopperCohortType.localeCompare(right.shopperCohortType)
+        || left.percentage - right.percentage
+        || JSON.stringify(left.audienceSegments ?? []).localeCompare(
+          JSON.stringify(right.audienceSegments ?? []),
+        ));
   }
 
   const offAmazonRaw = raw['offAmazonSettings'];

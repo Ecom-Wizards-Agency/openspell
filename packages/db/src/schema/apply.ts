@@ -19,9 +19,15 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import type { ApplyValue } from '@wizard-ads/shared';
-import type { AmazonWriteAction, AmazonWriteProviderEvidence } from '@wizard-ads/shared';
+import type {
+  AmazonWriteAction,
+  AmazonWritePredispatchObservation,
+  AmazonWriteProviderEvidence,
+  BoundedAmazonWriteAuthorization,
+} from '@wizard-ads/shared';
 import { count, money, ts } from './columns.js';
 import {
+  adsRegion,
   amazonWriteActionType,
   amazonWriteApprovalMode,
   amazonWriteAttemptOutcome,
@@ -127,9 +133,12 @@ export const amazonWriteApprovals = pgTable(
   'amazon_write_approvals',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
-    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
-    applyBatchId: uuid('apply_batch_id').notNull().references(() => applyBatches.id, { onDelete: 'cascade' }),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'restrict' }),
+    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'restrict' }),
+    amazonProfileId: text('amazon_profile_id').notNull(),
+    connectionId: uuid('connection_id').notNull(),
+    region: adsRegion('region').notNull(),
+    applyBatchId: uuid('apply_batch_id').notNull().references(() => applyBatches.id, { onDelete: 'restrict' }),
     mode: amazonWriteApprovalMode('mode').notNull(),
     previewSha256: text('preview_sha256').notNull(),
     approvedCount: integer('approved_count').notNull(),
@@ -139,6 +148,7 @@ export const amazonWriteApprovals = pgTable(
     inversePreapproved: boolean('inverse_preapproved').notNull().default(false),
     authorizationId: uuid('authorization_id'),
     authorizationSha256: text('authorization_sha256'),
+    authorizationSnapshot: jsonb('authorization_snapshot').$type<BoundedAmazonWriteAuthorization>(),
     createdAt: ts('created_at').notNull().defaultNow(),
   },
   (t) => [
@@ -152,10 +162,10 @@ export const amazonWriteExecutions = pgTable(
   'amazon_write_executions',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
-    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
-    applyBatchId: uuid('apply_batch_id').notNull().references(() => applyBatches.id, { onDelete: 'cascade' }),
-    approvalId: uuid('approval_id').notNull().references(() => amazonWriteApprovals.id, { onDelete: 'cascade' }),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'restrict' }),
+    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'restrict' }),
+    applyBatchId: uuid('apply_batch_id').notNull().references(() => applyBatches.id, { onDelete: 'restrict' }),
+    approvalId: uuid('approval_id').notNull().references(() => amazonWriteApprovals.id, { onDelete: 'restrict' }),
     idempotencyKey: text('idempotency_key').notNull(),
     direction: amazonWriteExecutionDirection('direction').notNull().default('forward'),
     sourceExecutionId: uuid('source_execution_id'),
@@ -192,12 +202,12 @@ export const amazonWriteInverseReservations = pgTable(
   'amazon_write_inverse_reservations',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
-    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
-    forwardExecutionId: uuid('forward_execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'cascade' }),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'restrict' }),
+    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'restrict' }),
+    forwardExecutionId: uuid('forward_execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'restrict' }),
     authorizationId: uuid('authorization_id').notNull(),
     authorizationSha256: text('authorization_sha256').notNull(),
-    inverseExecutionId: uuid('inverse_execution_id').references(() => amazonWriteExecutions.id, { onDelete: 'cascade' }),
+    inverseExecutionId: uuid('inverse_execution_id').references(() => amazonWriteExecutions.id, { onDelete: 'restrict' }),
     reservedAt: ts('reserved_at').notNull().defaultNow(),
     materializedAt: ts('materialized_at'),
   },
@@ -214,10 +224,10 @@ export const amazonWriteRows = pgTable(
   'amazon_write_rows',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
-    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
-    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'cascade' }),
-    applyRowId: uuid('apply_row_id').notNull().references(() => applyRows.id, { onDelete: 'cascade' }),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'restrict' }),
+    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'restrict' }),
+    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'restrict' }),
+    applyRowId: uuid('apply_row_id').notNull().references(() => applyRows.id, { onDelete: 'restrict' }),
     actionType: amazonWriteActionType('action_type').notNull(),
     action: jsonb('action').$type<AmazonWriteAction>().notNull(),
     expectedValue: jsonb('expected_value').$type<ApplyValue>().notNull(),
@@ -244,15 +254,41 @@ export const amazonWriteRows = pgTable(
   ],
 );
 
+/** Append-only exact provider state read before one possible dispatch. */
+export const amazonWritePredispatchObservations = pgTable(
+  'amazon_write_predispatch_observations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'restrict' }),
+    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'restrict' }),
+    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'restrict' }),
+    writeRowId: uuid('write_row_id').notNull().references(() => amazonWriteRows.id, { onDelete: 'restrict' }),
+    callId: uuid('call_id').notNull(),
+    observation: jsonb('observation').$type<AmazonWritePredispatchObservation>().notNull(),
+    observedAt: ts('observed_at').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('amazon_write_predispatch_observations_call_row_key')
+      .on(t.callId, t.writeRowId),
+    uniqueIndex('amazon_write_predispatch_observations_org_profile_id_key')
+      .on(t.orgId, t.profileId, t.id),
+    index('amazon_write_predispatch_observations_execution_idx')
+      .on(t.executionId, t.observedAt),
+  ],
+);
+
 /** Append-only, sanitized provider evidence for every attempted row. */
 export const amazonWriteAttempts = pgTable(
   'amazon_write_attempts',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
-    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
-    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'cascade' }),
-    writeRowId: uuid('write_row_id').notNull().references(() => amazonWriteRows.id, { onDelete: 'cascade' }),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'restrict' }),
+    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'restrict' }),
+    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'restrict' }),
+    writeRowId: uuid('write_row_id').notNull().references(() => amazonWriteRows.id, { onDelete: 'restrict' }),
+    callId: uuid('call_id').notNull(),
+    callEventType: amazonWriteProviderCallEventType('call_event_type').notNull().default('dispatch'),
     attemptNumber: integer('attempt_number').notNull(),
     requestFingerprint: text('request_fingerprint').notNull(),
     outcome: amazonWriteAttemptOutcome('outcome').notNull(),
@@ -272,9 +308,9 @@ export const amazonWriteProviderCallEvents = pgTable(
   'amazon_write_provider_call_events',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
-    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
-    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'cascade' }),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'restrict' }),
+    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'restrict' }),
+    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'restrict' }),
     callId: uuid('call_id').notNull(),
     eventType: amazonWriteProviderCallEventType('event_type').notNull(),
     providerOperation: amazonWriteActionType('provider_operation').notNull(),
@@ -293,6 +329,8 @@ export const amazonWriteProviderCallEvents = pgTable(
   (t) => [
     uniqueIndex('amazon_write_provider_call_events_call_event_key').on(t.callId, t.eventType),
     uniqueIndex('amazon_write_provider_call_events_org_profile_id_key').on(t.orgId, t.profileId, t.id),
+    uniqueIndex('amazon_write_provider_call_events_tenant_call_event_key')
+      .on(t.orgId, t.profileId, t.executionId, t.callId, t.eventType),
     index('amazon_write_provider_call_events_execution_idx').on(t.executionId, t.occurredAt),
   ],
 );

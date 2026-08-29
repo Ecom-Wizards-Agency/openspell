@@ -26,6 +26,7 @@ import {
 } from './amazon-writes.js';
 import {
   AuthHealthMonitor,
+  AmazonWriteRecoveryPass,
   BidSeriesSyncPass,
   ScheduleProvisioner,
   StaleClaimReaper,
@@ -110,6 +111,9 @@ const authHealth = adsApi
   ? new AuthHealthMonitor(worker, config.authHealthcheckIntervalMs)
   : undefined;
 const reaper = new StaleClaimReaper(store, config.staleClaimAfter);
+const amazonWriteRecovery = amazonWrites
+  ? new AmazonWriteRecoveryPass(store)
+  : undefined;
 const provisioner = new ScheduleProvisioner(
   store,
   undefined,
@@ -123,6 +127,7 @@ const bidSeries = adsApi
 const recommendationObserver = new RecommendationObservationPass(handle, console);
 authHealth?.start();
 reaper.start();
+amazonWriteRecovery?.start();
 provisioner.start();
 bidSeries?.start();
 recommendationObserver.start();
@@ -133,6 +138,7 @@ async function shutdown(): Promise<void> {
   shuttingDown = true;
   authHealth?.stop();
   reaper.stop();
+  amazonWriteRecovery?.stop();
   provisioner.stop();
   bidSeries?.stop();
   recommendationObserver.stop();

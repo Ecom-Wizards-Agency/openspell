@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import {
   approveAmazonWriteExecution,
+  claimSyncJobs,
+  finishSyncJob,
+  requeueStaleSyncJobs,
+  type ClaimedJob,
 } from '@wizard-ads/db';
 import {
   createTestDatabase,
@@ -14,7 +18,7 @@ import {
   type EntityRow,
 } from '@wizard-ads/shared';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { AdsApiRetryableError, type SpWriteClient } from './ads-api.js';
+import { type SpWriteClient } from './ads-api.js';
 import {
   boundedAmazonWriteAuthorizationFingerprint,
   GuardedAmazonWriteRuntime,
@@ -36,7 +40,7 @@ describe.skipIf(!available)('guarded Amazon write forward and inverse flow', () 
     await database?.drop();
   });
 
-  it('isolates observation generations across crash recovery, then executes and observes the exact inverse', async () => {
+  it('observes an ambiguous post-dispatch crash without resending, then executes the exact inverse', async () => {
     const [seeded] = await database.sql<{ org_id: string }[]>`
       select app.seed_tenant_fixture('worker-amazon-write-flow', ${OWNER_ID}, 'owner') as org_id
     `;
@@ -111,6 +115,9 @@ describe.skipIf(!available)('guarded Amazon write forward and inverse flow', () 
       profiles: [{
         org_id: tenant.org_id,
         profile_id: tenant.profile_id,
+        amazon_profile_id: profile.amazonProfileId,
+        connection_id: profile.connectionId ?? '',
+        region: profile.region,
         account_label: profile.accountName,
         marketplace: profile.countryCode,
         allowed_entities: [{
@@ -142,12 +149,18 @@ describe.skipIf(!available)('guarded Amazon write forward and inverse flow', () 
       expectedCount: 1,
       authorizationId: authorization.authorization_id,
       authorizationSha256: boundedAmazonWriteAuthorizationFingerprint(authorization),
+      authorizationSnapshot: authorization,
       inversePreapproved: true,
     }));
 
     let visibleProviderBid = 0.9;
-    let observationFailure = false;
     const writeValues: number[] = [];
+    const providerKeywordRow = (bid: number): EntityRow => ({
+      entityType: 'keyword', profileId: tenant.profile_id, amazonId: 'kw-1',
+      adProduct: 'SP', name: 'synthetic keyword', state: 'enabled',
+      campaignId: 'c-1', adGroupId: 'ag-1', keywordText: 'synthetic keyword',
+      matchType: 'exact', bid,
+    });
     const provider: SpWriteClient = {
       updateSpKeywordBids: vi.fn(async (_profile, items) => {
         expect(items).toHaveLength(1);
@@ -165,16 +178,8 @@ describe.skipIf(!available)('guarded Amazon write forward and inverse flow', () 
       updateSpTargetBids: vi.fn(async () => { throw new Error('unexpected target mutation'); }),
       updateSpCampaignPlacements: vi.fn(async () => { throw new Error('unexpected placement mutation'); }),
       observeSpWriteEntities: vi.fn(async (_profile, request) => {
-        if (observationFailure) {
-          throw new AdsApiRetryableError('synthetic sustained observation outage', 3);
-        }
         expect(request).toEqual({ keywordIds: ['kw-1'], targetIds: [], campaignIds: [] });
-        const row: EntityRow = {
-          entityType: 'keyword', profileId: tenant.profile_id, amazonId: 'kw-1',
-          adProduct: 'SP', name: 'synthetic keyword', state: 'enabled',
-          campaignId: 'c-1', adGroupId: 'ag-1', keywordText: 'synthetic keyword',
-          matchType: 'exact', bid: visibleProviderBid,
-        };
+        const row = providerKeywordRow(visibleProviderBid);
         return { rows: [row], requested: 1, returned: 1, apiCalls: 1 };
       }),
     };
@@ -187,19 +192,6 @@ describe.skipIf(!available)('guarded Amazon write forward and inverse flow', () 
         throw new Error('synthetic post-provider ledger outage');
       }
       return persistOutcome(input);
-    };
-    const persistObservations = store.recordObservations.bind(store);
-    let failAfterRecoveryOutbox = true;
-    store.recordObservations = async (input) => {
-      const result = await persistObservations(input);
-      if (input.executionId === approved.executionId
-        && input.attempt === 5
-        && result.retryApply
-        && failAfterRecoveryOutbox) {
-        failAfterRecoveryOutbox = false;
-        throw new Error('synthetic failure after atomic recovery outbox');
-      }
-      return result;
     };
     const runtime = new GuardedAmazonWriteRuntime({
       store,
@@ -225,6 +217,7 @@ describe.skipIf(!available)('guarded Amazon write forward and inverse flow', () 
            and dedupe_key = ${`amazon.observe:${executionId}:${generation}:${attempt}`}
       `;
     };
+    let staleObserverClaim: ClaimedJob | null = null;
 
     await expect(runtime.apply({
       type: 'amazon.apply', orgId: tenant.org_id, profileId: tenant.profile_id,
@@ -232,90 +225,133 @@ describe.skipIf(!available)('guarded Amazon write forward and inverse flow', () 
     }, profile)).rejects.toThrow(/ledger outage/i);
     const firstGeneration = await generationFor(approved.executionId);
     for (let attempt = 0; attempt <= 5; attempt += 1) {
+      if (attempt === 5) {
+        visibleProviderBid = 0.91;
+        const promoted = await store.syncEntities(
+          profile,
+          [providerKeywordRow(visibleProviderBid)],
+          new Date(),
+        );
+        expect(promoted).toMatchObject({ listed: 1, upserted: 1, changes: 0 });
+        const [beforeClassification] = await database.sql<{
+          batch_status: string; legacy_links: number;
+        }[]>`
+          select batch.status::text as batch_status,
+                 (select count(*)::int from public.entity_changes change
+                   join public.apply_rows apply_row on apply_row.id = change.apply_row_id
+                  where apply_row.batch_id = ${batch.id} and change.source = 'sync') as legacy_links
+            from public.apply_batches batch where batch.id = ${batch.id}
+        `;
+        expect(beforeClassification).toEqual({ batch_status: 'staged', legacy_links: 0 });
+        await database.sql`
+          update public.amazon_write_executions
+             set dispatch_lease_expires_at = clock_timestamp() - interval '1 second'
+           where id = ${approved.executionId}
+        `;
+      }
       const observation = {
         type: 'amazon.observe', orgId: tenant.org_id, profileId: tenant.profile_id,
         executionId: approved.executionId, generation: firstGeneration, attempt,
       } as const;
       if (attempt < 5) {
         await expect(runtime.observe(observation, profile)).resolves.toMatchObject({
-          status: 'awaiting_sync', requeued: true,
+          status: 'running', requeued: true,
         });
       } else {
-        await expect(runtime.observe(observation, profile)).rejects.toThrow(/recovery outbox/i);
-        expect(provider.updateSpKeywordBids).toHaveBeenCalledTimes(1);
-        await expect(runtime.observe(observation, profile)).resolves.toMatchObject({
-          status: 'settled', requested: 0, replayed: true,
-        });
-        const [recovery] = await database.sql<{ count: number }[]>`
-          select count(*)::int as count from public.sync_jobs
-           where org_id = ${tenant.org_id}
-             and dedupe_key = ${`amazon.apply:${approved.executionId}:recovery:${firstGeneration}:5`}
+        const attemptDedupe = `amazon.observe:${approved.executionId}:${firstGeneration}:${attempt}`;
+        await database.sql`
+          update public.sync_jobs set run_after = now()
+           where org_id = ${tenant.org_id} and dedupe_key = ${attemptDedupe}
         `;
-        expect(recovery?.count).toBe(1);
-      }
-      await completeObservationJob(approved.executionId, firstGeneration, attempt);
-    }
-
-    await expect(runtime.apply({
-      type: 'amazon.apply', orgId: tenant.org_id, profileId: tenant.profile_id,
-      executionId: approved.executionId,
-    }, profile)).resolves.toMatchObject({ status: 'awaiting_sync', amazonApiCalls: 2 });
-    const secondGeneration = await generationFor(approved.executionId);
-    expect(secondGeneration).not.toBe(firstGeneration);
-    observationFailure = true;
-    for (let attempt = 0; attempt <= 6; attempt += 1) {
-      const result = await runtime.observe({
-        type: 'amazon.observe', orgId: tenant.org_id, profileId: tenant.profile_id,
-        executionId: approved.executionId, generation: secondGeneration, attempt,
-      }, profile);
-      await completeObservationJob(approved.executionId, secondGeneration, attempt);
-      if (attempt < 5) {
-        expect(result).toMatchObject({ status: 'awaiting_sync', requeued: true });
-      } else if (attempt === 5) {
-        expect(result).toMatchObject({ status: 'conflict', requeued: true });
-      } else {
-        expect(result).toMatchObject({ status: 'conflict', requeued: false });
-      }
-      expect(result).toMatchObject({
-        observationIdentityComplete: false,
-        observationError: expect.stringMatching(/sustained observation outage/i),
-      });
-      if (attempt === 0) {
-        const [secondAttempt] = await database.sql<{ dedupe_key: string }[]>`
-          select dedupe_key from public.sync_jobs
-           where org_id = ${tenant.org_id}
-             and dedupe_key = ${`amazon.observe:${approved.executionId}:${secondGeneration}:1`}
-        `;
-        expect(secondAttempt?.dedupe_key).toBe(
-          `amazon.observe:${approved.executionId}:${secondGeneration}:1`,
+        const [originalClaim] = await claimSyncJobs(
+          database,
+          'synthetic-stale-observer',
+          1,
+          ['amazon.observe'],
         );
+        if (!originalClaim || originalClaim.dedupeKey !== attemptDedupe) {
+          throw new Error('exact stale observer job was not claimed');
+        }
+        staleObserverClaim = originalClaim;
+        await database.sql`
+          update public.sync_jobs set claimed_at = now() - interval '2 hours'
+           where id = ${originalClaim.id}
+        `;
+        expect(await requeueStaleSyncJobs(database, '30 minutes')).toBe(1);
+        const [replacementClaim] = await claimSyncJobs(
+          database,
+          'synthetic-replacement-observer',
+          1,
+          ['amazon.observe'],
+        );
+        if (!replacementClaim || replacementClaim.id !== originalClaim.id) {
+          throw new Error('replacement observer did not reclaim the exact queue row');
+        }
+        expect(replacementClaim.claimToken).not.toBe(originalClaim.claimToken);
+        await expect(runtime.observe(observation, profile)).resolves.toMatchObject({
+          status: 'succeeded', inverseReady: true,
+        });
+        await finishSyncJob(database, replacementClaim.id, 'succeeded', {
+          claimToken: replacementClaim.claimToken,
+          result: { status: 'succeeded', inverseReady: true },
+        });
+        expect(provider.updateSpKeywordBids).toHaveBeenCalledTimes(1);
+      }
+      if (attempt < 5) {
+        await completeObservationJob(approved.executionId, firstGeneration, attempt);
       }
     }
-    const [unresolved] = await database.sql<{
-      status: string;
-      inverse_execution_id: string | null;
-    }[]>`
-      select execution.status::text as status, reservation.inverse_execution_id
-        from public.amazon_write_executions execution
-        left join public.amazon_write_inverse_reservations reservation
-          on reservation.forward_execution_id = execution.id
-       where execution.id = ${approved.executionId}
-    `;
-    expect(unresolved).toEqual({ status: 'conflict', inverse_execution_id: null });
-    expect(provider.updateSpKeywordBids).toHaveBeenCalledTimes(2);
-
-    observationFailure = false;
-    visibleProviderBid = 0.91;
-    const forwardObserved = await runtime.observe({
-      type: 'amazon.observe', orgId: tenant.org_id, profileId: tenant.profile_id,
-      executionId: approved.executionId, generation: secondGeneration, attempt: 6,
-    }, profile);
-    expect(forwardObserved).toMatchObject({ status: 'succeeded', inverseReady: true });
     const [inverse] = await database.sql<{ inverse_execution_id: string | null }[]>`
       select inverse_execution_id from public.amazon_write_inverse_reservations
        where forward_execution_id = ${approved.executionId}
     `;
     if (!inverse?.inverse_execution_id) throw new Error('reserved inverse was not materialized');
+
+    const staleRow: EntityRow = {
+      entityType: 'keyword', profileId: tenant.profile_id, amazonId: 'kw-1',
+      adProduct: 'SP', name: 'synthetic stale keyword', state: 'enabled',
+      campaignId: 'c-1', adGroupId: 'ag-1', keywordText: 'synthetic stale keyword',
+      matchType: 'exact', bid: 0.9,
+    };
+    const stalePromotion = await workerStore.syncEntities(profile, [staleRow], {
+      observedAt: new Date(now.getTime() - 60_000),
+    });
+    expect(stalePromotion).toMatchObject({ listed: 1, upserted: 0 });
+    if (!staleObserverClaim) throw new Error('stale observer claim was not captured');
+    await expect(finishSyncJob(database, staleObserverClaim.id, 'succeeded', {
+      claimToken: staleObserverClaim.claimToken,
+      result: { status: 'stale-result-must-not-win' },
+    })).rejects.toThrow(/stale|claim token/i);
+    const [staleEvidence] = await database.sql<{ stale_changes: number }[]>`
+      select count(*)::int as stale_changes from public.entity_changes
+       where org_id = ${tenant.org_id} and profile_id = ${tenant.profile_id}
+         and entity_type = 'keyword' and amazon_id = 'kw-1' and field = 'bid'
+         and old_value = '0.91'::jsonb and new_value = '0.9'::jsonb
+    `;
+    expect(staleEvidence?.stale_changes).toBe(0);
+    const [beforeInverse] = await database.sql<{
+      bid: number; forward_status: string; inverse_status: string;
+    }[]>`
+      select keyword.bid::float8 as bid, forward_batch.status::text as forward_status,
+             inverse_batch.status::text as inverse_status
+        from public.amazon_write_executions forward
+        join public.apply_batches forward_batch on forward_batch.id = forward.apply_batch_id
+        join public.amazon_write_executions inverse_execution
+          on inverse_execution.source_execution_id = forward.id
+        join public.apply_batches inverse_batch on inverse_batch.id = inverse_execution.apply_batch_id
+        join public.keywords keyword
+          on keyword.profile_id = forward.profile_id and keyword.amazon_id = 'kw-1'
+       where forward.id = ${approved.executionId}
+    `;
+    expect(beforeInverse).toEqual({ bid: 0.91, forward_status: 'applied', inverse_status: 'staged' });
+    const [forwardEvidence] = await database.sql<{ apply_evidence: number; sync_evidence: number }[]>`
+      select
+        count(*) filter (where source = 'apply')::int as apply_evidence,
+        count(*) filter (where source = 'sync')::int as sync_evidence
+        from public.entity_changes
+       where apply_batch_id = ${batch.id}
+    `;
+    expect(forwardEvidence).toEqual({ apply_evidence: 1, sync_evidence: 0 });
 
     await expect(runtime.apply({
       type: 'amazon.apply', orgId: tenant.org_id, profileId: tenant.profile_id,
@@ -330,9 +366,48 @@ describe.skipIf(!available)('guarded Amazon write forward and inverse flow', () 
     expect(inverseObserved).toMatchObject({
       status: 'succeeded', inverseReady: true, amazonApiCalls: 1,
     });
-    expect(writeValues).toEqual([0.91, 0.91, 0.9]);
+    const [lifecycle] = await database.sql<{
+      forward_status: string; inverse_status: string; current_bid: number;
+      forward_requested: number; forward_succeeded: number; forward_ambiguous: number;
+      forward_resynchronized: number;
+      inverse_requested: number; inverse_succeeded: number; inverse_resynchronized: number;
+    }[]>`
+      select forward_batch.status::text as forward_status,
+             inverse_batch.status::text as inverse_status,
+             keyword.bid::float8 as current_bid,
+             forward.requested_count as forward_requested,
+             forward.succeeded_count as forward_succeeded,
+             forward.ambiguous_count as forward_ambiguous,
+             forward.resynchronized_count as forward_resynchronized,
+             inverse_execution.requested_count as inverse_requested,
+             inverse_execution.succeeded_count as inverse_succeeded,
+             inverse_execution.resynchronized_count as inverse_resynchronized
+        from public.amazon_write_executions forward
+        join public.apply_batches forward_batch on forward_batch.id = forward.apply_batch_id
+        join public.amazon_write_executions inverse_execution
+          on inverse_execution.source_execution_id = forward.id
+        join public.apply_batches inverse_batch on inverse_batch.id = inverse_execution.apply_batch_id
+        join public.keywords keyword
+          on keyword.org_id = forward.org_id and keyword.profile_id = forward.profile_id
+         and keyword.amazon_id = 'kw-1'
+       where forward.id = ${approved.executionId}
+    `;
+    expect(lifecycle).toEqual({
+      forward_status: 'reverted',
+      inverse_status: 'applied',
+      current_bid: 0.9,
+      forward_requested: 1,
+      forward_succeeded: 0,
+      forward_ambiguous: 1,
+      forward_resynchronized: 1,
+      inverse_requested: 1,
+      inverse_succeeded: 1,
+      inverse_resynchronized: 1,
+    });
+    expect(writeValues).toEqual([0.91, 0.9]);
     expect(visibleProviderBid).toBe(0.9);
-    expect(provider.updateSpKeywordBids).toHaveBeenCalledTimes(3);
-    expect(provider.observeSpWriteEntities).toHaveBeenCalledTimes(18);
+    expect(provider.updateSpKeywordBids).toHaveBeenCalledTimes(2);
+    // Two pre-dispatch exact refreshes plus six forward and one inverse observations.
+    expect(provider.observeSpWriteEntities).toHaveBeenCalledTimes(9);
   });
 });

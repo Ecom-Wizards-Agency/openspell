@@ -149,6 +149,39 @@ describe('Sponsored Products campaigns', () => {
     expectAccountedFor(result);
   });
 
+  it('canonicalizes shopper cohorts and nested audience segments for exact replacement comparison', async () => {
+    const reordered = structuredClone(SP_CAMPAIGNS_PAGE_1);
+    const campaign = reordered.campaigns[0];
+    if (!campaign?.dynamicBidding) throw new Error('fixture campaign has no dynamic bidding');
+    Object.assign(campaign.dynamicBidding, {
+      shopperCohortBidding: [
+        {
+          shopperCohortType: 'BETA', percentage: 10,
+          audienceSegments: [
+            { audienceId: 'z', audienceSegmentType: 'TYPE_B' },
+            { audienceId: 'a', audienceSegmentType: 'TYPE_A' },
+          ],
+        },
+        { shopperCohortType: 'ALPHA', percentage: 20 },
+      ],
+    });
+    const { client } = clientFor([
+      { method: 'POST', match: '/sp/campaigns/list', responses: [{ status: 200, json: reordered }] },
+    ]);
+
+    const result = await client.listSpCampaigns(PROFILE_ID, { maxPages: 1 });
+    expect(result.items[0]?.campaignWriteContext?.shopperCohortBidding).toEqual([
+      { shopperCohortType: 'ALPHA', percentage: 20 },
+      {
+        shopperCohortType: 'BETA', percentage: 10,
+        audienceSegments: [
+          { audienceId: 'a', audienceSegmentType: 'TYPE_A' },
+          { audienceId: 'z', audienceSegmentType: 'TYPE_B' },
+        ],
+      },
+    ]);
+  });
+
   it('stops at maxPages and says the walk was truncated', async () => {
     const { client } = clientFor([
       {
@@ -365,6 +398,26 @@ describe('response envelopes', () => {
     ]);
 
     await expect(client.listSpCampaigns(PROFILE_ID)).rejects.toBeInstanceOf(AdsApiParseError);
+  });
+
+  it('refuses malformed extra members instead of silently dropping them from exact accounting', async () => {
+    const { client } = clientFor([
+      {
+        method: 'POST',
+        match: '/sp/campaigns/list',
+        responses: [{ status: 200, json: { campaigns: [SP_CAMPAIGNS_PAGE_2.campaigns[0], 'malformed'] } }],
+      },
+    ]);
+
+    await expect(client.listSpCampaigns(PROFILE_ID)).rejects.toThrow(/non-object row/);
+  });
+
+  it('refuses malformed members in bare-array list responses', async () => {
+    const { client } = clientFor([
+      { method: 'GET', match: '/sd/campaigns', responses: [{ status: 200, json: [SD_CAMPAIGNS_PAGE_1[0], null] }] },
+    ]);
+
+    await expect(client.listSdCampaigns(PROFILE_ID)).rejects.toThrow(/non-object row/);
   });
 
   it('refuses a nextToken that repeats, instead of paging forever', async () => {

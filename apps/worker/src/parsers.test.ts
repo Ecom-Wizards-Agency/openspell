@@ -21,6 +21,7 @@ const reportRequestId = '33333333-3333-4333-8333-333333333333';
 const profile: AdsProfileContext = {
   id: profileId,
   orgId,
+  connectionId: '99999999-9999-4999-8999-999999999999',
   amazonProfileId: 'amazon-profile-1',
   region: 'NA',
   currencyCode: 'USD',

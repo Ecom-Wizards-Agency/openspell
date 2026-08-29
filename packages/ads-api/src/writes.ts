@@ -10,7 +10,7 @@
 import type { AmazonId } from '@wizard-ads/shared';
 import { AdsApiParseError } from './errors.js';
 import type { SpWriteEndpoint, SpWriteKind } from './endpoints.js';
-import { isRecord, readId, readNumber, readRecord, readRecordArray, readString } from './read.js';
+import { isRecord, readId, readNumber, readRecord, readString } from './read.js';
 
 export const SP_WRITE_BATCH_SIZE = 100;
 
@@ -359,8 +359,24 @@ function requiredIndex(row: Record<string, unknown>, what: string): number {
   return index;
 }
 
+function strictRecordArray(
+  source: Record<string, unknown>,
+  key: string,
+  what: string,
+): Record<string, unknown>[] {
+  if (!Object.hasOwn(source, key)) return [];
+  const value = source[key];
+  if (!Array.isArray(value)) {
+    throw new AdsApiParseError(`${what} '${key}' is not an array`);
+  }
+  if (!value.every(isRecord)) {
+    throw new AdsApiParseError(`${what} '${key}' contains a non-object item`);
+  }
+  return value;
+}
+
 function parseErrorDetails(row: Record<string, unknown>): SpWriteErrorDetail[] {
-  return readRecordArray(row, 'errors').map((detail) => ({
+  return strictRecordArray(row, 'errors', 'Amazon write error').map((detail) => ({
     errorType: readString(detail, 'errorType') ?? readString(detail, 'code'),
     errorValue: detail['errorValue'] ?? detail['details'] ?? detail['message'] ?? null,
   }));
@@ -383,11 +399,14 @@ export function parseSpWriteResponse<K extends SpWriteKind>(
       `${endpoint.path} write response has no '${endpoint.responseKey}' object`,
     );
   }
-  const success = readRecordArray(envelope, 'success');
-  const singularErrors = readRecordArray(envelope, 'error');
-  const pluralErrors = singularErrors.length === 0 ? readRecordArray(envelope, 'errors') : [];
-  const failures = singularErrors.length === 0 ? pluralErrors : singularErrors;
   const what = `${endpoint.path} write response`;
+  if (Object.hasOwn(envelope, 'error') && Object.hasOwn(envelope, 'errors')) {
+    throw new AdsApiParseError(`${what} contains both 'error' and 'errors' arrays`);
+  }
+  const success = strictRecordArray(envelope, 'success', what);
+  const singularErrors = strictRecordArray(envelope, 'error', what);
+  const pluralErrors = strictRecordArray(envelope, 'errors', what);
+  const failures = singularErrors.length === 0 ? pluralErrors : singularErrors;
 
   const localIndexes = new Set<number>();
   const items: SpWriteItem<K>[] = success.map((row) => {

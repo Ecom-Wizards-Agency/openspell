@@ -249,18 +249,19 @@ export class SyncWorker {
   private async runClaimed(job: ClaimedJob): Promise<void> {
     try {
       const result = await this.execute(job);
-      await this.store.finish(job.id, 'succeeded', { result });
+      await this.store.finish(job.id, 'succeeded', { result, claimToken: job.claimToken });
     } catch (error) {
-      if (error instanceof SqpWorkflowPendingError) {
+      if (error instanceof SqpWorkflowPendingError || error instanceof SpWriteRetryableError) {
         const retryIn = `${error.retryAfterSeconds} seconds`;
         if (this.store.defer) {
-          await this.store.defer(job.id, retryIn);
+          await this.store.defer(job.id, retryIn, job.claimToken);
         } else {
           // Adapter/test stores predating queue deferral retain the safe legacy
           // behavior. The production Postgres store never takes this branch.
           await this.store.finish(job.id, 'failed', {
             error: errorMessage(error).slice(0, 4_000),
             retryIn,
+            claimToken: job.claimToken,
           });
         }
         this.logger.info('sync job deferred for provider processing', {
@@ -278,7 +279,11 @@ export class SyncWorker {
         (error instanceof SpApiError && !error.retryable) ||
         isPermanentCrosscheckError(error)
       ) {
-        await this.store.deadLetter(job.id, errorMessage(error).slice(0, 4_000));
+        await this.store.deadLetter(
+          job.id,
+          errorMessage(error).slice(0, 4_000),
+          job.claimToken,
+        );
         this.logger.error('sync job dead-lettered', {
           jobId: job.id, type: job.jobType, error: errorMessage(error),
         });
@@ -293,6 +298,7 @@ export class SyncWorker {
       await this.store.finish(job.id, 'failed', {
         error: errorMessage(error).slice(0, 4_000),
         retryIn: `${retrySeconds} seconds`,
+        claimToken: job.claimToken,
       });
       this.logger.error('sync job failed', { jobId: job.id, type: job.jobType, error: errorMessage(error) });
     }
@@ -407,6 +413,7 @@ export class SyncWorker {
     payload: Extract<JobPayload, { type: 'entity.sync' }>,
   ): Promise<Record<string, unknown>> {
     const adsApi = this.requireAdsApi();
+    const listingObservedAt = new Date();
     const listing = await this.buckets.run(profile.region, () => adsApi.listEntities(profile, payload.full));
 
     // A product-scoped job cares only about its own product; an unscoped job
@@ -433,14 +440,16 @@ export class SyncWorker {
       const counts = await this.store.syncEntities(profile, productRows, {
         adProduct: product,
         full: payload.full,
+        observedAt: listingObservedAt,
       });
       // Program rule 4: the artifact, not the exit code. A listing that
       // upserted fewer rows than it listed lost some — unless the shortfall is
       // exactly the rows another row in the same listing already carried (the
       // negatives mirror merges three Amazon endpoints onto one key).
-      if (counts.listed !== counts.upserted + counts.duplicates) {
+      if (counts.listed !== counts.upserted + (counts.superseded ?? 0) + counts.duplicates) {
         throw new Error(
-          `${product}: listed ${counts.listed}, upserted ${counts.upserted}, duplicates ${counts.duplicates}`,
+          `${product}: listed ${counts.listed}, upserted ${counts.upserted}, `
+          + `superseded ${counts.superseded ?? 0}, duplicates ${counts.duplicates}`,
         );
       }
       totals.listed += counts.listed;
@@ -1056,6 +1065,30 @@ export class StaleClaimReaper extends PeriodicPass {
     const requeued = await this.store.requeueStale(this.olderThan);
     if (requeued > 0) this.reaperLogger.info('requeued stale jobs', { requeued, olderThan: this.olderThan });
     return requeued;
+  }
+}
+
+/**
+ * Repairs guarded-write outbox gaps independently of any one profile's queue
+ * row. The mutation gate is global, so this pass must also be global: a
+ * completed cycle in one profile cannot be the only producer capable of
+ * waking a queued execution in another profile.
+ */
+export class AmazonWriteRecoveryPass extends PeriodicPass {
+  constructor(
+    private readonly store: WorkerStore,
+    intervalMs = MINUTE_MS,
+    private readonly recoveryLogger: WorkerLogger = consoleLogger,
+  ) {
+    super(intervalMs, recoveryLogger);
+  }
+  protected get name(): string { return 'Amazon write outbox recovery'; }
+  protected async pass(): Promise<unknown> {
+    const counts = await this.store.recoverAmazonWrites();
+    if (counts.applyJobs + counts.observationJobs > 0) {
+      this.recoveryLogger.info('repaired Amazon write outbox', counts);
+    }
+    return counts;
   }
 }
 

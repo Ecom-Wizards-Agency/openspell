@@ -218,6 +218,26 @@ describe('server errors', () => {
     expect(effects.slept).toEqual([]);
     expect(server.requests).toHaveLength(1);
   });
+
+  it('forbids transparent redirects from replaying a mutation body', async () => {
+    const requests: RequestInit[] = [];
+    const fetchImpl = async (_url: string, init?: RequestInit): Promise<Response> => {
+      requests.push(init ?? {});
+      throw new TypeError('redirect mode is error');
+    };
+    const { ctx } = context(fetchImpl);
+    await expect(httpRequest(ctx, {
+      method: 'PUT',
+      url: `${URL_BASE}/sp/keywords`,
+      path: '/sp/keywords',
+      headers: staticHeaders,
+      body: '{"keywords":[]}',
+      idempotent: false,
+      singleAttempt: true,
+    })).rejects.toMatchObject({ status: 0, attempts: 1 });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ redirect: 'error', method: 'PUT' });
+  });
 });
 
 describe('token expiry', () => {
@@ -268,6 +288,29 @@ describe('token expiry', () => {
 });
 
 describe('transport failures', () => {
+  it('cancels asynchronous authorization headers before a write can be sent late', async () => {
+    let resolveHeaders: ((headers: Record<string, string>) => void) | undefined;
+    const headers = () => new Promise<Record<string, string>>((resolve) => {
+      resolveHeaders = resolve;
+    });
+    let calls = 0;
+    const { ctx } = context(async () => {
+      calls += 1;
+      return new Response('{}', { status: 200 });
+    });
+    const controller = new AbortController();
+    const request = httpRequest(ctx, {
+      method: 'PUT', url: `${URL_BASE}/sp/keywords`, path: '/sp/keywords',
+      headers, body: '{}', idempotent: false, singleAttempt: true,
+      signal: controller.signal,
+    });
+    controller.abort(new DOMException('synthetic deadline', 'TimeoutError'));
+    await expect(request).rejects.toMatchObject({ status: 0, attempts: 1 });
+    resolveHeaders?.({ Authorization: 'Bearer synthetic' });
+    await Promise.resolve();
+    expect(calls).toBe(0);
+  });
+
   it('retries a read when fetch itself throws', async () => {
     let calls = 0;
     const { ctx, effects } = context(async () => {

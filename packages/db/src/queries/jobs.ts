@@ -22,6 +22,8 @@ export interface ClaimedJob {
   maxAttempts: number;
   dedupeKey: string | null;
   claimedBy: string | null;
+  /** Fresh per-claim ownership fence; absent only in legacy/fake adapters. */
+  claimToken?: string | null;
 }
 
 interface RawJobRow {
@@ -34,6 +36,7 @@ interface RawJobRow {
   max_attempts: number;
   dedupe_key: string | null;
   claimed_by: string | null;
+  claim_token: string | null;
 }
 
 const toClaimedJob = (row: RawJobRow): ClaimedJob => ({
@@ -46,6 +49,7 @@ const toClaimedJob = (row: RawJobRow): ClaimedJob => ({
   maxAttempts: row.max_attempts,
   dedupeKey: row.dedupe_key,
   claimedBy: row.claimed_by,
+  claimToken: row.claim_token,
 });
 
 /**
@@ -78,11 +82,17 @@ export async function finishSyncJob(
   handle: DbHandle,
   jobId: string,
   outcome: JobOutcome,
-  options: { error?: string; result?: unknown; retryIn?: string } = {},
+  options: {
+    error?: string;
+    result?: unknown;
+    retryIn?: string;
+    claimToken?: string | null;
+  } = {},
 ): Promise<{ status: SyncJob['status']; attempts: number }> {
   const rows = await handle.sql<{ status: SyncJob['status']; attempts: number }[]>`
     select status, attempts from public.finish_sync_job(
       ${jobId},
+      ${options.claimToken ?? null},
       ${outcome}::public.sync_job_status,
       ${options.error ?? null},
       ${options.result === undefined ? null : JSON.stringify(options.result)}::jsonb,

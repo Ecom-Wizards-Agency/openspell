@@ -116,7 +116,8 @@ describe.skipIf(!available)('strategy and cooldown', () => {
 
     it('lets an entity go once the cooldown has passed', async () => {
       await database.sql`
-        update public.apply_batches set applied_on = current_date - 10 where org_id = ${orgId}
+        update public.apply_batches set applied_on = current_date - 10
+         where org_id = ${orgId} and tag like 'strategy-%-rank-bid-down'
       `;
       const conflicts = await applyCooldownConflicts(database, profileId, ['keyword:kw-1'], 7);
       expect(conflicts).toEqual([]);
@@ -125,7 +126,7 @@ describe.skipIf(!available)('strategy and cooldown', () => {
     it('ignores batches that were staged but never applied', async () => {
       await database.sql`
         update public.apply_batches set status = 'staged', applied_on = current_date
-        where org_id = ${orgId}
+        where org_id = ${orgId} and tag like 'strategy-%-rank-bid-down'
       `;
       const conflicts = await applyCooldownConflicts(database, profileId, ['keyword:kw-1']);
       expect(conflicts).toEqual([]);

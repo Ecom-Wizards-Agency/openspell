@@ -131,4 +131,14 @@ export interface ListOptions {
   adGroupIdFilter?: readonly string[];
   /** Restrict a targeted post-write observation to resource ids. */
   entityIdFilter?: readonly string[];
+  /** Cancels the complete request, including asynchronous access-token headers. */
+  signal?: AbortSignal;
+  /** Hard wall-clock bound for each HTTP round trip, including header resolution. */
+  timeoutMs?: number;
+}
+
+/** Optional cancellation boundary for one non-idempotent mutation call. */
+export interface MutationOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }

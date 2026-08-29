@@ -11,11 +11,13 @@ import type { CrosscheckIngestResult } from '@wizard-ads/crosscheck-cli';
 import { SpApiAuthError } from '@wizard-ads/sp-api';
 import {
   DownloadUrlExpiredError,
+  SpWriteRetryableError,
   type AdsApiClient,
   type AdsProfileContext,
   type AdsReportStatus,
   type CreateReportInput,
 } from './ads-api.js';
+import type { GuardedAmazonWriteRuntime } from './amazon-writes.js';
 import { resolveSourcePath } from './crosscheck.js';
 import type { ParsedFactBatch } from './parsers.js';
 import { RegionTokenBuckets } from './region-token-buckets.js';
@@ -177,10 +179,11 @@ describe('SB attribution-aware report accounting', () => {
 
 describe('queue deferral', () => {
   it('returns a running job to the queue without spending a failure attempt', async () => {
+    const claimToken = '66666666-6666-4666-8666-666666666666';
     let statement = '';
     const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
       statement = strings.join(' ');
-      expect(values).toEqual(['211 seconds', jobId]);
+      expect(values).toEqual(['211 seconds', jobId, claimToken]);
       return [{ id: jobId }];
     }) as unknown as DbHandle['sql'];
     const handle: DbHandle = {
@@ -189,7 +192,7 @@ describe('queue deferral', () => {
       close: async () => {},
     };
 
-    await new PostgresWorkerStore(handle).defer(jobId, '211 seconds');
+    await new PostgresWorkerStore(handle).defer(jobId, '211 seconds', claimToken);
     expect(statement).toContain('attempts = greatest(attempts - 1, 0)');
     expect(statement).toContain("status = 'running'::public.sync_job_status");
   });
@@ -808,6 +811,37 @@ describe('integration handler wiring', () => {
     expect(deferrals).toEqual(['211 seconds']);
   });
 
+  it('defers a max-attempt guarded write without consuming its durable recovery job', async () => {
+    const payload = {
+      type: 'amazon.apply' as const, orgId, profileId,
+      executionId: '55555555-5555-4555-8555-555555555555',
+    };
+    let claimed = false;
+    const deferrals: string[] = [];
+    const finishes: JobOutcome[] = [];
+    const amazonWrites = {
+      apply: async () => { throw new SpWriteRetryableError('synthetic guarded defer', 60, 0); },
+    } as unknown as GuardedAmazonWriteRuntime;
+    const worker = new SyncWorker({
+      workerId: 'integration-worker',
+      store: {
+        ...stubStore(),
+        claim: async () => claimed ? [] : (claimed = true, [{
+          id: jobId, orgId, profileId, jobType: payload.type, payload,
+          attempts: 5, maxAttempts: 5, dedupeKey: 'synthetic-write', claimedBy: 'integration-worker',
+        }]),
+        finish: async (_id, outcome) => { finishes.push(outcome); },
+        defer: async (_id, retryIn) => { deferrals.push(retryIn); },
+      },
+      amazonWrites,
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(deferrals).toEqual(['60 seconds']);
+    expect(finishes).toEqual([]);
+  });
+
   it.each([
     { status: 400, expected: 'dead' as const },
     { status: 503, expected: 'failed' as const },
@@ -896,6 +930,7 @@ function stubStore(): WorkerStore {
     deadLetter: async () => {},
     release: async () => 0,
     requeueStale: async () => 0,
+    recoverAmazonWrites: async () => ({ applyJobs: 0, observationJobs: 0 }),
     profile: async () => profile(),
     syncEntities: async () => ({ listed: 0, upserted: 0, duplicates: 0, changes: 0, tombstoned: 0 }),
     provisionSchedules: async () => 0,
@@ -956,5 +991,13 @@ class ExpiredDownloadApi extends OneRowApi {
 }
 
 function profile(): AdsProfileContext {
-  return { id: profileId, orgId, amazonProfileId: 'profile-1', region: 'NA', currencyCode: 'USD', timezone: 'UTC' };
+  return {
+    id: profileId,
+    orgId,
+    connectionId: '99999999-9999-4999-8999-999999999999',
+    amazonProfileId: 'profile-1',
+    region: 'NA',
+    currencyCode: 'USD',
+    timezone: 'UTC',
+  };
 }

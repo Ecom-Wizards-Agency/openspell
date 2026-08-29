@@ -6,6 +6,9 @@
     {
       "org_id": "<internal organization UUID>",
       "profile_id": "<internal advertising profile UUID>",
+      "amazon_profile_id": "<external Amazon advertising profile ID>",
+      "connection_id": "<internal Amazon connection UUID>",
+      "region": "<NA | EU | FE>",
       "account_label": "<local account label>",
       "marketplace": "<marketplace code>",
       "allowed_entities": [

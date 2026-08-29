@@ -39,6 +39,8 @@ export interface HttpRequestSpec {
   singleAttempt?: boolean;
   /** Optional hard wall-clock bound for one network attempt. */
   timeoutMs?: number;
+  /** Cancels token/header resolution, transport, response decode, and retry waits. */
+  signal?: AbortSignal;
   /** Statuses the caller handles itself, returned rather than thrown. */
   expectedStatuses?: readonly number[];
 }
@@ -60,6 +62,34 @@ export interface HttpContext {
   retry: RetryPolicy;
   onRetry?: (event: RetryEvent) => void;
   throttle: ThrottleTracker;
+}
+
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException('The operation was aborted', 'AbortError');
+}
+
+async function withAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) throw abortError(signal);
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(abortError(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+function attemptSignal(spec: HttpRequestSpec): AbortSignal | undefined {
+  const timeout = spec.timeoutMs === undefined ? null : AbortSignal.timeout(spec.timeoutMs);
+  if (spec.signal === undefined) return timeout ?? undefined;
+  if (timeout === null) return spec.signal;
+  return AbortSignal.any([spec.signal, timeout]);
 }
 
 /** Mutable throttle bookkeeping for one region. Read through `snapshot()`. */
@@ -160,12 +190,18 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
     let response: Response;
 
     try {
-      response = await ctx.fetch(spec.url, {
+      const signal = attemptSignal(spec);
+      const headers = await withAbort(spec.headers(false), signal);
+      response = await withAbort(ctx.fetch(spec.url, {
         method: spec.method,
-        headers: await spec.headers(false),
+        headers,
+        // Fetch follows 307/308 redirects by repeating the method and body.
+        // A non-idempotent Ads mutation must never become two HTTP writes
+        // hidden behind one fetch/accounting attempt.
+        redirect: spec.idempotent ? 'follow' : 'error',
         ...(spec.body === undefined ? {} : { body: spec.body }),
-        ...(spec.timeoutMs === undefined ? {} : { signal: AbortSignal.timeout(spec.timeoutMs) }),
-      });
+        ...(signal === undefined ? {} : { signal }),
+      }), signal);
     } catch (cause) {
       lastError = cause;
       // A transport failure on a write is ambiguous: the request may well have
@@ -181,11 +217,11 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
       }
       const delayMs = backoffDelay(ctx.retry, attempt, ctx.random());
       emit(ctx, spec, 'network', attempt, null, delayMs, null);
-      await ctx.sleep(delayMs);
+      await withAbort(ctx.sleep(delayMs), spec.signal);
       continue;
     }
 
-    const buffer = new Uint8Array(await response.arrayBuffer());
+    const buffer = new Uint8Array(await withAbort(response.arrayBuffer(), attemptSignal(spec)));
     const { status } = response;
 
     if ((status >= 200 && status < 300) || expected.includes(status)) {

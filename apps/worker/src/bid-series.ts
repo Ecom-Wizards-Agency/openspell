@@ -257,13 +257,14 @@ export class PostgresBidSeriesStore implements BidSeriesStore {
       {
         id: string;
         org_id: string;
+        connection_id: string | null;
         amazon_profile_id: string;
         region: 'NA' | 'EU' | 'FE';
         currency_code: string;
         timezone: string;
       }[]
     >`
-      select id, org_id, amazon_profile_id, region, currency_code, timezone
+      select id, org_id, connection_id, amazon_profile_id, region, currency_code, timezone
         from public.ad_profiles
        where sync_enabled
        order by id
@@ -271,6 +272,7 @@ export class PostgresBidSeriesStore implements BidSeriesStore {
     return rows.map((row) => ({
       id: row.id,
       orgId: row.org_id,
+      connectionId: row.connection_id,
       amazonProfileId: row.amazon_profile_id,
       region: row.region,
       currencyCode: row.currency_code,

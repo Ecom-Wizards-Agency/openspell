@@ -334,6 +334,29 @@ describe('batching and write failure mapping', () => {
     ])).rejects.toBeInstanceOf(AdsApiParseError);
   });
 
+  it.each([
+    {
+      label: 'dual singular and plural error arrays',
+      envelope: { success: [{ index: 0, keywordId: ID_1 }], error: [], errors: [] },
+    },
+    {
+      label: 'malformed success member beside a complete valid index set',
+      envelope: { success: [{ index: 0, keywordId: ID_1 }, 'malformed'], error: [] },
+    },
+    {
+      label: 'wrong-typed error collection',
+      envelope: { success: [{ index: 0, keywordId: ID_1 }], error: {} },
+    },
+  ])('rejects $label rather than silently accepting contradictory write evidence', async ({ envelope }) => {
+    const endpoint = SP_WRITE_ENDPOINTS.keywords;
+    const { client } = clientFor([{
+      method: 'PUT', match: endpoint.path,
+      responses: [{ status: 207, json: { keywords: envelope } }],
+    }]);
+    await expect(client.updateSpKeywords(PROFILE_ID, [{ keywordId: ID_1, bid: 0.71 }]))
+      .rejects.toBeInstanceOf(AdsApiParseError);
+  });
+
   it('returns the first 429 without consuming the later ambiguous response', async () => {
     const endpoint = SP_WRITE_ENDPOINTS.targets;
     const { client } = clientFor([

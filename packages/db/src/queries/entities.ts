@@ -18,6 +18,13 @@ export interface MirrorCounts {
   listed: number;
   /** Rows the database reports written. */
   upserted: number;
+  /** Older or identical snapshots deliberately rejected by the promotion watermark. */
+  superseded?: number;
+}
+
+export interface MirrorPromotionCounts extends MirrorCounts {
+  /** Exact Amazon ids whose snapshots were promoted by this statement set. */
+  promotedIds: string[];
 }
 
 export class MirrorCountMismatch extends Error {
@@ -124,12 +131,28 @@ export async function reconcileEntityChangeLinks(
  * refuses to let one `ON CONFLICT DO UPDATE` touch a row twice, and chunking
  * cannot make an intra-batch duplicate legal.
  */
+export function upsertMirrorRows<T extends PgTable>(
+  handle: DbHandle,
+  table: T,
+  rows: readonly T['$inferInsert'][],
+): Promise<MirrorCounts>;
+export function upsertMirrorRows<T extends PgTable>(
+  handle: DbHandle,
+  table: T,
+  rows: readonly T['$inferInsert'][],
+  options: { returnPromotedIds: true },
+): Promise<MirrorPromotionCounts>;
 export async function upsertMirrorRows<T extends PgTable>(
   handle: DbHandle,
   table: T,
   rows: readonly T['$inferInsert'][],
-): Promise<MirrorCounts> {
-  if (rows.length === 0) return { listed: 0, upserted: 0 };
+  options?: { returnPromotedIds: true },
+): Promise<MirrorCounts | MirrorPromotionCounts> {
+  if (rows.length === 0) {
+    return options?.returnPromotedIds
+      ? { listed: 0, upserted: 0, promotedIds: [] }
+      : { listed: 0, upserted: 0 };
+  }
 
   const columns = getTableColumns(table) as Record<string, { name: string }>;
   const keep = new Set(['id', 'profileId', 'amazonId', 'firstSeenAt']);
@@ -141,11 +164,22 @@ export async function upsertMirrorRows<T extends PgTable>(
 
   const profileColumn = columns['profileId'] as IndexColumn | undefined;
   const amazonColumn = columns['amazonId'] as IndexColumn | undefined;
-  if (!profileColumn || !amazonColumn) {
+  const syncedAtColumn = columns['syncedAt'] as IndexColumn | undefined;
+  if (!profileColumn || !amazonColumn || !syncedAtColumn) {
     throw new Error(`${getTableName(table)} is not a mirror table`);
   }
+  const snapshotEqual = sql.join(
+    Object.entries(columns)
+      .filter(([property]) => !keep.has(property))
+      .map(([_property, definition]) => {
+        const column = definition as IndexColumn;
+        return sql`${column} is not distinct from excluded.${sql.identifier(column.name)}`;
+      }),
+    sql` and `,
+  );
 
   let upserted = 0;
+  const promotedIds: string[] = [];
   for (const chunk of chunkForInsert(rows, Object.keys(columns).length)) {
     const written = await handle.db
       .insert(table)
@@ -153,16 +187,25 @@ export async function upsertMirrorRows<T extends PgTable>(
       .onConflictDoUpdate({
         target: [profileColumn, amazonColumn],
         set: set as PgUpdateSetSource<T>,
+        // A listing is stamped when its provider read begins. A slower, older
+        // listing must never overwrite evidence returned by a newer targeted
+        // read merely because its database write finishes later.
+        setWhere: sql`${syncedAtColumn} < excluded.${sql.identifier(syncedAtColumn.name)}
+          or (${syncedAtColumn} = excluded.${sql.identifier(syncedAtColumn.name)}
+              and ${snapshotEqual})`,
       })
       .returning({ amazonId: sql<string>`${sql.identifier(amazonColumn.name)}` });
     upserted += written.length;
+    promotedIds.push(...written.map((row) => row.amazonId));
   }
 
-  const counts: MirrorCounts = { listed: rows.length, upserted };
-  if (counts.listed !== counts.upserted) {
-    throw new MirrorCountMismatch(getTableName(table), counts);
-  }
-  return counts;
+  const superseded = rows.length - upserted;
+  const counts: MirrorCounts = {
+    listed: rows.length,
+    upserted,
+    ...(superseded === 0 ? {} : { superseded }),
+  };
+  return options?.returnPromotedIds ? { ...counts, promotedIds } : counts;
 }
 
 /**

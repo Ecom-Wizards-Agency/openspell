@@ -120,6 +120,7 @@ describe.skipIf(!available)('sync job queue', () => {
 
   it('requeues a failure with attempts left and buries one without', async () => {
     await queueJobs(1, 'retry');
+    await database.sql`update public.sync_jobs set priority = 10000 where dedupe_key = 'retry:1'`;
     const [job] = await claimSyncJobs(database, 'worker-d', 1);
     expect(job).toBeDefined();
     if (!job) return;
@@ -127,18 +128,25 @@ describe.skipIf(!available)('sync job queue', () => {
     const requeued = await finishSyncJob(database, job.id, 'failed', {
       error: 'throttled',
       retryIn: '5 seconds',
+      claimToken: job.claimToken,
     });
     expect(requeued.status).toBe('queued');
 
     await database.sql`
-      update public.sync_jobs set attempts = max_attempts, run_after = now() where id = ${job.id}
+      update public.sync_jobs set attempts = max_attempts, run_after = now(), priority = 20000
+       where id = ${job.id}
     `;
-    const buried = await finishSyncJob(database, job.id, 'failed', { error: 'still throttled' });
+    const [reclaimed] = await claimSyncJobs(database, 'worker-d', 1);
+    expect(reclaimed?.id).toBe(job.id);
+    const buried = await finishSyncJob(database, job.id, 'failed', {
+      error: 'still throttled', claimToken: reclaimed?.claimToken,
+    });
     expect(buried.status).toBe('dead');
   });
 
   it('reclaims a job whose worker went away', async () => {
     await queueJobs(1, 'stale');
+    await database.sql`update public.sync_jobs set priority = 30000 where dedupe_key = 'stale:1'`;
     const [job] = await claimSyncJobs(database, 'worker-e', 1);
     expect(job).toBeDefined();
     if (!job) return;
@@ -153,6 +161,35 @@ describe.skipIf(!available)('sync job queue', () => {
       select status from public.sync_jobs where id = ${job.id}
     `;
     expect(row?.status).toBe('queued');
+  });
+
+  it('fences a stale owner after the reaper issues a replacement claim', async () => {
+    await queueJobs(1, 'fenced-stale');
+    await database.sql`
+      update public.sync_jobs set priority = 40000 where dedupe_key = 'fenced-stale:1'
+    `;
+    const [original] = await claimSyncJobs(database, 'worker-fence-old', 1);
+    expect(original?.claimToken).toMatch(/[0-9a-f-]{36}/);
+    if (!original) return;
+    await database.sql`
+      update public.sync_jobs set claimed_at = now() - interval '2 hours'
+       where id = ${original.id}
+    `;
+    expect(await requeueStaleSyncJobs(database, '30 minutes')).toBeGreaterThanOrEqual(1);
+    await database.sql`
+      update public.sync_jobs set priority = 50000 where id = ${original.id}
+    `;
+    const [replacement] = await claimSyncJobs(database, 'worker-fence-new', 1);
+    expect(replacement?.id).toBe(original.id);
+    expect(replacement?.claimToken).not.toBe(original.claimToken);
+
+    await expect(finishSyncJob(database, original.id, 'succeeded', {
+      claimToken: original.claimToken,
+    })).rejects.toThrow(/stale|claim token/i);
+    const completed = await finishSyncJob(database, replacement!.id, 'succeeded', {
+      claimToken: replacement!.claimToken,
+    });
+    expect(completed.status).toBe('succeeded');
   });
 
   describe('scheduler', () => {

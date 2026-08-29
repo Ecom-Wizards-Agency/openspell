@@ -484,6 +484,50 @@ describe.skipIf(!available)('schema and contracts', () => {
     expect(row?.state).toBe('archived');
   });
 
+  it('refuses an older provider listing that finishes after newer targeted evidence', async () => {
+    const newer = new Date('2026-08-29T12:00:02.000Z');
+    const older = new Date('2026-08-29T12:00:01.000Z');
+    const newerRow = {
+      orgId,
+      profileId,
+      amazonId: 'kw-out-of-order',
+      adProduct: 'SP',
+      name: 'newer provider state',
+      state: 'enabled',
+      campaignId: 'c-1',
+      adGroupId: 'ag-1',
+      keywordText: 'synthetic',
+      matchType: 'exact',
+      bid: 0.72,
+      syncedAt: newer,
+    } as const;
+    await upsertMirrorRows(database, keywords, [newerRow]);
+    await expect(upsertMirrorRows(database, keywords, [newerRow])).resolves.toEqual({
+      listed: 1, upserted: 1,
+    });
+    await expect(upsertMirrorRows(database, keywords, [{
+      orgId,
+      profileId,
+      amazonId: 'kw-out-of-order',
+      adProduct: 'SP',
+      name: 'stale provider state',
+      state: 'enabled',
+      campaignId: 'c-1',
+      adGroupId: 'ag-1',
+      keywordText: 'synthetic',
+      matchType: 'exact',
+      bid: 0.70,
+      syncedAt: older,
+    }])).resolves.toEqual({ listed: 1, upserted: 0, superseded: 1 });
+    const [stored] = await database.sql<{ bid: string; synced_at: Date | string }[]>`
+      select bid::text as bid, synced_at
+        from public.keywords
+       where profile_id = ${profileId} and amazon_id = 'kw-out-of-order'
+    `;
+    expect(Number(stored?.bid)).toBe(0.72);
+    expect(new Date(stored?.synced_at ?? 0).toISOString()).toBe(newer.toISOString());
+  });
+
   /**
    * Postgres binds at most 65535 parameters per statement, so a single
    * multi-row insert caps out at a few thousand rows. Both batches below are
