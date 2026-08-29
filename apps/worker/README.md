@@ -17,6 +17,8 @@ in the repo talks to the Amazon Ads API — `apps/web` reads the database the wo
 | `ads-api.ts` | The narrow client interface the worker needs, plus `DbAdsApiClient` — the adapter that maps it onto the real `@wizard-ads/ads-api` client (per-connection/per-region, Vault-backed refresh token). |
 | `main.ts` | Process entry: config, health server, the two passes, graceful shutdown. |
 | `marketing-stream-sqs.ts` | Optional SQS long-poll ingress. It acknowledges only after the raw ledger and hourly projection counts reconcile. |
+| `spapi-sqp.ts` | Exact profile/marketplace binding, Vault-backed LWA token composition, and regional Reports API client pool. |
+| `sqp-scheduler.ts` | Idempotent weekly producer using the last complete profile-local Sunday–Saturday week and counted advertised ASINs. |
 
 ## The job pipeline
 
@@ -129,6 +131,30 @@ all. `variant` joins the key; existing rows default to `default` and keep the un
 | `WORKER_STALE_CLAIM_AFTER` | `30 minutes` | How long a `running` claim may go quiet. |
 | `CROSSCHECK_INBOX_DIR` | unset | Root of the AdLabs export inbox. Never a tracked default. |
 | `MARKETING_STREAM_SQS_QUEUE_URL` | unset | Enables Marketing Stream SQS ingestion. Kept out of health and logs. AWS credentials and region use the standard SDK provider chain. |
+| `SP_API_LWA_CLIENT_ID` | unset | Enables the SP-API SQP runtime when paired with `SP_API_LWA_CLIENT_SECRET`. Deployment environment only. |
+| `SP_API_LWA_CLIENT_SECRET` | unset | SP-API LWA application secret. Deployment environment only; tenant refresh credentials remain in Vault. |
+| `SP_API_REPORT_MIN_INTERVAL_MS` | `1000` | Serial floor between Reports API operations. Provider `Retry-After` still controls throttled retries. |
+
+### Weekly SQP
+
+When both SP-API LWA application variables are present, the schedule
+provisioner also inspects active `spapi_profile_bindings`. Each eligible
+binding must match one sync-enabled Ads profile, one active credentialed
+SP-API connection, its seller id, and one marketplace explicitly listed on the
+connection. The scheduler uses current, non-deleted `product_ads` rows as the
+initial attributable ASIN source; it counts missing, invalid, duplicate, and
+unique values before offering a job.
+
+The queue identity is stable per profile, marketplace, and completed week, so
+restarts and repeated 15-minute passes do not create another report. The
+durable job reuses provider report ids across polling attempts. Active
+advertised ASINs are not a claim of catalog-complete Brand Registry coverage;
+the exact requested set remains on the promotion ledger.
+
+This code does not activate itself. The additive SP-API binding migration,
+tenant refresh credential, exact binding rows, application role approval, and
+deployment environment must all be supplied separately. No production
+migration or credential provisioning is performed by the worker.
 
 ### Marketing Stream
 

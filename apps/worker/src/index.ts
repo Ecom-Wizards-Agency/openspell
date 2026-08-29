@@ -15,6 +15,8 @@ export * from './recommendations-run.js';
 export * from './recommendation-observer.js';
 export * from './schedules.js';
 export * from './sqp.js';
+export * from './spapi-sqp.js';
+export * from './sqp-scheduler.js';
 export * from './history-planning.js';
 export * from './report-promotion.js';
 export * from './store.js';

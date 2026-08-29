@@ -1,5 +1,7 @@
 export interface SpApiAccessTokenProvider {
   getAccessToken(): Promise<string>;
+  /** Optional 401/403 recovery seam. It clears memory only; it never revokes the grant. */
+  invalidate?(): void;
 }
 
 export type FetchLike = (

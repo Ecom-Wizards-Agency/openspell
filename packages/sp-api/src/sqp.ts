@@ -105,7 +105,15 @@ export function planSqpReportRequests(input: {
     const [request] = buildSqpReportRequests({ ...input, asins });
     if (!request) throw new SpApiParseError('SQP request planner produced no request');
     return {
-      requestKey: [input.marketplaceId, input.weekStart, input.weekEnd, asins.join(' ')].join('\u0000'),
+      // This identity is persisted inside a Postgres jsonb checkpoint. JSONB
+      // rejects U+0000 even when JSON.stringify escapes it, so use an encoded
+      // tuple rather than the in-memory NUL separators used only for hashing.
+      requestKey: JSON.stringify([
+        input.marketplaceId,
+        input.weekStart,
+        input.weekEnd,
+        asins.join(' '),
+      ]),
       marketplaceId: input.marketplaceId,
       weekStart: input.weekStart,
       weekEnd: input.weekEnd,

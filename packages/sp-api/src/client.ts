@@ -56,6 +56,7 @@ export class SpApiClient {
   }
 
   private async request(path: string, init: { method: string; body?: unknown }): Promise<unknown> {
+    let authRetried = false;
     for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
       const access = await this.options.accessTokenProvider.getAccessToken();
       const response = await this.fetchImpl(`${this.endpoint}${path}`, {
@@ -82,6 +83,15 @@ export class SpApiClient {
 
       if (response.ok) return body;
 
+      const authRefused = response.status === 401 || response.status === 403;
+      if (!authRetried && authRefused && this.options.accessTokenProvider.invalidate) {
+        authRetried = true;
+        this.options.accessTokenProvider.invalidate();
+        // Authentication recovery is one replacement attempt, not part of the
+        // transport retry budget. This also works when maxRetries is zero.
+        attempt -= 1;
+        continue;
+      }
       const retryable = response.status === 429 || response.status >= 500;
       if (!retryable || attempt === this.maxRetries) {
         throw new SpApiError(safeErrorMessage(response.status, body), response.status, retryable);

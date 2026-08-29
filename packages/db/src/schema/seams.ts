@@ -40,6 +40,33 @@ export const spapiConnections = pgTable('spapi_connections', {
   updatedAt: ts('updated_at').notNull().defaultNow(),
 });
 
+export const spapiProfileBindings = pgTable(
+  'spapi_profile_bindings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id')
+      .notNull()
+      .references(() => adProfiles.id, { onDelete: 'cascade' }),
+    connectionId: uuid('connection_id')
+      .notNull()
+      .references(() => spapiConnections.id, { onDelete: 'cascade' }),
+    marketplaceId: text('marketplace_id').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('spapi_profile_bindings_one_per_profile').on(t.profileId),
+    index('spapi_profile_bindings_connection_idx').on(t.connectionId, t.marketplaceId),
+  ],
+);
+
+export type SpApiConnection = typeof spapiConnections.$inferSelect;
+export type SpApiProfileBinding = typeof spapiProfileBindings.$inferSelect;
+
 export const factSalesTrafficDaily = pgTable(
   'fact_sales_traffic_daily',
   {

@@ -7,6 +7,8 @@ import { closeServer, startHealthServer } from './health.js';
 import { PostgresBidSeriesStore } from './bid-series.js';
 import { createKeepaSyncHandler } from './keepa.js';
 import { createMarketingStreamSqsConsumer } from './marketing-stream-sqs.js';
+import { createSpApiSqpRequestHandler } from './spapi-sqp.js';
+import { PostgresWeeklySqpScheduler } from './sqp-scheduler.js';
 import {
   PostgresRecommendationRunStore,
   createRecommendationsRunner,
@@ -43,6 +45,18 @@ const runsAmazonJobs = config.jobTypes === undefined
 // One client instance serves both the queue worker and bid-corridor sync.
 const adsApi = runsAmazonJobs ? createAdsApiClientFromEnv(handle) : undefined;
 const recommendationRuns = new PostgresRecommendationRunStore(handle);
+const runsSqpJobs = config.jobTypes === undefined || config.jobTypes.includes('sqp.request');
+const sqpRequest = runsSqpJobs && config.spApiClientId && config.spApiClientSecret
+  ? createSpApiSqpRequestHandler({
+      handle,
+      lwaClientId: config.spApiClientId,
+      lwaClientSecret: config.spApiClientSecret,
+      minimumProviderIntervalMs: config.spApiReportMinIntervalMs,
+    })
+  : undefined;
+const sqpSchedules = sqpRequest
+  ? new PostgresWeeklySqpScheduler(handle, store)
+  : undefined;
 const worker = new SyncWorker({
   workerId: config.workerId,
   store,
@@ -54,6 +68,7 @@ const worker = new SyncWorker({
     economicsSync: createMrpEconomicsSync(handle),
     rankSync: createDataDiveRankSyncHandler({ handle }),
     keepaSync: createKeepaSyncHandler(handle),
+    ...(sqpRequest === undefined ? {} : { sqpRequest }),
   },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,
@@ -65,7 +80,13 @@ const authHealth = adsApi
   ? new AuthHealthMonitor(worker, config.authHealthcheckIntervalMs)
   : undefined;
 const reaper = new StaleClaimReaper(store, config.staleClaimAfter);
-const provisioner = new ScheduleProvisioner(store, undefined, undefined, recommendationRuns);
+const provisioner = new ScheduleProvisioner(
+  store,
+  undefined,
+  undefined,
+  recommendationRuns,
+  sqpSchedules,
+);
 const bidSeries = adsApi
   ? new BidSeriesSyncPass({ store: new PostgresBidSeriesStore(handle), client: adsApi })
   : undefined;

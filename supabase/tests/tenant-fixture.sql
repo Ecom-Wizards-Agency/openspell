@@ -30,6 +30,7 @@ declare
   v_feedback uuid;
   v_experiment uuid;
   v_asset uuid;
+  v_spapi uuid;
   v_report uuid;
   v_recommendation uuid;
   v_group uuid;
@@ -215,7 +216,14 @@ begin
   values (v_experiment, v_org, null, 'running', 'Seeded by the tenant fixture.', p_user_id);
 
   -- Reserved seams
-  insert into public.spapi_connections (org_id, label) values (v_org, p_slug || '-spapi');
+  insert into public.spapi_connections
+    (org_id, label, selling_partner_id, marketplace_ids)
+  values
+    (v_org, p_slug || '-spapi', p_slug || '-seller', array['ATVPDKIKX0DER'])
+  returning id into v_spapi;
+  insert into public.spapi_profile_bindings
+    (org_id, profile_id, connection_id, marketplace_id)
+  values (v_org, v_profile, v_spapi, 'ATVPDKIKX0DER');
   insert into public.fact_sales_traffic_daily (org_id, profile_id, date, asin, sessions)
   values (v_org, v_profile, p_date, 'B0TEST0001', 10);
   insert into public.fact_sqp_weekly (org_id, profile_id, week_start, asin, search_query, search_volume)

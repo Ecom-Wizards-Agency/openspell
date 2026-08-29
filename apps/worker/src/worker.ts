@@ -14,7 +14,7 @@ import {
   type SqpRequestJob,
   type SqpCategorizeJob,
 } from '@wizard-ads/shared';
-import { SpApiError, SpApiParseError } from '@wizard-ads/sp-api';
+import { SpApiAuthError, SpApiError, SpApiParseError } from '@wizard-ads/sp-api';
 import { isPermanentCrosscheckError, type CrosscheckIngest } from './crosscheck.js';
 import {
   AdsApiRetryableError,
@@ -40,6 +40,7 @@ import {
   SqpWorkflowPermanentError,
   type SqpQueuedJobContext,
 } from './sqp.js';
+import type { WeeklySqpScheduleProducer } from './sqp-scheduler.js';
 
 const MINUTE_MS = 60_000;
 const FOUR_HOURS_MS = 4 * 60 * MINUTE_MS;
@@ -249,6 +250,7 @@ export class SyncWorker {
         error instanceof PermanentJobError ||
         error instanceof SqpWorkflowPermanentError ||
         error instanceof SpApiParseError ||
+        (error instanceof SpApiAuthError && !error.retryable) ||
         (error instanceof SpApiError && !error.retryable) ||
         isPermanentCrosscheckError(error)
       ) {
@@ -645,6 +647,7 @@ export class ScheduleProvisioner extends PeriodicPass {
     intervalMs = 15 * MINUTE_MS,
     private readonly provisionLogger: WorkerLogger = consoleLogger,
     private readonly recommendationSchedules?: RecommendationScheduleStore,
+    private readonly sqpSchedules?: WeeklySqpScheduleProducer,
   ) {
     super(intervalMs, provisionLogger);
   }
@@ -664,6 +667,7 @@ export class ScheduleProvisioner extends PeriodicPass {
       : 0;
     const repaired = await this.store.repairOverlongLookbacks();
     const integrations = await this.store.ensureIntegrationSchedules();
+    const sqp = await this.sqpSchedules?.enqueueDueSqpRequests();
     if (written > 0) {
       this.provisionLogger.info('provisioned default schedules', { profiles: profiles.length, schedules: written });
     }
@@ -676,7 +680,16 @@ export class ScheduleProvisioner extends PeriodicPass {
     if (integrations > 0) {
       this.provisionLogger.info('reconciled integration schedules', { schedules: integrations });
     }
-    return { written, repaired, recommendations, integrations };
+    if (sqp && sqp.enqueuedJobs > 0) {
+      this.provisionLogger.info('enqueued weekly SQP requests', {
+        jobs: sqp.enqueuedJobs,
+        scopes: sqp.scopes,
+        sourceAsinRows: sqp.sourceAsinRows,
+        uniqueAsins: sqp.uniqueAsins,
+        refusedAsinRows: sqp.refusedAsinRows,
+      });
+    }
+    return { written, repaired, recommendations, integrations, sqp };
   }
 }
 
