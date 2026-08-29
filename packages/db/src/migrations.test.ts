@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260829140000_feature_job_types.sql');
+    expect(files.at(-1)).toBe('20260829150000_spapi_profile_bindings.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -105,7 +105,8 @@ describe.skipIf(!available)('migrations', () => {
       // product surface
       'tags', 'entity_tags', 'dashboards', 'goto_links', 'audit_log',
       // reserved seams
-      'spapi_connections', 'fact_sales_traffic_daily', 'fact_sqp_weekly', 'supa_flags',
+      'spapi_connections', 'spapi_profile_bindings',
+      'fact_sales_traffic_daily', 'fact_sqp_weekly', 'supa_flags',
       'rank_observations', 'keepa_bsr_observations', 'competitor_links',
       'competitor_price_events',
       'creative_assets', 'creative_placements',

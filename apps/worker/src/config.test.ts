@@ -35,3 +35,39 @@ describe('Marketing Stream configuration', () => {
     }).marketingStreamQueueUrl).toBe('https://sqs.example.invalid/queue');
   });
 });
+
+describe('SP-API configuration', () => {
+  const base = { DATABASE_URL: 'postgres://synthetic.invalid/db' };
+  const appId = ['synthetic', 'app-id'].join('-');
+  const appKey = ['synthetic', 'app-key'].join('-');
+
+  it('stays disabled when both LWA application values are absent', () => {
+    const config = configFromEnv(base);
+    expect(config.spApiClientId).toBeUndefined();
+    expect(config.spApiClientSecret).toBeUndefined();
+    expect(config.spApiReportMinIntervalMs).toBe(1_000);
+  });
+
+  it('requires the pair and validates the provider interval', () => {
+    expect(() => configFromEnv({ ...base, SP_API_LWA_CLIENT_ID: appId }))
+      .toThrow(/configured together/);
+    expect(() => configFromEnv({
+      ...base,
+      SP_API_LWA_CLIENT_ID: appId,
+      SP_API_LWA_CLIENT_SECRET: appKey,
+      SP_API_REPORT_MIN_INTERVAL_MS: '0',
+    })).toThrow(/positive integer/);
+  });
+
+  it('trims configured application values without rendering them', () => {
+    const config = configFromEnv({
+      ...base,
+      SP_API_LWA_CLIENT_ID: ` ${appId} `,
+      SP_API_LWA_CLIENT_SECRET: ` ${appKey} `,
+      SP_API_REPORT_MIN_INTERVAL_MS: '2500',
+    });
+    expect(config.spApiClientId).toBe(appId);
+    expect(config.spApiClientSecret).toBe(appKey);
+    expect(config.spApiReportMinIntervalMs).toBe(2_500);
+  });
+});

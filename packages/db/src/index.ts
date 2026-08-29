@@ -56,6 +56,7 @@ export * from './queries/optimization-groups.js';
 export * from './queries/recommendations.js';
 export * from './queries/report-promotion.js';
 export * from './queries/sqp.js';
+export * from './queries/spapi.js';
 export * from './queries/tags.js';
 export * from './queries/time-machine.js';
 export * from './queries/apply-state.js';

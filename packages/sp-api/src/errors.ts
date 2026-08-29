@@ -15,3 +15,13 @@ export class SpApiParseError extends Error {
     this.name = 'SpApiParseError';
   }
 }
+
+export class SpApiAuthError extends Error {
+  readonly retryable: boolean;
+
+  constructor(message: string, readonly status: number | null) {
+    super(message);
+    this.name = 'SpApiAuthError';
+    this.retryable = status === 429 || (status !== null && status >= 500);
+  }
+}

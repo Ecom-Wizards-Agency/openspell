@@ -3,6 +3,7 @@ import type { ClaimedJob, DbHandle, JobOutcome } from '@wizard-ads/db';
 import type { JobPayload, Region } from '@wizard-ads/shared';
 import { describe, expect, it } from 'vitest';
 import type { CrosscheckIngestResult } from '@wizard-ads/crosscheck-cli';
+import { SpApiAuthError } from '@wizard-ads/sp-api';
 import type { AdsApiClient, AdsProfileContext, AdsReportStatus, CreateReportInput } from './ads-api.js';
 import { resolveSourcePath } from './crosscheck.js';
 import type { ParsedFactBatch } from './parsers.js';
@@ -497,6 +498,42 @@ describe('integration handler wiring', () => {
     expect(await worker.drainOnce()).toBe(1);
     expect(finishes).toEqual([]);
     expect(deferrals).toEqual(['211 seconds']);
+  });
+
+  it.each([
+    { status: 400, expected: 'dead' as const },
+    { status: 503, expected: 'failed' as const },
+  ])('classifies SP-API auth status $status as $expected', async ({ status, expected }) => {
+    const payload = payloads[5];
+    if (!payload || payload.type !== 'sqp.request') throw new Error('missing SQP payload');
+    let claimed = false;
+    const outcomes: JobOutcome[] = [];
+    const dead: string[] = [];
+    const worker = new SyncWorker({
+      workerId: 'integration-worker',
+      store: {
+        ...stubStore(),
+        claim: async () => claimed ? [] : (claimed = true, [{
+          id: jobId, orgId, profileId, jobType: payload.type, payload,
+          attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'integration-worker',
+        }]),
+        finish: async (_id, outcome) => { outcomes.push(outcome); },
+        deadLetter: async (_id, error) => { dead.push(error); },
+      },
+      integrations: {
+        sqpRequest: async () => { throw new SpApiAuthError('SP-API authorization failed', status); },
+      },
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    if (expected === 'dead') {
+      expect(dead).toEqual(['SP-API authorization failed']);
+      expect(outcomes).toEqual([]);
+    } else {
+      expect(dead).toEqual([]);
+      expect(outcomes).toEqual(['failed']);
+    }
   });
 
   it('passes the configured job-type allowlist into every claim', async () => {

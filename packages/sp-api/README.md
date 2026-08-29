@@ -13,5 +13,7 @@ The first supported workflow is weekly Brand Analytics Search Query Performance:
 - parsing accounts for every source row as parsed or refused, then reports
   deduplication and output counts explicitly.
 
-The worker injects an access-token provider and the configured SP-API endpoint.
-No token reaches request logs or returned errors.
+The package also supplies an LWA access-token provider whose refresh value is
+read lazily from worker-owned custody, cached only as a short-lived access
+token, and reread after invalidation. The worker injects the configured regional
+SP-API endpoint. No token reaches request logs or returned errors.

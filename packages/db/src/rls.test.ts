@@ -224,6 +224,38 @@ describe.skipIf(!available)('row level security', () => {
     });
   });
 
+  it('keeps SP-API bindings tenant-readable, owner-managed, and Vault-pointer guarded', async () => {
+    await asUser(database, USER_A, async (sql) => {
+      const own = await sql<{ org_id: string }[]>`
+        select org_id from public.spapi_profile_bindings
+      `;
+      expect(own.map((row) => row.org_id)).toEqual([orgA]);
+      const updated = await sql`
+        update public.spapi_profile_bindings
+           set enabled = false
+         where org_id = ${orgA}
+        returning id
+      `;
+      expect(updated).toEqual([]);
+    });
+
+    await asUser(database, USER_B, async (sql) => {
+      const updated = await sql`
+        update public.spapi_profile_bindings
+           set enabled = false
+         where org_id = ${orgB}
+        returning id
+      `;
+      expect(updated).toHaveLength(1);
+
+      await expect(sql`
+        update public.spapi_connections
+           set vault_secret_id = '33333333-3333-4333-8333-333333333333'
+         where org_id = ${orgB}
+      `).rejects.toThrow(/service-role/i);
+    });
+  });
+
   it('keeps competitor price events tenant-readable and service-role writable', async () => {
     await asUser(database, USER_A, async (sql) => {
       const rows = await sql<{ org_id: string }[]>`select org_id from public.competitor_price_events`;

@@ -22,6 +22,11 @@ export interface WorkerConfig {
   staleClaimAfter: string;
   /** Enables the independent long-poll consumer when present. Never logged. */
   marketingStreamQueueUrl: string | undefined;
+  /** Deployment-owned LWA application credentials. Tenant refresh values stay in Vault. */
+  spApiClientId: string | undefined;
+  spApiClientSecret: string | undefined;
+  /** Serial floor between Reports API operations; provider 429s still control retries. */
+  spApiReportMinIntervalMs: number;
 }
 
 function positiveInteger(value: string | undefined, fallback: number, name: string): number {
@@ -46,6 +51,11 @@ export function workerJobTypesFromEnv(value: string | undefined): readonly JobTy
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
+  const spApiClientId = env['SP_API_LWA_CLIENT_ID']?.trim() || undefined;
+  const spApiClientSecret = env['SP_API_LWA_CLIENT_SECRET']?.trim() || undefined;
+  if ((spApiClientId === undefined) !== (spApiClientSecret === undefined)) {
+    throw new Error('SP_API_LWA_CLIENT_ID and SP_API_LWA_CLIENT_SECRET must be configured together');
+  }
   return {
     databaseUrl: connectionStringFromEnv(env),
     workerId: env['WORKER_ID'] ?? `worker-${process.pid}`,
@@ -59,5 +69,12 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
       positiveInteger(env['WORKER_AUTH_HEALTHCHECK_MINUTES'], 60, 'WORKER_AUTH_HEALTHCHECK_MINUTES') * 60_000,
     staleClaimAfter: env['WORKER_STALE_CLAIM_AFTER'] ?? '30 minutes',
     marketingStreamQueueUrl: env['MARKETING_STREAM_SQS_QUEUE_URL']?.trim() || undefined,
+    spApiClientId,
+    spApiClientSecret,
+    spApiReportMinIntervalMs: positiveInteger(
+      env['SP_API_REPORT_MIN_INTERVAL_MS'],
+      1_000,
+      'SP_API_REPORT_MIN_INTERVAL_MS',
+    ),
   };
 }

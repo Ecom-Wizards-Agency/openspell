@@ -61,6 +61,7 @@ describe('SQP request construction', () => {
     });
     expect(first).toEqual(second);
     expect(first[0]?.asins).toEqual(['B000000001', 'B000000002']);
+    expect(first[0]?.requestKey).not.toContain('\u0000');
     expect(() => planSqpReportRequests({
       marketplaceId: 'marketplace-1',
       asins: ['not an asin'],
