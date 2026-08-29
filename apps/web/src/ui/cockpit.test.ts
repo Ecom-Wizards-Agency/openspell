@@ -209,6 +209,7 @@ describe('series selection and presentation', () => {
 
   it('uses metric-aware display defaults instead of selection order', () => {
     expect(defaultPresentation('spend')).toEqual({ mark: 'bar', axis: 'left' });
+    expect(defaultPresentation('sales')).toEqual({ mark: 'line', axis: 'right' });
     expect(defaultPresentation('clicks')).toEqual({ mark: 'bar', axis: 'right' });
     expect(defaultPresentation('rpc')).toEqual({ mark: 'line', axis: 'right' });
     expect(defaultPresentation('acos')).toEqual({ mark: 'line', axis: 'right' });
@@ -232,7 +233,7 @@ describe('series selection and presentation', () => {
         clicks: { mark: 'line', axis: 'left' },
         roas: { mark: 'bar', axis: 'right' },
         spend: { mark: 'bar', axis: 'left' },
-        sales: { mark: 'bar', axis: 'left' },
+        sales: { mark: 'line', axis: 'right' },
       },
     });
   });
@@ -256,6 +257,11 @@ describe('series selection and presentation', () => {
     expect(spendDisplay?.value).toBe('bar');
     expect(spendAxis?.value).toBe('left');
 
+    const salesDisplay = host.querySelector<HTMLSelectElement>('select[aria-label="Ad Sales display"]');
+    const salesAxis = host.querySelector<HTMLSelectElement>('select[aria-label="Ad Sales axis"]');
+    expect(salesDisplay?.value).toBe('line');
+    expect(salesAxis?.value).toBe('right');
+
     act(() => {
       if (spendDisplay === null) throw new Error('Spend display control missing');
       spendDisplay.value = 'line';
@@ -268,8 +274,8 @@ describe('series selection and presentation', () => {
     });
 
     expect(host.querySelector('[data-series-mark="line"][aria-label="Spend line"]')).not.toBeNull();
-    expect(host.querySelector('[data-series-mark="bar"][aria-label="Ad Sales bars"]')).not.toBeNull();
-    expect(host.querySelector('g[aria-label="left axis"]')).not.toBeNull();
+    expect(host.querySelector('[data-series-mark="line"][aria-label="Ad Sales line"]')).not.toBeNull();
+    expect(host.querySelector('g[aria-label="left axis"]')).toBeNull();
     expect(host.querySelector('g[aria-label="right axis"]')).not.toBeNull();
   });
 
