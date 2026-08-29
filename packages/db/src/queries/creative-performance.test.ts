@@ -3,6 +3,7 @@ import type {
   AdCreativeAssetMapping,
   CreativeAsset,
   CreativeDailyFact,
+  CreativeSyncSnapshot,
 } from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
 import { createTestDatabase, databaseAvailable } from '../testing/harness.js';
@@ -72,6 +73,8 @@ describe.skipIf(!available)('WP-58 creative performance database', () => {
       assetsReadBack: 2,
       mappingsReadBack: 3,
       factsReadBack: 3,
+      snapshotsUpserted: 0,
+      snapshotsReadBack: 0,
     });
 
     const rows = await readCreativePerformance(database, {
@@ -123,6 +126,80 @@ describe.skipIf(!available)('WP-58 creative performance database', () => {
        order by amazon_asset_id
     `;
     expect(assets.map((row) => row.amazon_asset_id)).toEqual(['asset-one', 'asset-two']);
+  });
+
+  it('preserves creativeVersion with no fabricated creativeId and replaces a changed current mapping', async () => {
+    const firstSnapshotId = '63636363-6363-4363-8363-636363636363';
+    const secondSnapshotId = '64646464-6464-4464-8464-646464646464';
+    const observed = observedBatch(orgId, profileId, firstSnapshotId, 'asset-observed-one');
+    const first = await persistCreativePerformanceBatch(database, observed);
+    expect(first).toMatchObject({
+      assetsUpserted: 1,
+      mappingsUpserted: 1,
+      factsUpserted: 1,
+      snapshotsUpserted: 1,
+      totalUpserts: 4,
+      snapshotsReadBack: 1,
+    });
+    const retry = await persistCreativePerformanceBatch(database, observed);
+    expect(retry).toMatchObject({ totalUpserts: 4, factsReadBack: 1, snapshotsReadBack: 1 });
+
+    const [stored] = await database.sql<{
+      creative_id: string | null;
+      creative_version: string | null;
+      mapping_provenance: string | null;
+      placement: string | null;
+    }[]>`
+      select creative_id, creative_version, mapping_provenance, placement::text
+        from public.fact_creative_daily
+       where profile_id = ${profileId} and ad_id = 'ad-observed'
+    `;
+    expect(stored).toEqual({
+      creative_id: null,
+      creative_version: 'version_v1',
+      mapping_provenance: 'current_sb_ad_snapshot',
+      placement: null,
+    });
+
+    await persistCreativePerformanceBatch(
+      database,
+      observedBatch(orgId, profileId, secondSnapshotId, 'asset-observed-two'),
+    );
+    const canonical = await database.sql<{ amazon_asset_id: string; rows: number }[]>`
+      select max(amazon_asset_id) as amazon_asset_id, count(*)::int as rows
+        from public.fact_creative_daily
+       where profile_id = ${profileId}
+         and date = '2026-08-28'
+         and ad_id = 'ad-observed'
+         and placement is null
+    `;
+    expect(canonical[0]).toEqual({ amazon_asset_id: 'asset-observed-two', rows: 1 });
+  });
+
+  it('does not let an overlapping observation move a report-pending mapping', async () => {
+    const firstSnapshotId = '65656565-6565-4565-8565-656565656565';
+    const secondSnapshotId = '66666666-6666-4666-8666-666666666666';
+    const first = pendingObservedBatch(orgId, profileId, firstSnapshotId, 'asset-pending-one');
+    await persistCreativePerformanceBatch(database, first);
+
+    try {
+      await expect(persistCreativePerformanceBatch(
+        database,
+        mappingOnlyObservedBatch(orgId, profileId, secondSnapshotId, 'asset-pending-two'),
+      )).rejects.toThrow(/still has a report pending/);
+      const [stored] = await database.sql<{ creative_sync_snapshot_id: string | null }[]>`
+        select creative_sync_snapshot_id
+          from public.ad_creative_asset_mappings
+         where profile_id = ${profileId} and source_mapping_key = 'observed-mapping'
+      `;
+      expect(stored?.creative_sync_snapshot_id).toBe(firstSnapshotId);
+    } finally {
+      await database.sql`
+        update public.creative_sync_snapshots
+           set status = 'blocked'
+         where id = ${firstSnapshotId}
+      `;
+    }
   });
 
   it('is idempotent and updates metrics on an exact fact retry', async () => {
@@ -332,9 +409,12 @@ function mapping(
     adGroupId: 'ad-group-one',
     adId: 'ad-one',
     creativeId: 'creative-one',
+    creativeVersion: null,
     assetId: 'asset-one',
     placement: 'top_of_search',
     attributionState: 'mapped',
+    mappingProvenance: null,
+    creativeSyncSnapshotId: null,
     observedAt: '2026-08-29T01:00:00Z',
     ...overrides,
   };
@@ -352,9 +432,12 @@ function fact(
     adGroupId: 'ad-group-one',
     adId: 'ad-one',
     creativeId: 'creative-one',
+    creativeVersion: null,
     assetId: 'asset-one',
     placement: 'top_of_search',
     attributionState: 'mapped',
+    mappingProvenance: null,
+    creativeSyncSnapshotId: null,
     impressions: 100,
     clicks: 10,
     cost: 5,
@@ -366,4 +449,100 @@ function fact(
     videoCompleteViews: 20,
     ...overrides,
   };
+}
+
+function observedBatch(
+  orgId: string,
+  profileId: string,
+  snapshotId: string,
+  assetId: string,
+): CreativePerformanceWriteBatch {
+  const snapshot: CreativeSyncSnapshot = {
+    id: snapshotId,
+    profileId,
+    startDate: '2026-08-28',
+    endDate: '2026-08-28',
+    observedAt: '2026-08-29T03:00:00Z',
+    mappingProvenance: 'current_sb_ad_snapshot',
+    historicalValidity: 'unproven_current_snapshot',
+    status: 'completed',
+    paginationComplete: true,
+    factPromotionAllowed: true,
+    sourceAssets: 1,
+    parsedAssets: 1,
+    sourceAds: 1,
+    parsedAds: 1,
+    mapped: 1,
+    legacy: 0,
+    unsupported: 0,
+    ambiguous: 0,
+    unmapped: 0,
+    reportSourceRows: 1,
+    reportParsedRows: 1,
+    reportRefusedRows: 0,
+    mappedFactRows: 1,
+    unpromotedReportRows: 0,
+  };
+  return {
+    orgId,
+    profileId,
+    snapshot,
+    assets: [asset(profileId, assetId, { contentHash: null })],
+    mappings: [{
+      sourceMappingKey: 'observed-mapping',
+      mapping: mapping(profileId, {
+        campaignId: 'campaign-observed',
+        adGroupId: 'ad-group-observed',
+        adId: 'ad-observed',
+        creativeId: null,
+        creativeVersion: 'version_v1',
+        assetId,
+        placement: null,
+        mappingProvenance: 'current_sb_ad_snapshot',
+        creativeSyncSnapshotId: snapshotId,
+      }),
+    }],
+    facts: [fact(profileId, {
+      campaignId: 'campaign-observed',
+      adGroupId: 'ad-group-observed',
+      adId: 'ad-observed',
+      creativeId: null,
+      creativeVersion: 'version_v1',
+      assetId,
+      placement: null,
+      mappingProvenance: 'current_sb_ad_snapshot',
+      creativeSyncSnapshotId: snapshotId,
+    })],
+  };
+}
+
+function pendingObservedBatch(
+  orgId: string,
+  profileId: string,
+  snapshotId: string,
+  assetId: string,
+): CreativePerformanceWriteBatch {
+  const batch = observedBatch(orgId, profileId, snapshotId, assetId);
+  batch.snapshot = {
+    ...batch.snapshot!,
+    status: 'report_pending',
+    reportSourceRows: null,
+    reportParsedRows: null,
+    reportRefusedRows: null,
+    mappedFactRows: 0,
+    unpromotedReportRows: 0,
+  };
+  batch.facts = [];
+  return batch;
+}
+
+function mappingOnlyObservedBatch(
+  orgId: string,
+  profileId: string,
+  snapshotId: string,
+  assetId: string,
+): CreativePerformanceWriteBatch {
+  const batch = pendingObservedBatch(orgId, profileId, snapshotId, assetId);
+  batch.snapshot = { ...batch.snapshot!, status: 'mapping_only', factPromotionAllowed: false };
+  return batch;
 }

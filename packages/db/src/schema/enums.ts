@@ -32,6 +32,7 @@ import {
   RecommendationEvidenceState,
   Region,
   ReportDataSource,
+  WorkerReportType,
 } from '@wizard-ads/shared';
 
 /**
@@ -83,14 +84,7 @@ export const syncJobStatus = pgEnum('sync_job_status', [
   'failed',
   'dead',
 ]);
-export const reportType = pgEnum('report_type', [
-  'spCampaigns',
-  'spTargeting',
-  'spSearchTerm',
-  'spPlacement',
-  'sbCampaigns',
-  'sdCampaigns',
-]);
+export const reportType = pgEnum('report_type', tuple(WorkerReportType.options));
 export const reportStatus = pgEnum('report_status', [
   'pending',
   'processing',

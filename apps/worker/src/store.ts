@@ -30,23 +30,28 @@ import {
   type StagedReportDate,
 } from '@wizard-ads/db';
 import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
-import type { EntityRow, JobPayload, JobType, ReportType } from '@wizard-ads/shared';
+import {
+  WorkerReportAccounting,
+  type WorkerReportAccounting as WorkerReportAccountingShape,
+  type EntityRow,
+  type JobPayload,
+  type JobType,
+  type ReportType,
+  type WorkerReportLedger,
+} from '@wizard-ads/shared';
+type AttributedReportCounts = WorkerReportAccountingShape;
 import type { AdsProfileContext } from './ads-api.js';
 import type { CampaignFactRow, ParsedFactBatch } from './parsers.js';
 import { defaultSchedules, type ScheduleSpec } from './schedules.js';
 
-export interface ReportRequestState {
-  id: string;
-  orgId: string;
-  profileId: string;
-  reportType: ReportType;
-  startDate: string;
-  endDate: string;
-  source: string;
-  amazonReportId: string | null;
+export type ReportRequestState = Omit<
+  WorkerReportLedger,
+  'requestedAt' | 'creativeSyncSnapshotId'
+> & {
   requestedAt: Date;
-  pollAttempts: number;
-}
+  /** Absent on base-report test adapters; production always returns null or a UUID. */
+  creativeSyncSnapshotId?: string | null;
+};
 
 export interface ReportPartitionCounts {
   expectedMonths: number;
@@ -186,6 +191,11 @@ export interface WorkerStore {
   completeReport(
     reportRequestId: string,
     counts: { parsed: number; loaded: number; bytesDownloaded: number },
+  ): Promise<void>;
+  finishAttributedReport(
+    reportRequestId: string,
+    counts: AttributedReportCounts,
+    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null },
   ): Promise<void>;
 }
 
@@ -397,6 +407,7 @@ export class PostgresWorkerStore implements WorkerStore {
       reportType: payload.reportType,
       startDate: payload.startDate,
       endDate: payload.endDate,
+      creativeSyncSnapshotId: payload.creativeSyncSnapshotId ?? null,
     }).onConflictDoNothing();
     return this.getReportRequest(jobId, payload.orgId, payload.profileId);
   }
@@ -418,16 +429,18 @@ export class PostgresWorkerStore implements WorkerStore {
       id: string;
       org_id: string;
       profile_id: string;
-      report_type: ReportType;
+      report_type: WorkerReportLedger['reportType'];
       start_date: string;
       end_date: string;
       source: string;
       amazon_report_id: string | null;
       requested_at: Date | string;
       poll_attempts: number;
+      creative_sync_snapshot_id: string | null;
     }[]>`
       select id, org_id, profile_id, report_type, start_date::text, end_date::text,
-             source, amazon_report_id, requested_at, poll_attempts
+             source, amazon_report_id, requested_at, poll_attempts,
+             creative_sync_snapshot_id
         from public.report_requests
        where id = ${reportRequestId}
          and org_id = ${orgId}
@@ -446,6 +459,7 @@ export class PostgresWorkerStore implements WorkerStore {
       amazonReportId: row.amazon_report_id,
       requestedAt: asDate(row.requested_at),
       pollAttempts: Number(row.poll_attempts),
+      creativeSyncSnapshotId: row.creative_sync_snapshot_id,
     };
   }
 
@@ -708,6 +722,35 @@ export class PostgresWorkerStore implements WorkerStore {
     `;
     if (rows.length !== 1) throw new Error(`complete report update matched ${rows.length} rows`);
     if (counts.parsed !== counts.loaded) throw new ParsedLoadedMismatch(counts.parsed, counts.loaded);
+  }
+
+  async finishAttributedReport(
+    reportRequestId: string,
+    input: AttributedReportCounts,
+    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null },
+  ): Promise<void> {
+    const counts = WorkerReportAccounting.parse(input);
+    const rows = await this.handle.sql<{ id: string; accounting_complete: boolean }[]>`
+      update public.report_requests
+         set status = ${options.status}::public.report_status,
+             completed_at = now(), next_poll_at = null,
+             source_rows = ${counts.sourceRows},
+             rows_parsed = ${counts.parsedRows},
+             refused_rows = ${counts.refusedRows},
+             promoted_rows = ${counts.promotedRows},
+             unpromoted_rows = ${counts.unpromotedRows},
+             rows_loaded = ${counts.canonicalRows},
+             bytes_downloaded = ${options.bytesDownloaded},
+             error = ${options.error ?? null}
+       where id = ${reportRequestId}
+       returning id, accounting_complete
+    `;
+    if (rows.length !== 1) {
+      throw new Error(`attributed report completion matched ${rows.length} rows`);
+    }
+    if (rows[0]?.accounting_complete !== true) {
+      throw new Error('attributed report durable accounting did not reconcile');
+    }
   }
 
   private async upsertCampaignFacts(kind: 'sb' | 'sd', rows: readonly CampaignFactRow[]): Promise<number> {

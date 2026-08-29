@@ -14,6 +14,7 @@ import {
   type MarketingStreamNormalizeJob,
   type RankSyncJob,
   type Region,
+  type ReportType,
   type ReportPromoteJob,
   type SqpRequestJob,
   type SqpCategorizeJob,
@@ -43,6 +44,7 @@ import {
   type RegionTokenBuckets,
 } from './region-token-buckets.js';
 import type { ReportRequestState, WorkerStore } from './store.js';
+import type { SbVideoIngestionRuntime } from './sb-video-ingestion.js';
 import {
   SqpWorkflowPendingError,
   SqpWorkflowPermanentError,
@@ -54,6 +56,7 @@ const MINUTE_MS = 60_000;
 const FOUR_HOURS_MS = 4 * 60 * MINUTE_MS;
 const POLL_DELAYS_MINUTES = [5, 10, 20, 30] as const;
 const SP_REPORT_TYPES = new Set(['spCampaigns', 'spTargeting', 'spSearchTerm', 'spPlacement']);
+type BaseReportRequestState = Omit<ReportRequestState, 'reportType'> & { reportType: ReportType };
 
 /** A failure retrying cannot fix. Goes straight to `dead` with its attempts unspent. */
 export class PermanentJobError extends Error {
@@ -109,6 +112,8 @@ export interface SyncWorkerOptions {
   crosscheckIngest?: CrosscheckIngest;
   /** WP-33's preview-only recommendations runner. Absent, the job dead-letters. */
   recommendationsRun?: RecommendationsRun;
+  /** Read-only current-snapshot SB Video ingestion and sbAds promotion. */
+  sbVideo?: SbVideoIngestionRuntime;
   buckets?: RegionTokenBuckets;
   claimBatchSize?: number;
   maxConcurrentJobs?: number;
@@ -125,6 +130,7 @@ export class SyncWorker {
   private readonly integrations: IntegrationHandlers;
   private readonly crosscheckIngest: CrosscheckIngest | undefined;
   private readonly recommendationsRun: RecommendationsRun | undefined;
+  private readonly sbVideo: SbVideoIngestionRuntime | undefined;
   private readonly buckets: RegionTokenBuckets;
   private readonly claimBatchSize: number;
   private readonly maxConcurrentJobs: number;
@@ -142,6 +148,7 @@ export class SyncWorker {
     this.integrations = options.integrations ?? {};
     this.crosscheckIngest = options.crosscheckIngest;
     this.recommendationsRun = options.recommendationsRun;
+    this.sbVideo = options.sbVideo;
     this.buckets = options.buckets ?? defaultRegionTokenBuckets;
     this.claimBatchSize = options.claimBatchSize ?? 10;
     this.maxConcurrentJobs = options.maxConcurrentJobs ?? 10;
@@ -315,8 +322,17 @@ export class SyncWorker {
         return this.runIntegration(payload.type, this.integrations.economicsSync, payload);
       case 'sqp.categorize':
         return this.runIntegration(payload.type, this.integrations.sqpCategorize, payload);
-      case 'creative.sync':
+      case 'creative.sync': {
+        const sbVideo = this.sbVideo;
+        if (sbVideo) {
+          return this.buckets.run(profile.region, () => sbVideo.syncSnapshot({
+            jobId: job.id,
+            profile,
+            payload,
+          }));
+        }
         return this.runIntegration(payload.type, this.integrations.creativeSync, payload);
+      }
       case 'sqp.request':
         if (!this.integrations.sqpRequest) {
           throw new PermanentJobError(`${payload.type} handler not deployed in this runtime`);
@@ -465,6 +481,12 @@ export class SyncWorker {
     payload: Extract<JobPayload, { type: 'report.request' }>,
   ): Promise<Record<string, unknown>> {
     const adsApi = this.requireAdsApi();
+    if (payload.reportType === 'sbAds' && payload.creativeSyncSnapshotId == null) {
+      throw new PermanentJobError('sbAds report request is missing creative snapshot provenance');
+    }
+    if (payload.reportType !== 'sbAds' && payload.creativeSyncSnapshotId != null) {
+      throw new PermanentJobError('base report request must not carry creative snapshot provenance');
+    }
     const ledger = await this.store.ensureReportRequest(jobId, payload);
     let amazonReportId = ledger.amazonReportId;
     if (!amazonReportId) {
@@ -573,11 +595,57 @@ export class SyncWorker {
       await this.store.failReport(ledger.id, detail);
       throw new PermanentJobError(detail);
     }
-    const batch = parseReportRows(ledger.reportType, downloaded.value, profile, ledger.id);
-    if (SP_REPORT_TYPES.has(ledger.reportType)) {
+    if (ledger.reportType === 'sbAds') {
+      if (!this.sbVideo) {
+        const detail = 'sbAds ingestion runtime is not configured on this worker';
+        await this.store.failReport(ledger.id, detail);
+        throw new PermanentJobError(detail);
+      }
+      const creativeSyncSnapshotId = ledger.creativeSyncSnapshotId;
+      if (creativeSyncSnapshotId == null) {
+        const detail = 'sbAds report ledger is missing creative snapshot provenance';
+        await this.store.failReport(ledger.id, detail);
+        throw new PermanentJobError(detail);
+      }
+      const result = await this.sbVideo.ingestReport({
+        profile,
+        ledger: { ...ledger, creativeSyncSnapshotId },
+        rawRows: downloaded.value,
+      });
+      const accounting = {
+        sourceRows: result.reportSourceRows,
+        parsedRows: result.reportParsedRows,
+        refusedRows: result.reportRefusedRows,
+        promotedRows: result.mappedFactRows,
+        unpromotedRows: result.unpromotedReportRows,
+        canonicalRows: result.factsReadBack,
+      };
+      if (result.blocked) {
+        const detail = `sbAds promotion blocked: ${result.reasons.join(', ') || 'contract incomplete'}`;
+        await this.store.finishAttributedReport(ledger.id, accounting, {
+          status: 'failed',
+          bytesDownloaded: downloaded.bytesDownloaded,
+          error: detail,
+        });
+        throw new PermanentJobError(detail);
+      }
+      await this.store.finishAttributedReport(ledger.id, accounting, {
+        status: 'completed',
+        bytesDownloaded: downloaded.bytesDownloaded,
+      });
+      this.logger.info('Sponsored Brands Video report ingested', {
+        reportRequestId: ledger.id,
+        reportType: ledger.reportType,
+        ...result,
+      });
+      return { ...result, bytesDownloaded: downloaded.bytesDownloaded };
+    }
+    const baseLedger: BaseReportRequestState = { ...ledger, reportType: ledger.reportType };
+    const batch = parseReportRows(baseLedger.reportType, downloaded.value, profile, ledger.id);
+    if (SP_REPORT_TYPES.has(baseLedger.reportType)) {
       return this.promoteSponsoredProductsReport(
         profile,
-        ledger,
+        baseLedger,
         downloaded.value,
         downloaded.bytesDownloaded,
         batch,
@@ -621,7 +689,7 @@ export class SyncWorker {
 
   private async promoteSponsoredProductsReport(
     profile: AdsProfileContext,
-    ledger: ReportRequestState,
+    ledger: BaseReportRequestState,
     rawRows: readonly unknown[],
     bytesDownloaded: number,
     batch: ReturnType<typeof parseReportRows>,

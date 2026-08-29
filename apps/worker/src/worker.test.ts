@@ -74,6 +74,107 @@ describe('fetch handler count assertion', () => {
   });
 });
 
+describe('SB attribution-aware report accounting', () => {
+  it('keeps actual parsed and valid unpromoted rows in the durable completion call', async () => {
+    const payload: Extract<JobPayload, { type: 'report.fetch' }> = {
+      type: 'report.fetch', orgId, profileId, reportRequestId,
+      amazonReportId: 'amazon-report', downloadUrl: 'https://reports.invalid/report',
+    };
+    const job: ClaimedJob = {
+      id: jobId, orgId, profileId, jobType: payload.type, payload,
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+    };
+    let claimed = false;
+    let accounting: Parameters<WorkerStore['finishAttributedReport']>[1] | undefined;
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      getReportRequest: async () => ({
+        id: reportRequestId,
+        orgId,
+        profileId,
+        reportType: 'sbAds',
+        startDate: '2026-08-29',
+        endDate: '2026-08-29',
+        source: 'amazon_api',
+        amazonReportId: 'amazon-report',
+        requestedAt: new Date('2026-08-29T00:01:00Z'),
+        pollAttempts: 1,
+        creativeSyncSnapshotId: jobId,
+      }),
+      finishAttributedReport: async (_id, counts) => { accounting = counts; },
+    };
+    const worker = new SyncWorker({
+      workerId: 'unit-worker',
+      store,
+      adsApi: new PayloadApi([{ synthetic: true }]),
+      sbVideo: {
+        syncSnapshot: async () => { throw new Error('unused'); },
+        ingestReport: async () => ({
+          blocked: false,
+          idempotentReplay: false,
+          reportSourceRows: 3,
+          reportParsedRows: 2,
+          reportRefusedRows: 1,
+          mappedFactRows: 1,
+          unpromotedReportRows: 1,
+          factsUpserted: 1,
+          factsReadBack: 1,
+          amazonWriteCalls: 0,
+          reasons: [],
+        }),
+      },
+      buckets: new RegionTokenBuckets(2),
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(accounting).toEqual({
+      sourceRows: 3,
+      parsedRows: 2,
+      refusedRows: 1,
+      promotedRows: 1,
+      unpromotedRows: 1,
+      canonicalRows: 1,
+    });
+  });
+
+  it('validates the additive durable accounting before writing it', async () => {
+    let statement = '';
+    const sql = (async (strings: TemplateStringsArray) => {
+      statement = strings.join(' ');
+      return [{ id: reportRequestId, accounting_complete: true }];
+    }) as unknown as DbHandle['sql'];
+    const store = new PostgresWorkerStore({
+      sql,
+      db: {} as DbHandle['db'],
+      close: async () => {},
+    });
+    await store.finishAttributedReport(reportRequestId, {
+      sourceRows: 3,
+      parsedRows: 2,
+      refusedRows: 1,
+      promotedRows: 1,
+      unpromotedRows: 1,
+      canonicalRows: 1,
+    }, { status: 'completed', bytesDownloaded: 100 });
+    expect(statement).toContain('source_rows =');
+    expect(statement).toContain('rows_parsed =');
+    expect(statement).toContain('promoted_rows =');
+    expect(statement).toContain('unpromoted_rows =');
+    expect(statement).toContain('rows_loaded =');
+
+    await expect(store.finishAttributedReport(reportRequestId, {
+      sourceRows: 3,
+      parsedRows: 2,
+      refusedRows: 0,
+      promotedRows: 1,
+      unpromotedRows: 1,
+      canonicalRows: 0,
+    }, { status: 'completed', bytesDownloaded: 100 })).rejects.toThrow();
+  });
+});
+
 describe('queue deferral', () => {
   it('returns a running job to the queue without spending a failure attempt', async () => {
     let statement = '';
@@ -811,6 +912,7 @@ function stubStore(): WorkerStore {
     failReport: async () => {},
     loadFacts: async () => 0,
     completeReport: async () => {},
+    finishAttributedReport: async () => {},
   };
 }
 

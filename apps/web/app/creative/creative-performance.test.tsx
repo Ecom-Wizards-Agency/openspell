@@ -11,6 +11,7 @@ function asset(overrides: Partial<CreativePerformanceAsset> = {}): CreativePerfo
     assetType: 'video',
     thumbnailUrl: null,
     campaignTypes: ['SB'],
+    mappingProvenances: ['current_sb_ad_snapshot'],
     campaignCount: 2,
     adGroupCount: 3,
     adCount: 4,
@@ -44,6 +45,7 @@ describe('CreativePerformanceExplorer', () => {
             attributionState: 'legacy',
             name: null,
             thumbnailUrl: null,
+            placementCount: 0,
             videoFirstQuartileViews: null,
             videoMidpointViews: null,
             videoThirdQuartileViews: null,
@@ -59,9 +61,11 @@ describe('CreativePerformanceExplorer', () => {
     expect(markup).toContain('No Amazon Asset ID');
     expect(markup).toContain('Legacy performance');
     expect(markup).toContain('Sponsored Brands');
+    expect(markup).toContain('Observed current mapping');
+    expect(markup).toContain('Placement not reported');
 
     for (const label of [
-      'Placements',
+      'Reported placements',
       'Impressions',
       'Clicks',
       'CTR',

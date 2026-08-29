@@ -5,6 +5,7 @@ import {
   CampaignOptimizationAssignment,
   ContextualNegativeProposal,
   CreativeAsset,
+  CreativeSyncSnapshot,
   DaypartingScheduleProposal,
   DirectionalAdjustmentProvenance,
   FeatureJobPayload,
@@ -22,6 +23,7 @@ import {
   ReversionBatchPreview,
   ReversionPreview,
   SqpWeeklyFact,
+  WorkerReportAccounting,
 } from './index.js';
 
 const PROFILE_ID = '00000000-0000-4000-8000-000000000001';
@@ -63,6 +65,75 @@ describe('creative attribution', () => {
         observedAt: '2026-08-28T00:00:00Z',
       }).attributionState,
     ).toBe('legacy');
+  });
+
+  it('preserves observed SB creative versions without fabricating a creative ID', () => {
+    const mapping = AdCreativeAssetMapping.parse({
+      profileId: PROFILE_ID,
+      adProduct: 'SB',
+      campaignId: 'campaign-1',
+      adGroupId: 'group-1',
+      adId: 'ad-1',
+      creativeId: null,
+      creativeVersion: 'version-v1',
+      assetId: 'asset-one',
+      placement: null,
+      attributionState: 'mapped',
+      mappingProvenance: 'current_sb_ad_snapshot',
+      creativeSyncSnapshotId: RUN_ID,
+      observedAt: '2026-08-28T00:00:00Z',
+    });
+    expect(mapping).toMatchObject({ creativeId: null, creativeVersion: 'version-v1' });
+  });
+
+  it('requires every parsed ad to appear in one snapshot coverage state', () => {
+    expect(CreativeSyncSnapshot.parse({
+      id: RUN_ID,
+      profileId: PROFILE_ID,
+      startDate: '2026-08-28',
+      endDate: '2026-08-28',
+      observedAt: '2026-08-29T00:00:00Z',
+      mappingProvenance: 'current_sb_ad_snapshot',
+      historicalValidity: 'unproven_current_snapshot',
+      status: 'mapping_only',
+      paginationComplete: true,
+      factPromotionAllowed: false,
+      sourceAssets: 2,
+      parsedAssets: 2,
+      sourceAds: 5,
+      parsedAds: 5,
+      mapped: 1,
+      legacy: 1,
+      unsupported: 1,
+      ambiguous: 1,
+      unmapped: 1,
+      mappedFactRows: 0,
+      unpromotedReportRows: 0,
+    }).parsedAds).toBe(5);
+  });
+});
+
+describe('attribution-aware report accounting', () => {
+  it('accounts for valid unpromoted rows without calling them loaded', () => {
+    expect(WorkerReportAccounting.parse({
+      sourceRows: 3,
+      parsedRows: 2,
+      refusedRows: 1,
+      promotedRows: 1,
+      unpromotedRows: 1,
+      canonicalRows: 1,
+    })).toMatchObject({ parsedRows: 2, promotedRows: 1, unpromotedRows: 1 });
+  });
+
+  it('rejects hidden source or canonical row loss', () => {
+    expect(WorkerReportAccounting.safeParse({
+      sourceRows: 3,
+      parsedRows: 2,
+      refusedRows: 0,
+      promotedRows: 1,
+      unpromotedRows: 1,
+      canonicalRows: 0,
+    }).success).toBe(false);
   });
 });
 

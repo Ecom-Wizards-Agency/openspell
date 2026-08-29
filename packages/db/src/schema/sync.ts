@@ -10,6 +10,7 @@
 import {
   boolean,
   date,
+  foreignKey,
   index,
   integer,
   interval,
@@ -22,6 +23,7 @@ import type { JobPayload } from '@wizard-ads/shared';
 import { count, ts } from './columns.js';
 import { reportStatus, reportType, syncJobStatus, syncJobType } from './enums.js';
 import { adProfiles, orgs } from './tenancy.js';
+import { creativeSyncSnapshots } from './operator-intelligence.js';
 
 export const syncSchedules = pgTable(
   'sync_schedules',
@@ -125,12 +127,25 @@ export const reportRequests = pgTable(
     rowsLoaded: count('rows_loaded'),
     /** Generated column: never written, always true or false or null. */
     countsMatch: boolean('counts_match'),
+    /** Attribution-aware accounting; base reports leave these null. */
+    sourceRows: count('source_rows'),
+    refusedRows: count('refused_rows'),
+    promotedRows: count('promoted_rows'),
+    unpromotedRows: count('unpromoted_rows'),
+    accountingComplete: boolean('accounting_complete'),
     bytesDownloaded: count('bytes_downloaded'),
     error: text('error'),
+    creativeSyncSnapshotId: uuid('creative_sync_snapshot_id'),
     createdAt: ts('created_at').notNull().defaultNow(),
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
-  (t) => [index('report_requests_profile_idx').on(t.profileId, t.reportType)],
+  (t) => [
+    index('report_requests_profile_idx').on(t.profileId, t.reportType),
+    foreignKey({
+      columns: [t.orgId, t.profileId, t.creativeSyncSnapshotId],
+      foreignColumns: [creativeSyncSnapshots.orgId, creativeSyncSnapshots.profileId, creativeSyncSnapshots.id],
+    }).onDelete('restrict'),
+  ],
 );
 
 export type SyncSchedule = typeof syncSchedules.$inferSelect;

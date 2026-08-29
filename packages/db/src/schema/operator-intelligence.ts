@@ -24,6 +24,8 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import type {
+  CreativeMappingProvenance,
+  CreativeSyncSnapshotStatus,
   DaypartingScheduleBlock,
   OptimizationGroup,
 } from '@wizard-ads/shared';
@@ -253,6 +255,57 @@ export const attributionObservations = pgTable(
   ],
 );
 
+/** Counted provenance for one current Sponsored Brands ad/asset observation. */
+export const creativeSyncSnapshots = pgTable(
+  'creative_sync_snapshots',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull(),
+    startDate: date('start_date').notNull(),
+    endDate: date('end_date').notNull(),
+    observedAt: ts('observed_at').notNull(),
+    mappingProvenance: text('mapping_provenance').$type<CreativeMappingProvenance>().notNull(),
+    historicalValidity: text('historical_validity')
+      .$type<'unproven_current_snapshot'>()
+      .notNull(),
+    status: text('status').$type<CreativeSyncSnapshotStatus>().notNull(),
+    paginationComplete: boolean('pagination_complete').notNull(),
+    factPromotionAllowed: boolean('fact_promotion_allowed').notNull(),
+    sourceAssets: count('source_assets').notNull(),
+    parsedAssets: count('parsed_assets').notNull(),
+    sourceAds: count('source_ads').notNull(),
+    parsedAds: count('parsed_ads').notNull(),
+    mapped: count('mapped').notNull(),
+    legacy: count('legacy').notNull(),
+    unsupported: count('unsupported').notNull(),
+    ambiguous: count('ambiguous').notNull(),
+    unmapped: count('unmapped').notNull(),
+    reportSourceRows: count('report_source_rows'),
+    reportParsedRows: count('report_parsed_rows'),
+    reportRefusedRows: count('report_refused_rows'),
+    mappedFactRows: count('mapped_fact_rows').notNull().default(0),
+    unpromotedReportRows: count('unpromoted_report_rows').notNull().default(0),
+    assetsUpserted: count('assets_upserted').notNull().default(0),
+    mappingsUpserted: count('mappings_upserted').notNull().default(0),
+    factsUpserted: count('facts_upserted').notNull().default(0),
+    assetsReadBack: count('assets_read_back').notNull().default(0),
+    mappingsReadBack: count('mappings_read_back').notNull().default(0),
+    factsReadBack: count('facts_read_back').notNull().default(0),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.orgId, t.profileId], foreignColumns: [adProfiles.orgId, adProfiles.id] })
+      .onDelete('cascade'),
+    unique('creative_sync_snapshots_org_id_profile_id_id_key').on(t.orgId, t.profileId, t.id),
+    index('creative_sync_snapshots_profile_observed_idx').on(t.profileId, t.observedAt),
+    uniqueIndex('creative_sync_snapshots_one_report_pending_idx')
+      .on(t.orgId, t.profileId)
+      .where(sql`${t.status} = 'report_pending'`),
+  ],
+);
+
 export const adCreativeAssetMappings = pgTable(
   'ad_creative_asset_mappings',
   {
@@ -265,10 +318,13 @@ export const adCreativeAssetMappings = pgTable(
     adGroupId: text('ad_group_id').notNull(),
     adId: text('ad_id').notNull(),
     creativeId: text('creative_id'),
+    creativeVersion: text('creative_version'),
     creativeAssetId: uuid('creative_asset_id'),
     amazonAssetId: text('amazon_asset_id'),
     placement: placement('placement'),
     attributionState: creativeAttributionState('attribution_state').notNull(),
+    mappingProvenance: text('mapping_provenance').$type<CreativeMappingProvenance>(),
+    creativeSyncSnapshotId: uuid('creative_sync_snapshot_id'),
     observedAt: ts('observed_at').notNull(),
     createdAt: ts('created_at').notNull().defaultNow(),
   },
@@ -278,6 +334,10 @@ export const adCreativeAssetMappings = pgTable(
     foreignKey({
       columns: [t.orgId, t.profileId, t.creativeAssetId],
       foreignColumns: [creativeAssets.orgId, creativeAssets.profileId, creativeAssets.id],
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [t.orgId, t.profileId, t.creativeSyncSnapshotId],
+      foreignColumns: [creativeSyncSnapshots.orgId, creativeSyncSnapshots.profileId, creativeSyncSnapshots.id],
     }).onDelete('restrict'),
     uniqueIndex('ad_creative_asset_mappings_profile_id_source_mapping_key_key').on(
       t.profileId,
@@ -299,9 +359,12 @@ export const factCreativeDaily = pgTable(
     adGroupId: text('ad_group_id').notNull(),
     adId: text('ad_id').notNull(),
     creativeId: text('creative_id'),
+    creativeVersion: text('creative_version'),
     amazonAssetId: text('amazon_asset_id'),
     placement: placement('placement'),
     attributionState: creativeAttributionState('attribution_state').notNull(),
+    mappingProvenance: text('mapping_provenance').$type<CreativeMappingProvenance>(),
+    creativeSyncSnapshotId: uuid('creative_sync_snapshot_id'),
     impressions: count('impressions').notNull().default(0),
     clicks: count('clicks').notNull().default(0),
     cost: money('cost', 16, 4).notNull().default(0),
@@ -316,6 +379,10 @@ export const factCreativeDaily = pgTable(
   (t) => [
     foreignKey({ columns: [t.orgId, t.profileId], foreignColumns: [adProfiles.orgId, adProfiles.id] })
       .onDelete('cascade'),
+    foreignKey({
+      columns: [t.orgId, t.profileId, t.creativeSyncSnapshotId],
+      foreignColumns: [creativeSyncSnapshots.orgId, creativeSyncSnapshots.profileId, creativeSyncSnapshots.id],
+    }).onDelete('restrict'),
     unique('fact_creative_daily_grain_key')
       .on(
         t.profileId,
@@ -325,6 +392,7 @@ export const factCreativeDaily = pgTable(
         t.adGroupId,
         t.adId,
         t.creativeId,
+        t.creativeVersion,
         t.amazonAssetId,
         t.placement,
       )

@@ -3,13 +3,14 @@
  *
  * Read-only and deliberately plain (WP-06 owns look and feel). Three tables:
  * freshness per profile, the job queue, the report ledger. The report ledger
- * shows rows parsed against rows loaded and the database's own `counts_match`,
- * because "the job succeeded" and "the rows arrived" are different claims and
- * only the second one is worth anything.
+ * shows base-report parsed/loaded equality and attribution-aware
+ * source/refused/promoted/unpromoted/canonical reconciliation, because "the
+ * job succeeded" and "every source row was accounted for" are different
+ * claims and only the second one is worth anything.
  */
 import type { ReactNode } from 'react';
 import { gate } from '../../src/auth/guard';
-import { loadSyncStatus } from '../../src/data/sync-status';
+import { loadSyncStatus, reportAccountingLabel } from '../../src/data/sync-status';
 import { Shell } from '../../src/ui/shell';
 import { banner, colors, heading, muted, page, subheading, table, td, th } from '../../src/ui/tokens';
 
@@ -127,9 +128,13 @@ export default async function SyncStatusPage({ searchParams }: Props): Promise<R
               <th style={th}>Window</th>
               <th style={th}>Status</th>
               <th style={th}>Polls</th>
+              <th style={th}>Source</th>
               <th style={th}>Parsed</th>
-              <th style={th}>Loaded</th>
-              <th style={th}>Counts match</th>
+              <th style={th}>Refused</th>
+              <th style={th}>Promoted</th>
+              <th style={th}>Unpromoted</th>
+              <th style={th}>Loaded / canonical</th>
+              <th style={th}>Reconciliation</th>
               <th style={th}>Error</th>
             </tr>
           </thead>
@@ -143,15 +148,21 @@ export default async function SyncStatusPage({ searchParams }: Props): Promise<R
                 </td>
                 <td style={td}>{report.status}</td>
                 <td style={td}>{report.pollAttempts}</td>
+                <td style={td}>{report.sourceRows ?? '—'}</td>
                 <td style={td}>{report.rowsParsed ?? '—'}</td>
+                <td style={td}>{report.refusedRows ?? '—'}</td>
+                <td style={td}>{report.promotedRows ?? '—'}</td>
+                <td style={td}>{report.unpromotedRows ?? '—'}</td>
                 <td style={td}>{report.rowsLoaded ?? '—'}</td>
                 <td
                   style={{
                     ...td,
-                    color: report.countsMatch === false ? colors.bad : undefined,
+                    color: report.accountingComplete === false || (
+                      report.accountingComplete === null && report.countsMatch === false
+                    ) ? colors.bad : undefined,
                   }}
                 >
-                  {report.countsMatch === null ? '—' : report.countsMatch ? 'yes' : 'no'}
+                  {reportAccountingLabel(report)}
                 </td>
                 <td style={{ ...td, color: report.error ? colors.bad : undefined }}>
                   {report.error ?? '—'}

@@ -61,7 +61,13 @@ export function CreativePerformanceExplorer({ rows, currencyCode }: Props) {
   return (
     <div className={styles.workspace}>
       <section className={styles.summary} aria-label="Creative performance summary">
-        <SummaryMetric label="Mapped assets" value={formatInteger(summary.mappedAssets)} detail={`${formatInteger(summary.placementCount)} placements`} />
+        <SummaryMetric
+          label="Mapped assets"
+          value={formatInteger(summary.mappedAssets)}
+          detail={summary.placementCount === 0
+            ? 'Placement not reported'
+            : `${formatInteger(summary.placementCount)} reported placements`}
+        />
         <SummaryMetric label="Spend" value={formatMoney(summary.cost, currencyCode)} detail="Across every attribution state" />
         <SummaryMetric label="Ad sales" value={formatMoney(summary.sales, currencyCode)} detail={`${formatInteger(summary.purchases)} orders`} />
         <SummaryMetric
@@ -180,7 +186,8 @@ export function CreativePerformanceExplorer({ rows, currencyCode }: Props) {
       )}
 
       <p className={styles.footnote}>
-        Amazon Asset ID is the creative identity. Recent orders and sales can restate; “—” means the
+        Amazon Asset ID is the asset identity. The mapping is a current observation and does not prove
+        which asset was attached on an earlier date. Recent orders and sales can restate; “—” means the
         source did not report complete metric coverage. Wizard Ads never assigns an ad group’s total
         to one creative and does not write changes to Amazon.
       </p>
@@ -224,13 +231,21 @@ function CreativeRows({
             </button>
           </div>
         </td>
-        <td><AttributionBadge state={row.attributionState} /></td>
+        <td>
+          <AttributionBadge state={row.attributionState} />
+          {row.mappingProvenances.includes('current_sb_ad_snapshot')
+            ? <small>Observed current mapping</small>
+            : null}
+        </td>
         <td>
           <MetricList>
             <Metric label="Campaign types" value={row.campaignTypes.map(campaignTypeLabel).join(', ') || '—'} />
             <Metric label="Campaigns" value={formatInteger(row.campaignCount)} />
             <Metric label="Ad groups" value={formatInteger(row.adGroupCount)} />
-            <Metric label="Placements" value={formatInteger(row.placementCount)} />
+            <Metric
+              label="Reported placements"
+              value={row.placementCount === 0 ? 'Placement not reported' : formatInteger(row.placementCount)}
+            />
           </MetricList>
         </td>
         <td>
@@ -278,7 +293,7 @@ function CreativeDrilldown({ row, currencyCode }: { row: CreativePerformanceAsse
     <div className={styles.drilldown}>
       <header>
         <div>
-          <h3>Ad-level placements</h3>
+          <h3>Ad-level rows</h3>
           <p>{formatInteger(row.drilldown.length)} exact contributing rows</p>
         </div>
         <span>Asset metrics above equal the sum of these rows.</span>
@@ -295,6 +310,8 @@ function CreativeDrilldown({ row, currencyCode }: { row: CreativePerformanceAsse
                 <th scope="col">Ad group ID</th>
                 <th scope="col">Ad ID</th>
                 <th scope="col">Creative ID</th>
+                <th scope="col">Creative version</th>
+                <th scope="col">Mapping provenance</th>
                 <th scope="col">Placement</th>
                 <th scope="col" data-numeric="true">Impressions</th>
                 <th scope="col" data-numeric="true">Clicks</th>
@@ -323,6 +340,8 @@ function DrilldownRow({ row, currencyCode }: { row: CreativePerformanceDrilldown
       <td><code>{row.adGroupId}</code></td>
       <td><code>{row.adId}</code></td>
       <td><code>{row.creativeId ?? '—'}</code></td>
+      <td><code>{row.creativeVersion ?? '—'}</code></td>
+      <td>{row.mappingProvenance === 'current_sb_ad_snapshot' ? 'Observed current mapping' : '—'}</td>
       <td>{placementLabel(row.placement)}</td>
       <td data-numeric="true">{formatInteger(row.impressions)}</td>
       <td data-numeric="true">{formatInteger(row.clicks)}</td>
@@ -395,7 +414,7 @@ function campaignTypeLabel(value: string): string {
 }
 
 function placementLabel(value: CreativePerformanceDrilldown['placement']): string {
-  if (value === null) return 'Not reported';
+  if (value === null) return 'Placement not reported';
   return value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 

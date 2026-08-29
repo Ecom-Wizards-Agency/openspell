@@ -53,8 +53,33 @@ export type ReportType = z.infer<typeof ReportType>;
 /** Additive report surfaces not yet implemented by the legacy Ads API client. */
 export const FeatureReportType = z.enum(['sbAds']);
 export type FeatureReportType = z.infer<typeof FeatureReportType>;
-export const WorkerReportType = z.union([ReportType, FeatureReportType]);
+export const WorkerReportType = z.enum([
+  ...ReportType.options,
+  ...FeatureReportType.options,
+]);
 export type WorkerReportType = z.infer<typeof WorkerReportType>;
+const reportCount = z.number().int().nonnegative();
+
+/** Truthful source-to-canonical accounting for attribution-aware reports. */
+export const WorkerReportAccounting = z.object({
+  sourceRows: reportCount,
+  parsedRows: reportCount,
+  refusedRows: reportCount,
+  promotedRows: reportCount,
+  unpromotedRows: reportCount,
+  canonicalRows: reportCount,
+}).superRefine((counts, context) => {
+  if (counts.sourceRows !== counts.parsedRows + counts.refusedRows) {
+    context.addIssue({ code: 'custom', message: 'source rows must equal parsed plus refused rows' });
+  }
+  if (counts.parsedRows !== counts.promotedRows + counts.unpromotedRows) {
+    context.addIssue({ code: 'custom', message: 'parsed rows must equal promoted plus unpromoted rows' });
+  }
+  if (counts.promotedRows !== counts.canonicalRows) {
+    context.addIssue({ code: 'custom', message: 'promoted rows must equal canonical rows' });
+  }
+});
+export type WorkerReportAccounting = z.infer<typeof WorkerReportAccounting>;
 
 /** Every job is scoped to one org and one profile. RLS depends on it. */
 const jobBase = {
@@ -73,9 +98,11 @@ export const EntitySyncJob = z.object({
 export const ReportRequestJob = z.object({
   ...jobBase,
   type: z.literal(JobType.enum['report.request']),
-  reportType: ReportType,
+  reportType: WorkerReportType,
   startDate: IsoDate,
   endDate: IsoDate,
+  /** Required by the runtime for sbAds; forbidden there for base reports. */
+  creativeSyncSnapshotId: Uuid.nullable().optional(),
 });
 
 export const ReportPollJob = z.object({
@@ -145,7 +172,29 @@ export const CreativeSyncJob = z.object({
   startDate: IsoDate,
   endDate: IsoDate,
   adProduct: z.literal('SB'),
+  /**
+   * Off by default. When enabled, only a single report day may be joined to
+   * this current observation, and the stored provenance remains explicitly
+   * non-historical.
+   */
+  allowObservedAttributionFacts: z.boolean().optional(),
 });
+
+/** Durable report-ledger shape shared by the worker and database adapter. */
+export const WorkerReportLedger = z.object({
+  id: Uuid,
+  orgId: Uuid,
+  profileId: Uuid,
+  reportType: WorkerReportType,
+  startDate: IsoDate,
+  endDate: IsoDate,
+  source: z.string().min(1),
+  amazonReportId: AmazonId.nullable(),
+  requestedAt: z.iso.datetime(),
+  pollAttempts: z.number().int().nonnegative(),
+  creativeSyncSnapshotId: Uuid.nullable(),
+});
+export type WorkerReportLedger = z.infer<typeof WorkerReportLedger>;
 
 export const SqpRequestJob = z.object({
   ...jobBase,

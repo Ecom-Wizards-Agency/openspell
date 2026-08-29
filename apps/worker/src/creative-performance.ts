@@ -11,6 +11,7 @@ import {
   CreativeAsset,
   CreativeDailyFact,
   CreativeIngestionCounts,
+  CreativeSyncSnapshot,
   type CreativeAttributionState,
 } from '@wizard-ads/shared';
 import {
@@ -30,6 +31,8 @@ export interface CreativePerformanceSourceBatch {
   mappings: readonly unknown[];
   /** Raw ad-level daily facts. Ad-group totals are not accepted. */
   facts: readonly unknown[];
+  /** Optional counted provenance persisted atomically with this batch. */
+  snapshot?: unknown;
 }
 
 export interface CreativeRefusal {
@@ -73,6 +76,7 @@ export function stageCreativePerformanceBatch(
   const assets = parseAssets(source, refusals);
   const mappings = parseMappings(source, refusals);
   const facts = parseFacts(source, mappings, refusals);
+  const snapshot = parseSnapshot(source);
 
   const counts = CreativeIngestionCounts.parse({
     sourceAssets: source.assets.length,
@@ -90,6 +94,7 @@ export function stageCreativePerformanceBatch(
       assets,
       mappings,
       facts,
+      ...(snapshot === undefined ? {} : { snapshot }),
     },
     counts,
     refusals,
@@ -106,7 +111,8 @@ export async function ingestCreativePerformanceBatch(
   const expectedUpserts =
     staged.writeBatch.assets.length +
     staged.writeBatch.mappings.length +
-    staged.writeBatch.facts.length;
+    staged.writeBatch.facts.length +
+    (staged.writeBatch.snapshot === undefined ? 0 : 1);
   if (persistence.totalUpserts !== expectedUpserts) {
     throw new CreativePerformanceInputError(
       `creative batch expected ${expectedUpserts} upserts, received ${persistence.totalUpserts}`,
@@ -253,7 +259,10 @@ function parseFacts(
     }
     if (
       mapping.assetId !== fact.assetId ||
-      mapping.attributionState !== fact.attributionState
+      mapping.attributionState !== fact.attributionState ||
+      mapping.creativeVersion !== fact.creativeVersion ||
+      mapping.mappingProvenance !== fact.mappingProvenance ||
+      mapping.creativeSyncSnapshotId !== fact.creativeSyncSnapshotId
     ) {
       refuse(refusals, 'fact', index, 'disagrees with the explicit mapping identity or attribution state');
       return;
@@ -289,6 +298,7 @@ function attributionProblem(
     profileId: string;
     adProduct: string;
     creativeId: string | null;
+    creativeVersion: string | null;
     assetId: string | null;
     attributionState: CreativeAttributionState;
   },
@@ -297,7 +307,9 @@ function attributionProblem(
   if (row.profileId !== profileId) return 'belongs to another profile';
   if (row.adProduct !== 'SB') return 'is not Sponsored Brands';
   if (row.attributionState === 'mapped') {
-    if (row.creativeId === null) return `is a mapped ${label} without a creative ID`;
+    if (row.creativeId === null && row.creativeVersion === null) {
+      return `is a mapped ${label} without a creative ID or version`;
+    }
     if (row.assetId === null) return `is a mapped ${label} without an Amazon Asset ID`;
   } else if (row.assetId !== null) {
     return `must keep ${row.attributionState} attribution separate from an Asset ID`;
@@ -314,9 +326,23 @@ function factGrain(fact: CreativeDailyFact): string {
     fact.adGroupId,
     fact.adId,
     fact.creativeId,
+    fact.creativeVersion,
     fact.assetId,
     fact.placement,
   ]);
+}
+
+function parseSnapshot(
+  source: CreativePerformanceSourceBatch,
+): CreativeSyncSnapshot | undefined {
+  if (source.snapshot === undefined) return undefined;
+  const parsed = CreativeSyncSnapshot.safeParse(source.snapshot);
+  if (!parsed.success || parsed.data.profileId !== source.profileId) {
+    throw new CreativePerformanceInputError(
+      'creative snapshot does not match the shared counted contract',
+    );
+  }
+  return parsed.data;
 }
 
 /** One performance row per ad/date/placement before any creative attribution. */

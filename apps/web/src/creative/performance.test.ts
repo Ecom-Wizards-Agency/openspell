@@ -14,6 +14,7 @@ function asset(overrides: Partial<CreativePerformanceAsset> = {}): CreativePerfo
     assetType: 'video',
     thumbnailUrl: null,
     campaignTypes: ['SB'],
+    mappingProvenances: [],
     campaignCount: 2,
     adGroupCount: 3,
     adCount: 4,

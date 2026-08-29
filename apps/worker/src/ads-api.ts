@@ -14,7 +14,7 @@ import {
   listActiveConnectionIdsForRegion,
   type DbHandle,
 } from '@wizard-ads/db';
-import type { EntityRow, Region, ReportType } from '@wizard-ads/shared';
+import type { EntityRow, Region, WorkerReportType } from '@wizard-ads/shared';
 
 /** The profile routing information every Amazon call needs. */
 export interface AdsProfileContext {
@@ -28,7 +28,7 @@ export interface AdsProfileContext {
 
 export interface CreateReportInput {
   profile: AdsProfileContext;
-  reportType: ReportType;
+  reportType: WorkerReportType;
   startDate: string;
   endDate: string;
 }

@@ -18,17 +18,20 @@ import {
 } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import type { PgTable, PgUpdateSetSource } from 'drizzle-orm/pg-core';
-import type {
+import {
   AdCreativeAssetMapping,
-  CreativeAsset,
-  CreativeDailyFact,
-  CreativeAttributionState,
-  Placement,
+  CreativeSyncSnapshot,
+  type CreativeAsset,
+  type CreativeAttributionState,
+  type CreativeDailyFact,
+  type CreativeMappingProvenance,
+  type Placement,
 } from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
 import {
   adCreativeAssetMappings,
   creativeAssets,
+  creativeSyncSnapshots,
   factCreativeDaily,
 } from '../schema/index.js';
 import { chunkForInsert } from './chunk.js';
@@ -45,6 +48,7 @@ export interface CreativePerformanceWriteBatch {
   assets: readonly CreativeAsset[];
   mappings: readonly CreativeMappingWrite[];
   facts: readonly CreativeDailyFact[];
+  snapshot?: CreativeSyncSnapshot;
 }
 
 export interface CreativePersistenceCounts {
@@ -55,6 +59,8 @@ export interface CreativePersistenceCounts {
   assetsReadBack: number;
   mappingsReadBack: number;
   factsReadBack: number;
+  snapshotsUpserted: number;
+  snapshotsReadBack: number;
 }
 
 export class CreativePersistenceError extends Error {
@@ -78,6 +84,83 @@ export async function persistCreativePerformanceBatch(
   validateWriteBatch(batch);
 
   return handle.db.transaction(async (tx) => {
+    if (
+      batch.snapshot !== undefined &&
+      (batch.snapshot.status === 'mapping_only' || batch.snapshot.status === 'report_pending')
+    ) {
+      // A report-pending snapshot relies on the current-key mapping rows until
+      // its report is promoted. Serialize observation starts for this profile,
+      // then reject a different snapshot while that evidence is in flight.
+      // This prevents even a mapping-only sync from moving those rows.
+      await tx.execute(sql`
+        select pg_advisory_xact_lock(
+          hashtextextended(${`${batch.orgId}:${batch.profileId}:creative-sync`}, 0)
+        )
+      `);
+      const pending = await tx
+        .select({ id: creativeSyncSnapshots.id })
+        .from(creativeSyncSnapshots)
+        .where(and(
+          eq(creativeSyncSnapshots.orgId, batch.orgId),
+          eq(creativeSyncSnapshots.profileId, batch.profileId),
+          eq(creativeSyncSnapshots.status, 'report_pending'),
+        ))
+        .limit(1);
+      if (pending[0] !== undefined && pending[0].id !== batch.snapshot.id) {
+        throw new CreativePersistenceError(
+          `creative snapshot ${pending[0].id} still has a report pending; overlapping observations are disabled`,
+        );
+      }
+    }
+
+    let snapshotsUpserted = 0;
+    if (batch.snapshot !== undefined) {
+      const existing = await tx
+        .select({ orgId: creativeSyncSnapshots.orgId, profileId: creativeSyncSnapshots.profileId })
+        .from(creativeSyncSnapshots)
+        .where(eq(creativeSyncSnapshots.id, batch.snapshot.id));
+      if (
+        existing[0] !== undefined &&
+        (existing[0].orgId !== batch.orgId || existing[0].profileId !== batch.profileId)
+      ) {
+        throw new CreativePersistenceError('creative snapshot id already belongs to another tenant scope');
+      }
+      const written = await tx
+        .insert(creativeSyncSnapshots)
+        .values(snapshotValues(batch.orgId, batch.snapshot))
+        .onConflictDoUpdate({
+          target: creativeSyncSnapshots.id,
+          set: conflictSet(creativeSyncSnapshots, [
+            'startDate',
+            'endDate',
+            'observedAt',
+            'mappingProvenance',
+            'historicalValidity',
+            'status',
+            'paginationComplete',
+            'factPromotionAllowed',
+            'sourceAssets',
+            'parsedAssets',
+            'sourceAds',
+            'parsedAds',
+            'mapped',
+            'legacy',
+            'unsupported',
+            'ambiguous',
+            'unmapped',
+            'reportSourceRows',
+            'reportParsedRows',
+            'reportRefusedRows',
+            'mappedFactRows',
+            'unpromotedReportRows',
+            'updatedAt',
+          ]),
+        })
+        .returning({ id: creativeSyncSnapshots.id });
+      snapshotsUpserted = written.length;
+      assertWriteCount('creative snapshots', 1, snapshotsUpserted);
+    }
+
     let assetsUpserted = 0;
     for (const rows of chunkForInsert(
       batch.assets.map((asset) => ({
@@ -154,10 +237,13 @@ export async function persistCreativePerformanceBatch(
       adGroupId: mapping.adGroupId,
       adId: mapping.adId,
       creativeId: mapping.creativeId,
+      creativeVersion: mapping.creativeVersion,
       creativeAssetId: mapping.assetId === null ? null : assetUuidByAmazonId.get(mapping.assetId) ?? null,
       amazonAssetId: mapping.assetId,
       placement: mapping.placement,
       attributionState: mapping.attributionState,
+      mappingProvenance: mapping.mappingProvenance,
+      creativeSyncSnapshotId: mapping.creativeSyncSnapshotId,
       observedAt: new Date(mapping.observedAt),
     }));
     for (const rows of chunkForInsert(
@@ -179,10 +265,13 @@ export async function persistCreativePerformanceBatch(
             'adGroupId',
             'adId',
             'creativeId',
+            'creativeVersion',
             'creativeAssetId',
             'amazonAssetId',
             'placement',
             'attributionState',
+            'mappingProvenance',
+            'creativeSyncSnapshotId',
             'observedAt',
           ]),
         })
@@ -201,9 +290,12 @@ export async function persistCreativePerformanceBatch(
       adGroupId: fact.adGroupId,
       adId: fact.adId,
       creativeId: fact.creativeId,
+      creativeVersion: fact.creativeVersion,
       amazonAssetId: fact.assetId,
       placement: fact.placement,
       attributionState: fact.attributionState,
+      mappingProvenance: fact.mappingProvenance,
+      creativeSyncSnapshotId: fact.creativeSyncSnapshotId,
       impressions: fact.impressions,
       clicks: fact.clicks,
       cost: fact.cost,
@@ -224,9 +316,12 @@ export async function persistCreativePerformanceBatch(
             adGroupId: adCreativeAssetMappings.adGroupId,
             adId: adCreativeAssetMappings.adId,
             creativeId: adCreativeAssetMappings.creativeId,
+            creativeVersion: adCreativeAssetMappings.creativeVersion,
             amazonAssetId: adCreativeAssetMappings.amazonAssetId,
             placement: adCreativeAssetMappings.placement,
             attributionState: adCreativeAssetMappings.attributionState,
+            mappingProvenance: adCreativeAssetMappings.mappingProvenance,
+            creativeSyncSnapshotId: adCreativeAssetMappings.creativeSyncSnapshotId,
           })
           .from(adCreativeAssetMappings)
           .where(and(
@@ -287,12 +382,15 @@ export async function persistCreativePerformanceBatch(
             factCreativeDaily.adGroupId,
             factCreativeDaily.adId,
             factCreativeDaily.creativeId,
+            factCreativeDaily.creativeVersion,
             factCreativeDaily.amazonAssetId,
             factCreativeDaily.placement,
           ],
           set: conflictSet(factCreativeDaily, [
             'orgId',
             'attributionState',
+            'mappingProvenance',
+            'creativeSyncSnapshotId',
             'impressions',
             'clicks',
             'cost',
@@ -350,8 +448,11 @@ export async function persistCreativePerformanceBatch(
             adGroupId: factCreativeDaily.adGroupId,
             adId: factCreativeDaily.adId,
             creativeId: factCreativeDaily.creativeId,
+            creativeVersion: factCreativeDaily.creativeVersion,
             assetId: factCreativeDaily.amazonAssetId,
             placement: factCreativeDaily.placement,
+            mappingProvenance: factCreativeDaily.mappingProvenance,
+            creativeSyncSnapshotId: factCreativeDaily.creativeSyncSnapshotId,
           })
           .from(factCreativeDaily)
           .where(and(
@@ -362,14 +463,47 @@ export async function persistCreativePerformanceBatch(
     const factsReadBack = readFacts.filter((fact) => factIdentitySet.has(factIdentity(fact))).length;
     assertReadbackCount('creative facts', batch.facts.length, factsReadBack);
 
+    if (batch.snapshot !== undefined) {
+      const updated = await tx
+        .update(creativeSyncSnapshots)
+        .set({
+          assetsUpserted: sql`greatest(${creativeSyncSnapshots.assetsUpserted}, ${assetsUpserted})`,
+          mappingsUpserted: sql`greatest(${creativeSyncSnapshots.mappingsUpserted}, ${mappingsUpserted})`,
+          factsUpserted: sql`greatest(${creativeSyncSnapshots.factsUpserted}, ${factsUpserted})`,
+          assetsReadBack: sql`greatest(${creativeSyncSnapshots.assetsReadBack}, ${assetsReadBack})`,
+          mappingsReadBack: sql`greatest(${creativeSyncSnapshots.mappingsReadBack}, ${mappingsReadBack})`,
+          factsReadBack: sql`greatest(${creativeSyncSnapshots.factsReadBack}, ${factsReadBack})`,
+        })
+        .where(and(
+          eq(creativeSyncSnapshots.id, batch.snapshot.id),
+          eq(creativeSyncSnapshots.orgId, batch.orgId),
+          eq(creativeSyncSnapshots.profileId, batch.profileId),
+        ))
+        .returning({ id: creativeSyncSnapshots.id });
+      assertWriteCount('creative snapshot count update', 1, updated.length);
+    }
+    const snapshotsReadBack = batch.snapshot === undefined
+      ? 0
+      : (await tx
+          .select({ id: creativeSyncSnapshots.id })
+          .from(creativeSyncSnapshots)
+          .where(and(
+            eq(creativeSyncSnapshots.id, batch.snapshot.id),
+            eq(creativeSyncSnapshots.orgId, batch.orgId),
+            eq(creativeSyncSnapshots.profileId, batch.profileId),
+          ))).length;
+    assertReadbackCount('creative snapshots', batch.snapshot === undefined ? 0 : 1, snapshotsReadBack);
+
     return {
       assetsUpserted,
       mappingsUpserted,
       factsUpserted,
-      totalUpserts: assetsUpserted + mappingsUpserted + factsUpserted,
+      totalUpserts: assetsUpserted + mappingsUpserted + factsUpserted + snapshotsUpserted,
       assetsReadBack,
       mappingsReadBack,
       factsReadBack,
+      snapshotsUpserted,
+      snapshotsReadBack,
     };
   });
 }
@@ -381,11 +515,164 @@ export interface CreativePerformanceFilter {
   to: string;
 }
 
+export interface CreativeSyncSnapshotEvidence {
+  snapshot: CreativeSyncSnapshot;
+  mappings: CreativeMappingWrite[];
+  persistence: Pick<
+    CreativePersistenceCounts,
+    | 'assetsUpserted'
+    | 'mappingsUpserted'
+    | 'factsUpserted'
+    | 'assetsReadBack'
+    | 'mappingsReadBack'
+    | 'factsReadBack'
+  >;
+}
+
+/** Read only mappings still attached to this exact observation snapshot. */
+export async function readCreativeSyncSnapshotEvidence(
+  handle: Pick<DbHandle, 'sql'>,
+  scope: { orgId: string; profileId: string; snapshotId: string },
+): Promise<CreativeSyncSnapshotEvidence> {
+  const snapshots = await handle.sql<{
+    id: string;
+    profile_id: string;
+    start_date: string;
+    end_date: string;
+    observed_at: Date | string;
+    mapping_provenance: CreativeMappingProvenance;
+    historical_validity: 'unproven_current_snapshot';
+    status: CreativeSyncSnapshot['status'];
+    pagination_complete: boolean;
+    fact_promotion_allowed: boolean;
+    source_assets: string | number;
+    parsed_assets: string | number;
+    source_ads: string | number;
+    parsed_ads: string | number;
+    mapped: string | number;
+    legacy: string | number;
+    unsupported: string | number;
+    ambiguous: string | number;
+    unmapped: string | number;
+    report_source_rows: string | number | null;
+    report_parsed_rows: string | number | null;
+    report_refused_rows: string | number | null;
+    mapped_fact_rows: string | number;
+    unpromoted_report_rows: string | number;
+    assets_upserted: string | number;
+    mappings_upserted: string | number;
+    facts_upserted: string | number;
+    assets_read_back: string | number;
+    mappings_read_back: string | number;
+    facts_read_back: string | number;
+  }[]>`
+    select id, profile_id, start_date::text, end_date::text, observed_at,
+           mapping_provenance, historical_validity, status, pagination_complete,
+           fact_promotion_allowed, source_assets, parsed_assets, source_ads, parsed_ads,
+           mapped, legacy, unsupported, ambiguous, unmapped,
+           report_source_rows, report_parsed_rows, report_refused_rows,
+           mapped_fact_rows, unpromoted_report_rows,
+           assets_upserted, mappings_upserted, facts_upserted,
+           assets_read_back, mappings_read_back, facts_read_back
+      from public.creative_sync_snapshots
+     where id = ${scope.snapshotId}
+       and org_id = ${scope.orgId}
+       and profile_id = ${scope.profileId}
+  `;
+  const row = snapshots[0];
+  if (row === undefined) {
+    throw new CreativePersistenceError(`creative snapshot ${scope.snapshotId} does not exist in scope`);
+  }
+  const snapshot = CreativeSyncSnapshot.parse({
+    id: row.id,
+    profileId: row.profile_id,
+    startDate: row.start_date,
+    endDate: row.end_date,
+    observedAt: new Date(row.observed_at).toISOString(),
+    mappingProvenance: row.mapping_provenance,
+    historicalValidity: row.historical_validity,
+    status: row.status,
+    paginationComplete: row.pagination_complete,
+    factPromotionAllowed: row.fact_promotion_allowed,
+    sourceAssets: number(row.source_assets),
+    parsedAssets: number(row.parsed_assets),
+    sourceAds: number(row.source_ads),
+    parsedAds: number(row.parsed_ads),
+    mapped: number(row.mapped),
+    legacy: number(row.legacy),
+    unsupported: number(row.unsupported),
+    ambiguous: number(row.ambiguous),
+    unmapped: number(row.unmapped),
+    reportSourceRows: nullableNumber(row.report_source_rows),
+    reportParsedRows: nullableNumber(row.report_parsed_rows),
+    reportRefusedRows: nullableNumber(row.report_refused_rows),
+    mappedFactRows: number(row.mapped_fact_rows),
+    unpromotedReportRows: number(row.unpromoted_report_rows),
+  });
+  const rows = await handle.sql<{
+    source_mapping_key: string;
+    ad_product: 'SB';
+    campaign_id: string;
+    ad_group_id: string;
+    ad_id: string;
+    creative_id: string | null;
+    creative_version: string | null;
+    amazon_asset_id: string | null;
+    placement: Placement | null;
+    attribution_state: CreativeAttributionState;
+    mapping_provenance: CreativeMappingProvenance | null;
+    creative_sync_snapshot_id: string | null;
+    observed_at: Date | string;
+  }[]>`
+    select source_mapping_key, ad_product::text as ad_product, campaign_id, ad_group_id,
+           ad_id, creative_id, creative_version, amazon_asset_id,
+           placement::text as placement, attribution_state::text as attribution_state,
+           mapping_provenance, creative_sync_snapshot_id, observed_at
+      from public.ad_creative_asset_mappings
+     where org_id = ${scope.orgId}
+       and profile_id = ${scope.profileId}
+       and creative_sync_snapshot_id = ${scope.snapshotId}
+     order by source_mapping_key
+  `;
+  const mappings = rows.map((mapping): CreativeMappingWrite => ({
+    sourceMappingKey: mapping.source_mapping_key,
+    mapping: AdCreativeAssetMapping.parse({
+      profileId: scope.profileId,
+      adProduct: mapping.ad_product,
+      campaignId: mapping.campaign_id,
+      adGroupId: mapping.ad_group_id,
+      adId: mapping.ad_id,
+      creativeId: mapping.creative_id,
+      creativeVersion: mapping.creative_version,
+      assetId: mapping.amazon_asset_id,
+      placement: mapping.placement,
+      attributionState: mapping.attribution_state,
+      mappingProvenance: mapping.mapping_provenance,
+      creativeSyncSnapshotId: mapping.creative_sync_snapshot_id,
+      observedAt: new Date(mapping.observed_at).toISOString(),
+    }),
+  }));
+  return {
+    snapshot,
+    mappings,
+    persistence: {
+      assetsUpserted: number(row.assets_upserted),
+      mappingsUpserted: number(row.mappings_upserted),
+      factsUpserted: number(row.facts_upserted),
+      assetsReadBack: number(row.assets_read_back),
+      mappingsReadBack: number(row.mappings_read_back),
+      factsReadBack: number(row.facts_read_back),
+    },
+  };
+}
+
 export interface CreativePerformanceDrilldown {
   campaignId: string;
   adGroupId: string;
   adId: string;
   creativeId: string | null;
+  creativeVersion: string | null;
+  mappingProvenance: CreativeMappingProvenance | null;
   placement: Placement | null;
   impressions: number;
   clicks: number;
@@ -405,6 +692,7 @@ export interface CreativePerformanceAsset {
   assetType: string | null;
   thumbnailUrl: string | null;
   campaignTypes: string[];
+  mappingProvenances: CreativeMappingProvenance[];
   campaignCount: number;
   adGroupCount: number;
   adCount: number;
@@ -431,6 +719,7 @@ interface AggregateRow {
   asset_type: string | null;
   thumbnail_url: string | null;
   campaign_types: string[];
+  mapping_provenances: CreativeMappingProvenance[];
   campaign_count: string | number;
   ad_group_count: string | number;
   ad_count: string | number;
@@ -453,6 +742,8 @@ interface DrilldownRow {
   ad_group_id: string;
   ad_id: string;
   creative_id: string | null;
+  creative_version: string | null;
+  mapping_provenance: CreativeMappingProvenance | null;
   placement: Placement | null;
   impressions: string | number;
   clicks: string | number;
@@ -478,10 +769,15 @@ export async function readCreativePerformance(
       max(a.kind) as asset_type,
       max(a.url) as thumbnail_url,
       array_agg(distinct f.ad_product::text order by f.ad_product::text) as campaign_types,
+      coalesce(
+        array_agg(distinct f.mapping_provenance order by f.mapping_provenance)
+          filter (where f.mapping_provenance is not null),
+        '{}'::text[]
+      ) as mapping_provenances,
       count(distinct f.campaign_id) as campaign_count,
       count(distinct (f.campaign_id, f.ad_group_id)) as ad_group_count,
       count(distinct (f.campaign_id, f.ad_group_id, f.ad_id)) as ad_count,
-      count(distinct (f.campaign_id, f.ad_group_id, f.ad_id, coalesce(f.placement::text, 'unknown'))) as placement_count,
+      count(distinct f.placement) as placement_count,
       sum(f.impressions) as impressions,
       sum(f.clicks) as clicks,
       sum(f.cost) as cost,
@@ -514,6 +810,8 @@ export async function readCreativePerformance(
       f.ad_group_id,
       f.ad_id,
       f.creative_id,
+      f.creative_version,
+      f.mapping_provenance,
       f.placement::text as placement,
       sum(f.impressions) as impressions,
       sum(f.clicks) as clicks,
@@ -533,7 +831,8 @@ export async function readCreativePerformance(
       and f.profile_id = ${filter.profileId}
       and f.date between ${filter.from}::date and ${filter.to}::date
     group by f.amazon_asset_id, f.attribution_state, f.campaign_id,
-             f.ad_group_id, f.ad_id, f.creative_id, f.placement
+             f.ad_group_id, f.ad_id, f.creative_id, f.creative_version,
+             f.mapping_provenance, f.placement
     order by sum(f.cost) desc, f.campaign_id, f.ad_group_id, f.ad_id
   `;
 
@@ -546,6 +845,8 @@ export async function readCreativePerformance(
       adGroupId: row.ad_group_id,
       adId: row.ad_id,
       creativeId: row.creative_id,
+      creativeVersion: row.creative_version,
+      mappingProvenance: row.mapping_provenance,
       placement: row.placement,
       impressions: number(row.impressions),
       clicks: number(row.clicks),
@@ -572,6 +873,7 @@ export async function readCreativePerformance(
       assetType: row.asset_type,
       thumbnailUrl: row.thumbnail_url,
       campaignTypes: row.campaign_types,
+      mappingProvenances: row.mapping_provenances,
       campaignCount: number(row.campaign_count),
       adGroupCount: number(row.ad_group_count),
       adCount: number(row.ad_count),
@@ -598,6 +900,9 @@ function validateWriteBatch(batch: CreativePerformanceWriteBatch): void {
   assertUnique('mapping source', batch.mappings.map((mapping) => mapping.sourceMappingKey));
   assertUnique('creative fact grain', batch.facts.map(factIdentity));
   assertUnique('ad-level performance grain', batch.facts.map(adFactIdentity));
+  if (batch.snapshot !== undefined && batch.snapshot.profileId !== batch.profileId) {
+    throw new CreativePersistenceError('creative snapshot belongs to another profile');
+  }
   for (const [index, asset] of batch.assets.entries()) {
     if (asset.profileId !== batch.profileId) {
       throw new CreativePersistenceError(`asset ${index} belongs to another profile`);
@@ -620,7 +925,14 @@ function validateWriteBatch(batch: CreativePerformanceWriteBatch): void {
       `mapping ${index}`,
       mapping.attributionState,
       mapping.creativeId,
+      mapping.creativeVersion,
       mapping.assetId,
+    );
+    assertObservedProvenance(
+      `mapping ${index}`,
+      mapping.mappingProvenance,
+      mapping.creativeSyncSnapshotId,
+      batch.snapshot?.id,
     );
   }
   for (const [index, fact] of batch.facts.entries()) {
@@ -634,7 +946,14 @@ function validateWriteBatch(batch: CreativePerformanceWriteBatch): void {
       `fact ${index}`,
       fact.attributionState,
       fact.creativeId,
+      fact.creativeVersion,
       fact.assetId,
+    );
+    assertObservedProvenance(
+      `fact ${index}`,
+      fact.mappingProvenance,
+      fact.creativeSyncSnapshotId,
+      batch.snapshot?.id,
     );
   }
 }
@@ -643,15 +962,33 @@ function assertAttributionIdentity(
   label: string,
   state: CreativeAttributionState,
   creativeId: string | null,
+  creativeVersion: string | null,
   assetId: string | null,
 ): void {
-  if (state === 'mapped' && (creativeId === null || assetId === null)) {
+  if (state === 'mapped' && ((creativeId === null && creativeVersion === null) || assetId === null)) {
     throw new CreativePersistenceError(
-      `${label} is mapped without an explicit creative ID and Amazon Asset ID`,
+      `${label} is mapped without an explicit creative ID/version and Amazon Asset ID`,
     );
   }
   if (state !== 'mapped' && assetId !== null) {
     throw new CreativePersistenceError(`${label} must not disguise ${state} attribution as an asset`);
+  }
+}
+
+function assertObservedProvenance(
+  label: string,
+  provenance: CreativeMappingProvenance | null,
+  snapshotId: string | null,
+  batchSnapshotId: string | undefined,
+): void {
+  if ((provenance === null) !== (snapshotId === null)) {
+    throw new CreativePersistenceError(`${label} has incomplete mapping provenance`);
+  }
+  if (snapshotId !== null && batchSnapshotId === undefined) {
+    throw new CreativePersistenceError(`${label} is missing its creative snapshot batch`);
+  }
+  if (snapshotId !== null && snapshotId !== batchSnapshotId) {
+    throw new CreativePersistenceError(`${label} belongs to another creative snapshot`);
   }
 }
 
@@ -683,8 +1020,11 @@ function factIdentity(fact: {
   adGroupId: string;
   adId: string;
   creativeId: string | null;
+  creativeVersion: string | null;
   assetId: string | null;
   placement: string | null;
+  mappingProvenance?: CreativeMappingProvenance | null;
+  creativeSyncSnapshotId?: string | null;
 }): string {
   return JSON.stringify([
     fact.profileId,
@@ -694,8 +1034,11 @@ function factIdentity(fact: {
     fact.adGroupId,
     fact.adId,
     fact.creativeId,
+    fact.creativeVersion,
     fact.assetId,
     fact.placement,
+    fact.mappingProvenance ?? null,
+    fact.creativeSyncSnapshotId ?? null,
   ]);
 }
 
@@ -725,7 +1068,10 @@ function mappingIdentity(mapping: {
   adGroupId: string;
   adId: string;
   creativeId: string | null;
+  creativeVersion: string | null;
   placement: string | null;
+  mappingProvenance: CreativeMappingProvenance | null;
+  creativeSyncSnapshotId: string | null;
 }): string {
   return JSON.stringify([
     mapping.adProduct,
@@ -733,8 +1079,42 @@ function mappingIdentity(mapping: {
     mapping.adGroupId,
     mapping.adId,
     mapping.creativeId,
+    mapping.creativeVersion,
     mapping.placement,
+    mapping.mappingProvenance,
+    mapping.creativeSyncSnapshotId,
   ]);
+}
+
+function snapshotValues(orgId: string, snapshot: CreativeSyncSnapshot) {
+  return {
+    id: snapshot.id,
+    orgId,
+    profileId: snapshot.profileId,
+    startDate: snapshot.startDate,
+    endDate: snapshot.endDate,
+    observedAt: new Date(snapshot.observedAt),
+    mappingProvenance: snapshot.mappingProvenance,
+    historicalValidity: snapshot.historicalValidity,
+    status: snapshot.status,
+    paginationComplete: snapshot.paginationComplete,
+    factPromotionAllowed: snapshot.factPromotionAllowed,
+    sourceAssets: snapshot.sourceAssets,
+    parsedAssets: snapshot.parsedAssets,
+    sourceAds: snapshot.sourceAds,
+    parsedAds: snapshot.parsedAds,
+    mapped: snapshot.mapped,
+    legacy: snapshot.legacy,
+    unsupported: snapshot.unsupported,
+    ambiguous: snapshot.ambiguous,
+    unmapped: snapshot.unmapped,
+    reportSourceRows: snapshot.reportSourceRows,
+    reportParsedRows: snapshot.reportParsedRows,
+    reportRefusedRows: snapshot.reportRefusedRows,
+    mappedFactRows: snapshot.mappedFactRows,
+    unpromotedReportRows: snapshot.unpromotedReportRows,
+    updatedAt: new Date(),
+  };
 }
 
 function attributionIdentity(assetId: string | null, state: CreativeAttributionState): string {
