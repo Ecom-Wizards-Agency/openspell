@@ -257,6 +257,22 @@ export const DaypartingStrategy = z.object({
 });
 export type DaypartingStrategy = z.infer<typeof DaypartingStrategy>;
 
+/**
+ * Tenant-owned gates for evaluating an exported recommendation after sync.
+ *
+ * There are deliberately no defaults: these values are doctrine and must come
+ * from the tenant strategy document before a worker may classify lift or
+ * propose a reversion.
+ */
+export const RecommendationEvidencePolicy = z.object({
+  synchronizationTolerance: z.number().nonnegative(),
+  minimumMatchedPairs: z.number().int().positive(),
+  minimumCombinedIncrementalVolume: z.number().nonnegative(),
+  minimumAbsoluteLift: z.number().nonnegative(),
+  minimumRelativeLift: z.number().nonnegative(),
+});
+export type RecommendationEvidencePolicy = z.infer<typeof RecommendationEvidencePolicy>;
+
 export const TenantStrategy = z.object({
   schema: z.literal('wizard-ads.tenant-strategy.v1'),
   refreshed_at: IsoDate.optional(),
@@ -277,6 +293,7 @@ export const TenantStrategy = z.object({
   discovery: DiscoveryStrategy.optional(),
   expanded_candidate_filter: ExpandedCandidateFilterStrategy.optional(),
   dayparting: DaypartingStrategy.optional(),
+  recommendation_evidence: RecommendationEvidencePolicy.optional(),
 });
 export type TenantStrategy = z.infer<typeof TenantStrategy>;
 

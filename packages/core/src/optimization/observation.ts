@@ -1,6 +1,7 @@
 import type {
   IsoDate,
   OptimizationRunContext,
+  RecommendationEvidencePolicy,
   RecommendationObservation,
 } from '@wizard-ads/shared';
 
@@ -32,13 +33,7 @@ export interface MatchedIncrementalVolumePair {
 /**
  * Tenant-supplied evidence gates. No doctrine values or defaults live in core.
  */
-export interface RecommendationEvidencePolicy {
-  synchronizationTolerance: number;
-  minimumMatchedPairs: number;
-  minimumCombinedIncrementalVolume: number;
-  minimumAbsoluteLift: number;
-  minimumRelativeLift: number;
-}
+export type { RecommendationEvidencePolicy } from '@wizard-ads/shared';
 
 export interface EvaluateRecommendationEvidenceRequest {
   context: OptimizationRunContext;
