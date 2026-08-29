@@ -46,6 +46,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     label: 'Optimize',
     icon: 'sliders',
     links: [
+      { href: '/strategy', label: 'Strategy Overview', icon: 'shield' },
       { href: '/optimizer', label: 'Campaign Optimizer', icon: 'sliders' },
       { href: '/optimizer/groups', label: 'Optimization Groups', icon: 'layers' },
       { href: '/recommendations', label: 'Recommendations', icon: 'check' },
@@ -58,6 +59,9 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     icon: 'grid',
     links: [
       { href: '/grid', label: 'Data Grid', icon: 'grid' },
+      { href: '/query-intelligence', label: 'Query Intelligence', icon: 'search' },
+      { href: '/creative', label: 'Creative Performance', icon: 'flask' },
+      { href: '/dayparting', label: 'Dayparting', icon: 'clock' },
       { href: '/ngrams', label: 'N-gram Explorer', icon: 'search' },
       { href: '/tags', label: 'Tags', icon: 'tag' },
       { href: '/experiments', label: 'Experiments', icon: 'flask' },
