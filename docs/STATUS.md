@@ -147,6 +147,7 @@ implementation brief in `docs/workpackages/`.
 | 113 | OpenSpell MCP identity | merged; host activation gated | setup and operator copy use OpenSpell while stable environment-variable and package identifiers remain compatible |
 | 114 | Date-range browser gate | merged; not deployed | Dashboard and Grid exercise all seven preset ranges through authenticated Playwright |
 | 116 | Hydration/readiness reliability | open; code-approved | PR #38 now fails closed until exact saved-state restoration, fails open from malformed cache/store errors, and covers schedule plus exact select-all/bulk persistence. Two independent reviews found no remaining P0/P1; merge is held because required hosted jobs cannot start under the Actions billing block. |
+| 117 | Operator route acceptance closure | open; code-approved | PR #39 adds test-only browser coverage for all fourteen Optimizer/Creative preset interactions with exact periods and canonical profile scope, plus the Strategy-to-Dashboard viewport destination. Independent review found no P0/P1; merge is held because hosted jobs cannot start under the Actions billing block. |
 
 ## Milestone gates
 
