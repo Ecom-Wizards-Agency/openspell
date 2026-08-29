@@ -2,9 +2,9 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated`.
 
-Reconciled 2026-08-29 against `origin/main` at `bfce504`. Here, **merged** means the
-implementation is reachable from that revision. It does not by itself mean live-data verified or
-accepted by an operator. Full original evidence and source pointers are in
+Reconciled 2026-08-29 against release candidate `8d7bd41`, based on `origin/main` at
+`bfce504`. Here, **merged** means the implementation is reachable from the recorded candidate. It
+does not by itself mean live-data verified, deployed, or accepted by an operator. Full original evidence and source pointers are in
 `docs/workpackages/WP-52-reconciliation.md`; the post-release capability design is in
 `docs/workpackages/WP-68-outstanding-capabilities-design.md`.
 
@@ -93,13 +93,13 @@ implementation brief in `docs/workpackages/`.
 
 | WP | Package | State | Boundary |
 |---|---|---|---|
-| 68 | Outstanding capability reconciliation and design | in-progress | status evidence and serialized architecture only |
-| 69 | Persistent optimization groups | todo | atomic settings/assignments, group-scoped worker runs and operator UI |
-| 70 | Intelligence product surfaces | todo | Creative, Query, Dayparting and Strategy read/review routes |
-| 71 | SQP production queue | todo | durable feature-report checkpoints and SP-API worker dispatch |
-| 72 | Marketing Stream subscription | todo | SQS receipt, acknowledgement, retry and settling scheduler |
+| 68 | Outstanding capability reconciliation and design | merged | verified gap map and serialized domain-workspace architecture |
+| 69 | Persistent optimization groups | merged | atomic settings/assignments, group-scoped worker runs, anti-compounding evidence gate and operator UI |
+| 70 | Intelligence product surfaces | merged | Creative, Query, Dayparting and Strategy read/review routes |
+| 71 | SQP production queue | gated | job contract is widened; live authenticated SP-API dispatch and checkpoint scheduling remain absent |
+| 72 | Marketing Stream SQS runtime | merged; live gated | SQS receipt, raw-first retention, acknowledgement, retry and read-time settling are implemented; subscription/fanout is not provisioned |
 | 73 | SB Video live adapter | gated | requires a live-verified ad-to-creative-to-Asset-ID response chain |
-| 74 | Integrated release verification | todo | performance, RLS, Playwright, live data and deployed revision checks |
+| 74 | Integrated release verification | review | local DB/RLS/unit/build and 54 Playwright workflows pass; hosted revision and live provider rows remain to verify |
 
 ## Milestone gates
 
@@ -175,10 +175,19 @@ implementation brief in `docs/workpackages/`.
   durable feature-report checkpoint table are widened.
 - Dayparting now has an append-only revision ledger, exact-source stale guards, normalized SP/SB/SD
   hourly facts, DST-local derivation, settling/revised states, confidence-shrunk proposals and
-  CSV/JSON serialization. Its SQS subscriber has the equivalent queue-contract gate.
+  CSV/JSON serialization. The optional SQS consumer uses the standard AWS credential chain,
+  retains valid raw events when modelling policy is absent, acknowledges only after counted
+  projection, and keeps retry/health details sanitized. No live subscription has been provisioned.
 - The pure optimizer evidence engine covers synchronization conflicts, incomplete observation,
-  insufficient evidence, supported lift and exact pre-change reversion. Worker scheduling and
-  persistence remain open.
+  insufficient evidence, supported lift and exact pre-change reversion. Group scheduling and
+  persistence now refuse overlapping previews and hold after export until the latest observation
+  is complete with a `continue` decision. `hold` and `revert` remain review gates.
+- Creative Performance, Query Intelligence, Dayparting and Strategy Overview are now guarded,
+  task-navigation-accessible operator surfaces. Empty or incomplete sources remain visible as
+  source gates instead of demo performance.
+- Historical live PPC rows in Query Intelligence are intentionally profile-only. The current
+  `product_ads` mirror is not dated and therefore cannot prove an ASIN assignment for an earlier
+  SQP week; exact joins remain available only to authoritative dated inputs.
 
 ## Open repository follow-ups
 
@@ -192,9 +201,12 @@ implementation brief in `docs/workpackages/`.
   The negatives mirror still retains its cross-scope key-collision risk.
 - Unknown match-type spellings remain target rows with a null match type.
 - Report ingest does not create missing historical partitions before a backfill write.
-- Query Intelligence, Creative Performance, Dayparting, and Strategy remain open product surfaces
-  even though their contracts and backend foundations exist. Time Machine v2 is hosted and deployed,
-  but a live reversion cannot be end-to-end verified until an eligible export batch exists.
+- Live SQP and SB Video provider adapters remain open. The new product surfaces are complete for
+  stored evidence, but cannot establish live Amazon parity until those adapters produce counted,
+  authoritative rows. Time Machine v2 is hosted and deployed, but a live reversion cannot be
+  end-to-end verified until an eligible export batch exists.
+- Optimization-group free-text exclusions are explicitly reference metadata. Typed, enforceable
+  exclusion rules remain a separate contract/work package rather than silently matching names.
 
 ## Unverified release gates
 
@@ -220,5 +232,11 @@ implementation brief in `docs/workpackages/`.
       experiments, Time Machine, tenancy, OAuth safety and every guarded route.
 - [ ] Fresh AdLabs and SYNQ workflow comparison. AdLabs has a durable redacted baseline in
       `tools/recon`; SYNQ has no tracked workflow evidence.
+- [x] Release-candidate PostgreSQL suites: database 209, worker 179 and web 316 tests passed with
+      migrations and synthetic tenant fixtures. The UI 3,597-row performance suite remained green.
+- [x] Release-candidate Playwright: 27 production-build workflows and 27 authenticated-dev
+      workflows passed, including every new intelligence route and anonymous redirects.
+- [ ] Apply `20260829140000_feature_job_types.sql` only after exact hosted authorization; the SQS
+      runtime remains disabled without its queue configuration, so deploying code first is safe.
 - [ ] v1 crosscheck exit gate: consecutive verified days, campaign-grain parity, and explained
       optimizer spot-check.

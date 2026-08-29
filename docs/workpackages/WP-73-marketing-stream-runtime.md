@@ -63,7 +63,8 @@ unknown provider fields or infer tenant identity from campaign ids.
 4. The profile's timezone and currency come from `ad_profiles`. The settling
    window and budget-cap threshold come from the layered tenant/profile
    strategy's `dayparting` section. Missing policy is an error with no numeric
-   fallback.
+   fallback, but valid tenant/profile-scoped events are retained in the raw
+   ledger before projection is deferred and the delivery is left for redrive.
 5. The existing Marketing Stream service validates, appends, snapshots the
    latest revisions, normalizes, replaces affected hourly scopes, and reads the
    fact count back.
@@ -78,6 +79,9 @@ unknown provider fields or infer tenant identity from campaign ids.
    and destroys the SQS client before the database pool closes.
 10. `/healthz` exposes only counters, timestamps, and an error class. It never
     returns the queue URL, credentials, envelope, profile, or payload.
+11. The web read model derives the current settling state from the tenant-owned
+    window, event hour and latest revision receipt time. Canonical actuals are
+    not forecast or rewritten merely to age an hour from settling to settled.
 
 ## Queue contract reconciliation
 
