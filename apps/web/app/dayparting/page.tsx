@@ -110,6 +110,11 @@ export default async function DaypartingPage({ searchParams }: PageProps): Promi
         <Banner tone="info" role="status">
           Marketing Stream evidence is read-only. Schedules below are proposals for export; Wizard Ads never applies bid or budget changes to Amazon.
         </Banner>
+        {!workspace.maturityPolicyConfigured ? (
+          <Banner tone="warn" role="status">
+            No tenant dayparting settling window is configured. Stored evidence states are shown as recorded and cannot age automatically until an operator adds that policy.
+          </Banner>
+        ) : null}
 
         <section className={styles.summary} aria-label="Dayparting evidence summary">
           <SummaryTile value={summary.settledHours} label="Settled hours" />

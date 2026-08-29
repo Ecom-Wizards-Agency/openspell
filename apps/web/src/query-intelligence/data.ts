@@ -169,7 +169,6 @@ async function readPpc(
     campaign_id: string;
     ad_group_id: string;
     search_term: string;
-    asins: string[] | null;
     spend: string | number;
     sales: string | number;
     clicks: string | number;
@@ -189,19 +188,9 @@ async function readPpc(
        group by f.campaign_id, f.ad_group_id, f.search_term
     )
     select ppc.campaign_id, ppc.ad_group_id, ppc.search_term,
-           advertised.asins, ppc.spend, ppc.sales, ppc.clicks, ppc.orders,
+           ppc.spend, ppc.sales, ppc.clicks, ppc.orders,
            groups.role::text as group_role
       from ppc
-      left join lateral (
-        select array_agg(distinct upper(product.asin) order by upper(product.asin))
-          filter (where product.asin is not null and btrim(product.asin) <> '') as asins
-          from public.product_ads product
-         where product.org_id = ${input.orgId}
-           and product.profile_id = ${input.profileId}
-           and product.ad_group_id = ppc.ad_group_id
-           and product.deleted_at is null
-           and product.state <> 'archived'
-      ) advertised on true
       left join public.campaign_optimization_assignments assignment
         on assignment.org_id = ${input.orgId}
        and assignment.profile_id = ${input.profileId}
@@ -214,7 +203,6 @@ async function readPpc(
   `;
 
   const records = rows.map((row) => {
-    const attributedAsins = [...new Set((row.asins ?? []).map((asin) => asin.toUpperCase()))].sort();
     return {
       id: [row.campaign_id, row.ad_group_id, row.search_term].join('\u0000'),
       profileId: input.profileId,
@@ -223,8 +211,11 @@ async function readPpc(
       campaignId: row.campaign_id,
       adGroupId: row.ad_group_id,
       searchTerm: row.search_term,
-      asin: attributedAsins.length === 1 ? attributedAsins[0] ?? null : null,
-      attributedAsins,
+      // `product_ads` is a current-state mirror. It cannot establish which
+      // ASIN an ad group advertised during this historical week, so live PPC
+      // rows remain profile-only until a dated ad-to-ASIN ledger exists.
+      asin: null,
+      attributedAsins: [],
       spend: Number(row.spend),
       sales: Number(row.sales),
       clicks: Number(row.clicks),

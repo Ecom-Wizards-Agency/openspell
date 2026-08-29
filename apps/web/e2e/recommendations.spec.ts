@@ -158,6 +158,7 @@ test.describe('n-gram explorer', () => {
     // They are reviewable like any other proposal, in their own run — the
     // newest one, which the review screen lists first.
     await page.goto(`/recommendations?profile=${PROFILE}`);
+    await page.getByText(/^Choose run/).click();
     await page.getByRole('navigation', { name: 'Runs' }).getByRole('link').first().click();
     await expect(page.getByTestId('reason-group-needs_review-flag')).toBeVisible();
     await expect(page.locator('tr[data-testid^="proposal-"]')).toHaveCount(chosen);

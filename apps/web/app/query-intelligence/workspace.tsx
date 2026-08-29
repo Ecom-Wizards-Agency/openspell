@@ -227,7 +227,8 @@ export function QueryIntelligenceWorkspace({
         <p className="wa-banner wa-banner--warn">
           Profile-only and ambiguous rows keep their spend at profile level. Wizard Ads never
           duplicates that spend across candidate ASINs, and these rows cannot support an ASIN-level
-          action.
+          action. Current product-ad mirrors are not dated, so historical live PPC remains
+          profile-only until an authoritative weekly ad-to-ASIN mapping exists.
         </p>
         {visiblePpc.length === 0 ? (
           <div className="wa-empty">

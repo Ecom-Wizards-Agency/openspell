@@ -95,7 +95,14 @@ test('every guarded screen sends an anonymous visitor to the login page', async 
 
   const landed: string[] = [];
   for (const route of GUARDED) {
-    await page.goto(route);
+    // A server-component `redirect()` can commit `/login` quickly enough to
+    // interrupt Playwright's wait for the original document. That is the
+    // protected outcome we want, so wait for the destination explicitly while
+    // still surfacing every other navigation failure.
+    await page.goto(route).catch((error: unknown) => {
+      if (!String(error).includes('is interrupted by another navigation')) throw error;
+    });
+    await page.waitForURL('**/login');
     landed.push(new URL(page.url()).pathname);
   }
 

@@ -5,6 +5,7 @@ import type {
 } from '@wizard-ads/shared';
 import type { MarketingStreamStore } from './dayparting.js';
 import {
+  MarketingStreamConfigurationError,
   MarketingStreamSqsConsumer,
   parseMarketingStreamSqsBody,
   type MarketingStreamQueueClient,
@@ -145,6 +146,45 @@ describe('Marketing Stream SQS acknowledgement', () => {
 
     await consumer.pollOnce();
     expect(consumer.status().acknowledged).toBe(1);
+  });
+
+  it('retains valid raw evidence before deferring projection for missing policy', async () => {
+    const appended: MarketingStreamLedgerEvent[][] = [];
+    const deleted: string[] = [];
+    const base = unusedStore();
+    const store: MarketingStreamStore = {
+      ...base,
+      append: async (input) => {
+        appended.push([...input.events]);
+        return {
+          offeredMessages: input.events.length,
+          insertedMessages: input.events.length,
+          duplicateMessages: 0,
+          revisedMessages: 0,
+          affectedScopes: [{ adProduct: 'SP', utcHour: '2026-08-01T10:00:00.000Z' }],
+        };
+      },
+    };
+    const consumer = new MarketingStreamSqsConsumer({
+      queueUrl: QUEUE_URL,
+      queue: {
+        receive: async () => [delivery(batchEnvelope())],
+        delete: async (_url, receipt) => { deleted.push(receipt); },
+        destroy: () => {},
+      },
+      store,
+      contexts: {
+        load: async () => { throw new MarketingStreamConfigurationError('tenant policy absent'); },
+      },
+      logger: silentLogger(),
+    });
+
+    await consumer.pollOnce();
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toHaveLength(1);
+    expect(deleted).toEqual([]);
+    expect(consumer.status()).toMatchObject({ received: 1, acknowledged: 0, failed: 1 });
   });
 
   it('aborts a pending long poll and destroys the AWS boundary on stop', async () => {

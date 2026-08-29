@@ -291,10 +291,38 @@ export class MarketingStreamSqsConsumer {
       if (!message.body) throw new MarketingStreamDeliveryError('SQS delivery has no body');
       if (!message.receiptHandle) throw new MarketingStreamDeliveryError('SQS delivery has no receipt handle');
       const envelope = parseMarketingStreamSqsBody(message.body);
-      const context = await this.contexts.load({
-        orgId: envelope.orgId,
-        profileId: envelope.profileId,
-      });
+      let context: MarketingStreamRuntimeContext;
+      try {
+        context = await this.contexts.load({
+          orgId: envelope.orgId,
+          profileId: envelope.profileId,
+        });
+      } catch (error) {
+        if (error instanceof MarketingStreamConfigurationError) {
+          // Optional modelling policy must not become a raw-data-loss gate.
+          // The scoped FK/tenant checks in the ledger append still reject an
+          // unknown profile. A later SQS redelivery is idempotent and can
+          // project these events once policy exists.
+          const append = await this.store.append({
+            orgId: envelope.orgId,
+            profileId: envelope.profileId,
+            events: envelope.events,
+          });
+          if (
+            append.offeredMessages !== envelope.events.length ||
+            append.insertedMessages + append.duplicateMessages !== envelope.events.length
+          ) {
+            throw new MarketingStreamDeliveryError('deferred raw-ledger counts do not reconcile');
+          }
+          this.logger.info('Marketing Stream evidence retained; projection deferred', {
+            messageId: message.messageId,
+            receivedEvents: envelope.events.length,
+            insertedEvents: append.insertedMessages,
+            duplicateEvents: append.duplicateMessages,
+          });
+        }
+        throw error;
+      }
       const result = await this.process(this.store, {
         orgId: envelope.orgId,
         profileId: envelope.profileId,
