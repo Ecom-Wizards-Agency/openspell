@@ -60,10 +60,30 @@ export default async function globalSetup(): Promise<void> {
   // Teardown is attached here rather than in a second file so the handles it
   // closes are the ones this function opened.
   (globalThis as Record<string, unknown>)['__wizardAdsE2E'] = async () => {
-    server?.kill('SIGTERM');
+    await stopProcess(server);
     await mock?.close();
     await dropDatabase(admin);
   };
+}
+
+async function stopProcess(child: ChildProcess | null): Promise<void> {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+
+  await new Promise<void>((resolveStop, rejectStop) => {
+    const timeout = setTimeout(() => {
+      child.kill('SIGKILL');
+    }, 15_000);
+
+    child.once('exit', () => {
+      clearTimeout(timeout);
+      resolveStop();
+    });
+    child.once('error', (error) => {
+      clearTimeout(timeout);
+      rejectStop(error);
+    });
+    child.kill('SIGTERM');
+  });
 }
 
 async function createDatabase(admin: string): Promise<string> {
