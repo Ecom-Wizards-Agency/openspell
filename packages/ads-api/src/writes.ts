@@ -256,6 +256,8 @@ export interface SpBatchWriteResult<K extends SpWriteKind = SpWriteKind> {
   submitted: number;
   /** Number of HTTP batches used. */
   batches: number;
+  /** Exact outbound HTTP attempts, including pre-mutation 429 retries. */
+  apiCalls: number;
 }
 
 /** Minimal provider evidence safe to persist in the OpenSpell audit ledger. */
@@ -272,6 +274,7 @@ export interface SpWriteEvidenceResult<K extends SpWriteKind = SpWriteKind> {
   evidence: SpWriteEvidence<K>[];
   submitted: number;
   batches: number;
+  apiCalls: number;
 }
 
 function sanitizedEvidenceText(value: string | null, maxLength: number): string | null {
@@ -318,7 +321,12 @@ export function toSpWriteEvidence<K extends SpWriteKind>(
       `write evidence accounted for ${evidence.length} of ${result.submitted} submitted items`,
     );
   }
-  return { evidence, submitted: result.submitted, batches: result.batches };
+  return {
+    evidence,
+    submitted: result.submitted,
+    batches: result.batches,
+    apiCalls: result.apiCalls,
+  };
 }
 
 export function batchSpWrites<T>(items: readonly T[]): T[][] {
@@ -428,5 +436,11 @@ export function parseSpWriteResponse<K extends SpWriteKind>(
     }
   }
 
-  return { items, errors, submitted, batches: submitted === 0 ? 0 : 1 };
+  return {
+    items,
+    errors,
+    submitted,
+    batches: submitted === 0 ? 0 : 1,
+    apiCalls: submitted === 0 ? 0 : 1,
+  };
 }

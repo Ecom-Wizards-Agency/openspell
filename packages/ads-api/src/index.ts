@@ -277,6 +277,7 @@ export {
   AdsApiHttpError,
   AdsApiNotImplementedError,
   AdsApiParseError,
+  AdsApiWriteResponseError,
   AdsApiTimeoutError,
   AdsAuthError,
   AdsThrottleError,

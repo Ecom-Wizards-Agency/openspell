@@ -2,6 +2,7 @@ import {
   AdsApiClient as UnderlyingAdsApiClient,
   AdsApiHttpError,
   AdsApiParseError,
+  AdsApiWriteResponseError,
   AdsApiTimeoutError,
   AdsThrottleError,
   DuplicateReportError,
@@ -553,16 +554,17 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
         }
         return parsed.data;
       });
-      return { evidence, apiCalls: result.batches };
+      return { evidence, apiCalls: result.apiCalls };
     } catch (error) {
       if (error instanceof AdsThrottleError) {
         throw new SpWriteRetryableError(
           error.message,
           error.retryAfterMs === null ? undefined : Math.ceil(error.retryAfterMs / 1_000),
+          error.attempts,
         );
       }
       if (error instanceof AdsApiHttpError && error.status === 429) {
-        throw new SpWriteRetryableError(error.message);
+        throw new SpWriteRetryableError(error.message, undefined, error.attempts);
       }
       if (
         error instanceof AdsApiTimeoutError
@@ -570,10 +572,14 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
         || error instanceof DuplicateWriteError
         || (error instanceof AdsApiHttpError && (error.status === 0 || error.status >= 500))
       ) {
-        throw new SpWriteAmbiguousError(error instanceof Error ? error.message : String(error));
+        throw new SpWriteAmbiguousError(
+          error instanceof Error ? error.message : String(error),
+          error instanceof AdsApiWriteResponseError ? error.apiCalls
+            : error instanceof AdsApiHttpError ? error.attempts : 1,
+        );
       }
       if (error instanceof AdsApiHttpError) {
-        throw new SpWriteFailedError(error.message);
+        throw new SpWriteFailedError(error.message, error.attempts);
       }
       throw error;
     }

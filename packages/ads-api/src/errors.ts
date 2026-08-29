@@ -152,5 +152,18 @@ export class AdsApiTimeoutError extends AdsApiError {
  * failure Rule 4 exists to catch.
  */
 export class AdsApiParseError extends AdsApiError {
-  override readonly name = 'AdsApiParseError';
+  override readonly name: string = 'AdsApiParseError';
+}
+
+/**
+ * A mutation response could not be proven complete after it reached Amazon.
+ * The attempt count is retained so the worker can account for every outbound
+ * call while still treating the mutation result as ambiguous.
+ */
+export class AdsApiWriteResponseError extends AdsApiParseError {
+  override readonly name = 'AdsApiWriteResponseError';
+
+  constructor(message: string, readonly apiCalls: number, detail?: unknown) {
+    super(message, detail);
+  }
 }

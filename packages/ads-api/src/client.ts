@@ -51,6 +51,7 @@ import {
 import {
   AdsApiNotImplementedError,
   AdsApiParseError,
+  AdsApiWriteResponseError,
   DuplicateReportError,
   DuplicateWriteError,
 } from './errors.js';
@@ -461,6 +462,7 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
     const errors: SpBatchWriteResult<K>['errors'] = [];
     const batches = batchSpWrites(values);
     let indexOffset = 0;
+    let apiCalls = 0;
 
     for (const batch of batches) {
       const path = operation === 'archive' ? `${endpoint.path}/delete` : endpoint.path;
@@ -484,6 +486,7 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
         idempotent: false,
         expectedStatuses: [425],
       });
+      apiCalls += result.attempts;
 
       if (result.status === 425) {
         throw new DuplicateWriteError(
@@ -496,24 +499,33 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
         );
       }
 
-      const parsed = parseSpWriteResponse(
-        this.json(result, `${method} ${path}`),
-        kind,
-        endpoint,
-        batch.length,
-        indexOffset,
-      );
+      let parsed: SpBatchWriteResult<K>;
+      try {
+        parsed = parseSpWriteResponse(
+          this.json(result, `${method} ${path}`),
+          kind,
+          endpoint,
+          batch.length,
+          indexOffset,
+        );
+      } catch (error) {
+        if (error instanceof AdsApiParseError) {
+          throw new AdsApiWriteResponseError(error.message, apiCalls, error);
+        }
+        throw error;
+      }
       items.push(...parsed.items);
       errors.push(...parsed.errors);
       indexOffset += batch.length;
     }
 
     if (items.length + errors.length !== values.length) {
-      throw new AdsApiParseError(
+      throw new AdsApiWriteResponseError(
         `${operation} ${endpoint.path} accounted for ${items.length + errors.length} of ${values.length} submitted items`,
+        apiCalls,
       );
     }
-    return { items, errors, submitted: values.length, batches: batches.length };
+    return { items, errors, submitted: values.length, batches: batches.length, apiCalls };
   }
 
   createSpCampaigns(profileId: string, items: readonly SpCampaignCreateInput[]): Promise<SpBatchWriteResult<'campaigns'>> {

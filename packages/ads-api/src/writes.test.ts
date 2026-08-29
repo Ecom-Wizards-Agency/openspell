@@ -14,6 +14,7 @@ import {
   AdsApiHttpError,
   AdsApiNotImplementedError,
   AdsApiParseError,
+  AdsApiWriteResponseError,
   DuplicateWriteError,
 } from './errors.js';
 import type { SpBatchWriteResult } from './writes.js';
@@ -263,6 +264,7 @@ describe('batching and write failure mapping', () => {
     const result = await client.updateSpKeywords(PROFILE_ID, updates);
 
     expect(result.batches).toBe(2);
+    expect(result.apiCalls).toBe(2);
     expect(server.requestsFor(endpoint.path)).toHaveLength(2);
     expect(result.items).toHaveLength(101);
     expect(result.items[100]?.index).toBe(100);
@@ -282,6 +284,7 @@ describe('batching and write failure mapping', () => {
     const result = await client.updateSpCampaigns(PROFILE_ID, [{ campaignId: ID_1, state: 'PAUSED' }]);
 
     expect(result.items).toHaveLength(1);
+    expect(result.apiCalls).toBe(2);
     expect(server.requestsFor(endpoint.path)).toHaveLength(2);
     expect(effects.slept).toEqual([3_000]);
     expect(client.throttleState.totalThrottles).toBe(1);
@@ -330,10 +333,27 @@ describe('batching and write failure mapping', () => {
     ])).rejects.toBeInstanceOf(AdsApiParseError);
   });
 
+  it('retains every outbound attempt when a retried response is ambiguous', async () => {
+    const endpoint = SP_WRITE_ENDPOINTS.targets;
+    const { client } = clientFor([
+      { method: 'PUT', match: endpoint.path, responses: [
+        { status: 429, json: { message: 'synthetic throttle' } },
+        { status: 207, json: { targetingClauses: { success: [], error: [] } } },
+      ] },
+    ]);
+
+    const error = await client.updateSpTargets(PROFILE_ID, [
+      { targetId: ID_1, bid: 0.6 },
+    ]).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(AdsApiWriteResponseError);
+    expect(error).toMatchObject({ apiCalls: 2 });
+  });
+
   it('makes no HTTP call for an empty batch', async () => {
     const { server, client } = clientFor([]);
     const result = await client.archiveSpCampaigns(PROFILE_ID, []);
-    expect(result).toEqual({ items: [], errors: [], submitted: 0, batches: 0 });
+    expect(result).toEqual({ items: [], errors: [], submitted: 0, batches: 0, apiCalls: 0 });
     expect(server.requests).toHaveLength(0);
   });
 });

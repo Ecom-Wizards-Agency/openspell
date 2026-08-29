@@ -8,6 +8,7 @@ import {
   AdsApiHttpError,
   AdsApiParseError,
   AdsApiTimeoutError,
+  AdsApiWriteResponseError,
   AdsThrottleError,
   DuplicateReportError,
   DuplicateWriteError,
@@ -419,6 +420,7 @@ describe('DbAdsApiClient guarded Sponsored Products writes', () => {
     const updateSpKeywords = vi.fn(async () => ({
       submitted: 2,
       batches: 1,
+      apiCalls: 1,
       items: [{
         kind: 'keywords' as const, index: 0, id: 'keyword-1', entity: null,
         raw: { sensitive: 'not persisted' },
@@ -444,11 +446,13 @@ describe('DbAdsApiClient guarded Sponsored Products writes', () => {
   it('retries only an explicit pre-mutation throttle', async () => {
     const { adapter } = makeAdapter(underlying({
       updateSpKeywords: async () => {
-        throw new AdsThrottleError('synthetic throttle', 429, '', 1, 2_000);
+        throw new AdsThrottleError('synthetic throttle', 429, '', 3, 2_000);
       },
     }));
     await expect(adapter.updateSpKeywordBids(profile, [{ keywordId: 'keyword-1', bid: 0.71 }]))
-      .rejects.toMatchObject({ name: 'SpWriteRetryableError', retryAfterSeconds: 2 });
+      .rejects.toMatchObject({
+        name: 'SpWriteRetryableError', retryAfterSeconds: 2, apiCalls: 3,
+      });
     await expect(adapter.updateSpKeywordBids(profile, [{ keywordId: 'keyword-1', bid: 0.71 }]))
       .rejects.toBeInstanceOf(SpWriteRetryableError);
   });
@@ -465,6 +469,16 @@ describe('DbAdsApiClient guarded Sponsored Products writes', () => {
     await expect(adapter.updateSpKeywordBids(profile, [{ keywordId: 'keyword-1', bid: 0.71 }]))
       .rejects.toBeInstanceOf(SpWriteAmbiguousError);
     expect(updateSpKeywords).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the provider attempt count for an ambiguous write response', async () => {
+    const updateSpKeywords = vi.fn(async () => {
+      throw new AdsApiWriteResponseError('synthetic incomplete response', 3);
+    });
+    const { adapter } = makeAdapter(underlying({ updateSpKeywords }));
+
+    await expect(adapter.updateSpKeywordBids(profile, [{ keywordId: 'keyword-1', bid: 0.71 }]))
+      .rejects.toMatchObject({ name: 'SpWriteAmbiguousError', apiCalls: 3 });
   });
 
   it('counts a deterministic whole-request Amazon rejection as one failed provider call', async () => {

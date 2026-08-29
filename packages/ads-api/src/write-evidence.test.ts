@@ -20,6 +20,7 @@ describe('sanitized write evidence', () => {
     const result: SpBatchWriteResult<'keywords'> = {
       submitted: 2,
       batches: 1,
+      apiCalls: 2,
       items: [{
         kind: 'keywords', index: 0, id: 'keyword-1', entity: null,
         raw: { [['access', 'Token'].join('')]: 'must-not-survive' },
@@ -42,5 +43,6 @@ describe('sanitized write evidence', () => {
       },
     ]);
     expect(JSON.stringify(evidence)).not.toContain('must-not-survive');
+    expect(evidence.apiCalls).toBe(2);
   });
 });
