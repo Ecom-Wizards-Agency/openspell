@@ -62,6 +62,7 @@ test('the index sends an anonymous visitor directly to sign in', async ({ page }
   await expect(nav.getByTestId('nav-signout')).toHaveCount(0);
   await expect(nav.getByRole('navigation', { name: 'Primary' })).toHaveCount(0);
   await expect(nav.getByRole('link', { name: 'Dashboard' })).toHaveCount(0);
+  await expect(page.getByTestId('feedback-entry')).toHaveCount(0);
   await expect(page.getByTestId('home-signin')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'wizard-ads' })).toBeVisible();
 });
@@ -79,6 +80,7 @@ test('the index names the signed-in user and offers a way out', async ({ page })
   await page.keyboard.press('Escape');
   await expect(nav.getByTestId('nav-signin')).toHaveCount(0);
   await expect(page.getByTestId('home-signed-in')).toBeVisible();
+  await expect(page.getByTestId('feedback-entry')).toBeVisible();
 
   // The bar reaches every screen; the dashboard is the one an operator opens.
   await nav.getByRole('link', { name: 'Dashboard' }).click();

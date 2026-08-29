@@ -29,6 +29,29 @@ export const viewport: Viewport = {
 export default async function RootLayout({ children }: { children: ReactNode }) {
   const { currentUser } = await import('../src/auth/session');
   const user = await currentUser();
+  let feedbackEnabled = user !== null;
+
+  // The production-style Playwright suite authenticates with the deliberately
+  // isolated header bridge rather than a Supabase cookie. Recognise that
+  // already-verified test actor here so the suite still exercises the widget;
+  // the bridge refuses to arm alongside a real auth provider.
+  if (!feedbackEnabled) {
+    const { actorFromHeaders, e2eAuthBridgeEnabled, RequestAuthError } = await import(
+      '../src/server/request-context'
+    );
+    if (e2eAuthBridgeEnabled()) {
+      const { headers } = await import('next/headers');
+      try {
+        actorFromHeaders(await headers());
+        feedbackEnabled = true;
+      } catch (error) {
+        // Playwright's web-server readiness probe does not carry the browser
+        // context's auth headers. It must be allowed to receive the anonymous
+        // frame; invalid bridge configuration (503) still fails the request.
+        if (!(error instanceof RequestAuthError && error.status === 401)) throw error;
+      }
+    }
+  }
 
   return (
     // The theme stamp below rewrites `data-theme` before React sees the
@@ -58,11 +81,13 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             {children}
           </div>
           {/*
-            Rendered unconditionally: the header-bridge e2e harness carries no
-            Supabase session, so a session gate here hides the widget from that
-            whole suite. The widget hides itself on /login instead.
+            The bug reporter is an operator control. Gating it on a verified
+            session (or the isolated e2e bridge) prevents an anonymous hydration
+            flash on /login while preserving the signed-in browser workflow.
           */}
-          <BugWidget appVersion={process.env['WIZARD_ADS_APP_VERSION'] ?? null} />
+          {feedbackEnabled ? (
+            <BugWidget appVersion={process.env['WIZARD_ADS_APP_VERSION'] ?? null} />
+          ) : null}
         </ToastProvider>
       </body>
     </html>
