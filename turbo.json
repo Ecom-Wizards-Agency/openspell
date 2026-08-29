@@ -4,7 +4,19 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"],
+      "passThroughEnv": [
+        "AMAZON_LWA_CLIENT_ID",
+        "AMAZON_LWA_CLIENT_SECRET",
+        "AMAZON_OAUTH_REDIRECT_URI",
+        "AMAZON_OAUTH_STATE_KEY",
+        "CRON_SECRET",
+        "DATABASE_URL",
+        "GOTO_LINK_SIGNING_SECRET",
+        "WIZARD_ADS_APP_URL",
+        "WIZARD_ADS_SECURE_COOKIES",
+        "WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS"
+      ]
     },
     "typecheck": {
       "dependsOn": ["^typecheck"]
