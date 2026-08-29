@@ -45,6 +45,9 @@ const visibleIds = defaultVisibleColumns('search_terms');
 const visible = visibleIds
   .map((id) => available.find((column) => column.id === id))
   .filter((column): column is NonNullable<typeof column> => column !== undefined);
+const groupedVisible = ['campaign_name', 'ad_group_name', 'match_type', 'spend', 'sales', 'acos']
+  .map((id) => available.find((column) => column.id === id))
+  .filter((column): column is NonNullable<typeof column> => column !== undefined);
 
 function renderGrid(rowCount: number, options: { groupBy?: string[] } = {}) {
   const rows = syntheticSearchTermRows(rowCount, { seed: 20260814 });
@@ -127,6 +130,147 @@ describe('DataGrid over 50k rows', () => {
     expect(
       screen.getByText(/Ratio metrics recomputed from summed bases, never averaged\./),
     ).toBeTruthy();
+  });
+
+  it('renders three hierarchy levels with accessible labels and truthful counts', () => {
+    const rows = syntheticSearchTermRows(3_597, { seed: 44 });
+    const model = buildGridModel(rows, {
+      groupBy: ['campaign_name', 'ad_group_name', 'match_type'],
+      sort: [{ columnId: 'spend', direction: 'desc' }],
+    });
+    render(
+      <DataGrid
+        model={model}
+        columns={groupedVisible}
+        currencyCode="USD"
+        sort={[{ columnId: 'spend', direction: 'desc' }]}
+        onSortChange={() => {}}
+        height={VIEWPORT.height}
+        rowHeight={ROW_HEIGHT}
+        initialRect={VIEWPORT}
+      />,
+    );
+
+    expect(
+      screen.getByRole('treegrid', {
+        name: 'Results grouped by campaign_name, ad_group_name, match_type',
+      }),
+    ).toBeTruthy();
+    const rendered = screen.getAllByTestId('grid-row');
+    expect(rendered.some((row) => row.getAttribute('aria-level') === '1')).toBe(true);
+    expect(rendered.some((row) => row.getAttribute('aria-level') === '2')).toBe(true);
+    expect(rendered.some((row) => row.getAttribute('aria-level') === '3')).toBe(true);
+    expect(rendered.some((row) => row.getAttribute('aria-label')?.startsWith('Grouping level 2 of 3: Ad group '))).toBe(true);
+    expect(screen.getByText('Total · 3,597 source rows')).toBeTruthy();
+    expect(
+      screen.getByText(
+        `${model.shown} hierarchy rows · ${model.exported} deepest groups · 3,597 matched source rows of 3,597`,
+      ),
+    ).toBeTruthy();
+  });
+
+  it('collapses every descendant of a parent and restores them without changing model counts', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    const rows = syntheticSearchTermRows(120, { seed: 51, campaigns: 1 });
+    const model = buildGridModel(rows, {
+      groupBy: ['campaign_name', 'ad_group_name', 'match_type'],
+      sort: [{ columnId: 'spend', direction: 'desc' }],
+    });
+    const before = {
+      shown: model.shown,
+      exported: model.exported,
+      matched: model.matched,
+      spend: model.totalsRow?.totals.spend,
+    };
+    render(
+      <DataGrid
+        model={model}
+        columns={groupedVisible}
+        currencyCode="USD"
+        sort={[{ columnId: 'spend', direction: 'desc' }]}
+        onSortChange={() => {}}
+        height={VIEWPORT.height}
+        rowHeight={ROW_HEIGHT}
+        initialRect={VIEWPORT}
+      />,
+    );
+
+    const root = screen.getAllByTestId('grid-row').find(
+      (row) => row.getAttribute('aria-level') === '1',
+    );
+    expect(root).toBeDefined();
+    const collapse = within(root as HTMLElement).getByRole('button', { name: /Collapse Campaign/ });
+    expect(collapse.tagName).toBe('BUTTON');
+    expect(collapse.getAttribute('type')).toBe('button');
+    expect(collapse.getAttribute('aria-expanded')).toBe('true');
+    expect(root?.getAttribute('aria-expanded')).toBe('true');
+    expect(document.querySelector('[data-group-level="2"]')).not.toBeNull();
+    expect(document.querySelector('[data-group-level="3"]')).not.toBeNull();
+
+    fireEvent.click(collapse);
+
+    const collapsedRoot = screen.getByTestId('grid-row');
+    const expand = within(collapsedRoot).getByRole('button', { name: /Expand Campaign/ });
+    expect(expand.getAttribute('aria-expanded')).toBe('false');
+    expect(collapsedRoot.getAttribute('aria-expanded')).toBe('false');
+    expect(document.querySelector('[data-group-level="2"]')).toBeNull();
+    expect(document.querySelector('[data-group-level="3"]')).toBeNull();
+    expect(screen.getByText(
+      `1 visible of ${model.shown} hierarchy rows · ${model.exported} deepest groups · 120 matched source rows of 120`,
+    )).toBeTruthy();
+    expect({
+      shown: model.shown,
+      exported: model.exported,
+      matched: model.matched,
+      spend: model.totalsRow?.totals.spend,
+    }).toEqual(before);
+
+    fireEvent.click(expand);
+
+    expect(screen.getAllByTestId('grid-row')).toHaveLength(model.shown);
+    expect(document.querySelector('[data-group-level="2"]')).not.toBeNull();
+    expect(document.querySelector('[data-group-level="3"]')).not.toBeNull();
+    const leaf = screen.getAllByTestId('grid-row').find(
+      (row) => row.getAttribute('aria-level') === '3',
+    );
+    expect(leaf).toBeDefined();
+    expect(within(leaf as HTMLElement).queryByRole('button', { name: /Collapse|Expand/ })).toBeNull();
+  });
+
+  it('clears collapse state when the grouping hierarchy changes', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    const rows = syntheticSearchTermRows(120, { seed: 52, campaigns: 1 });
+    const original = buildGridModel(rows, {
+      groupBy: ['campaign_name', 'ad_group_name', 'match_type'],
+    });
+    // The root campaign ids are identical in both models; only a grouping-key
+    // reset prevents the old collapse state leaking into the new hierarchy.
+    const regrouped = buildGridModel(rows, { groupBy: ['campaign_name', 'match_type'] });
+    const regroupedColumns = ['campaign_name', 'match_type', 'spend']
+      .map((id) => available.find((column) => column.id === id))
+      .filter((column): column is NonNullable<typeof column> => column !== undefined);
+    const component = (model: typeof original, columns = groupedVisible) => (
+      <DataGrid
+        model={model}
+        columns={columns}
+        currencyCode="USD"
+        sort={[]}
+        onSortChange={() => {}}
+        height={VIEWPORT.height}
+        rowHeight={ROW_HEIGHT}
+        initialRect={VIEWPORT}
+      />
+    );
+    const view = render(component(original));
+    fireEvent.click(screen.getByRole('button', { name: /Collapse Campaign/ }));
+    expect(screen.getAllByTestId('grid-row')).toHaveLength(1);
+
+    view.rerender(component(regrouped, regroupedColumns));
+    view.rerender(component(original));
+
+    expect(screen.getByRole('button', { name: /Collapse Campaign/ }).getAttribute('aria-expanded'))
+      .toBe('true');
+    expect(screen.getAllByTestId('grid-row')).toHaveLength(original.shown);
   });
 
   it('marks the sorted column for a screen reader and shows the direction', () => {

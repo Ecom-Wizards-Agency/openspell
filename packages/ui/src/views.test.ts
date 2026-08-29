@@ -50,10 +50,14 @@ describe.each([
 
   it('carries the whole lens: columns, pinning, widths, filter, sort, group-by', async () => {
     const store = build();
-    const saved = view({ groupBy: ['campaign_name'] });
+    const saved = view({
+      entity: 'search_terms',
+      groupBy: ['campaign_name', 'ad_group_name', 'match_type'],
+    });
     await store.save(saved);
-    const [loaded] = await store.list('campaigns');
+    const [loaded] = await store.list('search_terms');
     expect(loaded).toEqual(saved);
+    expect(loaded?.groupBy).toEqual(['campaign_name', 'ad_group_name', 'match_type']);
   });
 
   it('carries no profile id, so one view applies to any profile', async () => {

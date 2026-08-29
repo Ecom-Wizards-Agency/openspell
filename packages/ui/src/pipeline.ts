@@ -5,13 +5,13 @@
  * The order matters and is not negotiable. Grouping before filtering would let
  * a filter on ACOS drop groups whose members individually failed it; sorting
  * before grouping would be wasted work on rows about to be folded away. And the
- * counts (`total`, `shown`) are produced here rather than by the caller, because
- * "exported N of M" on the export button has to be the same N and M the grid
- * footer shows -- if two call sites compute them, one of them is eventually
- * wrong and nobody notices.
+ * display, source and export counts are produced here rather than by callers.
+ * A hierarchy legitimately renders parent and child summaries but exports only
+ * deepest groups, so those counts differ by design and must still come from one
+ * model or one call site will eventually double-count.
  */
 import type { GroupedRow } from './aggregate.js';
-import { grandTotal, groupRows } from './aggregate.js';
+import { grandTotal, groupRows, isGroupedRow, uniqueGroupLevels } from './aggregate.js';
 import type { FilterSet } from './filter.js';
 import { FilterError, applyFilterSet } from './filter.js';
 import type { GridRow } from './rows.js';
@@ -28,15 +28,24 @@ export interface GridQuery {
 export interface GridModel {
   /** The rows to render, in display order. */
   rows: GridRow[];
+  /**
+   * Rows safe to export without double-counting. Equal to `rows` when flat;
+   * deepest hierarchy groups only when grouped.
+   */
+  exportRows: GridRow[];
   /** Rows before filtering. */
   total: number;
   /** Rows after filtering, before grouping. */
   matched: number;
   /** Rows on screen (equals `matched` when not grouping). */
   shown: number;
+  /** Rows that the CSV operation will write. */
+  exported: number;
   /** Sums over the filtered set. Null on an empty result. */
   totalsRow: GroupedRow | null;
   grouped: boolean;
+  /** Unique grouping dimensions in operator-defined order. */
+  groupBy: readonly string[];
 }
 
 /**
@@ -75,20 +84,67 @@ export function buildGridModelSafely(
 
 export function buildGridModel(rows: readonly GridRow[], query: GridQuery = {}): GridModel {
   const filtered = query.filter ? applyFilterSet(rows, query.filter) : (rows as GridRow[]);
-  const groupBy = query.groupBy ?? [];
+  const groupBy = uniqueGroupLevels(query.groupBy ?? []);
   const grouped = groupBy.length > 0;
-  const shaped: GridRow[] = grouped ? groupRows(filtered, groupBy) : filtered;
-  const sorted = applySort(shaped, query.sort ?? []);
+  const shaped = grouped ? groupRows(filtered, groupBy) : filtered;
+  const sorted = grouped
+    ? sortGroupedHierarchy(shaped as GroupedRow[], query.sort ?? [])
+    : applySort(shaped, query.sort ?? []);
+  const exportRows = grouped
+    ? sorted.filter((row): row is GroupedRow => isGroupedRow(row) && row.isLeafGroup)
+    : sorted;
+
+  if (grouped) {
+    const represented = exportRows.reduce(
+      (count, row) => count + (isGroupedRow(row) ? row.groupSize : 0),
+      0,
+    );
+    if (represented !== filtered.length) {
+      throw new Error(
+        `group hierarchy represented ${represented} source rows, expected ${filtered.length}`,
+      );
+    }
+  }
 
   return {
     rows: sorted,
+    exportRows,
     total: rows.length,
     matched: filtered.length,
     shown: sorted.length,
+    exported: exportRows.length,
     // Totals always come from the pre-grouping filtered set: summing group rows
     // and summing their members give the same base sums, but only one of them
     // stays right if grouping ever drops a row.
     totalsRow: grandTotal(filtered),
     grouped,
+    groupBy,
   };
+}
+
+/** Sort siblings independently, then flatten without breaking the tree. */
+function sortGroupedHierarchy(
+  rows: readonly GroupedRow[],
+  rules: readonly SortRule[],
+): GroupedRow[] {
+  if (rows.length < 2 || rules.length === 0) return rows as GroupedRow[];
+
+  const children = new Map<string, GroupedRow[]>();
+  for (const row of rows) {
+    const key = row.parentGroupId ?? '';
+    const siblings = children.get(key);
+    if (siblings === undefined) children.set(key, [row]);
+    else siblings.push(row);
+  }
+
+  const sorted: GroupedRow[] = [];
+  const append = (parentGroupId: string | null): void => {
+    const siblings = applySort(children.get(parentGroupId ?? '') ?? [], rules) as GroupedRow[];
+    for (const sibling of siblings) {
+      sorted.push(sibling);
+      append(sibling.id);
+    }
+  };
+  append(null);
+  return sorted;
 }

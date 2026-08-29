@@ -102,6 +102,7 @@ describe.skipIf(!available)('partition automation', () => {
       'fact_profile_daily',
       'fact_sales_traffic_daily',
       'fact_sqp_weekly',
+      'fact_creative_daily',
     ]) {
       expect(tables).toContain(table);
     }

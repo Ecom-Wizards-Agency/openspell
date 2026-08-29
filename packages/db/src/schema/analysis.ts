@@ -7,8 +7,8 @@
  * and is not nullable. A proposal without its provenance is not a proposal we
  * ship.
  */
-import { date, index, integer, jsonb, pgTable, text, uuid } from 'drizzle-orm/pg-core';
-import type { RecommendationInputs, TenantStrategy } from '@wizard-ads/shared';
+import { date, index, integer, jsonb, pgTable, text, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import type { OptimizationGroup, RecommendationInputs, TenantStrategy } from '@wizard-ads/shared';
 import { money, ts } from './columns.js';
 import {
   adProduct,
@@ -17,6 +17,7 @@ import {
   recommendationReason,
   recommendationStatus,
   runStatus,
+  optimizationGroupRole,
 } from './enums.js';
 import { adProfiles, authUsers, orgs } from './tenancy.js';
 
@@ -36,6 +37,10 @@ export const recommendationRuns = pgTable(
     windowEnd: date('window_end'),
     /** Doctrine as it was at run time. Without it, an old proposal is unexplainable. */
     strategySnapshot: jsonb('strategy_snapshot').$type<TenantStrategy>(),
+    groupId: uuid('group_id'),
+    groupRole: optimizationGroupRole('group_role'),
+    groupSnapshot: jsonb('group_snapshot').$type<OptimizationGroup>(),
+    dueAt: ts('due_at'),
     engineVersion: text('engine_version'),
     proposalsCount: integer('proposals_count').notNull().default(0),
     startedAt: ts('started_at'),
@@ -82,6 +87,7 @@ export const recommendations = pgTable(
   (t) => [
     index('recommendations_run_idx').on(t.runId),
     index('recommendations_open_idx').on(t.profileId, t.status),
+    uniqueIndex('recommendations_org_profile_id_key').on(t.orgId, t.profileId, t.id),
   ],
 );
 

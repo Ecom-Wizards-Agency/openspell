@@ -7,7 +7,6 @@
  * takes an org id as an argument, so there is no argument a caller could supply
  * to reach another org's data.
  */
-import { randomBytes } from 'node:crypto';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { addDays } from '@wizard-ads/core';
@@ -17,8 +16,6 @@ import { ENTITY_LEVELS, LEVELS } from './catalog.js';
 import type { EntityLevel } from './catalog.js';
 import { toCsv } from './csv.js';
 import {
-  GOTO_ROUTES,
-  createGotoLink,
   getLatestRecommendations,
   getProfileContext,
   getSyncStatus,
@@ -30,13 +27,6 @@ import {
 import type { KeyScopeContext, ProfileRecord } from './data.js';
 import { buildFlags, buildPacing } from './analysis.js';
 import {
-  SUBMIT_FEEDBACK_DESCRIPTION,
-  SUBMIT_FEEDBACK_TITLE,
-  submitFeedback,
-  submitFeedbackInputSchema,
-} from './feedback.js';
-import type { SubmitFeedbackArgs } from './feedback.js';
-import {
   GET_EXPERIMENT_DESCRIPTION,
   GET_EXPERIMENT_TITLE,
   LIST_EXPERIMENTS_DESCRIPTION,
@@ -46,7 +36,7 @@ import {
   listExperimentsInputSchema,
   listExperimentsTool,
 } from './experiments.js';
-import { GatedError, ToolError } from './errors.js';
+import { ToolError } from './errors.js';
 import { instructionsDocument } from './instructions.js';
 import { ALL_METRICS } from './metrics.js';
 import { FILTER_OPERATORS } from './sql.js';
@@ -178,7 +168,6 @@ function audited<Args>(context: ServerContext, tool: string, handler: ToolHandle
       });
       return jsonResult(outcome.payload);
     } catch (error) {
-      const gated = error instanceof GatedError;
       const known = error instanceof ToolError;
       const message = known
         ? error.message
@@ -188,7 +177,7 @@ function audited<Args>(context: ServerContext, tool: string, handler: ToolHandle
         keyId: context.keyId,
         tool,
         params: args,
-        outcome: gated ? 'gated' : 'error',
+        outcome: 'error',
         summary: {
           code: known ? error.code : 'internal',
           message: known ? error.message : String(error instanceof Error ? error.message : error),
@@ -196,6 +185,100 @@ function audited<Args>(context: ServerContext, tool: string, handler: ToolHandle
         durationMs: Date.now() - started,
       });
       return jsonResult({ error: known ? error.code : 'internal', message }, true);
+    }
+  };
+}
+
+interface ResourceOutcome<Result> {
+  result: Result;
+  summary: Record<string, unknown>;
+  profileId?: string | null;
+}
+
+/**
+ * Resource reads use the same durable audit contract as tools. Only the URI is
+ * recorded: SDK request metadata may contain transport or authentication state
+ * and must never reach the log.
+ */
+function auditedResourceRead<Rest extends unknown[], Result>(
+  context: ServerContext,
+  resource: string,
+  handler: (uri: URL, ...rest: Rest) => Promise<ResourceOutcome<Result>>,
+): (uri: URL, ...rest: Rest) => Promise<Result> {
+  return async (uri: URL, ...rest: Rest): Promise<Result> => {
+    const started = Date.now();
+    try {
+      const outcome = await handler(uri, ...rest);
+      await writeAuditEntry(context.handle, {
+        orgId: context.scope.orgId,
+        keyId: context.keyId,
+        tool: `resource.${resource}.read`,
+        params: { uri: uri.href },
+        outcome: 'ok',
+        summary: outcome.summary,
+        durationMs: Date.now() - started,
+        profileId: outcome.profileId ?? null,
+      });
+      return outcome.result;
+    } catch (error) {
+      const known = error instanceof ToolError;
+      await writeAuditEntry(context.handle, {
+        orgId: context.scope.orgId,
+        keyId: context.keyId,
+        tool: `resource.${resource}.read`,
+        params: { uri: uri.href },
+        outcome: 'error',
+        summary: {
+          code: known ? error.code : 'internal',
+          message: known ? error.message : String(error instanceof Error ? error.message : error),
+        },
+        durationMs: Date.now() - started,
+      });
+      if (known) throw error;
+      throw new Error('the resource could not be read. This has been logged; nothing was changed.', {
+        cause: error,
+      });
+    }
+  };
+}
+
+/** Audit the dynamic profile-resource enumeration without retaining SDK extras. */
+function auditedResourceList<Result>(
+  context: ServerContext,
+  resource: string,
+  handler: () => Promise<ResourceOutcome<Result>>,
+): () => Promise<Result> {
+  return async (): Promise<Result> => {
+    const started = Date.now();
+    try {
+      const outcome = await handler();
+      await writeAuditEntry(context.handle, {
+        orgId: context.scope.orgId,
+        keyId: context.keyId,
+        tool: `resource.${resource}.list`,
+        params: {},
+        outcome: 'ok',
+        summary: outcome.summary,
+        durationMs: Date.now() - started,
+      });
+      return outcome.result;
+    } catch (error) {
+      await writeAuditEntry(context.handle, {
+        orgId: context.scope.orgId,
+        keyId: context.keyId,
+        tool: `resource.${resource}.list`,
+        params: {},
+        outcome: 'error',
+        summary: {
+          code: error instanceof ToolError ? error.code : 'internal',
+          message: String(error instanceof Error ? error.message : error),
+        },
+        durationMs: Date.now() - started,
+      });
+      if (error instanceof ToolError) throw error;
+      throw new Error('the resource list could not be read. This has been logged; nothing was changed.', {
+        cause: error,
+      });
     }
   };
 }
@@ -251,8 +334,6 @@ export function createMcpServer(context: ServerContext): McpServer {
 
   registerReadTools(server, context);
   registerExperimentTools(server, context);
-  registerFeedbackTool(server, context);
-  registerWriteStubs(server, context);
   registerResources(server, context);
   return server;
 }
@@ -784,152 +865,6 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
     }),
   );
 
-  server.registerTool(
-    'create_goto_link',
-    {
-      title: 'Deep link into the web app',
-      description:
-        'Mint a link that opens the web app at exactly this filtered view. Use one whenever a ' +
-        'result is bigger than about ten rows: hand a human the view, not a wall of numbers. ' +
-        'The link carries the lens (entity, filters, date range), so moving the date range ' +
-        'still means something.',
-      inputSchema: {
-        route: z.enum(GOTO_ROUTES),
-        profile_id: profileIdSchema,
-        state: z
-          .record(z.string(), z.unknown())
-          .default({})
-          .describe('Filter and grid state restored verbatim on open'),
-        label: z.string().max(200).optional(),
-        expires_in_days: z.number().int().min(1).max(365).optional(),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-    },
-    audited(
-      context,
-      'create_goto_link',
-      async (args: {
-        route: (typeof GOTO_ROUTES)[number];
-        profile_id: string;
-        state: Record<string, unknown>;
-        label?: string;
-        expires_in_days?: number;
-      }) => {
-        const profile = await resolveProfile(handle, scope, args.profile_id);
-        const expiresAt =
-          args.expires_in_days === undefined
-            ? null
-            : new Date(Date.now() + args.expires_in_days * 86_400_000);
-
-        const link = await createGotoLink(handle, scope, {
-          route: args.route,
-          state: { ...args.state, profileId: profile.id },
-          label: args.label,
-          expiresAt,
-          webBaseUrl: config.webBaseUrl,
-          token: randomBytes(18).toString('base64url'),
-        });
-
-        return {
-          payload: {
-            ...link,
-            kind: 'live query',
-            note: 'The link restores the lens and re-runs it, so it shows the data as it is when opened.',
-          },
-          summary: { route: link.route, token: link.token },
-          profileId: profile.id,
-        };
-      },
-    ),
-  );
-}
-
-/**
- * The one write that is not gated (WP-15).
- *
- * Registered from its own module so `apps/mcp` gains a tool rather than a
- * rewrite; the schema, the description and the handler all live in
- * `feedback.ts`, and the audit wrapper here is the same one every other tool
- * goes through.
- */
-function registerFeedbackTool(server: McpServer, context: ServerContext): void {
-  server.registerTool(
-    'submit_feedback',
-    {
-      title: SUBMIT_FEEDBACK_TITLE,
-      description: SUBMIT_FEEDBACK_DESCRIPTION,
-      inputSchema: submitFeedbackInputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-    },
-    audited(context, 'submit_feedback', (args: SubmitFeedbackArgs) =>
-      submitFeedback(context, args),
-    ),
-  );
-}
-
-/**
- * The write surface, present and refusing.
- *
- * A client that cannot see these tools cannot plan around them, and a client
- * that discovers them by trying an undocumented name gets a protocol error
- * instead of a reason. Each one is typed the way its v1.x version will be, and
- * each one logs the attempt.
- */
-function registerWriteStubs(server: McpServer, context: ServerContext): void {
-  const stubs: { name: string; description: string; inputSchema: z.ZodRawShape }[] = [
-    {
-      name: 'update_entities',
-      description:
-        'GATED until v1.x. Will update bids, budgets and states in bulk. v1 is read-only: it ' +
-        'proposes and the operator applies, and the write path unlocks only after the ' +
-        'crosscheck exit criterion is met on real profiles.',
-      inputSchema: {
-        profile_id: profileIdSchema,
-        entity_type: z.enum(['campaign', 'ad_group', 'keyword', 'target']),
-        updates: z.array(z.record(z.string(), z.unknown())),
-        note: z.string().describe('Mandatory on every mutating action, including reverts'),
-      },
-    },
-    {
-      name: 'create_negatives',
-      description: 'GATED until v1.x. Will create negative keywords and product targets from a preview.',
-      inputSchema: {
-        profile_id: profileIdSchema,
-        negatives: z.array(z.record(z.string(), z.unknown())),
-        note: z.string(),
-      },
-    },
-    {
-      name: 'apply_optimization',
-      description: 'GATED until v1.x. Will apply a staged bid batch, snapshot first, revertible by batch.',
-      inputSchema: { profile_id: profileIdSchema, batch_id: z.string(), note: z.string() },
-    },
-    {
-      name: 'create_tag',
-      description: 'GATED until v1.x. Will create and assign nested tags.',
-      inputSchema: { name: z.string(), parent_id: z.string().optional() },
-    },
-    {
-      name: 'set_context',
-      description: 'GATED until v1.x. Will store per-profile operating context.',
-      inputSchema: { profile_id: profileIdSchema, content: z.string() },
-    },
-  ];
-
-  for (const stub of stubs) {
-    server.registerTool(
-      stub.name,
-      {
-        title: `${stub.name} (gated)`,
-        description: stub.description,
-        inputSchema: stub.inputSchema,
-        annotations: { readOnlyHint: false, destructiveHint: true },
-      },
-      audited(context, stub.name, async () => {
-        throw new GatedError(stub.name);
-      }),
-    );
-  }
 }
 
 function registerResources(server: McpServer, context: ServerContext): void {
@@ -943,36 +878,42 @@ function registerResources(server: McpServer, context: ServerContext): void {
       description: 'Pipeline, entity levels, metric conventions, filter grammar, and the traps.',
       mimeType: 'text/markdown',
     },
-    async (uri) => {
+    auditedResourceRead(context, 'instructions', async (uri) => {
       const profiles = await listProfiles(handle, scope);
       return {
-        contents: [
-          {
-            uri: uri.href,
-            mimeType: 'text/markdown',
-            text: instructionsDocument(context.orgSlug, profiles.length),
-          },
-        ],
+        result: {
+          contents: [
+            {
+              uri: uri.href,
+              mimeType: 'text/markdown',
+              text: instructionsDocument(context.orgSlug, profiles.length),
+            },
+          ],
+        },
+        summary: { profiles: profiles.length },
       };
-    },
+    }),
   );
 
   server.registerResource(
     'profile-context',
     new ResourceTemplate('wizardads://profiles/{profileId}', {
-      list: async () => {
+      list: auditedResourceList(context, 'profile-context', async () => {
         const profiles = await listProfiles(handle, scope);
         return {
-          resources: profiles.map((profile) => ({
-            uri: `wizardads://profiles/${profile.id}`,
-            name: profile.accountName ?? `${profile.countryCode} ${profile.amazonProfileId}`,
-            description: `${profile.countryCode} · ${profile.currencyCode} · ${
-              profile.syncEnabled ? 'syncing' : 'sync disabled'
-            }`,
-            mimeType: 'application/json',
-          })),
+          result: {
+            resources: profiles.map((profile) => ({
+              uri: `wizardads://profiles/${profile.id}`,
+              name: profile.accountName ?? `${profile.countryCode} ${profile.amazonProfileId}`,
+              description: `${profile.countryCode} · ${profile.currencyCode} · ${
+                profile.syncEnabled ? 'syncing' : 'sync disabled'
+              }`,
+              mimeType: 'application/json',
+            })),
+          },
+          summary: { rows: profiles.length },
         };
-      },
+      }),
     }),
     {
       title: 'Profile context',
@@ -981,22 +922,30 @@ function registerResources(server: McpServer, context: ServerContext): void {
         'profile. Context arrives with the data it qualifies, so it cannot be forgotten.',
       mimeType: 'application/json',
     },
-    async (uri, variables) => {
+    auditedResourceRead(
+      context,
+      'profile-context',
+      async (uri, variables: Record<string, string | string[]>) => {
       const raw = variables['profileId'];
       const profileId = Array.isArray(raw) ? raw[0] : raw;
       if (!profileId) throw new ToolError('invalid_argument', 'no profile id in the resource URI');
       const profile = await resolveProfile(handle, scope, profileId);
       const profileContext = await getProfileContext(handle, scope, profile);
       return {
-        contents: [
-          {
-            uri: uri.href,
-            mimeType: 'application/json',
-            text: JSON.stringify(profileContext, null, 2),
-          },
-        ],
+        result: {
+          contents: [
+            {
+              uri: uri.href,
+              mimeType: 'application/json',
+              text: JSON.stringify(profileContext, null, 2),
+            },
+          ],
+        },
+        summary: { profileId: profile.id },
+        profileId: profile.id,
       };
-    },
+      },
+    ),
   );
 }
 

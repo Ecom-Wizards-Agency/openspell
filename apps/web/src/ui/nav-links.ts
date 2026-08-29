@@ -47,7 +47,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     icon: 'sliders',
     links: [
       { href: '/optimizer', label: 'Campaign Optimizer', icon: 'sliders' },
-      { href: '/optimizer/groups', label: 'Optimization Groups', icon: 'layers' },
+      { href: '/optimizer/groups', label: 'Campaign Review', icon: 'layers' },
       { href: '/recommendations', label: 'Recommendations', icon: 'check' },
       { href: '/campaigns', label: 'Campaign Builder', icon: 'layers' },
     ],

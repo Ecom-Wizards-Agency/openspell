@@ -8,6 +8,9 @@ import { buildGridModel } from './pipeline.js';
 const columns = columnsFor('search_terms').filter((column) =>
   ['search_term', 'spend', 'sales', 'acos', 'acos_delta_percent'].includes(column.id),
 );
+const nestedColumns = columnsFor('search_terms').filter((column) =>
+  ['campaign_name', 'ad_group_name', 'match_type', 'spend', 'sales', 'acos'].includes(column.id),
+);
 
 describe('toCsv', () => {
   it('exports the filtered set, and counts it against the unfiltered one', () => {
@@ -53,7 +56,7 @@ describe('toCsv', () => {
     expect(header).toContain('2026-07-01..2026-07-31');
     expect(header).toContain('2026-06-01..2026-06-30');
     expect(header).toContain('currency JPY');
-    expect(header).toContain('3 of 3 rows');
+    expect(header).toContain('3 of 3 source rows');
   });
 
   it('says so when the export is of grouped rows', () => {
@@ -64,6 +67,33 @@ describe('toCsv', () => {
     expect(result.csv.split('\n')[0]).toContain('recomputed from summed bases');
     expect(result.exported).toBe(model.shown);
     expect(result.total).toBe(500);
+  });
+
+  it('exports deepest nested groups only, so parent summaries cannot double-count totals', () => {
+    const rows = syntheticSearchTermRows(3_597, { seed: 41 });
+    const model = buildGridModel(rows, {
+      groupBy: ['campaign_name', 'ad_group_name', 'match_type'],
+    });
+    const result = toCsv(model, {
+      columns: nestedColumns,
+      label: 'Search terms',
+      currencyCode: 'USD',
+    });
+    const lines = result.csv.trimEnd().split('\n');
+    const provenance = lines[0] as string;
+    const headers = (lines[1] as string).split(',');
+    const spendIndex = headers.indexOf('Spend');
+    const exportedSpend = lines
+      .slice(2)
+      .reduce((sum, line) => sum + Number(line.split(',')[spendIndex]), 0);
+
+    expect(model.exported).toBeLessThan(model.shown);
+    expect(result.exported).toBe(model.exported);
+    expect(lines).toHaveLength(model.exported + 2);
+    expect(provenance).toContain('deepest groups');
+    expect(provenance).toContain('parent summaries omitted');
+    expect(provenance).toContain('campaign_name > ad_group_name > match_type');
+    expect(exportedSpend).toBeCloseTo(model.totalsRow?.totals.spend ?? -1, 6);
   });
 
   it('escapes quotes, commas and newlines', () => {

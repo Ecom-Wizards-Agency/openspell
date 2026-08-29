@@ -21,6 +21,7 @@ const PROFILE_A = process.env['WIZARD_ADS_E2E_PROFILE_A'] ?? '';
 
 /** Kept in sync with `TIME_MACHINE_MARKER` in `e2e/run.ts`: a campaign budget change. */
 const MARKER = 'ZZ Time Machine Marker';
+const READY_TAG = 'tm-e2e-ready-export';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -62,6 +63,38 @@ test('the timeline shows both a sync-detected change and an operator apply', asy
   // A campaign entry deep-links into the grid where the change can be inspected.
   const expected = `${GRID}?${new URLSearchParams({ profile: PROFILE_A, entity: 'campaigns' })}`;
   await expect(marker.getByTestId('entry-goto')).toHaveAttribute('href', expected);
+});
+
+test('reviews uniquely synchronized evidence and exports an exact inverse file', async ({ page }) => {
+  await open(page);
+
+  const selectedBatch = page.getByTestId('time-machine-batch').filter({ hasText: READY_TAG });
+  await selectedBatch.click();
+  await expect(selectedBatch).toHaveClass(/is-selected/);
+  const preview = page.getByTestId('reversion-preview');
+  await expect(preview).toContainText('1 ready');
+  const row = preview.getByTestId('reversion-row');
+  await expect(row).toHaveCount(1);
+  await expect(row).toHaveAttribute('data-state', 'ready');
+  await expect(row).toContainText('0.9');
+  await expect(row).toContainText('0.71');
+  await expect(preview).toContainText('Wizard Ads does not update Amazon');
+  if (process.env['WIZARD_ADS_VISUAL_PATH']) {
+    await page.screenshot({ path: process.env['WIZARD_ADS_VISUAL_PATH'], fullPage: true });
+  }
+
+  await preview.getByPlaceholder('Why should this batch return to its original values?').fill(
+    'Synthetic E2E reversion review',
+  );
+  await preview.getByLabel('Yes, export reversion').check();
+  await preview.getByTestId('export-reversion').click();
+  const result = preview.getByTestId('reversion-result');
+  await expect(result).toContainText('Exported 1 inverse change');
+  await expect(result).toContainText('Amazon was not updated');
+  await expect(result.getByRole('link', { name: 'Download inverse rows JSON' })).toHaveAttribute(
+    'href',
+    /\/api\/recommendations\/export\/.+\?format=rows/,
+  );
 });
 
 test('filters narrow by source, entity type and field', async ({ page }) => {

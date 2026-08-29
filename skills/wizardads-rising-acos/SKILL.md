@@ -17,7 +17,6 @@ Explain a confirmed ACOS increase without changing the account. Follow the order
 - `get_flags` — read active and suppressed goal-aware findings.
 - `get_pacing` — identify budget-pacing context.
 - `get_recommendations` — surface existing engine proposals and provenance.
-- `create_goto_link` — link the operator to large driver tables.
 
 ## Rules
 
@@ -93,7 +92,10 @@ Call `get_flags`, `get_pacing`, and `get_recommendations`.
 
 ### 7. Hand off the evidence
 
-When the contributor table exceeds about ten rows, call `create_goto_link` for `/grid`, `/search-terms`, or `/recommendations` with the matching date and filters.
+When the contributor table exceeds about ten rows, provide a textual in-app handoff. Name
+`/grid`, `/search-terms`, or `/recommendations` and give the exact profile, date window, entity,
+filters, and sort the operator should apply manually. Do not claim that a link or saved view was
+created.
 
 ## Output
 
@@ -104,6 +106,6 @@ Return a concise diagnostic with these headings:
 3. **ACOS equation** — current versus prior CPC, CVR, AOV, spend, and attributed sales.
 4. **Driver waterfall** — timing/mix, campaigns, traffic, and placements in fixed order.
 5. **Strategy context** — active flags, suppressed flags, pacing, and current proposals.
-6. **Operator review** — prioritized evidence to review, with GoTo links; no executed changes.
+6. **Operator review** — prioritized evidence plus in-app route instructions; no executed changes.
 
 End with the comparison windows and: “Read-only diagnostic: no account changes were made.”

@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RecommendationRecord } from '@wizard-ads/db';
 import type { RecommendationInputs } from '@wizard-ads/shared';
-import { groupByReason, reasonCoverage, toProposalView } from './view';
+import { groupByDecision, groupByReason, reasonCoverage, toProposalView } from './view';
 
 const INPUT_KEYS = ['rpc', 'clicks', 'cvrSourceLevel', 'ceilingApplied', 'capClamped', 'window'];
 
@@ -136,5 +136,28 @@ describe('grouping and coverage', () => {
     expect(coverage[0]).toMatchObject({ reason: 'high_acos', count: 2 });
     expect(coverage[0]?.share).toBeCloseTo(2 / 3, 6);
     expect(reasonCoverage([])).toEqual([]);
+  });
+
+  it('builds a decision queue from stored statuses without inventing groups', () => {
+    const views = [
+      toProposalView(record('low_acos'), { strategySnapshot: SNAPSHOT }),
+      toProposalView(record('high_acos', { id: 'accepted', status: 'accepted' }), {
+        strategySnapshot: SNAPSHOT,
+      }),
+      toProposalView(record('high_acos', { id: 'exported', status: 'exported' }), {
+        strategySnapshot: SNAPSHOT,
+      }),
+      toProposalView(record('flag', { id: 'dismissed', status: 'dismissed' }), {
+        strategySnapshot: SNAPSHOT,
+      }),
+    ];
+
+    const queue = groupByDecision(views);
+    expect(queue.map((lane) => [lane.id, lane.proposals.length])).toEqual([
+      ['needs_review', 1],
+      ['ready_to_export', 1],
+      ['completed', 2],
+    ]);
+    expect(queue[2]?.reasons.map((group) => group.reason)).toEqual(['high_acos', 'flag']);
   });
 });

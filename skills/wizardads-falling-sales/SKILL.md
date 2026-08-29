@@ -17,7 +17,6 @@ Explain a decline in Amazon Ads attributed sales without changing the account. T
 - `get_flags` — read active and suppressed doctrine-engine findings.
 - `get_pacing` — identify underpacing or budget context.
 - `get_recommendations` — surface existing proposals and their evidence.
-- `create_goto_link` — link the operator to detailed loss-contributor views.
 
 ## Rules
 
@@ -101,7 +100,11 @@ Call `get_flags`, `get_pacing`, and `get_recommendations`.
 
 When traffic or CVR falls without an ad-side cause, list the narrow external checks needed: stock availability, Buy Box/featured offer, listing eligibility, price or promotion changes, retail sessions, and market demand. Present these as unresolved hypotheses, not findings.
 
-For large contributor tables, call `create_goto_link` for `/grid`, `/search-terms`, or `/recommendations` with the matching profile, dates, filters, and sort.
+For a large contributor table, give the operator a textual in-app handoff instead of pasting the
+long tail. Name the route (`/grid`, `/search-terms`, or `/recommendations`) and the exact profile,
+date window, entity, filters, and sort to apply there. Format it as a short instruction such as
+`Open /grid → select <profile> → set <window> → filter <condition> → sort <metric> descending`.
+Do not claim that a link or saved view was created.
 
 ## Output
 
@@ -113,6 +116,6 @@ Return a concise diagnostic with these headings:
 4. **Loss contributors** — channel, campaign, keyword/target, search-term, and placement evidence.
 5. **Strategy context** — flags, suppressed flags, pacing, and recommendations.
 6. **Unresolved hypotheses** — only checks the MCP evidence cannot decide.
-7. **Operator review** — GoTo links and proposed next investigations; no executed changes.
+7. **Operator review** — in-app route instructions and proposed next investigations; no executed changes.
 
 End with both comparison windows and: “Read-only diagnostic: no account changes were made.”

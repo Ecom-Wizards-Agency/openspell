@@ -7,7 +7,9 @@
  * them out the way the recon says the incumbent does: a KPI tile row, a
  * daily/weekly/monthly trend chart, the reason-coverage clusters, and a preview
  * grouped into optimization groups, each proposal carrying the change-reasons /
- * limit-reasons split as two separate pill columns. The three-act QA-and-apply
+ * limit-reasons split as two separate pill columns. Campaign buckets are named
+ * honestly; they do not stand in for the persisted optimization-group model.
+ * The three-act QA-and-apply
  * gesture stays where it is tested and trusted, on `/recommendations`; this page
  * links through to it.
  *
@@ -33,7 +35,7 @@ import { toProposalView } from '../../src/recommendations/view';
 import { reasonCoverage } from '../../src/recommendations/view';
 import {
   kpiTiles,
-  optimizationGroups,
+  campaignReviewGroups,
   settingsSummary,
   totalsOf,
 } from '../../src/optimizer/view';
@@ -125,7 +127,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
     settledRows.length === 0 ? null : totalsOf(settledRows),
     comparisonRows.length === 0 ? null : totalsOf(comparisonRows),
   );
-  const groups = optimizationGroups(proposals);
+  const groups = campaignReviewGroups(proposals);
   const coverage = reasonCoverage(proposals);
   const summary = settingsSummary(proposals);
   const freshness = assessFreshness(ledger, { now: new Date() });
@@ -224,9 +226,9 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
                 }
               />
             ) : (
-              <section aria-label="Optimization groups" className="wa-stack">
+              <section aria-label="Campaign review groups" className="wa-stack">
                 <h2 className="wa-section-title" style={{ margin: 0 }}>
-                  Optimization groups · {groups.length}
+                  Campaign review groups · {groups.length}
                 </h2>
                 {groups.map((group) => (
                   <OptimizerGroupTable

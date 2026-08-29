@@ -14,12 +14,24 @@
 import { pgEnum } from 'drizzle-orm/pg-core';
 import {
   AdProduct,
+  CreativeAttributionState,
   EntityState,
   EntityType,
+  HistoricalBootstrapStatus,
+  HourSettlingState,
   JobType,
+  MarketingStreamDataset,
   MatchType,
+  OptimizationGroupRole,
+  OptimizationPrioritization,
   Placement,
+  QueryCategory,
+  QueryVocabularyKind,
+  QueryVocabularySource,
+  RecommendationEvidenceDecision,
+  RecommendationEvidenceState,
   Region,
+  ReportDataSource,
 } from '@wizard-ads/shared';
 
 /**
@@ -129,3 +141,51 @@ export const applyBatchStatus = pgEnum('apply_batch_status', [
 
 export const auditActorType = pgEnum('audit_actor_type', ['user', 'service', 'mcp', 'system']);
 export const supaRule = pgEnum('supa_rule', ['P1', 'P2', 'P3', 'O1', 'O2', 'E1']);
+
+// WP-56 operator-intelligence foundations. Values come directly from the
+// contract package so SQL, Drizzle and the worker cannot drift by spelling.
+export const reportDataSource = pgEnum(
+  'report_data_source',
+  tuple(ReportDataSource.options),
+);
+export const historicalBootstrapStatus = pgEnum(
+  'historical_bootstrap_status',
+  tuple(HistoricalBootstrapStatus.options),
+);
+export const creativeAttributionState = pgEnum(
+  'creative_attribution_state',
+  tuple(CreativeAttributionState.options),
+);
+export const queryCategory = pgEnum('query_category', tuple(QueryCategory.options));
+export const queryVocabularyKind = pgEnum(
+  'query_vocabulary_kind',
+  tuple(QueryVocabularyKind.options),
+);
+export const queryVocabularySource = pgEnum(
+  'query_vocabulary_source',
+  tuple(QueryVocabularySource.options),
+);
+export const optimizationGroupRole = pgEnum(
+  'optimization_group_role',
+  tuple(OptimizationGroupRole.options),
+);
+export const optimizationPrioritization = pgEnum(
+  'optimization_prioritization',
+  tuple(OptimizationPrioritization.options),
+);
+export const recommendationEvidenceState = pgEnum(
+  'recommendation_evidence_state',
+  tuple(RecommendationEvidenceState.options),
+);
+export const recommendationEvidenceDecision = pgEnum(
+  'recommendation_evidence_decision',
+  tuple(RecommendationEvidenceDecision.options),
+);
+export const marketingStreamDataset = pgEnum(
+  'marketing_stream_dataset',
+  tuple(MarketingStreamDataset.options),
+);
+export const hourSettlingState = pgEnum(
+  'hour_settling_state',
+  tuple(HourSettlingState.options),
+);

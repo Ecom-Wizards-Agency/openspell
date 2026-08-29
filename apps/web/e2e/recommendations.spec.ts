@@ -35,10 +35,12 @@ test.describe('recommendations review', () => {
   test('shows every proposal grouped by reason, with its work and its strategy', async ({ page }) => {
     await openReview(page);
 
-    // Grouped by reason, and the coverage strip says how concentrated the run is.
-    await expect(page.getByTestId('reason-group-high_acos')).toBeVisible();
-    await expect(page.getByTestId('reason-group-low_visibility')).toBeVisible();
-    await expect(page.getByTestId('reason-coverage')).toContainText('High ACOS');
+    // Decision first, then reason: the operator sees one queue rather than a
+    // flat wall of recommendation rows.
+    const reviewLane = page.getByTestId('decision-lane-needs_review');
+    await expect(reviewLane).toBeVisible();
+    await expect(page.getByTestId('reason-group-needs_review-high_acos')).toBeVisible();
+    await expect(page.getByTestId('reason-group-needs_review-low_visibility')).toBeVisible();
 
     const rows = page.locator('tr[data-testid^="proposal-"]');
     await expect(rows).toHaveCount(PROPOSALS);
@@ -48,7 +50,7 @@ test.describe('recommendations review', () => {
     const id = (await first.getAttribute('data-testid'))?.replace('proposal-', '') ?? '';
     await expect(page.getByTestId(`objective-${id}`)).toHaveText('Rank · rank-launch');
 
-    await first.getByRole('button', { name: 'Show work' }).click();
+    await first.getByRole('button', { name: 'Show evidence' }).click();
     const panel = page.getByTestId(`provenance-${id}`);
     await expect(panel).toBeVisible();
     for (const key of INPUT_KEYS) {
@@ -58,6 +60,7 @@ test.describe('recommendations review', () => {
     await expect(panel).toContainText('Change reason');
     await expect(page.getByTestId(`limit-${id}`)).toContainText('data_based_ad_group');
     await expect(page.getByTestId(`strategy-${id}`)).toContainText('rank-launch');
+
   });
 
   test('accept, dismiss and export: the three-act gesture, and dismissed rows never export', async ({
@@ -66,7 +69,9 @@ test.describe('recommendations review', () => {
     await openReview(page);
 
     // Dismiss the low-visibility proposal, with the note the route demands.
-    const lowVisibility = page.getByTestId('reason-group-low_visibility').locator('tr[data-testid^="proposal-"]').first();
+    const lowVisibilityGroup = page.getByTestId('reason-group-needs_review-low_visibility');
+    await lowVisibilityGroup.locator('summary').click();
+    const lowVisibility = lowVisibilityGroup.locator('tr[data-testid^="proposal-"]').first();
     await lowVisibility.getByRole('checkbox').check();
     await page.getByLabel('Decision note').fill('Rank target: never cut on ACOS alone.');
     await page.getByRole('button', { name: 'Dismiss selected' }).click();
@@ -84,12 +89,12 @@ test.describe('recommendations review', () => {
     // Act two of the gesture is separate from act three: pressing Export
     // without the confirmation is refused.
     await page.getByLabel('Decision note').fill('Weekly rank batch.');
-    await page.getByLabel('Opt group').fill('Rank');
-    await page.getByRole('button', { name: 'Export', exact: true }).click();
-    await expect(page.getByTestId('review-error')).toContainText('I confirm this export');
+    await page.getByLabel('Strategy group for export').selectOption('Rank');
+    await page.getByTestId('export-accepted').click();
+    await expect(page.getByTestId('review-error')).toContainText('Yes, export changes');
 
-    await page.getByRole('checkbox', { name: 'I confirm this export' }).check();
-    await page.getByRole('button', { name: 'Export', exact: true }).click();
+    await page.getByRole('checkbox', { name: 'Yes, export changes' }).check();
+    await page.getByTestId('export-accepted').click();
     const result = page.getByTestId('export-result');
     await expect(result).toContainText(`Exported ${PROPOSALS - 1} of ${PROPOSALS - 1} accepted`);
     await expect(result).toContainText('-rank-bid-down');
@@ -118,7 +123,7 @@ test.describe('recommendations review', () => {
 
     // And the statuses moved.
     await openReview(page);
-    await expect(page.getByTestId('run-counts')).toContainText(`exported ${PROPOSALS - 1} of`);
+    await expect(page.getByTestId('run-counts')).toContainText(`${PROPOSALS - 1} exported`);
     await expect(page.locator('tr[data-status="dismissed"]')).toHaveCount(1);
   });
 });
@@ -154,7 +159,7 @@ test.describe('n-gram explorer', () => {
     // newest one, which the review screen lists first.
     await page.goto(`/recommendations?profile=${PROFILE}`);
     await page.getByRole('navigation', { name: 'Runs' }).getByRole('link').first().click();
-    await expect(page.getByTestId('reason-group-flag')).toBeVisible();
+    await expect(page.getByTestId('reason-group-needs_review-flag')).toBeVisible();
     await expect(page.locator('tr[data-testid^="proposal-"]')).toHaveCount(chosen);
   });
 });

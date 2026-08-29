@@ -17,8 +17,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createDb } from '@wizard-ads/db';
 import type { DbHandle } from '@wizard-ads/db';
 import { AuthError } from './errors.js';
-import { touchApiKey, verifyApiKey } from './keys.js';
-import { createMcpServer } from './server.js';
+import { verifyApiKey } from './keys.js';
+import { createMcpServer, SERVER_NAME, SERVER_VERSION } from './server.js';
 import type { McpConfig } from './config.js';
 
 export const MCP_PATH = '/mcp';
@@ -35,6 +35,8 @@ export interface StartOptions {
   config: McpConfig;
   /** An existing handle (tests own their database); otherwise one is opened here. */
   handle?: DbHandle;
+  /** Override only for an embedding host or a health-path unit test. */
+  readinessProbe?: () => Promise<void>;
 }
 
 export async function startHttpServer(options: StartOptions): Promise<RunningServer> {
@@ -47,6 +49,9 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
       max: config.poolSize,
       statementTimeoutSeconds: config.statementTimeoutSeconds,
     });
+  const readinessProbe = options.readinessProbe ?? (async () => {
+    await handle.sql`select 1`;
+  });
 
   const http = createServer((req, res) => {
     void handle_(req, res).catch((error: unknown) => {
@@ -65,7 +70,12 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
     const url = new URL(req.url ?? '/', 'http://localhost');
 
     if (url.pathname === '/healthz') {
-      respond(res, 200, { status: 'ok' });
+      try {
+        await readinessProbe();
+        respond(res, 200, healthPayload(config, 'ready'));
+      } catch {
+        respond(res, 503, healthPayload(config, 'not_ready'));
+      }
       return;
     }
     if (url.pathname !== MCP_PATH) {
@@ -122,9 +132,6 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
 
     await server.connect(transport);
     await transport.handleRequest(req, res, body);
-    // Best effort, and deliberately after the response: a failed bookkeeping
-    // write must never fail the call it was recording.
-    void touchApiKey(handle, key.id).catch(() => {});
   }
 
   const port = await listen(http, config.port, config.host);
@@ -138,6 +145,20 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
       if (owned) await handle.close();
     },
   };
+}
+
+function healthPayload(config: McpConfig, status: 'ready' | 'not_ready') {
+  return {
+    status,
+    service: SERVER_NAME,
+    version: SERVER_VERSION,
+    revision: publicRevision(config.revision),
+    checks: { database: status === 'ready' ? 'ready' : 'not_ready' },
+  } as const;
+}
+
+function publicRevision(value: string | undefined): string {
+  return value !== undefined && /^[0-9a-f]{7,64}$/.test(value) ? value : 'unknown';
 }
 
 function bearerToken(req: IncomingMessage): string {

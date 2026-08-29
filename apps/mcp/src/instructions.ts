@@ -12,7 +12,6 @@
 import { ENTITY_LEVELS, LEVELS } from './catalog.js';
 import { ALL_METRICS, DERIVED_METRICS } from './metrics.js';
 import { FILTER_OPERATORS } from './sql.js';
-import { GOTO_ROUTES } from './data.js';
 
 export function instructionsDocument(orgSlug: string, profileCount: number): string {
   const levels = ENTITY_LEVELS.map((level) => `- \`${level}\` — ${LEVELS[level].description}`).join('\n');
@@ -26,8 +25,8 @@ You are connected to **${orgSlug}** with a read-only key covering ${profileCount
     profileCount === 1 ? '' : 's'
   }.
 Every call you make is written to the audit log with its parameters. Nothing you can call
-changes an Amazon account; the write tools exist so you can see the future surface and they
-refuse.
+changes an Amazon account or wizard-ads product data. The production catalog contains
+analytical reads only.
 
 ## The pipeline
 
@@ -35,7 +34,6 @@ refuse.
     REFINE   query / group_by                          slice them
     EXPORT   download_data                             take them away as CSV
     EXPLAIN  get_flags / get_pacing / get_recommendations
-    HAND OVER create_goto_link                         send a human to the exact view
 
 Start with \`list_profiles\`. Never guess a profile id. \`profile_id\` is required on every
 profile-scoped tool and is applied as a predicate on the fact scan, so a result set contains
@@ -96,12 +94,6 @@ Three keys are not columns:
 - **The product level attributes through single-ASIN ad groups only.** Ad groups advertising
   more than one ASIN cannot be split without inventing a number, so they are excluded and the
   excluded spend is reported on every product response. Read it before quoting an ASIN total.
-
-## Deep links
-
-\`create_goto_link\` mints a token that opens the web app at a specific view. Routes:
-${GOTO_ROUTES.map((route) => `\`${route}\``).join(', ')}. Use one whenever a result is too large
-to show inline (more than about ten rows), instead of pasting a wall of numbers.
 
 ## Per-profile context
 

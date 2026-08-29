@@ -42,18 +42,37 @@ export function assertSingleCurrency(rows: readonly GridRow[]): string | null {
   return seen;
 }
 
-const GROUP_SEPARATOR = '\u0000';
+/** Remove repeated levels while preserving the operator's requested order. */
+export function uniqueGroupLevels(columnIds: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const levels: string[] = [];
+  for (const columnId of columnIds) {
+    if (columnId === '' || seen.has(columnId)) continue;
+    seen.add(columnId);
+    levels.push(columnId);
+  }
+  return levels;
+}
 
 /**
- * `GROUP_SEPARATOR` above is NUL, because it cannot occur in a dimension
- * value: grouping by campaign name and match type together must not collide
- * with a campaign whose name happens to contain whatever separator we picked.
- * It is written as an escape rather than a literal byte — a raw NUL in the
- * source makes git treat the whole file as binary, and a file nobody can read
- * a diff of is a file nobody reviews.
+ * A length-prefixed, typed key. Delimiters alone are not sufficient because a
+ * customer-authored campaign name may contain any printable character (and
+ * imports can contain control characters). The key is used in a Map; the URI
+ * encoded form is exposed as the stable virtual-row identity.
  */
-function groupKeyOf(row: GridRow, columnIds: readonly string[]): string {
-  return columnIds.map((id) => String(resolveField(row, id) ?? '')).join(GROUP_SEPARATOR);
+function dimensionKey(columnId: string, value: DimensionValue): string {
+  const encodedValue =
+    value === null
+      ? 'null'
+      : typeof value === 'string'
+        ? `string:${value}`
+        : `${typeof value}:${String(value)}`;
+  return `${columnId.length}:${columnId}${encodedValue.length}:${encodedValue}`;
+}
+
+export interface GroupPathPart {
+  columnId: string;
+  value: DimensionValue;
 }
 
 export interface GroupedRow extends GridRow {
@@ -61,6 +80,16 @@ export interface GroupedRow extends GridRow {
   groupSize: number;
   /** The columns that defined the group, in order. */
   groupBy: readonly string[];
+  /** Zero-based level in the rendered hierarchy. */
+  groupDepth: number;
+  /** The dimension represented by this row. */
+  groupColumnId: string;
+  /** Ordered dimension/value path from the root to this row. */
+  groupPath: readonly GroupPathPart[];
+  /** Null only for a root group. */
+  parentGroupId: string | null;
+  /** True when this row is at the deepest requested grouping level. */
+  isLeafGroup: boolean;
 }
 
 export function isGroupedRow(row: GridRow): row is GroupedRow {
@@ -68,7 +97,7 @@ export function isGroupedRow(row: GridRow): row is GroupedRow {
 }
 
 /**
- * Fold rows onto the given dimension columns.
+ * Fold rows into an ordered, depth-first hierarchy.
  *
  * Dimension columns that are not part of the group key are dropped rather than
  * taking an arbitrary row's value: showing one campaign's bid on a row that
@@ -77,54 +106,148 @@ export function isGroupedRow(row: GridRow): row is GroupedRow {
  * tag any member carries).
  */
 export function groupRows(rows: readonly GridRow[], columnIds: readonly string[]): GroupedRow[] {
-  if (columnIds.length === 0) return [];
-  assertSingleCurrency(rows);
+  const levels = uniqueGroupLevels(columnIds);
+  if (levels.length === 0) return [];
+
+  // The common operator path is one grouping dimension. Avoid constructing a
+  // hierarchy index and path arrays for 50k source rows when every bucket is a
+  // root and a leaf. Multi-level grouping keeps the general tree path below.
+  if (levels.length === 1) return groupRowsSingleLevel(rows, levels[0] as string, levels);
 
   const buckets = new Map<string, GroupedRow>();
+  const children = new Map<string, GroupedRow[]>();
   const tagSets = new Map<string, Set<string>>();
-  /** Only entities that reported in the comparison window contribute to it. */
-  const comparisonSeen = new Map<string, boolean>();
+  let currency: string | null = null;
 
   for (const row of rows) {
-    const key = groupKeyOf(row, columnIds);
+    if (currency === null) currency = row.currencyCode;
+    else if (currency !== row.currencyCode) {
+      throw new MixedCurrencyError([currency, row.currencyCode].sort());
+    }
+    let pathKey = '';
+    let parentGroupId: string | null = null;
+    const dimensions: Record<string, DimensionValue> = {};
+    const groupPath: GroupPathPart[] = [];
+
+    for (let depth = 0; depth < levels.length; depth += 1) {
+      const columnId = levels[depth] as string;
+      const value = resolveField(row, columnId);
+      dimensions[columnId] = value;
+      groupPath.push({ columnId, value });
+      pathKey += dimensionKey(columnId, value);
+
+      let bucket = buckets.get(pathKey);
+      if (bucket === undefined) {
+        const id = `group:${encodeURIComponent(pathKey)}`;
+        bucket = {
+          id,
+          dimensions: { ...dimensions },
+          totals: emptyTotals(),
+          comparison: null,
+          currencyCode: row.currencyCode,
+          groupSize: 0,
+          groupBy: levels,
+          groupDepth: depth,
+          groupColumnId: columnId,
+          groupPath: [...groupPath],
+          parentGroupId,
+          isLeafGroup: depth === levels.length - 1,
+        };
+        buckets.set(pathKey, bucket);
+        tagSets.set(pathKey, new Set());
+        const parentKey = parentGroupId ?? '';
+        const siblings = children.get(parentKey);
+        if (siblings === undefined) children.set(parentKey, [bucket]);
+        else siblings.push(bucket);
+      }
+
+      addTotals(bucket.totals, row.totals);
+      bucket.groupSize += 1;
+      if (row.comparison !== null) {
+        if (bucket.comparison === null) bucket.comparison = emptyTotals();
+        addTotals(bucket.comparison, row.comparison);
+      }
+      const tags = tagSets.get(pathKey);
+      if (tags !== undefined) for (const tagId of row.tagIds ?? []) tags.add(tagId);
+      parentGroupId = bucket.id;
+    }
+  }
+
+  for (const [key, bucket] of buckets) {
+    const tags = tagSets.get(key);
+    if (tags !== undefined && tags.size > 0) bucket.tagIds = [...tags].sort();
+  }
+
+  const out: GroupedRow[] = [];
+  const append = (parentGroupId: string | null): void => {
+    for (const child of children.get(parentGroupId ?? '') ?? []) {
+      out.push(child);
+      append(child.id);
+    }
+  };
+  append(null);
+  return out;
+}
+
+function groupRowsSingleLevel(
+  rows: readonly GridRow[],
+  columnId: string,
+  groupBy: readonly string[],
+): GroupedRow[] {
+  const buckets = new Map<string, GroupedRow>();
+  const tagSets = new Map<string, Set<string>>();
+  let currency: string | null = null;
+
+  for (const row of rows) {
+    if (currency === null) currency = row.currencyCode;
+    else if (currency !== row.currencyCode) {
+      throw new MixedCurrencyError([currency, row.currencyCode].sort());
+    }
+
+    const value = resolveField(row, columnId);
+    const key = dimensionKey(columnId, value);
     let bucket = buckets.get(key);
     if (bucket === undefined) {
-      const dimensions: Record<string, DimensionValue> = {};
-      for (const id of columnIds) dimensions[id] = resolveField(row, id);
       bucket = {
-        id: `group:${key}`,
-        dimensions,
+        id: `group:${encodeURIComponent(key)}`,
+        dimensions: { [columnId]: value },
         totals: emptyTotals(),
         comparison: null,
         currencyCode: row.currencyCode,
         groupSize: 0,
-        groupBy: columnIds,
+        groupBy,
+        groupDepth: 0,
+        groupColumnId: columnId,
+        groupPath: [{ columnId, value }],
+        parentGroupId: null,
+        isLeafGroup: true,
       };
       buckets.set(key, bucket);
-      tagSets.set(key, new Set());
-      comparisonSeen.set(key, false);
     }
 
     addTotals(bucket.totals, row.totals);
     bucket.groupSize += 1;
-
     if (row.comparison !== null) {
       if (bucket.comparison === null) bucket.comparison = emptyTotals();
       addTotals(bucket.comparison, row.comparison);
-      comparisonSeen.set(key, true);
     }
-
-    const tags = tagSets.get(key);
-    if (tags !== undefined) for (const tagId of row.tagIds ?? []) tags.add(tagId);
+    if ((row.tagIds?.length ?? 0) > 0) {
+      let tags = tagSets.get(key);
+      if (tags === undefined) {
+        tags = new Set<string>();
+        tagSets.set(key, tags);
+      }
+      for (const tagId of row.tagIds ?? []) tags.add(tagId);
+    }
   }
 
-  const out: GroupedRow[] = [];
-  for (const [key, bucket] of buckets) {
+  const result = [...buckets.values()];
+  for (const bucket of result) {
+    const key = dimensionKey(columnId, bucket.groupPath[0]?.value ?? null);
     const tags = tagSets.get(key);
-    if (tags !== undefined && tags.size > 0) bucket.tagIds = [...tags].sort();
-    out.push(bucket);
+    if (tags !== undefined) bucket.tagIds = [...tags].sort();
   }
-  return out;
+  return result;
 }
 
 /**
@@ -134,11 +257,15 @@ export function groupRows(rows: readonly GridRow[], columnIds: readonly string[]
  */
 export function grandTotal(rows: readonly GridRow[], label = 'Total'): GroupedRow | null {
   if (rows.length === 0) return null;
-  const currency = assertSingleCurrency(rows);
   const totals = emptyTotals();
   let comparison: BaseTotals | null = null;
+  let currency: string | null = null;
 
   for (const row of rows) {
+    if (currency === null) currency = row.currencyCode;
+    else if (currency !== row.currencyCode) {
+      throw new MixedCurrencyError([currency, row.currencyCode].sort());
+    }
     addTotals(totals, row.totals);
     if (row.comparison !== null) {
       if (comparison === null) comparison = emptyTotals();
@@ -154,5 +281,10 @@ export function grandTotal(rows: readonly GridRow[], label = 'Total'): GroupedRo
     currencyCode: currency ?? '',
     groupSize: rows.length,
     groupBy: [],
+    groupDepth: -1,
+    groupColumnId: '__total__',
+    groupPath: [],
+    parentGroupId: null,
+    isLeafGroup: true,
   };
 }

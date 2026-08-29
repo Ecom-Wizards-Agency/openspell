@@ -11,6 +11,7 @@ import {
   portfolios,
   productAds,
   recordEntityChanges,
+  reconcileEntityChangeLinks,
   reportRequests,
   requeueStaleSyncJobs,
   targets,
@@ -322,6 +323,13 @@ export class PostgresWorkerStore implements WorkerStore {
     }
 
     const writtenChanges = await recordEntityChanges(this.handle, changes);
+    // If a prior pass persisted the change ledger but failed during evidence
+    // attribution, the mirror already contains the new value and a retry will
+    // produce no fresh diff. Reconcile every pass so that failure is recoverable.
+    await reconcileEntityChangeLinks(this.handle, {
+      orgId: profile.orgId,
+      profileId: profile.id,
+    });
     // Program rule 4: every listed row is accounted for, as a write or as a
     // collision with a row that was written.
     if (entities.length !== upserted + duplicates) {

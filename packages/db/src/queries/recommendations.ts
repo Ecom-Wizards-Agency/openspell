@@ -25,8 +25,11 @@
  * to report success unless the rows it wrote equal the proposals it claimed,
  * and unless every proposal it touched actually changed status.
  */
+import { createHash } from 'node:crypto';
+import { serializeApplyRows } from '@wizard-ads/shared';
 import type { ApplyRow, RecommendationInputs } from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
+import { lockCurrentApplyStates, resolveCurrentApplyStates } from './apply-state.js';
 import type { JsonValue } from './goto.js';
 import { toDate, toDateOrNull } from './pg-time.js';
 
@@ -503,6 +506,10 @@ function applyValue(value: JsonValue): ApplyRow['old'] {
   throw new Error('A staged value must be a scalar; got a structured value');
 }
 
+function sameApplyValue(left: ApplyRow['old'], right: ApplyRow['old']): boolean {
+  return typeof left === typeof right && Object.is(left, right);
+}
+
 /**
  * Turn accepted proposals into a staged-apply batch.
  *
@@ -566,8 +573,29 @@ export async function exportAcceptedRecommendations(
     const accepted = acceptedRow?.count ?? 0;
 
     const rows: ApplyRow[] = [];
+    const rowRecommendationIds: string[] = [];
     const exportedIds: string[] = [];
     const skipped: ExportSkip[] = [];
+
+    const applyStateTargets = candidates.flatMap((candidate) => {
+      const entityType = applyEntityTypeFor(candidate.entity_type);
+      return entityType === null
+        ? []
+        : [{ key: candidate.id, entityType, entityId: candidate.entity_id, field: candidate.field }];
+    });
+    await lockCurrentApplyStates({ sql }, {
+      orgId: options.orgId,
+      profileId: options.profileId,
+      targets: applyStateTargets,
+    });
+    const currentStates = await resolveCurrentApplyStates({ sql }, {
+      orgId: options.orgId,
+      profileId: options.profileId,
+      targets: applyStateTargets,
+    });
+    const currentStateByRecommendation = new Map(
+      currentStates.map((state) => [state.key, state] as const),
+    );
 
     for (const candidate of candidates) {
       const entityType = applyEntityTypeFor(candidate.entity_type);
@@ -586,6 +614,26 @@ export async function exportAcceptedRecommendations(
         exportedIds.push(candidate.id);
         continue;
       }
+      const currentState = currentStateByRecommendation.get(candidate.id);
+      if (currentState === undefined || !currentState.supported) {
+        throw new Error(
+          `Cannot export ${candidate.entity_type}:${candidate.entity_id}.${candidate.field}: ` +
+            'the current-state adapter does not support this field.',
+        );
+      }
+      if (!currentState.present) {
+        throw new Error(
+          `Cannot export ${candidate.entity_type}:${candidate.entity_id}.${candidate.field}: ` +
+            'the entity is missing or deleted in the synchronized mirror.',
+        );
+      }
+      const expectedCurrent = applyValue(candidate.current_value);
+      if (!sameApplyValue(currentState.currentValue, expectedCurrent)) {
+        throw new Error(
+          `Cannot export ${candidate.entity_type}:${candidate.entity_id}.${candidate.field}: ` +
+            'the synchronized value changed after this recommendation was calculated. Refresh recommendations first.',
+        );
+      }
       const row: ApplyRow = {
         entityType,
         entityId: candidate.entity_id,
@@ -601,16 +649,22 @@ export async function exportAcceptedRecommendations(
       const rpc = toNumberOrUndefined(candidate.inputs?.rpc);
       if (rpc !== undefined && clicks !== undefined) row.revenue = Number((rpc * clicks).toFixed(4));
       rows.push(row);
+      rowRecommendationIds.push(candidate.id);
       exportedIds.push(candidate.id);
     }
 
     if (exportedIds.length === 0) throw new Error('No accepted proposals to export.');
 
+    const artifactSha256 = createHash('sha256')
+      .update(serializeApplyRows(rows))
+      .digest('hex');
     const [batch] = await sql<{ id: string }[]>`
       insert into public.apply_batches
-        (org_id, profile_id, tag, opt_group, lever, note, status, created_by)
+        (org_id, profile_id, tag, opt_group, lever, note, status, created_by,
+         exported_at, artifact_sha256, exported_proposals, reversible_rows, unsupported_rows)
       values (${options.orgId}, ${options.profileId}, ${tag}, ${options.optGroup},
-              ${options.lever}, ${note}, 'staged', ${options.actorId ?? null}::uuid)
+              ${options.lever}, ${note}, 'staged', ${options.actorId ?? null}::uuid,
+              now(), ${artifactSha256}, ${exportedIds.length}, ${rows.length}, ${skipped.length})
       returning id
     `;
     const batchId = batch?.id;
@@ -623,12 +677,14 @@ export async function exportAcceptedRecommendations(
         ? []
         : await sql<{ id: string }[]>`
             insert into public.apply_rows
-              (batch_id, org_id, entity_type, entity_id, entity_name, field, old_value, new_value,
-               lever, clicks, revenue)
-            select ${batchId}, ${options.orgId}, r.entity_type::public.apply_entity_type,
-                   r.entity_id, r.entity_name, r.field, r.old_value::jsonb, r.new_value::jsonb,
+              (batch_id, org_id, profile_id, recommendation_id, entity_type, entity_id,
+               entity_name, field, old_value, new_value, lever, clicks, revenue)
+            select ${batchId}, ${options.orgId}, ${options.profileId}, r.recommendation_id::uuid,
+                   r.entity_type::public.apply_entity_type, r.entity_id, r.entity_name,
+                   r.field, r.old_value::jsonb, r.new_value::jsonb,
                    ${options.lever}, r.clicks::bigint, r.revenue::numeric
               from unnest(
+                     ${rowRecommendationIds}::text[],
                      ${rows.map((row) => row.entityType)}::text[],
                      ${rows.map((row) => row.entityId)}::text[],
                      ${rows.map((row) => row.name ?? null)}::text[],
@@ -637,8 +693,8 @@ export async function exportAcceptedRecommendations(
                      ${rows.map((row) => serializeJson(row.new))}::text[],
                      ${rows.map((row) => (row.clicks === undefined ? null : String(row.clicks)))}::text[],
                      ${rows.map((row) => (row.revenue === undefined ? null : String(row.revenue)))}::text[]
-                   ) as r(entity_type, entity_id, entity_name, field, old_value, new_value,
-                          clicks, revenue)
+                   ) as r(recommendation_id, entity_type, entity_id, entity_name, field,
+                          old_value, new_value, clicks, revenue)
             returning id
           `;
     // Program rule 4: count outputs against inputs rather than trusting the

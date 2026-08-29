@@ -20,7 +20,12 @@ import type { McpConfig } from './config.js';
 import { startHttpServer } from './http.js';
 import { jsonText } from './json.js';
 import type { RunningServer } from './http.js';
-import { issueApiKey, revokeApiKey } from './keys.js';
+import {
+  issueApiKey,
+  MAX_API_KEY_LIFETIME_DAYS,
+  revokeApiKey,
+} from './keys.js';
+import type { IssueApiKeyInput } from './keys.js';
 
 const available = await databaseAvailable();
 
@@ -38,6 +43,7 @@ describe.skipIf(!available)('the MCP server', () => {
   let server: RunningServer;
   let orgAId: string;
   let orgBId: string;
+  let orgAProfileIds: string[];
   let profileA: string;
   let profileB: string;
   let amazonProfileA: string;
@@ -64,6 +70,7 @@ describe.skipIf(!available)('the MCP server', () => {
       select id, amazon_profile_id from public.ad_profiles
        where org_id = ${orgAId} order by amazon_profile_id
     `;
+    orgAProfileIds = profiles.map((profile) => profile.id);
     profileA = profiles[0]?.id ?? '';
     amazonProfileA = profiles[0]?.amazon_profile_id ?? '';
     profileB = profiles[1]?.id ?? '';
@@ -108,8 +115,18 @@ describe.skipIf(!available)('the MCP server', () => {
        where id = ${profileA}
     `;
 
-    const keyA = await issueApiKey(database, { orgId: orgAId, label: 'suite key A' });
-    const keyB = await issueApiKey(database, { orgId: orgBId, label: 'suite key B' });
+    const keyA = await issueApiKey(database, {
+      orgId: orgAId,
+      label: 'suite key A',
+      profileIds: orgAProfileIds,
+      expiresAt: futureExpiry(),
+    });
+    const keyB = await issueApiKey(database, {
+      orgId: orgBId,
+      label: 'suite key B',
+      profileIds: [orgBProfile],
+      expiresAt: futureExpiry(),
+    });
     tokenA = keyA.token;
     tokenB = keyB.token;
     keyAId = keyA.record.id;
@@ -124,17 +141,13 @@ describe.skipIf(!available)('the MCP server', () => {
 
   // -------------------------------------------------------------------------
 
-  it('serves its tool surface, read tools and gated write stubs alike', async () => {
+  it('serves an analytical-read-only production catalog', async () => {
     const client = await connect(server, tokenA);
     try {
       const { tools } = await client.listTools();
       const names = tools.map((tool) => tool.name).sort();
       expect(names).toEqual(
         [
-          'apply_optimization',
-          'create_goto_link',
-          'create_negatives',
-          'create_tag',
           'download_data',
           'get_entity_data',
           'get_flags',
@@ -146,13 +159,10 @@ describe.skipIf(!available)('the MCP server', () => {
           'list_experiments',
           'list_profiles',
           'query',
-          'set_context',
-          // WP-15's one write that is not gated: it files feedback about the
-          // tool itself and touches no advertising data.
-          'submit_feedback',
-          'update_entities',
         ].sort(),
       );
+      expect(tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
+      expect(tools.every((tool) => tool.annotations?.destructiveHint !== true)).toBe(true);
     } finally {
       await client.close();
     }
@@ -400,6 +410,7 @@ describe.skipIf(!available)('the MCP server', () => {
   });
 
   it('serves the instructions resource and a per-profile context resource', async () => {
+    const before = await readAuditEntries(database, orgAId, 500);
     const client = await connect(server, tokenA);
     try {
       const instructions = await client.readResource({ uri: 'wizardads://instructions' });
@@ -420,6 +431,41 @@ describe.skipIf(!available)('the MCP server', () => {
     } finally {
       await client.close();
     }
+
+    const after = await readAuditEntries(database, orgAId, 500);
+    const added = after.slice(0, after.length - before.length);
+    expect(added.map((entry) => entry.action)).toEqual(
+      expect.arrayContaining([
+        'mcp.resource.instructions.read',
+        'mcp.resource.profile-context.list',
+        'mcp.resource.profile-context.read',
+      ]),
+    );
+    const profileRead = added.find(
+      (entry) => entry.action === 'mcp.resource.profile-context.read',
+    );
+    expect(profileRead?.targetId).toBe(profileA);
+    expect(profileRead?.payload['outcome']).toBe('ok');
+    expect(JSON.stringify(added)).not.toContain(tokenA);
+  });
+
+  it('audits a refused out-of-scope resource read', async () => {
+    const client = await connect(server, tokenA);
+    try {
+      await expect(
+        client.readResource({ uri: `wizardads://profiles/${orgBProfile}` }),
+      ).rejects.toThrow();
+    } finally {
+      await client.close();
+    }
+
+    const entries = await readAuditEntries(database, orgAId, 500);
+    const refused = entries.find(
+      (entry) =>
+        entry.action === 'mcp.resource.profile-context.read' &&
+        entry.payload['outcome'] === 'error',
+    );
+    expect((refused?.payload['summary'] as Record<string, unknown>)['code']).toBe('not_found');
   });
 
   it('computes flags and pacing through the doctrine engine', async () => {
@@ -499,30 +545,6 @@ describe.skipIf(!available)('the MCP server', () => {
     }
   });
 
-  it('mints a goto link that resolves to a row and a URL', async () => {
-    const client = await connect(server, tokenA);
-    try {
-      const result = await call(client, 'create_goto_link', {
-        route: '/grid',
-        profile_id: profileA,
-        state: { entity: 'keyword', sort: 'spend' },
-        label: 'wasted spend, last week',
-      });
-
-      const token = result.payload['token'] as string;
-      expect(result.payload['url']).toBe(`http://localhost:3000/go/${token}`);
-
-      const rows = await database.sql<{ route: string; org_id: string; state: Record<string, unknown> }[]>`
-        select route, org_id, state from public.goto_links where token = ${token}
-      `;
-      expect(rows[0]?.route).toBe('/grid');
-      expect(rows[0]?.org_id).toBe(orgAId);
-      expect(rows[0]?.state['profileId']).toBe(profileA);
-    } finally {
-      await client.close();
-    }
-  });
-
   // -------------------------------------------------------------------------
   // Isolation, gating, auditing
   // -------------------------------------------------------------------------
@@ -556,6 +578,7 @@ describe.skipIf(!available)('the MCP server', () => {
       orgId: orgAId,
       label: 'one profile only',
       profileIds: [profileB],
+      expiresAt: futureExpiry(),
     });
     const client = await connect(server, scoped.token);
     try {
@@ -573,28 +596,6 @@ describe.skipIf(!available)('the MCP server', () => {
     } finally {
       await client.close();
     }
-  });
-
-  it('refuses every write tool with a reason, and logs the attempt', async () => {
-    const client = await connect(server, tokenA);
-    try {
-      const result = await call(client, 'update_entities', {
-        profile_id: profileA,
-        entity_type: 'keyword',
-        updates: [{ id: 'kw-1', bid: 1.2 }],
-        note: 'testing the gate',
-      });
-      expect(result.isError).toBe(true);
-      expect(result.payload['error']).toBe('gated');
-      expect(String(result.payload['message'])).toContain('read-only');
-    } finally {
-      await client.close();
-    }
-
-    const entries = await readAuditEntries(database, orgAId, 200);
-    const gated = entries.find((entry) => entry.action === 'mcp.update_entities');
-    expect(gated).toBeDefined();
-    expect((gated?.payload['outcome'] as string) ?? '').toBe('gated');
   });
 
   it('writes every call to the audit log with its parameters', async () => {
@@ -646,71 +647,6 @@ describe.skipIf(!available)('the MCP server', () => {
     expect(failure?.action).toBe('mcp.get_entity_data');
   });
 
-  it('files feedback into the tracker, and logs the call like every other', async () => {
-    const client = await connect(server, tokenA);
-    let itemId = '';
-    try {
-      const result = await call(client, 'submit_feedback', {
-        type: 'bug',
-        title: 'group_by returned an ACOS that cannot be right',
-        body: 'Spend and sales agree with SQL; the ratio does not.',
-        severity: 'high',
-      });
-      expect(result.isError).toBe(false);
-      itemId = String(result.payload['id']);
-      expect(result.payload['status']).toBe('new');
-
-      // A severity on a feature request is refused with its reason, not a 500.
-      const refused = await call(client, 'submit_feedback', {
-        type: 'feature',
-        title: 'Severity does not apply here',
-        severity: 'critical',
-      });
-      expect(refused.isError).toBe(true);
-      expect(refused.payload['error']).toBe('invalid_argument');
-    } finally {
-      await client.close();
-    }
-
-    // The row is in the org that filed it, marked as coming from MCP, with no
-    // human author to attribute it to.
-    const [row] = await database.sql<
-      {
-        org_id: string;
-        author_id: string | null;
-        type: string;
-        severity: string;
-        page_context: Record<string, unknown>;
-      }[]
-    >`
-      select org_id, author_id, type::text as type, severity::text as severity, page_context
-        from public.feedback_items where id = ${itemId}
-    `;
-    expect(row?.org_id).toBe(orgAId);
-    expect(row?.author_id).toBeNull();
-    expect(row?.type).toBe('bug');
-    expect(row?.severity).toBe('high');
-    expect(row?.page_context['actorType']).toBe('mcp');
-    expect(row?.page_context['keyId']).toBe(keyAId);
-
-    // And org B cannot see it, which is the whole point of scoping the key.
-    const [foreign] = await database.sql<{ count: string }[]>`
-      select count(*) as count from public.feedback_items
-       where org_id = ${orgBId} and id = ${itemId}
-    `;
-    expect(Number(foreign?.count)).toBe(0);
-
-    const entries = await readAuditEntries(database, orgAId, 500);
-    const logged = entries.find(
-      (entry) =>
-        entry.action === 'mcp.submit_feedback' &&
-        (entry.payload['summary'] as Record<string, unknown>)['id'] === itemId,
-    );
-    expect(logged?.actorType).toBe('mcp');
-    expect(logged?.actorId).toBe(keyAId);
-    expect(logged?.payload['outcome']).toBe('ok');
-  });
-
   it('accepts a profile by its Amazon id as well as its internal id', async () => {
     const client = await connect(server, tokenA);
     try {
@@ -726,8 +662,74 @@ describe.skipIf(!available)('the MCP server', () => {
   // Authentication
   // -------------------------------------------------------------------------
 
+  it('issues only bounded, explicitly profile-scoped keys for profiles owned by the org', async () => {
+    const valid = await issueApiKey(database, {
+      orgId: orgAId,
+      label: '  bounded key  ',
+      profileIds: [profileA, profileB],
+      expiresAt: futureExpiry(MAX_API_KEY_LIFETIME_DAYS),
+    });
+    expect(valid.record.label).toBe('bounded key');
+    expect(valid.record.profileIds).toEqual([profileA, profileB]);
+    expect(valid.record.expiresAt).not.toBeNull();
+
+    const missingProfiles = {
+      orgId: orgAId,
+      label: 'missing profiles',
+      expiresAt: futureExpiry(),
+    } as IssueApiKeyInput;
+    await expect(issueApiKey(database, missingProfiles)).rejects.toThrow(
+      'at least one profile',
+    );
+    await expect(
+      issueApiKey(database, {
+        orgId: orgAId,
+        label: 'duplicate profiles',
+        profileIds: [profileA, profileA],
+        expiresAt: futureExpiry(),
+      }),
+    ).rejects.toThrow('must not contain duplicates');
+    await expect(
+      issueApiKey(database, {
+        orgId: orgAId,
+        label: 'invalid profile',
+        profileIds: ['not-a-uuid'],
+        expiresAt: futureExpiry(),
+      }),
+    ).rejects.toThrow('valid UUID');
+    await expect(
+      issueApiKey(database, {
+        orgId: orgAId,
+        label: 'foreign profile',
+        profileIds: [orgBProfile],
+        expiresAt: futureExpiry(),
+      }),
+    ).rejects.toThrow('belong to the selected organization');
+    await expect(
+      issueApiKey(database, {
+        orgId: orgAId,
+        label: 'past expiry',
+        profileIds: [profileA],
+        expiresAt: new Date(Date.now() - 1_000),
+      }),
+    ).rejects.toThrow('must be in the future');
+    await expect(
+      issueApiKey(database, {
+        orgId: orgAId,
+        label: 'too long',
+        profileIds: [profileA],
+        expiresAt: futureExpiry(MAX_API_KEY_LIFETIME_DAYS + 1),
+      }),
+    ).rejects.toThrow(`cannot exceed ${MAX_API_KEY_LIFETIME_DAYS} days`);
+  });
+
   it('rejects a missing, malformed, revoked or expired key with 401', async () => {
-    const doomed = await issueApiKey(database, { orgId: orgAId, label: 'to be revoked' });
+    const doomed = await issueApiKey(database, {
+      orgId: orgAId,
+      label: 'to be revoked',
+      profileIds: [profileA],
+      expiresAt: futureExpiry(),
+    });
     const working = await connect(server, doomed.token);
     await working.close();
     expect(await status(server, doomed.token)).toBe(200);
@@ -738,15 +740,54 @@ describe.skipIf(!available)('the MCP server', () => {
     const expired = await issueApiKey(database, {
       orgId: orgAId,
       label: 'already expired',
-      expiresAt: new Date(Date.now() - 1000),
+      profileIds: [profileA],
+      expiresAt: futureExpiry(),
     });
+    await database.sql`update mcp.api_keys set expires_at = now() - interval '1 second' where id = ${expired.record.id}`;
     expect(await status(server, expired.token)).toBe(401);
+
+    const wrongScope = await issueApiKey(database, {
+      orgId: orgAId,
+      label: 'legacy write scope',
+      profileIds: [profileA],
+      expiresAt: futureExpiry(),
+    });
+    await database.sql`update mcp.api_keys set scope = 'write' where id = ${wrongScope.record.id}`;
+    expect(await status(server, wrongScope.token)).toBe(401);
     expect(await status(server, undefined)).toBe(401);
     expect(await status(server, 'not-a-key')).toBe(401);
     expect(await status(server, 'wza_totally-made-up-token-value-here-padded')).toBe(401);
 
     // And the client cannot get past it either.
     await expect(connect(server, doomed.token)).rejects.toThrow();
+  });
+
+  it('rejects legacy keys with all-profile, empty, missing, or overlong constraints', async () => {
+    const legacy = await Promise.all(
+      ['null profiles', 'empty profiles', 'null expiry', 'overlong expiry'].map((label) =>
+        issueApiKey(database, {
+          orgId: orgAId,
+          label,
+          profileIds: [profileA],
+          expiresAt: futureExpiry(),
+        }),
+      ),
+    );
+    const [nullProfiles, emptyProfiles, nullExpiry, overlongExpiry] = legacy;
+    if (!nullProfiles || !emptyProfiles || !nullExpiry || !overlongExpiry) {
+      throw new Error('legacy key setup failed');
+    }
+
+    await database.sql`update mcp.api_keys set profile_ids = null where id = ${nullProfiles.record.id}`;
+    await database.sql`update mcp.api_keys set profile_ids = '{}'::uuid[] where id = ${emptyProfiles.record.id}`;
+    await database.sql`update mcp.api_keys set expires_at = null where id = ${nullExpiry.record.id}`;
+    await database.sql`
+      update mcp.api_keys
+         set expires_at = created_at + make_interval(days => ${MAX_API_KEY_LIFETIME_DAYS + 1})
+       where id = ${overlongExpiry.record.id}
+    `;
+
+    for (const key of legacy) expect(await status(server, key.token)).toBe(401);
   });
 
   it('stores no plaintext token and stamps last-used on the key', async () => {
@@ -757,11 +798,20 @@ describe.skipIf(!available)('the MCP server', () => {
     expect(row?.token_hash).not.toBe(tokenA);
     expect(row?.token_hash).toHaveLength(64);
     expect(tokenA.startsWith(row?.key_prefix ?? 'nope')).toBe(true);
+    expect(row?.last_used_at).not.toBeNull();
   });
 
   it('answers a health check and refuses anything but POST on the MCP path', async () => {
     const base = server.url.replace('/mcp', '');
-    expect((await fetch(`${base}/healthz`)).status).toBe(200);
+    const health = await fetch(`${base}/healthz`);
+    expect(health.status).toBe(200);
+    expect(await health.json()).toEqual({
+      status: 'ready',
+      service: 'wizard-ads',
+      version: '0.1.0',
+      revision: 'abcdef123456',
+      checks: { database: 'ready' },
+    });
     expect((await fetch(server.url)).status).toBe(405);
     expect((await fetch(`${base}/nope`)).status).toBe(404);
   });
@@ -776,6 +826,7 @@ function testConfig(connectionString: string): McpConfig {
     port: 0,
     host: '127.0.0.1',
     webBaseUrl: 'http://localhost:3000',
+    revision: 'abcdef123456',
     poolSize: 4,
     statementTimeoutSeconds: 30,
     maxRows: DEFAULT_MAX_ROWS,
@@ -790,6 +841,10 @@ async function connect(server: RunningServer, token: string): Promise<Client> {
   const client = new Client({ name: 'wizard-ads-test-client', version: '0.0.0' });
   await client.connect(transport);
   return client;
+}
+
+function futureExpiry(days = 30): Date {
+  return new Date(Date.now() + days * 86_400_000);
 }
 
 /** Resource contents are text or binary; this suite only ever asks for text. */

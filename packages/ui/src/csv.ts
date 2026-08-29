@@ -19,7 +19,7 @@ export interface CsvResult {
   csv: string;
   /** Data rows written. */
   exported: number;
-  /** Rows the grid held before filtering. The "N of M" the button shows. */
+  /** Source rows the grid held before filtering. */
   total: number;
   filename: string;
 }
@@ -60,8 +60,12 @@ export function toCsv(model: GridModel, options: CsvOptions): CsvResult {
       ? `comparison ${options.comparisonPeriod.start}..${options.comparisonPeriod.end}`
       : null,
     `currency ${options.currencyCode}`,
-    `${model.shown} of ${model.total} rows`,
-    model.grouped ? 'grouped: ratio metrics recomputed from summed bases' : null,
+    model.grouped
+      ? `${model.exported} deepest groups from ${model.matched} matched source rows (${model.total} before filtering)`
+      : `${model.exported} of ${model.total} source rows`,
+    model.grouped
+      ? `grouped by ${model.groupBy.join(' > ')}: parent summaries omitted; ratio metrics recomputed from summed bases`
+      : null,
   ]
     .filter((part): part is string => part !== null)
     .join(' · ');
@@ -69,7 +73,7 @@ export function toCsv(model: GridModel, options: CsvOptions): CsvResult {
 
   lines.push(options.columns.map((column) => escapeCell(column.header)).join(','));
 
-  for (const row of model.rows) {
+  for (const row of model.exportRows) {
     lines.push(
       options.columns.map((column) => escapeCell(resolveField(row, column.id))).join(','),
     );
@@ -77,7 +81,7 @@ export function toCsv(model: GridModel, options: CsvOptions): CsvResult {
 
   return {
     csv: `${lines.join('\n')}\n`,
-    exported: model.rows.length,
+    exported: model.exportRows.length,
     total: model.total,
     filename: csvFilename(options.label),
   };

@@ -134,7 +134,8 @@ describe.skipIf(!available)('recommendation routes', () => {
     // read plus a portfolio, which is what makes the campaign update row legal.
     await database.sql`
       update public.campaigns
-         set name = 'Alpha | SKW | blue widget', portfolio_amazon_id = 'pf-1'
+         set name = 'Alpha | SKW | blue widget', portfolio_amazon_id = 'pf-1',
+             budget_amount = 50
        where org_id = ${orgA} and amazon_id = 'c-1'
     `;
 

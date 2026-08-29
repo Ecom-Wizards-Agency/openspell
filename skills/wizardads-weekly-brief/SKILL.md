@@ -1,6 +1,6 @@
 ---
 name: wizardads-weekly-brief
-description: Create a structured, read-only weekly Amazon PPC performance brief from the wizard-ads MCP server, covering completed-week results, week-over-week drivers, goal-aware flags, budget pacing, current recommendations, data confidence, and operator links. Use for weekly ads reviews, recurring PPC briefings, week-over-week account summaries, or Monday performance updates for a connected profile.
+description: Create a structured, read-only weekly Amazon PPC performance brief from the wizard-ads MCP server, covering completed-week results, week-over-week drivers, goal-aware flags, budget pacing, current recommendations, data confidence, and operator review guidance. Use for weekly ads reviews, recurring PPC briefings, week-over-week account summaries, or Monday performance updates for a connected profile.
 ---
 
 # WizardAds Weekly Brief
@@ -17,7 +17,6 @@ Produce one evidence-led brief per connected profile. Report what happened, why 
 - `get_flags` — report active and suppressed goal-aware findings.
 - `get_pacing` — report month-to-date budget pacing.
 - `get_recommendations` — present current explainable proposals.
-- `create_goto_link` — link detailed evidence and proposal views.
 
 ## Rules
 
@@ -52,7 +51,9 @@ Use `group_by` at `campaign` level by `ad_product` for the completed week and pr
 
 Drill into `keyword` and `target` only for the campaigns that explain the movement. Use `group_by` on `search_term` for concrete shopper-query evidence and on `placement` for campaign-level delivery mix.
 
-Name exact entities when evidence supports them. Keep tables short and prioritize contribution over extreme low-volume ratios. Use a GoTo link for the long tail.
+Name exact entities when evidence supports them. Keep tables short and prioritize contribution
+over extreme low-volume ratios. For the long tail, give the operator the route and filters needed
+to review it in-product.
 
 ### 4. Add strategy and pacing
 
@@ -67,16 +68,19 @@ Call `get_pacing`. State month-to-date spend, budget-to-date, projected pace, an
 
 Call `get_recommendations`. Group returned items by status and reason. For proposed items, show the entity, proposed direction, evidence, and provenance fields supplied by the engine. Do not imply that accepted or exported means applied. If no successful run exists, say so; that is not evidence that the account is clean.
 
-### 6. Create operator links
+### 6. Give the operator in-app review instructions
 
-Call `create_goto_link` for the most useful detailed views, normally:
+Provide short textual handoffs for the most useful detailed views, normally:
 
 - `/grid` for campaign, keyword, target, or placement drivers;
 - `/search-terms` for query evidence;
 - `/recommendations` for proposals;
 - `/sync` for a freshness concern.
 
-Include the exact profile and date/filter state in each link. Do not paste more than about ten detail rows when a link communicates the same evidence better.
+Include the exact profile, date window, entity, filters, and sort for each route. A useful format is
+`Open <route> → select <profile> → set <window> → apply <filters> → sort <metric>`. Do not claim
+that a link or saved view was created. Do not paste more than about ten detail rows when the route
+instructions let the operator reproduce the view.
 
 ## Brief contract
 
@@ -91,6 +95,6 @@ Return Markdown with this fixed structure:
 7. **Flags** — active first, suppressed separately.
 8. **Pacing** — returned status or the explicit unavailable note.
 9. **Proposals for operator review** — engine output with provenance, never executed changes.
-10. **Links and follow-ups** — GoTo links and unresolved external questions.
+10. **In-app review and follow-ups** — route/filter instructions and unresolved external questions.
 
 Use the profile currency and consistent percent formatting. If several profiles were requested, order their sections by active-flag severity and keep each currency separate. End with: “Read-only brief: no account changes were made.”

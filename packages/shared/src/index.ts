@@ -14,3 +14,8 @@ export * from './recommendations.js';
 export * from './apply.js';
 export * from './strategy.js';
 export * from './jobs.js';
+export * from './creative.js';
+export * from './query-intelligence.js';
+export * from './optimization.js';
+export * from './reporting.js';
+export * from './dayparting.js';

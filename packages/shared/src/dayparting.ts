@@ -1,0 +1,84 @@
+/** Amazon Marketing Stream ledger, hourly facts, and read-only schedule proposals. */
+import { z } from 'zod';
+import { AdProduct, AmazonId, CurrencyCode, IsoDate, Uuid } from './primitives.js';
+
+const count = z.number().int().nonnegative();
+const metric = z.number().nonnegative();
+
+export const MarketingStreamDataset = z.enum([
+  'traffic',
+  'conversion',
+  'budget_usage',
+]);
+export type MarketingStreamDataset = z.infer<typeof MarketingStreamDataset>;
+
+export const MarketingStreamLedgerEvent = z.object({
+  profileId: Uuid,
+  messageId: z.string().min(1),
+  dataset: MarketingStreamDataset,
+  adProduct: AdProduct,
+  eventTime: z.iso.datetime(),
+  receivedAt: z.iso.datetime(),
+  revision: z.number().int().nonnegative(),
+  payloadHash: z.string().min(1),
+  rawPayload: z.record(z.string(), z.unknown()),
+});
+export type MarketingStreamLedgerEvent = z.infer<typeof MarketingStreamLedgerEvent>;
+
+export const HourSettlingState = z.enum(['settling', 'settled', 'revised']);
+export type HourSettlingState = z.infer<typeof HourSettlingState>;
+
+export const MarketingStreamHourlyFact = z.object({
+  profileId: Uuid,
+  adProduct: AdProduct,
+  campaignId: AmazonId,
+  utcHour: z.iso.datetime(),
+  profileTimeZone: z.string().min(1),
+  localDate: IsoDate,
+  localHour: z.number().int().min(0).max(23),
+  localDayOfWeek: z.number().int().min(0).max(6),
+  currencyCode: CurrencyCode,
+  impressions: count,
+  clicks: count,
+  cost: metric,
+  purchases: count,
+  sales: metric,
+  budgetUsagePercent: z.number().min(0).nullable(),
+  budgetCapped: z.boolean(),
+  settlingState: HourSettlingState,
+  sourceEvents: count,
+});
+export type MarketingStreamHourlyFact = z.infer<typeof MarketingStreamHourlyFact>;
+
+export const DaypartingScheduleBlock = z.object({
+  dayOfWeek: z.number().int().min(0).max(6),
+  startHour: z.number().int().min(0).max(23),
+  endHour: z.number().int().min(1).max(24),
+  adjustmentPercent: z.number(),
+  confidence: z.number().min(0).max(1),
+});
+export type DaypartingScheduleBlock = z.infer<typeof DaypartingScheduleBlock>;
+
+export const DaypartingScheduleProposal = z.object({
+  id: Uuid.optional(),
+  profileId: Uuid,
+  campaignId: AmazonId,
+  baselineLabel: z.string().min(1),
+  evidenceStart: IsoDate,
+  evidenceEnd: IsoDate,
+  settledHours: count,
+  blocks: z.array(DaypartingScheduleBlock),
+  status: z.enum(['proposed', 'accepted', 'dismissed', 'exported']),
+});
+export type DaypartingScheduleProposal = z.infer<typeof DaypartingScheduleProposal>;
+
+export const MarketingStreamNormalizationCounts = z.object({
+  receivedMessages: count,
+  duplicateMessages: count,
+  revisedMessages: count,
+  refusedMessages: count,
+  normalizedRows: count,
+});
+export type MarketingStreamNormalizationCounts = z.infer<
+  typeof MarketingStreamNormalizationCounts
+>;

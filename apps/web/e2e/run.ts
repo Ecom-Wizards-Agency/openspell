@@ -37,7 +37,7 @@ import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
-import { createGotoLink } from '@wizard-ads/db';
+import { createGotoLink, recordEntityChanges } from '@wizard-ads/db';
 import { ROADMAP_ITEMS, seedRoadmap } from '../../../supabase/seed/seed-roadmap.js';
 
 const SUITES = ['tags-goto', 'auth'] as const;
@@ -179,6 +179,7 @@ async function seedRecommendations(
  * identical fixture rows.
  */
 export const TIME_MACHINE_MARKER = 'ZZ Time Machine Marker';
+export const TIME_MACHINE_READY_TAG = 'tm-e2e-ready-export';
 
 async function seedTimeMachine(
   database: TestDatabase,
@@ -193,6 +194,50 @@ async function seedTimeMachine(
     returning id
   `;
   if (rows.length !== 1) throw new Error(`Seeded 1 Time Machine change, wrote ${rows.length}`);
+
+  const keywordRows = await database.sql<{ amazon_id: string }[]>`
+    insert into public.keywords
+      (org_id, profile_id, amazon_id, ad_product, name, state, campaign_id,
+       ad_group_id, keyword_text, match_type, bid, synced_at)
+    values (${orgId}, ${profileId}, 'kw-time-machine-ready', 'SP', 'Reversible keyword',
+            'enabled', 'c-1', 'ag-1', 'reversible keyword', 'exact', 0.71,
+            now() + interval '2 seconds')
+    returning amazon_id
+  `;
+  if (keywordRows.length !== 1) {
+    throw new Error(`Seeded 1 reversible keyword, wrote ${keywordRows.length}`);
+  }
+  const [batch] = await database.sql<{ id: string }[]>`
+    insert into public.apply_batches
+      (org_id, profile_id, tag, opt_group, lever, note, exported_at,
+       artifact_sha256, exported_proposals, reversible_rows, unsupported_rows)
+    values (${orgId}, ${profileId}, ${TIME_MACHINE_READY_TAG}, 'rank', 'push',
+            'Synthetic reversible export', now(), ${'e'.repeat(64)}, 1, 1, 0)
+    returning id
+  `;
+  const batchId = batch?.id ?? '';
+  const applyRows = await database.sql<{ id: string }[]>`
+    insert into public.apply_rows
+      (batch_id, org_id, profile_id, entity_type, entity_id, entity_name,
+       field, old_value, new_value)
+    values (${batchId}, ${orgId}, ${profileId}, 'keyword', 'kw-time-machine-ready',
+            'Reversible keyword', 'bid', '0.9'::jsonb, '0.71'::jsonb)
+    returning id
+  `;
+  if (applyRows.length !== 1) throw new Error(`Seeded 1 reversible row, wrote ${applyRows.length}`);
+  const linked = await recordEntityChanges(database, [{
+    orgId,
+    profileId,
+    entityType: 'keyword',
+    amazonId: 'kw-time-machine-ready',
+    entityName: 'Reversible keyword',
+    field: 'bid',
+    oldValue: 0.9,
+    newValue: 0.71,
+    source: 'sync',
+    observedAt: new Date(Date.now() + 1_000),
+  }]);
+  if (linked !== 1) throw new Error(`Seeded 1 linked sync, wrote ${linked}`);
 }
 
 /**

@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260827150500_comparison_report_windows.sql');
+    expect(files.at(-1)).toBe('20260829130000_time_machine_v2.sql');
   });
 
   it('adds the integration job labels without weakening the report schedule constraint', async () => {
@@ -91,6 +91,14 @@ describe.skipIf(!available)('migrations', () => {
       'rank_observations', 'keepa_bsr_observations', 'competitor_links',
       'competitor_price_events',
       'creative_assets', 'creative_placements',
+      // operator-intelligence foundations
+      'report_coverage', 'historical_bootstrap_progress',
+      'report_promotion_watermarks', 'attribution_observations',
+      'ad_creative_asset_mappings', 'fact_creative_daily',
+      'sqp_promotion_runs', 'query_vocabulary', 'contextual_negative_proposals',
+      'optimization_groups', 'campaign_optimization_assignments',
+      'recommendation_observations', 'marketing_stream_events',
+      'marketing_stream_hourly_facts', 'dayparting_schedule_proposals',
     ]) {
       expect(tables, `missing table ${expected}`).toContain(expected);
     }
@@ -172,6 +180,7 @@ describe.skipIf(!available)('migrations', () => {
       'fact_profile_daily',
       'fact_sales_traffic_daily',
       'fact_sqp_weekly',
+      'fact_creative_daily',
     ]) {
       // 'r' is RANGE. LIST or HASH here would mean the retention automation
       // cannot reason about a partition's month at all.

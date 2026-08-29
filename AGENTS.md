@@ -31,6 +31,7 @@ never need the same file.
 | `packages/shared` | THE contract package. Zod schemas and inferred types. | WP-00 |
 | `packages/db` | Drizzle schema, typed queries, RLS test helpers. | WP-01 |
 | `packages/ads-api` | Amazon Ads API client. Pure client, no database. | WP-02 |
+| `packages/sp-api` | Selling Partner API report client. Pure client, worker-only. | WP-55 |
 | `packages/core` | Doctrine engine. Pure functions, zero I/O. | WP-05 |
 | `packages/strategy` | Tenant config resolution. Template only, no values. | WP-05 |
 | `packages/campaigns` | Campaign generation engine (SKW/Halo/Phrase/Auto/PAT; BMM dropped 2026-08-14). Pure, plus its own XLSX writer. | WP-14 |
@@ -48,17 +49,17 @@ never need the same file.
 ## Dependency direction
 
 ```
-shared  <-  core / strategy / ads-api / db  <-  web / worker / mcp
+shared  <-  core / strategy / ads-api / sp-api / db  <-  web / worker / mcp
 ```
 
 Three rules inside that, each one load-bearing rather than stylistic:
 
 - **`shared` depends on nothing of ours.** It is the contract; a contract that
   imports an implementation is not a contract.
-- **`core` and `strategy` never import `db` or `ads-api`.** Pure functions with zero
+- **`core` and `strategy` never import `db`, `ads-api`, or `sp-api`.** Pure functions with zero
   I/O are what make the parity harness against the Python reference possible at all.
   The moment the doctrine engine can read a database, it cannot be replayed.
-- **`apps/web` never imports `ads-api`.** Every Amazon call lives in the worker.
+- **`apps/web` never imports `ads-api` or `sp-api`.** Every Amazon call lives in the worker.
   Reporting v3 takes hours and throttles with no quota headers; that does not belong
   behind a request handler, and Amazon tokens must never reach the web tier.
 

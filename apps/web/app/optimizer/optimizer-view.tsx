@@ -14,7 +14,7 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { Badge } from '../../src/ui/primitives';
 import { BidHistoryModal } from '../../src/ui/bid-history-modal';
-import type { OptimizationGroup, SettingsSummary } from '../../src/optimizer/view';
+import type { CampaignReviewGroup, SettingsSummary } from '../../src/optimizer/view';
 import type { ReasonCoverage } from '../../src/recommendations/view';
 
 function percent(value: number | null): string {
@@ -80,19 +80,19 @@ export interface BidHistoryContext {
   currencyCode: string;
 }
 
-/** One optimization group: a header of shared policy, then its proposal rows. */
+/** One campaign review group: a scannable bucket, not a persisted policy object. */
 export function OptimizerGroupTable({
   group,
   bidHistoryContext,
 }: {
-  group: OptimizationGroup;
+  group: CampaignReviewGroup;
   bidHistoryContext: BidHistoryContext;
 }): ReactNode {
   const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
   const acos = acosLabel(group.targetAcos);
   return (
     <>
-      <section className="wa-card" aria-label={`Optimization group ${group.label}`}>
+      <section className="wa-card" aria-label={`Campaign review group ${group.label}`}>
       <header className="wa-card__head">
         <div style={{ flex: '1 1 auto', minWidth: 0 }}>
           <h3 className="wa-card__title" title={group.label}>

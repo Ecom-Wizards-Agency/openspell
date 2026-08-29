@@ -208,10 +208,20 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     <main style={page}>
       <PageHeader
         title="Dashboard"
-        subtitle={`${profile.label} · ${period.start} to ${period.end} · ${currentWindow === null || settled.comparison === null ? 'no settled KPI comparison yet' : `settled KPIs ${currentWindow.start} to ${currentWindow.end}${coverageClamped ? ' (first synced day)' : ''} vs ${settled.comparison.start} to ${settled.comparison.end}`} · all figures in ${profile.currencyCode}`}
+        subtitle={`${profile.label} · ${period.start} to ${period.end} · ${profile.currencyCode}`}
       />
 
       <div className="wa-stack">
+        <details className="wa-dashboard-context">
+          <summary>Comparison and attribution coverage</summary>
+          <p>
+            {currentWindow === null || settled.comparison === null
+              ? 'No settled KPI comparison is available yet.'
+              : `Settled KPIs use ${currentWindow.start} to ${currentWindow.end}${coverageClamped ? ' from the first synced day' : ''}, compared with ${settled.comparison.start} to ${settled.comparison.end}.`}
+            {' '}Recent conversion days remain in the chart and are marked as settling.
+          </p>
+        </details>
+
         <FreshnessBar assessment={freshness}>
           {data.crosscheck ? <CrosscheckChip chip={data.crosscheck.chip} /> : null}
         </FreshnessBar>
@@ -224,12 +234,12 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           coverageStart={accountRows[0]?.date ?? null}
         />
 
-        <CampaignTable rows={campaignSummary} currencyCode={profile.currencyCode} profileId={profile.id} period={period} />
-
         <section className="wa-grid-2">
           <PacingCard pacing={pacing as PacingView | null} context={context} />
           <FlagsCard active={activeFlags as FlagView[]} suppressed={flags.suppressed as FlagView[]} />
         </section>
+
+        <CampaignTable rows={campaignSummary} currencyCode={profile.currencyCode} profileId={profile.id} period={period} />
 
       </div>
     </main>
@@ -268,7 +278,7 @@ function CampaignTable({
             <th style={{ textAlign: 'left' }}>Category</th>
             <th>Spend</th>
             <th>Share</th>
-            <th>Sales</th>
+            <th>Ad Sales</th>
             <th>ACOS</th>
             <th>Clicks</th>
             <th>Orders</th>

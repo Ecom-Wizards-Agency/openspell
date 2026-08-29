@@ -6,7 +6,13 @@
  * test where averaging happens to agree with sum/sum proves nothing.
  */
 import { describe, expect, it } from 'vitest';
-import { MixedCurrencyError, assertSingleCurrency, grandTotal, groupRows } from './aggregate.js';
+import {
+  MixedCurrencyError,
+  assertSingleCurrency,
+  grandTotal,
+  groupRows,
+  uniqueGroupLevels,
+} from './aggregate.js';
 import { syntheticSearchTermRows } from './fixtures.js';
 import { deriveMetric } from './metrics.js';
 import type { GridRow } from './rows.js';
@@ -115,6 +121,62 @@ describe('groupRows', () => {
     const groups = groupRows(rows, ['campaign_name']);
     const folded = groups.reduce((sum, group) => sum + group.groupSize, 0);
     expect(folded).toBe(rows.length);
+  });
+
+  it('builds three ordered levels without losing source rows or base metrics', () => {
+    const rows = syntheticSearchTermRows(3_597, { seed: 31 });
+    const groups = groupRows(rows, ['campaign_name', 'ad_group_name', 'match_type']);
+    const deepest = groups.filter((group) => group.isLeafGroup);
+    const inputSpend = rows.reduce((sum, item) => sum + item.totals.spend, 0);
+
+    expect(new Set(groups.map((group) => group.groupDepth))).toEqual(new Set([0, 1, 2]));
+    expect(deepest.reduce((sum, group) => sum + group.groupSize, 0)).toBe(rows.length);
+    expect(deepest.reduce((sum, group) => sum + group.totals.spend, 0)).toBeCloseTo(inputSpend, 6);
+
+    for (const depth of [0, 1, 2]) {
+      const level = groups.filter((group) => group.groupDepth === depth);
+      expect(level.reduce((sum, group) => sum + group.groupSize, 0)).toBe(rows.length);
+      expect(level.reduce((sum, group) => sum + group.totals.spend, 0)).toBeCloseTo(inputSpend, 6);
+    }
+
+    for (const group of groups) {
+      expect(resolveField(group, 'acos')).toEqual(deriveMetric('acos', group.totals));
+      expect(resolveField(group, 'ctr')).toEqual(deriveMetric('ctr', group.totals));
+    }
+
+    for (const group of groups.filter((candidate) => candidate.groupDepth > 0)) {
+      expect(groups.some((candidate) => candidate.id === group.parentGroupId)).toBe(true);
+      expect(group.groupPath).toHaveLength(group.groupDepth + 1);
+      expect(group.groupColumnId).toBe(group.groupBy[group.groupDepth]);
+    }
+  });
+
+  it('uses deterministic, collision-safe hierarchy identities', () => {
+    const rows = syntheticSearchTermRows(200, { seed: 17 });
+    const levels = ['campaign_name', 'ad_group_name', 'match_type'];
+    const forward = groupRows(rows, levels).map((group) => group.id).sort();
+    const reverse = groupRows([...rows].reverse(), levels).map((group) => group.id).sort();
+    expect(reverse).toEqual(forward);
+
+    const awkward = [
+      {
+        ...rows[0]!,
+        id: 'awkward-string',
+        dimensions: { ...rows[0]!.dimensions, campaign_name: 'a\u0000b', match_type: '1' },
+      },
+      {
+        ...rows[1]!,
+        id: 'awkward-number',
+        dimensions: { ...rows[1]!.dimensions, campaign_name: 'a', match_type: 1 },
+      },
+    ];
+    const ids = groupRows(awkward, ['campaign_name', 'match_type']).map((group) => group.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('deduplicates repeated dimensions without changing their order', () => {
+    expect(uniqueGroupLevels(['campaign_name', 'match_type', 'campaign_name', '', 'ad_product']))
+      .toEqual(['campaign_name', 'match_type', 'ad_product']);
   });
 });
 

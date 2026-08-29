@@ -54,7 +54,7 @@ export const ApplyLever = z.enum([
 export type ApplyLever = z.infer<typeof ApplyLever>;
 
 /** Values a staged field can hold. batches.py only does arithmetic on numbers. */
-const ApplyValue = z.union([z.number(), z.string(), z.boolean(), z.null()]);
+export const ApplyValue = z.union([z.number(), z.string(), z.boolean(), z.null()]);
 export type ApplyValue = z.infer<typeof ApplyValue>;
 
 /** TypeScript-facing shape. */

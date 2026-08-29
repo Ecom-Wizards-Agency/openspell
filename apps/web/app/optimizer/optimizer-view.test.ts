@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import type { OptimizationGroup } from '../../src/optimizer/view';
+import type { CampaignReviewGroup } from '../../src/optimizer/view';
 import type { ProposalView } from '../../src/recommendations/view';
 import { OptimizerGroupTable } from './optimizer-view';
 
@@ -25,7 +25,7 @@ function proposal(entityType: string, id: string): ProposalView {
 
 describe('OptimizerGroupTable bid-history attach point', () => {
   it('offers target and keyword history without offering campaign history', () => {
-    const group: OptimizationGroup = {
+    const group: CampaignReviewGroup = {
       key: 'campaign-1',
       label: 'SP | Rank | Widget',
       targetAcos: 0.3,

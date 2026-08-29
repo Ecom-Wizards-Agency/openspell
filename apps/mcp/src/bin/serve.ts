@@ -1,7 +1,7 @@
 /**
  * Entry point: `pnpm --filter @wizard-ads/mcp start`.
  *
- * Runs beside the worker on the same Fly app, on its own port.
+ * Runs as a standalone process or container on its own port.
  */
 import { configFromEnv } from '../config.js';
 import { startHttpServer } from '../http.js';

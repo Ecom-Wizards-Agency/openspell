@@ -161,6 +161,9 @@ importers:
       '@wizard-ads/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@wizard-ads/sp-api':
+        specifier: workspace:*
+        version: link:../../packages/sp-api
       '@wizard-ads/strategy':
         specifier: workspace:*
         version: link:../../packages/strategy
@@ -244,6 +247,12 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+
+  packages/sp-api:
+    dependencies:
+      '@wizard-ads/shared':
+        specifier: workspace:*
+        version: link:../shared
 
   packages/strategy:
     dependencies:

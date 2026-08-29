@@ -2,7 +2,7 @@
  * The Campaign Optimizer's view model is pure, so its arithmetic is tested here
  * without a browser or a database — the two claims that matter are that a ratio
  * KPI is recomputed from base sums (never averaged), and that proposals group
- * into optimization groups with their shared policy resolved.
+ * into honest campaign review groups with their shared policy resolved.
  */
 import { describe, expect, it } from 'vitest';
 import type { BaseTotals } from '@wizard-ads/ui';
@@ -10,8 +10,8 @@ import type { ProposalView } from '../recommendations/view';
 import type { ProposalStrategy } from '../recommendations/strategy';
 import {
   bidHistoryKpiTiles,
+  campaignReviewGroups,
   kpiTiles,
-  optimizationGroups,
   settingsSummary,
   totalsOf,
 } from './view';
@@ -99,9 +99,9 @@ describe('kpiTiles', () => {
   });
 });
 
-describe('optimizationGroups', () => {
+describe('campaignReviewGroups', () => {
   it('groups by campaign and resolves the shared target when it is uniform', () => {
-    const groups = optimizationGroups([
+    const groups = campaignReviewGroups([
       proposal({ id: 'a', scope: 'Campaign A › Ad group 1' }),
       proposal({ id: 'b', scope: 'Campaign A › Ad group 2', reasonLabel: 'Low ACOS' }),
       proposal({ id: 'c', scope: 'Campaign B', strategy: strat({ objective: 'Reduce ACOS', objectiveLabel: 'Reduce ACOS', targetAcos: 0.2 }) }),
@@ -116,7 +116,7 @@ describe('optimizationGroups', () => {
   });
 
   it('reports a null target when a group mixes strategies', () => {
-    const groups = optimizationGroups([
+    const groups = campaignReviewGroups([
       proposal({ id: 'a', scope: 'Campaign A', strategy: strat({ targetAcos: 0.3 }) }),
       proposal({ id: 'b', scope: 'Campaign A', strategy: strat({ targetAcos: 0.25 }) }),
     ]);

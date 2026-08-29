@@ -93,6 +93,10 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
     () => props.available.filter((column) => column.kind === 'dimension'),
     [props.available],
   );
+  const selectedGroupBy = useMemo(
+    () => [...new Set(props.groupBy)].filter((id) => dimensions.some((column) => column.id === id)),
+    [dimensions, props.groupBy],
+  );
 
   const setFilters = (next: readonly Filter[]): void => {
     props.onFilterChange(next.length === 0 ? { groups: [] } : { groups: [{ filters: next }] });
@@ -161,24 +165,6 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
           Add
         </button>
 
-        {filters.map((filter, index) => (
-          <span key={`${filter.key}-${index}`} style={chip}>
-            {describeFilter(filter)}
-            <button
-              type="button"
-              aria-label={`Remove filter ${filter.key}`}
-              onClick={() => setFilters(filters.filter((_, i) => i !== index))}
-              style={chipClose}
-            >
-              ×
-            </button>
-          </span>
-        ))}
-        {filters.length === 0 ? null : (
-          <button type="button" onClick={() => setFilters([])} style={linkButton}>
-            Clear all
-          </button>
-        )}
       </div>
 
       <div style={controlsRow} data-toolbar-row="table-controls">
@@ -204,23 +190,11 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
         {props.children}
         <div style={{ flex: 1 }} />
 
-        <label style={label}>
-          Group by
-          <select
-            value={props.groupBy[0] ?? ''}
-            onChange={(event) =>
-              props.onGroupByChange(event.target.value === '' ? [] : [event.target.value])
-            }
-            style={control}
-          >
-            <option value="">— none —</option>
-            {dimensions.map((column) => (
-              <option key={column.id} value={column.id}>
-                {column.header}
-              </option>
-            ))}
-          </select>
-        </label>
+        <GroupingLevels
+          dimensions={dimensions}
+          groupBy={selectedGroupBy}
+          onChange={props.onGroupByChange}
+        />
 
         <button type="button" onClick={() => setPickerOpen((open) => !open)} style={button}>
           Columns ({props.visible.length})
@@ -236,7 +210,9 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
 
         {props.onExport === undefined ? null : (
           <button type="button" onClick={props.onExport} style={primaryButton}>
-            Export CSV ({formatInteger(props.model.shown)} of {formatInteger(props.model.total)})
+            {props.model.grouped
+              ? `Export CSV (${formatInteger(props.model.exported)} deepest ${props.model.exported === 1 ? 'group' : 'groups'})`
+              : `Export CSV (${formatInteger(props.model.exported)} of ${formatInteger(props.model.total)})`}
           </button>
         )}
       </div>
@@ -285,6 +261,91 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
           })}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function GroupingLevels({
+  dimensions,
+  groupBy,
+  onChange,
+}: {
+  dimensions: readonly GridColumn[];
+  groupBy: readonly string[];
+  onChange: (columnIds: string[]) => void;
+}): ReactNode {
+  const remaining = dimensions.filter((column) => !groupBy.includes(column.id));
+  const move = (index: number, delta: -1 | 1): void => {
+    const target = index + delta;
+    if (target < 0 || target >= groupBy.length) return;
+    const next = [...groupBy];
+    const current = next[index];
+    const displaced = next[target];
+    if (current === undefined || displaced === undefined) return;
+    next[index] = displaced;
+    next[target] = current;
+    onChange(next);
+  };
+
+  return (
+    <div style={groupingControl} aria-label="Grouping levels">
+      <span style={groupingLabel}>Group</span>
+      <ol style={groupingList} aria-label="Ordered grouping levels">
+        {groupBy.map((columnId, index) => {
+          const label = dimensions.find((column) => column.id === columnId)?.header ?? columnId;
+          return (
+            <li key={columnId} style={groupingLevel}>
+              <span aria-hidden style={levelNumber}>{index + 1}</span>
+              <span>{label}</span>
+              <button
+                type="button"
+                aria-label={`Move ${label} up`}
+                disabled={index === 0}
+                onClick={() => move(index, -1)}
+                style={{ ...levelButton, ...(index === 0 ? levelButtonDisabled : {}) }}
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                aria-label={`Move ${label} down`}
+                disabled={index === groupBy.length - 1}
+                onClick={() => move(index, 1)}
+                style={{
+                  ...levelButton,
+                  ...(index === groupBy.length - 1 ? levelButtonDisabled : {}),
+                }}
+              >
+                ↓
+              </button>
+              <button
+                type="button"
+                aria-label={`Remove grouping level ${label}`}
+                onClick={() => onChange(groupBy.filter((_, level) => level !== index))}
+                style={levelButton}
+              >
+                ×
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+      <select
+        aria-label="Add grouping level"
+        value=""
+        disabled={remaining.length === 0}
+        onChange={(event) => {
+          if (event.target.value !== '') onChange([...groupBy, event.target.value]);
+        }}
+        style={control}
+      >
+        <option value="">{groupBy.length === 0 ? 'Group by…' : 'Add level…'}</option>
+        {remaining.map((column) => (
+          <option key={column.id} value={column.id}>
+            {column.header}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -406,7 +467,60 @@ const linkButton: CSSProperties = {
   padding: 0,
 };
 
-const label: CSSProperties = { alignItems: 'center', display: 'flex', gap: tokens.space(1) };
+const groupingControl: CSSProperties = {
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: tokens.space(1),
+};
+
+const groupingLabel: CSSProperties = {
+  color: tokens.color.textMuted,
+  fontSize: tokens.font.size.xs,
+  fontWeight: 600,
+  letterSpacing: '0.04em',
+  textTransform: 'uppercase',
+};
+
+const groupingList: CSSProperties = {
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: tokens.space(1),
+  listStyle: 'none',
+  margin: 0,
+  padding: 0,
+};
+
+const groupingLevel: CSSProperties = {
+  alignItems: 'center',
+  background: tokens.color.surfaceAlt,
+  border: `1px solid ${tokens.color.borderStrong}`,
+  borderRadius: tokens.radius.sm,
+  display: 'inline-flex',
+  gap: tokens.space(0.5),
+  padding: `${tokens.space(0.5)} ${tokens.space(1)}`,
+};
+
+const levelNumber: CSSProperties = {
+  color: tokens.color.textMuted,
+  fontVariantNumeric: 'tabular-nums',
+  fontWeight: 600,
+};
+
+const levelButton: CSSProperties = {
+  background: 'none',
+  border: 'none',
+  color: tokens.color.textMuted,
+  cursor: 'pointer',
+  lineHeight: 1,
+  padding: tokens.space(0.5),
+};
+
+const levelButtonDisabled: CSSProperties = {
+  cursor: 'default',
+  opacity: 0.35,
+};
 
 const segmented: CSSProperties = {
   border: `1px solid ${tokens.color.borderStrong}`,
