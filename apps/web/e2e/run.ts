@@ -45,9 +45,7 @@ import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import { createGotoLink, recordEntityChanges } from '@wizard-ads/db';
 import { ROADMAP_ITEMS, seedRoadmap } from '../../../supabase/seed/seed-roadmap.js';
-
-const SUITES = ['tags-goto', 'grid-performance', 'auth'] as const;
-type Suite = (typeof SUITES)[number];
+import { parseE2EArgs } from '../src/e2e-args.js';
 
 const USER_A = '8a8a8a8a-8a8a-4a8a-8a8a-8a8a8a8a8a8a';
 const USER_B = '8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b';
@@ -441,20 +439,8 @@ async function auth(playwrightArgs: string[]): Promise<number> {
 async function gridPerformance(playwrightArgs: string[]): Promise<number> {
   return await authenticated('playwright.grid-performance.config.ts', playwrightArgs);
 }
-
-function parse(argv: string[]): { suites: Suite[]; playwrightArgs: string[] } {
-  const [first, ...rest] = argv;
-  if (first === undefined || first === 'all' || first.startsWith('-')) {
-    return { suites: [...SUITES], playwrightArgs: first === undefined ? [] : argv };
-  }
-  if (!(SUITES as readonly string[]).includes(first)) {
-    throw new Error(`Unknown suite '${first}'. Expected one of: ${SUITES.join(', ')}, all.`);
-  }
-  return { suites: [first as Suite], playwrightArgs: rest };
-}
-
 async function main(): Promise<number> {
-  const { suites, playwrightArgs } = parse(process.argv.slice(2));
+  const { suites, playwrightArgs } = parseE2EArgs(process.argv.slice(2));
 
   if (!(await databaseAvailable())) {
     throw new Error(
