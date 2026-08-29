@@ -17,6 +17,11 @@
  */
 import { spawn } from 'node:child_process';
 import { chromium } from '@playwright/test';
+import {
+  inspectReleaseArtifact,
+  RELEASE_ROUTE_CHECKS,
+  type ReleaseRouteCheck,
+} from '../src/release/candidate-artifacts';
 
 const PRODUCTION_ORIGIN = process.env['OPENSPELL_PRODUCTION_ORIGIN']
   ?? 'https://ads.ecomwizards.agency';
@@ -24,27 +29,13 @@ const CDP_URL = process.env['OPENSPELL_CDP_URL'] ?? 'http://127.0.0.1:9222';
 const AUTH_COOKIE = /^sb-.*-auth-token(?:\.\d+)?$/;
 const CANDIDATE_HOST = /^wizard-[a-z0-9]+-ecom-wizards\.vercel\.app$/;
 const STATUS_MARKER = 'OPENSPELL_STATUS:';
-const REJECTED_BODY = /role=["']alert["']|Application error|Internal Server Error|Login – Vercel/i;
-
-const ROUTES = [
-  { route: '/', expectedText: 'Open the dashboard' },
-  { route: '/dashboard', expectedText: 'Dashboard' },
-  { route: '/grid', expectedText: 'Campaigns' },
-  { route: '/optimizer', expectedText: 'Campaign Optimizer' },
-  { route: '/optimizer/groups', expectedText: 'Optimization Groups' },
-  { route: '/creative', expectedText: 'Creative Performance' },
-  { route: '/campaigns', expectedText: 'Campaign Builder' },
-  { route: '/recommendations', expectedText: 'Recommendations' },
-  { route: '/tags', expectedText: 'Tags' },
-  { route: '/time-machine', expectedText: 'Time Machine' },
-  { route: '/settings/integrations', expectedText: 'Integrations' },
-] as const;
-
 interface RouteResult {
   route: string;
   status: number | null;
   checkDurationMs: number;
   passed: boolean;
+  missingArtifacts: readonly string[];
+  rejectedBody: boolean;
 }
 
 async function main(): Promise<void> {
@@ -70,7 +61,7 @@ async function main(): Promise<void> {
     .join('; ');
 
   const results: RouteResult[] = [];
-  for (const check of ROUTES) {
+  for (const check of RELEASE_ROUTE_CHECKS) {
     results.push(await verifyRoute(candidate, check, cookieHeader));
   }
 
@@ -81,7 +72,7 @@ async function main(): Promise<void> {
 
 async function verifyRoute(
   candidate: URL,
-  check: { route: string; expectedText: string },
+  check: ReleaseRouteCheck,
   cookieHeader: string,
 ): Promise<RouteResult> {
   const startedAt = performance.now();
@@ -109,12 +100,14 @@ async function verifyRoute(
     ? null
     : result.stdout.slice(markerIndex).match(new RegExp(`${STATUS_MARKER}(\\d{3})`));
   const status = statusMatch?.[1] === undefined ? null : Number(statusMatch[1]);
-  const artifactMatched = responseBody.includes(check.expectedText) && !REJECTED_BODY.test(responseBody);
+  const inspection = inspectReleaseArtifact(responseBody, check.artifacts);
   return {
     route: check.route,
     status,
     checkDurationMs: Math.round(performance.now() - startedAt),
-    passed: result.exitCode === 0 && status === 200 && artifactMatched,
+    passed: result.exitCode === 0 && status === 200 && inspection.matched,
+    missingArtifacts: inspection.missingArtifacts,
+    rejectedBody: inspection.rejectedBody,
   };
 }
 
