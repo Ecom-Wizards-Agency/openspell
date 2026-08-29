@@ -18,11 +18,6 @@ const ROUTES = [
     body: 'Spend, sales, ACOS and CPC against the prior period and the trailing-7 average, with pacing, flags, freshness and the crosscheck verdict.',
   },
   {
-    href: '/strategy',
-    title: 'Strategy Overview',
-    body: 'Stock, pacing, open batches, cooldowns, optimization groups and the next operator decision in one calm view.',
-  },
-  {
     href: '/optimizer',
     title: 'Campaign Optimizer',
     body: 'Review group-scoped recommendations and their evidence, then export accepted changes without writing to Amazon.',
@@ -55,9 +50,9 @@ export default async function Page() {
 
   return (
     <main style={main}>
-      <h1 style={{ fontSize: '1.5rem', margin: '0 0 0.5rem' }}>wizard-ads</h1>
+      <h1 style={{ fontSize: '1.5rem', margin: '0 0 0.5rem' }}>OpenSpell</h1>
       <p style={{ color: 'var(--wa-text-muted)', margin: '0 0 1.5rem' }}>
-        Read-only Amazon advertising operator workspace.
+        Amazon advertising operator workspace.
       </p>
 
       <p style={cta} data-testid="home-signed-in">

@@ -259,6 +259,23 @@ Day-1 parallel set after WP-0 (~2 days): WP-1, 2, 3, 4, 5, 11 simultaneously —
 file overlap. WP-6/7/8 start when recon + contracts land; WP-9/10 at v0 close; WP-12/13 gated
 on v1 exit.
 
+### Active operator-experience queue
+
+The historical table above explains the original build. Current operator work continues with
+numbered briefs in `docs/workpackages/`; status and release gates remain in `docs/STATUS.md`.
+
+- **WP-89 — Data context and filtered bulk selection:** make routine freshness compact, keep
+  warnings prominent, explain provenance through an accessible info affordance, and support
+  select-all/deselect-all within the currently filtered campaign set.
+- **WP-90 — Optimization-group review schedule:** replace the ambiguous interval-only cadence
+  control with persisted profile-local weekday choices. Due-group evaluation must honor the
+  chosen days and generate previews only in this package. A separate, explicitly enabled apply
+  cadence is required for unattended Amazon writes through the guarded worker gateway.
+- **WP-91 — Live interaction performance:** profile the deployed server query, payload,
+  hydration and render paths. The known 3,597-row grid must become usable in under two seconds;
+  p95 filter/group interactions must remain below 150 ms. Time Machine and other slow operator
+  routes receive the same evidence-first breakdown rather than a generic loading-state patch.
+
 ## Verification strategy
 
 1. **Parity harness**: `fixtures/generate/` Python scripts import the real amazon-agent modules,

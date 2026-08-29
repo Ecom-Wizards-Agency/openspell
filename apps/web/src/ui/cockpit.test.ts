@@ -11,12 +11,14 @@
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   bucketKey,
   Cockpit,
   completeDailyFacts,
+  defaultPresentation,
   MAX_CHART_SERIES,
+  parseCockpitPreferences,
   partitionKpiTiles,
   periodAriaLabel,
   presentationAfterChange,
@@ -29,6 +31,24 @@ import type { KpiTileModel } from '../optimizer/view';
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const mounted: Root[] = [];
+const storedPreferences = new Map<string, string>();
+
+beforeEach(() => {
+  storedPreferences.clear();
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => storedPreferences.get(key) ?? null,
+      setItem: (key: string, value: string) => storedPreferences.set(key, value),
+      removeItem: (key: string) => storedPreferences.delete(key),
+      clear: () => storedPreferences.clear(),
+      key: (index: number) => [...storedPreferences.keys()][index] ?? null,
+      get length() {
+        return storedPreferences.size;
+      },
+    } satisfies Storage,
+  });
+});
 
 const day = (date: string, over: Partial<CockpitDay> = {}): CockpitDay => ({
   date,
@@ -76,6 +96,7 @@ function mountCockpit(days: readonly CockpitDay[] = [day('2026-08-24'), day('202
         currencyCode: 'USD',
         settlingStart: '2026-08-26',
         coverageStart: '2026-08-24',
+        preferenceKey: 'synthetic-profile',
       }),
     );
   });
@@ -95,6 +116,7 @@ afterEach(() => {
     for (const root of mounted.splice(0)) root.unmount();
   });
   document.body.replaceChildren();
+  window.localStorage.clear();
 });
 
 describe('bucketKey', () => {
@@ -185,6 +207,36 @@ describe('series selection and presentation', () => {
     expect(right.spend).toEqual({ mark: 'line', axis: 'right' });
   });
 
+  it('uses metric-aware display defaults instead of selection order', () => {
+    expect(defaultPresentation('spend')).toEqual({ mark: 'bar', axis: 'left' });
+    expect(defaultPresentation('clicks')).toEqual({ mark: 'bar', axis: 'right' });
+    expect(defaultPresentation('rpc')).toEqual({ mark: 'line', axis: 'right' });
+    expect(defaultPresentation('acos')).toEqual({ mark: 'line', axis: 'right' });
+  });
+
+  it('restores only valid available metrics from a saved view', () => {
+    const saved = JSON.stringify({
+      version: 1,
+      selected: ['clicks', 'missing', 'roas', 'spend', 'sales', 'orders'],
+      granularity: 'W',
+      presentations: {
+        clicks: { mark: 'line', axis: 'left' },
+        roas: { mark: 'bar', axis: 'right' },
+      },
+    });
+    expect(parseCockpitPreferences(saved, tiles.map((candidate) => candidate.metric))).toEqual({
+      version: 1,
+      selected: ['clicks', 'roas', 'spend', 'sales'],
+      granularity: 'W',
+      presentations: {
+        clicks: { mark: 'line', axis: 'left' },
+        roas: { mark: 'bar', axis: 'right' },
+        spend: { mark: 'bar', axis: 'left' },
+        sales: { mark: 'bar', axis: 'left' },
+      },
+    });
+  });
+
   it('enforces the cap in the rendered metric controls', () => {
     const host = mountCockpit();
     act(() => metricButton(host, 'Orders').click());
@@ -216,8 +268,37 @@ describe('series selection and presentation', () => {
     });
 
     expect(host.querySelector('[data-series-mark="line"][aria-label="Spend line"]')).not.toBeNull();
-    expect(host.querySelector('g[aria-label="left axis"]')).toBeNull();
+    expect(host.querySelector('[data-series-mark="bar"][aria-label="Ad Sales bars"]')).not.toBeNull();
+    expect(host.querySelector('g[aria-label="left axis"]')).not.toBeNull();
     expect(host.querySelector('g[aria-label="right axis"]')).not.toBeNull();
+  });
+
+  it('persists supporting metrics, presentation, axis, and aggregation for the account', () => {
+    const host = mountCockpit();
+    const daily = host.querySelector<HTMLButtonElement>('[role="radio"][aria-label="Weekly"]');
+    act(() => metricButton(host, 'Clicks').click());
+    act(() => {
+      if (daily === null) throw new Error('Weekly aggregation control missing');
+      daily.click();
+    });
+
+    const clicksDisplay = host.querySelector<HTMLSelectElement>('select[aria-label="Clicks display"]');
+    act(() => {
+      if (clicksDisplay === null) throw new Error('Clicks display control missing');
+      clicksDisplay.value = 'line';
+      clicksDisplay.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    const stored = [...Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index))]
+      .filter((key): key is string => key !== null)
+      .map((key) => window.localStorage.getItem(key))
+      .find((value) => value?.includes('"clicks"'));
+    expect(stored).not.toBeUndefined();
+    expect(JSON.parse(stored as string)).toMatchObject({
+      selected: ['spend', 'sales', 'clicks'],
+      granularity: 'W',
+      presentations: { clicks: { mark: 'line', axis: 'right' } },
+    });
   });
 });
 

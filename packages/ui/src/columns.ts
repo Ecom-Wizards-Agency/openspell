@@ -170,12 +170,16 @@ const DIMENSIONS: Record<EntityLevel, GridColumn[]> = {
         'negatives; one concept gets one name here.',
     }),
     dimension('bid', 'Bid', { scale: 'money', align: 'right', width: 96 }),
-    dimension('suggested_bid', 'Suggested bid', {
+    dimension('suggested_bid', 'Bid corridor', {
       scale: 'money',
       align: 'right',
       width: 128,
       cell: 'suggested_bid',
-      description: 'Latest Amazon suggested-bid median, with the low–high range beneath it.',
+      description: 'Latest Amazon suggested-bid median, with the low–high corridor beneath it.',
+    }),
+    dimension('bid_corridor_position', 'Corridor position', {
+      width: 128,
+      description: 'Whether the current bid sits below, within, or above Amazon’s latest suggested-bid corridor.',
     }),
     dimension('max_potential_cpc', 'Max potential CPC', {
       scale: 'money',
@@ -255,6 +259,7 @@ function isKeyDimension(level: EntityLevel, id: string): boolean {
       'match_type',
       'bid',
       'suggested_bid',
+      'bid_corridor_position',
       'max_potential_cpc',
       'diff_from_suggested_bid',
       'rpc_category',

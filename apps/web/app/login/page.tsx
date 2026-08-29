@@ -23,7 +23,7 @@ export default async function LoginPage({
 
   return (
     <main style={{ ...page, maxWidth: '28rem' }}>
-      <h1 style={heading}>wizard-ads</h1>
+      <h1 style={heading}>OpenSpell</h1>
       <p style={muted}>
         {passwordLoginEnabled
           ? 'Sign in with your work address. Invited accounts can use their password; magic link and Google remain available. There is no public signup—accounts are created only while accepting an invitation.'

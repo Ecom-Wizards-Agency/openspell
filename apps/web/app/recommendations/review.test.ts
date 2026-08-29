@@ -17,6 +17,7 @@ function proposal(id: string, status: string, reason: string): ProposalView {
     limitReason: null,
     entityType: 'keyword',
     entityId: `entity-${id}`,
+    campaignId: 'campaign-synthetic',
     entityLabel: `Synthetic keyword ${id}`,
     scope: 'Synthetic campaign',
     field: 'bid',
@@ -65,7 +66,7 @@ describe('ReviewWorkspace operator queue', () => {
     expect(markup).toContain('decision-lane-completed');
     expect(markup).toContain('reason-group-needs_review-high_acos');
     expect(markup).toContain('Yes, export changes');
-    expect(markup).toContain('Wizard Ads does not update Amazon');
+    expect(markup).toContain('OpenSpell does not update Amazon');
     expect(markup).toContain(
       'Selects caps from this run’s snapshot; it is not a persisted campaign assignment.',
     );

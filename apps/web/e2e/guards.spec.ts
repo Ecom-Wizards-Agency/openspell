@@ -64,7 +64,7 @@ test('the index sends an anonymous visitor directly to sign in', async ({ page }
   await expect(nav.getByRole('link', { name: 'Dashboard' })).toHaveCount(0);
   await expect(page.getByTestId('feedback-entry')).toHaveCount(0);
   await expect(page.getByTestId('home-signin')).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'wizard-ads' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'OpenSpell' })).toBeVisible();
 });
 
 test('the index names the signed-in user and offers a way out', async ({ page }) => {

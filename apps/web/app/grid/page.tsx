@@ -34,6 +34,7 @@ import { withDatabase } from '../_lib/db';
 import { ROW_CAP, loadGridRows } from '../_lib/grid-data';
 import { periodFromParams, precedingPeriod, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
+import { OperatorContext } from '../../src/ui/operator-context';
 import { GridWorkspace } from './grid-client';
 import { CrosscheckChip } from '../crosscheck/panel';
 
@@ -127,6 +128,21 @@ export default async function GridPage({ searchParams }: PageProps) {
         </div>
 
       </header>
+
+      <OperatorContext
+        account={profile.label}
+        marketplace={profile.countryCode}
+        currencyCode={profile.currencyCode}
+        timezone={profile.timezone}
+        path="/grid"
+        period={period}
+        today={todayIso()}
+        preserved={{
+          profile: profile.id,
+          entity,
+          ...(params.campaign === undefined ? {} : { campaign: params.campaign }),
+        }}
+      />
 
       {payload?.truncated ? (
         <p style={{ ...muted, color: tokens.color.bad }}>

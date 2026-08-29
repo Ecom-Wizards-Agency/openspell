@@ -20,19 +20,24 @@
  * use: anonymous visitors are sent to `/login`, and every read below is scoped
  * by the org the gate resolved.
  */
+import { Suspense } from 'react';
 import { analyzeAccount, classifyCampaignCategory, computePacing, evaluate, pacingFlag } from '@wizard-ads/core';
 import type { DailyRow, Flag } from '@wizard-ads/core';
+import { readOptimizationWorkspace } from '@wizard-ads/db';
+import type { DbHandle } from '@wizard-ads/db';
 import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 import { assessFreshness } from '@wizard-ads/ui';
 import { CrosscheckChip } from '../crosscheck/panel';
 import { gate } from '../../src/auth/guard';
 import { gateMessage } from '../../src/ui/gate-message';
-import { Card, EmptyState, PageHeader } from '../../src/ui/primitives';
+import { Badge, Card, EmptyState, PageHeader } from '../../src/ui/primitives';
 import { FlagsCard, FreshnessBar, PacingCard } from '../../src/ui/dashboard';
 import { Cockpit } from '../../src/ui/cockpit';
 import { kpiTiles, totalsOf } from '../../src/optimizer/view';
 import type { FlagView, PacingView } from '../../src/ui/dashboard';
 import { page } from '../../src/ui/tokens';
+import { OperatorContext } from '../../src/ui/operator-context';
+import { readStrategyEvidence } from '../../src/strategy/overview';
 import { loadCampaignDailyRows, loadProfileDailyRows, loadReportLedger } from '../_lib/dashboard-data';
 import { withDatabase } from '../_lib/db';
 import { addDays, periodFromParams, settledComparisonWindows, todayIso } from '../_lib/periods';
@@ -208,10 +213,20 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     <main style={page}>
       <PageHeader
         title="Dashboard"
-        subtitle={`${profile.label} · ${period.start} to ${period.end} · ${profile.currencyCode}`}
+        subtitle="Performance, operating constraints, and the next decisions that need attention"
       />
 
       <div className="wa-stack">
+        <OperatorContext
+          account={profile.label}
+          marketplace={profile.countryCode}
+          currencyCode={profile.currencyCode}
+          timezone={profile.timezone}
+          path="/dashboard"
+          period={period}
+          today={today}
+          preserved={{ profile: profile.id }}
+        />
         <details className="wa-dashboard-context">
           <summary>Comparison and attribution coverage</summary>
           <p>
@@ -232,17 +247,127 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           currencyCode={profile.currencyCode}
           settlingStart={settlingWindow.start}
           coverageStart={accountRows[0]?.date ?? null}
+          preferenceKey={profile.id}
         />
 
         <section className="wa-grid-2">
           <PacingCard pacing={pacing as PacingView | null} context={context} />
-          <FlagsCard active={activeFlags as FlagView[]} suppressed={flags.suppressed as FlagView[]} />
+          <Suspense fallback={<OperatingStatusLoading />}>
+            <OperatingStatus
+              handle={entry.handle}
+              orgId={orgId}
+              profileId={profile.id}
+            />
+          </Suspense>
         </section>
+
+        <FlagsCard active={activeFlags as FlagView[]} suppressed={flags.suppressed as FlagView[]} />
 
         <CampaignTable rows={campaignSummary} currencyCode={profile.currencyCode} profileId={profile.id} period={period} />
 
       </div>
     </main>
+  );
+}
+
+async function OperatingStatus({
+  handle,
+  orgId,
+  profileId,
+}: {
+  handle: DbHandle;
+  orgId: string;
+  profileId: string;
+}) {
+  const [workspace, evidence] = await Promise.all([
+    readOptimizationWorkspace(handle, { orgId, profileId }),
+    readStrategyEvidence(handle, { orgId, profileId }),
+  ]);
+  const openBatch = evidence.batches.find((batch) => batch.status === 'staged') ?? null;
+  const stockNeedsReview = evidence.knowledge.stockSignals > 0;
+  const observationNeedsReview = evidence.observations.revert > 0 || evidence.observations.settling > 0;
+
+  return (
+    <div id="operating-status">
+      <Card
+        title="Operating status"
+        subtitle="Account constraints and evidence behind the next optimizer decision."
+        actions={<a className="wa-btn wa-btn--ghost wa-btn--sm" href={`/optimizer/groups?profile=${profileId}`}>Manage groups</a>}
+      >
+        <div className="wa-operating-status">
+          <OperatingSignal
+            label="Stock gate"
+            value={stockNeedsReview ? 'Review' : 'Unknown'}
+            detail={stockNeedsReview
+              ? `${evidence.knowledge.stockSignals} stock signal${evidence.knowledge.stockSignals === 1 ? '' : 's'} need review.`
+              : 'No validated inventory signal is available.'}
+            tone={stockNeedsReview ? 'warn' : 'neutral'}
+          />
+          <OperatingSignal
+            label="Optimization groups"
+            value={`${workspace.assignedCampaigns}/${workspace.campaigns.length} assigned`}
+            detail={workspace.unassignedCampaigns === 0
+              ? `${workspace.groups.length} group${workspace.groups.length === 1 ? '' : 's'} cover the campaign roster.`
+              : `${workspace.unassignedCampaigns} campaign${workspace.unassignedCampaigns === 1 ? '' : 's'} still need a group.`}
+            tone={workspace.unassignedCampaigns === 0 && workspace.campaigns.length > 0 ? 'good' : 'warn'}
+          />
+          <OperatingSignal
+            label="Open export batch"
+            value={openBatch === null ? 'Clear' : `${openBatch.rows} staged`}
+            detail={openBatch === null
+              ? 'No exported change set is waiting for operator handling.'
+              : `${openBatch.optGroup} · ${openBatch.lever} · Amazon unchanged`}
+            tone={openBatch === null ? 'good' : 'warn'}
+          />
+          <OperatingSignal
+            label="Evidence loop"
+            value={evidence.observations.revert > 0
+              ? `${evidence.observations.revert} revert`
+              : evidence.observations.settling > 0
+                ? `${evidence.observations.settling} observing`
+                : `${evidence.observations.complete} complete`}
+            detail={`${evidence.observations.synchronized} synchronized · ${evidence.observations.hold} hold`}
+            tone={evidence.observations.revert > 0 ? 'bad' : observationNeedsReview ? 'warn' : 'neutral'}
+          />
+        </div>
+        <div className="wa-operating-status__actions">
+          <a href={`/optimizer?profile=${profileId}`}>Open Campaign Optimizer →</a>
+          <a href={`/recommendations?profile=${profileId}`}>Review recommendations →</a>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function OperatingStatusLoading() {
+  return (
+    <Card title="Operating status" subtitle="Loading account constraints and decision evidence…">
+      <div className="wa-operating-status" aria-busy="true">
+        {['Stock gate', 'Optimization groups', 'Open export batch', 'Evidence loop'].map((label) => (
+          <div className="wa-operating-signal" key={label}><span>{label}</span><strong>—</strong></div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function OperatingSignal({
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone: 'good' | 'warn' | 'bad' | 'neutral';
+}) {
+  return (
+    <div className="wa-operating-signal">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <Badge tone={tone}>{detail}</Badge>
+    </div>
   );
 }
 

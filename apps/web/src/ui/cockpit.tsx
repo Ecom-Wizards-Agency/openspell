@@ -9,7 +9,7 @@
  * facts are summed into a week or month. We never average daily ratios.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { deriveMetric } from '@wizard-ads/ui';
 import type { KpiTileModel } from '../optimizer/view';
@@ -31,6 +31,8 @@ export interface CockpitProps {
   settlingStart: string | null;
   /** First day facts actually exist — the honest coverage boundary. */
   coverageStart: string | null;
+  /** Stable account key used to restore this operator's chart view. */
+  preferenceKey: string;
 }
 
 export type Granularity = 'D' | 'W' | 'M';
@@ -40,6 +42,13 @@ export type SeriesAxis = 'left' | 'right';
 export interface SeriesPresentation {
   mark: SeriesMark;
   axis: SeriesAxis;
+}
+
+export interface CockpitPreferences {
+  version: 1;
+  selected: string[];
+  granularity: Granularity;
+  presentations: Record<string, SeriesPresentation>;
 }
 
 export interface SeriesPoint {
@@ -76,6 +85,23 @@ const GRANULARITY_LABELS: Record<Granularity, string> = {
 };
 
 export const MAX_CHART_SERIES = 4;
+const PREFERENCE_VERSION = 1;
+const PREFERENCE_PREFIX = 'openspell:performance-chart:v1';
+const BAR_METRICS = new Set(['spend', 'sales', 'orders', 'impressions', 'clicks']);
+const RIGHT_AXIS_METRICS = new Set([
+  'orders',
+  'impressions',
+  'clicks',
+  'acos',
+  'roas',
+  'rpc',
+  'ctr',
+  'cpc',
+  'aov',
+  'cpa',
+  'cvr',
+  'cpm',
+]);
 
 function zeroDay(date: string): CockpitDay {
   return { date, impressions: 0, clicks: 0, spend: 0, sales: 0, orders: 0 };
@@ -139,15 +165,73 @@ export function presentationAfterChange(
   metric: string,
   patch: Partial<SeriesPresentation>,
 ): Record<string, SeriesPresentation> {
-  const previous = current[metric] ?? defaultPresentation(0);
+  const previous = current[metric] ?? defaultPresentation(metric);
   return { ...current, [metric]: { ...previous, ...patch } };
 }
 
-function defaultPresentation(index: number): SeriesPresentation {
+/** AdLabs-style semantic preset: totals are bars; rates and unit economics are lines. */
+export function defaultPresentation(metric: string): SeriesPresentation {
   return {
-    mark: index % 2 === 0 ? 'bar' : 'line',
-    axis: index % 2 === 0 ? 'left' : 'right',
+    mark: BAR_METRICS.has(metric) ? 'bar' : 'line',
+    axis: RIGHT_AXIS_METRICS.has(metric) ? 'right' : 'left',
   };
+}
+
+function isPresentation(value: unknown): value is SeriesPresentation {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Partial<SeriesPresentation>;
+  return (candidate.mark === 'line' || candidate.mark === 'bar')
+    && (candidate.axis === 'left' || candidate.axis === 'right');
+}
+
+export function parseCockpitPreferences(
+  serialized: string | null,
+  availableMetrics: readonly string[],
+): CockpitPreferences | null {
+  if (serialized === null) return null;
+  try {
+    const parsed = JSON.parse(serialized) as Partial<CockpitPreferences>;
+    if (parsed.version !== PREFERENCE_VERSION) return null;
+    if (!Array.isArray(parsed.selected)) return null;
+    if (parsed.granularity !== 'D' && parsed.granularity !== 'W' && parsed.granularity !== 'M') return null;
+
+    const available = new Set(availableMetrics);
+    const selected = [...new Set(parsed.selected)]
+      .filter((metric): metric is string => typeof metric === 'string' && available.has(metric))
+      .slice(0, MAX_CHART_SERIES);
+    if (selected.length === 0) return null;
+
+    const supplied = parsed.presentations;
+    const presentations = Object.fromEntries(
+      selected.map((metric) => {
+        const candidate = typeof supplied === 'object' && supplied !== null ? supplied[metric] : undefined;
+        return [metric, isPresentation(candidate) ? candidate : defaultPresentation(metric)];
+      }),
+    );
+    return { version: PREFERENCE_VERSION, selected, granularity: parsed.granularity, presentations };
+  } catch {
+    return null;
+  }
+}
+
+function preferenceStorageKey(preferenceKey: string): string {
+  return `${PREFERENCE_PREFIX}:${preferenceKey}`;
+}
+
+function readPreferences(preferenceKey: string): string | null {
+  try {
+    return window.localStorage?.getItem(preferenceStorageKey(preferenceKey)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writePreferences(preferenceKey: string, preferences: CockpitPreferences): void {
+  try {
+    window.localStorage?.setItem(preferenceStorageKey(preferenceKey), JSON.stringify(preferences));
+  } catch {
+    // Storage may be disabled or unavailable. The chart remains fully usable in memory.
+  }
 }
 
 function formatValue(value: number | null, scale: KpiTileModel['scale'], currency: string): string {
@@ -307,7 +391,14 @@ export function periodAriaLabel(
   return [formatPeriod(point), ...values, gapNote].filter((part): part is string => part !== null).join('. ');
 }
 
-export function Cockpit({ days, tiles, currencyCode, settlingStart, coverageStart }: CockpitProps): ReactNode {
+export function Cockpit({
+  days,
+  tiles,
+  currencyCode,
+  settlingStart,
+  coverageStart,
+  preferenceKey,
+}: CockpitProps): ReactNode {
   const initialSelection = useMemo(() => {
     const preferred = ['spend', 'sales'].filter((metric) => tiles.some((tile) => tile.metric === metric));
     return preferred.length > 0 ? preferred : tiles.slice(0, 1).map((tile) => tile.metric);
@@ -315,16 +406,50 @@ export function Cockpit({ days, tiles, currencyCode, settlingStart, coverageStar
   const [selected, setSelected] = useState<string[]>(initialSelection);
   const [granularity, setGranularity] = useState<Granularity>('D');
   const [presentations, setPresentations] = useState<Record<string, SeriesPresentation>>(() =>
-    Object.fromEntries(initialSelection.map((metric, index) => [metric, defaultPresentation(index)])),
+    Object.fromEntries(initialSelection.map((metric) => [metric, defaultPresentation(metric)])),
   );
+  const [preferencesReady, setPreferencesReady] = useState(false);
   const tileGroups = useMemo(() => partitionKpiTiles(tiles), [tiles]);
+  const availableMetrics = useMemo(() => tiles.map((tile) => tile.metric), [tiles]);
+
+  useEffect(() => {
+    const restored = parseCockpitPreferences(
+      readPreferences(preferenceKey),
+      availableMetrics,
+    );
+    if (restored === null) {
+      setSelected(initialSelection);
+      setGranularity('D');
+      setPresentations(
+        Object.fromEntries(initialSelection.map((metric) => [metric, defaultPresentation(metric)])),
+      );
+    } else {
+      setSelected(restored.selected);
+      setGranularity(restored.granularity);
+      setPresentations(restored.presentations);
+    }
+    setPreferencesReady(true);
+  }, [preferenceKey, availableMetrics, initialSelection]);
+
+  useEffect(() => {
+    if (!preferencesReady) return;
+    const preferences: CockpitPreferences = {
+      version: PREFERENCE_VERSION,
+      selected,
+      granularity,
+      presentations: Object.fromEntries(
+        selected.map((metric) => [metric, presentations[metric] ?? defaultPresentation(metric)]),
+      ),
+    };
+    writePreferences(preferenceKey, preferences);
+  }, [preferencesReady, preferenceKey, selected, granularity, presentations]);
 
   const toggle = (metric: string): void => {
     const next = selectionAfterToggle(selected, metric);
     if (!selected.includes(metric) && next.includes(metric)) {
       setPresentations((current) => ({
         ...current,
-        [metric]: current[metric] ?? defaultPresentation(next.indexOf(metric)),
+        [metric]: current[metric] ?? defaultPresentation(metric),
       }));
     }
     setSelected(next);
@@ -343,7 +468,7 @@ export function Cockpit({ days, tiles, currencyCode, settlingStart, coverageStar
           label: tile?.label ?? metric,
           scale: tile?.scale ?? 'money',
           color: SERIES_COLORS[index] as string,
-          presentation: presentations[metric] ?? defaultPresentation(index),
+          presentation: presentations[metric] ?? defaultPresentation(metric),
           points: seriesFor(days, metric, granularity),
         };
       }),
@@ -352,6 +477,10 @@ export function Cockpit({ days, tiles, currencyCode, settlingStart, coverageStar
 
   return (
     <section aria-label="Performance cockpit" className="wa-cockpit">
+      <div className="wa-cockpit__metric-head">
+        <strong>Chart metrics</strong>
+        <span>Choose up to four · saved for this account</span>
+      </div>
       <div
         className="wa-cockpit__strip wa-cockpit__strip--primary"
         role="listbox"
@@ -372,7 +501,7 @@ export function Cockpit({ days, tiles, currencyCode, settlingStart, coverageStar
 
       {tileGroups.supporting.length === 0 ? null : (
         <details className="wa-cockpit__supporting">
-          <summary>Supporting metrics · {tileGroups.supporting.length}</summary>
+          <summary>Supporting metrics · {tileGroups.supporting.length} · choose any to chart</summary>
           <div
             className="wa-cockpit__strip wa-cockpit__strip--supporting"
             role="listbox"
@@ -429,12 +558,16 @@ function MetricTile({
       role="option"
       aria-selected={selectedIndex >= 0}
       aria-disabled={unavailable}
+      aria-label={`${tile.label}: ${selectedIndex >= 0 ? 'remove from' : 'add to'} performance chart`}
       className="wa-cockpit__tile"
       style={color === undefined ? undefined : { borderBottomColor: color }}
       title={unavailable ? 'Remove a selected metric before adding another.' : undefined}
       onClick={unavailable ? undefined : onSelect}
     >
-      <span className="wa-kpi__label">{tile.label}</span>
+      <span className="wa-cockpit__tile-head">
+        <span className="wa-kpi__label">{tile.label}</span>
+        {selectedIndex >= 0 ? <span className="wa-cockpit__charted">Charted</span> : null}
+      </span>
       <span className="wa-cockpit__value">{formatValue(tile.value, tile.scale, currencyCode)}</span>
       <span className="wa-cockpit__prev">
         {tile.prev === null

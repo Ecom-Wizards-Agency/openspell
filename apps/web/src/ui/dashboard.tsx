@@ -124,9 +124,9 @@ const FRESHNESS_TONE: Record<string, Exclude<Tone, 'neutral'>> = {
 };
 
 /**
- * Staleness changes how every number on the page should be read, so it sits
- * above them at full width rather than tucked into a corner. The crosscheck
- * verdict answers a different question and rides beside it as a chip.
+ * Fresh data is routine context, not a success alert. Keep the current state
+ * compact and neutral; warning and failure states still receive a tinted
+ * surface because they change how every number below should be read.
  *
  * The ledger expands through `<details>`, so the disclosure needs no JavaScript
  * and this stays a server component.
@@ -139,36 +139,65 @@ export function FreshnessBar({
   children?: ReactNode;
 }): ReactNode {
   const tone = FRESHNESS_TONE[assessment.tone] ?? 'info';
+  const status = freshnessStatus(assessment.tone);
+  const summary = assessment.tone === 'good' && assessment.coversThrough !== null
+    ? `Through ${formatCoverageDate(assessment.coversThrough)}`
+    : assessment.headline;
   return (
-    <section aria-label="Data freshness" className={`wa-banner wa-banner--${tone}`} style={{ display: 'block' }}>
+    <section aria-label="Data freshness" className={`wa-freshness wa-freshness--${tone}`}>
       <details>
-        <summary
-          className="wa-row"
-          style={{ cursor: 'pointer', gap: '0.5rem', listStyle: 'none' }}
-        >
-          <Badge tone={tone} dot>
-            Data
-          </Badge>
-          <span style={{ fontSize: 'var(--wa-fs-sm)' }}>{assessment.headline}</span>
-          <span style={{ flex: 1 }} />
+        <summary className="wa-freshness__summary">
+          <span className="wa-freshness__primary">
+            <span aria-hidden="true" className="wa-freshness__dot" />
+            <strong>{status}</strong>
+            <span className="wa-freshness__meta">{summary}</span>
+          </span>
+          <span className="wa-freshness__spacer" />
           {children}
-          <span className="wa-hint" style={{ textDecoration: 'underline' }}>
-            Report ledger
+          <span className="wa-freshness__action">
+            <span
+              aria-label="Freshness is based on completed Amazon report loads, not fact-row timestamps."
+              className="wa-info-mark"
+              role="img"
+              title="Freshness is based on completed Amazon report loads, not fact-row timestamps."
+            >
+              i
+            </span>
+            Sync details
           </span>
         </summary>
-        <ul style={{ fontSize: 'var(--wa-fs-xs)', margin: '0.5rem 0 0', paddingLeft: '1.25rem' }}>
-          {assessment.details.map((detail) => (
-            <li key={detail}>{detail}</li>
-          ))}
-          <li style={{ opacity: 0.85 }}>
-            Read from <code>report_requests</code>. Fact rows are never used to infer freshness:
-            Amazon omits zero-impression rows, so an empty day and a missing sync look identical in
-            the facts.
-          </li>
-        </ul>
+        <div className="wa-freshness__panel">
+          <ul>
+            {assessment.details.map((detail) => (
+              <li key={detail}>{detail}</li>
+            ))}
+          </ul>
+          <p>
+            Based on the report ledger. Fact rows cannot prove freshness because Amazon may omit
+            rows with no impressions.
+          </p>
+        </div>
       </details>
     </section>
   );
+}
+
+function freshnessStatus(tone: FreshnessAssessment['tone']): string {
+  if (tone === 'good') return 'Data current';
+  if (tone === 'warn') return 'Data delayed';
+  if (tone === 'bad') return 'Data issue';
+  return 'No data yet';
+}
+
+function formatCoverageDate(value: string): string {
+  const [year, month, day] = value.split('-').map(Number);
+  if (year === undefined || month === undefined || day === undefined) return value;
+  return new Intl.DateTimeFormat('en-US', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'UTC',
+    year: 'numeric',
+  }).format(new Date(Date.UTC(year, month - 1, day)));
 }
 
 /* ------------------------------------------------------------- pacing ----- */
@@ -354,16 +383,45 @@ const SEVERITY_TONE: Record<FlagSeverity, Exclude<Tone, 'neutral'>> = {
   info: 'info',
 };
 
+export interface FlagGroup {
+  key: string;
+  severity: FlagSeverity;
+  metric: string;
+  category: string;
+  label: string;
+  flags: FlagView[];
+}
+
+const SEVERITY_RANK: Record<FlagSeverity, number> = { critical: 0, alert: 1, warn: 2, info: 3 };
+
+/** Collapse repeated campaign-level signals into operator-sized issue groups. */
+export function groupFlags(flags: readonly FlagView[]): FlagGroup[] {
+  const grouped = new Map<string, FlagView[]>();
+  for (const flag of flags) {
+    const key = `${flag.severity}:${flag.metric}:${flag.category}`;
+    const bucket = grouped.get(key);
+    if (bucket) bucket.push(flag);
+    else grouped.set(key, [flag]);
+  }
+  return [...grouped.entries()]
+    .map(([key, entries]) => {
+      const first = entries[0]!;
+      return {
+        key,
+        severity: first.severity,
+        metric: first.metric,
+        category: first.category,
+        label: `${humanMetric(first.metric)} · ${first.category}`,
+        flags: entries,
+      };
+    })
+    .sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.flags.length - a.flags.length);
+}
+
 /**
- * Flags, active and suppressed, in two separate lists.
- *
- * The suppressed list is the point. A wide ACOS swing on a Rank/SKW campaign is
- * an attribution artifact, not an anomaly, so the engine returns it separately —
- * and the UI has to *show* it, headed "noted, not flagged", with the reason
- * attached. Raising it trains operators to ignore alerts; dropping it silently
- * makes the tool look like it missed something plainly visible in the numbers.
- *
- * Severity ordering is the engine's; this component never re-ranks.
+ * The dashboard shows ranked issue groups, not a raw event log. A repeated
+ * campaign signal remains inspectable inside its group without forcing every
+ * row to compete for attention on first paint.
  */
 export function FlagsCard({
   active,
@@ -372,79 +430,86 @@ export function FlagsCard({
   active: readonly FlagView[];
   suppressed: readonly FlagView[];
 }): ReactNode {
+  const groups = groupFlags(active);
+  const primary = groups.slice(0, 4);
+  const remaining = groups.slice(4);
+  const topSeverity = groups[0]?.severity ?? null;
   return (
     <Card
-      title="Flags"
-      aria-label="Flags"
+      title="Priority alerts"
+      aria-label="Priority alerts"
       actions={
         <span className="wa-row" style={{ gap: '0.375rem' }}>
-          <Badge tone={active.length === 0 ? 'good' : 'bad'} dot>
-            {active.length} active
+          <Badge tone={topSeverity === null ? 'good' : SEVERITY_TONE[topSeverity]} dot>
+            {groups.length} issue group{groups.length === 1 ? '' : 's'}
           </Badge>
-          <Badge>{suppressed.length} noted</Badge>
+          <Badge>{active.length} signal{active.length === 1 ? '' : 's'}</Badge>
         </span>
       }
     >
       {active.length === 0 ? (
         <p className="wa-card__sub" style={{ margin: 0 }}>
-          Nothing crossed a threshold on this profile for the selected day. That is a result, not an
-          empty panel.
+          No issue needs operator attention for the selected evidence window.
         </p>
       ) : (
-        <ul style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem', listStyle: 'none', margin: 0, padding: 0 }}>
-          {active.map((flag, index) => (
-            <FlagItem key={`${flag.scope}-${flag.metric}-${index}`} flag={flag} />
-          ))}
-        </ul>
+        <div className="wa-flag-groups">
+          {primary.map((group) => <FlagGroupItem group={group} key={group.key} />)}
+          {remaining.length === 0 ? null : (
+            <details className="wa-flag-groups__more">
+              <summary>Show {remaining.length} more issue group{remaining.length === 1 ? '' : 's'}</summary>
+              <div className="wa-flag-groups">
+                {remaining.map((group) => <FlagGroupItem group={group} key={group.key} />)}
+              </div>
+            </details>
+          )}
+        </div>
       )}
 
       {suppressed.length === 0 ? null : (
-        <>
-          <h3 className="wa-card__title" style={{ fontSize: 'var(--wa-fs-base)', marginTop: '1rem' }}>
-            Noted, not flagged
-          </h3>
-          <p className="wa-hint" style={{ margin: '0.25rem 0 0.625rem' }}>
-            These crossed a threshold and were deliberately not raised. They are shown so nobody has
-            to wonder whether the tool saw them.
+        <details className="wa-flag-groups__noted">
+          <summary>{suppressed.length} threshold observation{suppressed.length === 1 ? '' : 's'} deliberately not raised</summary>
+          <p className="wa-hint">
+            The strategy rules suppressed these signals. They remain visible for auditability.
           </p>
-          <ul style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem', listStyle: 'none', margin: 0, padding: 0 }}>
-            {suppressed.map((flag, index) => (
-              <FlagItem key={`s-${flag.scope}-${flag.metric}-${index}`} flag={flag} dim />
-            ))}
-          </ul>
-        </>
+          <div className="wa-flag-groups">
+            {groupFlags(suppressed).map((group) => <FlagGroupItem group={group} key={`noted:${group.key}`} dim />)}
+          </div>
+        </details>
       )}
     </Card>
   );
 }
 
-/**
- * One flag, one line. Fifteen active flags at four lines each buried the rest
- * of the dashboard, so the collapsed row keeps only what an operator scans for
- * — severity, scope, the quantitative headline — and the diagnosis (likely
- * cause + the rule that fired) waits behind the disclosure.
- */
-function FlagItem({ flag, dim = false }: { flag: FlagView; dim?: boolean }): ReactNode {
+function FlagGroupItem({ group, dim = false }: { group: FlagGroup; dim?: boolean }): ReactNode {
+  const scopes = new Set(group.flags.map((flag) => flag.scope));
+  const first = group.flags[0]!;
   return (
-    <li style={{ opacity: dim ? 0.85 : 1 }}>
-      <details className="wa-flag">
-        <summary className="wa-flag__sum">
-          <Badge tone={dim ? 'neutral' : SEVERITY_TONE[flag.severity]}>{flag.severity}</Badge>
-          <span className="wa-flag__head">
-            <strong>{flag.scope}</strong> · {flag.message}
-          </span>
-          <span className="wa-flag__chev" aria-hidden="true">
-            ›
-          </span>
-        </summary>
-        <div className="wa-flag__body">
-          <div style={{ color: 'var(--wa-text-muted)' }}>{flag.likelyCause}</div>
-          <div className="wa-hint">
-            {flag.metric} · {flag.threshold}
-            {flag.suppressedReason === null ? '' : ` · ${flag.suppressedReason}`}
-          </div>
-        </div>
-      </details>
-    </li>
+    <details className="wa-flag-group" style={{ opacity: dim ? 0.82 : 1 }}>
+      <summary>
+        <Badge tone={dim ? 'neutral' : SEVERITY_TONE[group.severity]}>{group.severity}</Badge>
+        <span className="wa-flag-group__title">
+          <strong>{group.label}</strong>
+          <span>{scopes.size} scope{scopes.size === 1 ? '' : 's'} · {group.flags.length} signal{group.flags.length === 1 ? '' : 's'}</span>
+        </span>
+        <span className="wa-flag-group__example">{first.message}</span>
+        <span aria-hidden="true" className="wa-flag__chev">›</span>
+      </summary>
+      <div className="wa-flag-group__body">
+        <p>{first.likelyCause}</p>
+        <p className="wa-hint">Rule: {first.metric} · {first.threshold}</p>
+        <ul>
+          {group.flags.map((flag, index) => (
+            <li key={`${flag.scope}-${flag.metric}-${index}`}>
+              <strong>{flag.scope}</strong><span>{flag.message}</span>
+              {flag.suppressedReason === null ? null : <small>{flag.suppressedReason}</small>}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </details>
   );
+}
+
+function humanMetric(value: string): string {
+  return value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }

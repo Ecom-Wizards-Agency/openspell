@@ -13,8 +13,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: 'wizard-ads',
-  description: 'In-house Amazon Advertising tool',
+  title: 'OpenSpell',
+  description: 'Amazon Advertising operator workspace',
 };
 
 export const viewport: Viewport = {
