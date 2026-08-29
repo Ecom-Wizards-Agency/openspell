@@ -69,6 +69,8 @@
 
   "bids": {
     "start_bid_pct_of_recommended": "<signed int, e.g. start N% below the suggested bid>",
+    "mechanical_bid_step": "<currency interval whose multiples should be moved by one legal cent>",
+    "mechanical_placement_step": "<integer placement interval whose multiples should move by one legal point>",
     "by_bucket": {
       "<your-bucket-name>": {
         "daily_budget": "<number>",

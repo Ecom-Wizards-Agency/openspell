@@ -236,6 +236,7 @@ describe('recommendations.run wiring', () => {
     profileId,
     runId: reportRequestId,
     lookbackDays: 7,
+    groupId: jobId,
   };
 
   it('delegates to the injected runner and stores its result', async () => {

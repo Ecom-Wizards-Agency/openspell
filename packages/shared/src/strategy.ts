@@ -170,6 +170,10 @@ export type BucketBids = z.infer<typeof BucketBids>;
 
 export const BidStrategy = z.object({
   start_bid_pct_of_recommended: z.number().optional(),
+  /** Tenant-supplied currency interval treated as mechanically rounded. */
+  mechanical_bid_step: z.number().positive().optional(),
+  /** Tenant-supplied integer placement interval treated as mechanically rounded. */
+  mechanical_placement_step: z.number().int().positive().optional(),
   by_bucket: z.record(z.string(), BucketBids).optional(),
 });
 export type BidStrategy = z.infer<typeof BidStrategy>;

@@ -284,7 +284,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     });
   });
 
-  it('mints one delayed weekly run/job per due sync-enabled profile', async () => {
+  it('mints one delayed weekly run/job per due optimization group', async () => {
     await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
     // N-gram proposals share recommendation_runs but are not weekly optimizer
     // executions, so a recent one must not suppress this profile's due run.
@@ -302,12 +302,18 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     const [job] = await database.sql<{
       run_id: string;
       payload_run_id: string;
+      group_id: string | null;
+      payload_group_id: string | null;
+      group_snapshot_id: string | null;
       priority: number;
       delay_seconds: number;
       engine_version: string;
     }[]>`
       select r.id as run_id,
              j.payload ->> 'runId' as payload_run_id,
+             r.group_id,
+             j.payload ->> 'groupId' as payload_group_id,
+             r.group_snapshot ->> 'id' as group_snapshot_id,
              r.engine_version,
              j.priority,
              extract(epoch from (j.run_after - ${now.toISOString()}::timestamptz)) as delay_seconds
@@ -318,6 +324,9 @@ describe.skipIf(!available)('worker + real Postgres', () => {
        limit 1
     `;
     expect(job?.payload_run_id).toBe(job?.run_id);
+    expect(job?.group_id).not.toBeNull();
+    expect(job?.payload_group_id).toBe(job?.group_id);
+    expect(job?.group_snapshot_id).toBe(job?.group_id);
     expect(job?.engine_version).toBe(RECOMMENDATIONS_ENGINE_VERSION);
     expect(job?.priority).toBe(RECOMMENDATION_SCHEDULE_PRIORITY);
     expect(Number(job?.delay_seconds)).toBe(5 * 60 * 60);
