@@ -27,6 +27,7 @@ import { readLatestBidSeriesByTargetIds } from '@wizard-ads/db';
 import type { DbHandle } from '@wizard-ads/db';
 import type { EntityLevel, GridRow } from '@wizard-ads/ui';
 import type { Period } from './periods.js';
+import { withServerTiming } from './server-timing.js';
 
 interface AggregateRow {
   impressions: string | number | null;
@@ -107,15 +108,28 @@ export async function loadGridRows(
   options: LoadGridOptions,
 ): Promise<GridPayload> {
   const limit = options.limit ?? ROW_CAP;
+  // One sentinel row distinguishes an exact-size complete result from a set
+  // that really exceeded the in-memory cap. Only the requested rows cross the
+  // server/client boundary.
+  const queryLimit = limit + 1;
   const loaders: Record<EntityLevel, () => Promise<GridRow[]>> = {
-    campaigns: () => loadCampaigns(handle, options, limit),
-    ad_groups: () => loadAdGroups(handle, options, limit),
-    targets: () => loadTargets(handle, options, limit),
-    search_terms: () => loadSearchTerms(handle, options, limit),
-    placements: () => loadPlacements(handle, options, limit),
+    campaigns: () => loadCampaigns(handle, options, queryLimit),
+    ad_groups: () => loadAdGroups(handle, options, queryLimit),
+    targets: () => loadTargets(handle, options, queryLimit),
+    search_terms: () => loadSearchTerms(handle, options, queryLimit),
+    placements: () => loadPlacements(handle, options, queryLimit),
   };
-  const rows = await loaders[level]();
-  return { rows, truncated: rows.length >= limit };
+  return withServerTiming(
+    `grid.${level}`,
+    async () => {
+      const loadedRows = await loaders[level]();
+      return {
+        rows: loadedRows.slice(0, limit),
+        truncated: loadedRows.length > limit,
+      };
+    },
+    (payload) => payload.rows.length,
+  );
 }
 
 // ---------------------------------------------------------------------------
