@@ -12,6 +12,8 @@ describe('nested grid pipeline', () => {
     });
 
     expect(model.groupBy).toEqual(['campaign_name', 'ad_group_name', 'match_type']);
+    expect(model.matchedRows).toHaveLength(model.matched);
+    expect(model.matchedRows.every((row) => !isGroupedRow(row))).toBe(true);
     expect(model.rows).toHaveLength(model.shown);
     expect(model.exportRows).toHaveLength(model.exported);
     expect(model.exported).toBeLessThan(model.shown);

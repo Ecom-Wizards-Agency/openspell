@@ -38,6 +38,7 @@ import type {
   GridRow,
   SavedView,
   SortRule,
+  ViewStore,
 } from '@wizard-ads/ui';
 import { FreshnessBanner, tokens } from '@wizard-ads/ui';
 import type { GridPayload } from '../_lib/grid-data';
@@ -54,6 +55,8 @@ export interface GridWorkspaceProps {
   crosscheck?: ReactNode;
   /** Campaign deep-link applied as a visible grid filter. */
   campaignId: string | null;
+  /** Test seam for proving delayed restoration. Production uses browser localStorage. */
+  viewStore?: ViewStore | null;
 }
 
 interface ReadyGridWorkspaceProps extends GridWorkspaceProps {
@@ -330,18 +333,29 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const available = useMemo(() => columnsFor(props.entity), [props.entity]);
   const [view, setView] = useState<SavedView>(() => defaultView(props.entity, props.campaignId));
   const [saved, setSaved] = useState<readonly SavedView[]>([]);
-  const [viewReady, setViewReady] = useState(false);
+  const [restoredScope, setRestoredScope] = useState<{
+    key: string;
+    store: ViewStore | null;
+  } | null>(null);
   const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
-  const [store] = useState(() =>
+  const [browserStore] = useState(() =>
     typeof window === 'undefined' ? null : new LocalViewStore(window.localStorage),
   );
+  const store = props.viewStore === undefined ? browserStore : props.viewStore;
+  const scopeKey = `${props.entity}\u0000${props.campaignId ?? ''}`;
+  // Readiness belongs to the exact entity/deep-link scope that was restored.
+  // Deriving it from the current props prevents one render of stale `true`
+  // before an effect can reset a boolean after a client-side route change.
+  const viewReady = restoredScope?.key === scopeKey && restoredScope.store === store;
 
   // Restore the implicit layout AdLabs remembers per user, and list the named
   // views we have that they do not.
   useEffect(() => {
-    setViewReady(false);
     if (store === null) {
-      setViewReady(true);
+      setView(defaultView(props.entity, props.campaignId));
+      setSaved([]);
+      setSelectedTargetId(null);
+      setRestoredScope({ key: scopeKey, store });
       return;
     }
     let cancelled = false;
@@ -354,26 +368,29 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       }
       else setView(defaultView(props.entity, null));
       setSaved(list);
+      setSelectedTargetId(null);
       // This is deliberately later than hydration alone. An interaction that
       // lands after React attaches but before the saved layout resolves can be
       // overwritten by the restoration above just as surely as a pre-hydration
-      // interaction can be lost. The toolbar opens only once both are done.
-      setViewReady(true);
+      // interaction can be lost. The restored scope opens only the matching
+      // entity/deep-link workspace, never a later render with different props.
+      setRestoredScope({ key: scopeKey, store });
     })();
     return () => {
       cancelled = true;
     };
-  }, [available, props.campaignId, props.entity, store]);
+  }, [available, props.campaignId, props.entity, scopeKey, store]);
 
   const update = useCallback(
     (patch: Partial<SavedView>) => {
+      if (!viewReady) return;
       setView((current) => {
         const next = { ...current, ...patch, updatedAt: new Date().toISOString() };
         void store?.rememberLayout(next);
         return next;
       });
     },
-    [store],
+    [store, viewReady],
   );
 
   const { model, filterError } = useMemo(
@@ -409,6 +426,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   }, [available, model.groupBy, model.grouped, view.columns, view.pinned, view.widths]);
 
   const handleExport = useCallback(() => {
+    if (!viewReady) return;
     const result = toCsv(model, {
       columns: visibleColumns,
       label: props.entity.replace('_', ' '),
@@ -417,25 +435,26 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       comparisonPeriod: props.comparisonPeriod,
     });
     downloadCsv(result.csv, result.filename);
-  }, [model, props.comparisonPeriod, props.currencyCode, props.entity, props.period, visibleColumns]);
+  }, [model, props.comparisonPeriod, props.currencyCode, props.entity, props.period, viewReady, visibleColumns]);
 
   const handleSaveView = useCallback(
     (name: string) => {
-      if (store === null) return;
+      if (!viewReady || store === null) return;
       const toSave: SavedView = { ...view, groupBy: model.groupBy, id: newViewId(), name };
       void store.save(toSave).then(() => store.list(props.entity)).then(setSaved);
     },
-    [model.groupBy, props.entity, store, view],
+    [model.groupBy, props.entity, store, view, viewReady],
   );
 
   const handleReorder = useCallback(
     (columnId: string, beforeColumnId: string | null) => {
+      if (!viewReady) return;
       const remaining = view.columns.filter((id) => id !== columnId);
       const at = beforeColumnId === null ? remaining.length : remaining.indexOf(beforeColumnId);
       remaining.splice(at < 0 ? remaining.length : at, 0, columnId);
       update({ columns: remaining });
     },
-    [update, view.columns],
+    [update, view.columns, viewReady],
   );
 
   /**
@@ -449,7 +468,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     if (mapping === undefined) return null;
     const ids = Array.from(
       new Set(
-        model.exportRows
+        model.matchedRows
           .map((row) => row.dimensions[mapping.key])
           .filter((value): value is string | number => value !== null && value !== undefined)
           .map((value) => String(value)),
@@ -459,7 +478,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     const params = new URLSearchParams({ profile: props.profileId, entity: props.entity });
     params.set(mapping.param, ids.join(','));
     return `/experiments/new?${params.toString()}`;
-  }, [model.exportRows, props.entity, props.profileId]);
+  }, [model.matchedRows, props.entity, props.profileId]);
 
   return (
     // `wa-embed` sets the inherited text colour and chromes the bare controls
@@ -472,39 +491,40 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       aria-busy={!viewReady}
       style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(3) }}
     >
-      <fieldset
-        disabled={!viewReady}
-        data-testid="grid-toolbar-readiness"
-        style={{ border: 0, margin: 0, minWidth: 0, padding: 0 }}
-      >
-        <legend className="wa-sr-only">Grid view controls</legend>
-        <GridToolbar
-          entity={props.entity}
-          onEntityChange={(entity) => {
-            const params = new URLSearchParams({
-              profile: props.profileId,
-              entity,
-              from: props.period.start,
-              to: props.period.end,
-            });
-            router.push(`/grid?${params.toString()}`);
-          }}
-          available={available}
-          visible={view.columns}
-          onVisibleChange={(columns) => update({ columns })}
-          filter={view.filter}
-          onFilterChange={(filter) => update({ filter })}
-          groupBy={model.groupBy}
-          onGroupByChange={(groupBy) => update({ groupBy })}
-          model={model}
-          onExport={handleExport}
-          views={saved}
-          onApplyView={(applied) => setView(withValidGrouping(applied, available))}
-          onSaveView={handleSaveView}
-        />
-      </fieldset>
+      <div data-testid="grid-toolbar-readiness" aria-busy={!viewReady}>
+        {viewReady ? (
+          <GridToolbar
+            entity={props.entity}
+            onEntityChange={(entity) => {
+              const params = new URLSearchParams({
+                profile: props.profileId,
+                entity,
+                from: props.period.start,
+                to: props.period.end,
+              });
+              router.push(`/grid?${params.toString()}`);
+            }}
+            available={available}
+            visible={view.columns}
+            onVisibleChange={(columns) => update({ columns })}
+            filter={view.filter}
+            onFilterChange={(filter) => update({ filter })}
+            groupBy={model.groupBy}
+            onGroupByChange={(groupBy) => update({ groupBy })}
+            model={model}
+            onExport={handleExport}
+            views={saved}
+            onApplyView={(applied) => setView(withValidGrouping(applied, available))}
+            onSaveView={handleSaveView}
+          />
+        ) : (
+          <p role="status" data-testid="grid-layout-restoring" className="wa-hint">
+            Restoring your saved grid layout…
+          </p>
+        )}
+      </div>
 
-      {experimentHref === null ? null : (
+      {!viewReady || experimentHref === null ? null : (
         <div className="wa-row" style={{ justifyContent: 'flex-end' }}>
           <Link
             href={experimentHref}
@@ -517,47 +537,49 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
         </div>
       )}
 
-      {props.entity === 'targets' ? (
+      {viewReady && props.entity === 'targets' ? (
         <p className="wa-grid-context-hint">
           Select a target row to open its bid-corridor history, including the current bid,
           Amazon’s suggested range, realized CPC, and maximum potential CPC.
         </p>
       ) : null}
 
-      {filterError === null ? null : (
+      {!viewReady || filterError === null ? null : (
         <p role="alert" style={filterErrorStyle}>
           Filter not applied — {filterError}. Every row is shown until the filter is fixed or
           removed.
         </p>
       )}
 
-      <DataGrid
-        model={model}
-        columns={visibleColumns}
-        currencyCode={props.currencyCode}
-        sort={view.sort}
-        onSortChange={(sort: SortRule[]) => update({ sort })}
-        onWidthChange={(columnId, width) => update({ widths: { ...view.widths, [columnId]: width } })}
-        onPinChange={(columnId, pinned) =>
-          update({
-            pinned: pinned
-              ? [...view.pinned, columnId]
-              : view.pinned.filter((id) => id !== columnId),
-          })
-        }
-        onReorder={handleReorder}
-        rowHeight={props.entity === 'targets' ? 42 : 30}
-        {...(props.entity === 'targets'
-          ? {
-              onRowClick: (row: GridRow) => {
-                const targetId = row.dimensions['target_id'];
-                if (targetId !== null && targetId !== undefined) setSelectedTargetId(String(targetId));
-              },
-            }
-          : {})}
-      />
+      {viewReady ? (
+        <DataGrid
+          model={model}
+          columns={visibleColumns}
+          currencyCode={props.currencyCode}
+          sort={view.sort}
+          onSortChange={(sort: SortRule[]) => update({ sort })}
+          onWidthChange={(columnId, width) => update({ widths: { ...view.widths, [columnId]: width } })}
+          onPinChange={(columnId, pinned) =>
+            update({
+              pinned: pinned
+                ? [...view.pinned, columnId]
+                : view.pinned.filter((id) => id !== columnId),
+            })
+          }
+          onReorder={handleReorder}
+          rowHeight={props.entity === 'targets' ? 42 : 30}
+          {...(props.entity === 'targets'
+            ? {
+                onRowClick: (row: GridRow) => {
+                  const targetId = row.dimensions['target_id'];
+                  if (targetId !== null && targetId !== undefined) setSelectedTargetId(String(targetId));
+                },
+              }
+            : {})}
+        />
+      ) : null}
 
-      {selectedTargetId === null ? null : (
+      {!viewReady || selectedTargetId === null ? null : (
         <BidHistoryModal
           profileId={props.profileId}
           targetId={selectedTargetId}
