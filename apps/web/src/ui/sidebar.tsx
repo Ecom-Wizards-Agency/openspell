@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * The sidebar's navigation: collapsible groups, not a flat list, plus an
- * icon-rail collapse toggle.
+ * The sidebar's navigation: one direct home link, three task groups, and quiet
+ * utility links above the icon-rail collapse toggle.
  *
  * The shape is the recon's (`tools/recon/01-navigation-map.md`): the incumbent's
  * nav is a projection of the entity hierarchy into named groups, which is why an
@@ -29,15 +29,25 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { NAV_GROUPS } from './nav-links';
+import type { NavLink } from './nav-links';
 import { NavIcon } from './nav-icons';
 
-const CLOSED_KEY = 'wizard-ads.nav.closed';
+const CLOSED_KEY = 'openspell.nav.closed.v2';
 const COLLAPSED_KEY = 'wizard-ads.nav.collapsed';
+const WORKFLOW_GROUP_IDS = new Set(['optimize', 'analyze', 'verify']);
+const PRIMARY_LINKS = NAV_GROUPS.filter((group) => group.id === 'insights').flatMap(
+  (group) => group.links,
+);
+const WORKFLOW_GROUPS = NAV_GROUPS.filter((group) => WORKFLOW_GROUP_IDS.has(group.id));
+const UTILITY_LINKS = NAV_GROUPS.filter(
+  (group) => group.id === 'ai' || group.id === 'product' || group.id === 'admin',
+).flatMap((group) => group.links);
+const DEFAULT_CLOSED = WORKFLOW_GROUPS.map((group) => group.id);
 
 export function SidebarNav(): ReactNode {
   const [pathname, setPathname] = useState<string | null>(null);
   const [profile, setProfile] = useState<string | null>(null);
-  const [closed, setClosed] = useState<readonly string[]>([]);
+  const [closed, setClosed] = useState<readonly string[]>(DEFAULT_CLOSED);
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
@@ -76,8 +86,14 @@ export function SidebarNav(): ReactNode {
 
   return (
     <>
-      <nav aria-label="Primary" style={{ display: 'contents' }}>
-        {NAV_GROUPS.map((group) => {
+      <nav aria-label="Primary" className="wa-sidebar-main">
+        <ul className="wa-navlist wa-navlist--direct">
+          {PRIMARY_LINKS.map((link) => (
+            <NavLinkRow key={link.href} link={link} pathname={pathname} profile={profile} />
+          ))}
+        </ul>
+
+        {WORKFLOW_GROUPS.map((group) => {
           const holdsCurrent =
             pathname !== null && group.links.some((link) => isCurrent(link.href, pathname));
           return (
@@ -97,55 +113,75 @@ export function SidebarNav(): ReactNode {
                 <span className="wa-navgroup-label">{group.label}</span>
               </summary>
               <ul className="wa-navlist">
-                {group.links.map((link) => {
-                  const current = pathname !== null && isCurrent(link.href, pathname);
-                  return (
-                    <li key={link.href}>
-                      <a
-                        href={withProfile(link.href, profile)}
-                        className="wa-navlink"
-                        title={link.label}
-                        {...(current ? { 'aria-current': 'page' as const } : {})}
-                      >
-                        <span aria-hidden="true" className="wa-navlink-icon">
-                          <NavIcon icon={link.icon} />
-                        </span>
-                        <span className="wa-navlink-label">{link.label}</span>
-                        {link.tag === undefined ? null : (
-                          <span className="wa-navlink-tag">{link.tag}</span>
-                        )}
-                      </a>
-                    </li>
-                  );
-                })}
+                {group.links.map((link) => (
+                  <NavLinkRow key={link.href} link={link} pathname={pathname} profile={profile} />
+                ))}
               </ul>
             </details>
           );
         })}
       </nav>
 
-      <button
-        type="button"
-        className="wa-nav-collapse"
-        data-testid="nav-collapse"
-        aria-pressed={collapsed}
-        aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
-        title={collapsed ? 'Expand navigation' : 'Collapse navigation'}
-        onClick={toggleCollapsed}
-      >
-        <svg aria-hidden="true" viewBox="0 0 16 16" className="wa-nav-collapse-icon">
-          <path
-            d="M10 3.5 5.5 8l4.5 4.5"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-        <span className="wa-navlink-label">Collapse</span>
-      </button>
+      <footer className="wa-sidebar-utilities">
+        <nav aria-label="Product and account">
+          <ul className="wa-navlist">
+            {UTILITY_LINKS.map((link) => (
+              <NavLinkRow key={link.href} link={link} pathname={pathname} profile={profile} />
+            ))}
+          </ul>
+        </nav>
+
+        <button
+          type="button"
+          className="wa-nav-collapse"
+          data-testid="nav-collapse"
+          aria-pressed={collapsed}
+          aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
+          title={collapsed ? 'Expand navigation' : 'Collapse navigation'}
+          onClick={toggleCollapsed}
+        >
+          <svg aria-hidden="true" viewBox="0 0 16 16" className="wa-nav-collapse-icon">
+            <path
+              d="M10 3.5 5.5 8l4.5 4.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          <span className="wa-navlink-label">Collapse</span>
+        </button>
+      </footer>
     </>
+  );
+}
+
+function NavLinkRow({
+  link,
+  pathname,
+  profile,
+}: {
+  link: NavLink;
+  pathname: string | null;
+  profile: string | null;
+}): ReactNode {
+  const current = pathname !== null && isCurrent(link.href, pathname);
+  return (
+    <li>
+      <a
+        href={withProfile(link.href, profile)}
+        className="wa-navlink"
+        title={link.label}
+        {...(current ? { 'aria-current': 'page' as const } : {})}
+      >
+        <span aria-hidden="true" className="wa-navlink-icon">
+          <NavIcon icon={link.icon} />
+        </span>
+        <span className="wa-navlink-label">{link.label}</span>
+        {link.tag === undefined ? null : <span className="wa-navlink-tag">{link.tag}</span>}
+      </a>
+    </li>
   );
 }
 
