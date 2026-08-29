@@ -5,8 +5,9 @@ Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gate
 Reconciled 2026-08-29 against `origin/main` at `602a780`. Here, **merged** means the
 implementation is reachable from that revision. It does not mean deployed, applied to a hosted
 database, live-data verified, or accepted by an operator. Full evidence and source pointers:
-`docs/workpackages/WP-52-reconciliation.md`. Work after WP-52 is integrated on
-`wp-67-operator-upgrade-integration` for review and is not described as merged to `main`.
+`docs/workpackages/WP-52-reconciliation.md`. WP-53 onward is integrated on
+`wp-67-operator-upgrade-integration` for review; WP-61 Time Machine v2 is stacked on that tip in
+`wp-61-time-machine-v2`. Neither branch is described as merged to `main`.
 
 ## Repository state
 
@@ -83,6 +84,7 @@ implementation brief in `docs/workpackages/`.
 | 58 | Creative Performance backend | review | Asset-ID mappings/facts, strict SB Video staging seam, ambiguity states |
 | 59 | SQP and Query Intelligence | review | strict weekly SP-API seam, counted persistence, pure taxonomy, spend-conserving joins and contextual negatives; live queue gated |
 | 60 | Stateful optimizer core | review | synchronization/observation gates, lift/hold/revert decisions and bounded de-rounding |
+| 61 | Time Machine v2 | review | export-time mirror snapshots, exact row-level sync attribution, verified lifecycle transitions, conflict-safe inverse exports and audit evidence |
 | 62 | Dayparting v0.5 backend | review | revision-safe ledger/hourly facts, DST/settling, bounded proposals and exports; SQS wiring gated |
 | 63 | Operator Console UX | review | four-series chart, guided builder, recommendation grouping and nested grid |
 | 64 | Roadmap reconciliation | review | deduplicated manifest with value, prerequisite and deferral reason |
@@ -111,9 +113,10 @@ implementation brief in `docs/workpackages/`.
   remain deployment-unverified.
 - The web deployment inspected during this wave did not expose trustworthy Git metadata. A local
   or preview build therefore does not close the production-revision gate.
-- Authenticated Chrome CDP reached Wizard Ads, AdLabs, and SYNQ tabs, but the first-party tab was
-  blocked by the browser and the competitor tabs were at sign-in. No credential was entered and
-  no competitor data or dashboard configuration was changed.
+- The requested normal Chrome connector was unavailable to the current automation session; this is
+  not evidence that any product logged out. A separate CDP surface exposed open Wizard Ads,
+  AdLabs, and SYNQ product tabs, but it is not treated as the operator's requested normal session.
+  No credential was entered and no competitor data or dashboard configuration was changed.
 
 ## Reconciled production behavior at `602a780`
 
@@ -170,12 +173,14 @@ implementation brief in `docs/workpackages/`.
   constant instead of a central auth capability.
 - Dashboard fact reads now label missing source dates honestly, but complete source provenance and
   coverage headers still require the live report-promotion path.
-- Mirror chunks and later change-log writes are not one retry-convergent transaction; the negatives
-  mirror also retains its cross-scope key-collision risk.
+- Mirror chunks and later change-log writes are not one transaction, but eligible export evidence
+  now reconciles on every entity-pass retry and is protected by a one-link-per-export-row invariant.
+  The negatives mirror still retains its cross-scope key-collision risk.
 - Unknown match-type spellings remain target rows with a null match type.
 - Report ingest does not create missing historical partitions before a backfill write.
-- Query Intelligence, Creative Performance, Dayparting, Strategy, and Time Machine v2 remain open
-  product surfaces even where their contracts or backend foundations now exist.
+- Query Intelligence, Creative Performance, Dayparting, and Strategy remain open product surfaces
+  even where their contracts or backend foundations now exist. Time Machine v2 is implemented on
+  its review branch but remains hosted-migration, deployed-revision, and live-sync unverified.
 
 ## Unverified release gates
 
@@ -185,7 +190,7 @@ implementation brief in `docs/workpackages/`.
       isolated UI suite passed 149 of 149 instead of measuring unrelated CPU contention.
 - [x] Additive migration, RLS, report promotion, roadmap, creative persistence and dayparting
       persistence suites executed against disposable PostgreSQL with synthetic fixtures. The final
-      database package run passed 25 files and 197 tests; the worker package passed 18 files and
+      database package run passed 26 files and 204 tests; the worker package passed 18 files and
       163 tests against the same disposable database. The MCP package passed 55 tests with scoped,
       expiring issuance and unsafe-legacy-key refusal.
 - [x] Workspace build passed; the web build generated the current route tree without production
@@ -193,10 +198,10 @@ implementation brief in `docs/workpackages/`.
 - [ ] Exact deployed revisions for web and always-on worker.
 - [x] Revision-stamped MCP health plus Codex and Claude discovery/read/audit/last-used/allowlist
       checks. Re-run after the final review-branch commit before handoff.
-- [ ] Hosted migration ledger reconciled to the 30 tracked SQL migrations.
+- [ ] Hosted migration ledger reconciled to the 32 tracked SQL migrations on this review branch.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [ ] Full current Wizard Ads route/state click-through after the latest commits.
-- [x] Local Playwright release suites: 26 production-build workflows and 27 authenticated-dev
+- [x] Local Playwright release suites: 27 production-build workflows and 27 authenticated-dev
       workflows passed, including dashboard, nested grid, campaign export, recommendations,
       experiments, Time Machine, tenancy, OAuth safety and every guarded route.
 - [ ] Fresh AdLabs and SYNQ workflow comparison. AdLabs has a durable redacted baseline in
