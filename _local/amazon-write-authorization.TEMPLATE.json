@@ -1,0 +1,35 @@
+{
+  "schema": "openspell.amazon-write-authorization.v1",
+  "expires_at": "<ISO-8601 timestamp>",
+  "profiles": [
+    {
+      "account_label": "<local account label>",
+      "marketplace": "<marketplace code>"
+    }
+  ],
+  "allowed_tests": {
+    "bid": {
+      "enabled": false,
+      "max_absolute_delta": "<currency amount>",
+      "require_immediate_inverse": true
+    },
+    "placement": {
+      "enabled": false,
+      "max_absolute_percentage_points": "<integer>",
+      "require_immediate_inverse": true
+    },
+    "cadence": {
+      "enabled": false,
+      "max_executions": "<integer>",
+      "disable_after_test": true,
+      "require_immediate_inverse": true
+    }
+  },
+  "constraints": {
+    "max_concurrent_mutations": 1,
+    "require_current_value_match": true,
+    "require_amazon_acceptance": true,
+    "require_sync_observation_before_inverse": true,
+    "stop_on_conflict": true
+  }
+}

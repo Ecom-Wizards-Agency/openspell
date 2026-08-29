@@ -32,30 +32,31 @@ Three facts shape every design decision in here:
 
 Architecture and phase plan: `docs/PLAN.md`. Program status: `docs/STATUS.md`.
 
-## Layout and ownership
+## Package boundaries
 
-Package boundaries are work-package boundaries. Two agents building in parallel must
-never need the same file.
+Numbered work packages are historical delivery records, not permanent owners. Active work
+declares its file scope in its branch or brief, and concurrent work must use non-overlapping
+files. Keep this map because these boundaries still define where code belongs.
 
-| Path | What it is | Owner |
+| Path | Responsibility | Change boundary |
 |---|---|---|
-| `packages/shared` | THE contract package. Zod schemas and inferred types. | WP-00 |
-| `packages/db` | Drizzle schema, typed queries, RLS test helpers. | WP-01 |
-| `packages/ads-api` | Amazon Ads API client. Pure client, no database. | WP-02 |
-| `packages/sp-api` | Selling Partner API report client. Pure client, worker-only. | WP-55 |
-| `packages/core` | Doctrine engine. Pure functions, zero I/O. | WP-05 |
-| `packages/strategy` | Tenant config resolution. Template only, no values. | WP-05 |
-| `packages/campaigns` | Campaign generation engine (SKW/Halo/Phrase/Auto/PAT; BMM dropped 2026-08-14). Pure, plus its own XLSX writer. | WP-14 |
-| `packages/ui` | DataGrid, charts, tiles. | WP-06 |
-| `apps/web` | Next.js App Router: auth, OAuth, dashboard, grid, settings. | WP-04, 06, 07, 08 |
-| `apps/worker` | Job worker. Every Amazon API call in the system happens here. | WP-03 |
-| `apps/mcp` | Approval-gated MCP interface; no direct Amazon credentials or calls. | WP-09, WP-93 |
-| `supabase/` | Migrations, RLS, partitions, seed. | WP-01 |
-| `fixtures/` | Python-to-TypeScript parity harness. | WP-05 |
-| `tools/crosscheck-cli` | Crosscheck CLI and exit-report generator. | WP-10 |
-| `tools/recon` | Competitor UI walkthrough specs. Specs only, no code. | WP-11 |
-| `tools/hygiene-lint` | The public-repo gate. | WP-00 |
-| `_local/` | Gitignored per-operator config. Only `*.TEMPLATE.*` is tracked. | operator |
+| `packages/shared` | THE contract package: Zod schemas and inferred types. | Contracts land before dependent implementations. |
+| `packages/db` | Drizzle schema, typed queries, and RLS test helpers. | Persistence only; no Amazon calls. |
+| `packages/ads-api` | Pure Amazon Ads API client. | HTTP client only; no database. |
+| `packages/sp-api` | Pure Selling Partner API report client. | HTTP client only; worker-only at runtime. |
+| `packages/core` | Doctrine and decision engine. | Pure functions, zero I/O. |
+| `packages/strategy` | Tenant strategy resolution. | Shape and resolution only; no tenant values in source. |
+| `packages/campaigns` | Campaign planning, validation, and artifacts. | Pure; no database, credentials, or Amazon calls. |
+| `packages/ui` | Reusable DataGrid, chart, and tile primitives. | Presentation only. |
+| `apps/web` | Next.js operator application. | May preview, approve, and enqueue; never calls Amazon. |
+| `apps/worker` | Sync, reports, schedules, and mutation execution. | Every Amazon API call happens here. |
+| `apps/mcp` | Authenticated MCP interface. | No direct Amazon calls; cannot self-approve. |
+| `supabase/` | Migrations, RLS, partitions, and seed structure. | No production execution without scoped authorization. |
+| `fixtures/` | Python-to-TypeScript parity harness. | Synthetic data only. |
+| `tools/crosscheck-cli` | Crosscheck CLI and exit-report generator. | Read-only evidence. |
+| `tools/recon` | Competitor walkthrough specifications. | Specs only, no product runtime. |
+| `tools/hygiene-lint` | Public-repository safety gate. | Scans tracked content. |
+| `_local/` | Gitignored operator configuration and authorizations. | Only `*.TEMPLATE.*` files are tracked. |
 
 ## Dependency direction
 
@@ -79,27 +80,18 @@ lint failure, not a code review comment.
 
 wizard-ads consumes nothing from any sibling project at runtime.
 
-## Contract freeze
+## Contract authority
 
-`packages/shared` is frozen. Six packages are built in parallel against it.
-
-If you need a shape that is not there, or a shape that is there and wrong: **stop and
-report it.** Do not add a local type that duplicates a contract, do not widen a schema
-to make your package compile, and do not edit `packages/shared` unless you own WP-00
-and the manager has signed off. A contract that changes under a parallel build costs
-more than a day of waiting.
-
-Adding a genuinely new shape that no other package touches yet is the one cheap case,
-and it still goes through the same door.
-
-The manager decision dated 2026-08-29 authorizes additive contract widening required for
-the guarded Amazon write gateway and SP/SB/SB Video/SD campaign creation. Keep those changes
-in explicit WP-00-owned commits and serialize dependent package work against them.
+`packages/shared` remains authoritative. Do not add a package-local type that duplicates a
+cross-package contract or widen a schema merely to make one caller compile. Additive contract
+work for the guarded Amazon write gateway and SP/SB/SB Video/SD campaign creation is approved;
+land and verify those contracts before dependent implementations, and serialize concurrent
+changes that touch the same contract files.
 
 ## Program rules
 
-1. **Own your package only.** Never edit files another work package owns. Cross-package
-   shapes live in `packages/shared`.
+1. **Respect active file scope.** Inspect branches and worktrees before editing. Concurrent
+   packages must not edit the same files; cross-package shapes live in `packages/shared`.
 2. **Dependency direction is enforced.** See above.
 3. **This repo is public.** See hygiene, below.
 4. **Verify the artifact, not the exit code.** Any list-driven operation counts outputs
@@ -150,9 +142,11 @@ Amazon writes are allowed only through this contract:
    write and distinguish requested, accepted by Amazon, observed in sync, conflicting, and
    failed states.
 8. **Reversion is another guarded write.** Time Machine may restore prior values through the
-   Advertising API after it previews the exact inverse against
-   current synchronized state. It refuses blind inversion on conflicts and requires a fresh
-   explicit confirmation. Creation has no delete rollback; any pause/archive proposal is a
+   Advertising API after it previews the exact inverse against current synchronized state.
+   It refuses blind inversion on conflicts and normally requires a fresh explicit
+   confirmation. A bounded live-test authorization may pre-approve the exact inverse as part
+   of the same test cycle, so the worker can verify and reverse without waiting for a second
+   operator response. Creation has no delete rollback; any pause/archive proposal is a
    separate reviewed action.
 9. **No automatic execution by accident.** Schedules, optimization cadence, dayparting, AI,
    and webhooks may execute only when the operator deliberately creates and enables a cadence
@@ -160,10 +154,15 @@ Amazon writes are allowed only through this contract:
    next-run visibility, pause control, and kill switch. Without an active cadence, these
    surfaces may generate previews but cannot push. MCP cannot create or enable a cadence and
    cannot mutate Amazon without a separately recorded approval.
-10. **Live tests need exact authorization.** Unit and integration tests use fake providers and
-    synthetic fixtures. A live Amazon write smoke test must name the target profile, entity set,
-    action, and rollback plan in the current operator-approved task. Never use a live account
-    merely because credentials are available.
+10. **Live tests need scoped authorization.** Unit and integration tests use fake providers and
+    synthetic fixtures. A live Amazon write smoke test requires either an exact
+    operator-approved action or a current, gitignored
+    `_local/amazon-write-authorization.json` that names the allowlisted profiles, permitted
+    action classes, per-operation maxima, expiry, cadence limit, and rollback requirements.
+    The worker resolves the final entity, records the immutable preview and inverse, allows
+    only one active test mutation, and stops on stale state, conflict, missing observation,
+    or any exceeded bound. Never use a live account merely because credentials are available.
+    Profile names and ids never enter a tracked file.
 
 ## Public-repo hygiene
 
@@ -212,6 +211,6 @@ Individually: `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm hygiene`.
 Node 22 or newer, pnpm as declared in `package.json`. Workspace packages are consumed
 as TypeScript source, so there is no build step between them.
 
-Live Amazon smoke tests read credentials from a gitignored `_local/` config. Ask the
-operator to place it. Never hardcode a credential, and never commit one for "just a
-test".
+Live Amazon smoke tests load credentials through the approved secret manager and read bounded
+authorization from gitignored `_local/` configuration. Never print or hardcode a credential,
+and never commit one for "just a test".
