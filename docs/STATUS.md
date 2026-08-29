@@ -1,7 +1,7 @@
 # OpenSpell — program status board
 
 Snapshot cut 2026-08-30 from `origin/main` at
-`9717c8bc81a9bbb16c2937394d27d8ce6c7e9c26`. Here, **merged** means the implementation is
+`705ea4325dee86dcea72d6febb471ea6e924a388`. Here, **merged** means the implementation is
 reachable from that revision. It does not by itself mean live-data verified, deployed, or
 accepted by an operator. Full original evidence and source pointers are in
 `docs/workpackages/WP-52-reconciliation.md`; the post-release capability design is in
@@ -11,15 +11,15 @@ accepted by an operator. Full original evidence and source pointers are in
 
 | Surface | Verified state at the snapshot |
 |---|---|
-| Repository | `origin/main` is `9717c8b`, through merged PR #31. PR checks for #31 passed typecheck, lint, tests, hygiene and Playwright. |
+| Repository | `origin/main` is `705ea43` and includes merged PRs #30 and #32. Both passed typecheck, lint, tests, hygiene and Playwright before merge; the last exact-main run remains the successful `9717c8b` run. |
 | Production web | Healthy and intentionally held at `caff194`. Nine authenticated operator routes returned HTTP 200 with no page or console error after rollback. Main is ahead and is not yet deployed. |
 | Deployment environment | Newer candidates consumed corrupted or malformed production runtime-secret metadata after the healthy build. The authoritative 1Password service-account session is unavailable, so values have not been safely restored. No further production promotion is allowed until an immutable candidate passes the release gate. |
 | Hosted database | The production migration ledger is applied exactly through `20260829160100_sb_video_observed_ingestion.sql`. No unmerged write-gateway migration has been applied. |
 | MCP | The public read-only service was verified from Codex and Claude Code on an older application revision. Exact-main activation on the always-on host is blocked on authoritative server environment recovery from 1Password. |
 | Amazon writes | No production migration or Amazon write from the open SP write-gateway PR has run. PR #24 remains open and is not merge-safe pending independent safety review. |
 
-Since the prior status cut, the first-parent history adds merged PRs #18–23, #25–29 and #31.
-PR #24 and PR #30 remain open; a gap in PR numbers is not treated as merged work.
+Since the prior status cut, the first-parent history adds merged PRs #18–23 and #25–32.
+PR #24 remains open; a gap in PR numbers is not treated as merged work.
 
 ## Repository state
 
@@ -136,10 +136,11 @@ implementation brief in `docs/workpackages/`.
 | 99 | Vercel environment boundary | merged and deployed | server runtime variable names pass through Turborepo without committing values |
 | 100 | Query and loader performance | merged; not deployed | opt-in sanitized timings, campaign-grain preaggregation, parallel newest-run evidence and an exact grid overflow sentinel |
 | 101 | Frankfurt function placement | superseded | the setting was tested but reverted before promotion after the candidate failed full-route QA |
-| 102 | Active-profile canonicalization | open | PR #30 is pending; current main can still show route-to-route active-profile drift |
+| 102 | Active-profile canonicalization | merged; not deployed | canonical profile selection and `?profile=` propagation cover Dashboard, Grid, Optimizer, Groups, Creative, Recommendations and Campaign Builder; PR #30 passed both hosted gates |
 | 103 | Semantic chart defaults | merged; not deployed | Spend defaults to bar/left and Ad Sales to line/right while saved profile choices still win |
 | 104 | Safe region rollback | merged | main again uses the previously verified Vercel function-region configuration |
 | 105 | Immutable release-candidate gate | merged | GET-only authenticated verification covers eleven critical routes and fails before production promotion on bad status, content or application errors |
+| 106 | Focused recommendation review | merged; not deployed | compact filters, exact filtered selection and one action bar replace three equal-weight prequeue panels while preserving exact export confirmation |
 
 ## Milestone gates
 
@@ -157,6 +158,13 @@ implementation brief in `docs/workpackages/`.
   rejected and aliases were restored, authenticated checks covered Dashboard, Grid, Optimizer,
   Creative, Campaigns, Recommendations, Tags, Time Machine and Integrations: nine of nine returned
   HTTP 200 with no page or console error.
+- A fresh authenticated Chrome check found material artifact drift despite those HTTP checks:
+  Dashboard and Creative expose the seven preset date choices, while deployed Grid omits the
+  active-account/date-range component that exists in current source. A new Grid tab took about
+  6.6 seconds to load and a warm reload about 5.6 seconds; response streaming, not initial response
+  latency, consumed most of the wait. One synthetic no-match filter transition completed in 71 ms,
+  which is encouraging interaction evidence but not a p95 benchmark. Candidate verification must
+  therefore assert distinctive current UI artifacts as well as headings and status codes.
 - A later production-target candidate inherited malformed database/runtime secret metadata and
   returned HTTP 500 on four database-backed routes. The healthy and failing builds had 1,147
   byte-identical artifact files; the relevant production secret metadata had changed after the
@@ -263,8 +271,9 @@ implementation brief in `docs/workpackages/`.
 - Unknown match-type spellings remain target rows with a null match type.
 - Report ingest does not create missing historical partitions before a backfill write.
 - Loading speed is an open priority acceptance gap. Earlier Grid and Time Machine first-load checks
-  measured 4.27 seconds and 5.36 seconds; the latest healthy-production Grid repeat loads remained
-  around 3.2–3.3 seconds. Grid filter and grouping must also demonstrate p95 response below 150 ms
+  measured 4.27 seconds and 5.36 seconds; later Grid checks ranged from roughly 3.2 seconds to 6.6
+  seconds, with a 5.6-second warm reload in the current Chrome session. Grid filter and grouping
+  must also demonstrate p95 response below 150 ms
   on the reference development machine; synthetic fixture success does not close either live
   performance gate.
 - Hosted SQP configuration and the SB Video provider adapter remain open. The new product surfaces are complete for
@@ -294,8 +303,7 @@ implementation brief in `docs/workpackages/`.
       production-target immutable candidate before moving any alias.
 - [ ] Deploy a reviewed current-main descendant only after the immutable gate passes, then repeat
       full authenticated route, error, data and timing QA on the production domain.
-- [ ] Merge active-profile canonicalization only after PR #30's hosted Playwright gate and final
-      diff review pass.
+- [x] Active-profile canonicalization passed both hosted gates and merged through PR #30.
 - [ ] Resolve PR #24's independent write-safety review. Preview its exact migration separately;
       do not apply it or call Amazon merely because CI is green.
 - [ ] Prove one authoritative SB Video Asset-ID mapping/fact count crosscheck and one read-only SP
@@ -320,6 +328,6 @@ implementation brief in `docs/workpackages/`.
   service-account session is unavailable. The diagnosis is supported by update timestamps,
   identical build artifacts and request failures, but final closure requires a fresh authoritative
   sync and candidate pass.
-- Current main has not been promoted, the exact-main MCP service has not been activated, PR #30 is
-  unmerged and PR #24 is still in safety review. Code presence or green CI does not close any of
+- Current main has not been promoted, the exact-main MCP service has not been activated and PR #24
+  is still in safety review. Code presence or green CI does not close any of
   those runtime gates.
