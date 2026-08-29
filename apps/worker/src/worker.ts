@@ -612,14 +612,25 @@ export class SyncWorker {
         ledger: { ...ledger, creativeSyncSnapshotId },
         rawRows: downloaded.value,
       });
+      const accounting = {
+        sourceRows: result.reportSourceRows,
+        parsedRows: result.reportParsedRows,
+        refusedRows: result.reportRefusedRows,
+        promotedRows: result.mappedFactRows,
+        unpromotedRows: result.unpromotedReportRows,
+        canonicalRows: result.factsReadBack,
+      };
       if (result.blocked) {
         const detail = `sbAds promotion blocked: ${result.reasons.join(', ') || 'contract incomplete'}`;
-        await this.store.failReport(ledger.id, detail);
+        await this.store.finishAttributedReport(ledger.id, accounting, {
+          status: 'failed',
+          bytesDownloaded: downloaded.bytesDownloaded,
+          error: detail,
+        });
         throw new PermanentJobError(detail);
       }
-      await this.store.completeReport(ledger.id, {
-        parsed: result.mappedFactRows,
-        loaded: result.factsReadBack,
+      await this.store.finishAttributedReport(ledger.id, accounting, {
+        status: 'completed',
         bytesDownloaded: downloaded.bytesDownloaded,
       });
       this.logger.info('Sponsored Brands Video report ingested', {

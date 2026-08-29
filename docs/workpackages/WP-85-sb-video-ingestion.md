@@ -34,6 +34,8 @@ Amazon writes disabled.
 - `(profile_id, amazon_asset_id)` remains the Asset Library uniqueness boundary. Content-hash nulls
   and duplicate non-null hashes do not collapse separate assets.
 - A report request may reference a creative snapshot only when its durable report type is `sbAds`.
+  Its additive ledger accounting stores source, parsed, refused, promoted, unpromoted and canonical
+  counts; partial attribution is complete only when both arithmetic identities reconcile.
 
 PostgreSQL enum additions must commit before a constraint can use the new label, so WP-85 uses one
 enum migration followed by one schema migration. Neither migration was applied to a hosted,
@@ -62,7 +64,9 @@ into a mapped asset.
   and current mappings.
 - Mapping-only is the default. It writes no report request.
 - `allowObservedAttributionFacts: true` is an explicit gate and is accepted only when
-  `startDate === endDate`. It enqueues an `sbAds` `report.request` tied to the snapshot.
+  `startDate === endDate` and that date equals `observedAt` in the profile timezone. Earlier and
+  later dates are rejected before any Amazon read. The gate enqueues an `sbAds` `report.request`
+  tied to the snapshot.
 - Only one report-pending creative snapshot may exist per profile. Profile-scoped transaction
   serialization rejects any different mapping observation while that report is pending, so a later
   current-key upsert cannot move the evidence before promotion. A terminal failed, cancelled or
@@ -75,6 +79,10 @@ into a mapped asset.
   exact creative version, the Asset ID and `placement = null`.
 - Report rows that are legacy, unsupported, ambiguous, unmapped, unmatched or missing complete
   metrics remain counted as unpromoted. They are not spread or silently aggregated.
+- The report ledger keeps `rows_parsed` as the actual parsed count. Expected unpromoted rows do not
+  masquerade as loaded rows: source equals parsed plus refused, parsed equals promoted plus
+  unpromoted, and promoted equals canonical `rows_loaded`. Sync Status labels this as complete
+  attribution accounting instead of a silent-load-loss mismatch.
 - Any parser refusal, repeated ad/date report grain, out-of-scope report date, incomplete pagination,
   source/parsed count mismatch or duplicate Asset Library identity fails closed before canonical fact
   promotion. The count-only snapshot records the blocked state where its own contract is valid.
@@ -99,14 +107,15 @@ Before success:
 4. every offered asset, mapping, fact and snapshot is returned by its upsert;
 5. every offered object is read back at its exact tenant-scoped identity;
 6. report source rows equal parsed plus refused rows;
-7. report parsed rows equal mapped facts plus explicitly unpromoted rows;
-8. mapped facts equal facts upserted and read back.
+7. report parsed rows equal promoted facts plus explicitly unpromoted rows;
+8. promoted facts equal canonical rows loaded, facts upserted and facts read back.
 
 ## Safety and live gate
 
 - No Amazon advertising write method is called or exposed by the ingestion adapter.
 - No `sbAds` schedule or historical-bootstrap handler is enabled.
-- Multi-day observed-fact requests are rejected before an Amazon read.
+- Multi-day, earlier-day and later-day observed-fact requests are rejected before an Amazon read;
+  only the profile-local observation date can pass the gate.
 - Overlapping current observations are blocked while an explicitly gated report is in flight.
 - This package does not claim historical Asset-ID attribution is authoritative.
 - Historical backfill remains blocked until an operator authorizes a live, read-only probe that proves
@@ -122,8 +131,12 @@ Before success:
 - a non-video asset is unsupported;
 - null content hashes preserve separate Asset IDs;
 - retries remain idempotent;
+- earlier and later fact dates fail before any Amazon read, while timezone-local observation dates
+  are resolved from the profile timezone;
 - a current mapping change leaves one canonical fact;
 - incomplete pagination writes no canonical asset, mapping or fact;
 - report refusals and duplicate ad/date grains promote zero facts;
 - all facts retain null placement and observed provenance;
+- partial attribution retains truthful source/parsed/refused/promoted/unpromoted/canonical ledger
+  counts and a distinct complete-accounting Sync Status label;
 - Amazon write-call count remains zero.

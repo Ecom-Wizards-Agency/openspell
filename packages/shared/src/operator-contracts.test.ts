@@ -23,6 +23,7 @@ import {
   ReversionBatchPreview,
   ReversionPreview,
   SqpWeeklyFact,
+  WorkerReportAccounting,
 } from './index.js';
 
 const PROFILE_ID = '00000000-0000-4000-8000-000000000001';
@@ -109,6 +110,30 @@ describe('creative attribution', () => {
       mappedFactRows: 0,
       unpromotedReportRows: 0,
     }).parsedAds).toBe(5);
+  });
+});
+
+describe('attribution-aware report accounting', () => {
+  it('accounts for valid unpromoted rows without calling them loaded', () => {
+    expect(WorkerReportAccounting.parse({
+      sourceRows: 3,
+      parsedRows: 2,
+      refusedRows: 1,
+      promotedRows: 1,
+      unpromotedRows: 1,
+      canonicalRows: 1,
+    })).toMatchObject({ parsedRows: 2, promotedRows: 1, unpromotedRows: 1 });
+  });
+
+  it('rejects hidden source or canonical row loss', () => {
+    expect(WorkerReportAccounting.safeParse({
+      sourceRows: 3,
+      parsedRows: 2,
+      refusedRows: 0,
+      promotedRows: 1,
+      unpromotedRows: 1,
+      canonicalRows: 0,
+    }).success).toBe(false);
   });
 });
 

@@ -34,6 +34,7 @@ declare
   v_report uuid;
   v_recommendation uuid;
   v_group uuid;
+  v_creative_snapshot uuid;
   v_strategy jsonb := jsonb_build_object(
     'schema', 'wizard-ads.tenant-strategy.v1',
     'pacing', '{}'::jsonb,
@@ -270,6 +271,17 @@ begin
   values (v_org, v_profile, p_slug || '-attribution-1', p_date, 'SP',
           'spCampaigns', 'amazon_reporting_v3', now(), 14, 1,
           100, 5, 4.5, 1, 25);
+
+  insert into public.creative_sync_snapshots
+    (id, org_id, profile_id, start_date, end_date, observed_at,
+     mapping_provenance, historical_validity, status, pagination_complete,
+     fact_promotion_allowed, source_assets, parsed_assets, source_ads, parsed_ads,
+     mapped, legacy, unsupported, ambiguous, unmapped)
+  values
+    (gen_random_uuid(), v_org, v_profile, p_date, p_date, now(),
+     'current_sb_ad_snapshot', 'unproven_current_snapshot', 'mapping_only', true,
+     false, 1, 1, 1, 1, 0, 1, 0, 0, 0)
+  returning id into v_creative_snapshot;
 
   insert into public.ad_creative_asset_mappings
     (org_id, profile_id, source_mapping_key, ad_product, campaign_id,

@@ -110,7 +110,7 @@ describe('observed SB Video snapshot ingestion', () => {
       profile: PROFILE,
       payload: {
         type: 'creative.sync', orgId: ORG_ID, profileId: PROFILE_ID, adProduct: 'SB',
-        startDate: '2026-08-28', endDate: '2026-08-28',
+        startDate: '2026-08-29', endDate: '2026-08-29',
         allowObservedAttributionFacts: true,
       },
     });
@@ -141,8 +141,8 @@ describe('observed SB Video snapshot ingestion', () => {
         orgId: ORG_ID,
         profileId: PROFILE_ID,
         adProduct: 'SB' as const,
-        startDate: '2026-08-28',
-        endDate: '2026-08-28',
+        startDate: '2026-08-29',
+        endDate: '2026-08-29',
         allowObservedAttributionFacts: true,
       },
     };
@@ -170,7 +170,7 @@ describe('observed SB Video snapshot ingestion', () => {
       profile: PROFILE,
       payload: {
         type: 'creative.sync', orgId: ORG_ID, profileId: PROFILE_ID, adProduct: 'SB',
-        startDate: '2026-08-28', endDate: '2026-08-28',
+        startDate: '2026-08-29', endDate: '2026-08-29',
         allowObservedAttributionFacts: true,
       },
     });
@@ -199,7 +199,7 @@ describe('observed SB Video snapshot ingestion', () => {
       profile: PROFILE,
       payload: {
         type: 'creative.sync', orgId: ORG_ID, profileId: PROFILE_ID, adProduct: 'SB',
-        startDate: '2026-08-28', endDate: '2026-08-28',
+        startDate: '2026-08-29', endDate: '2026-08-29',
         allowObservedAttributionFacts: true,
       },
     });
@@ -210,8 +210,8 @@ describe('observed SB Video snapshot ingestion', () => {
         orgId: ORG_ID,
         profileId: PROFILE_ID,
         reportType: 'sbAds',
-        startDate: '2026-08-28',
-        endDate: '2026-08-28',
+        startDate: '2026-08-29',
+        endDate: '2026-08-29',
         source: 'amazon_api',
         amazonReportId: 'report-provider-one',
         requestedAt: new Date('2026-08-29T00:01:00Z'),
@@ -267,7 +267,7 @@ describe('observed SB Video snapshot ingestion', () => {
       profile: PROFILE,
       payload: {
         type: 'creative.sync', orgId: ORG_ID, profileId: PROFILE_ID, adProduct: 'SB',
-        startDate: '2026-08-28', endDate: '2026-08-28',
+        startDate: '2026-08-29', endDate: '2026-08-29',
         allowObservedAttributionFacts: true,
       },
     });
@@ -302,6 +302,47 @@ describe('observed SB Video snapshot ingestion', () => {
       },
     })).rejects.toThrow(/historical backfill is disabled/);
     expect(reads).toBe(0);
+  });
+
+  it.each(['2026-08-28', '2026-08-30'])(
+    'refuses non-observation fact date %s before any Amazon read',
+    async (date) => {
+      let reads = 0;
+      const api: SbVideoContractProbeClient = {
+        probeSbAdsPage: async () => (reads += 1, adsPage([])),
+        probeCreativeAssetsPage: async () => (reads += 1, assetsPage([])),
+      };
+      const runtime = new ObservedSbVideoIngestion(api, new MemoryStore(), fixedNow);
+      await expect(runtime.syncSnapshot({
+        jobId: SNAPSHOT_ID,
+        profile: PROFILE,
+        payload: {
+          type: 'creative.sync', orgId: ORG_ID, profileId: PROFILE_ID, adProduct: 'SB',
+          startDate: date, endDate: date,
+          allowObservedAttributionFacts: true,
+        },
+      })).rejects.toThrow(/profile-local observation date 2026-08-29/);
+      expect(reads).toBe(0);
+    },
+  );
+
+  it('uses the profile timezone when resolving the observation date', async () => {
+    const store = new MemoryStore();
+    const runtime = new ObservedSbVideoIngestion(
+      client(adsPage([ad('ad-one')]), assetsPage([asset(ASSET_ONE, 'VIDEO')])),
+      store,
+      fixedNow,
+    );
+    const result = await runtime.syncSnapshot({
+      jobId: SNAPSHOT_ID,
+      profile: { ...PROFILE, timezone: 'America/Los_Angeles' },
+      payload: {
+        type: 'creative.sync', orgId: ORG_ID, profileId: PROFILE_ID, adProduct: 'SB',
+        startDate: '2026-08-28', endDate: '2026-08-28',
+        allowObservedAttributionFacts: true,
+      },
+    });
+    expect(result.status).toBe('report_pending');
   });
 });
 
@@ -450,7 +491,7 @@ function asset(assetId: string, assetType: string): CreativeAssetProbePage['item
 
 function reportRow() {
   return {
-    date: '2026-08-28',
+    date: '2026-08-29',
     campaignId: 'campaign-one',
     adGroupId: 'ad-group-one',
     adId: 'ad-one',
@@ -472,8 +513,8 @@ function ledger() {
     orgId: ORG_ID,
     profileId: PROFILE_ID,
     reportType: 'sbAds' as const,
-    startDate: '2026-08-28',
-    endDate: '2026-08-28',
+    startDate: '2026-08-29',
+    endDate: '2026-08-29',
     source: 'amazon_api',
     amazonReportId: 'report-provider-one',
     requestedAt: new Date('2026-08-29T00:01:00Z'),

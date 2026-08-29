@@ -58,6 +58,28 @@ export const WorkerReportType = z.enum([
   ...FeatureReportType.options,
 ]);
 export type WorkerReportType = z.infer<typeof WorkerReportType>;
+const reportCount = z.number().int().nonnegative();
+
+/** Truthful source-to-canonical accounting for attribution-aware reports. */
+export const WorkerReportAccounting = z.object({
+  sourceRows: reportCount,
+  parsedRows: reportCount,
+  refusedRows: reportCount,
+  promotedRows: reportCount,
+  unpromotedRows: reportCount,
+  canonicalRows: reportCount,
+}).superRefine((counts, context) => {
+  if (counts.sourceRows !== counts.parsedRows + counts.refusedRows) {
+    context.addIssue({ code: 'custom', message: 'source rows must equal parsed plus refused rows' });
+  }
+  if (counts.parsedRows !== counts.promotedRows + counts.unpromotedRows) {
+    context.addIssue({ code: 'custom', message: 'parsed rows must equal promoted plus unpromoted rows' });
+  }
+  if (counts.promotedRows !== counts.canonicalRows) {
+    context.addIssue({ code: 'custom', message: 'promoted rows must equal canonical rows' });
+  }
+});
+export type WorkerReportAccounting = z.infer<typeof WorkerReportAccounting>;
 
 /** Every job is scoped to one org and one profile. RLS depends on it. */
 const jobBase = {

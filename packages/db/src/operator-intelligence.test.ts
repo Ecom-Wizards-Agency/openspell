@@ -87,11 +87,11 @@ describe.skipIf(!available)('WP-56 operator-intelligence foundations', () => {
     await expect(database.sql`
       insert into public.ad_creative_asset_mappings (
         org_id, profile_id, source_mapping_key, ad_product, campaign_id,
-        ad_group_id, ad_id, creative_asset_id, amazon_asset_id,
+        ad_group_id, ad_id, creative_id, creative_asset_id, amazon_asset_id,
         attribution_state, observed_at
       ) values (
         ${orgA}, ${profileA}, 'mapping-cross-tenant', 'SB', 'campaign-1',
-        'ad-group-1', 'ad-1', ${foreignAsset?.id ?? ''}, 'asset-foreign',
+        'ad-group-1', 'ad-1', 'creative-1', ${foreignAsset?.id ?? ''}, 'asset-foreign',
         'mapped', now()
       )
     `).rejects.toThrow(/ad_creative_asset_mappings_asset_fkey/i);

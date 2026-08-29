@@ -145,6 +145,15 @@ export class ObservedSbVideoIngestion implements SbVideoIngestionRuntime {
     ) {
       throw new Error('observed SB attribution facts are limited to one day; historical backfill is disabled');
     }
+    const observedAt = this.now();
+    if (input.payload.allowObservedAttributionFacts) {
+      const observedDate = profileLocalDate(observedAt, input.profile.timezone);
+      if (input.payload.startDate !== observedDate) {
+        throw new Error(
+          `observed SB attribution facts require the profile-local observation date ${observedDate}; historical or future dates are disabled`,
+        );
+      }
+    }
 
     const adsPage = await this.client.probeSbAdsPage(input.profile);
     const assetsPage = await this.client.probeCreativeAssetsPage(input.profile);
@@ -154,7 +163,7 @@ export class ObservedSbVideoIngestion implements SbVideoIngestionRuntime {
       profileId: input.payload.profileId,
       startDate: input.payload.startDate,
       endDate: input.payload.endDate,
-      observedAt: this.now().toISOString(),
+      observedAt: observedAt.toISOString(),
       allowFacts: input.payload.allowObservedAttributionFacts === true,
       adsPage,
       assetsPage,
@@ -644,4 +653,21 @@ function duplicates(values: readonly string[]): Set<string> {
     else seen.add(value);
   }
   return result;
+}
+
+function profileLocalDate(observedAt: Date, timezone: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(observedAt);
+  const byType = new Map(parts.map((part) => [part.type, part.value]));
+  const year = byType.get('year');
+  const month = byType.get('month');
+  const day = byType.get('day');
+  if (year === undefined || month === undefined || day === undefined) {
+    throw new Error(`could not resolve observation date for profile timezone ${timezone}`);
+  }
+  return `${year}-${month}-${day}`;
 }

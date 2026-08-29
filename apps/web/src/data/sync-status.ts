@@ -42,6 +42,11 @@ export interface ReportRow {
   rowsParsed: number | null;
   rowsLoaded: number | null;
   countsMatch: boolean | null;
+  sourceRows: number | null;
+  refusedRows: number | null;
+  promotedRows: number | null;
+  unpromotedRows: number | null;
+  accountingComplete: boolean | null;
   error: string | null;
 }
 
@@ -150,6 +155,11 @@ export async function loadSyncStatus(
       rows_parsed: string | null;
       rows_loaded: string | null;
       counts_match: boolean | null;
+      source_rows: string | null;
+      refused_rows: string | null;
+      promoted_rows: string | null;
+      unpromoted_rows: string | null;
+      accounting_complete: boolean | null;
       error: string | null;
     }[]
   >`
@@ -165,6 +175,11 @@ export async function loadSyncStatus(
            r.rows_parsed,
            r.rows_loaded,
            r.counts_match,
+           r.source_rows,
+           r.refused_rows,
+           r.promoted_rows,
+           r.unpromoted_rows,
+           r.accounting_complete,
            r.error
       from public.report_requests r
       join public.ad_profiles p on p.id = r.profile_id
@@ -211,7 +226,31 @@ export async function loadSyncStatus(
       rowsParsed: row.rows_parsed === null ? null : Number(row.rows_parsed),
       rowsLoaded: row.rows_loaded === null ? null : Number(row.rows_loaded),
       countsMatch: row.counts_match,
+      sourceRows: row.source_rows === null ? null : Number(row.source_rows),
+      refusedRows: row.refused_rows === null ? null : Number(row.refused_rows),
+      promotedRows: row.promoted_rows === null ? null : Number(row.promoted_rows),
+      unpromotedRows: row.unpromoted_rows === null ? null : Number(row.unpromoted_rows),
+      accountingComplete: row.accounting_complete,
       error: row.error,
     })),
   };
+}
+
+export function reportAccountingLabel(report: Pick<
+  ReportRow,
+  | 'countsMatch'
+  | 'accountingComplete'
+  | 'sourceRows'
+  | 'rowsParsed'
+  | 'refusedRows'
+  | 'promotedRows'
+  | 'unpromotedRows'
+  | 'rowsLoaded'
+>): string {
+  if (report.accountingComplete === true) {
+    return `complete attribution accounting: ${report.sourceRows} source = ${report.rowsParsed} parsed + ${report.refusedRows} refused; ${report.rowsParsed} parsed = ${report.promotedRows} promoted + ${report.unpromotedRows} unpromoted; ${report.rowsLoaded} canonical`;
+  }
+  if (report.accountingComplete === false) return 'incomplete attribution accounting';
+  if (report.countsMatch === null) return '—';
+  return report.countsMatch ? 'yes · exact row counts' : 'no · row-count mismatch';
 }

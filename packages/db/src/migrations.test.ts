@@ -109,6 +109,28 @@ describe.skipIf(!available)('migrations', () => {
     expect(definition).toContain('report_source_rows is not null');
     expect(definition).toContain('report_parsed_rows is not null');
     expect(definition).toContain('report_refused_rows is not null');
+
+    const accountingColumns = await database.sql<{
+      column_name: string;
+      is_generated: string;
+    }[]>`
+      select column_name, is_generated
+        from information_schema.columns
+       where table_schema = 'public'
+         and table_name = 'report_requests'
+         and column_name in (
+           'source_rows', 'refused_rows', 'promoted_rows',
+           'unpromoted_rows', 'accounting_complete'
+         )
+       order by column_name
+    `;
+    expect(accountingColumns).toEqual([
+      { column_name: 'accounting_complete', is_generated: 'ALWAYS' },
+      { column_name: 'promoted_rows', is_generated: 'NEVER' },
+      { column_name: 'refused_rows', is_generated: 'NEVER' },
+      { column_name: 'source_rows', is_generated: 'NEVER' },
+      { column_name: 'unpromoted_rows', is_generated: 'NEVER' },
+    ]);
   });
 
   it('creates every table the plan names', async () => {

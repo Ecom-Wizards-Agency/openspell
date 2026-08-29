@@ -146,11 +146,38 @@ create unique index fact_creative_daily_grain_key
 
 alter table public.report_requests
   add column creative_sync_snapshot_id uuid,
+  add column source_rows bigint,
+  add column refused_rows bigint,
+  add column promoted_rows bigint,
+  add column unpromoted_rows bigint,
+  add column accounting_complete boolean generated always as (
+    case
+      when source_rows is null
+       and refused_rows is null
+       and promoted_rows is null
+       and unpromoted_rows is null then null
+      else source_rows is not null
+       and rows_parsed is not null
+       and refused_rows is not null
+       and promoted_rows is not null
+       and unpromoted_rows is not null
+       and rows_loaded is not null
+       and source_rows = rows_parsed + refused_rows
+       and rows_parsed = promoted_rows + unpromoted_rows
+       and promoted_rows = rows_loaded
+    end
+  ) stored,
   add constraint report_requests_creative_snapshot_fkey
     foreign key (org_id, profile_id, creative_sync_snapshot_id)
     references public.creative_sync_snapshots (org_id, profile_id, id) on delete restrict,
   add constraint report_requests_creative_snapshot_scope check (
     creative_sync_snapshot_id is null or report_type = 'sbAds'
+  ),
+  add constraint report_requests_attribution_counts_nonnegative check (
+    (source_rows is null or source_rows >= 0)
+    and (refused_rows is null or refused_rows >= 0)
+    and (promoted_rows is null or promoted_rows >= 0)
+    and (unpromoted_rows is null or unpromoted_rows >= 0)
   );
 
 create or replace function app.block_creative_snapshot_on_report_terminal()
@@ -184,3 +211,5 @@ comment on table public.creative_sync_snapshots is
   'Counted current SB ad/asset observations. Provenance is intentionally non-historical until a separately authorized live probe proves time-valid mapping.';
 comment on column public.fact_creative_daily.placement is
   'Null for sbAds: the ad-grain report does not report placement.';
+comment on column public.report_requests.accounting_complete is
+  'For attribution-aware reports: source = parsed + refused, parsed = promoted + unpromoted, and promoted = canonical rows_loaded. Null on legacy/base report accounting.';

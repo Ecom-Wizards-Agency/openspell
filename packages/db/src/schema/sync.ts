@@ -127,6 +127,12 @@ export const reportRequests = pgTable(
     rowsLoaded: count('rows_loaded'),
     /** Generated column: never written, always true or false or null. */
     countsMatch: boolean('counts_match'),
+    /** Attribution-aware accounting; base reports leave these null. */
+    sourceRows: count('source_rows'),
+    refusedRows: count('refused_rows'),
+    promotedRows: count('promoted_rows'),
+    unpromotedRows: count('unpromoted_rows'),
+    accountingComplete: boolean('accounting_complete'),
     bytesDownloaded: count('bytes_downloaded'),
     error: text('error'),
     creativeSyncSnapshotId: uuid('creative_sync_snapshot_id'),
