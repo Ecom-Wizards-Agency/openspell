@@ -11,7 +11,8 @@ import { connectToCdpSafely, inspectCandidateRevision, publicReleaseFailure, Rel
 const PROD = process.env['OPENSPELL_PRODUCTION_ORIGIN'] ?? 'https://ads.ecomwizards.agency';
 const HOST = /^wizard-ads-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.vercel\.app$/;
 const AUTH_COOKIE = /^sb-.*-auth-token(?:\.\d+)?$/;
-const MARKER = '\nOPENSPELL_STATUS:';
+const RESPONSE_MARKER = '\nOPENSPELL_STATUS:';
+const CURL_WRITE_OUT = '\\nOPENSPELL_STATUS:%{http_code}';
 const DIAGNOSTIC = ['DEBUG', 'NODE_DEBUG', 'NODE_DEBUG_NATIVE', 'PWDEBUG', 'NODE_OPTIONS', 'NODE_V8_COVERAGE'] as const;
 type RouteResult = { route: string; status: number | null; checkDurationMs: number; passed: boolean; missingArtifacts: readonly string[]; rejectedBody: boolean };
 type Inputs = { token: string; projectId: string; orgId: string; bypass: string };
@@ -46,7 +47,7 @@ async function main(): Promise<void> {
 async function requestMetadata(candidate: URL, input: Inputs): Promise<CandidateHttpResponse> {
   const url = new URL(`https://api.vercel.com/v13/deployments/${encodeURIComponent(candidate.hostname)}`);
   url.searchParams.set('teamId', input.orgId);
-  return requestCurl(config({ url: url.href, bearer: input.token }));
+  return requestCurl(buildReleaseCurlConfig({ url: url.href, bearer: input.token }));
 }
 
 async function verifyRoutes(candidate: URL, production: URL, cdp: string, bypass: string): Promise<readonly RouteResult[]> {
@@ -76,11 +77,11 @@ async function verifyRoute(candidate: URL, check: ReleaseRouteCheck, bypass: str
 function requestCandidate(candidate: URL, route: string, bypass: string, cookie?: string): Promise<CandidateHttpResponse> {
   const target = new URL(route, candidate.origin);
   if (target.origin !== candidate.origin) throw new ReleaseVerifierError('invalid_candidate_route');
-  return requestCurl(config({ url: target.href, bypass, cookie }));
+  return requestCurl(buildReleaseCurlConfig({ url: target.href, bypass, cookie }));
 }
 
-function config(input: { url: string; bearer?: string; bypass?: string; cookie?: string }): string {
-  const lines = [`url = "${escape(input.url)}"`, 'silent', 'show-error', 'max-time = 30', 'max-redirs = 0', 'dump-header = "-"', `write-out = "${MARKER}%{http_code}"`];
+export function buildReleaseCurlConfig(input: { url: string; bearer?: string; bypass?: string; cookie?: string }): string {
+  const lines = [`url = "${escape(input.url)}"`, 'silent', 'show-error', 'max-time = 30', 'max-redirs = 0', 'dump-header = "-"', `write-out = "${CURL_WRITE_OUT}"`];
   if (input.bearer !== undefined) lines.push(`header = "Authorization: Bearer ${escape(input.bearer)}"`);
   if (input.bypass !== undefined) lines.push(`header = "x-vercel-protection-bypass: ${escape(input.bypass)}"`);
   if (input.cookie !== undefined) lines.push(`header = "Cookie: ${escape(input.cookie)}"`);
@@ -94,9 +95,9 @@ function escape(value: string): string {
 
 async function requestCurl(stdin: string): Promise<CandidateHttpResponse> {
   const result = await isolatedCurl(stdin);
-  const marker = result.stdout.lastIndexOf(MARKER);
+  const marker = result.stdout.lastIndexOf(RESPONSE_MARKER);
   if (marker < 0) return { exitCode: result.exitCode, status: null, responseBody: '', rawLocation: null };
-  const statusText = result.stdout.slice(marker + MARKER.length);
+  const statusText = result.stdout.slice(marker + RESPONSE_MARKER.length);
   const status = /^\d{3}$/.test(statusText) ? Number(statusText) : null;
   const payload = result.stdout.slice(0, marker);
   const separator = payload.indexOf('\r\n\r\n');

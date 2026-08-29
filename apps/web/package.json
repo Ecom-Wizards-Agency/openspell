@@ -12,7 +12,7 @@
     "test:e2e": "tsx e2e/run.ts",
     "test:e2e:tags-goto": "tsx e2e/run.ts tags-goto",
     "test:e2e:auth": "tsx e2e/run.ts auth",
-    "test:release-candidate": "vitest run src/release/candidate-artifacts.test.ts src/release/candidate-binding.test.ts src/release/candidate-redirect.test.ts src/release/candidate-revision.test.ts src/release/public-revision.test.ts src/release/verifier-subprocess.test.ts app/api/healthz/route.test.ts",
+    "test:release-candidate": "vitest run src/release/candidate-artifacts.test.ts src/release/candidate-binding.test.ts src/release/candidate-redirect.test.ts src/release/candidate-revision.test.ts src/release/curl-config.test.ts src/release/public-revision.test.ts src/release/verifier-subprocess.test.ts app/api/healthz/route.test.ts",
     "verify:release-candidate": "tsx scripts/release-candidate-entry.ts"
   },
   "dependencies": {
