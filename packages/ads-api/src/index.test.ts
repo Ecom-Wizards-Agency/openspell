@@ -82,6 +82,8 @@ describe('@wizard-ads/ads-api', () => {
       'createSbCreatives',
       'updateSbCreatives',
       'listSbCreatives',
+      'probeSbAdsPage',
+      'probeCreativeAssetsPage',
       'archiveSbCreative',
     ]) {
       const prototype = api.AdsApiClient.prototype as unknown as Record<string, unknown>;
@@ -91,6 +93,7 @@ describe('@wizard-ads/ads-api', () => {
 
   it('exports one parser per report type in the contract', () => {
     expect(Object.keys(api.REPORT_SPECS).sort()).toEqual([
+      'sbAds',
       'sbCampaigns',
       'sdCampaigns',
       'spCampaigns',
@@ -105,6 +108,7 @@ describe('@wizard-ads/ads-api', () => {
       api.parseSpPlacementReport,
       api.parseSbCampaignReport,
       api.parseSdCampaignReport,
+      api.parseSbAdsReportProbe,
     ]) {
       expect(typeof parser).toBe('function');
     }

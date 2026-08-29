@@ -86,6 +86,15 @@ import {
   type ReportMetadata,
 } from './reports.js';
 import {
+  CREATIVE_ASSET_SEARCH_PATH,
+  SB_AD_LIST_PATH,
+  SB_AD_MEDIA_TYPE,
+  parseCreativeAssetProbePage,
+  parseSbAdProbePage,
+  type CreativeAssetProbePage,
+  type SbAdProbePage,
+} from './sb-ad-assets.js';
+import {
   SB_CREATIVE_LIST_PATH,
   SB_CREATIVE_MEDIA_TYPE,
   SB_CREATIVE_PATH,
@@ -895,6 +904,46 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
       }
       seenTokens.add(nextToken);
     }
+  }
+
+  /**
+   * Fetch exactly one Sponsored Brands ads page for a non-persisting contract
+   * probe. Pagination and promotion stay disabled until a live response proves
+   * the provider's current token and identity fields.
+   */
+  async probeSbAdsPage(profileId: string): Promise<SbAdProbePage> {
+    const result = await httpRequest(this.ctx, {
+      method: 'POST',
+      url: `${hostFor(this.region)}${SB_AD_LIST_PATH}`,
+      path: SB_AD_LIST_PATH,
+      headers: this.headers({
+        profileId,
+        contentType: SB_AD_MEDIA_TYPE,
+        accept: SB_AD_MEDIA_TYPE,
+      }),
+      body: JSON.stringify({ maxResults: SB_LIST_MAX_PAGE_SIZE }),
+      idempotent: true,
+    });
+    return parseSbAdProbePage(this.json(result, `POST ${SB_AD_LIST_PATH}`));
+  }
+
+  /** One Creative Asset Library page, read-only and deliberately unpaginated. */
+  async probeCreativeAssetsPage(profileId: string): Promise<CreativeAssetProbePage> {
+    const result = await httpRequest(this.ctx, {
+      method: 'POST',
+      url: `${hostFor(this.region)}${CREATIVE_ASSET_SEARCH_PATH}`,
+      path: CREATIVE_ASSET_SEARCH_PATH,
+      headers: this.headers({
+        profileId,
+        contentType: 'application/json',
+        accept: 'application/json',
+      }),
+      body: '{}',
+      idempotent: true,
+    });
+    return parseCreativeAssetProbePage(
+      this.json(result, `POST ${CREATIVE_ASSET_SEARCH_PATH}`),
+    );
   }
 
   /**

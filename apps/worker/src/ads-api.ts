@@ -4,7 +4,9 @@ import {
   AdsApiTimeoutError,
   AdsThrottleError,
   DuplicateReportError,
+  type CreativeAssetProbePage,
   type ReportMetadata,
+  type SbAdProbePage,
 } from '@wizard-ads/ads-api';
 import {
   getAdsRefreshToken,
@@ -118,6 +120,12 @@ export interface SuggestedBidClient {
   ): Promise<SuggestedBidResult>;
 }
 
+/** Read-only, page-scoped seam used by the non-persisting SB Video probe. */
+export interface SbVideoContractProbeClient {
+  probeSbAdsPage(profile: AdsProfileContext): Promise<SbAdProbePage>;
+  probeCreativeAssetsPage(profile: AdsProfileContext): Promise<CreativeAssetProbePage>;
+}
+
 export class AdsApiRetryableError extends Error {
   constructor(message: string, readonly retryAfterSeconds?: number) {
     super(message);
@@ -158,7 +166,10 @@ export type UnderlyingClient = Pick<
   // drives. Added to the Pick so a unit test can mock only these without HTTP.
   | 'getSpKeywordBidRecommendations'
   | 'getSpTargetBidRecommendations'
->;
+> & Partial<Pick<
+  UnderlyingAdsApiClient,
+  'probeSbAdsPage' | 'probeCreativeAssetsPage'
+>>;
 
 /** The subset of `fetch` the report download needs. */
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -199,7 +210,7 @@ const KNOWN_REPORT_STATUSES = new Set<AdsReportStatus['status']>([
  * so the fetch re-polls, and everything else is left as-is for the generic
  * attempt counter to age out into the dead-letter.
  */
-export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient {
+export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideoContractProbeClient {
   private readonly clients = new Map<string, UnderlyingClient>();
   private readonly fetch: FetchLike;
 
@@ -364,6 +375,29 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient {
       for (const profile of profiles) profileIds.push(profile.profileId);
     }
     return profileIds;
+  }
+
+  async probeSbAdsPage(profile: AdsProfileContext): Promise<SbAdProbePage> {
+    const client = await this.clientForProfile(profile);
+    const probe = client.probeSbAdsPage;
+    if (probe === undefined) {
+      throw new Error('Sponsored Brands ad contract probe is not available on this client');
+    }
+    return this.guard(profile.region, () => probe.call(client, profile.amazonProfileId));
+  }
+
+  async probeCreativeAssetsPage(
+    profile: AdsProfileContext,
+  ): Promise<CreativeAssetProbePage> {
+    const client = await this.clientForProfile(profile);
+    const probe = client.probeCreativeAssetsPage;
+    if (probe === undefined) {
+      throw new Error('Creative Asset Library contract probe is not available on this client');
+    }
+    return this.guard(
+      profile.region,
+      () => probe.call(client, profile.amazonProfileId),
+    );
   }
 
   private toReportStatus(meta: ReportMetadata): AdsReportStatus {

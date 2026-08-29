@@ -39,7 +39,7 @@ import {
 } from '../src/parsers.js';
 import { assertRegion, type ReportMetadata } from '../src/index.js';
 import { isReportComplete, isTerminalFailure, type ReportSpec, REPORT_SPECS } from '../src/reports.js';
-import type { ReportType } from '@wizard-ads/shared';
+import { ReportType, type ReportType as ReportTypeValue } from '@wizard-ads/shared';
 import type {
   SpAdGroupCreateInput,
   SpAdGroupUpdateInput,
@@ -139,14 +139,15 @@ function loadConfig(path: string): SmokeConfig {
   };
 }
 
-function reportTypeOf(value: string | undefined): ReportType {
+function reportTypeOf(value: string | undefined): ReportTypeValue {
   const candidate = value ?? 'spCampaigns';
-  if (candidate in REPORT_SPECS) return candidate as ReportType;
-  die(`unknown reportType '${candidate}'. One of: ${Object.keys(REPORT_SPECS).join(', ')}`);
+  const parsed = ReportType.safeParse(candidate);
+  if (parsed.success) return parsed.data;
+  die(`unknown smoke reportType '${candidate}'. One of: ${ReportType.options.join(', ')}`);
 }
 
 /** One parser per report shape; the smoke test uses whichever it asked for. */
-function parseFor(reportType: ReportType, rows: Record<string, unknown>[]): ParseResult<unknown> {
+function parseFor(reportType: ReportTypeValue, rows: Record<string, unknown>[]): ParseResult<unknown> {
   switch (reportType) {
     case 'spCampaigns':
       return parseSpCampaignReport(rows);
