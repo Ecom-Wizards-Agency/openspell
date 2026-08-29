@@ -192,6 +192,30 @@ describe.skipIf(!available)('sync job queue', () => {
     expect(completed.status).toBe('succeeded');
   });
 
+  it('allows only a pre-migration null-token claim through the rolling compatibility signature', async () => {
+    await queueJobs(2, 'rolling-finish');
+    await database.sql`update public.sync_jobs set priority = 60000
+      where dedupe_key like 'rolling-finish:%'`;
+    const claimed = await claimSyncJobs(database, 'old-worker', 2);
+    expect(claimed).toHaveLength(2);
+    const legacy = claimed[0];
+    const fenced = claimed[1];
+    if (!legacy || !fenced) return;
+    await database.sql`update public.sync_jobs set claim_token = null where id = ${legacy.id}`;
+    const [completed] = await database.sql<{ status: string }[]>`
+      select status from public.finish_sync_job(
+        ${legacy.id}, 'succeeded'::public.sync_job_status, null, null::jsonb, null::interval
+      )
+    `;
+    expect(completed?.status).toBe('succeeded');
+    await expect(database.sql`
+      select public.finish_sync_job(
+        ${fenced.id}, 'succeeded'::public.sync_job_status, null, null::jsonb, null::interval
+      )
+    `).rejects.toThrow(/legacy completion cannot own tokenized job/i);
+    await finishSyncJob(database, fenced.id, 'succeeded', { claimToken: fenced.claimToken });
+  });
+
   describe('scheduler', () => {
     it('enqueues a due schedule once per slot and advances it', async () => {
       const [schedule] = await database.sql<{ id: string }[]>`

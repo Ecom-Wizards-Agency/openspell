@@ -13,6 +13,7 @@ import {
   recordAmazonWriteOutcomes,
   releaseAmazonWriteExecutionForRetry,
   refuseAmazonWriteExecution,
+  refuseUndispatchedForwardAmazonWriteExecution,
   type AmazonWriteObservation,
   type AmazonWriteRowOutcome,
   type DbHandle,
@@ -99,6 +100,9 @@ export interface AmazonWriteRuntimeStore {
     executionId: string;
     reason: string;
   }): Promise<AmazonWriteAccounting>;
+  refuseUndispatchedForward(input: {
+    orgId: string; profileId: string; executionId: string; reason: string;
+  }): Promise<AmazonWriteAccounting | null>;
   releaseForRetry(input: {
     orgId: string;
     profileId: string;
@@ -196,6 +200,10 @@ export class PostgresAmazonWriteStore implements AmazonWriteRuntimeStore {
 
   refuse(input: Parameters<AmazonWriteRuntimeStore['refuse']>[0]) {
     return refuseAmazonWriteExecution(this.handle, input);
+  }
+
+  refuseUndispatchedForward(input: Parameters<AmazonWriteRuntimeStore['refuseUndispatchedForward']>[0]) {
+    return refuseUndispatchedForwardAmazonWriteExecution(this.handle, input);
   }
 
   releaseForRetry(input: Parameters<AmazonWriteRuntimeStore['releaseForRetry']>[0]) {
@@ -305,10 +313,6 @@ export function classifyAmazonWriteObservations(
     });
 }
 
-function normalized(value: string): string {
-  return value.trim().toLocaleLowerCase('en-US');
-}
-
 /** Stable across harmless JSON array reordering; binds every authorization rule. */
 export function boundedAmazonWriteAuthorizationFingerprint(
   authorization: BoundedAuthorization,
@@ -319,15 +323,12 @@ export function boundedAmazonWriteAuthorizationFingerprint(
 }
 
 function allowedProfile(profile: AdsProfileContext, authorization: BoundedAuthorization) {
-  if (!profile.accountName || !profile.countryCode) return false;
   return authorization.profiles.find((allowed) =>
     allowed.org_id === profile.orgId
       && allowed.profile_id === profile.id
       && allowed.amazon_profile_id === profile.amazonProfileId
       && allowed.connection_id === profile.connectionId
       && allowed.region === profile.region
-      && normalized(allowed.account_label) === normalized(profile.accountName ?? '')
-      && normalized(allowed.marketplace) === normalized(profile.countryCode ?? ''),
   ) ?? null;
 }
 
@@ -483,8 +484,13 @@ export class GuardedAmazonWriteRuntime {
       if (initial.retryable) {
         throw new SpWriteRetryableError(initial.reason, 60, 0);
       }
-      const accounting = await this.store.refuse({ ...payload, executionId: payload.executionId, reason: initial.reason });
-      return { status: 'refused', ...accounting, amazonApiCalls: 0 };
+      const accounting = await this.store.refuseUndispatchedForward({
+        ...payload, executionId: payload.executionId, reason: initial.reason,
+      });
+      if (accounting !== null) return { status: 'refused', ...accounting, amazonApiCalls: 0 };
+      throw new SpWriteRetryableError(
+        'revocation blocks mutation but dispatched or inverse recovery remains resumable', 60, 0,
+      );
     }
     const authorization = initial.authorization;
     const allowed = initial.allowed;
@@ -860,24 +866,18 @@ export class GuardedAmazonWriteRuntime {
     const expectedEntities = request.keywordIds.length + request.targetIds.length + request.campaignIds.length;
     let observed: Awaited<ReturnType<SpWriteClient['observeSpWriteEntities']>> | null = null;
     let observationError: unknown = null;
-    let providerReadAttempted = false;
     const observedAt = this.now();
-    const observationAuthorization = await this.authorized(profile);
-    if ('reason' in observationAuthorization) {
-      if (observationAuthorization.retryable) {
-        throw new SpWriteRetryableError(observationAuthorization.reason, 60, 0);
-      }
-      observationError = new Error(observationAuthorization.reason);
-    } else {
-      providerReadAttempted = true;
-      try {
-        observed = await this.provider.observeSpWriteEntities(profile, request, {
-          signal: AbortSignal.timeout(WRITE_EXACT_READ_TIMEOUT_MS),
-          timeoutMs: WRITE_EXACT_READ_TIMEOUT_MS,
-        });
-      } catch (error) {
-        observationError = error;
-      }
+    // Observation is recovery, not a mutation. Once a dispatch intent exists,
+    // disabling the mutation gate, rotating/removing the local authorization,
+    // or letting it expire must stop new writes without blinding the exact-ID
+    // observer needed to prove state and reserve/reapprove the inverse.
+    try {
+      observed = await this.provider.observeSpWriteEntities(profile, request, {
+        signal: AbortSignal.timeout(WRITE_EXACT_READ_TIMEOUT_MS),
+        timeoutMs: WRITE_EXACT_READ_TIMEOUT_MS,
+      });
+    } catch (error) {
+      observationError = error;
     }
     const identityComplete = observed !== null && this.isExactObservationResult(request, observed);
     const trustedRows = identityComplete && observed !== null ? observed.rows : [];
@@ -912,8 +912,7 @@ export class GuardedAmazonWriteRuntime {
       amazonApiCalls: observed?.apiCalls
         ?? (observationError instanceof SpWriteObservationError
           ? observationError.apiCallsLowerBound : 0),
-      amazonApiCallAccounting: observed !== null ? 'exact'
-        : providerReadAttempted ? 'lower_bound_unknown' : 'none',
+      amazonApiCallAccounting: observed !== null ? 'exact' : 'lower_bound_unknown',
       requeued: recorded.observationRequeued,
       applyRequeued: recorded.applyRequeued,
     };
@@ -943,13 +942,10 @@ export class GuardedAmazonWriteRuntime {
       return { reason: 'bounded Amazon write authorization expired', retryable: true };
     }
     const allowed = allowedProfile(profile, authorization);
-    if (allowed === null || allowed === false) {
+    if (allowed === null) {
       return {
         reason: 'profile is absent from the Amazon write allowlist',
-        // A removed or rotating entry is an explicit fail-closed pause. Keep
-        // the immutable execution recoverable so restoring the same exact
-        // authorization can still complete a preapproved inverse.
-        retryable: true,
+        retryable: false,
       };
     }
     return { authorization, allowed };

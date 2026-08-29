@@ -70,9 +70,6 @@ begin
 end;
 $$;
 
-drop function public.finish_sync_job(
-  uuid, public.sync_job_status, text, jsonb, interval
-);
 create function public.finish_sync_job(
   p_job_id uuid,
   p_claim_token uuid,
@@ -128,6 +125,55 @@ begin
 end;
 $$;
 
+-- Rolling compatibility for a job claimed before claim-token fencing was
+-- installed. It can finish only a legacy running row whose token is NULL;
+-- every claim made by the new function has a token and is rejected here.
+create or replace function public.finish_sync_job(
+  p_job_id uuid,
+  p_status public.sync_job_status,
+  p_error text default null,
+  p_result jsonb default null,
+  p_retry_in interval default null
+)
+returns public.sync_jobs
+language plpgsql
+security definer
+set search_path = pg_catalog, public, pg_temp
+as $$
+declare
+  v_job public.sync_jobs;
+begin
+  perform app.assert_service_role('finish_sync_job');
+  select * into v_job from public.sync_jobs where id = p_job_id for update;
+  if not found then
+    raise exception 'no such job %', p_job_id using errcode = '22023';
+  end if;
+  if v_job.status <> 'running' or v_job.claim_token is not null then
+    raise exception 'legacy completion cannot own tokenized job %', p_job_id
+      using errcode = '40001';
+  end if;
+  if p_status = 'failed' and v_job.attempts >= v_job.max_attempts then
+    update public.sync_jobs set status = 'dead', last_error = p_error,
+      result = coalesce(p_result, result), finished_at = now(), updated_at = now()
+      where id = p_job_id and status = 'running' and claim_token is null returning * into v_job;
+  elsif p_status = 'failed' then
+    update public.sync_jobs set status = 'queued', last_error = p_error,
+      result = coalesce(p_result, result), claimed_by = null, claimed_at = null,
+      run_after = now() + coalesce(p_retry_in, interval '1 minute'),
+      finished_at = null, updated_at = now()
+      where id = p_job_id and status = 'running' and claim_token is null returning * into v_job;
+  else
+    update public.sync_jobs set status = p_status, last_error = p_error,
+      result = coalesce(p_result, result), finished_at = now(), updated_at = now()
+      where id = p_job_id and status = 'running' and claim_token is null returning * into v_job;
+  end if;
+  if not found then
+    raise exception 'legacy claim ownership changed for job %', p_job_id using errcode = '40001';
+  end if;
+  return v_job;
+end;
+$$;
+
 create or replace function public.requeue_stale_sync_jobs(
   p_older_than interval default interval '30 minutes'
 )
@@ -161,6 +207,12 @@ revoke execute on function public.finish_sync_job(
 ) from public, anon, authenticated;
 grant execute on function public.finish_sync_job(
   uuid, uuid, public.sync_job_status, text, jsonb, interval
+) to service_role;
+revoke execute on function public.finish_sync_job(
+  uuid, public.sync_job_status, text, jsonb, interval
+) from public, anon, authenticated;
+grant execute on function public.finish_sync_job(
+  uuid, public.sync_job_status, text, jsonb, interval
 ) to service_role;
 
 -- The export artifact is order-sensitive. UUID order is not insertion order,
@@ -295,6 +347,26 @@ create index amazon_write_executions_status_idx
 create trigger amazon_write_executions_touch before update on public.amazon_write_executions
   for each row execute function app.touch_updated_at();
 select app.install_tenant_rls('public.amazon_write_executions');
+
+alter table public.amazon_write_executions
+  add column reauthorization_approval_id uuid unique
+    references public.amazon_write_approvals (id) on delete restrict;
+
+create table public.amazon_write_reapprovals (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references public.orgs (id) on delete restrict,
+  profile_id uuid not null references public.ad_profiles (id) on delete restrict,
+  execution_id uuid not null references public.amazon_write_executions (id) on delete restrict,
+  prior_approval_id uuid not null references public.amazon_write_approvals (id) on delete restrict,
+  replacement_approval_id uuid not null unique references public.amazon_write_approvals (id) on delete restrict,
+  approved_by uuid not null references auth.users (id) on delete restrict,
+  approved_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  unique (org_id, profile_id, execution_id, replacement_approval_id)
+);
+select app.install_tenant_rls('public.amazon_write_reapprovals');
+revoke insert, update, delete, truncate on public.amazon_write_reapprovals
+  from anon, authenticated;
 
 alter table public.amazon_write_approvals
   add constraint amazon_write_approvals_profile_fkey foreign key (org_id, profile_id)
@@ -519,6 +591,9 @@ $$;
 create trigger amazon_write_approvals_immutable
   before update or delete on public.amazon_write_approvals
   for each row execute function app.reject_amazon_write_immutable_change();
+create trigger amazon_write_reapprovals_immutable
+  before update or delete on public.amazon_write_reapprovals
+  for each row execute function app.reject_amazon_write_immutable_change();
 create trigger amazon_write_attempts_immutable
   before update or delete on public.amazon_write_attempts
   for each row execute function app.reject_amazon_write_immutable_change();
@@ -535,6 +610,7 @@ create trigger amazon_write_provider_call_events_immutable
 revoke truncate on table
   public.amazon_write_approvals,
   public.amazon_write_executions,
+  public.amazon_write_reapprovals,
   public.amazon_write_inverse_reservations,
   public.amazon_write_rows,
   public.amazon_write_predispatch_observations,
@@ -589,6 +665,13 @@ begin
      or new.created_at is distinct from old.created_at then
     raise exception 'amazon write execution identity is immutable';
   end if;
+  if new.reauthorization_approval_id is distinct from old.reauthorization_approval_id
+  then
+    perform app.assert_service_role('amazon inverse reauthorization');
+    if current_setting('app.amazon_inverse_reapproval', true) <> 'on' then
+      raise exception 'amazon write inverse reauthorization requires its authenticated ceremony';
+    end if;
+  end if;
   return new;
 end;
 $$;
@@ -630,7 +713,9 @@ create trigger amazon_write_rows_identity_immutable
 -- evidence that a staged export was applied. A gateway approval is different:
 -- an external actor can independently make the proposed change between
 -- approval and the worker's final freshness read. Do not attribute that sync
--- event to OpenSpell until the exact row has a durable provider-call intent.
+-- event to OpenSpell. Gateway evidence is always generation/call-bound and is
+-- recorded by its observer as source='apply'; ordinary sync must never claim
+-- a gateway row, including after a dispatch intent exists.
 create or replace function app.guard_gateway_entity_change_link()
 returns trigger
 language plpgsql
@@ -642,17 +727,11 @@ begin
      and exists (
        select 1 from public.amazon_write_approvals approval
         where approval.apply_batch_id = new.apply_batch_id
-     )
-     and not exists (
-       select 1
-         from public.amazon_write_rows write_row
-        where write_row.apply_row_id = new.apply_row_id
-          and write_row.dispatch_token is not null
      ) then
     if tg_op = 'UPDATE' and old.apply_batch_id is null and old.apply_row_id is null then
       return null;
     end if;
-    raise exception 'gateway apply evidence requires a durable provider dispatch';
+    raise exception 'gateway apply evidence requires its generation-bound observer';
   end if;
   return new;
 end;

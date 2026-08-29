@@ -249,6 +249,11 @@ begin
           'failed',
           1, 1, 1)
   returning id into v_write_execution;
+  insert into public.amazon_write_reapprovals
+    (org_id, profile_id, execution_id, prior_approval_id, replacement_approval_id,
+     approved_by, approved_at)
+  values (v_org, v_profile, v_write_execution, v_write_approval, v_write_approval,
+          p_user_id, now() - interval '1 minute');
   insert into public.amazon_write_rows
     (org_id, profile_id, execution_id, apply_row_id, action_type, action,
      expected_value, requested_value, inverse_value, inverse_action, row_status,

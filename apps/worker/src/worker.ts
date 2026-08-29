@@ -144,7 +144,7 @@ export class SyncWorker {
   private readonly pollIntervalMs: number;
   private readonly now: () => Date;
   private readonly logger: WorkerLogger;
-  private readonly running = new Map<string, Promise<void>>();
+  private readonly running = new Map<string, { job: ClaimedJob; promise: Promise<void> }>();
   private stopping = false;
 
   constructor(options: SyncWorkerOptions) {
@@ -175,7 +175,7 @@ export class SyncWorker {
       const claimed = await this.claimAvailable();
       if (claimed === 0) await delay(this.pollIntervalMs);
     }
-    await Promise.allSettled(this.running.values());
+    await Promise.allSettled([...this.running.values()].map(({ promise }) => promise));
   }
 
   /**
@@ -195,7 +195,7 @@ export class SyncWorker {
     const claimed = await this.claimAvailable(maxJobs);
     const batch = [...this.running.entries()]
       .filter(([id]) => !before.has(id))
-      .map(([, promise]) => promise);
+      .map(([, { promise }]) => promise);
     await Promise.allSettled(batch);
     return claimed;
   }
@@ -207,13 +207,21 @@ export class SyncWorker {
     let timedOut = false;
     let timeout: NodeJS.Timeout | undefined;
     await Promise.race([
-      Promise.allSettled(this.running.values()),
+      Promise.allSettled([...this.running.values()].map(({ promise }) => promise)),
       new Promise<void>((resolve) => {
         timeout = setTimeout(() => { timedOut = true; resolve(); }, releaseAfterMs);
       }),
     ]);
     if (timeout) clearTimeout(timeout);
-    return { released: timedOut ? await this.store.release(this.workerId) : 0 };
+    return {
+      released: timedOut ? await this.store.release(
+        this.workerId,
+        [...this.running.values()].map(({ job }) => ({
+          jobId: job.id,
+          claimToken: job.claimToken ?? null,
+        })),
+      ) : 0,
+    };
   }
 
   async runAuthHealthcheck(): Promise<{ ok: Region[]; failed: Region[] }> {
@@ -240,8 +248,9 @@ export class SyncWorker {
     const batchSize = Math.min(maxJobs ?? this.claimBatchSize, capacity);
     const jobs = await this.store.claim(this.workerId, batchSize, this.jobTypes);
     for (const job of jobs) {
-      const task = this.runClaimed(job).finally(() => this.running.delete(job.id));
-      this.running.set(job.id, task);
+      const claimKey = `${job.id}:${job.claimToken ?? 'legacy'}`;
+      const task = this.runClaimed(job).finally(() => this.running.delete(claimKey));
+      this.running.set(claimKey, { job, promise: task });
     }
     return jobs.length;
   }

@@ -447,3 +447,24 @@ export const ApproveAmazonWriteExecution = z.object({
   }
 });
 export type ApproveAmazonWriteExecution = z.infer<typeof ApproveAmazonWriteExecution>;
+
+/** Fresh operator ceremony for the already-materialized exact inverse only. */
+export const ReapproveAmazonWriteInverseExecution = z.object({
+  orgId: Uuid,
+  profileId: Uuid,
+  executionId: Uuid,
+  expiresAt: z.iso.datetime(),
+  authorizationId: Uuid,
+  authorizationSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  authorizationSnapshot: BoundedAmazonWriteAuthorization,
+}).strict().superRefine((value, context) => {
+  if (value.authorizationSnapshot.authorization_id !== value.authorizationId) {
+    context.addIssue({ code: 'custom', path: ['authorizationSnapshot'], message: 'authorization snapshot ID does not match reapproval' });
+  }
+  if (value.authorizationSnapshot.expires_at !== value.expiresAt) {
+    context.addIssue({ code: 'custom', path: ['authorizationSnapshot'], message: 'authorization snapshot expiry does not match reapproval' });
+  }
+});
+export type ReapproveAmazonWriteInverseExecution = z.infer<
+  typeof ReapproveAmazonWriteInverseExecution
+>;

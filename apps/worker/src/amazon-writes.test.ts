@@ -120,6 +120,8 @@ function fakeStore(overrides: Partial<AmazonWriteRuntimeStore> = {}): AmazonWrit
   return {
     prepare: vi.fn(async () => prepared([bidAction()])),
     refuse: vi.fn(async () => accounting({ attempted: 0, succeeded: 0, refused: 1, resyncRequested: 0 })),
+    refuseUndispatchedForward: vi.fn(async () =>
+      accounting({ attempted: 0, succeeded: 0, refused: 1, resyncRequested: 0 })),
     releaseForRetry: vi.fn(async () => {}),
     markDispatched: vi.fn(async () => true),
     recheckCurrentState: vi.fn(async () => true),
@@ -375,6 +377,38 @@ describe('guarded Amazon write runtime', () => {
     });
     expect(store.refuse).not.toHaveBeenCalled();
     expect(store.prepare).not.toHaveBeenCalled();
+    expect(provider.updateSpKeywordBids).not.toHaveBeenCalled();
+  });
+
+  it('continues exact recovery observation while the mutation gate and auth file are unavailable', async () => {
+    const action = bidAction();
+    const store = fakeStore({
+      observationRows: vi.fn(async () => [{
+        writeRowId: '66666666-6666-4666-8666-666666666661', action, rowStatus: 'accepted',
+      }]),
+      resolveObservation: vi.fn(async (input) => classifyAmazonWriteObservations(input)),
+    });
+    const provider = fakeProvider({
+      observeSpWriteEntities: vi.fn(async () => ({
+        requested: 1, returned: 1, identityComplete: true, apiCalls: 1,
+        rows: [{
+          entityType: 'keyword', profileId: PROFILE_ID, amazonId: 'keyword-1', adProduct: 'SP',
+          name: 'renamed account entity', state: 'enabled', campaignId: 'campaign-1',
+          adGroupId: 'group-1', keywordText: 'synthetic', matchType: 'exact', bid: 0.71,
+        } satisfies EntityRow],
+      })),
+    });
+    const loadAuthorization = vi.fn(async () => { throw new Error('synthetic missing mount'); });
+    const runtime = new GuardedAmazonWriteRuntime({
+      enabled: false, loadAuthorization, provider, store, now: () => NOW,
+    });
+    await expect(runtime.observe({
+      ...job, type: 'amazon.observe', generation: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', attempt: 0,
+    }, { ...profile, accountName: 'renamed', countryCode: 'CA' })).resolves.toMatchObject({
+      status: 'succeeded', observationIdentityComplete: true, amazonApiCalls: 1,
+    });
+    expect(loadAuthorization).not.toHaveBeenCalled();
+    expect(provider.observeSpWriteEntities).toHaveBeenCalledTimes(1);
     expect(provider.updateSpKeywordBids).not.toHaveBeenCalled();
   });
 
@@ -747,9 +781,10 @@ describe('guarded Amazon write runtime', () => {
     const runtime = new GuardedAmazonWriteRuntime({
       enabled: true, loadAuthorization: async () => authorization, provider, store, now: () => NOW,
     });
-    await expect(runtime.apply(job, mismatchedProfile)).rejects.toMatchObject({
-      name: 'SpWriteRetryableError', apiCalls: 0,
+    await expect(runtime.apply(job, mismatchedProfile)).resolves.toMatchObject({
+      status: 'refused', amazonApiCalls: 0,
     });
+    expect(store.refuseUndispatchedForward).toHaveBeenCalledTimes(1);
     expect(store.prepare).not.toHaveBeenCalled();
     expect(provider.updateSpKeywordBids).not.toHaveBeenCalled();
   });

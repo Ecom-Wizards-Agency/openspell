@@ -21,6 +21,7 @@ import {
   recordAmazonWritePredispatchObservations,
   recordAmazonWriteObservations,
   recordAmazonWriteOutcomes,
+  reapproveAmazonWriteInverseExecution,
   refuseAmazonWriteExecution,
   releaseAmazonWriteExecutionForRetry,
 } from './amazon-writes.js';
@@ -248,6 +249,8 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     executionId: string,
     rowIds: readonly string[],
     dispatchToken = DISPATCH_TOKEN,
+    authorizationId = AUTHORIZATION_ID,
+    authorizationFingerprint = authorizationSha256(),
   ) {
     const stored = await database.sql<{ id: string; action: AmazonWriteAction }[]>`
       select id, action from public.amazon_write_rows where id = any(${[...rowIds]}::uuid[])
@@ -291,8 +294,8 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
         actions: stored.map((row) => row.action),
       }),
       requestedEntityIds,
-      authorizationId: AUTHORIZATION_ID,
-      authorizationSha256: authorizationSha256(),
+      authorizationId,
+      authorizationSha256: authorizationFingerprint,
       amazonProfileId,
       connectionId,
       region: profileRegion,
@@ -609,6 +612,37 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     expect(state).toEqual({ batch_status: 'staged', linked: 0, provider_calls: 0 });
     const prepared = await prepare(approved.executionId);
     expect(prepared).toMatchObject({ status: 'refused', rows: [] });
+  });
+
+  it('never attributes ordinary sync to a gateway batch after durable dispatch', async () => {
+    const batch = await createBatch([
+      { entityType: 'keyword', entityId: 'kw-1', field: 'bid', oldValue: 0.9, newValue: 0.91 },
+    ]);
+    const approved = await approve(batch.batchId, batch.artifact, 1);
+    const prepared = await prepare(approved.executionId);
+    const row = prepared.rows[0];
+    if (!row) throw new Error('expected gateway row');
+    await dispatch(approved.executionId, [row.writeRowId]);
+    const observedAt = new Date();
+    await database.sql`update public.keywords set bid = 0.91, synced_at = ${observedAt.toISOString()}
+      where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = 'kw-1'`;
+    await recordEntityChanges(database, [{
+      orgId, profileId, entityType: 'keyword', amazonId: 'kw-1', field: 'bid',
+      oldValue: 0.9, newValue: 0.91, source: 'sync', observedAt,
+    }]);
+    const [state] = await database.sql<{ status: string; linked: number }[]>`
+      select batch.status::text as status,
+        (select count(*)::int from public.entity_changes change
+          where change.apply_batch_id = batch.id) as linked
+      from public.apply_batches batch where batch.id = ${batch.batchId}
+    `;
+    expect(state).toEqual({ status: 'staged', linked: 0 });
+    await recordOutcomes({
+      orgId, profileId, executionId: approved.executionId, attemptedAt: new Date(),
+      outcomes: [{ writeRowId: row.writeRowId, attemptNumber: row.attemptNumber,
+        requestFingerprint: sha('synthetic post-dispatch cleanup'),
+        evidence: { outcome: 'failed', providerEntityId: 'kw-1', code: 'SYNTHETIC', message: 'cleanup' } }],
+    });
   });
 
   it('accounts partial provider success and keeps every attempt append-only', async () => {
@@ -1325,6 +1359,106 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
       dispatchLeaseExpiresAt: new Date('2026-08-29T12:05:00.000Z'),
     });
     expect(overTotal).toMatchObject({ status: 'refused', rows: [] });
+  });
+
+  it('atomically reserves both authorization slots before accepting a forward approval', async () => {
+    const authorizationId = randomUUID();
+    const bounded = BoundedAmazonWriteAuthorization.parse({
+      ...authorizationSnapshot(authorizationId),
+      constraints: { ...authorizationSnapshot(authorizationId).constraints, max_total_executions: 2 },
+    });
+    const authorizationFingerprint = sha(serializeBoundedAmazonWriteAuthorization(bounded));
+    const firstBatch = await createBatch([
+      { entityType: 'keyword', entityId: 'kw-1', field: 'bid', oldValue: 0.9, newValue: 0.91 },
+    ]);
+    const secondBatch = await createBatch([
+      { entityType: 'target', entityId: 'tg-1', field: 'bid', oldValue: 0.6, newValue: 0.61 },
+    ]);
+    const approveBounded = (batch: { batchId: string; artifact: string }) => asUser(
+      database, USER_ID, (sql) => approveAmazonWriteExecution(database, { sql }, {
+        orgId, profileId, applyBatchId: batch.batchId, approvalMode: 'bounded_live_test',
+        expiresAt: EXPIRES_AT, previewSha256: batch.artifact, expectedCount: 1,
+        authorizationId, authorizationSha256: authorizationFingerprint,
+        authorizationSnapshot: bounded, inversePreapproved: true,
+      }),
+    );
+    const attempts = await Promise.allSettled([
+      approveBounded(firstBatch), approveBounded(secondBatch),
+    ]);
+    expect(attempts.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(attempts.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const [usage] = await database.sql<{ executions: number; reservations: number }[]>`
+      select
+        (select count(*)::int from public.amazon_write_executions execution
+          join public.amazon_write_approvals approval on approval.id = execution.approval_id
+         where approval.authorization_id = ${authorizationId}) as executions,
+        (select count(*)::int from public.amazon_write_inverse_reservations
+         where authorization_id = ${authorizationId} and inverse_execution_id is null) as reservations
+    `;
+    expect(usage).toEqual({ executions: 1, reservations: 1 });
+  });
+
+  it('rejects a later same-authorization approval without poisoning the materialized inverse', async () => {
+    const authorizationId = randomUUID();
+    const bounded = BoundedAmazonWriteAuthorization.parse({
+      ...authorizationSnapshot(authorizationId),
+      constraints: { ...authorizationSnapshot(authorizationId).constraints, max_total_executions: 2 },
+    });
+    const authSha = sha(serializeBoundedAmazonWriteAuthorization(bounded));
+    const source = await createBatch([
+      { entityType: 'keyword', entityId: 'kw-1', field: 'bid', oldValue: 0.9, newValue: 0.91 },
+    ]);
+    const forward = await asUser(database, USER_ID, (sql) => approveAmazonWriteExecution(database, { sql }, {
+      orgId, profileId, applyBatchId: source.batchId, approvalMode: 'bounded_live_test',
+      expiresAt: EXPIRES_AT, previewSha256: source.artifact, expectedCount: 1,
+      authorizationId, authorizationSha256: authSha, authorizationSnapshot: bounded,
+      inversePreapproved: true,
+    }));
+    const token = randomUUID();
+    const preparedForward = await prepareAmazonWriteExecution(database, {
+      orgId, profileId, executionId: forward.executionId, now: new Date(), maxConcurrentMutations: 1,
+      authorizationId, authorizationSha256: authSha, maxRowsPerExecution: 1, maxTotalExecutions: 2,
+      amazonProfileId, connectionId, region: profileRegion, dispatchLeaseToken: token,
+      dispatchLeaseExpiresAt: new Date(Date.now() + 300_000),
+    });
+    const forwardRow = preparedForward.rows[0];
+    if (!forwardRow) throw new Error('expected bounded forward row');
+    await dispatch(forward.executionId, [forwardRow.writeRowId], token, authorizationId, authSha);
+    await recordOutcomes({
+      orgId, profileId, executionId: forward.executionId, attemptedAt: new Date(),
+      outcomes: [{ writeRowId: forwardRow.writeRowId, attemptNumber: forwardRow.attemptNumber,
+        requestFingerprint: sha('bounded-forward-result'),
+        evidence: { outcome: 'accepted', providerEntityId: 'kw-1', code: null, message: null } }],
+    });
+    await database.sql`update public.keywords set bid = 0.91 where org_id = ${orgId}
+      and profile_id = ${profileId} and amazon_id = 'kw-1'`;
+    const observed = await recordAmazonWriteObservations(database, {
+      orgId, profileId, executionId: forward.executionId,
+      generation: observationGeneration(forwardRow.writeRowId), observedAt: new Date(), attempt: 0,
+      nextObservationAt: new Date(Date.now() + 60_000),
+      observations: [{ writeRowId: forwardRow.writeRowId, state: 'observed', currentValue: 0.91 }],
+    });
+    if (!observed.inverseExecutionId) throw new Error('expected materialized exact inverse');
+    const later = await createBatch([
+      { entityType: 'target', entityId: 'tg-1', field: 'bid', oldValue: 0.6, newValue: 0.61 },
+    ]);
+    await expect(asUser(database, USER_ID, (sql) => approveAmazonWriteExecution(database, { sql }, {
+      orgId, profileId, applyBatchId: later.batchId, approvalMode: 'bounded_live_test',
+      expiresAt: EXPIRES_AT, previewSha256: later.artifact, expectedCount: 1,
+      authorizationId, authorizationSha256: authSha, authorizationSnapshot: bounded,
+      inversePreapproved: true,
+    }))).rejects.toThrow(/no capacity/i);
+    const inverse = await prepareAmazonWriteExecution(database, {
+      orgId, profileId, executionId: observed.inverseExecutionId, now: new Date(), maxConcurrentMutations: 1,
+      authorizationId, authorizationSha256: authSha, maxRowsPerExecution: 1, maxTotalExecutions: 2,
+      amazonProfileId, connectionId, region: profileRegion, dispatchLeaseToken: randomUUID(),
+      dispatchLeaseExpiresAt: new Date(Date.now() + 300_000),
+    });
+    expect(inverse.rows).toHaveLength(1);
+    expect(inverse.direction).toBe('inverse');
+    await refuseAmazonWriteExecution(database, {
+      orgId, profileId, executionId: observed.inverseExecutionId, reason: 'synthetic cleanup',
+    });
   });
 
   it('serializes concurrent prepares and reserves the profile until the exact inverse is observed', async () => {
@@ -2416,8 +2550,32 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
 
     const inverseExecutionId = observed.inverseExecutionId;
     if (inverseExecutionId === null) throw new Error('expected reserved inverse execution');
-    const inversePrepared = await prepare(inverseExecutionId);
-    await dispatch(inverseExecutionId, inversePrepared.rows.map((row) => row.writeRowId));
+    const reauthorizationId = randomUUID();
+    const reauthorization = BoundedAmazonWriteAuthorization.parse({
+      ...authorizationSnapshot(reauthorizationId),
+      authorization_id: reauthorizationId,
+      expires_at: EXPIRES_AT,
+    });
+    const reauthorizationSha = sha(serializeBoundedAmazonWriteAuthorization(reauthorization));
+    const reapproved = await asUser(database, USER_ID, (sql) =>
+      reapproveAmazonWriteInverseExecution(database, { sql }, {
+        orgId, profileId, executionId: inverseExecutionId, expiresAt: EXPIRES_AT,
+        authorizationId: reauthorizationId, authorizationSha256: reauthorizationSha,
+        authorizationSnapshot: reauthorization,
+      }));
+    expect(reapproved).toMatchObject({ executionId: inverseExecutionId, replayed: false });
+    const inversePrepared = await prepareAmazonWriteExecution(database, {
+      orgId, profileId, executionId: inverseExecutionId, now: new Date(),
+      maxConcurrentMutations: 1, authorizationId: reauthorizationId,
+      authorizationSha256: reauthorizationSha, maxRowsPerExecution: 100,
+      maxTotalExecutions: 100, amazonProfileId, connectionId, region: profileRegion,
+      dispatchLeaseToken: DISPATCH_TOKEN,
+      dispatchLeaseExpiresAt: new Date(Date.now() + 300_000),
+    });
+    await dispatch(
+      inverseExecutionId, inversePrepared.rows.map((row) => row.writeRowId),
+      DISPATCH_TOKEN, reauthorizationId, reauthorizationSha,
+    );
     await recordOutcomes({
       orgId, profileId, executionId: inverseExecutionId,
       attemptedAt: new Date(),

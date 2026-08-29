@@ -8,6 +8,7 @@ import {
   AmazonWriteProviderCallEvidence,
   ApproveAmazonWriteExecution,
   BoundedAmazonWriteAuthorization,
+  ReapproveAmazonWriteInverseExecution,
   Uuid,
   serializeAmazonWriteAttemptFingerprint,
   serializeAmazonWriteProviderCallFingerprint,
@@ -20,6 +21,7 @@ import {
   type ApplyEntityType,
   type ApplyValue,
   type ApproveAmazonWriteExecution as ApproveAmazonWriteExecutionInput,
+  type ReapproveAmazonWriteInverseExecution as ReapproveAmazonWriteInverseExecutionInput,
 } from '@wizard-ads/shared';
 import type { QuerySql } from '../client.js';
 import type { DbHandle } from '../client.js';
@@ -276,6 +278,13 @@ export async function approveAmazonWriteExecution(
     await sql`select pg_advisory_xact_lock(hashtextextended(${
       `amazon-write:${input.orgId}:${input.profileId}`
     }, 0))`;
+    if (authorizationSnapshot !== null && input.authorizationId !== null) {
+      // Capacity belongs to the immutable authorization, not one profile. A
+      // profile lock alone lets two profiles reserve the same final slots.
+      await sql`select pg_advisory_xact_lock(hashtextextended(${
+        `amazon-write-authorization:${input.authorizationId}`
+      }, 0))`;
+    }
 
     const [clock] = await sql<{ approved_at: Date | string }[]>`
       select clock_timestamp() as approved_at
@@ -323,6 +332,28 @@ export async function approveAmazonWriteExecution(
         actions,
         replayed: true,
       };
+    }
+
+    if (authorizationSnapshot !== null && input.authorizationId !== null
+      && input.authorizationSha256 !== null) {
+      const [authorizationUse] = await sql<{ count: number }[]>`
+        select (
+          (select count(*) from public.amazon_write_executions used_execution
+            join public.amazon_write_approvals used_approval
+              on used_approval.id = used_execution.approval_id
+           where used_approval.authorization_id = ${input.authorizationId}
+          )
+          +
+          (select count(*) from public.amazon_write_inverse_reservations reservation
+           where reservation.authorization_id = ${input.authorizationId}
+             and reservation.inverse_execution_id is null)
+        )::int as count
+      `;
+      const slotsRequired = input.inversePreapproved ? 2 : 1;
+      if ((authorizationUse?.count ?? 0) + slotsRequired
+        > authorizationSnapshot.constraints.max_total_executions) {
+        throw new Error('bounded authorization has no capacity for the forward and exact inverse');
+      }
     }
 
     const [batch] = await sql<ApplyBatchForApproval[]>`
@@ -503,6 +534,121 @@ export async function approveAmazonWriteExecution(
   });
 }
 
+export async function reapproveAmazonWriteInverseExecution(
+  serviceHandle: AmazonWriteQueryHandle,
+  authenticatedHandle: AmazonWriteQueryHandle,
+  rawInput: ReapproveAmazonWriteInverseExecutionInput,
+): Promise<{ executionId: string; approvalId: string; replayed: boolean }> {
+  const input = ReapproveAmazonWriteInverseExecution.parse(rawInput);
+  const snapshot = BoundedAmazonWriteAuthorization.parse(input.authorizationSnapshot);
+  const fingerprint = createHash('sha256')
+    .update(serializeBoundedAmazonWriteAuthorization(snapshot)).digest('hex');
+  if (fingerprint !== input.authorizationSha256) {
+    throw new Error('Amazon inverse reapproval authorization fingerprint does not match');
+  }
+  const [session] = await authenticatedHandle.sql<{ actor_id: string | null }[]>`
+    select auth.uid()::text as actor_id
+  `;
+  if (!session?.actor_id) throw new Error('Amazon inverse reapproval requires an authenticated operator session');
+  return serviceHandle.sql.begin(async (sql) => {
+    await sql`select pg_advisory_xact_lock(hashtextextended(${
+      `amazon-write-authorization:${input.authorizationId}`
+    }, 0))`;
+    const [actor] = await sql<{ active: boolean }[]>`
+      select exists(select 1 from public.org_members where org_id = ${input.orgId}
+        and user_id = ${session.actor_id} and role in ('owner', 'admin')) as active
+    `;
+    if (!actor?.active) throw new Error('Amazon inverse reapproval requires an active owner or admin');
+    const [clock] = await sql<{ now: Date | string }[]>`select clock_timestamp() as now`;
+    if (!clock || toDate(input.expiresAt).getTime() <= toDate(clock.now).getTime()) {
+      throw new Error('Amazon inverse reapproval expiry is not in the future');
+    }
+    const allowed = snapshot.profiles.find((profile) => profile.org_id === input.orgId
+      && profile.profile_id === input.profileId);
+    if (!allowed) throw new Error('Amazon inverse reapproval does not allow this profile');
+    const [execution] = await sql<{
+      id: string; apply_batch_id: string; approval_id: string;
+      reauthorization_approval_id: string | null; preview_sha256: string;
+      prior_authorization_id: string | null;
+      approved_count: number; amazon_profile_id: string; connection_id: string; region: 'NA'|'EU'|'FE';
+    }[]>`
+      select execution.id, execution.apply_batch_id, execution.approval_id,
+             execution.reauthorization_approval_id, approval.preview_sha256,
+             approval.authorization_id as prior_authorization_id,
+             approval.approved_count, profile.amazon_profile_id, profile.connection_id,
+             profile.region::text as region
+        from public.amazon_write_executions execution
+        join public.amazon_write_approvals approval on approval.id = execution.approval_id
+        join public.ad_profiles profile on profile.org_id = execution.org_id and profile.id = execution.profile_id
+        join public.ads_connections connection on connection.org_id = profile.org_id
+          and connection.id = profile.connection_id and connection.status = 'active'
+       where execution.org_id = ${input.orgId} and execution.profile_id = ${input.profileId}
+         and execution.id = ${input.executionId} and execution.direction = 'inverse'
+         and execution.status in ('queued', 'conflict')
+       for update of execution
+    `;
+    if (!execution) throw new Error('Amazon inverse is not eligible for fresh reapproval');
+    if (execution.reauthorization_approval_id !== null) {
+      return { executionId: execution.id, approvalId: execution.reauthorization_approval_id, replayed: true };
+    }
+    if (allowed.amazon_profile_id !== execution.amazon_profile_id
+      || allowed.connection_id !== execution.connection_id || allowed.region !== execution.region) {
+      throw new Error('Amazon inverse reapproval advertiser route does not match');
+    }
+    const [authorizationUse] = await sql<{ count: number }[]>`
+      select (
+        (select count(*) from public.amazon_write_executions used_execution
+          join public.amazon_write_approvals original on original.id = used_execution.approval_id
+          left join public.amazon_write_approvals replacement
+            on replacement.id = used_execution.reauthorization_approval_id
+         where coalesce(replacement.authorization_id, original.authorization_id) = ${input.authorizationId})
+        + (select count(*) from public.amazon_write_inverse_reservations reservation
+           where reservation.authorization_id = ${input.authorizationId}
+             and reservation.inverse_execution_id is null)
+      )::int as count
+    `;
+    const additionalSlot = execution.prior_authorization_id === input.authorizationId ? 0 : 1;
+    if ((authorizationUse?.count ?? 0) + additionalSlot > snapshot.constraints.max_total_executions) {
+      throw new Error('bounded authorization has no capacity for the reapproved exact inverse');
+    }
+    const stored = await sql<{ id: string; action: unknown }[]>`
+      select id, action from public.amazon_write_rows where execution_id = ${execution.id}
+        and row_status in ('pending', 'retryable') order by id for update
+    `;
+    if (stored.length !== execution.approved_count) throw new Error('Amazon inverse reapproval row set changed');
+    const actions = stored.map((row) => ({ id: row.id, action: AmazonWriteAction.parse(row.action) }));
+    if ((await currentAmazonWriteConflicts(sql, {
+      orgId: input.orgId, profileId: input.profileId, actions,
+    })).length > 0) throw new Error('Amazon inverse reapproval current state does not match the exact observed forward state');
+    const [approval] = await sql<{ id: string }[]>`
+      insert into public.amazon_write_approvals
+        (org_id, profile_id, amazon_profile_id, connection_id, region, apply_batch_id, mode,
+         preview_sha256, approved_count, approved_by, approved_at, expires_at,
+         inverse_preapproved, authorization_id, authorization_sha256, authorization_snapshot)
+      values (${input.orgId}, ${input.profileId}, ${execution.amazon_profile_id},
+        ${execution.connection_id}, ${execution.region}, ${execution.apply_batch_id}, 'bounded_live_test',
+        ${execution.preview_sha256}, ${execution.approved_count}, ${session.actor_id}, ${toDate(clock.now).toISOString()},
+        ${input.expiresAt}, false, ${input.authorizationId}, ${input.authorizationSha256}, ${json(snapshot)}::jsonb)
+      returning id
+    `;
+    if (!approval) throw new Error('Amazon inverse reapproval was not recorded');
+    await sql`select set_config('app.amazon_inverse_reapproval', 'on', true)`;
+    await sql`update public.amazon_write_executions set reauthorization_approval_id = ${approval.id},
+      status = 'queued', completed_at = null where id = ${execution.id}`;
+    await sql`insert into public.amazon_write_reapprovals
+      (org_id, profile_id, execution_id, prior_approval_id, replacement_approval_id, approved_by, approved_at)
+      values (${input.orgId}, ${input.profileId}, ${execution.id}, ${execution.approval_id},
+        ${approval.id}, ${session.actor_id}, ${toDate(clock.now).toISOString()})`;
+    await sql`insert into public.sync_jobs (org_id, profile_id, job_type, payload, run_after, dedupe_key)
+      values (${input.orgId}, ${input.profileId}, 'amazon.apply',
+        ${json({ type: 'amazon.apply', orgId: input.orgId, profileId: input.profileId,
+          executionId: execution.id })}::jsonb, ${toDate(clock.now).toISOString()},
+        ${`amazon.apply:${execution.id}:reapproved:${approval.id}`})
+      on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing`;
+    return { executionId: execution.id, approvalId: approval.id, replayed: false };
+  });
+}
+
 interface StoredWriteRow {
   id: string;
   apply_row_id: string;
@@ -678,7 +824,7 @@ export async function prepareAmazonWriteExecution(
         join public.amazon_write_approvals approval
           on approval.org_id = execution.org_id
          and approval.profile_id = execution.profile_id
-         and approval.id = execution.approval_id
+         and approval.id = coalesce(execution.reauthorization_approval_id, execution.approval_id)
         join public.apply_batches batch
           on batch.org_id = execution.org_id
          and batch.profile_id = execution.profile_id
@@ -1292,7 +1438,8 @@ export async function markAmazonWriteRowsDispatched(
       select execution.id, approval.inverse_preapproved, approval.approved_by,
              execution.direction::text as direction
         from public.amazon_write_executions execution
-        join public.amazon_write_approvals approval on approval.id = execution.approval_id
+        join public.amazon_write_approvals approval
+          on approval.id = coalesce(execution.reauthorization_approval_id, execution.approval_id)
         join public.apply_batches batch on batch.id = execution.apply_batch_id
         join public.ad_profiles profile
           on profile.org_id = execution.org_id and profile.id = execution.profile_id
@@ -1562,6 +1709,28 @@ export async function refuseAmazonWriteExecution(
        for update
     `;
     if (!execution) throw new Error('Amazon write execution does not exist in this profile');
+    await refuseExecutionRows(sql, execution.id, input.reason.slice(0, 1_000));
+    return readAccounting(sql, execution.id);
+  });
+}
+
+/** Explicit revocation consumes only a forward that provably never dispatched. */
+export async function refuseUndispatchedForwardAmazonWriteExecution(
+  handle: AmazonWriteQueryHandle,
+  input: { orgId: string; profileId: string; executionId: string; reason: string },
+): Promise<AmazonWriteAccounting | null> {
+  return handle.sql.begin(async (sql) => {
+    const [execution] = await sql<{ id: string }[]>`
+      select execution.id from public.amazon_write_executions execution
+       where execution.org_id = ${input.orgId} and execution.profile_id = ${input.profileId}
+         and execution.id = ${input.executionId} and execution.direction = 'forward'
+         and execution.status in ('queued', 'running')
+         and not exists (select 1 from public.amazon_write_rows write_row
+           where write_row.execution_id = execution.id
+             and (write_row.dispatch_token is not null or write_row.attempt_count > 0))
+       for update of execution
+    `;
+    if (!execution) return null;
     await refuseExecutionRows(sql, execution.id, input.reason.slice(0, 1_000));
     return readAccounting(sql, execution.id);
   });
@@ -1889,10 +2058,9 @@ async function enqueueNextAmazonWriteCycle(
        and id = ${input.completedForwardExecutionId} and direction = 'forward'
   `;
   if (!completed) return false;
-  const [next] = await sql<{ id: string }[]>`
-    select id from public.amazon_write_executions
-     where org_id = ${input.orgId} and profile_id = ${input.profileId}
-       and direction = 'forward' and status = 'queued'
+  const [next] = await sql<{ id: string; org_id: string; profile_id: string }[]>`
+    select id, org_id, profile_id from public.amazon_write_executions
+     where direction = 'forward' and status = 'queued'
        and (created_at, id) >
            (${toDate(completed.created_at).toISOString()}::timestamptz,
             ${input.completedForwardExecutionId}::uuid)
@@ -1904,8 +2072,8 @@ async function enqueueNextAmazonWriteCycle(
   const inserted = await sql<{ id: string }[]>`
     insert into public.sync_jobs
       (org_id, profile_id, job_type, payload, run_after, dedupe_key)
-    values (${input.orgId}, ${input.profileId}, 'amazon.apply',
-            ${json({ type: 'amazon.apply', orgId: input.orgId, profileId: input.profileId,
+    values (${next.org_id}, ${next.profile_id}, 'amazon.apply',
+            ${json({ type: 'amazon.apply', orgId: next.org_id, profileId: next.profile_id,
               executionId: next.id })}::jsonb,
             ${input.runAt.toISOString()},
             ${`amazon.apply:${next.id}:released:${input.completedForwardExecutionId}`})

@@ -148,7 +148,10 @@ export interface WorkerStore {
    * that does not exist — retrying five times only delays the human.
    */
   deadLetter(jobId: string, error: string, claimToken?: string | null): Promise<void>;
-  release(workerId: string): Promise<number>;
+  release(
+    workerId: string,
+    claims?: readonly { jobId: string; claimToken: string | null }[],
+  ): Promise<number>;
   /**
    * Requeue jobs still `running` on a worker that died without releasing them.
    * Nothing else does this: `claim_sync_jobs` only ever sees `queued`, so a
@@ -284,12 +287,23 @@ export class PostgresWorkerStore implements WorkerStore {
     `;
   }
 
-  async release(workerId: string): Promise<number> {
+  async release(
+    workerId: string,
+    claims: readonly { jobId: string; claimToken: string | null }[] = [],
+  ): Promise<number> {
+    if (claims.length === 0) return 0;
     const rows = await this.handle.sql<{ id: string }[]>`
       update public.sync_jobs
          set status = 'queued', claimed_by = null, claimed_at = null, claim_token = null,
              run_after = now(), last_error = coalesce(last_error, 'released during graceful shutdown')
        where status = 'running' and claimed_by = ${workerId}
+         and (id, claim_token) in (
+           select offered.job_id::uuid, offered.claim_token::uuid
+             from unnest(
+               ${claims.map((claim) => claim.jobId)}::text[],
+               ${claims.map((claim) => claim.claimToken)}::text[]
+             ) offered(job_id, claim_token)
+         )
       returning id
     `;
     return rows.length;

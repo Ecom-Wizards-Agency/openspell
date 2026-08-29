@@ -166,6 +166,8 @@ export const amazonWriteExecutions = pgTable(
     profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'restrict' }),
     applyBatchId: uuid('apply_batch_id').notNull().references(() => applyBatches.id, { onDelete: 'restrict' }),
     approvalId: uuid('approval_id').notNull().references(() => amazonWriteApprovals.id, { onDelete: 'restrict' }),
+    reauthorizationApprovalId: uuid('reauthorization_approval_id')
+      .references(() => amazonWriteApprovals.id, { onDelete: 'restrict' }),
     idempotencyKey: text('idempotency_key').notNull(),
     direction: amazonWriteExecutionDirection('direction').notNull().default('forward'),
     sourceExecutionId: uuid('source_execution_id'),
@@ -191,9 +193,32 @@ export const amazonWriteExecutions = pgTable(
   (t) => [
     uniqueIndex('amazon_write_executions_apply_batch_key').on(t.orgId, t.profileId, t.applyBatchId),
     uniqueIndex('amazon_write_executions_approval_key').on(t.approvalId),
+    uniqueIndex('amazon_write_executions_reauthorization_approval_id_key')
+      .on(t.reauthorizationApprovalId),
     uniqueIndex('amazon_write_executions_idempotency_key').on(t.idempotencyKey),
     uniqueIndex('amazon_write_executions_org_profile_id_key').on(t.orgId, t.profileId, t.id),
     index('amazon_write_executions_status_idx').on(t.status, t.nextObservationAt),
+  ],
+);
+
+/** Append-only authenticated ceremony extending one exact inverse window. */
+export const amazonWriteReapprovals = pgTable(
+  'amazon_write_reapprovals',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'restrict' }),
+    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'restrict' }),
+    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'restrict' }),
+    priorApprovalId: uuid('prior_approval_id').notNull().references(() => amazonWriteApprovals.id, { onDelete: 'restrict' }),
+    replacementApprovalId: uuid('replacement_approval_id').notNull().references(() => amazonWriteApprovals.id, { onDelete: 'restrict' }),
+    approvedBy: uuid('approved_by').notNull().references(() => authUsers.id, { onDelete: 'restrict' }),
+    approvedAt: ts('approved_at').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('amazon_write_reapprovals_replacement_approval_id_key').on(t.replacementApprovalId),
+    uniqueIndex('amazon_write_reapprovals_org_profile_execution_replacement_key')
+      .on(t.orgId, t.profileId, t.executionId, t.replacementApprovalId),
   ],
 );
 
@@ -366,6 +391,7 @@ export type NewApplyRowDb = typeof applyRows.$inferInsert;
 export type CampaignMap = typeof campaignMaps.$inferSelect;
 export type AmazonWriteApprovalDb = typeof amazonWriteApprovals.$inferSelect;
 export type AmazonWriteExecutionDb = typeof amazonWriteExecutions.$inferSelect;
+export type AmazonWriteReapprovalDb = typeof amazonWriteReapprovals.$inferSelect;
 export type AmazonWriteRowDb = typeof amazonWriteRows.$inferSelect;
 export type AmazonWriteAttemptDb = typeof amazonWriteAttempts.$inferSelect;
 export type AmazonWriteInverseReservationDb = typeof amazonWriteInverseReservations.$inferSelect;
