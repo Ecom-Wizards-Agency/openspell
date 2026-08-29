@@ -281,9 +281,8 @@ implementation brief in `docs/workpackages/`.
 
 ## Release gates
 
-- [x] PR #31 passed both hosted gates before merge. At this snapshot the exact-main fast gate for
-      `9717c8b` has passed and its serial Playwright job is still running; do not describe the
-      exact-main run as complete until that job finishes.
+- [x] PR #31 passed both hosted gates before merge. Exact-main CI run `33266608069` then completed
+      successfully at `9717c8b`, including the fast gate and serial Playwright.
 - [x] Production `caff194` passed a fresh authenticated nine-route click-through after rollback.
 - [x] The release-candidate verifier passed eleven of eleven routes on the healthy immutable
       candidate and rejected the known broken candidate.
