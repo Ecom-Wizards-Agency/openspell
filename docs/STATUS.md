@@ -143,7 +143,7 @@ implementation brief in `docs/workpackages/`.
 | 105 | Immutable release-candidate gate | merged | GET-only authenticated verification covers eleven critical routes and fails before production promotion on bad status, content or application errors |
 | 106 | Focused recommendation review | merged; not deployed | compact filters, exact filtered selection and one action bar replace three equal-weight prequeue panels while preserving exact export confirmation |
 | 110 | Task-focused navigation | merged; not deployed | the shell removes low-value filler navigation and keeps the operator workspace primary |
-| 112 | Release artifact assertions | open; exact-object review in progress | PR #35 now has one frozen repair head with exact revision, production-target binding, official-logo, active-account/date-range, focused-review, real-curl, raw-host and bounded large-response assertions. The consolidated local suite and production build pass; an independent reviewer found no further issue in the staged repair and is rechecking the pushed git object. Hosted jobs still cannot start because of the Actions billing block. |
+| 112 | Release artifact assertions | open; code-approved | PR #35's frozen head has exact revision, production-target binding, official-logo, active-account/date-range, focused-review, real-curl, raw-host and bounded large-response assertions. Exact-object independent review found no P0, P1 or P2; the full local suite and production build pass. Merge remains held because hosted jobs still cannot start under the Actions billing block. |
 | 113 | OpenSpell MCP identity | merged; host activation gated | setup and operator copy use OpenSpell while stable environment-variable and package identifiers remain compatible |
 | 114 | Date-range browser gate | merged; not deployed | Dashboard and Grid exercise all seven preset ranges through authenticated Playwright |
 | 116 | Hydration/readiness reliability | open; code-approved | PR #38 now fails closed until exact saved-state restoration, fails open from malformed cache/store errors, and covers schedule plus exact select-all/bulk persistence. Two independent reviews found no remaining P0/P1; merge is held because required hosted jobs cannot start under the Actions billing block. |
@@ -192,7 +192,8 @@ implementation brief in `docs/workpackages/`.
 - The hardened verifier in open PR #35 was tested with the real curl parser, the Grid's real
   default and explicit Campaigns state, a response larger than the old two-megabyte ceiling, an
   over-limit response, a non-production deployment target and raw host variants. Its consolidated
-  local checks pass; exact-object approval and hosted checks remain separate unfinished gates.
+  local checks pass, and independent exact-object review found no remaining P0, P1 or P2. Hosted
+  checks remain a separate unfinished gate.
 - Co-location remains worth retesting after environment recovery. On successfully rendered routes,
   the Frankfurt candidate measured Grid and Optimizer repeat loads around 0.7–0.8 seconds versus
   roughly 2.4–3.3 seconds on the prior production placement; Creative measured around 0.6–0.9
