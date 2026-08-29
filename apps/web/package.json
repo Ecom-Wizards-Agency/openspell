@@ -11,7 +11,8 @@
     "test": "vitest run --passWithNoTests",
     "test:e2e": "tsx e2e/run.ts",
     "test:e2e:tags-goto": "tsx e2e/run.ts tags-goto",
-    "test:e2e:auth": "tsx e2e/run.ts auth"
+    "test:e2e:auth": "tsx e2e/run.ts auth",
+    "verify:release-candidate": "tsx scripts/verify-release-candidate.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.8.0",
