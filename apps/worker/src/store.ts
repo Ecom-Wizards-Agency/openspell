@@ -100,6 +100,12 @@ export interface WorkerStore {
     options?: { error?: string; result?: unknown; retryIn?: string },
   ): Promise<void>;
   /**
+   * Return a healthy, unfinished provider job to the queue without consuming
+   * its failure budget. Optional for test/adaptor stores; the Postgres runtime
+   * implements it. A provider poll is waiting, not a failed attempt.
+   */
+  defer?(jobId: string, retryIn: string): Promise<void>;
+  /**
    * Finish a job as `dead` without spending its remaining attempts. For
    * failures no retry can fix — a malformed export, a payload naming a profile
    * that does not exist — retrying five times only delays the human.
@@ -188,6 +194,24 @@ export class PostgresWorkerStore implements WorkerStore {
     options: { error?: string; result?: unknown; retryIn?: string } = {},
   ): Promise<void> {
     await finishSyncJob(this.handle, jobId, outcome, options);
+  }
+
+  async defer(jobId: string, retryIn: string): Promise<void> {
+    const rows = await this.handle.sql<{ id: string }[]>`
+      update public.sync_jobs
+         set status = 'queued'::public.sync_job_status,
+             attempts = greatest(attempts - 1, 0),
+             last_error = null,
+             claimed_by = null,
+             claimed_at = null,
+             run_after = now() + ${retryIn}::interval
+       where id = ${jobId}
+         and status = 'running'::public.sync_job_status
+      returning id
+    `;
+    if (rows.length !== 1 || rows[0]?.id !== jobId) {
+      throw new Error(`could not defer running sync job ${jobId}`);
+    }
   }
 
   async deadLetter(jobId: string, error: string): Promise<void> {

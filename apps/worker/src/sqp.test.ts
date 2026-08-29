@@ -6,6 +6,7 @@ import type {
 } from '@wizard-ads/shared';
 import type {
   ContextualProposalPersistenceCounts,
+  DbHandle,
   SqpWeeklyPromotionInput,
   SqpWeeklyPromotionResult,
   WeeklyPpcQueryRecord,
@@ -16,6 +17,7 @@ import type {
   SpApiReportDocument,
 } from '@wizard-ads/sp-api';
 import {
+  createPostgresSqpRequestHandler,
   InMemorySqpWorkflowCheckpoints,
   MinimumIntervalSqpProviderGate,
   runSqpRequestWorkflow,
@@ -199,6 +201,65 @@ describe('weekly SQP worker workflow', () => {
       })).rejects.toBeInstanceOf(SqpWorkflowPermanentError);
     }
   });
+
+  it('reuses a durable report id after a queue retry or process restart', async () => {
+    const jobId = '93939393-9393-4393-8393-939393939393';
+    const ledger = fakeCheckpointLedger(jobId);
+    const api = new FakeSqpApi(['IN_PROGRESS', 'DONE'], document());
+    const data = new FakeDataStore(vocabulary(), []);
+
+    const firstProcess = createPostgresSqpRequestHandler({
+      handle: ledger.handle,
+      api,
+      data,
+      providerGate: new RecordingGate(),
+      nextPollAfterSeconds: 47,
+    });
+    await expect(firstProcess(job(), { jobId })).rejects.toMatchObject({
+      name: 'SqpWorkflowPendingError',
+      retryAfterSeconds: 47,
+    });
+    expect(api.actions).toEqual(['create_report', 'get_report']);
+    expect(ledger.writes()).toBeGreaterThan(0);
+
+    // Build a new handler to model a replacement process. Its only memory is
+    // the JSONB result already written to the queue ledger.
+    const replacementProcess = createPostgresSqpRequestHandler({
+      handle: ledger.handle,
+      api,
+      data,
+      providerGate: new RecordingGate(),
+    });
+    const completed = await replacementProcess(job(), { jobId });
+    expect(completed).toMatchObject({
+      status: 'completed',
+      reused: false,
+      reports: { created: 1 },
+      ingestion: { sourceRows: 3, parsedRows: 3, upserts: 3, canonicalRows: 3 },
+    });
+    expect(api.actions.filter((action) => action === 'create_report')).toHaveLength(1);
+    expect(data.promotions).toHaveLength(1);
+
+    const actionCount = api.actions.length;
+    const replayed = await replacementProcess(job(), { jobId });
+    expect(replayed).toMatchObject({ status: 'completed', reused: true });
+    expect(api.actions).toHaveLength(actionCount);
+    expect(data.promotions).toHaveLength(1);
+  });
+
+  it('refuses to use a checkpoint ledger row from another tenant or profile', async () => {
+    const jobId = '94949494-9494-4494-8494-949494949494';
+    const ledger = fakeCheckpointLedger(jobId, { verifiedOwner: false });
+    const handler = createPostgresSqpRequestHandler({
+      handle: ledger.handle,
+      api: new FakeSqpApi(['DONE'], document()),
+      data: new FakeDataStore([], []),
+      providerGate: new RecordingGate(),
+    });
+    await expect(handler(job(), { jobId })).rejects.toThrow(
+      'SQP checkpoint job ownership could not be verified',
+    );
+  });
 });
 
 describe('SQP provider throttling seam', () => {
@@ -330,6 +391,38 @@ class FakeDataStore implements SqpWorkflowDataStore {
       preservedHumanDecisions: 0,
     };
   }
+}
+
+function fakeCheckpointLedger(
+  jobId: string,
+  options: { verifiedOwner?: boolean } = {},
+): { handle: DbHandle; writes: () => number } {
+  let result: unknown = null;
+  let writeCount = 0;
+  const verifiedOwner = options.verifiedOwner ?? true;
+  const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const statement = strings.join(' ');
+    if (statement.includes('select result')) {
+      expect(values).toEqual([jobId, ORG, PROFILE]);
+      return verifiedOwner ? [{ result }] : [];
+    }
+    if (statement.includes('update public.sync_jobs')) {
+      expect(values.slice(1)).toEqual([jobId, ORG, PROFILE]);
+      if (!verifiedOwner) return [];
+      result = JSON.parse(String(values[0])) as unknown;
+      writeCount += 1;
+      return [{ id: jobId }];
+    }
+    throw new Error('unexpected synthetic checkpoint query');
+  }) as unknown as DbHandle['sql'];
+  return {
+    handle: {
+      sql,
+      db: {} as DbHandle['db'],
+      close: async () => {},
+    },
+    writes: () => writeCount,
+  };
 }
 
 function job(): SqpRequestJob {

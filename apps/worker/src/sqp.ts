@@ -1,10 +1,10 @@
 /**
- * Adapter-ready weekly SP-API Search Query Performance workflow.
+ * Weekly SP-API Search Query Performance workflow.
  *
- * The live queue cannot carry `sqp.request` until its Postgres enum and
- * dispatcher are widened. This module therefore owns the complete resumable
- * workflow behind an explicit checkpoint seam, without silently borrowing the
- * legacy Advertising report ledger.
+ * A queue job can span several slow provider polls. Its checkpoint therefore
+ * lives on the owning `sync_jobs` ledger row: retries and process restarts reuse
+ * report ids instead of creating duplicate Amazon reports. The analytical
+ * promotion remains transactional and independently idempotent in packages/db.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -99,6 +99,10 @@ export interface SqpWorkflowCheckpointStore {
   save(checkpoint: SqpWorkflowCheckpoint): Promise<void>;
 }
 
+export interface SqpQueuedJobContext {
+  jobId: string;
+}
+
 export interface SqpRoutingContext {
   ppc: WeeklyPpcQueryRecord;
   category: QueryCategory;
@@ -189,6 +193,14 @@ export class SqpWorkflowPermanentError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'SqpWorkflowPermanentError';
+  }
+}
+
+/** Yield an unfinished provider report back to the durable queue. */
+export class SqpWorkflowPendingError extends Error {
+  constructor(readonly retryAfterSeconds: number) {
+    super(`SQP reports are still processing; retry after ${retryAfterSeconds} seconds`);
+    this.name = 'SqpWorkflowPendingError';
   }
 }
 
@@ -439,6 +451,95 @@ export class InMemorySqpWorkflowCheckpoints implements SqpWorkflowCheckpointStor
   }
 }
 
+const SQP_CHECKPOINT_RESULT_KIND = 'sqp_workflow_checkpoint';
+const SQP_CHECKPOINT_RESULT_VERSION = 1;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Durable queue-owned checkpoint storage. `finish_sync_job` deliberately keeps
+ * an existing result when a retry supplies no replacement, so this envelope
+ * survives the pending-error/requeue transition without a schema change.
+ */
+export class PostgresSqpWorkflowCheckpoints implements SqpWorkflowCheckpointStore {
+  constructor(
+    private readonly handle: DbHandle,
+    private readonly owner: {
+      jobId: string;
+      orgId: string;
+      profileId: string;
+    },
+  ) {}
+
+  async load(runKey: string): Promise<SqpWorkflowCheckpoint | null> {
+    const rows = await this.handle.sql<{ result: unknown }[]>`
+      select result
+        from public.sync_jobs
+       where id = ${this.owner.jobId}
+         and org_id = ${this.owner.orgId}
+         and profile_id = ${this.owner.profileId}
+         and job_type = 'sqp.request'::public.sync_job_type
+         and status = 'running'::public.sync_job_status
+    `;
+    const row = rows[0];
+    if (!row) {
+      throw new SqpWorkflowPermanentError('SQP checkpoint job ownership could not be verified');
+    }
+    if (row.result === null) return null;
+    return decodeCheckpointEnvelope(row.result, runKey);
+  }
+
+  async save(checkpoint: SqpWorkflowCheckpoint): Promise<void> {
+    const envelope = {
+      kind: SQP_CHECKPOINT_RESULT_KIND,
+      version: SQP_CHECKPOINT_RESULT_VERSION,
+      checkpoint,
+    };
+    const rows = await this.handle.sql<{ id: string }[]>`
+      update public.sync_jobs
+         set result = ${JSON.stringify(envelope)}::jsonb
+       where id = ${this.owner.jobId}
+         and org_id = ${this.owner.orgId}
+         and profile_id = ${this.owner.profileId}
+         and job_type = 'sqp.request'::public.sync_job_type
+         and status = 'running'::public.sync_job_status
+      returning id
+    `;
+    if (rows.length !== 1 || rows[0]?.id !== this.owner.jobId) {
+      throw new SqpWorkflowPermanentError('SQP checkpoint write did not update its owning job');
+    }
+  }
+}
+
+function decodeCheckpointEnvelope(value: unknown, runKey: string): SqpWorkflowCheckpoint {
+  if (!isRecord(value)) {
+    throw new SqpWorkflowPermanentError('SQP checkpoint result is not an object');
+  }
+  if (
+    value['kind'] !== SQP_CHECKPOINT_RESULT_KIND ||
+    value['version'] !== SQP_CHECKPOINT_RESULT_VERSION
+  ) {
+    throw new SqpWorkflowPermanentError('SQP checkpoint result has an unsupported envelope');
+  }
+  const checkpoint = value['checkpoint'];
+  if (
+    !isRecord(checkpoint) ||
+    checkpoint['runKey'] !== runKey ||
+    typeof checkpoint['orgId'] !== 'string' ||
+    typeof checkpoint['profileId'] !== 'string' ||
+    typeof checkpoint['marketplaceId'] !== 'string' ||
+    typeof checkpoint['weekStart'] !== 'string' ||
+    typeof checkpoint['weekEnd'] !== 'string' ||
+    !Array.isArray(checkpoint['batches']) ||
+    !(checkpoint['completed'] === null || isRecord(checkpoint['completed']))
+  ) {
+    throw new SqpWorkflowPermanentError('SQP checkpoint result is malformed');
+  }
+  return structuredClone(checkpoint) as unknown as SqpWorkflowCheckpoint;
+}
+
 export class PostgresSqpWorkflowDataStore implements SqpWorkflowDataStore {
   constructor(private readonly handle: DbHandle) {}
 
@@ -467,6 +568,51 @@ export class PostgresSqpWorkflowDataStore implements SqpWorkflowDataStore {
   }): Promise<ContextualProposalPersistenceCounts> {
     return persistContextualNegativeProposals(this.handle, input);
   }
+}
+
+export interface PostgresSqpRequestHandlerOptions {
+  handle: DbHandle;
+  api: SqpReportApi;
+  providerGate: SqpProviderGate;
+  /** Test seam; production always uses the tenant-scoped Postgres store. */
+  data?: SqpWorkflowDataStore;
+  resolveRouting?: SqpWorkflowDependencies['resolveRouting'];
+  confirmCancelledNoData?: SqpWorkflowDependencies['confirmCancelledNoData'];
+  nextPollAfterSeconds?: number;
+  now?: () => Date;
+}
+
+/** Build the queue handler once SP-API token custody is available to a runtime. */
+export function createPostgresSqpRequestHandler(options: PostgresSqpRequestHandlerOptions): (
+  payload: SqpRequestJobType,
+  context: SqpQueuedJobContext,
+) => Promise<Record<string, unknown>> {
+  const data = options.data ?? new PostgresSqpWorkflowDataStore(options.handle);
+  return async (payload, context) => {
+    const checkpoints = new PostgresSqpWorkflowCheckpoints(options.handle, {
+      jobId: context.jobId,
+      orgId: payload.orgId,
+      profileId: payload.profileId,
+    });
+    const result = await runSqpRequestWorkflow(payload, {
+      api: options.api,
+      providerGate: options.providerGate,
+      checkpoints,
+      data,
+      ...(options.resolveRouting === undefined ? {} : { resolveRouting: options.resolveRouting }),
+      ...(options.confirmCancelledNoData === undefined
+        ? {}
+        : { confirmCancelledNoData: options.confirmCancelledNoData }),
+      ...(options.nextPollAfterSeconds === undefined
+        ? {}
+        : { nextPollAfterSeconds: options.nextPollAfterSeconds }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
+    if (result.status === 'pending') {
+      throw new SqpWorkflowPendingError(result.nextPollAfterSeconds);
+    }
+    return { ...result };
+  };
 }
 
 /** Serial provider gate; the Reports API default rate is intentionally slow. */

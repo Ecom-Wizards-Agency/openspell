@@ -1,5 +1,5 @@
 import { gzipSync } from 'node:zlib';
-import type { ClaimedJob, JobOutcome } from '@wizard-ads/db';
+import type { ClaimedJob, DbHandle, JobOutcome } from '@wizard-ads/db';
 import type { JobPayload, Region } from '@wizard-ads/shared';
 import { describe, expect, it } from 'vitest';
 import type { CrosscheckIngestResult } from '@wizard-ads/crosscheck-cli';
@@ -7,7 +7,13 @@ import type { AdsApiClient, AdsProfileContext, AdsReportStatus, CreateReportInpu
 import { resolveSourcePath } from './crosscheck.js';
 import type { ParsedFactBatch } from './parsers.js';
 import { RegionTokenBuckets } from './region-token-buckets.js';
-import { ParsedLoadedMismatch, type ReportRequestState, type WorkerStore } from './store.js';
+import {
+  ParsedLoadedMismatch,
+  PostgresWorkerStore,
+  type ReportRequestState,
+  type WorkerStore,
+} from './store.js';
+import { SqpWorkflowPendingError } from './sqp.js';
 import { RetryableJobError, SyncWorker } from './worker.js';
 
 const orgId = '11111111-1111-4111-8111-111111111111';
@@ -63,6 +69,26 @@ describe('fetch handler count assertion', () => {
     expect(await worker.drainOnce()).toBe(1);
     expect(completedCounts).toMatchObject({ parsed: 1, loaded: 0 });
     expect(outcome).toBe('failed');
+  });
+});
+
+describe('queue deferral', () => {
+  it('returns a running job to the queue without spending a failure attempt', async () => {
+    let statement = '';
+    const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      statement = strings.join(' ');
+      expect(values).toEqual(['211 seconds', jobId]);
+      return [{ id: jobId }];
+    }) as unknown as DbHandle['sql'];
+    const handle: DbHandle = {
+      sql,
+      db: {} as DbHandle['db'],
+      close: async () => {},
+    };
+
+    await new PostgresWorkerStore(handle).defer(jobId, '211 seconds');
+    expect(statement).toContain('attempts = greatest(attempts - 1, 0)');
+    expect(statement).toContain("status = 'running'::public.sync_job_status");
   });
 });
 
@@ -321,6 +347,7 @@ describe('integration handler wiring', () => {
   it('delegates every queue payload only through an explicitly bound handler', async () => {
     let claimed = false;
     const called: string[] = [];
+    const sqpJobIds: string[] = [];
     const results: unknown[] = [];
     const jobs = payloads.map((payload, index): ClaimedJob => ({
       id: `${index + 1}`.repeat(8) + '-1111-4111-8111-111111111111',
@@ -349,7 +376,9 @@ describe('integration handler wiring', () => {
         economicsSync: async (payload) => (called.push(payload.type), { provider: 'mrp' }),
         sqpCategorize: async (payload) => (called.push(payload.type), { weekStart: payload.weekStart }),
         creativeSync: async (payload) => (called.push(payload.type), { rows: 1 }),
-        sqpRequest: async (payload) => (called.push(payload.type), { asins: payload.asins.length }),
+        sqpRequest: async (payload, context) => (
+          called.push(payload.type), sqpJobIds.push(context.jobId), { asins: payload.asins.length }
+        ),
         historyBootstrap: async (payload) => (called.push(payload.type), { source: payload.source }),
         reportPromote: async (payload) => (called.push(payload.type), { date: payload.date }),
         marketingStreamNormalize: async (payload) => (
@@ -362,6 +391,7 @@ describe('integration handler wiring', () => {
     expect(await worker.drainOnce()).toBe(payloads.length);
     expect(called).toEqual(payloads.map((payload) => payload.type));
     expect(results).toHaveLength(payloads.length);
+    expect(sqpJobIds).toEqual([jobs[5]?.id]);
   });
 
   it('dead-letters an approved feature payload when its real handler is absent', async () => {
@@ -435,6 +465,38 @@ describe('integration handler wiring', () => {
 
     expect(await worker.drainOnce()).toBe(1);
     expect(finishes).toEqual([{ outcome: 'failed', retryIn: '3600 seconds' }]);
+  });
+
+  it('requeues a pending SQP report with the workflow poll delay', async () => {
+    const payload = payloads[5];
+    if (!payload || payload.type !== 'sqp.request') throw new Error('missing SQP payload');
+    let claimed = false;
+    const finishes: { outcome: JobOutcome; retryIn: string | undefined }[] = [];
+    const deferrals: string[] = [];
+    const worker = new SyncWorker({
+      workerId: 'integration-worker',
+      store: {
+        ...stubStore(),
+        claim: async () => claimed ? [] : (claimed = true, [{
+          id: jobId, orgId, profileId, jobType: payload.type, payload,
+          attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'integration-worker',
+        }]),
+        finish: async (_id, outcome, options) => {
+          finishes.push({ outcome, retryIn: options?.retryIn });
+        },
+        defer: async (_id, retryIn) => {
+          deferrals.push(retryIn);
+        },
+      },
+      integrations: {
+        sqpRequest: async () => { throw new SqpWorkflowPendingError(211); },
+      },
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(finishes).toEqual([]);
+    expect(deferrals).toEqual(['211 seconds']);
   });
 
   it('passes the configured job-type allowlist into every claim', async () => {
