@@ -21,6 +21,8 @@ import { useCallback, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { ProposalView } from '../../src/recommendations/view';
 import { groupByDecision, groupByReason } from '../../src/recommendations/view';
+import { can } from '../../src/auth/roles';
+import type { OrgRole } from '../../src/auth/roles';
 
 export interface ReviewWorkspaceProps {
   proposals: readonly ProposalView[];
@@ -34,7 +36,6 @@ export interface ReviewWorkspaceProps {
 
 const STATUSES = ['proposed', 'accepted', 'dismissed', 'exported', 'applied', 'superseded'];
 const LEVERS = ['bid-down', 'push', 'waste-cut', 'budget', 'placement', 'negative', 'pause', 'other'];
-const EXPORT_ROLES = ['owner', 'admin'];
 
 interface Filters {
   reason: string;
@@ -100,7 +101,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
     () => visible.filter((proposal) => selected.has(proposal.id)).map((proposal) => proposal.id),
     [visible, selected],
   );
-  const canExport = EXPORT_ROLES.includes(props.role);
+  const canExport = can(props.role as OrgRole, 'exportBatches');
   const acceptedSelected = useMemo(
     () => visible.filter((proposal) => selected.has(proposal.id) && proposal.status === 'accepted').length,
     [visible, selected],
