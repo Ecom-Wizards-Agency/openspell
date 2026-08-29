@@ -14,21 +14,23 @@ function response(status: number, rawLocation: string | null = null): CandidateH
 
 describe('manual release-candidate redirects', () => {
   it('accepts one same-origin canonical profile redirect and requests only its relative route', async () => {
+    const initial = '/grid?entity=campaigns';
+    const canonical = ['/grid?profile=', PROFILE, '&entity=campaigns'].join('');
     const request = vi.fn(async (route: string) => (
-      route === '/grid'
-        ? response(307, `${CANDIDATE.origin}/grid?profile=${PROFILE}`)
+      route === initial
+        ? response(307, `${CANDIDATE.origin}${canonical}`)
         : { ...response(200), responseBody: '<h1>Campaigns</h1>' }
     ));
 
     const result = await requestAccountRouteWithRedirects({
       candidate: CANDIDATE,
-      route: '/grid',
+      route: initial,
       request,
     });
 
     expect(request.mock.calls).toEqual([
-      ['/grid'],
-      [`/grid?profile=${PROFILE}`],
+      [initial],
+      [canonical],
     ]);
     expect(result).toMatchObject({ status: 200, redirectsFollowed: 1, redirectRejected: false });
   });

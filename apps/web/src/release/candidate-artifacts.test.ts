@@ -8,6 +8,8 @@ import {
   RECOMMENDATION_REVIEW_ARTIFACT,
 } from '../ui/artifact-markers';
 import { ProfileAwareBrand } from '../ui/profile-aware-brand';
+import { ENTITY_LABELS } from '@wizard-ads/ui';
+import { parseGridEntity } from '../../app/grid/entity';
 import {
   inspectReleaseArtifact,
   releaseResponsePassed,
@@ -20,7 +22,18 @@ function routeCheck(route: string) {
   return check;
 }
 
+const GRID_ROUTE = '/grid?entity=campaigns';
+
 describe('release candidate artifact checks', () => {
+  it('requests the real Campaigns grid state instead of the Search terms default', () => {
+    const check = routeCheck(GRID_ROUTE);
+    const params = new URL(check.route, 'https://release.invalid').searchParams;
+    const requestedEntity = parseGridEntity(params.get('entity') ?? undefined);
+
+    expect(ENTITY_LABELS[requestedEntity]).toBe('Campaigns');
+    expect(ENTITY_LABELS[parseGridEntity(undefined)]).toBe('Search terms');
+  });
+
   it('matches the tracked official brand icon and still requires a successful response', () => {
     const body = readFileSync(
       new URL('../../public/brand/wizards-ai-icon.svg', import.meta.url),
@@ -51,7 +64,7 @@ describe('release candidate artifact checks', () => {
   });
 
   it('rejects the stale grid artifact even when its old heading remains', () => {
-    const inspection = inspectReleaseArtifact('<main><h1>Campaigns</h1></main>', routeCheck('/grid').artifacts);
+    const inspection = inspectReleaseArtifact('<main><h1>Campaigns</h1></main>', routeCheck(GRID_ROUTE).artifacts);
 
     expect(inspection).toEqual({
       matched: false,
@@ -80,7 +93,7 @@ describe('release candidate artifact checks', () => {
       })),
     ].join('');
 
-    expect(inspectReleaseArtifact(body, routeCheck('/grid').artifacts)).toEqual({
+    expect(inspectReleaseArtifact(body, routeCheck(GRID_ROUTE).artifacts)).toEqual({
       matched: true,
       missingArtifacts: [],
       rejectedBody: false,
@@ -89,7 +102,7 @@ describe('release candidate artifact checks', () => {
   });
 
   it('rejects operator markup that falls back to text instead of the official mark', () => {
-    const check = routeCheck('/grid');
+    const check = routeCheck(GRID_ROUTE);
     const body = check.artifacts
       .filter((artifact) => artifact.id !== 'official-brand-mark-in-dom')
       .map((artifact) => artifact.text)
@@ -116,7 +129,7 @@ describe('release candidate artifact checks', () => {
   });
 
   it('rejects an error surface even when every expected string is present', () => {
-    const check = routeCheck('/grid');
+    const check = routeCheck(GRID_ROUTE);
     const body = `${check.artifacts.map((artifact) => artifact.text).join('')}<p role="alert">Unavailable</p>`;
 
     expect(inspectReleaseArtifact(body, check.artifacts)).toEqual({

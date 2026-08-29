@@ -5,6 +5,7 @@ export type CandidateBindingReason =
   | 'candidate_mismatch'
   | 'project_mismatch'
   | 'owner_mismatch'
+  | 'target_mismatch'
   | 'not_ready';
 
 export interface CandidateBindingCheck {
@@ -41,6 +42,9 @@ export function inspectCandidateBinding(input: {
   }
   if (deployment['ownerId'] !== input.orgId) {
     return { passed: false, reason: 'owner_mismatch' };
+  }
+  if (deployment['target'] !== 'production') {
+    return { passed: false, reason: 'target_mismatch' };
   }
   if (deployment['readyState'] !== 'READY') {
     return { passed: false, reason: 'not_ready' };

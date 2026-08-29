@@ -43,7 +43,7 @@ export const RELEASE_ROUTE_CHECKS: readonly ReleaseRouteCheck[] = [
   { route: '/', artifacts: [{ id: 'dashboard-link', text: 'Open the dashboard' }] },
   { route: '/dashboard', artifacts: [{ id: 'dashboard-heading', text: 'Dashboard' }] },
   {
-    route: '/grid',
+    route: '/grid?entity=campaigns',
     artifacts: [
       { id: 'grid-heading', text: 'Campaigns' },
       {

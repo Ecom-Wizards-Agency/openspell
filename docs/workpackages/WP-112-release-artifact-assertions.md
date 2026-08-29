@@ -13,8 +13,8 @@ generic headings.
 - Public `GET /api/healthz` returns only OpenSpell readiness and one normalized
   full Git commit revision from Vercel build metadata or an explicit non-secret
   app-version fallback.
-- The verifier binds the candidate to an exact ready Vercel deployment, project,
-  and owner before health, CDP, or cookies. It then requires the expected full
+- The verifier binds the candidate to an exact ready, production-target Vercel
+  deployment, project, and owner before health, CDP, or cookies. It then requires the expected full
   commit SHA as a separate explicit release input.
 - Candidate, expected-revision, and CDP inputs never enter package-manager
   arguments. The root launcher clears Node/Playwright debug variables before

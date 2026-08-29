@@ -21,12 +21,10 @@ import { Suspense, type CSSProperties } from 'react';
 import { redirect } from 'next/navigation';
 import {
   ENTITY_LABELS,
-  ENTITY_LEVELS,
   assessFreshness,
   formatInteger,
   tokens,
 } from '@wizard-ads/ui';
-import type { EntityLevel } from '@wizard-ads/ui';
 import type { DbHandle } from '@wizard-ads/db';
 import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 import { gate } from '../../src/auth/guard';
@@ -40,6 +38,7 @@ import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profile
 import { OperatorContext } from '../../src/ui/operator-context';
 import { GridWorkspace } from './grid-client';
 import { CrosscheckChip } from '../crosscheck/panel';
+import { parseGridEntity } from './entity';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,10 +50,6 @@ interface PageProps {
     from?: string;
     to?: string;
   }>;
-}
-
-function parseEntity(value: string | undefined): EntityLevel {
-  return ENTITY_LEVELS.includes(value as EntityLevel) ? (value as EntityLevel) : 'search_terms';
 }
 
 export default async function GridPage({ searchParams }: PageProps) {
@@ -71,7 +66,7 @@ export default async function GridPage({ searchParams }: PageProps) {
 
   const params = await searchParams;
   const profileId = await requestedProfileId(params.profile);
-  const entity = parseEntity(params.entity);
+  const entity = parseGridEntity(params.entity);
   const period = periodFromParams(params, todayIso());
   const comparison = precedingPeriod(period);
 

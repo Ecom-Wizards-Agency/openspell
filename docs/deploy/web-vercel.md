@@ -26,7 +26,9 @@ runtime URL, deployment identifier, environment name, database state, or secret.
 
 The release verifier requires the expected full SHA as an explicit environment
 input. Before health, CDP, or cookies, it asks Vercel's fixed deployment API for
-the candidate and requires an exact URL, project, owner, and `READY` match.
+the candidate and requires an exact URL, project, owner, `production` target,
+and `READY` match. This ensures promotion moves the verified production-target
+artifact rather than rebuilding a preview with different environment inputs.
 It then checks `/api/healthz` before opening CDP or requesting authenticated
 routes. Any binding or revision failure stops with zero route checks.
 
@@ -65,8 +67,9 @@ The curl child receives only process lookup, temporary-directory, locale, proxy,
 and certificate variables. Database, Amazon, release, CDP, provider, debug, and
 unrelated variables are absent.
 
-The immutable candidate URL must use HTTPS on the exact project host, with no
-username, password, or explicit port. `OPENSPELL_CDP_URL` is a separate validated
+The immutable candidate URL is validated in its raw form before URL parsing. It
+must use lowercase HTTPS on the exact project host, with no encoded aliases,
+username, password, or explicit port (including `:443`). `OPENSPELL_CDP_URL` is a separate validated
 HTTP(S) or WebSocket endpoint and may use a local or authenticated remote
 transport. Neither value is printed. Any Playwright, CDP, URL-parser, stream, timeout,
 or child-process exception becomes one fixed `OPENSPELL_RELEASE_ERROR:<code>`
@@ -75,7 +78,10 @@ diagnostic; dependency error messages are never printed.
 Each request invokes system curl with the exact argv `--disable --config -`;
 URLs, authorization, bypass, and cookies are never argv values. Curl's ambient
 configuration is disabled and every request runs with a private,
-known-empty `.curlrc`. Child runtime, stdout, and stderr are bounded. Health and the
+known-empty `.curlrc`. Child runtime and diagnostic output are tightly bounded.
+Response output has a 64 MiB hard ceiling, derived from the known 3,597-row grid
+payload scaled to the product's 50,000-row cap with nearly threefold encoding
+headroom; crossing it terminates the child. Health and the
 public SVG forbid redirects. Account routes start with a direct request and may follow
 only one raw, same-candidate canonical redirect that keeps the pathname and original
 query byte-for-byte and prepends one lowercase canonical profile id. Cross-origin,

@@ -10,9 +10,15 @@ import { connectToCdpSafely, inspectCandidateRevision, publicReleaseFailure, Rel
 
 const PROD = process.env['OPENSPELL_PRODUCTION_ORIGIN'] ?? 'https://ads.ecomwizards.agency';
 const HOST = /^wizard-ads-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.vercel\.app$/;
+const RAW_CANDIDATE = /^https:\/\/(wizard-ads-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.vercel\.app)\/?$/;
 const AUTH_COOKIE = /^sb-.*-auth-token(?:\.\d+)?$/;
 const RESPONSE_MARKER = '\nOPENSPELL_STATUS:';
 const CURL_WRITE_OUT = '\\nOPENSPELL_STATUS:%{http_code}';
+// The 3,597-row grid fixture is 1.56 MiB before HTML/RSC. Linear scaling to
+// the product's 50,000-row cap is 21.7 MiB; 64 MiB leaves nearly 3x headroom
+// while still terminating a response that grows without bound.
+const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+const MAX_DIAGNOSTIC_BYTES = 256 * 1024;
 const DIAGNOSTIC = ['DEBUG', 'NODE_DEBUG', 'NODE_DEBUG_NATIVE', 'PWDEBUG', 'NODE_OPTIONS', 'NODE_V8_COVERAGE'] as const;
 type RouteResult = { route: string; status: number | null; checkDurationMs: number; passed: boolean; missingArtifacts: readonly string[]; rejectedBody: boolean };
 type Inputs = { token: string; projectId: string; orgId: string; bypass: string };
@@ -134,8 +140,8 @@ function boundedSpawn(command: string, args: readonly string[], input: string, c
     let stdout = '', stdoutBytes = 0, stderrBytes = 0, failure: ReleaseVerifierError | null = null, settled = false;
     const timeout = setTimeout(() => fail('curl_timeout'), 35_000);
     function fail(code: 'curl_timeout' | 'curl_output_exceeded' | 'curl_stream_failed') { if (failure !== null || settled) return; failure = new ReleaseVerifierError(code); child.kill('SIGKILL'); }
-    child.stdout.on('data', (chunk: Buffer) => { stdoutBytes += chunk.byteLength; if (stdoutBytes > 2 * 1024 * 1024) fail('curl_output_exceeded'); else stdout += chunk.toString('utf8'); });
-    child.stderr.on('data', (chunk: Buffer) => { stderrBytes += chunk.byteLength; if (stderrBytes > 256 * 1024) fail('curl_output_exceeded'); });
+    child.stdout.on('data', (chunk: Buffer) => { stdoutBytes += chunk.byteLength; if (stdoutBytes > MAX_RESPONSE_BYTES) fail('curl_output_exceeded'); else stdout += chunk.toString('utf8'); });
+    child.stderr.on('data', (chunk: Buffer) => { stderrBytes += chunk.byteLength; if (stderrBytes > MAX_DIAGNOSTIC_BYTES) fail('curl_output_exceeded'); });
     child.stdout.on('error', () => fail('curl_stream_failed')); child.stderr.on('error', () => fail('curl_stream_failed')); child.stdin.on('error', () => fail('curl_stream_failed'));
     child.on('error', () => { if (settled) return; settled = true; clearTimeout(timeout); reject(new ReleaseVerifierError('curl_unavailable')); });
     child.on('close', (exitCode) => { if (settled) return; settled = true; clearTimeout(timeout); if (failure !== null) reject(failure); else if (exitCode !== 0) reject(new ReleaseVerifierError('curl_stream_failed')); else resolve({ exitCode, stdout }); });
@@ -157,6 +163,9 @@ function providerInputs(): Inputs {
 }
 function candidateOrigin(value: string | undefined): URL {
   if (value === undefined) throw new ReleaseVerifierError('candidate_missing');
+  if (hasControl(value)) throw new ReleaseVerifierError('invalid_candidate');
+  const raw = RAW_CANDIDATE.exec(value);
+  if (raw?.[1] === undefined || raw[1].split('.')[0]!.length > 63) throw new ReleaseVerifierError('invalid_candidate');
   let url: URL; try { url = new URL(value); } catch { throw new ReleaseVerifierError('invalid_candidate'); }
   if (url.protocol !== 'https:' || !HOST.test(url.hostname) || url.hostname.split('.')[0]!.length > 63 || url.username !== '' || url.password !== '' || url.port !== '' || url.pathname !== '/' || url.search !== '' || url.hash !== '') throw new ReleaseVerifierError('invalid_candidate');
   return url;

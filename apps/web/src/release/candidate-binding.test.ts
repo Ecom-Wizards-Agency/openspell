@@ -14,6 +14,7 @@ function body(overrides: Record<string, unknown> = {}): string {
     url: BASE.candidateHostname,
     projectId: BASE.projectId,
     ownerId: BASE.orgId,
+    target: 'production',
     readyState: 'READY',
     ...overrides,
   });
@@ -30,6 +31,7 @@ describe('immutable candidate metadata binding', () => {
     [{ url: 'wizard-ads-other.vercel.app' }, 'candidate_mismatch'],
     [{ projectId: 'different-project' }, 'project_mismatch'],
     [{ ownerId: 'different-owner' }, 'owner_mismatch'],
+    [{ target: 'preview' }, 'target_mismatch'],
     [{ readyState: 'BUILDING' }, 'not_ready'],
   ] as const)('rejects metadata mismatch %#', (override, reason) => {
     expect(inspectCandidateBinding({ ...BASE, responseBody: body(override) })).toEqual({
