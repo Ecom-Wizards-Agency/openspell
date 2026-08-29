@@ -15,7 +15,7 @@ accepted by an operator. Full original evidence and source pointers are in
 | Production web | Healthy and intentionally held at `caff194`. Nine authenticated operator routes returned HTTP 200 with no page or console error after rollback. Main is ahead and is not yet deployed. A fresh authenticated navigation now serves the legacy `wizard-ads` label and `w` placeholder, while `/brand/wizards-ai-icon.svg` returns HTTP 404 even though current main contains the verified official asset. |
 | Deployment environment | Newer candidates consumed corrupted or malformed production runtime-secret metadata after the healthy build. The authoritative 1Password service-account session is unavailable, so values have not been safely restored. No further production promotion is allowed until an immutable candidate passes the release gate. |
 | Hosted database | The production migration ledger is applied exactly through `20260829160100_sb_video_observed_ingestion.sql`. No unmerged write-gateway migration has been applied. |
-| MCP | The public read-only service was verified from Codex and Claude Code on an older application revision. Exact-main activation on the always-on host is blocked on authoritative server environment recovery from 1Password. |
+| MCP | A fresh unauthenticated health check reports ready with a ready database, but the public service still identifies itself with the legacy product name and an older ancestor revision. Earlier Codex and Claude Code read/audit checks therefore remain historical evidence; exact-main activation is blocked on authoritative server environment recovery from 1Password. |
 | Amazon writes | No production migration or Amazon write from the open SP write-gateway PR has run. PR #24 remains open and is not merge-safe pending independent safety review. |
 
 Since the prior status cut, the first-parent history adds merged PRs #18–23, #25–32, #34,
@@ -208,7 +208,8 @@ implementation brief in `docs/workpackages/`.
   Codex and Claude Code each discovered the same eleven analytical tools, found no write-like tool,
   completed one permitted real read, created an audit record and advanced last-used state. Exact-main
   host activation remains blocked because the authoritative 1Password service-account session is
-  unavailable; the existing read-only service remains in place.
+  unavailable. A fresh health request confirms the existing service and database are ready, while
+  its legacy product identity and older ancestor revision make the deployment drift explicit.
 - The pre-release visual record remains in `docs/design/QA-2026-08-27.md`. It is historical evidence,
   not proof that current main is deployed.
 
