@@ -706,20 +706,86 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     const [durable] = await database.sql<{ observation_jobs: number; result_events: number }[]>`
       select
         (select count(*)::int from public.sync_jobs
-          where org_id = ${orgId} and dedupe_key = ${`amazon.observe:${approved.executionId}:0`}) as observation_jobs,
+          where org_id = ${orgId}
+            and dedupe_key like ${`amazon.observe:${approved.executionId}:dispatch:%`}) as observation_jobs,
         (select count(*)::int from public.amazon_write_provider_call_events
           where execution_id = ${approved.executionId} and event_type = 'result') as result_events
     `;
-    expect(durable).toEqual({ observation_jobs: 1, result_events: 2 });
-    const retry = await prepare(approved.executionId);
+    expect(durable).toEqual({ observation_jobs: 2, result_events: 2 });
+    await database.sql`
+      update public.sync_jobs set status = 'succeeded', finished_at = now()
+       where org_id = ${orgId}
+         and dedupe_key like ${`amazon.observe:${approved.executionId}:dispatch:%`}
+    `;
+    const retryToken = randomUUID();
+    const retry = await prepare(approved.executionId, new Date(), retryToken);
     expect(retry.rows).toHaveLength(1);
     expect(retry.rows[0]).toMatchObject({
       attemptNumber: 1,
       action: { actionType: 'sp_target_bid', amazonEntityId: 'tg-1' },
     });
     expect(retry.rows.some((row) => row.writeRowId === keyword.writeRowId)).toBe(false);
-    await refuseAmazonWriteExecution(database, {
-      orgId, profileId, executionId: approved.executionId, reason: 'synthetic cleanup',
+    await dispatch(approved.executionId, [target.writeRowId], retryToken);
+    const [afterRetry] = await database.sql<{ jobs: number; distinct_keys: number; queued: number }[]>`
+      select count(*)::int as jobs, count(distinct dedupe_key)::int as distinct_keys,
+             count(*) filter (where status = 'queued')::int as queued
+        from public.sync_jobs
+       where org_id = ${orgId}
+         and dedupe_key like ${`amazon.observe:${approved.executionId}:dispatch:%`}
+    `;
+    expect(afterRetry).toEqual({ jobs: 3, distinct_keys: 3, queued: 1 });
+    await recordOutcomes({
+      orgId, profileId, executionId: approved.executionId,
+      attemptedAt: new Date(),
+      outcomes: [{
+        writeRowId: target.writeRowId, attemptNumber: retry.rows[0]?.attemptNumber ?? 1,
+        requestFingerprint: sha(`retry-cleanup-${approved.executionId}`),
+        evidence: { outcome: 'failed', providerEntityId: null, code: 'SYNTHETIC', message: 'cleanup' },
+      }],
+    });
+  });
+
+  it('creates a fresh observation generation after a final not-applied recovery', async () => {
+    const batch = await createBatch([
+      { entityType: 'keyword', entityId: 'kw-1', field: 'bid', oldValue: 0.9, newValue: 0.91 },
+    ]);
+    const approved = await approve(batch.batchId, batch.artifact, 1);
+    const first = await prepare(approved.executionId);
+    const row = first.rows[0];
+    if (!row) throw new Error('expected final-not-applied recovery row');
+    await dispatch(approved.executionId, [row.writeRowId]);
+    await database.sql`
+      update public.sync_jobs set status = 'succeeded', finished_at = now()
+       where org_id = ${orgId}
+         and dedupe_key like ${`amazon.observe:${approved.executionId}:dispatch:%`}
+    `;
+    const observation = await recordAmazonWriteObservations(database, {
+      orgId, profileId, executionId: approved.executionId,
+      observedAt: new Date(), attempt: 5,
+      observations: [{ writeRowId: row.writeRowId, state: 'not_applied', currentValue: 0.9 }],
+    });
+    expect(observation).toMatchObject({ status: 'queued', retryApply: true });
+
+    const retryToken = randomUUID();
+    const retry = await prepare(approved.executionId, new Date(), retryToken);
+    expect(retry.rows).toEqual([expect.objectContaining({ writeRowId: row.writeRowId, attemptNumber: 2 })]);
+    await dispatch(approved.executionId, [row.writeRowId], retryToken);
+    const [jobs] = await database.sql<{ total: number; distinct_keys: number; queued: number }[]>`
+      select count(*)::int as total, count(distinct dedupe_key)::int as distinct_keys,
+             count(*) filter (where status = 'queued')::int as queued
+        from public.sync_jobs
+       where org_id = ${orgId}
+         and dedupe_key like ${`amazon.observe:${approved.executionId}:dispatch:%`}
+    `;
+    expect(jobs).toEqual({ total: 2, distinct_keys: 2, queued: 1 });
+    await recordOutcomes({
+      orgId, profileId, executionId: approved.executionId,
+      attemptedAt: new Date(),
+      outcomes: [{
+        writeRowId: row.writeRowId, attemptNumber: retry.rows[0]?.attemptNumber ?? 2,
+        requestFingerprint: sha(`not-applied-cleanup-${approved.executionId}`),
+        evidence: { outcome: 'failed', providerEntityId: null, code: 'SYNTHETIC', message: 'cleanup' },
+      }],
     });
   });
 
@@ -814,6 +880,51 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     expect(recorded).toMatchObject({
       status: 'succeeded', inverseReady: true,
       accounting: { succeeded: 1, failed: 0, ambiguous: 0, resynchronized: 1 },
+    });
+  });
+
+  it('does not materialize a subset inverse while another forward row is unresolved', async () => {
+    const batch = await createBatch([
+      { entityType: 'keyword', entityId: 'kw-1', field: 'bid', oldValue: 0.9, newValue: 0.91 },
+      { entityType: 'target', entityId: 'tg-1', field: 'bid', oldValue: 0.6, newValue: 0.61 },
+    ]);
+    const approved = await approve(batch.batchId, batch.artifact, 2);
+    const prepared = await prepare(approved.executionId);
+    const keyword = prepared.rows.find((row) => row.action.actionType === 'sp_keyword_bid');
+    const target = prepared.rows.find((row) => row.action.actionType === 'sp_target_bid');
+    if (!keyword || !target) throw new Error('expected unresolved forward rows');
+    await dispatch(approved.executionId, [keyword.writeRowId]);
+    await recordOutcomes({
+      orgId, profileId, executionId: approved.executionId,
+      attemptedAt: new Date(),
+      outcomes: [{
+        writeRowId: keyword.writeRowId, attemptNumber: keyword.attemptNumber,
+        requestFingerprint: sha(`early-observation-${approved.executionId}`),
+        evidence: { outcome: 'accepted', providerEntityId: 'kw-1', code: null, message: null },
+      }],
+    });
+    await database.sql`
+      update public.keywords set bid = 0.91, synced_at = now()
+       where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = 'kw-1'
+    `;
+    const early = await recordAmazonWriteObservations(database, {
+      orgId, profileId, executionId: approved.executionId,
+      observedAt: new Date(), attempt: 0,
+      observations: [{ writeRowId: keyword.writeRowId, state: 'observed', currentValue: 0.91 }],
+    });
+    expect(early).toMatchObject({
+      status: 'queued', inverseReady: false, inverseExecutionId: null,
+      retryApply: true, accounting: { succeeded: 1, resynchronized: 1 },
+    });
+    const [reservation] = await database.sql<{ inverse_execution_id: string | null }[]>`
+      select inverse_execution_id from public.amazon_write_inverse_reservations
+       where forward_execution_id = ${approved.executionId}
+    `;
+    expect(reservation?.inverse_execution_id).toBeNull();
+    const resumed = await prepare(approved.executionId, new Date(), randomUUID());
+    expect(resumed.rows).toEqual([expect.objectContaining({ writeRowId: target.writeRowId })]);
+    await refuseAmazonWriteExecution(database, {
+      orgId, profileId, executionId: approved.executionId, reason: 'synthetic cleanup',
     });
   });
 

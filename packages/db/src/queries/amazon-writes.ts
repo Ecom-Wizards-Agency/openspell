@@ -924,7 +924,7 @@ export async function markAmazonWriteRowsDispatched(
               ${json({ type: 'amazon.observe', orgId: input.orgId, profileId: input.profileId,
                 executionId: input.executionId, attempt: 0 })}::jsonb,
               clock_timestamp() + interval '15 seconds',
-              ${`amazon.observe:${input.executionId}:0`})
+              ${`amazon.observe:${input.executionId}:dispatch:${input.callId}`})
       on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
     `;
     await sql`
@@ -1633,7 +1633,8 @@ export async function recordAmazonWriteObservations(
     const inverseReady = counts.succeeded > 0
       && counts.observed === counts.succeeded
       && counts.pending === 0
-      && counts.ambiguous === 0;
+      && counts.ambiguous === 0
+      && counts.retryable === 0;
     const status: AmazonWriteExecutionStatus = counts.retryable > 0 ? 'queued'
       : fullyObserved ? 'succeeded'
       : counts.conflicts > 0 ? 'conflict'

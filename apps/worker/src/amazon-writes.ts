@@ -403,7 +403,9 @@ export class GuardedAmazonWriteRuntime {
       const accounting = await this.store.refuse({ ...payload, reason: 'approval expired before execution' });
       return { status: 'refused', ...accounting, amazonApiCalls: 0 };
     }
-    const boundedRefusal = this.boundedRefusal(prepared.rows, prepared.inversePreapproved, authorization, allowed);
+    const boundedRefusal = this.boundedRefusal(
+      prepared.rows, prepared.direction, prepared.inversePreapproved, authorization, allowed,
+    );
     if (boundedRefusal !== null) {
       const accounting = await this.store.refuse({ ...payload, reason: boundedRefusal });
       return { status: 'refused', ...accounting, amazonApiCalls: 0 };
@@ -424,7 +426,10 @@ export class GuardedAmazonWriteRuntime {
         : (refreshed.authorization.authorization_id !== authorization.authorization_id
           || boundedAmazonWriteAuthorizationFingerprint(refreshed.authorization) !== authorizationSha256)
           ? 'bounded Amazon write authorization was replaced during execution'
-          : this.boundedRefusal(group.rows, prepared.inversePreapproved, refreshed.authorization, refreshed.allowed);
+          : this.boundedRefusal(
+              group.rows, prepared.direction, prepared.inversePreapproved,
+              refreshed.authorization, refreshed.allowed,
+            );
       if (refreshedRefusal !== null) {
         latestAccounting = await this.store.refuse({ ...payload, reason: refreshedRefusal });
         latestStatus = latestAccounting.succeeded > 0 ? 'partial' : 'refused';
@@ -628,6 +633,7 @@ export class GuardedAmazonWriteRuntime {
 
   private boundedRefusal(
     rows: readonly { action: AmazonWriteAction }[],
+    direction: 'forward' | 'inverse',
     inversePreapproved: boolean,
     authorization: BoundedAuthorization,
     allowed: BoundedAuthorization['profiles'][number],
@@ -653,7 +659,9 @@ export class GuardedAmazonWriteRuntime {
         if (delta > authorization.allowed_tests.placement.max_absolute_percentage_points) {
           return 'placement mutation exceeds the bounded authorization';
         }
-        if (authorization.allowed_tests.placement.require_immediate_inverse && !inversePreapproved) {
+        if (direction === 'forward'
+          && authorization.allowed_tests.placement.require_immediate_inverse
+          && !inversePreapproved) {
           return 'placement test requires a preapproved inverse';
         }
       } else {
@@ -661,7 +669,9 @@ export class GuardedAmazonWriteRuntime {
         if (delta > authorization.allowed_tests.bid.max_absolute_delta) {
           return 'bid mutation exceeds the bounded authorization';
         }
-        if (authorization.allowed_tests.bid.require_immediate_inverse && !inversePreapproved) {
+        if (direction === 'forward'
+          && authorization.allowed_tests.bid.require_immediate_inverse
+          && !inversePreapproved) {
           return 'bid test requires a preapproved inverse';
         }
       }
