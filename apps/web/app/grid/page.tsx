@@ -17,7 +17,7 @@
  * visitors are sent to `/login`, and both the roster and the rows are scoped by
  * the org the gate resolved rather than by a profile id anybody could paste.
  */
-import type { CSSProperties } from 'react';
+import { Suspense, type CSSProperties } from 'react';
 import {
   ENTITY_LABELS,
   ENTITY_LEVELS,
@@ -35,6 +35,7 @@ import { ROW_CAP, loadGridRows } from '../_lib/grid-data';
 import { periodFromParams, precedingPeriod, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
 import { GridWorkspace } from './grid-client';
+import { CrosscheckChip } from '../crosscheck/panel';
 
 export const dynamic = 'force-dynamic';
 
@@ -75,7 +76,7 @@ export default async function GridPage({ searchParams }: PageProps) {
     const profile = selectProfile(profiles, profileId);
     if (profile === null) return { profiles, profile: null };
 
-    const [payload, ledger, crosscheck] = await Promise.all([
+    const [payload, ledger] = await Promise.all([
       loadGridRows(handle, entity, {
         orgId,
         profileId: profile.id,
@@ -84,10 +85,9 @@ export default async function GridPage({ searchParams }: PageProps) {
         comparison,
       }),
       loadReportLedger(handle, orgId, profile.id),
-      loadCrosscheckPanel(handle, { profileId: profile.id }).catch(() => null),
     ]);
 
-    return { profiles, profile, payload, ledger, crosscheck };
+    return { profiles, profile, payload, ledger };
   });
 
   if (data === null) {
@@ -144,7 +144,11 @@ export default async function GridPage({ searchParams }: PageProps) {
         period={period}
         comparisonPeriod={comparison}
         freshness={freshness}
-        chip={data.crosscheck?.chip ?? null}
+        crosscheck={
+          <Suspense fallback={<span style={crosscheckPending}>Crosscheck loading…</span>}>
+            <GridCrosscheck profileId={profile.id} />
+          </Suspense>
+        }
         campaignId={entity === 'campaigns' ? params.campaign ?? null : null}
       />
 
@@ -160,6 +164,19 @@ export default async function GridPage({ searchParams }: PageProps) {
   );
 }
 
+/**
+ * Crosscheck evidence is useful context, not a prerequisite for operating the
+ * grid. Keep its independent database read outside the critical row-delivery
+ * path so a slow or unavailable comparison source cannot delay filtering,
+ * grouping, or export.
+ */
+async function GridCrosscheck({ profileId }: { profileId: string }) {
+  const model = await withDatabase((handle) =>
+    loadCrosscheckPanel(handle, { profileId }).catch(() => null),
+  );
+  return model === null ? null : <CrosscheckChip chip={model.chip} />;
+}
+
 const main: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
@@ -172,3 +189,7 @@ const main: CSSProperties = {
 
 const heading: CSSProperties = { fontSize: tokens.font.size.xl, margin: '0 0 0.25rem' };
 const muted: CSSProperties = { color: tokens.color.textMuted, fontSize: tokens.font.size.base, margin: 0 };
+const crosscheckPending: CSSProperties = {
+  color: tokens.color.textMuted,
+  fontSize: tokens.font.size.sm,
+};

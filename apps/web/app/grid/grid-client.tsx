@@ -36,8 +36,6 @@ import type {
   SortRule,
 } from '@wizard-ads/ui';
 import { FreshnessBanner, tokens } from '@wizard-ads/ui';
-import type { VerdictChip } from '@wizard-ads/crosscheck-cli/pure';
-import { CrosscheckChip } from '../crosscheck/panel';
 import { BidHistoryModal } from '../../src/ui/bid-history-modal';
 
 export interface GridWorkspaceProps {
@@ -48,7 +46,8 @@ export interface GridWorkspaceProps {
   period: { start: string; end: string };
   comparisonPeriod: { start: string; end: string };
   freshness: FreshnessAssessment;
-  chip: VerdictChip | null;
+  /** Streamed server-owned crosscheck state; it never blocks the data grid. */
+  crosscheck?: ReactNode;
   /** Campaign deep-link applied as a visible grid filter. */
   campaignId: string | null;
 }
@@ -249,7 +248,7 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
     // `var(--wa-*, <literal>)` and reads the tokens directly.
     <div className="wa-embed" style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(3) }}>
       <FreshnessBanner assessment={props.freshness}>
-        {props.chip === null ? null : <CrosscheckChip chip={props.chip} />}
+        {props.crosscheck ?? null}
       </FreshnessBanner>
 
       <GridToolbar

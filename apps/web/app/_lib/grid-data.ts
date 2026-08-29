@@ -381,6 +381,18 @@ async function loadSearchTerms(
       where org_id = ${orgId} and profile_id = ${profileId}
         and date between ${comparison.start} and ${period.end}
       group by search_term, campaign_id, ad_group_id, target_id, ad_product
+    ), harvested_terms as materialized (
+      -- Build the profile vocabulary once. A correlated EXISTS with
+      -- lower(keyword_text) makes Postgres revisit the current keyword mirror
+      -- for every aggregated search-term row; on an operator-sized account
+      -- that becomes the cold route's dominant work.
+      select lower(keyword_text) as normalized_term
+        from public.keywords
+       where org_id = ${orgId}
+         and profile_id = ${profileId}
+         and deleted_at is null
+         and keyword_text is not null
+       group by lower(keyword_text)
     )
     select f.*,
            k.keyword_text as targeting,
@@ -388,13 +400,7 @@ async function loadSearchTerms(
            c.name as campaign_name,
            -- "Have I already acted on this row." Without it an operator
            -- re-harvests the same winners every week.
-           exists (
-             select 1 from public.keywords h
-              where h.org_id = ${orgId}
-                and h.profile_id = ${profileId}
-                and h.deleted_at is null
-                and lower(h.keyword_text) = lower(f.search_term)
-           ) as harvested
+           (harvested.normalized_term is not null) as harvested
       from facts f
       left join public.keywords k
         on k.org_id = ${orgId} and k.profile_id = ${profileId} and k.amazon_id = f.target_id
@@ -402,6 +408,8 @@ async function loadSearchTerms(
         on g.org_id = ${orgId} and g.profile_id = ${profileId} and g.amazon_id = f.ad_group_id
       left join public.campaigns c
         on c.org_id = ${orgId} and c.profile_id = ${profileId} and c.amazon_id = f.campaign_id
+      left join harvested_terms harvested
+        on harvested.normalized_term = lower(f.search_term)
      limit ${limit}
   `;
 
