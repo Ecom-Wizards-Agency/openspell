@@ -20,6 +20,7 @@ const USER_ID = '11111111-1111-4111-8111-111111111111';
 const APPROVED_AT = '2026-08-29T12:00:00.000Z';
 const EXPIRES_AT = '2026-08-30T12:00:00.000Z';
 const AUTHORIZATION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const BUDGET_AUTHORIZATION_ID = 'abababab-abab-4bab-8bab-abababababab';
 const DISPATCH_TOKEN = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 function sha(value: string): string {
@@ -97,7 +98,12 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     return { batchId: batch.id, artifact };
   }
 
-  async function approve(batchId: string, artifact: string, expectedCount: number) {
+  async function approve(
+    batchId: string,
+    artifact: string,
+    expectedCount: number,
+    authorizationId = AUTHORIZATION_ID,
+  ) {
     return approveAmazonWriteExecution(database, {
       orgId,
       profileId,
@@ -108,7 +114,7 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
       expiresAt: EXPIRES_AT,
       previewSha256: artifact,
       expectedCount,
-      authorizationId: AUTHORIZATION_ID,
+      authorizationId,
       inversePreapproved: true,
     });
   }
@@ -117,6 +123,7 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
     executionId: string,
     now = new Date(APPROVED_AT),
     dispatchLeaseToken = DISPATCH_TOKEN,
+    authorizationId = AUTHORIZATION_ID,
   ) {
     return prepareAmazonWriteExecution(database, {
       orgId,
@@ -124,7 +131,7 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
       executionId,
       now,
       maxConcurrentMutations: 1,
-      authorizationId: AUTHORIZATION_ID,
+      authorizationId,
       maxRowsPerExecution: 100,
       maxTotalExecutions: 100,
       dispatchLeaseToken,
@@ -400,24 +407,41 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
       { entityType: 'keyword', entityId: 'kw-1', field: 'bid', oldValue: 0.9, newValue: 0.91 },
       { entityType: 'target', entityId: 'tg-1', field: 'bid', oldValue: 0.6, newValue: 0.61 },
     ]);
-    const first = await approve(firstBatch.batchId, firstBatch.artifact, 2);
+    const first = await approve(firstBatch.batchId, firstBatch.artifact, 2, BUDGET_AUTHORIZATION_ID);
     const overRows = await prepareAmazonWriteExecution(database, {
       orgId, profileId, executionId: first.executionId,
       now: new Date(APPROVED_AT), maxConcurrentMutations: 1,
-      authorizationId: AUTHORIZATION_ID, maxRowsPerExecution: 1, maxTotalExecutions: 100,
+      authorizationId: BUDGET_AUTHORIZATION_ID, maxRowsPerExecution: 1, maxTotalExecutions: 100,
       dispatchLeaseToken: DISPATCH_TOKEN,
       dispatchLeaseExpiresAt: new Date('2026-08-29T12:05:00.000Z'),
     });
     expect(overRows).toMatchObject({ status: 'refused', rows: [] });
 
+    const consumedBatch = await createBatch([
+      { entityType: 'keyword', entityId: 'kw-1', field: 'bid', oldValue: 0.9, newValue: 0.91 },
+    ]);
+    const consumed = await approve(
+      consumedBatch.batchId, consumedBatch.artifact, 1, BUDGET_AUTHORIZATION_ID,
+    );
+    const started = await prepare(
+      consumed.executionId,
+      new Date(APPROVED_AT),
+      'fafafafa-fafa-4afa-8afa-fafafafafafa',
+      BUDGET_AUTHORIZATION_ID,
+    );
+    expect(started.rows).toHaveLength(1);
+    await refuseAmazonWriteExecution(database, {
+      orgId, profileId, executionId: consumed.executionId, reason: 'synthetic consumed authorization slot',
+    });
+
     const secondBatch = await createBatch([
       { entityType: 'target', entityId: 'tg-1', field: 'bid', oldValue: 0.6, newValue: 0.61 },
     ]);
-    const second = await approve(secondBatch.batchId, secondBatch.artifact, 1);
+    const second = await approve(secondBatch.batchId, secondBatch.artifact, 1, BUDGET_AUTHORIZATION_ID);
     const overTotal = await prepareAmazonWriteExecution(database, {
       orgId, profileId, executionId: second.executionId,
       now: new Date(APPROVED_AT), maxConcurrentMutations: 1,
-      authorizationId: AUTHORIZATION_ID, maxRowsPerExecution: 100, maxTotalExecutions: 1,
+      authorizationId: BUDGET_AUTHORIZATION_ID, maxRowsPerExecution: 100, maxTotalExecutions: 1,
       dispatchLeaseToken: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
       dispatchLeaseExpiresAt: new Date('2026-08-29T12:05:00.000Z'),
     });

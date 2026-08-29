@@ -523,10 +523,14 @@ export async function prepareAmazonWriteExecution(
     }
     const [authorizationUse] = await sql<{ count: number }[]>`
       select count(*)::int as count
-        from public.amazon_write_approvals
-       where authorization_id = ${input.authorizationId}
+        from public.amazon_write_executions used_execution
+        join public.amazon_write_approvals used_approval
+          on used_approval.id = used_execution.approval_id
+       where used_approval.authorization_id = ${input.authorizationId}
+         and used_execution.id <> ${execution.id}
+         and used_execution.started_at is not null
     `;
-    if ((authorizationUse?.count ?? 0) > input.maxTotalExecutions) {
+    if ((authorizationUse?.count ?? 0) >= input.maxTotalExecutions) {
       await refuseExecutionRows(sql, execution.id, 'bounded authorization execution budget is exhausted');
       return {
         executionId: execution.id, applyBatchId: execution.apply_batch_id,
