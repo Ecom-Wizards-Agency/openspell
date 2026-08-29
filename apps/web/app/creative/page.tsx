@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { readCreativePerformance } from '@wizard-ads/db';
 import { gate } from '../../src/auth/guard';
 import { gateMessage } from '../../src/ui/gate-message';
@@ -66,7 +67,7 @@ export default async function CreativePerformancePage({ searchParams }: PageProp
     );
   }
 
-  const rows = await readCreativePerformance(entry.handle, {
+  const rows = readCreativePerformance(entry.handle, {
     orgId,
     profileId: profile.id,
     from: period.start,
@@ -82,7 +83,9 @@ export default async function CreativePerformancePage({ searchParams }: PageProp
           <>
             <Badge tone="info">Sponsored Brands Video · v1</Badge>
             <Badge>Identity · Amazon Asset ID</Badge>
-            <Badge>{rows.length} mapped asset{rows.length === 1 ? '' : 's'}</Badge>
+            <Suspense fallback={<Badge>Loading mapped assets…</Badge>}>
+              <CreativeAssetCount rows={rows} />
+            </Suspense>
           </>
         }
       />
@@ -98,25 +101,70 @@ export default async function CreativePerformancePage({ searchParams }: PageProp
         preserved={{ profile: profile.id }}
       />
 
-      {rows.length === 0 ? (
-        <div className={styles.emptyWrap}>
-          <EmptyState
-            title="No mapped SB Video creatives yet"
-            body={
-              <>
-                OpenSpell has no ad → creative → Amazon Asset ID performance mapping for this
-                account and date range. Creative names and ad-group totals are not used as
-                substitutes; mappings and metrics may arrive in separate sync cycles.
-              </>
-            }
-            meta="Historical mapping validity remains unproven until an observed Asset-ID snapshot covers the report window."
-            action={<a className="wa-btn wa-btn--sm" href={`/sync-status?profile=${profile.id}`}>Check Sync status</a>}
-            data-testid="creative-source-empty"
-          />
-        </div>
-      ) : (
-        <CreativePerformanceExplorer rows={rows} currencyCode={profile.currencyCode} />
-      )}
+      <Suspense fallback={<CreativeResultsLoading />}>
+        <CreativeResults
+          rows={rows}
+          currencyCode={profile.currencyCode}
+          profileId={profile.id}
+        />
+      </Suspense>
     </main>
+  );
+}
+
+type CreativeRows = Awaited<ReturnType<typeof readCreativePerformance>>;
+
+async function CreativeAssetCount({ rows }: { rows: Promise<CreativeRows> }) {
+  const resolved = await rows;
+  return (
+    <Badge>
+      {resolved.length} mapped asset{resolved.length === 1 ? '' : 's'}
+    </Badge>
+  );
+}
+
+async function CreativeResults({
+  rows,
+  currencyCode,
+  profileId,
+}: {
+  rows: Promise<CreativeRows>;
+  currencyCode: string;
+  profileId: string;
+}) {
+  const resolved = await rows;
+  return resolved.length === 0 ? (
+    <div className={styles.emptyWrap}>
+      <EmptyState
+        title="No mapped SB Video creatives yet"
+        body={
+          <>
+            OpenSpell has no ad → creative → Amazon Asset ID performance mapping for this
+            account and date range. Creative names and ad-group totals are not used as
+            substitutes; mappings and metrics may arrive in separate sync cycles.
+          </>
+        }
+        meta="Historical mapping validity remains unproven until an observed Asset-ID snapshot covers the report window."
+        action={
+          <a className="wa-btn wa-btn--sm" href={`/sync-status?profile=${profileId}`}>
+            Check Sync status
+          </a>
+        }
+        data-testid="creative-source-empty"
+      />
+    </div>
+  ) : (
+    <CreativePerformanceExplorer rows={resolved} currencyCode={currencyCode} />
+  );
+}
+
+function CreativeResultsLoading() {
+  return (
+    <section aria-busy="true" aria-label="Creative performance loading">
+      <div className={styles.loadingSummary}>
+        {Array.from({ length: 4 }, (_, index) => <div key={index} />)}
+      </div>
+      <div className={styles.loadingTable} />
+    </section>
   );
 }

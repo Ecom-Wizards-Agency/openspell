@@ -10,6 +10,7 @@
  * back to the first membership.
  */
 import { cookies } from 'next/headers';
+import { cache } from 'react';
 import type { DbHandle } from '@wizard-ads/db';
 import { isOrgRole } from '../auth/roles';
 import type { OrgRole } from '../auth/roles';
@@ -57,7 +58,7 @@ export async function listMemberships(handle: DbHandle, userId: string): Promise
  * a signed state and must confirm the *user* is still a member of it rather
  * than trusting the cookie it arrived with.
  */
-export async function resolveOrgContext(
+async function readOrgContext(
   handle: DbHandle,
   user: SessionUser,
   preferredOrgId?: string | null,
@@ -68,6 +69,13 @@ export async function resolveOrgContext(
     memberships.find((membership) => membership.orgId === cookieOrg) ?? memberships[0] ?? null;
   return { user, memberships, active };
 }
+
+/**
+ * Layout navigation and the page gate resolve the same membership context.
+ * Deduplicate that read within one React server render; argument identity keeps
+ * OAuth's explicit preferred-org lookup separate from the cookie-backed one.
+ */
+export const resolveOrgContext = cache(readOrgContext);
 
 /** Membership lookup with no cookie involved. The OAuth callback's check. */
 export function membershipFor(context: OrgContext, orgId: string): Membership | null {

@@ -17,13 +17,6 @@
  * every read below is scoped by the org the gate resolved.
  */
 import type { ReactNode } from 'react';
-import {
-  getRecommendationRun,
-  listRecommendationRuns,
-  listRecommendations,
-  readOptimizationWorkspace,
-} from '@wizard-ads/db';
-import { RECOMMENDATIONS_ENGINE_VERSION } from '@wizard-ads/worker';
 import { assessFreshness } from '@wizard-ads/ui';
 import { gate } from '../../src/auth/guard';
 import { can } from '../../src/auth/roles';
@@ -42,9 +35,8 @@ import {
   totalsOf,
 } from '../../src/optimizer/view';
 import { buildOptimizerCampaignRows } from '../../src/optimizer/campaigns';
-import { loadProfileDailyRows, loadReportLedger } from '../_lib/dashboard-data';
-import { loadOptimizerCampaignFacts } from '../_lib/optimizer-campaigns';
-import { periodFromParams, precedingPeriod, settledComparisonWindows, todayIso } from '../_lib/periods';
+import { loadOptimizerPageData } from '../_lib/optimizer-page-data';
+import { periodFromParams, settledComparisonWindows, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
 import { OptimizerGroupTable, ReasonCoverageRow, SettingsChip } from './optimizer-view';
 import { CampaignWorkspace } from './campaign-workspace';
@@ -95,32 +87,26 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
     );
   }
 
-  const [allRuns, optimizationWorkspace] = await Promise.all([
-    listRecommendationRuns(handle, { orgId, profileId: profile.id, limit: 100 }),
-    readOptimizationWorkspace(handle, { orgId, profileId: profile.id }),
-  ]);
-  const runs = allRuns.filter((candidate) => candidate.engineVersion === RECOMMENDATIONS_ENGINE_VERSION);
-  const runId = runs.find((candidate) => candidate.id === params.run)?.id ?? runs[0]?.id ?? null;
-  const run = runId === null ? null : await getRecommendationRun(handle, { orgId, runId });
-  const records =
-    run === null ? [] : await listRecommendations(handle, { orgId, runId: run.id });
+  const {
+    runs,
+    run,
+    records,
+    optimizationWorkspace,
+    periodRows,
+    comparisonRows,
+    ledger,
+    campaignFacts,
+  } = await loadOptimizerPageData({
+    handle,
+    orgId,
+    profile,
+    period,
+    settledComparison: settled.comparison,
+    ...(params.run === undefined ? {} : { requestedRunId: params.run }),
+  });
   const proposals = records.map((record) =>
     toProposalView(record, { strategySnapshot: run?.strategySnapshot ?? null }),
   );
-
-  const [periodRows, comparisonRows, ledger, campaignFacts] = await Promise.all([
-    loadProfileDailyRows(handle, orgId, profile.id, profile.label, period),
-    settled.comparison === null
-      ? Promise.resolve([])
-      : loadProfileDailyRows(handle, orgId, profile.id, profile.label, settled.comparison),
-    loadReportLedger(handle, orgId, profile.id),
-    loadOptimizerCampaignFacts(handle, {
-      orgId,
-      profileId: profile.id,
-      period,
-      comparison: precedingPeriod(period),
-    }),
-  ]);
 
   // Same clamp the dashboard applies: never claim settled days that have no
   // synced facts behind them.

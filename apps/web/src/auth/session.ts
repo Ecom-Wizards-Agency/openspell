@@ -20,6 +20,7 @@
  * resembling the thing it stands in for.
  */
 import { cookies } from 'next/headers';
+import { cache } from 'react';
 import { E2E_USER_COOKIE, E2E_USER_EMAIL_COOKIE } from '../cookies';
 import { supabaseConfigured, supabaseServerClient } from './supabase';
 
@@ -42,7 +43,7 @@ export function e2eAuthEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return true;
 }
 
-export async function currentUser(): Promise<SessionUser | null> {
+async function readCurrentUser(): Promise<SessionUser | null> {
   if (e2eAuthEnabled()) {
     const store = await cookies();
     const id = store.get(E2E_USER_COOKIE)?.value;
@@ -57,3 +58,13 @@ export async function currentUser(): Promise<SessionUser | null> {
   if (error || !data.user) return null;
   return { id: data.user.id, email: data.user.email ?? null };
 }
+
+/**
+ * One authoritative Supabase validation per Server Component render.
+ *
+ * The root layout and the guarded page both need the same user. React's cache
+ * is request-scoped, so sharing this result removes a second network round trip
+ * without carrying one user's session into another request. Route handlers and
+ * tests outside a Server Component render retain the uncached call semantics.
+ */
+export const currentUser = cache(readCurrentUser);
