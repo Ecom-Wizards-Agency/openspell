@@ -1,5 +1,6 @@
 import type { DbHandle } from '@wizard-ads/db';
 import type { Period } from './periods';
+import { withServerTiming } from './server-timing';
 
 export interface OptimizerCampaignFactRow {
   campaignId: string;
@@ -52,36 +53,40 @@ export async function loadOptimizerCampaignFacts(
     comparison: Period;
   },
 ): Promise<OptimizerCampaignFactRow[]> {
-  const rows = await handle.sql<CampaignWireRow[]>`
-    with fact_rows as materialized (
-      select campaign_id, ad_product::text as ad_product, date,
-             impressions, clicks, cost, purchases_7d as orders, sales_7d as sales
+  return withServerTiming('optimizer.campaign_facts', async () => {
+    const rows = await handle.sql<CampaignWireRow[]>`
+    with source_performance as (
+      select campaign_id, ad_product::text as ad_product,
+             ${windowSums(handle, input.period, input.comparison)}
         from public.fact_sp_target_daily
        where org_id = ${input.orgId} and profile_id = ${input.profileId}
          and date between ${input.comparison.start} and ${input.period.end}
+       group by campaign_id, ad_product
       union all
-      select campaign_id, 'SB', date,
-             impressions, clicks, cost, purchases_7d, sales_7d
+      select campaign_id, 'SB',
+             ${windowSums(handle, input.period, input.comparison)}
         from public.fact_sb_daily
        where org_id = ${input.orgId} and profile_id = ${input.profileId}
          and date between ${input.comparison.start} and ${input.period.end}
+       group by campaign_id
       union all
-      select campaign_id, 'SD', date,
-             impressions, clicks, cost, purchases_7d, sales_7d
+      select campaign_id, 'SD',
+             ${windowSums(handle, input.period, input.comparison)}
         from public.fact_sd_daily
        where org_id = ${input.orgId} and profile_id = ${input.profileId}
          and date between ${input.comparison.start} and ${input.period.end}
+       group by campaign_id
     ), performance as (
       select campaign_id, ad_product,
-             count(*) filter (where date between ${input.period.start} and ${input.period.end}) as current_rows,
-             sum(impressions) filter (where date between ${input.period.start} and ${input.period.end}) as impressions,
-             sum(clicks) filter (where date between ${input.period.start} and ${input.period.end}) as clicks,
-             sum(cost) filter (where date between ${input.period.start} and ${input.period.end}) as spend,
-             sum(sales) filter (where date between ${input.period.start} and ${input.period.end}) as sales,
-             sum(orders) filter (where date between ${input.period.start} and ${input.period.end}) as orders,
-             count(*) filter (where date between ${input.comparison.start} and ${input.comparison.end}) as comparison_rows,
-             sum(cost) filter (where date between ${input.comparison.start} and ${input.comparison.end}) as comparison_spend
-        from fact_rows
+             sum(current_rows) as current_rows,
+             sum(impressions) as impressions,
+             sum(clicks) as clicks,
+             sum(spend) as spend,
+             sum(sales) as sales,
+             sum(orders) as orders,
+             sum(comparison_rows) as comparison_rows,
+             sum(comparison_spend) as comparison_spend
+        from source_performance
        group by campaign_id, ad_product
     )
     select c.amazon_id as campaign_id, c.name as campaign_name,
@@ -109,26 +114,41 @@ export async function loadOptimizerCampaignFacts(
        and c.profile_id = ${input.profileId}
        and c.deleted_at is null
      order by coalesce(performance.spend, 0) desc, lower(c.name), c.amazon_id
-  `;
+    `;
 
-  return rows.map((row) => ({
-    campaignId: row.campaign_id,
-    name: row.campaign_name,
-    adProduct: row.ad_product,
-    state: row.campaign_state,
-    dailyBudget: nullableNumber(row.daily_budget),
-    biddingStrategy: row.bidding_strategy,
-    startDate: row.start_date,
-    groupId: row.group_id,
-    currentRows: number(row.current_rows),
-    impressions: number(row.impressions),
-    clicks: number(row.clicks),
-    spend: number(row.spend),
-    sales: number(row.sales),
-    orders: number(row.orders),
-    comparisonRows: number(row.comparison_rows),
-    comparisonSpend: number(row.comparison_spend),
-  }));
+    return rows.map((row) => ({
+      campaignId: row.campaign_id,
+      name: row.campaign_name,
+      adProduct: row.ad_product,
+      state: row.campaign_state,
+      dailyBudget: nullableNumber(row.daily_budget),
+      biddingStrategy: row.bidding_strategy,
+      startDate: row.start_date,
+      groupId: row.group_id,
+      currentRows: number(row.current_rows),
+      impressions: number(row.impressions),
+      clicks: number(row.clicks),
+      spend: number(row.spend),
+      sales: number(row.sales),
+      orders: number(row.orders),
+      comparisonRows: number(row.comparison_rows),
+      comparisonSpend: number(row.comparison_spend),
+    }));
+  }, (rows) => rows.length);
+}
+
+function windowSums(handle: Pick<DbHandle, 'sql'>, period: Period, comparison: Period) {
+  const { sql } = handle;
+  return sql`
+    count(*) filter (where date between ${period.start} and ${period.end}) as current_rows,
+    sum(impressions) filter (where date between ${period.start} and ${period.end}) as impressions,
+    sum(clicks) filter (where date between ${period.start} and ${period.end}) as clicks,
+    sum(cost) filter (where date between ${period.start} and ${period.end}) as spend,
+    sum(sales_7d) filter (where date between ${period.start} and ${period.end}) as sales,
+    sum(purchases_7d) filter (where date between ${period.start} and ${period.end}) as orders,
+    count(*) filter (where date between ${comparison.start} and ${comparison.end}) as comparison_rows,
+    sum(cost) filter (where date between ${comparison.start} and ${comparison.end}) as comparison_spend
+  `;
 }
 
 function number(value: string | number | null | undefined): number {

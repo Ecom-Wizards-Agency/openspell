@@ -27,6 +27,7 @@ import { readLatestBidSeriesByTargetIds } from '@wizard-ads/db';
 import type { DbHandle } from '@wizard-ads/db';
 import type { EntityLevel, GridRow } from '@wizard-ads/ui';
 import type { Period } from './periods.js';
+import { withServerTiming } from './server-timing.js';
 
 interface AggregateRow {
   impressions: string | number | null;
@@ -114,8 +115,14 @@ export async function loadGridRows(
     search_terms: () => loadSearchTerms(handle, options, limit),
     placements: () => loadPlacements(handle, options, limit),
   };
-  const rows = await loaders[level]();
-  return { rows, truncated: rows.length >= limit };
+  return withServerTiming(
+    `grid.${level}`,
+    async () => {
+      const rows = await loaders[level]();
+      return { rows, truncated: rows.length >= limit };
+    },
+    (payload) => payload.rows.length,
+  );
 }
 
 // ---------------------------------------------------------------------------

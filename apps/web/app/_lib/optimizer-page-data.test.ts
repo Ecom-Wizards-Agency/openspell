@@ -42,6 +42,9 @@ function deferred<T>() {
 }
 
 describe('optimizer page loading plan', () => {
+  const sql = vi.fn();
+  const handle = { sql } as unknown as DbHandle;
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.readWorkspace.mockResolvedValue({ groups: [], campaigns: [] });
@@ -49,6 +52,7 @@ describe('optimizer page loading plan', () => {
     mocks.loadCampaignFacts.mockResolvedValue([]);
     mocks.getRun.mockResolvedValue(null);
     mocks.listRecommendations.mockResolvedValue([]);
+    sql.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -65,7 +69,7 @@ describe('optimizer page loading plan', () => {
     ]);
 
     const resultPromise = loadOptimizerPageData({
-      handle: {} as DbHandle,
+      handle,
       orgId: 'synthetic-org',
       profile: { id: 'synthetic-profile', label: 'Synthetic profile' },
       period: { start: '2026-08-01', end: '2026-08-20' },
@@ -77,6 +81,7 @@ describe('optimizer page loading plan', () => {
     expect(mocks.loadAccountRows).toHaveBeenCalledTimes(1);
     expect(mocks.loadLedger).toHaveBeenCalledTimes(1);
     expect(mocks.loadCampaignFacts).toHaveBeenCalledTimes(1);
+    expect(sql).toHaveBeenCalledTimes(1);
     expect(mocks.listRuns).toHaveBeenCalledWith(expect.anything(), {
       orgId: 'synthetic-org',
       profileId: 'synthetic-profile',
@@ -111,7 +116,7 @@ describe('optimizer page loading plan', () => {
 
     let resolved = false;
     const result = loadOptimizerPageData({
-      handle: {} as DbHandle,
+      handle,
       orgId: 'synthetic-org',
       profile: { id: 'synthetic-profile', label: 'Synthetic profile' },
       period: { start: '2026-08-01', end: '2026-08-20' },
@@ -126,5 +131,49 @@ describe('optimizer page loading plan', () => {
     await vi.advanceTimersByTimeAsync(1);
     await expect(result).resolves.toMatchObject({ periodRows: [], comparisonRows: [] });
     expect(resolved).toBe(true);
+  });
+
+  it('reuses the newest strategy snapshot without a run-detail waterfall', async () => {
+    const latest = {
+      id: 'run-current',
+      orgId: 'synthetic-org',
+      profileId: 'synthetic-profile',
+      status: 'succeeded',
+      lookbackDays: 7,
+      windowStart: '2026-08-01',
+      windowEnd: '2026-08-20',
+      engineVersion: 'synthetic-engine',
+      proposalsCount: 1,
+      createdAt: new Date('2026-08-21T00:00:00.000Z'),
+      finishedAt: new Date('2026-08-21T00:01:00.000Z'),
+      groupId: null,
+      groupRole: null,
+      groupSnapshot: null,
+      dueAt: null,
+      counts: { proposed: 1, accepted: 0, dismissed: 0, exported: 0, applied: 0, superseded: 0 },
+    };
+    mocks.listRuns.mockResolvedValue([latest]);
+    mocks.loadAccountRows.mockResolvedValue([]);
+    sql.mockResolvedValue([
+      { id: latest.id, strategy_snapshot: { schema: 'synthetic.strategy.v1' } },
+    ]);
+
+    const result = await loadOptimizerPageData({
+      handle,
+      orgId: latest.orgId,
+      profile: { id: latest.profileId, label: 'Synthetic profile' },
+      period: { start: '2026-08-01', end: '2026-08-20' },
+      settledComparison: null,
+    });
+
+    expect(result.run).toEqual({
+      ...latest,
+      strategySnapshot: { schema: 'synthetic.strategy.v1' },
+    });
+    expect(mocks.getRun).not.toHaveBeenCalled();
+    expect(mocks.listRecommendations).toHaveBeenCalledWith(expect.anything(), {
+      orgId: latest.orgId,
+      runId: latest.id,
+    });
   });
 });
