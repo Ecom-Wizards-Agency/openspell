@@ -14,6 +14,7 @@ import {
   type SqpRequestJob,
   type SqpCategorizeJob,
 } from '@wizard-ads/shared';
+import { SpApiError, SpApiParseError } from '@wizard-ads/sp-api';
 import { isPermanentCrosscheckError, type CrosscheckIngest } from './crosscheck.js';
 import {
   AdsApiRetryableError,
@@ -34,6 +35,11 @@ import {
   type RegionTokenBuckets,
 } from './region-token-buckets.js';
 import type { WorkerStore } from './store.js';
+import {
+  SqpWorkflowPendingError,
+  SqpWorkflowPermanentError,
+  type SqpQueuedJobContext,
+} from './sqp.js';
 
 const MINUTE_MS = 60_000;
 const FOUR_HOURS_MS = 4 * 60 * MINUTE_MS;
@@ -66,7 +72,10 @@ export interface IntegrationHandlers {
   economicsSync?: (payload: EconomicsSyncJob) => Promise<Record<string, unknown>>;
   sqpCategorize?: (payload: SqpCategorizeJob) => Promise<Record<string, unknown>>;
   creativeSync?: (payload: CreativeSyncJob) => Promise<Record<string, unknown>>;
-  sqpRequest?: (payload: SqpRequestJob) => Promise<Record<string, unknown>>;
+  sqpRequest?: (
+    payload: SqpRequestJob,
+    context: SqpQueuedJobContext,
+  ) => Promise<Record<string, unknown>>;
   historyBootstrap?: (payload: HistoryBootstrapJob) => Promise<Record<string, unknown>>;
   reportPromote?: (payload: ReportPromoteJob) => Promise<Record<string, unknown>>;
   marketingStreamNormalize?: (payload: MarketingStreamNormalizeJob) => Promise<Record<string, unknown>>;
@@ -217,7 +226,32 @@ export class SyncWorker {
       const result = await this.execute(job);
       await this.store.finish(job.id, 'succeeded', { result });
     } catch (error) {
-      if (error instanceof PermanentJobError || isPermanentCrosscheckError(error)) {
+      if (error instanceof SqpWorkflowPendingError) {
+        const retryIn = `${error.retryAfterSeconds} seconds`;
+        if (this.store.defer) {
+          await this.store.defer(job.id, retryIn);
+        } else {
+          // Adapter/test stores predating queue deferral retain the safe legacy
+          // behavior. The production Postgres store never takes this branch.
+          await this.store.finish(job.id, 'failed', {
+            error: errorMessage(error).slice(0, 4_000),
+            retryIn,
+          });
+        }
+        this.logger.info('sync job deferred for provider processing', {
+          jobId: job.id,
+          type: job.jobType,
+          retryAfterSeconds: error.retryAfterSeconds,
+        });
+        return;
+      }
+      if (
+        error instanceof PermanentJobError ||
+        error instanceof SqpWorkflowPermanentError ||
+        error instanceof SpApiParseError ||
+        (error instanceof SpApiError && !error.retryable) ||
+        isPermanentCrosscheckError(error)
+      ) {
         await this.store.deadLetter(job.id, errorMessage(error).slice(0, 4_000));
         this.logger.error('sync job dead-lettered', {
           jobId: job.id, type: job.jobType, error: errorMessage(error),
@@ -273,7 +307,10 @@ export class SyncWorker {
       case 'creative.sync':
         return this.runIntegration(payload.type, this.integrations.creativeSync, payload);
       case 'sqp.request':
-        return this.runIntegration(payload.type, this.integrations.sqpRequest, payload);
+        if (!this.integrations.sqpRequest) {
+          throw new PermanentJobError(`${payload.type} handler not deployed in this runtime`);
+        }
+        return this.integrations.sqpRequest(payload, { jobId: job.id });
       case 'history.bootstrap':
         return this.runIntegration(payload.type, this.integrations.historyBootstrap, payload);
       case 'report.promote':
