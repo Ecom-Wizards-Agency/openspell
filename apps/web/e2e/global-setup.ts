@@ -188,6 +188,13 @@ async function startWebServer(connectionString: string, amazon: AmazonMock): Pro
       stdio: ['ignore', 'inherit', 'inherit'],
       env: {
         ...process.env,
+        // The authenticated suite compiles every guarded route in one dev
+        // process. Give Next enough headroom to avoid its development-only
+        // memory restart, which would discard the in-process OAuth fixture.
+        NODE_OPTIONS: appendNodeOption(
+          process.env['NODE_OPTIONS'],
+          '--max-old-space-size=4096',
+        ),
         NODE_ENV: 'development',
         DATABASE_URL: connectionString,
         WIZARD_ADS_APP_URL: BASE_URL,
@@ -207,6 +214,10 @@ async function startWebServer(connectionString: string, amazon: AmazonMock): Pro
 
   await waitForServer(`${BASE_URL}/login`, 120_000);
   return child;
+}
+
+function appendNodeOption(current: string | undefined, option: string): string {
+  return [current, option].filter((value): value is string => Boolean(value)).join(' ');
 }
 
 async function waitForServer(url: string, timeoutMs: number): Promise<void> {
