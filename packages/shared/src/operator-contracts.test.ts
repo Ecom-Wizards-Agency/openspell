@@ -17,6 +17,7 @@ import {
   RecommendationObservation,
   ReportCoverage,
   ReportPromotionWatermark,
+  ReversionBatchPreview,
   ReversionPreview,
   SqpWeeklyFact,
 } from './index.js';
@@ -26,6 +27,8 @@ const ORG_ID = '00000000-0000-4000-8000-000000000002';
 const GROUP_ID = '00000000-0000-4000-8000-000000000003';
 const RUN_ID = '00000000-0000-4000-8000-000000000004';
 const REC_ID = '00000000-0000-4000-8000-000000000005';
+const BATCH_ID = '00000000-0000-4000-8000-000000000006';
+const ROW_ID = '00000000-0000-4000-8000-000000000007';
 
 describe('creative attribution', () => {
   it('uses Asset ID as identity even when content hashes are null', () => {
@@ -222,6 +225,53 @@ describe('optimization observations and reversion', () => {
       reason: 'current state differs from expected applied value',
     });
     expect(reversion.exportAllowed).toBe(false);
+  });
+
+  it('counts an evidence-backed inverse batch without implying an Amazon write', () => {
+    const preview = ReversionBatchPreview.parse({
+      batchId: BATCH_ID,
+      sourceBatchId: null,
+      activeReversionBatchId: null,
+      profileId: PROFILE_ID,
+      tag: 'synthetic-export',
+      optGroup: 'Rank',
+      lever: 'push',
+      note: 'synthetic',
+      lifecycleStatus: 'exported',
+      exportedAt: '2026-08-29T00:00:00Z',
+      appliedAt: null,
+      artifactSha256: 'a'.repeat(64),
+      exportedProposals: 1,
+      reversibleRows: 1,
+      unsupportedRows: 0,
+      rows: [{
+        batchId: BATCH_ID,
+        rowId: ROW_ID,
+        recommendationId: REC_ID,
+        entityType: 'keyword',
+        entityId: 'keyword-1',
+        entityName: 'Synthetic keyword',
+        field: 'bid',
+        originalValue: 0.9,
+        proposedValue: 0.71,
+        exportedValue: 0.71,
+        synchronizedValue: 0.71,
+        synchronizedAt: '2026-08-29T01:00:00Z',
+        currentValue: 0.71,
+        currentSyncedAt: '2026-08-29T02:00:00Z',
+        inverseValue: 0.9,
+        state: 'ready',
+        conflict: false,
+        exportAllowed: true,
+        reason: 'exact synchronized evidence',
+      }],
+      readyRows: 1,
+      blockedRows: 0,
+      exportAllowed: true,
+      reason: 'one exact inverse row',
+    });
+    expect(preview.readyRows).toBe(preview.rows.length);
+    expect(preview.sourceBatchId).toBeNull();
   });
 });
 

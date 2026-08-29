@@ -33,6 +33,73 @@ export class MirrorCountMismatch extends Error {
   }
 }
 
+export interface EntityChangeLinkCounts {
+  offered: number;
+  linked: number;
+  ambiguous: number;
+  unmatched: number;
+}
+
+async function linkEntityChangeIds(
+  handle: DbHandle,
+  ids: readonly number[],
+): Promise<EntityChangeLinkCounts> {
+  if (ids.length === 0) return { offered: 0, linked: 0, ambiguous: 0, unmatched: 0 };
+  const [counts] = await handle.sql<EntityChangeLinkCounts[]>`
+    select * from app.link_exact_apply_changes(${ids}::bigint[])
+  `;
+  const classified = counts === undefined
+    ? 0
+    : counts.linked + counts.ambiguous + counts.unmatched;
+  if (counts === undefined || counts.offered !== ids.length || classified !== ids.length) {
+    throw new Error(
+      `entity_changes: offered ${ids.length} synchronization links, classified ${classified}`,
+    );
+  }
+  return counts;
+}
+
+/**
+ * Retry-safe reconciliation for sync evidence inserted before a linker error.
+ * The worker calls this on every entity pass, including a retry that produces
+ * no fresh diff because the current-state mirror was already promoted.
+ */
+export async function reconcileEntityChangeLinks(
+  handle: DbHandle,
+  input: { orgId: string; profileId: string },
+): Promise<EntityChangeLinkCounts> {
+  const rows = await handle.sql<{ id: number }[]>`
+    select ec.id from public.entity_changes ec
+     where ec.org_id = ${input.orgId}
+       and ec.profile_id = ${input.profileId}
+       and ec.source = 'sync'
+       and ec.apply_batch_id is null
+       and exists (
+         select 1
+           from public.apply_rows ar
+           join public.apply_batches ab
+             on ab.org_id = ar.org_id
+            and ab.profile_id = ar.profile_id
+            and ab.id = ar.batch_id
+          where ar.org_id = ec.org_id
+            and ar.profile_id = ec.profile_id
+            and (case when ar.entity_type = 'placement' then 'campaign' else ar.entity_type::text end)
+                = ec.entity_type::text
+            and ar.entity_id = ec.amazon_id
+            and app.canonical_apply_field(ar.entity_type::text, ar.field)
+                = app.canonical_apply_field(ec.entity_type::text, ec.field)
+            and ar.old_value = ec.old_value
+            and ar.new_value = ec.new_value
+            and ab.status in ('staged', 'applied')
+            and ab.artifact_sha256 is not null
+            and ab.exported_at <= ec.observed_at
+       )
+     order by ec.observed_at desc, ec.id desc
+     limit 500
+  `;
+  return linkEntityChangeIds(handle, rows.map((row) => row.id));
+}
+
 /**
  * Upsert mirror rows, keyed `(profile_id, amazon_id)`.
  *
@@ -113,17 +180,21 @@ export async function recordEntityChanges(
   if (changes.length === 0) return 0;
   const columnCount = Object.keys(getTableColumns(entityChanges)).length;
   let total = 0;
+  const insertedIds: number[] = [];
   for (const chunk of chunkForInsert(changes, columnCount)) {
     const written = await handle.db
       .insert(entityChanges)
       .values(chunk)
       .returning({ id: entityChanges.id });
     total += written.length;
+    insertedIds.push(...written.map((row) => row.id));
   }
   if (total !== changes.length) {
     throw new Error(
       `entity_changes: offered ${changes.length} rows, wrote ${total}`,
     );
   }
+
+  await linkEntityChangeIds(handle, insertedIds);
   return total;
 }

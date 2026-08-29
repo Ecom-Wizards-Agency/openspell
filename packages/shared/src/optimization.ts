@@ -1,5 +1,6 @@
 /** Persistent optimization group and observation-loop contracts. */
 import { z } from 'zod';
+import { ApplyEntityType, ApplyValue } from './apply.js';
 import { AmazonId, IsoDate, Uuid } from './primitives.js';
 
 export const OptimizationGroupRole = z.enum(['rank', 'discovery', 'profit', 'shield']);
@@ -109,3 +110,95 @@ export const ReversionPreview = z.object({
   reason: z.string().min(1),
 });
 export type ReversionPreview = z.infer<typeof ReversionPreview>;
+
+/** Exact evidence state for one exported old-to-new row. */
+export const ReversionRowState = z.enum([
+  'awaiting_sync',
+  'ready',
+  'conflict',
+  'already_reverted',
+  'unsupported',
+  'ambiguous',
+]);
+export type ReversionRowState = z.infer<typeof ReversionRowState>;
+
+/**
+ * One immutable export row reconstructed against synchronized evidence and the
+ * current entity mirror. Values stay scalar because the staged-apply bridge
+ * can only validate scalar old-to-new changes.
+ */
+export const ReversionRowPreview = z.object({
+  batchId: Uuid,
+  rowId: Uuid,
+  recommendationId: Uuid.nullable(),
+  entityType: ApplyEntityType,
+  entityId: AmazonId,
+  entityName: z.string().nullable(),
+  field: z.string().min(1),
+  originalValue: ApplyValue,
+  proposedValue: ApplyValue,
+  exportedValue: ApplyValue,
+  synchronizedValue: ApplyValue.nullable(),
+  synchronizedAt: z.iso.datetime().nullable(),
+  currentValue: ApplyValue.nullable(),
+  currentSyncedAt: z.iso.datetime().nullable(),
+  inverseValue: ApplyValue,
+  state: ReversionRowState,
+  conflict: z.boolean(),
+  exportAllowed: z.boolean(),
+  reason: z.string().min(1),
+});
+export type ReversionRowPreview = z.infer<typeof ReversionRowPreview>;
+
+export const ReversionBatchPreview = z.object({
+  batchId: Uuid,
+  sourceBatchId: Uuid.nullable(),
+  activeReversionBatchId: Uuid.nullable(),
+  profileId: Uuid,
+  tag: z.string().min(1),
+  optGroup: z.string().min(1),
+  lever: z.string().min(1),
+  note: z.string(),
+  lifecycleStatus: z.enum(['exported', 'applied_externally', 'reversion_exported', 'verified_reverted', 'abandoned']),
+  exportedAt: z.iso.datetime(),
+  appliedAt: z.iso.datetime().nullable(),
+  artifactSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  exportedProposals: z.number().int().nonnegative(),
+  reversibleRows: z.number().int().nonnegative(),
+  unsupportedRows: z.number().int().nonnegative(),
+  rows: z.array(ReversionRowPreview),
+  readyRows: z.number().int().nonnegative(),
+  blockedRows: z.number().int().nonnegative(),
+  exportAllowed: z.boolean(),
+  reason: z.string().min(1),
+}).superRefine((batch, context) => {
+  if (batch.exportedProposals !== batch.reversibleRows + batch.unsupportedRows) {
+    context.addIssue({
+      code: 'custom',
+      path: ['exportedProposals'],
+      message: 'exported proposals must equal reversible plus unsupported rows',
+    });
+  }
+  if (batch.rows.length !== batch.reversibleRows) {
+    context.addIssue({
+      code: 'custom',
+      path: ['rows'],
+      message: 'reconstructed rows must equal reversible rows',
+    });
+  }
+  if (batch.readyRows + batch.blockedRows !== batch.exportedProposals) {
+    context.addIssue({
+      code: 'custom',
+      path: ['blockedRows'],
+      message: 'ready plus blocked rows must equal exported proposals',
+    });
+  }
+  if (batch.readyRows !== batch.rows.filter((row) => row.exportAllowed).length) {
+    context.addIssue({
+      code: 'custom',
+      path: ['readyRows'],
+      message: 'ready row count must equal exportable reconstructed rows',
+    });
+  }
+});
+export type ReversionBatchPreview = z.infer<typeof ReversionBatchPreview>;

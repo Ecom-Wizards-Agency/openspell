@@ -5,7 +5,18 @@
  * port of the Python staged-apply ledger. `clicks` and `revenue` ride along on
  * a row because the caps-are-ceilings validator reads them.
  */
-import { boolean, date, index, integer, jsonb, pgTable, text, uuid } from 'drizzle-orm/pg-core';
+import {
+  boolean,
+  date,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import type { ApplyValue } from '@wizard-ads/shared';
 import { count, money, ts } from './columns.js';
 import { applyBatchStatus, applyEntityType, matchType } from './enums.js';
@@ -35,11 +46,25 @@ export const applyBatches = pgTable(
     score: jsonb('score'),
     revertedAt: ts('reverted_at'),
     revertNote: text('revert_note'),
+    /** A reversion export points to the immutable batch it inverses. */
+    sourceBatchId: uuid('source_batch_id'),
+    exportedAt: ts('exported_at').notNull().defaultNow(),
+    appliedAt: ts('applied_at'),
+    artifactSha256: text('artifact_sha256'),
+    exportedProposals: integer('exported_proposals').notNull().default(0),
+    reversibleRows: integer('reversible_rows').notNull().default(0),
+    unsupportedRows: integer('unsupported_rows').notNull().default(0),
     createdBy: uuid('created_by').references(() => authUsers.id, { onDelete: 'set null' }),
     createdAt: ts('created_at').notNull().defaultNow(),
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
-  (t) => [index('apply_batches_profile_idx').on(t.profileId, t.appliedOn)],
+  (t) => [
+    index('apply_batches_profile_idx').on(t.profileId, t.appliedOn),
+    uniqueIndex('apply_batches_org_profile_id_key').on(t.orgId, t.profileId, t.id),
+    uniqueIndex('apply_batches_active_reversion_key')
+      .on(t.sourceBatchId)
+      .where(sql`${t.sourceBatchId} is not null and ${t.status} <> 'abandoned'`),
+  ],
 );
 
 export const applyRows = pgTable(
@@ -52,6 +77,10 @@ export const applyRows = pgTable(
     orgId: uuid('org_id')
       .notNull()
       .references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id')
+      .notNull()
+      .references(() => adProfiles.id, { onDelete: 'cascade' }),
+    recommendationId: uuid('recommendation_id'),
     entityType: applyEntityType('entity_type').notNull(),
     entityId: text('entity_id').notNull(),
     entityName: text('entity_name'),
@@ -63,7 +92,17 @@ export const applyRows = pgTable(
     revenue: money('revenue'),
     createdAt: ts('created_at').notNull().defaultNow(),
   },
-  (t) => [index('apply_rows_batch_idx').on(t.batchId)],
+  (t) => [
+    index('apply_rows_batch_idx').on(t.batchId),
+    uniqueIndex('apply_rows_org_profile_id_key').on(t.orgId, t.profileId, t.id),
+    index('apply_rows_profile_entity_idx').on(
+      t.orgId,
+      t.profileId,
+      t.entityType,
+      t.entityId,
+      t.field,
+    ),
+  ],
 );
 
 export const campaignMaps = pgTable(

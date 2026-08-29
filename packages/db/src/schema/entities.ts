@@ -19,6 +19,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import type { TargetExpression } from '@wizard-ads/shared';
 import { money, ts } from './columns.js';
 import {
@@ -184,9 +185,16 @@ export const entityChanges = pgTable(
     /** `sync` means somebody changed it outside wizard-ads. That is the point. */
     source: entityChangeSource('source').notNull(),
     applyBatchId: uuid('apply_batch_id'),
+    /** Exact immutable export row this synchronization event uniquely proves. */
+    applyRowId: uuid('apply_row_id'),
     observedAt: ts('observed_at').notNull().defaultNow(),
   },
-  (t) => [index('entity_changes_profile_time_idx').on(t.profileId, t.observedAt)],
+  (t) => [
+    index('entity_changes_profile_time_idx').on(t.profileId, t.observedAt),
+    uniqueIndex('entity_changes_apply_row_once_key')
+      .on(t.applyRowId)
+      .where(sql`${t.applyRowId} is not null`),
+  ],
 );
 
 export type CampaignRowDb = typeof campaigns.$inferSelect;
