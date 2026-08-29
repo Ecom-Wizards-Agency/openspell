@@ -227,6 +227,10 @@ implementation brief in `docs/workpackages/`.
   observations, but there is no validated account-specific attribution-maturity curve.
 - Unified reporting, maximum-history bootstrap and a live-verified coverage matrix remain absent.
   Stale-row reconciliation now applies only to accepted complete SP report dates.
+- Amazon's current unified-reporting availability table documents hour-grain Reporting API data
+  with a 14-day history and 14-day maximum pull. OpenSpell has not implemented or live-verified
+  that beta path, so it is a bounded bootstrap candidate rather than a substitute for the
+  forward, near-real-time Marketing Stream ledger.
 
 ## Released data foundations
 
