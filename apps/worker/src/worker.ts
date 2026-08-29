@@ -7,6 +7,8 @@ import {
 import {
   JobPayload,
   type EconomicsSyncJob,
+  type AmazonApplyJob,
+  type AmazonObserveJob,
   type CreativeSyncJob,
   type HistoryBootstrapJob,
   type JobType,
@@ -51,6 +53,8 @@ import {
   type SqpQueuedJobContext,
 } from './sqp.js';
 import type { WeeklySqpScheduleProducer } from './sqp-scheduler.js';
+import type { GuardedAmazonWriteRuntime } from './amazon-writes.js';
+import { SpWriteRetryableError } from './ads-api.js';
 
 const MINUTE_MS = 60_000;
 const FOUR_HOURS_MS = 4 * 60 * MINUTE_MS;
@@ -114,6 +118,8 @@ export interface SyncWorkerOptions {
   recommendationsRun?: RecommendationsRun;
   /** Read-only current-snapshot SB Video ingestion and sbAds promotion. */
   sbVideo?: SbVideoIngestionRuntime;
+  /** Guarded worker-only Amazon mutation and observation runtime. */
+  amazonWrites?: GuardedAmazonWriteRuntime;
   buckets?: RegionTokenBuckets;
   claimBatchSize?: number;
   maxConcurrentJobs?: number;
@@ -131,6 +137,7 @@ export class SyncWorker {
   private readonly crosscheckIngest: CrosscheckIngest | undefined;
   private readonly recommendationsRun: RecommendationsRun | undefined;
   private readonly sbVideo: SbVideoIngestionRuntime | undefined;
+  private readonly amazonWrites: GuardedAmazonWriteRuntime | undefined;
   private readonly buckets: RegionTokenBuckets;
   private readonly claimBatchSize: number;
   private readonly maxConcurrentJobs: number;
@@ -149,6 +156,7 @@ export class SyncWorker {
     this.crosscheckIngest = options.crosscheckIngest;
     this.recommendationsRun = options.recommendationsRun;
     this.sbVideo = options.sbVideo;
+    this.amazonWrites = options.amazonWrites;
     this.buckets = options.buckets ?? defaultRegionTokenBuckets;
     this.claimBatchSize = options.claimBatchSize ?? 10;
     this.maxConcurrentJobs = options.maxConcurrentJobs ?? 10;
@@ -276,7 +284,7 @@ export class SyncWorker {
         });
         return;
       }
-      const explicitRetry = error instanceof AdsApiRetryableError || error instanceof RetryableJobError
+      const explicitRetry = error instanceof AdsApiRetryableError || error instanceof RetryableJobError || error instanceof SpWriteRetryableError
         ? error.retryAfterSeconds
         : undefined;
       const retrySeconds = explicitRetry !== undefined
@@ -344,7 +352,27 @@ export class SyncWorker {
         return this.runIntegration(payload.type, this.integrations.reportPromote, payload);
       case 'marketing_stream.normalize':
         return this.runIntegration(payload.type, this.integrations.marketingStreamNormalize, payload);
+      case 'amazon.apply':
+        return this.runAmazonApply(profile, payload);
+      case 'amazon.observe':
+        return this.runAmazonObserve(profile, payload);
     }
+  }
+
+  private runAmazonApply(
+    profile: AdsProfileContext,
+    payload: AmazonApplyJob,
+  ): Promise<Record<string, unknown>> {
+    if (!this.amazonWrites) throw new PermanentJobError('Amazon write runtime is not configured');
+    return this.buckets.run(profile.region, () => this.amazonWrites!.apply(payload, profile));
+  }
+
+  private runAmazonObserve(
+    profile: AdsProfileContext,
+    payload: AmazonObserveJob,
+  ): Promise<Record<string, unknown>> {
+    if (!this.amazonWrites) throw new PermanentJobError('Amazon write runtime is not configured');
+    return this.buckets.run(profile.region, () => this.amazonWrites!.observe(payload, profile));
   }
 
   private async runIntegration<TPayload extends JobPayload>(

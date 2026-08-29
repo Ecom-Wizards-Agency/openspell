@@ -129,4 +129,6 @@ export interface ListOptions {
   campaignIdFilter?: readonly string[];
   /** Restrict to these ad groups where the endpoint supports it. */
   adGroupIdFilter?: readonly string[];
+  /** Restrict a targeted post-write observation to resource ids. */
+  entityIdFilter?: readonly string[];
 }

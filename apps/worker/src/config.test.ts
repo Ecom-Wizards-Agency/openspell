@@ -71,3 +71,21 @@ describe('SP-API configuration', () => {
     expect(config.spApiReportMinIntervalMs).toBe(2_500);
   });
 });
+
+describe('Amazon write configuration', () => {
+  const base = { DATABASE_URL: 'postgres://synthetic.invalid/db' };
+
+  it('is fail-closed unless the deployment flag is exactly true', () => {
+    expect(configFromEnv(base).amazonWritesEnabled).toBe(false);
+    expect(configFromEnv({ ...base, OPEN_SPELL_AMAZON_WRITES_ENABLED: 'TRUE' }).amazonWritesEnabled)
+      .toBe(false);
+    expect(configFromEnv({ ...base, OPEN_SPELL_AMAZON_WRITES_ENABLED: 'true' }).amazonWritesEnabled)
+      .toBe(true);
+  });
+
+  it('trims the gitignored authorization path without providing a tracked default', () => {
+    expect(configFromEnv(base).amazonWriteAuthorizationPath).toBeUndefined();
+    expect(configFromEnv({ ...base, AMAZON_WRITE_AUTHORIZATION_PATH: '  _local/write.json  ' })
+      .amazonWriteAuthorizationPath).toBe('_local/write.json');
+  });
+});

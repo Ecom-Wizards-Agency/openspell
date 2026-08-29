@@ -27,6 +27,9 @@ export interface WorkerConfig {
   spApiClientSecret: string | undefined;
   /** Serial floor between Reports API operations; provider 429s still control retries. */
   spApiReportMinIntervalMs: number;
+  /** Two-factor deployment gate: this flag plus a valid bounded authorization file. */
+  amazonWritesEnabled: boolean;
+  amazonWriteAuthorizationPath: string | undefined;
 }
 
 function positiveInteger(value: string | undefined, fallback: number, name: string): number {
@@ -76,5 +79,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
       1_000,
       'SP_API_REPORT_MIN_INTERVAL_MS',
     ),
+    amazonWritesEnabled: env['OPEN_SPELL_AMAZON_WRITES_ENABLED'] === 'true',
+    amazonWriteAuthorizationPath: env['AMAZON_WRITE_AUTHORIZATION_PATH']?.trim() || undefined,
   };
 }

@@ -1,12 +1,20 @@
 import {
   AdsApiClient as UnderlyingAdsApiClient,
   AdsApiHttpError,
+  AdsApiParseError,
   AdsApiTimeoutError,
   AdsThrottleError,
   DuplicateReportError,
+  DuplicateWriteError,
+  SP_WRITE_BATCH_SIZE,
   type CreativeAssetProbePage,
   type ReportMetadata,
   type SbAdProbePage,
+  type SpBatchWriteResult,
+  toSpWriteEvidence,
+  type SpKeywordUpdateInput,
+  type SpTargetUpdateInput,
+  type SpCampaignPlacementUpdateInput,
 } from '@wizard-ads/ads-api';
 import {
   getAdsRefreshToken,
@@ -14,7 +22,12 @@ import {
   listActiveConnectionIdsForRegion,
   type DbHandle,
 } from '@wizard-ads/db';
-import type { EntityRow, Region, WorkerReportType } from '@wizard-ads/shared';
+import {
+  AmazonWriteProviderEvidence,
+  type EntityRow,
+  type Region,
+  type WorkerReportType,
+} from '@wizard-ads/shared';
 
 /** The profile routing information every Amazon call needs. */
 export interface AdsProfileContext {
@@ -24,6 +37,9 @@ export interface AdsProfileContext {
   region: Region;
   currencyCode: string;
   timezone: string;
+  /** Used only for an exact gitignored live-test allowlist match. */
+  accountName?: string | null;
+  countryCode?: string;
 }
 
 export interface CreateReportInput {
@@ -120,6 +136,56 @@ export interface SuggestedBidClient {
   ): Promise<SuggestedBidResult>;
 }
 
+export interface SpWriteObservationRequest {
+  keywordIds: readonly string[];
+  targetIds: readonly string[];
+  campaignIds: readonly string[];
+}
+
+export interface SpWriteObservationResult {
+  rows: readonly EntityRow[];
+  requested: number;
+  returned: number;
+  /** Logical Amazon list requests made across keywords, targets, and campaigns. */
+  apiCalls: number;
+}
+
+/** Worker-only mutation and targeted observation surface. */
+export interface SpWriteClient {
+  updateSpKeywordBids(
+    profile: AdsProfileContext,
+    items: readonly SpKeywordUpdateInput[],
+  ): Promise<AmazonWriteProviderEvidence[]>;
+  updateSpTargetBids(
+    profile: AdsProfileContext,
+    items: readonly SpTargetUpdateInput[],
+  ): Promise<AmazonWriteProviderEvidence[]>;
+  updateSpCampaignPlacements(
+    profile: AdsProfileContext,
+    items: readonly SpCampaignPlacementUpdateInput[],
+  ): Promise<AmazonWriteProviderEvidence[]>;
+  observeSpWriteEntities(
+    profile: AdsProfileContext,
+    request: SpWriteObservationRequest,
+  ): Promise<SpWriteObservationResult>;
+}
+
+/** A throttle explicitly rejected the mutation before Amazon applied it. */
+export class SpWriteRetryableError extends Error {
+  constructor(message: string, readonly retryAfterSeconds?: number) {
+    super(message);
+    this.name = 'SpWriteRetryableError';
+  }
+}
+
+/** A timeout or 5xx cannot prove whether Amazon applied the request. */
+export class SpWriteAmbiguousError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SpWriteAmbiguousError';
+  }
+}
+
 /** Read-only, page-scoped seam used by the non-persisting SB Video probe. */
 export interface SbVideoContractProbeClient {
   probeSbAdsPage(profile: AdsProfileContext): Promise<SbAdProbePage>;
@@ -168,7 +234,11 @@ export type UnderlyingClient = Pick<
   | 'getSpTargetBidRecommendations'
 > & Partial<Pick<
   UnderlyingAdsApiClient,
-  'probeSbAdsPage' | 'probeCreativeAssetsPage'
+  | 'probeSbAdsPage'
+  | 'probeCreativeAssetsPage'
+  | 'updateSpKeywords'
+  | 'updateSpTargets'
+  | 'updateSpCampaignPlacementBidding'
 >>;
 
 /** The subset of `fetch` the report download needs. */
@@ -210,7 +280,7 @@ const KNOWN_REPORT_STATUSES = new Set<AdsReportStatus['status']>([
  * so the fetch re-polls, and everything else is left as-is for the generic
  * attempt counter to age out into the dead-letter.
  */
-export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideoContractProbeClient {
+export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideoContractProbeClient, SpWriteClient {
   private readonly clients = new Map<string, UnderlyingClient>();
   private readonly fetch: FetchLike;
 
@@ -377,6 +447,121 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
     return profileIds;
   }
 
+  async updateSpKeywordBids(
+    profile: AdsProfileContext,
+    items: readonly SpKeywordUpdateInput[],
+  ): Promise<AmazonWriteProviderEvidence[]> {
+    const client = await this.clientForProfile(profile);
+    if (!client.updateSpKeywords) throw new Error('Sponsored Products keyword writes are unavailable');
+    return this.writeEvidence(() => client.updateSpKeywords!(profile.amazonProfileId, items));
+  }
+
+  async updateSpTargetBids(
+    profile: AdsProfileContext,
+    items: readonly SpTargetUpdateInput[],
+  ): Promise<AmazonWriteProviderEvidence[]> {
+    const client = await this.clientForProfile(profile);
+    if (!client.updateSpTargets) throw new Error('Sponsored Products target writes are unavailable');
+    return this.writeEvidence(() => client.updateSpTargets!(profile.amazonProfileId, items));
+  }
+
+  async updateSpCampaignPlacements(
+    profile: AdsProfileContext,
+    items: readonly SpCampaignPlacementUpdateInput[],
+  ): Promise<AmazonWriteProviderEvidence[]> {
+    const client = await this.clientForProfile(profile);
+    if (!client.updateSpCampaignPlacementBidding) throw new Error('Sponsored Products placement writes are unavailable');
+    return this.writeEvidence(() => client.updateSpCampaignPlacementBidding!(profile.amazonProfileId, items));
+  }
+
+  async observeSpWriteEntities(
+    profile: AdsProfileContext,
+    request: SpWriteObservationRequest,
+  ): Promise<SpWriteObservationResult> {
+    const client = await this.clientForProfile(profile);
+    const keywordIds = [...new Set(request.keywordIds)];
+    const targetIds = [...new Set(request.targetIds)];
+    const campaignIds = [...new Set(request.campaignIds)];
+    const requested = keywordIds.length + targetIds.length + campaignIds.length;
+    const rows: EntityRow[] = [];
+    let apiCalls = 0;
+    const collect = async <T extends { amazonId: string }>(
+      run: () => Promise<{ items: T[]; truncated: boolean; skipped: unknown[] }>,
+      expectedIds: ReadonlySet<string>,
+    ): Promise<void> => {
+      apiCalls += 1;
+      const listed = await this.guard(profile.region, run);
+      if (listed.truncated || listed.skipped.length > 0) {
+        throw new Error('targeted Sponsored Products observation was truncated or refused provider rows');
+      }
+      for (const item of listed.items) {
+        if (!expectedIds.has(item.amazonId)) {
+          throw new Error('targeted Sponsored Products observation returned an unrequested entity');
+        }
+        rows.push({ ...item, profileId: profile.id } as unknown as EntityRow);
+      }
+    };
+    for (const ids of batchSpObservationIds(keywordIds)) {
+      await collect(() => client.listSpKeywords(profile.amazonProfileId, {
+        entityIdFilter: ids,
+      }), new Set(ids));
+    }
+    for (const ids of batchSpObservationIds(targetIds)) {
+      await collect(() => client.listSpTargets(profile.amazonProfileId, {
+        entityIdFilter: ids,
+      }), new Set(ids));
+    }
+    for (const ids of batchSpObservationIds(campaignIds)) {
+      await collect(() => client.listSpCampaigns(profile.amazonProfileId, {
+        entityIdFilter: ids,
+      }), new Set(ids));
+    }
+    const uniqueReturned = new Set(rows.map((row) => `${row.entityType}:${row.amazonId}`));
+    if (uniqueReturned.size !== rows.length) {
+      throw new Error('targeted Sponsored Products observation returned duplicate entities');
+    }
+    return { rows, requested, returned: rows.length, apiCalls };
+  }
+
+  private async writeEvidence(
+    run: () => Promise<SpBatchWriteResult>,
+  ): Promise<AmazonWriteProviderEvidence[]> {
+    try {
+      const result = toSpWriteEvidence(await run());
+      return result.evidence.map((evidence) => {
+        const parsed = AmazonWriteProviderEvidence.safeParse({
+          outcome: evidence.outcome,
+          providerEntityId: evidence.providerEntityId,
+          code: evidence.code,
+          message: evidence.message,
+        });
+        if (!parsed.success) {
+          throw new AdsApiParseError('Amazon write response contains invalid sanitized evidence');
+        }
+        return parsed.data;
+      });
+    } catch (error) {
+      if (error instanceof AdsThrottleError) {
+        throw new SpWriteRetryableError(
+          error.message,
+          error.retryAfterMs === null ? undefined : Math.ceil(error.retryAfterMs / 1_000),
+        );
+      }
+      if (error instanceof AdsApiHttpError && error.status === 429) {
+        throw new SpWriteRetryableError(error.message);
+      }
+      if (
+        error instanceof AdsApiTimeoutError
+        || error instanceof AdsApiParseError
+        || error instanceof DuplicateWriteError
+        || (error instanceof AdsApiHttpError && (error.status === 0 || error.status >= 500))
+      ) {
+        throw new SpWriteAmbiguousError(error instanceof Error ? error.message : String(error));
+      }
+      throw error;
+    }
+  }
+
   async probeSbAdsPage(profile: AdsProfileContext): Promise<SbAdProbePage> {
     const client = await this.clientForProfile(profile);
     const probe = client.probeSbAdsPage;
@@ -466,6 +651,14 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function batchSpObservationIds(ids: readonly string[]): string[][] {
+  const batches: string[][] = [];
+  for (let index = 0; index < ids.length; index += SP_WRITE_BATCH_SIZE) {
+    batches.push(ids.slice(index, index + SP_WRITE_BATCH_SIZE));
+  }
+  return batches;
 }
 
 async function* emptyStream(): AsyncGenerator<Uint8Array> {

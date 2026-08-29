@@ -19,3 +19,4 @@ export * from './query-intelligence.js';
 export * from './optimization.js';
 export * from './reporting.js';
 export * from './dayparting.js';
+export * from './amazon-writes.js';

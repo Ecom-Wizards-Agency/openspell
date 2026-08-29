@@ -33,6 +33,11 @@ import {
   Region,
   ReportDataSource,
   WorkerReportType,
+  AmazonWriteActionType,
+  AmazonWriteApprovalMode,
+  AmazonWriteExecutionStatus,
+  AmazonWriteObservationStatus,
+  AmazonWriteRowStatus,
 } from '@wizard-ads/shared';
 
 /**
@@ -131,6 +136,32 @@ export const applyBatchStatus = pgEnum('apply_batch_status', [
   'applied',
   'reverted',
   'abandoned',
+]);
+export const amazonWriteActionType = pgEnum(
+  'amazon_write_action_type',
+  tuple(AmazonWriteActionType.options),
+);
+export const amazonWriteApprovalMode = pgEnum(
+  'amazon_write_approval_mode',
+  tuple(AmazonWriteApprovalMode.options),
+);
+export const amazonWriteExecutionStatus = pgEnum(
+  'amazon_write_execution_status',
+  tuple(AmazonWriteExecutionStatus.options),
+);
+export const amazonWriteRowStatus = pgEnum(
+  'amazon_write_row_status',
+  tuple(AmazonWriteRowStatus.options),
+);
+export const amazonWriteObservationStatus = pgEnum(
+  'amazon_write_observation_status',
+  tuple(AmazonWriteObservationStatus.options),
+);
+export const amazonWriteAttemptOutcome = pgEnum('amazon_write_attempt_outcome', [
+  'accepted',
+  'failed',
+  'retryable',
+  'ambiguous',
 ]);
 
 export const auditActorType = pgEnum('audit_actor_type', ['user', 'service', 'mcp', 'system']);

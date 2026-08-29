@@ -132,6 +132,7 @@ export {
   buildSpArchiveBody,
   buildSpWriteBody,
   parseSpWriteResponse,
+  toSpWriteEvidence,
 } from './writes.js';
 export type {
   SpAdGroupCreateInput,
@@ -168,6 +169,8 @@ export type {
   SpWriteError,
   SpWriteErrorDetail,
   SpWriteItem,
+  SpWriteEvidence,
+  SpWriteEvidenceResult,
 } from './writes.js';
 
 // Sponsored Products suggested bids

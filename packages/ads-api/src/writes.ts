@@ -257,6 +257,69 @@ export interface SpBatchWriteResult<K extends SpWriteKind = SpWriteKind> {
   batches: number;
 }
 
+/** Minimal provider evidence safe to persist in the OpenSpell audit ledger. */
+export interface SpWriteEvidence<K extends SpWriteKind = SpWriteKind> {
+  kind: K;
+  index: number;
+  outcome: 'accepted' | 'failed';
+  providerEntityId: AmazonId | null;
+  code: string | null;
+  message: string | null;
+}
+
+export interface SpWriteEvidenceResult<K extends SpWriteKind = SpWriteKind> {
+  evidence: SpWriteEvidence<K>[];
+  submitted: number;
+  batches: number;
+}
+
+function sanitizedEvidenceText(value: string | null, maxLength: number): string | null {
+  if (value === null) return null;
+  const compact = value
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[A-Za-z0-9_=-]{40,}/g, '[redacted]')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return compact.length === 0 ? null : compact.slice(0, maxLength);
+}
+
+/**
+ * Drop raw Amazon envelopes before persistence. The returned evidence keeps
+ * only index accounting, provider identity and bounded diagnostic text.
+ */
+export function toSpWriteEvidence<K extends SpWriteKind>(
+  result: SpBatchWriteResult<K>,
+): SpWriteEvidenceResult<K> {
+  const evidence: SpWriteEvidence<K>[] = [
+    ...result.items.map((item) => ({
+      kind: item.kind,
+      index: item.index,
+      outcome: 'accepted' as const,
+      providerEntityId: item.id,
+      code: null,
+      message: null,
+    })),
+    ...result.errors.map((error) => ({
+      kind: error.kind,
+      index: error.index,
+      outcome: 'failed' as const,
+      providerEntityId: null,
+      code: sanitizedEvidenceText(error.code, 160),
+      message: sanitizedEvidenceText(
+        error.details ?? error.errors.map((detail) => String(detail.errorValue)).join('; '),
+        512,
+      ),
+    })),
+  ].sort((left, right) => left.index - right.index);
+
+  if (evidence.length !== result.submitted) {
+    throw new AdsApiParseError(
+      `write evidence accounted for ${evidence.length} of ${result.submitted} submitted items`,
+    );
+  }
+  return { evidence, submitted: result.submitted, batches: result.batches };
+}
+
 export function batchSpWrites<T>(items: readonly T[]): T[][] {
   const batches: T[][] = [];
   for (let index = 0; index < items.length; index += SP_WRITE_BATCH_SIZE) {

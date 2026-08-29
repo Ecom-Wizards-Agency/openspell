@@ -20,6 +20,7 @@ export * from './spapi-sqp.js';
 export * from './sqp-scheduler.js';
 export * from './history-planning.js';
 export * from './report-promotion.js';
+export * from './amazon-writes.js';
 export * from './store.js';
 export * from './worker.js';
 

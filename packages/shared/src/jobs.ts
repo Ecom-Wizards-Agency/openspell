@@ -26,6 +26,8 @@ export const JobType = z.enum([
   'history.bootstrap',
   'report.promote',
   'marketing_stream.normalize',
+  'amazon.apply',
+  'amazon.observe',
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -227,6 +229,19 @@ export const MarketingStreamNormalizeJob = z.object({
   messageIds: z.array(z.string().min(1)).min(1),
 });
 
+export const AmazonApplyJob = z.object({
+  ...jobBase,
+  type: z.literal(JobType.enum['amazon.apply']),
+  executionId: Uuid,
+});
+
+export const AmazonObserveJob = z.object({
+  ...jobBase,
+  type: z.literal(JobType.enum['amazon.observe']),
+  executionId: Uuid,
+  attempt: z.number().int().nonnegative().default(0),
+});
+
 export const JobPayload = z.discriminatedUnion('type', [
   EntitySyncJob,
   ReportRequestJob,
@@ -243,6 +258,8 @@ export const JobPayload = z.discriminatedUnion('type', [
   HistoryBootstrapJob,
   ReportPromoteJob,
   MarketingStreamNormalizeJob,
+  AmazonApplyJob,
+  AmazonObserveJob,
 ]);
 export type JobPayload = z.infer<typeof JobPayload>;
 
@@ -270,3 +287,5 @@ export type SqpRequestJob = z.infer<typeof SqpRequestJob>;
 export type HistoryBootstrapJob = z.infer<typeof HistoryBootstrapJob>;
 export type ReportPromoteJob = z.infer<typeof ReportPromoteJob>;
 export type MarketingStreamNormalizeJob = z.infer<typeof MarketingStreamNormalizeJob>;
+export type AmazonApplyJob = z.infer<typeof AmazonApplyJob>;
+export type AmazonObserveJob = z.infer<typeof AmazonObserveJob>;

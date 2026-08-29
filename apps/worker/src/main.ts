@@ -21,6 +21,10 @@ import {
 } from './sb-video-ingestion.js';
 import { createMrpEconomicsSync } from './mrp.js';
 import {
+  createPostgresAmazonWriteRuntime,
+  loadBoundedAmazonWriteAuthorization,
+} from './amazon-writes.js';
+import {
   AuthHealthMonitor,
   BidSeriesSyncPass,
   ScheduleProvisioner,
@@ -35,11 +39,16 @@ const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
   'report.poll',
   'report.fetch',
   'creative.sync',
+  'amazon.apply',
+  'amazon.observe',
 ]);
 
 const config = configFromEnv();
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
 const store = new PostgresWorkerStore(handle);
+const amazonWriteAuthorization = config.amazonWritesEnabled
+  ? await loadBoundedAmazonWriteAuthorization(config.amazonWriteAuthorizationPath)
+  : null;
 const marketingStream = config.marketingStreamQueueUrl
   ? createMarketingStreamSqsConsumer({ handle, queueUrl: config.marketingStreamQueueUrl })
   : undefined;
@@ -50,6 +59,15 @@ const runsAmazonJobs = config.jobTypes === undefined
 // One client instance serves both the queue worker and bid-corridor sync.
 const adsApi = runsAmazonJobs ? createAdsApiClientFromEnv(handle) : undefined;
 const recommendationRuns = new PostgresRecommendationRunStore(handle);
+const amazonWrites = adsApi
+  ? createPostgresAmazonWriteRuntime({
+      handle,
+      workerStore: store,
+      provider: adsApi,
+      enabled: config.amazonWritesEnabled,
+      authorization: amazonWriteAuthorization,
+    })
+  : undefined;
 const sbVideo = adsApi
   ? new ObservedSbVideoIngestion(
       adsApi,
@@ -76,6 +94,7 @@ const worker = new SyncWorker({
   crosscheckIngest: createCrosscheckIngest(handle, { inboxDir: config.crosscheckInboxDir }),
   recommendationsRun: createRecommendationsRunner(recommendationRuns),
   sbVideo,
+  amazonWrites,
   integrations: {
     economicsSync: createMrpEconomicsSync(handle),
     rankSync: createDataDiveRankSyncHandler({ handle }),

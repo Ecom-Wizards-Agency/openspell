@@ -296,6 +296,7 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
               ...(options.stateFilter === undefined ? {} : { stateFilter: options.stateFilter }),
               ...(options.campaignIdFilter === undefined ? {} : { campaignIdFilter: options.campaignIdFilter }),
               ...(options.adGroupIdFilter === undefined ? {} : { adGroupIdFilter: options.adGroupIdFilter }),
+              ...(options.entityIdFilter === undefined ? {} : { entityIdFilter: options.entityIdFilter }),
             }),
           );
 

@@ -334,7 +334,14 @@ describe.skipIf(!available)('worker + real Postgres', () => {
   });
 
   it('refuses overlapping group previews and holds after export until complete continue evidence', async () => {
-    await database.sql`delete from public.apply_batches where org_id = ${orgId}`;
+    await database.sql`
+      delete from public.apply_batches batch
+       where batch.org_id = ${orgId}
+         and not exists (
+           select 1 from public.amazon_write_approvals approval
+            where approval.apply_batch_id = batch.id
+         )
+    `;
     await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
     const [group] = await database.sql<{ id: string }[]>`
       select id from public.optimization_groups

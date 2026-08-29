@@ -6,8 +6,11 @@
 import { gzipSync } from 'node:zlib';
 import {
   AdsApiHttpError,
+  AdsApiParseError,
+  AdsApiTimeoutError,
   AdsThrottleError,
   DuplicateReportError,
+  DuplicateWriteError,
   type MirrorRow,
   type ReportMetadata,
 } from '@wizard-ads/ads-api';
@@ -18,6 +21,8 @@ import {
   AdsApiRetryableError,
   DbAdsApiClient,
   DownloadUrlExpiredError,
+  SpWriteAmbiguousError,
+  SpWriteRetryableError,
   createAdsApiClientFromEnv,
   type AdsApiAdapterDeps,
   type AdsProfileContext,
@@ -405,6 +410,94 @@ describe('DbAdsApiClient.getSpSuggestedBids', () => {
     expect(keywords).toHaveBeenCalledOnce();
     expect(targets).not.toHaveBeenCalled();
     expect(result.submitted).toBe(1);
+  });
+});
+
+describe('DbAdsApiClient guarded Sponsored Products writes', () => {
+  it('keeps row-level Amazon success/failure accounting and drops raw envelopes', async () => {
+    const updateSpKeywords = vi.fn(async () => ({
+      submitted: 2,
+      batches: 1,
+      items: [{
+        kind: 'keywords' as const, index: 0, id: 'keyword-1', entity: null,
+        raw: { sensitive: 'not persisted' },
+      }],
+      errors: [{
+        kind: 'keywords' as const, index: 1, code: 'INVALID_ARGUMENT',
+        details: 'synthetic rejection', errors: [], raw: { sensitive: 'not persisted' },
+      }],
+    }));
+    const { adapter } = makeAdapter(underlying({ updateSpKeywords }));
+
+    const evidence = await adapter.updateSpKeywordBids(profile, [
+      { keywordId: 'keyword-1', bid: 0.71 },
+      { keywordId: 'keyword-2', bid: 0.72 },
+    ]);
+
+    expect(evidence.map((row) => row.outcome)).toEqual(['accepted', 'failed']);
+    expect(JSON.stringify(evidence)).not.toContain('not persisted');
+    expect(updateSpKeywords).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries only an explicit pre-mutation throttle', async () => {
+    const { adapter } = makeAdapter(underlying({
+      updateSpKeywords: async () => {
+        throw new AdsThrottleError('synthetic throttle', 429, '', 1, 2_000);
+      },
+    }));
+    await expect(adapter.updateSpKeywordBids(profile, [{ keywordId: 'keyword-1', bid: 0.71 }]))
+      .rejects.toMatchObject({ name: 'SpWriteRetryableError', retryAfterSeconds: 2 });
+    await expect(adapter.updateSpKeywordBids(profile, [{ keywordId: 'keyword-1', bid: 0.71 }]))
+      .rejects.toBeInstanceOf(SpWriteRetryableError);
+  });
+
+  it.each([
+    new AdsApiTimeoutError('synthetic timeout'),
+    new AdsApiHttpError('synthetic transport failure', 0, '', 1),
+    new AdsApiHttpError('synthetic server failure', 503, '', 1),
+    new AdsApiParseError('synthetic incomplete multi-status response'),
+    new DuplicateWriteError('synthetic duplicate', 425, '', 1, 'update', '/sp/keywords'),
+  ])('marks an uncertain post-send outcome ambiguous and never asks the caller to retry it', async (failure) => {
+    const updateSpKeywords = vi.fn(async () => { throw failure; });
+    const { adapter } = makeAdapter(underlying({ updateSpKeywords }));
+    await expect(adapter.updateSpKeywordBids(profile, [{ keywordId: 'keyword-1', bid: 0.71 }]))
+      .rejects.toBeInstanceOf(SpWriteAmbiguousError);
+    expect(updateSpKeywords).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses targeted id filters and rejects duplicate observation rows', async () => {
+    const listSpKeywords = vi.fn(async () => ({
+      ...emptyList(),
+      items: [{
+        entityType: 'keyword' as const, amazonId: 'keyword-1', adProduct: 'SP' as const,
+        name: 'synthetic', state: 'enabled' as const, campaignId: 'campaign-1',
+        adGroupId: 'group-1', keywordText: 'synthetic', matchType: 'exact' as const, bid: 0.71,
+      }],
+    }));
+    const { adapter } = makeAdapter(underlying({ listSpKeywords }));
+    const observed = await adapter.observeSpWriteEntities(profile, {
+      keywordIds: ['keyword-1'], targetIds: [], campaignIds: [],
+    });
+    expect(observed).toMatchObject({ requested: 1, returned: 1, apiCalls: 1 });
+    expect(listSpKeywords).toHaveBeenCalledWith(profile.amazonProfileId, {
+      entityIdFilter: ['keyword-1'],
+    });
+  });
+
+  it('chunks targeted observations at the provider batch limit and counts every read', async () => {
+    const listSpKeywords = vi.fn(async (
+      _profileId: string,
+      _options?: { entityIdFilter?: readonly string[] },
+    ) => emptyList());
+    const { adapter } = makeAdapter(underlying({ listSpKeywords }));
+    const keywordIds = Array.from({ length: 101 }, (_unused, index) => `keyword-${index + 1}`);
+    const observed = await adapter.observeSpWriteEntities(profile, {
+      keywordIds, targetIds: [], campaignIds: [],
+    });
+    expect(observed).toMatchObject({ requested: 101, returned: 0, apiCalls: 2 });
+    expect(listSpKeywords).toHaveBeenCalledTimes(2);
+    expect(listSpKeywords.mock.calls.map((call) => call[1]?.entityIdFilter?.length))
+      .toEqual([100, 1]);
   });
 });
 

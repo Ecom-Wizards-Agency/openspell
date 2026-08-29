@@ -37,7 +37,14 @@ describe.skipIf(!available)('recommendation observation reconciler + Postgres', 
   beforeEach(async () => {
     await database.sql`delete from public.recommendation_observations where org_id = ${orgId}`;
     await database.sql`delete from public.entity_changes where org_id = ${orgId} and apply_row_id is not null`;
-    await database.sql`delete from public.apply_batches where org_id = ${orgId}`;
+    await database.sql`
+      delete from public.apply_batches batch
+       where batch.org_id = ${orgId}
+         and not exists (
+           select 1 from public.amazon_write_approvals approval
+            where approval.apply_batch_id = batch.id
+         )
+    `;
     await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
     await database.sql`delete from public.optimization_groups where org_id = ${orgId}`;
     await database.sql`delete from public.report_coverage where org_id = ${orgId}`;

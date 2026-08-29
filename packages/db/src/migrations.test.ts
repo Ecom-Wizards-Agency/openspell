@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260829160100_sb_video_observed_ingestion.sql');
+    expect(files.at(-1)).toBe('20260829180000_amazon_write_gateway.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -42,12 +42,14 @@ describe.skipIf(!available)('migrations', () => {
        where t.typname = 'sync_job_type'
        order by e.enumsortorder
     `;
-    expect(labels.slice(-5).map((row) => row.enumlabel)).toEqual([
+    expect(labels.slice(-7).map((row) => row.enumlabel)).toEqual([
       'creative.sync',
       'sqp.request',
       'history.bootstrap',
       'report.promote',
       'marketing_stream.normalize',
+      'amazon.apply',
+      'amazon.observe',
     ]);
   });
 
@@ -159,6 +161,8 @@ describe.skipIf(!available)('migrations', () => {
       'recommendation_runs', 'recommendations', 'insights', 'crosscheck_results',
       // writes
       'apply_batches', 'apply_rows', 'campaign_maps',
+      'amazon_write_approvals', 'amazon_write_executions',
+      'amazon_write_rows', 'amazon_write_attempts',
       // product surface
       'tags', 'entity_tags', 'dashboards', 'goto_links', 'audit_log',
       // reserved seams

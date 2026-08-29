@@ -280,8 +280,11 @@ export class PostgresWorkerStore implements WorkerStore {
       region: 'NA' | 'EU' | 'FE';
       currency_code: string;
       timezone: string;
+      account_name: string | null;
+      country_code: string;
     }[]>`
-      select id, org_id, amazon_profile_id, region, currency_code, timezone
+      select id, org_id, amazon_profile_id, region, currency_code, timezone,
+             account_name, country_code
         from public.ad_profiles where id = ${profileId}
     `;
     const row = rows[0];
@@ -293,6 +296,8 @@ export class PostgresWorkerStore implements WorkerStore {
       region: row.region,
       currencyCode: row.currency_code,
       timezone: row.timezone,
+      accountName: row.account_name,
+      countryCode: row.country_code,
     };
   }
 

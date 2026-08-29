@@ -74,6 +74,7 @@ export interface ListEndpoint {
     state?: string;
     campaignId?: string;
     adGroupId?: string;
+    entityId?: string;
   };
 }
 
@@ -99,7 +100,7 @@ export const LIST_ENDPOINTS: Readonly<Record<EntityKind, ListEndpoint>> = {
     mediaType: 'application/vnd.spCampaign.v3+json',
     responseKey: 'campaigns',
     paging: 'token',
-    filters: { state: spFilters.state, campaignId: spFilters.campaignId },
+    filters: { state: spFilters.state, campaignId: spFilters.campaignId, entityId: 'campaignIdFilter' },
   },
   'sp.adGroups': {
     method: 'POST',
@@ -107,7 +108,7 @@ export const LIST_ENDPOINTS: Readonly<Record<EntityKind, ListEndpoint>> = {
     mediaType: 'application/vnd.spAdGroup.v3+json',
     responseKey: 'adGroups',
     paging: 'token',
-    filters: spFilters,
+    filters: { ...spFilters, entityId: 'adGroupIdFilter' },
   },
   'sp.keywords': {
     method: 'POST',
@@ -115,7 +116,7 @@ export const LIST_ENDPOINTS: Readonly<Record<EntityKind, ListEndpoint>> = {
     mediaType: 'application/vnd.spKeyword.v3+json',
     responseKey: 'keywords',
     paging: 'token',
-    filters: spFilters,
+    filters: { ...spFilters, entityId: 'keywordIdFilter' },
   },
   'sp.targets': {
     method: 'POST',
@@ -123,7 +124,7 @@ export const LIST_ENDPOINTS: Readonly<Record<EntityKind, ListEndpoint>> = {
     mediaType: 'application/vnd.spTargetingClause.v3+json',
     responseKey: 'targetingClauses',
     paging: 'token',
-    filters: spFilters,
+    filters: { ...spFilters, entityId: 'targetIdFilter' },
   },
   'sp.negativeKeywords': {
     method: 'POST',
@@ -293,6 +294,7 @@ export interface ListRequestInput {
   stateFilter?: readonly string[];
   campaignIdFilter?: readonly string[];
   adGroupIdFilter?: readonly string[];
+  entityIdFilter?: readonly string[];
 }
 
 /** Body for a token-paginated list POST. Empty filters are omitted, not sent as `[]`. */
@@ -317,6 +319,10 @@ export function buildListBody(
   const adGroup = include(input.adGroupIdFilter);
   if (endpoint.filters.adGroupId !== undefined && adGroup !== undefined) {
     body[endpoint.filters.adGroupId] = adGroup;
+  }
+  const entity = include(input.entityIdFilter);
+  if (endpoint.filters.entityId !== undefined && entity !== undefined) {
+    body[endpoint.filters.entityId] = entity;
   }
   return body;
 }

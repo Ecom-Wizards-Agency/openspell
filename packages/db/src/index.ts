@@ -60,5 +60,6 @@ export * from './queries/spapi.js';
 export * from './queries/tags.js';
 export * from './queries/time-machine.js';
 export * from './queries/apply-state.js';
+export * from './queries/amazon-writes.js';
 export * from './queries/tokens.js';
 export * from './queries/request-client.js';

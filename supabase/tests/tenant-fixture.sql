@@ -26,6 +26,10 @@ declare
   v_profile uuid;
   v_run uuid;
   v_batch uuid;
+  v_apply_row uuid;
+  v_write_approval uuid;
+  v_write_execution uuid;
+  v_write_row uuid;
   v_tag uuid;
   v_feedback uuid;
   v_experiment uuid;
@@ -182,7 +186,48 @@ begin
     (batch_id, org_id, profile_id, entity_type, entity_id, entity_name, field,
      old_value, new_value, lever, clicks, revenue)
   values (v_batch, v_org, v_profile, 'keyword', 'kw-1', 'widget', 'bid',
-          '0.90'::jsonb, '0.70'::jsonb, 'bid-down', 5, 25.00);
+          '0.90'::jsonb, '0.70'::jsonb, 'bid-down', 5, 25.00)
+  returning id into v_apply_row;
+  insert into public.amazon_write_approvals
+    (org_id, profile_id, apply_batch_id, mode, preview_sha256, approved_count,
+     approved_by, approved_at, expires_at)
+  values (v_org, v_profile, v_batch, 'manual', repeat('a', 64), 1,
+          p_user_id, now() - interval '2 minutes', now() + interval '1 hour')
+  returning id into v_write_approval;
+  insert into public.amazon_write_executions
+    (org_id, profile_id, apply_batch_id, approval_id, idempotency_key, status,
+     requested_count, attempted_count, succeeded_count, resync_requested_count)
+  values (v_org, v_profile, v_batch, v_write_approval,
+          md5(p_slug || '-write-execution') || md5(p_slug || '-write-execution-2'),
+          'awaiting_sync',
+          1, 1, 1, 1)
+  returning id into v_write_execution;
+  insert into public.amazon_write_rows
+    (org_id, profile_id, execution_id, apply_row_id, action_type, action,
+     expected_value, requested_value, inverse_value, row_status,
+     observation_status, attempt_count, provider_evidence, provider_accepted_at)
+  values (
+    v_org, v_profile, v_write_execution, v_apply_row, 'sp_keyword_bid',
+    jsonb_build_object(
+      'actionType', 'sp_keyword_bid', 'applyRowId', v_apply_row::text,
+      'amazonEntityId', 'kw-1', 'field', 'bid',
+      'expectedValue', 0.90, 'requestedValue', 0.70, 'inverseValue', 0.90
+    ),
+    '0.90'::jsonb, '0.70'::jsonb, '0.90'::jsonb, 'accepted',
+    'pending', 1,
+    jsonb_build_object('outcome', 'accepted', 'providerEntityId', 'kw-1',
+                       'code', null, 'message', null), now()
+  ) returning id into v_write_row;
+  insert into public.amazon_write_attempts
+    (org_id, profile_id, execution_id, write_row_id, attempt_number,
+     request_fingerprint, outcome, provider_evidence, attempted_at)
+  values (
+    v_org, v_profile, v_write_execution, v_write_row, 1,
+    md5(p_slug || '-write-attempt') || md5(p_slug || '-write-attempt-2'),
+    'accepted',
+    jsonb_build_object('outcome', 'accepted', 'providerEntityId', 'kw-1',
+                       'code', null, 'message', null), now()
+  );
   insert into public.campaign_maps (org_id, profile_id, name)
   values (v_org, v_profile, 'harvest map');
 

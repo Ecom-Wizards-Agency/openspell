@@ -18,8 +18,19 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import type { ApplyValue } from '@wizard-ads/shared';
+import type { AmazonWriteAction, AmazonWriteProviderEvidence } from '@wizard-ads/shared';
 import { count, money, ts } from './columns.js';
-import { applyBatchStatus, applyEntityType, matchType } from './enums.js';
+import {
+  amazonWriteActionType,
+  amazonWriteApprovalMode,
+  amazonWriteAttemptOutcome,
+  amazonWriteExecutionStatus,
+  amazonWriteObservationStatus,
+  amazonWriteRowStatus,
+  applyBatchStatus,
+  applyEntityType,
+  matchType,
+} from './enums.js';
 import { adProfiles, authUsers, orgs } from './tenancy.js';
 
 export const applyBatches = pgTable(
@@ -105,6 +116,120 @@ export const applyRows = pgTable(
   ],
 );
 
+/** Immutable evidence that an operator approved one exact export artifact. */
+export const amazonWriteApprovals = pgTable(
+  'amazon_write_approvals',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
+    applyBatchId: uuid('apply_batch_id').notNull().references(() => applyBatches.id, { onDelete: 'restrict' }),
+    mode: amazonWriteApprovalMode('mode').notNull(),
+    previewSha256: text('preview_sha256').notNull(),
+    approvedCount: integer('approved_count').notNull(),
+    approvedBy: uuid('approved_by').notNull().references(() => authUsers.id, { onDelete: 'restrict' }),
+    approvedAt: ts('approved_at').notNull(),
+    expiresAt: ts('expires_at').notNull(),
+    inversePreapproved: boolean('inverse_preapproved').notNull().default(false),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('amazon_write_approvals_profile_idx').on(t.orgId, t.profileId, t.approvedAt),
+    uniqueIndex('amazon_write_approvals_org_profile_id_key').on(t.orgId, t.profileId, t.id),
+  ],
+);
+
+/** One replay-safe worker execution for one immutable apply batch. */
+export const amazonWriteExecutions = pgTable(
+  'amazon_write_executions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
+    applyBatchId: uuid('apply_batch_id').notNull().references(() => applyBatches.id, { onDelete: 'restrict' }),
+    approvalId: uuid('approval_id').notNull().references(() => amazonWriteApprovals.id, { onDelete: 'restrict' }),
+    idempotencyKey: text('idempotency_key').notNull(),
+    status: amazonWriteExecutionStatus('status').notNull().default('queued'),
+    requestedCount: integer('requested_count').notNull(),
+    attemptedCount: integer('attempted_count').notNull().default(0),
+    succeededCount: integer('succeeded_count').notNull().default(0),
+    failedCount: integer('failed_count').notNull().default(0),
+    ambiguousCount: integer('ambiguous_count').notNull().default(0),
+    refusedCount: integer('refused_count').notNull().default(0),
+    resyncRequestedCount: integer('resync_requested_count').notNull().default(0),
+    resynchronizedCount: integer('resynchronized_count').notNull().default(0),
+    observationAttempts: integer('observation_attempts').notNull().default(0),
+    nextObservationAt: ts('next_observation_at'),
+    inverseReadyAt: ts('inverse_ready_at'),
+    startedAt: ts('started_at'),
+    completedAt: ts('completed_at'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('amazon_write_executions_apply_batch_key').on(t.orgId, t.profileId, t.applyBatchId),
+    uniqueIndex('amazon_write_executions_approval_key').on(t.approvalId),
+    uniqueIndex('amazon_write_executions_idempotency_key').on(t.idempotencyKey),
+    uniqueIndex('amazon_write_executions_org_profile_id_key').on(t.orgId, t.profileId, t.id),
+    index('amazon_write_executions_status_idx').on(t.status, t.nextObservationAt),
+  ],
+);
+
+/** Materialized provider actions and precomputed exact inverses. */
+export const amazonWriteRows = pgTable(
+  'amazon_write_rows',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
+    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'restrict' }),
+    applyRowId: uuid('apply_row_id').notNull().references(() => applyRows.id, { onDelete: 'restrict' }),
+    actionType: amazonWriteActionType('action_type').notNull(),
+    action: jsonb('action').$type<AmazonWriteAction>().notNull(),
+    expectedValue: jsonb('expected_value').$type<ApplyValue>().notNull(),
+    requestedValue: jsonb('requested_value').$type<ApplyValue>().notNull(),
+    inverseValue: jsonb('inverse_value').$type<ApplyValue>().notNull(),
+    rowStatus: amazonWriteRowStatus('row_status').notNull().default('pending'),
+    observationStatus: amazonWriteObservationStatus('observation_status').notNull().default('pending'),
+    attemptCount: integer('attempt_count').notNull().default(0),
+    refusalReason: text('refusal_reason'),
+    providerEvidence: jsonb('provider_evidence').$type<AmazonWriteProviderEvidence>(),
+    providerAcceptedAt: ts('provider_accepted_at'),
+    currentObservedValue: jsonb('current_observed_value').$type<ApplyValue>(),
+    observedAt: ts('observed_at'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('amazon_write_rows_execution_apply_row_key').on(t.executionId, t.applyRowId),
+    uniqueIndex('amazon_write_rows_org_profile_id_key').on(t.orgId, t.profileId, t.id),
+    index('amazon_write_rows_execution_status_idx').on(t.executionId, t.rowStatus, t.observationStatus),
+  ],
+);
+
+/** Append-only, sanitized provider evidence for every attempted row. */
+export const amazonWriteAttempts = pgTable(
+  'amazon_write_attempts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull().references(() => adProfiles.id, { onDelete: 'cascade' }),
+    executionId: uuid('execution_id').notNull().references(() => amazonWriteExecutions.id, { onDelete: 'restrict' }),
+    writeRowId: uuid('write_row_id').notNull().references(() => amazonWriteRows.id, { onDelete: 'restrict' }),
+    attemptNumber: integer('attempt_number').notNull(),
+    requestFingerprint: text('request_fingerprint').notNull(),
+    outcome: amazonWriteAttemptOutcome('outcome').notNull(),
+    providerEvidence: jsonb('provider_evidence').$type<AmazonWriteProviderEvidence>().notNull(),
+    attemptedAt: ts('attempted_at').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('amazon_write_attempts_row_attempt_key').on(t.writeRowId, t.attemptNumber),
+    uniqueIndex('amazon_write_attempts_request_key').on(t.requestFingerprint),
+    index('amazon_write_attempts_execution_idx').on(t.executionId, t.attemptedAt),
+  ],
+);
+
 export const campaignMaps = pgTable(
   'campaign_maps',
   {
@@ -134,3 +259,7 @@ export type NewApplyBatch = typeof applyBatches.$inferInsert;
 export type ApplyRowDb = typeof applyRows.$inferSelect;
 export type NewApplyRowDb = typeof applyRows.$inferInsert;
 export type CampaignMap = typeof campaignMaps.$inferSelect;
+export type AmazonWriteApprovalDb = typeof amazonWriteApprovals.$inferSelect;
+export type AmazonWriteExecutionDb = typeof amazonWriteExecutions.$inferSelect;
+export type AmazonWriteRowDb = typeof amazonWriteRows.$inferSelect;
+export type AmazonWriteAttemptDb = typeof amazonWriteAttempts.$inferSelect;
