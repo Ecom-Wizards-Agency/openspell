@@ -146,7 +146,7 @@ implementation brief in `docs/workpackages/`.
 | 112 | Release artifact assertions | open | PR #35 adds current-revision logo, active-account/date-range and focused-review assertions; local gates pass, but hosted jobs cannot start because of the Actions billing block |
 | 113 | OpenSpell MCP identity | merged; host activation gated | setup and operator copy use OpenSpell while stable environment-variable and package identifiers remain compatible |
 | 114 | Date-range browser gate | merged; not deployed | Dashboard and Grid exercise all seven preset ranges through authenticated Playwright |
-| 116 | Hydration/readiness reliability | open; not merge-safe | PR #38 fixes several cold-load races, but independent review found the Grid readiness boundary incomplete; repair and regression coverage are in progress and hosted jobs are billing-blocked |
+| 116 | Hydration/readiness reliability | open; code-approved | PR #38 now fails closed until exact saved-state restoration, fails open from malformed cache/store errors, and covers schedule plus exact select-all/bulk persistence. Two independent reviews found no remaining P0/P1; merge is held because required hosted jobs cannot start under the Actions billing block. |
 
 ## Milestone gates
 
