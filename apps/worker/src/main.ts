@@ -11,6 +11,7 @@ import {
   PostgresRecommendationRunStore,
   createRecommendationsRunner,
 } from './recommendations-run.js';
+import { RecommendationObservationPass } from './recommendation-observer.js';
 import { PostgresWorkerStore } from './store.js';
 import { createMrpEconomicsSync } from './mrp.js';
 import {
@@ -68,10 +69,12 @@ const provisioner = new ScheduleProvisioner(store, undefined, undefined, recomme
 const bidSeries = adsApi
   ? new BidSeriesSyncPass({ store: new PostgresBidSeriesStore(handle), client: adsApi })
   : undefined;
+const recommendationObserver = new RecommendationObservationPass(handle, console);
 authHealth?.start();
 reaper.start();
 provisioner.start();
 bidSeries?.start();
+recommendationObserver.start();
 
 let shuttingDown = false;
 async function shutdown(): Promise<void> {
@@ -81,6 +84,7 @@ async function shutdown(): Promise<void> {
   reaper.stop();
   provisioner.stop();
   bidSeries?.stop();
+  recommendationObserver.stop();
   await marketingStream?.stop();
   await worker.shutdown();
   await closeServer(health);

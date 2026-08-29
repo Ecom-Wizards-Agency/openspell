@@ -119,6 +119,15 @@
     "budget_capped_at_percent": "<non-negative budget-usage percentage that marks a capped hour>"
   },
 
+  "recommendation_evidence": {
+    "_comment": "Tenant-owned gates for synchronized matched pre/post recommendation evidence. No defaults exist in application source.",
+    "synchronizationTolerance": "<non-negative numeric tolerance for the synchronized exported value>",
+    "minimumMatchedPairs": "<positive integer matched pre/post dates>",
+    "minimumCombinedIncrementalVolume": "<non-negative minimum combined incremental volume>",
+    "minimumAbsoluteLift": "<non-negative absolute lift required to continue>",
+    "minimumRelativeLift": "<non-negative relative lift required to continue>"
+  },
+
   "naming": {
     "_comment": "Campaign naming. Mirrors the bulk-creator naming settings so proposed names match what gets created. goal: Discovery|Rank|Profit; match_type: EXACT|BROAD|PHRASE|ASIN_EXACT; campaign_type: SKW|Halo|BMM|Phrase|PAT. descriptor placeholders: {keyword} {root} {counter}.",
     "variable_order": ["Goal", "SP", "MatchType", "ProductName", "TargetDescriptor", "Suffix"],

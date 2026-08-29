@@ -444,6 +444,13 @@ describe('TenantStrategy', () => {
     },
     discovery: { min_root_words: 1 },
     expanded_candidate_filter: { min_relevancy: 1, max_sv: 1 },
+    recommendation_evidence: {
+      synchronizationTolerance: 1,
+      minimumMatchedPairs: 1,
+      minimumCombinedIncrementalVolume: 1,
+      minimumAbsoluteLift: 1,
+      minimumRelativeLift: 1,
+    },
   };
 
   it('round-trips the shape', () => {
@@ -494,6 +501,21 @@ describe('TenantStrategy', () => {
     expect(parsed.discovery?.min_root_words).toBe(1);
     expect(parsed.expanded_candidate_filter?.min_relevancy).toBe(1);
     expect(parsed.expanded_candidate_filter?.max_sv).toBe(1);
+    expect(parsed.recommendation_evidence).toEqual(widened.recommendation_evidence);
+  });
+
+  it('requires every recommendation evidence gate and supplies no defaults', () => {
+    expect(TenantStrategy.parse(synthetic).recommendation_evidence).toBeUndefined();
+    expect(TenantStrategy.safeParse({
+      ...synthetic,
+      recommendation_evidence: {
+        synchronizationTolerance: 1,
+        minimumMatchedPairs: 0,
+        minimumCombinedIncrementalVolume: 1,
+        minimumAbsoluteLift: 1,
+        minimumRelativeLift: 1,
+      },
+    }).success).toBe(false);
   });
 
   it('keeps the bid-bound unit a closed vocabulary', () => {
