@@ -22,7 +22,7 @@
  * `columns` override so an operator can correct a rejected column set without
  * a code change.
  */
-import type { ReportType } from '@wizard-ads/shared';
+import type { WorkerReportType } from '@wizard-ads/shared';
 import { AdsApiConfigError } from './errors.js';
 
 export type AmazonAdProduct = 'SPONSORED_PRODUCTS' | 'SPONSORED_BRANDS' | 'SPONSORED_DISPLAY';
@@ -50,7 +50,7 @@ const SP_ATTRIBUTION = [
   'unitsSoldClicks7d',
 ] as const;
 
-export const REPORT_SPECS: Readonly<Record<ReportType, ReportSpec>> = {
+export const REPORT_SPECS: Readonly<Record<WorkerReportType, ReportSpec>> = {
   spCampaigns: {
     reportTypeId: 'spCampaigns',
     adProduct: 'SPONSORED_PRODUCTS',
@@ -145,6 +145,27 @@ export const REPORT_SPECS: Readonly<Record<ReportType, ReportSpec>> = {
     ],
     timeUnit: 'DAILY',
   },
+  sbAds: {
+    reportTypeId: 'sbAds',
+    adProduct: 'SPONSORED_BRANDS',
+    groupBy: ['ads'],
+    columns: [
+      'date',
+      'campaignId',
+      'adGroupId',
+      'adId',
+      ...SP_CORE,
+      'purchases',
+      'sales',
+      'unitsSold',
+      'videoFirstQuartileViews',
+      'videoMidpointViews',
+      'videoThirdQuartileViews',
+      'videoCompleteViews',
+      'viewableImpressions',
+    ],
+    timeUnit: 'DAILY',
+  },
   sdCampaigns: {
     reportTypeId: 'sdCampaigns',
     adProduct: 'SPONSORED_DISPLAY',
@@ -214,7 +235,7 @@ export interface ReportMetadata {
 }
 
 export interface CreateReportInput {
-  reportType: ReportType;
+  reportType: WorkerReportType;
   startDate: string;
   endDate: string;
   /** Defaults to a deterministic name derived from the type and window. */

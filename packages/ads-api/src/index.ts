@@ -222,6 +222,31 @@ export type {
   SbV4MediaCreativeApi,
 } from './sb-media.js';
 
+// Sponsored Brands read-only ad/asset contract probe
+export {
+  CREATIVE_ASSET_SEARCH_PATH,
+  SB_AD_LIST_PATH,
+  SB_AD_MEDIA_TYPE,
+  parseCreativeAssetProbePage,
+  parseCreativeAssetProbeRow,
+  parseSbAdProbePage,
+  parseSbAdProbeRow,
+  parseSbAssetReference,
+} from './sb-ad-assets.js';
+export { parseSbAdsReportProbe } from './sb-ads-report.js';
+export type {
+  SbAdsReportProbeParseResult,
+  SbAdsReportProbeRefusal,
+  SbAdsReportProbeRow,
+} from './sb-ads-report.js';
+export type {
+  CreativeAssetProbePage,
+  CreativeAssetProbeRow,
+  SbAdAssetReference,
+  SbAdProbePage,
+  SbAdProbeRow,
+} from './sb-ad-assets.js';
+
 // Payload decoding
 export { decodeJsonArray, decodePayload, looksGzipped } from './gzip.js';
 export type { DecodedPayload } from './gzip.js';

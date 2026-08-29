@@ -74,6 +74,32 @@ describe('report request bodies', () => {
     expect(REPORT_SPECS.spSearchTerm.groupBy).toEqual(['searchTerm']);
   });
 
+  it('uses Amazon documented ad grain and video columns for the SB Video probe', () => {
+    const body = buildReportRequestBody({
+      reportType: 'sbAds',
+      startDate: '2026-08-01',
+      endDate: '2026-08-01',
+    });
+    const configuration = body['configuration'] as Record<string, unknown>;
+    expect(configuration).toMatchObject({
+      reportTypeId: 'sbAds',
+      adProduct: 'SPONSORED_BRANDS',
+      groupBy: ['ads'],
+      timeUnit: 'DAILY',
+      format: 'GZIP_JSON',
+    });
+    expect(configuration['columns']).toEqual(expect.arrayContaining([
+      'date',
+      'campaignId',
+      'adGroupId',
+      'adId',
+      'videoFirstQuartileViews',
+      'videoMidpointViews',
+      'videoThirdQuartileViews',
+      'videoCompleteViews',
+    ]));
+  });
+
   it('names a report deterministically, so a re-request is recognisably identical', () => {
     const input = { reportType: 'spTargeting', startDate: '2026-08-01', endDate: '2026-08-10' } as const;
     expect(defaultReportName(input)).toBe('wizard-ads spTargeting 2026-08-01..2026-08-10');
