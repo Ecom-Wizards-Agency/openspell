@@ -408,17 +408,16 @@ button {
 }
 
 .wa-brand-mark {
-  align-items: center;
-  background: var(--wa-accent);
-  border-radius: var(--wa-radius-sm);
-  color: var(--wa-on-accent);
+  background-image: url('/brand/wizards-ai-icon.svg');
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  border-radius: 0.35rem;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--wa-border) 72%, transparent);
   display: inline-flex;
   flex: none;
-  font-size: var(--wa-fs-xs);
-  font-weight: 700;
   height: 1.375rem;
-  justify-content: center;
-  letter-spacing: 0;
+  overflow: hidden;
   width: 1.375rem;
 }
 
