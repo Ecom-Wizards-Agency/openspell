@@ -143,6 +143,30 @@ suite('grid and roster reads against SQL aggregates', () => {
     expect(rows.length).toBe(Number((counted as { n: string }).n));
   });
 
+  it('marks the grid truncated only when a sentinel row exists beyond the limit', async () => {
+    const exact = await loadGridRows(database, 'targets', {
+      orgId,
+      profileId,
+      currencyCode: 'USD',
+      period: PERIOD,
+      comparison: COMPARISON,
+      limit: 6,
+    });
+    const overflow = await loadGridRows(database, 'targets', {
+      orgId,
+      profileId,
+      currencyCode: 'USD',
+      period: PERIOD,
+      comparison: COMPARISON,
+      limit: 5,
+    });
+
+    expect(exact.rows).toHaveLength(6);
+    expect(exact.truncated).toBe(false);
+    expect(overflow.rows).toHaveLength(5);
+    expect(overflow.truncated).toBe(true);
+  });
+
   it('enriches targets with the latest bid series and campaign RPC category', async () => {
     const { rows } = await loadGridRows(database, 'targets', {
       orgId,
