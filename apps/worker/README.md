@@ -124,6 +124,7 @@ all. `variant` joins the key; existing rows default to `default` and keep the un
 | `WORKER_ID` | `worker-<pid>` | Identifies the claimer in `sync_jobs.claimed_by`. |
 | `WORKER_JOB_TYPES` | all | Comma-separated queue allowlist. Unknown or empty values fail startup. `evo-report-lane` requires exactly `creative.sync,report.request,report.poll,report.fetch`. |
 | `WORKER_DEPLOYMENT_ROLE` | `general` | `general` or `evo-report-lane`. The report lane is queue-only and refuses missing, partial, or foreign `WORKER_JOB_TYPES`. |
+| `OPENSPELL_WORKER_REVISION` | `unknown` | Sanitized 7–64 character Git object id exposed in worker health. A Creative pilot preflight refuses `unknown` or a mismatch. |
 | `PORT` | `3000` | `/healthz`. |
 | `WORKER_POLL_INTERVAL_MS` | `1000` | Idle sleep between empty claims. |
 | `WORKER_CLAIM_BATCH_SIZE` | `10` | Jobs per `claim_sync_jobs` call. |
@@ -135,6 +136,29 @@ all. `variant` joins the key; existing rows default to `default` and keep the un
 | `SP_API_LWA_CLIENT_ID` | unset | Enables the SP-API SQP runtime when paired with `SP_API_LWA_CLIENT_SECRET`. Deployment environment only. |
 | `SP_API_LWA_CLIENT_SECRET` | unset | SP-API LWA application secret. Deployment environment only; tenant refresh credentials remain in Vault. |
 | `SP_API_REPORT_MIN_INTERVAL_MS` | `1000` | Serial floor between Reports API operations. Provider `Retry-After` still controls throttled retries. |
+
+### Bounded Creative pilot preflight
+
+The daily Creative producer remains off unless the Vercel deployment has all
+three exact values: the report-lane handoff, the producer gate, and a non-empty
+`OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST` containing unique comma-separated
+profile UUIDs. When the producer gate is absent or `0`, the cohort is not parsed
+and no Creative job is offered.
+
+Before activating the producer, run the read-only preflight against the stopped
+or running candidate configuration:
+
+```bash
+pnpm --filter @wizard-ads/worker creative:preflight \
+  --health-url http://127.0.0.1:3000/healthz \
+  --expected-revision "$APPROVED_REVISION"
+```
+
+The command reads the cohort from the deployment environment, inspects the
+required Creative tables, columns, and enums, counts cohort and total pending
+snapshots, and compares the worker's exact revision, role, and claim set. It
+does not apply a migration, enqueue a job, or construct an Amazon client. Its
+JSON output contains counts and catalog names only, never profile identifiers.
 
 ### Weekly SQP
 

@@ -33,8 +33,10 @@ import type { Sql } from '@wizard-ads/db';
 import type { JobType } from '@wizard-ads/shared';
 import {
   DEFAULT_VERCEL_CRON_JOB_TYPES,
+  resolveCreativeSyncPilotPolicy,
   vercelCronJobTypesFromEnv,
 } from '@wizard-ads/worker/deployment-role';
+import type { CreativeSyncPilotPolicy } from '@wizard-ads/worker/deployment-role';
 import type { DailyCreativeSyncEnqueueResult } from '@wizard-ads/db';
 
 /** Queue work owned by Vercel cron; integration jobs stay on the always-on host. */
@@ -53,18 +55,10 @@ export function cronSyncJobTypesFromEnv(
  * Creative observation. A malformed or premature opt-in fails before the
  * database and Amazon client are constructed.
  */
-export function creativeSyncProducerEnabledFromEnv(
+export function creativeSyncPilotFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
-): boolean {
-  const producer = env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
-  if (producer === undefined || producer === '0') return false;
-  if (producer !== '1') {
-    throw new Error('OPENSPELL_CREATIVE_SYNC_PRODUCER_READY must be 0 or 1');
-  }
-  if (env['OPENSPELL_EVO_REPORT_LANE_READY'] !== '1') {
-    throw new Error('Creative sync producer requires the exclusive Evo report lane');
-  }
-  return true;
+): CreativeSyncPilotPolicy {
+  return resolveCreativeSyncPilotPolicy(env);
 }
 
 /**
@@ -117,8 +111,9 @@ export interface SyncTickResult {
   enqueued: number;
   creativeSync?: Pick<
     DailyCreativeSyncEnqueueResult,
-    | 'enabledProfiles'
-    | 'offeredProfiles'
+    | 'requestedProfiles'
+    | 'eligibleProfiles'
+    | 'ineligibleProfiles'
     | 'deferredPendingProfiles'
     | 'enqueuedJobs'
     | 'deduplicatedJobs'
@@ -188,8 +183,9 @@ export async function runSyncTick(deps: SyncTickDeps): Promise<SyncTickResult> {
       if (deps.creativeSyncSchedules) {
         const result = await deps.creativeSyncSchedules();
         creativeSync = {
-          enabledProfiles: result.enabledProfiles,
-          offeredProfiles: result.offeredProfiles,
+          requestedProfiles: result.requestedProfiles,
+          eligibleProfiles: result.eligibleProfiles,
+          ineligibleProfiles: result.ineligibleProfiles,
           deferredPendingProfiles: result.deferredPendingProfiles,
           enqueuedJobs: result.enqueuedJobs,
           deduplicatedJobs: result.deduplicatedJobs,

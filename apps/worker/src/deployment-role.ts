@@ -1,4 +1,4 @@
-import type { JobType } from '@wizard-ads/shared';
+import { Uuid, type JobType } from '@wizard-ads/shared';
 
 /**
  * The queue types Vercel owns until the report-lane handoff is explicitly
@@ -27,6 +27,9 @@ export const EVO_REPORT_LANE_JOB_TYPES = [
   'report.fetch',
 ] as const satisfies readonly JobType[];
 
+export const CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV =
+  'OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST' as const;
+
 export type WorkerDeploymentRole = 'general' | 'evo-report-lane';
 
 export interface WorkerDeploymentPolicy {
@@ -35,6 +38,51 @@ export interface WorkerDeploymentPolicy {
   jobTypes: readonly JobType[] | undefined;
   /** The exclusive report runtime is a queue consumer, not a timer host. */
   startsBackgroundPasses: boolean;
+}
+
+export type CreativeSyncPilotPolicy =
+  | { enabled: false; profileIds: readonly [] }
+  | { enabled: true; profileIds: readonly string[] };
+
+/**
+ * Parse the deployment-only pilot cohort without ever rendering an identifier
+ * in an error. An allowlist is a safety boundary, so duplicates are rejected
+ * rather than silently normalized away.
+ */
+export function parseCreativeSyncProfileAllowlist(value: string | undefined): readonly string[] {
+  if (value === undefined || value.trim() === '') {
+    throw new Error(`${CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV} must contain at least one profile UUID`);
+  }
+  const tokens = value.split(',').map((token) => token.trim().toLowerCase());
+  if (tokens.some((token) => token.length === 0 || !Uuid.safeParse(token).success)) {
+    throw new Error(`${CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV} must be a comma-separated UUID list`);
+  }
+  if (new Set(tokens).size !== tokens.length) {
+    throw new Error(`${CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV} must not contain duplicate UUIDs`);
+  }
+  return tokens;
+}
+
+/**
+ * Source stays inert unless the producer, exclusive report lane, and a
+ * non-empty bounded cohort all agree. Values unrelated to the disabled
+ * producer are deliberately ignored so an absent/zero gate performs no work.
+ */
+export function resolveCreativeSyncPilotPolicy(
+  env: Readonly<Record<string, string | undefined>>,
+): CreativeSyncPilotPolicy {
+  const producer = env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
+  if (producer === undefined || producer === '0') return { enabled: false, profileIds: [] };
+  if (producer !== '1') {
+    throw new Error('OPENSPELL_CREATIVE_SYNC_PRODUCER_READY must be 0 or 1');
+  }
+  if (env['OPENSPELL_EVO_REPORT_LANE_READY'] !== '1') {
+    throw new Error('Creative sync producer requires the exclusive Evo report lane');
+  }
+  return {
+    enabled: true,
+    profileIds: parseCreativeSyncProfileAllowlist(env[CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV]),
+  };
 }
 
 /**

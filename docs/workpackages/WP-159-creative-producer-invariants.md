@@ -8,6 +8,11 @@ source remains off after merge. No job is produced unless both the exclusive
 Evo report lane and this producer are explicitly activated with the exact value
 `1`.
 
+WP-165 narrows this historical package: activation now also requires a
+deployment-only profile UUID allowlist, and the producer may offer only that
+bounded cohort. Follow WP-165's preflight and activation order rather than the
+unbounded examples retained below as historical design context.
+
 Close the report lifecycle invariant at the same time. A request, poll, or fetch
 that reaches a non-retryable failure or exhausts its retry budget fails the
 tenant-scoped report ledger before its queue job becomes terminal. The existing
@@ -21,14 +26,14 @@ an environment value, run a migration, read a credential, or call Amazon.
 
 ```ts
 const jobTypes = cronSyncJobTypesFromEnv(env);
-const producerReady = creativeSyncProducerEnabledFromEnv(env);
+const pilot = creativeSyncPilotFromEnv(env);
 
 await runSyncTick({
   sql,
   store,
   worker: new SyncWorker({ jobTypes, ...workerDeps }),
-  ...(producerReady
-    ? { creativeSyncSchedules: () => enqueueDailyCreativeSyncJobs(handle) }
+  ...(pilot.enabled
+    ? { creativeSyncSchedules: () => enqueueDailyCreativeSyncJobs(handle, pilot.profileIds) }
     : {}),
 });
 ```
@@ -94,10 +99,11 @@ Activation is a separate attended deployment operation:
    exact four-type allowlist, and prove the two claim sets are disjoint.
 3. Verify Evo health, queue age, report-ledger terminal behavior, and that no
    Creative snapshot is already stranded in `report_pending`.
-4. Set `OPENSPELL_CREATIVE_SYNC_PRODUCER_READY=1` on Vercel and redeploy.
-5. Invoke one authenticated cron tick. Reconcile `enabledProfiles` as
-   `offeredProfiles + deferredPendingProfiles`, and `offeredProfiles` as
-   `enqueuedJobs + deduplicatedJobs`.
+4. Configure WP-165's bounded allowlist, run its read-only preflight, then set
+   `OPENSPELL_CREATIVE_SYNC_PRODUCER_READY=1` on Vercel and redeploy.
+5. Invoke one authenticated cron tick. Reconcile `requestedProfiles` as
+   `eligibleProfiles + deferredPendingProfiles + ineligibleProfiles`, and
+   `eligibleProfiles` as `enqueuedJobs + deduplicatedJobs`.
 6. Observe one test profile through `creative.sync` → `report.request` →
    `report.poll` → `report.fetch`, then verify snapshot and report counts before
    broadening observation.

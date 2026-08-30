@@ -16,6 +16,8 @@ export interface WorkerConfig {
   jobTypes: readonly JobTypeValue[] | undefined;
   /** Sanitized deployment identity; never derived from a hostname or secret. */
   deploymentRole: WorkerDeploymentRole;
+  /** Sanitized Git object id; public health never echoes arbitrary environment values. */
+  revision: string;
   /** Whether this process hosts timers and independent background consumers. */
   startsBackgroundPasses: boolean;
   /**
@@ -35,6 +37,18 @@ export interface WorkerConfig {
   spApiClientSecret: string | undefined;
   /** Serial floor between Reports API operations; provider 429s still control retries. */
   spApiReportMinIntervalMs: number;
+}
+
+export function workerRevisionFromEnv(env: NodeJS.ProcessEnv): string {
+  const raw = env['OPENSPELL_WORKER_REVISION'];
+  if (raw === undefined || raw.trim() === '') return 'unknown';
+  const revision = raw.trim().toLowerCase();
+  if (!/^[0-9a-f]{7,64}$/.test(revision)) {
+    throw new Error(
+      'OPENSPELL_WORKER_REVISION must be a 7-64 character hexadecimal Git object id',
+    );
+  }
+  return revision;
 }
 
 function positiveInteger(value: string | undefined, fallback: number, name: string): number {
@@ -77,6 +91,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     maxConcurrentJobs: positiveInteger(env['WORKER_MAX_CONCURRENT_JOBS'], 10, 'WORKER_MAX_CONCURRENT_JOBS'),
     jobTypes: deployment.jobTypes,
     deploymentRole: deployment.role,
+    revision: workerRevisionFromEnv(env),
     startsBackgroundPasses: deployment.startsBackgroundPasses,
     crosscheckInboxDir: env['CROSSCHECK_INBOX_DIR'] || undefined,
     authHealthcheckIntervalMs:

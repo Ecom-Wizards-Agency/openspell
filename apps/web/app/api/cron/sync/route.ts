@@ -34,7 +34,7 @@ import {
   runBidSeriesSync,
 } from '@wizard-ads/worker';
 import {
-  creativeSyncProducerEnabledFromEnv,
+  creativeSyncPilotFromEnv,
   cronSyncJobTypesFromEnv,
   runSyncTick,
 } from '../../../../src/server/sync-tick';
@@ -63,10 +63,10 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   let jobTypes;
-  let creativeSyncProducerEnabled;
+  let creativeSyncPilot;
   try {
     jobTypes = cronSyncJobTypesFromEnv();
-    creativeSyncProducerEnabled = creativeSyncProducerEnabledFromEnv();
+    creativeSyncPilot = creativeSyncPilotFromEnv();
   } catch {
     return NextResponse.json(
       { error: 'cron queue ownership is not configured safely' },
@@ -109,8 +109,11 @@ export async function GET(request: Request): Promise<Response> {
       ...(process.env['WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS'] === '1'
         ? { recommendationSchedules: () => recommendationRuns.enqueueDueRecommendationRuns() }
         : {}),
-      ...(creativeSyncProducerEnabled
-        ? { creativeSyncSchedules: () => enqueueDailyCreativeSyncJobs(handle) }
+      ...(creativeSyncPilot.enabled
+        ? {
+            creativeSyncSchedules: () =>
+              enqueueDailyCreativeSyncJobs(handle, creativeSyncPilot.profileIds),
+          }
         : {}),
       budgetMs: DRAIN_BUDGET_MS,
       // One client serves both roles: DbAdsApiClient is an AdsApiClient for the

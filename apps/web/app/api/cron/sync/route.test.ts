@@ -24,12 +24,14 @@ describe('GET /api/cron/sync', () => {
   const savedDbUrl = process.env['DATABASE_URL'];
   const savedReportLane = process.env['OPENSPELL_EVO_REPORT_LANE_READY'];
   const savedCreativeProducer = process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
+  const savedCreativeAllowlist = process.env['OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST'];
 
   beforeEach(() => {
     delete process.env['CRON_SECRET'];
     delete process.env['DATABASE_URL'];
     delete process.env['OPENSPELL_EVO_REPORT_LANE_READY'];
     delete process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
+    delete process.env['OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST'];
   });
 
   afterEach(() => {
@@ -43,6 +45,11 @@ describe('GET /api/cron/sync', () => {
       delete process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
     } else {
       process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'] = savedCreativeProducer;
+    }
+    if (savedCreativeAllowlist === undefined) {
+      delete process.env['OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST'];
+    } else {
+      process.env['OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST'] = savedCreativeAllowlist;
     }
   });
 
@@ -87,6 +94,19 @@ describe('GET /api/cron/sync', () => {
   it('fails closed before database or Amazon wiring for premature Creative activation', async () => {
     process.env['CRON_SECRET'] = SECRET;
     process.env['OPENSPELL_EVO_REPORT_LANE_READY'] = '0';
+    process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'] = '1';
+    process.env['OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST'] =
+      '11111111-2222-4333-8444-555555555555';
+    const response = await GET(request(`Bearer ${SECRET}`));
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: 'cron queue ownership is not configured safely',
+    });
+  });
+
+  it('fails closed before database or Amazon wiring when the active cohort is absent', async () => {
+    process.env['CRON_SECRET'] = SECRET;
+    process.env['OPENSPELL_EVO_REPORT_LANE_READY'] = '1';
     process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'] = '1';
     const response = await GET(request(`Bearer ${SECRET}`));
     expect(response.status).toBe(503);

@@ -1,9 +1,9 @@
 /**
- * Database-only producer for one current-day SB Video observation per enabled
- * profile. It never claims work and never calls Amazon; the exclusive report
- * worker owns the jobs after they are inserted.
+ * Database-only producer for one current-day SB Video observation per eligible
+ * profile in a bounded deployment cohort. It never claims work and never calls
+ * Amazon; the exclusive report worker owns the jobs after they are inserted.
  */
-import { JobPayload } from '@wizard-ads/shared';
+import { JobPayload, Uuid } from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
 
 export interface DailyCreativeSyncObservation {
@@ -16,8 +16,9 @@ export interface DailyCreativeSyncObservation {
 }
 
 export interface DailyCreativeSyncEnqueueResult {
-  enabledProfiles: number;
-  offeredProfiles: number;
+  requestedProfiles: number;
+  eligibleProfiles: number;
+  ineligibleProfiles: number;
   deferredPendingProfiles: number;
   enqueuedJobs: number;
   deduplicatedJobs: number;
@@ -25,8 +26,9 @@ export interface DailyCreativeSyncEnqueueResult {
 }
 
 interface RawDailyCreativeSyncResult {
-  enabled_profiles: string | number;
-  offered_profiles: string | number;
+  requested_profiles: string | number;
+  eligible_profiles: string | number;
+  ineligible_profiles: string | number;
   deferred_pending_profiles: string | number;
   enqueued_jobs: string | number;
   deduplicated_jobs: string | number;
@@ -42,7 +44,8 @@ interface RawDailyCreativeSyncResult {
 }
 
 /**
- * Offer today's profile-local observation for every sync-enabled profile.
+ * Offer today's profile-local observation only for the requested sync-enabled
+ * cohort.
  *
  * The queue's `(org_id, dedupe_key)` partial unique index is the retry lock.
  * The key includes the profile UUID because one organization may own many
@@ -50,10 +53,15 @@ interface RawDailyCreativeSyncResult {
  */
 export async function enqueueDailyCreativeSyncJobs(
   handle: Pick<DbHandle, 'sql'>,
+  profileIds: readonly string[],
   observedAt: Date = new Date(),
 ): Promise<DailyCreativeSyncEnqueueResult> {
+  assertBoundedProfileIds(profileIds);
   const rows = await handle.sql<RawDailyCreativeSyncResult[]>`
-    with enabled as materialized (
+    with requested as materialized (
+      select requested.profile_id
+        from unnest(${[...profileIds]}::uuid[]) as requested(profile_id)
+    ), enabled as materialized (
       select p.org_id,
              p.id as profile_id,
              (${observedAt.toISOString()}::timestamptz at time zone p.timezone)::date::text as local_date,
@@ -66,7 +74,8 @@ export async function enqueueDailyCreativeSyncJobs(
                   and snapshot.profile_id = p.id
                   and snapshot.status = 'report_pending'
              ) as report_pending
-        from public.ad_profiles p
+        from requested r
+        join public.ad_profiles p on p.id = r.profile_id
        where p.sync_enabled
     ), eligible as materialized (
       select org_id, profile_id, local_date, dedupe_key
@@ -125,8 +134,9 @@ export async function enqueueDailyCreativeSyncJobs(
             and i.dedupe_key = e.dedupe_key
        )
     )
-    select (select count(*) from enabled) as enabled_profiles,
-           (select count(*) from eligible) as offered_profiles,
+    select (select count(*) from requested) as requested_profiles,
+           (select count(*) from eligible) as eligible_profiles,
+           (select count(*) from requested) - (select count(*) from enabled) as ineligible_profiles,
            (select count(*) from enabled where report_pending) as deferred_pending_profiles,
            count(*) filter (where enqueued) as enqueued_jobs,
            count(*) filter (where not enqueued) as deduplicated_jobs,
@@ -171,19 +181,31 @@ export async function enqueueDailyCreativeSyncJobs(
     };
   });
   const result = {
-    enabledProfiles: Number(row.enabled_profiles),
-    offeredProfiles: Number(row.offered_profiles),
+    requestedProfiles: Number(row.requested_profiles),
+    eligibleProfiles: Number(row.eligible_profiles),
+    ineligibleProfiles: Number(row.ineligible_profiles),
     deferredPendingProfiles: Number(row.deferred_pending_profiles),
     enqueuedJobs: Number(row.enqueued_jobs),
     deduplicatedJobs: Number(row.deduplicated_jobs),
     observations,
   };
   if (
-    result.enabledProfiles !== result.offeredProfiles + result.deferredPendingProfiles ||
-    result.offeredProfiles !== result.enqueuedJobs + result.deduplicatedJobs ||
-    result.offeredProfiles !== result.observations.length
+    result.requestedProfiles !==
+      result.eligibleProfiles + result.deferredPendingProfiles + result.ineligibleProfiles ||
+    result.eligibleProfiles !== result.enqueuedJobs + result.deduplicatedJobs ||
+    result.eligibleProfiles !== result.observations.length
   ) {
     throw new Error('daily Creative queue counts did not reconcile');
   }
   return result;
+}
+
+function assertBoundedProfileIds(profileIds: readonly string[]): void {
+  if (
+    profileIds.length === 0 ||
+    profileIds.some((profileId) => !Uuid.safeParse(profileId).success) ||
+    new Set(profileIds.map((profileId) => profileId.toLowerCase())).size !== profileIds.length
+  ) {
+    throw new Error('daily Creative queue requires a non-empty unique UUID pilot cohort');
+  }
 }
