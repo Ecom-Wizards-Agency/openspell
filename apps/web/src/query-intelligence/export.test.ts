@@ -44,7 +44,16 @@ describe('contextual negative export rendering', () => {
     '\t=1+1',
     '\u0001@SUM(1,1)',
     '\u00a0=1+1',
-  ])('neutralizes CSV formula input %j after whitespace and controls', (value) => {
+    '\u0085=1+1',
+    '\u061c=1+1',
+    '\u200b=1+1',
+    '\u200c=1+1',
+    '\u200d=1+1',
+    '\u2028=1+1',
+    '\u2060=1+1',
+    '\u2066=1+1',
+    '\ufeff=1+1',
+  ])('neutralizes CSV formula input %j after whitespace, controls, and formatting', (value) => {
     const csv = contextualNegativeExportCsv(artifact(value));
     const dataRow = csv.split('\n')[1] ?? '';
     expect(dataRow).toContain(`'${value}`);
