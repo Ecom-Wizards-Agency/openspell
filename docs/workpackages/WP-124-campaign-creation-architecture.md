@@ -1,28 +1,53 @@
-# WP-124 — Multi-product campaign creation architecture
+# WP-124: multi-product campaign creation architecture
 
 ## Outcome
 
 Define the contract and delivery sequence for operator-approved Sponsored Products, Sponsored
-Brands, Sponsored Brands Video, and Sponsored Display creation. This package is specification
-only. It does not add a write path, migration, credential access, deployment, or Amazon call.
+Brands, Sponsored Brands Video, and Sponsored Display creation. This package documents the
+architecture only. It does not add a write path, migration, credential access, deployment, or
+Amazon call.
 
-The plan extends the guarded write contract in `AGENTS.md`: OpenSpell freezes an exact resource
+The plan follows the guarded write contract in `AGENTS.md`. OpenSpell freezes an exact resource
 graph, shows its irreversible create count, obtains a separate approval, and lets only the worker
 dispatch the graph. New resources start paused wherever the provider supports it. Campaign
-creation has no delete rollback; pause or archive is a separate reviewed change.
+creation has no delete rollback. Pause or archive is a separate reviewed change.
+
+Provider claims in this brief were checked against Amazon's public Ads API material at commit
+`5c1c432c3dbe676a571780aa0c4d0217659a5f3a`. Each implementation package must check its exact
+endpoint and dialect again before adding an adapter or live test.
 
 ## Verified baseline
 
 | Product | Current repository support | Missing operator path |
 |---|---|---|
-| Sponsored Products | Typed legacy create clients exist for campaigns, ad groups, product ads, keywords, targets, and negatives. The guided builder produces a preview and export. | Authoritative shared creation contract, persisted plan, worker executor, approval/apply UI, observation, and live proof. |
-| Sponsored Brands Collections | Campaign and ad-group reads plus narrow creative seams. | Eligibility, brand and Store reads; complete campaign/ad-group/target/ad adapters; product and asset selection; executor and UI. |
-| Sponsored Brands Store Spotlight | No creation implementation. | Accessible Store/page checks, exactly three eligible Store-page cards, logo Asset ID/version, format-specific ad adapter, executor and UI. |
-| Sponsored Brands Video | Read-only observed ad-to-Asset-ID ingestion exists. | Current Asset Library integration, exact video Asset ID/version selection, complete parent campaign graph, format-specific ad creation, moderation observation, executor and UI. |
-| Sponsored Display | Campaign and ad-group reads exist. | Authoritative product-ad/target/creative contracts, observation reads, adapters, executor and UI. Multi-row creation stays blocked until response correlation is proven. |
+| Sponsored Products | Typed v3 create, update, and archive clients exist for campaigns, ad groups, product ads, keywords, targets, and negatives. The guided builder produces a preview and bulksheet export. | Authoritative shared creation contract, persisted plan, worker executor, approval/apply UI, observation, and live proof. |
+| Sponsored Brands Collections | Typed v4 campaign and ad-group reads exist. OpenSpell also has page-scoped SB ad and Asset Library probes. Its older `/media` and `/sb/v4/creatives` client is not the current unified creation or Asset Library contract. | Eligibility, brand and Store reads; current campaign/ad-group/target/ad adapters; product and asset selection; executor and UI. |
+| Sponsored Brands Store Spotlight | The same SB reads exist, but there is no complete Store Spotlight creation path. | Accessible Store/page checks, exactly three eligible Store-page cards, logo Asset ID/version, format-specific ad adapter, executor, and UI. |
+| Sponsored Brands Video | Read-only ad-to-Asset-ID ingestion, explicit attribution states, and a creative-performance UI exist. | Current Asset Library selection and optional asset-preparation flow, exact video Asset ID/version preview, complete parent campaign graph, product-video ad adapter, moderation observation, executor, and UI. |
+| Sponsored Display | Campaign and ad-group reads plus campaign reporting exist. | Authoritative product-ad, target, and creative contracts; observation reads; adapters; executor; and UI. Multi-row creation stays blocked until response correlation is proven. |
 
-“Amazon publishes a contract” and “OpenSpell has verified a live end-to-end path” are separate
+"Amazon publishes a contract" and "OpenSpell has verified a live end-to-end path" are separate
 states. A client method or fixture is not a shipped operator capability.
+
+## Guarded execution boundary
+
+Preview, approval, and execution are separate acts. No API call follows from opening the builder,
+selecting an asset, or generating a plan.
+
+Before dispatch, the worker must verify all of the following:
+
+1. the environment write gate is enabled for campaign creation;
+2. the exact profile is present in the tenant allowlist;
+3. the immutable plan is unexpired and still matches current eligibility and synchronized state;
+4. an authorized operator approved the plan ID, fingerprint, profile, marketplace, ad product,
+   dialect, and exact irreversible-create count;
+5. the approval includes the no-delete-rollback acknowledgement.
+
+The final confirmation names Amazon and the exact resource count, for example, "Yes, create 12
+resources in Amazon." A changed or stale preview requires a new plan and approval. MCP may prepare
+a draft or trigger an already approved plan, but it cannot approve its own plan or enable a
+cadence. This architecture does not add automatic campaign-creation cadence. Each creation plan
+requires its own approval.
 
 ## Current Asset Library boundary
 
@@ -33,11 +58,15 @@ Amazon's current documented asset lifecycle is:
 3. register the upload through `POST /assets/register`;
 4. search or read the registered asset through `/assets/search` or `GET /assets`.
 
-The repository's older Sponsored Brands media seam assumes different media and creative
-endpoints. It must not be treated as the production Asset Library until it is replaced or verified
-against an exact current contract. Campaign creation v1 selects an existing registered asset by
-Amazon Asset ID and version. Asset preparation is a separate plan so upload failure or moderation
-cannot silently mutate the campaign graph.
+The repository's older Sponsored Brands media seam uses different media and creative endpoints.
+It is not the production Asset Library workflow. The first campaign-creation implementation
+selects an existing registered asset by Amazon Asset ID and version. Asset preparation remains a
+separate plan so an upload or registration failure cannot silently mutate the campaign graph.
+
+The picker may show the current thumbnail, video preview, asset name, type, and status from a fresh
+Asset Library read. Those fields are display metadata. The approved identity is the profile-scoped
+Amazon Asset ID and exact version. The plan hash binds both. If the asset version, eligibility, or
+status changes before execution, the worker refuses the stale plan and requires a new preview.
 
 ## Authoritative immutable plan
 
@@ -94,21 +123,21 @@ During execution the create counts obey:
 
 - `operatorApproved = pendingDispatch + attempted + refusedAtExecution + blockedByDependency`;
 - `attempted = succeeded + failed + ambiguous`;
-- `succeeded + ambiguous = observed + pendingObservation + observationConflict` once provider
-  result classification is complete.
+- `succeeded + ambiguous = observed + pendingObservation + observationNotFound +
+  observationConflict` once provider result classification is complete.
 
 Read-check nodes have their own requested/passed/refused/failed counts and never inflate the
 irreversible-create count. HTTP request counts also never stand in for resource counts. A failed or
 ambiguous parent moves every unattempted descendant into `blockedByDependency`; it does not leave
 those nodes silently pending.
 
-Batch states distinguish in-progress work from terminal `succeeded`, `partial_failed`,
+Batch states distinguish in-progress work from terminal `succeeded`, `failed`, `partial_failed`,
 `ambiguous`, `refused`, and `blocked` outcomes. A batch is successful only when every provider
-success is observed in a fresh entity sync and no failed, ambiguous, refused, blocked, pending, or
-observation-conflict node remains. Creative moderation is separately `not_applicable`, `pending`,
-`approved`, or `rejected`, and delivery is separately `unknown`, `not_delivering`, or `delivering`.
-Sponsored Brands can therefore be created and observed while still pending moderation, without
-being presented as moderation-approved or delivering.
+success is observed in a fresh entity sync and no failed, ambiguous, refused, blocked, pending,
+not-found, or observation-conflict node remains. Creative moderation is separately
+`not_applicable`, `pending`, `approved`, or `rejected`. Delivery is separately `unknown`,
+`not_delivering`, or `delivering`. Sponsored Brands can be created and observed while moderation
+is still pending. OpenSpell must not present that state as approved or delivering.
 
 ## Product execution order
 
@@ -132,7 +161,7 @@ being presented as moderation-approved or delivering.
 
 Format checks include the official product-count and Store-page rules, supported targeting for the
 selected format, and exactly one eligible video Asset ID/version where video is required. Preview
-URLs and names are display metadata, never asset identity.
+URLs, thumbnails, and names are display metadata, never asset identity.
 
 ### Sponsored Display
 
@@ -150,7 +179,9 @@ lossless multi-status response correlation is proven.
 
 ## Ambiguous create recovery
 
-- Persist a durable dispatch intent and request fingerprint before network I/O.
+- Persist a durable dispatch intent and request fingerprint before network I/O. The local
+  idempotency identity prevents a second execution from being scheduled; it does not prove whether
+  Amazon created a resource after an ambiguous response.
 - Never retry a create automatically after a timeout, lost connection, ambiguous server error, or
   provider success followed by local persistence failure.
 - Stop descendants of an ambiguous parent.
@@ -196,15 +227,21 @@ serialized. No package creates a shadow type to get ahead of the contract.
   success has one nonempty, correctly typed, unique Amazon ID.
 - Non-indexed responses use request size one until correlation is authoritative.
 - No failed, refused, or ambiguous node is hidden by a successful HTTP response.
+- The environment gate, tenant/profile allowlist, plan expiry, and exact approval are rechecked by
+  the worker immediately before dispatch.
 - The operator confirmation names Amazon and the exact irreversible resource count.
+- A selected creative preview binds the exact profile-scoped Asset ID and version. A URL,
+  thumbnail, name, or headline cannot substitute for that identity.
 - Web and MCP receive no Amazon credentials; MCP cannot approve its own plan.
+- Campaign creation has no automatic cadence in this architecture.
 - No production migration, deployment, or live creation occurs as part of this package.
 
 ## Official source anchors
 
-- [Amazon Ads advanced tools repository](https://github.com/amzn/ads-advanced-tools-docs)
-- [Unified campaign-management migration material](https://github.com/amzn/ads-advanced-tools-docs/tree/main/unified-campaign-management-migration-skills)
-- [Unified Sponsored Products specification](https://github.com/amzn/ads-advanced-tools-docs/blob/main/unified-campaign-management-migration-skills/api-specs/unified-api-sp.json)
-- [Unified Sponsored Brands specification](https://github.com/amzn/ads-advanced-tools-docs/blob/main/unified-campaign-management-migration-skills/api-specs/unified-api-sb.json)
-- [Sponsored Brands Collections contract notes](https://github.com/amzn/ads-advanced-tools-docs/blob/main/unified-campaign-management-migration-skills/skills/amazon-ads-sb-collections/SKILL.md)
+- [Amazon Ads advanced tools repository at the verified commit](https://github.com/amzn/ads-advanced-tools-docs/tree/5c1c432c3dbe676a571780aa0c4d0217659a5f3a)
+- [Asset Library upload, register, read, and search examples](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/postman/Amazon_Ads_API.postman_collection.json)
+- [Unified campaign-management migration material](https://github.com/amzn/ads-advanced-tools-docs/tree/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills)
+- [Unified Sponsored Products specification](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/api-specs/unified-api-sp.json)
+- [Unified Sponsored Brands specification](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/api-specs/unified-api-sb.json)
+- [Sponsored Brands Collections contract notes](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/skills/amazon-ads-sb-collections/SKILL.md)
 - [Sponsored Brands video specifications](https://advertising.amazon.com/resources/ad-specs/sponsored-brands-video)
