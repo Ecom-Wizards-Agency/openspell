@@ -201,6 +201,89 @@ describe.skipIf(!available)('WP-56 operator-intelligence foundations', () => {
     expect(Number(count?.n)).toBe(3);
   });
 
+  it('requires a complete provider identity and binds it to the exact tenant profile', async () => {
+    const [bindingA] = await database.sql<{
+      id: string;
+      subscription_id: string;
+      provider_dataset_id: string;
+      advertiser_id: string;
+      marketplace_id: string;
+    }[]>`
+      select id, subscription_id, provider_dataset_id, advertiser_id, marketplace_id
+        from public.marketing_stream_subscription_bindings
+       where org_id = ${orgA} and profile_id = ${profileA}
+       limit 1
+    `;
+    const [bindingB] = await database.sql<{
+      id: string;
+      subscription_id: string;
+      provider_dataset_id: string;
+      advertiser_id: string;
+      marketplace_id: string;
+    }[]>`
+      select id, subscription_id, provider_dataset_id, advertiser_id, marketplace_id
+        from public.marketing_stream_subscription_bindings
+       where org_id = ${orgB} and profile_id = ${profileB}
+       limit 1
+    `;
+    if (!bindingA || !bindingB) throw new Error('missing synthetic Stream bindings');
+    let sequence = 0;
+    const insertProvider = (identity: {
+      bindingId: string | null;
+      subscriptionId: string | null;
+      datasetId: string | null;
+      eventId: string | null;
+      advertiserId: string | null;
+      marketplaceId: string | null;
+    }) => {
+      sequence += 1;
+      return database.sql`
+        insert into public.marketing_stream_events (
+          org_id, profile_id, message_id, dataset, ad_product, event_time,
+          received_at, revision, payload_hash, raw_payload, binding_id,
+          provider_subscription_id, provider_dataset_id, provider_event_id,
+          provider_advertiser_id, provider_marketplace_id
+        ) values (
+          ${orgA}, ${profileA}, ${`provider-completeness-${sequence}`},
+          'traffic', 'SP', now() - interval '1 minute', now(), 0,
+          ${`provider-completeness-hash-${sequence}`}, '{}'::jsonb,
+          ${identity.bindingId}::uuid, ${identity.subscriptionId}, ${identity.datasetId},
+          ${identity.eventId}, ${identity.advertiserId}, ${identity.marketplaceId}
+        )
+      `;
+    };
+    const complete = {
+      bindingId: bindingA.id,
+      subscriptionId: bindingA.subscription_id,
+      datasetId: bindingA.provider_dataset_id,
+      eventId: 'provider-complete-event',
+      advertiserId: bindingA.advertiser_id,
+      marketplaceId: bindingA.marketplace_id,
+    };
+    for (const column of Object.keys(complete) as (keyof typeof complete)[]) {
+      await expect(insertProvider({ ...complete, [column]: null })).rejects.toThrow(
+        /marketing_stream_events_provider_identity_complete/i,
+      );
+    }
+    await expect(insertProvider({ ...complete, eventId: '   ' })).rejects.toThrow(
+      /marketing_stream_events_provider_identity_complete/i,
+    );
+
+    await expect(insertProvider({
+      bindingId: bindingB.id,
+      subscriptionId: bindingB.subscription_id,
+      datasetId: bindingB.provider_dataset_id,
+      eventId: 'cross-tenant-provider-event',
+      advertiserId: bindingB.advertiser_id,
+      marketplaceId: bindingB.marketplace_id,
+    })).rejects.toThrow(/marketing_stream_events_binding_fkey/i);
+
+    await insertProvider(complete);
+    await expect(insertProvider(complete)).rejects.toThrow(
+      /marketing_stream_events_provider_identity_key/i,
+    );
+  });
+
   it('refuses unreconciled promotion counts and an older late promotion', async () => {
     await expect(database.sql`
       insert into public.report_promotion_watermarks (

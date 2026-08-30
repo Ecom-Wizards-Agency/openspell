@@ -14,6 +14,7 @@ import {
   MarketingStreamBatchEnvelope,
   MarketingStreamHourlyFact,
   MarketingStreamLedgerEvent,
+  MarketingStreamNormalizeJob,
   OptimizationGroup,
   OptimizationRunContext,
   QueryCategory,
@@ -550,6 +551,7 @@ describe('feature jobs', () => {
         profileId: PROFILE_ID,
         type: 'marketing_stream.normalize',
         messageIds: ['message-1'],
+        configurationRetryAttempt: 1,
       },
     ];
     expect(jobs.map((job) => FeatureJobPayload.parse(job).type)).toEqual([
@@ -566,5 +568,12 @@ describe('feature jobs', () => {
       'report.promote',
       'marketing_stream.normalize',
     ]);
+    expect(MarketingStreamNormalizeJob.safeParse({
+      orgId: ORG_ID,
+      profileId: PROFILE_ID,
+      type: 'marketing_stream.normalize',
+      messageIds: ['message-1'],
+      configurationRetryAttempt: 25,
+    }).success).toBe(false);
   });
 });

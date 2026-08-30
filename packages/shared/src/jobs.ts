@@ -225,6 +225,8 @@ export const MarketingStreamNormalizeJob = z.object({
   ...jobBase,
   type: z.literal(FeatureJobType.enum['marketing_stream.normalize']),
   messageIds: z.array(z.string().min(1)).min(1),
+  /** Bounded policy-configuration retry generation; absent on normal ingestion jobs. */
+  configurationRetryAttempt: z.number().int().min(1).max(24).optional(),
 });
 
 export const JobPayload = z.discriminatedUnion('type', [

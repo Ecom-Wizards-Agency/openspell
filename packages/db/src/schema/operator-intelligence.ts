@@ -598,6 +598,26 @@ export const marketingStreamSubscriptionBindings = pgTable(
   ],
 );
 
+export const marketingStreamProjectionBlocks = pgTable(
+  'marketing_stream_projection_blocks',
+  {
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull(),
+    scopeKeys: text('scope_keys').array().notNull().default([]),
+    firstBlockedAt: ts('first_blocked_at').notNull(),
+    lastBlockedAt: ts('last_blocked_at').notNull(),
+    retryCount: integer('retry_count').notNull().default(0),
+    alertState: text('alert_state').$type<'pending' | 'alerted'>().notNull().default('pending'),
+    lastReason: text('last_reason').notNull(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.orgId, t.profileId] }),
+    foreignKey({ columns: [t.orgId, t.profileId], foreignColumns: [adProfiles.orgId, adProfiles.id] })
+      .onDelete('cascade'),
+  ],
+);
+
 export const marketingStreamEvents = pgTable(
   'marketing_stream_events',
   {
@@ -728,3 +748,5 @@ export type NewOptimizationGroup = typeof optimizationGroups.$inferInsert &
 export type MarketingStreamEventRow = typeof marketingStreamEvents.$inferSelect;
 export type MarketingStreamSubscriptionBindingRow =
   typeof marketingStreamSubscriptionBindings.$inferSelect;
+export type MarketingStreamProjectionBlockRow =
+  typeof marketingStreamProjectionBlocks.$inferSelect;

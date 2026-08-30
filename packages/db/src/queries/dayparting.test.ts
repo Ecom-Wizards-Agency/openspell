@@ -8,12 +8,15 @@ import type { DbHandle } from '../client.js';
 import { createTestDatabase, databaseAvailable } from '../testing/harness.js';
 import type { TestDatabase } from '../testing/harness.js';
 import {
+  clearMarketingStreamProjectionBlock,
+  markMarketingStreamProjectionBlocked,
   StaleMarketingStreamProjection,
   appendMarketingStreamEvents,
   marketingStreamScopeKey,
   marketingStreamScopesForMessageIds,
   persistDaypartingScheduleProposal,
   readMarketingStreamHourlyFacts,
+  readMarketingStreamProjectionBlock,
   replaceMarketingStreamHourlyFacts,
   resolveMarketingStreamSubscriptionBinding,
   snapshotLatestMarketingStreamEvents,
@@ -318,6 +321,39 @@ describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
     unlock?.();
     await blocker;
     await expect(projection).resolves.toMatchObject({ scopesReplaced: 1, factsInserted: 1 });
+  });
+
+  it('consolidates bounded missing-policy state and clears it after recovery', async () => {
+    await clearMarketingStreamProjectionBlock(database, { orgId, profileId });
+    const firstScope = { adProduct: 'SP' as const, utcHour: firstHour };
+    const secondScope = { adProduct: 'SB' as const, utcHour: secondHour };
+    await expect(markMarketingStreamProjectionBlocked(database, {
+      orgId,
+      profileId,
+      scopes: [firstScope],
+      blockedAt: new Date('2026-06-01T12:00:00.000Z'),
+      retryAttempt: 0,
+      retryLimit: 2,
+      reason: 'synthetic policy absent',
+    })).resolves.toMatchObject({
+      scopes: [firstScope], retryCount: 0, alertState: 'pending',
+    });
+    await expect(markMarketingStreamProjectionBlocked(database, {
+      orgId,
+      profileId,
+      scopes: [secondScope],
+      blockedAt: new Date('2026-06-01T13:00:00.000Z'),
+      retryAttempt: 2,
+      retryLimit: 2,
+      reason: 'synthetic policy still absent',
+    })).resolves.toMatchObject({
+      scopes: [secondScope, firstScope], retryCount: 2, alertState: 'alerted',
+    });
+    await expect(readMarketingStreamProjectionBlock(database, { orgId, profileId }))
+      .resolves.toMatchObject({ retryCount: 2, alertState: 'alerted', lastReason: 'synthetic policy still absent' });
+    await expect(clearMarketingStreamProjectionBlock(database, { orgId, profileId })).resolves.toBe(true);
+    await expect(clearMarketingStreamProjectionBlock(database, { orgId, profileId })).resolves.toBe(false);
+    await expect(readMarketingStreamProjectionBlock(database, { orgId, profileId })).resolves.toBeNull();
   });
 
   it('recomputes both old and new scopes when a latest revision moves hours', async () => {

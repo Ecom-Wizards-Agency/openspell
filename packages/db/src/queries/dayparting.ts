@@ -59,6 +59,17 @@ export interface MarketingStreamProjectionResult {
   factsReadBack: number;
 }
 
+export interface MarketingStreamProjectionBlock {
+  orgId: string;
+  profileId: string;
+  scopes: MarketingStreamScope[];
+  firstBlockedAt: string;
+  lastBlockedAt: string;
+  retryCount: number;
+  alertState: 'pending' | 'alerted';
+  lastReason: string;
+}
+
 export interface ReadMarketingStreamFactsInput {
   orgId: string;
   profileId: string;
@@ -174,6 +185,17 @@ interface FactWireRow {
   budget_capped: boolean;
   settling_state: HourSettlingState;
   source_events: number | string;
+}
+
+interface ProjectionBlockWireRow {
+  org_id: string;
+  profile_id: string;
+  scope_keys: string[];
+  first_blocked_at: Date | string;
+  last_blocked_at: Date | string;
+  retry_count: number;
+  alert_state: 'pending' | 'alerted';
+  last_reason: string;
 }
 
 /** Append valid shared-contract events without collapsing later revisions. */
@@ -386,6 +408,114 @@ export async function marketingStreamScopesForMessageIds(
       utcHour: truncateUtcHour(row.event_time),
     }))),
   };
+}
+
+/**
+ * Accumulate scopes behind one durable profile-level missing-policy block.
+ * Concurrent message-set jobs converge here instead of producing independent
+ * unbounded retry chains.
+ */
+export async function markMarketingStreamProjectionBlocked(
+  handle: DbHandle,
+  input: {
+    orgId: string;
+    profileId: string;
+    scopes: readonly MarketingStreamScope[];
+    blockedAt: Date;
+    retryAttempt: number;
+    retryLimit: number;
+    reason: string;
+  },
+): Promise<MarketingStreamProjectionBlock> {
+  assertUuid('orgId', input.orgId);
+  assertUuid('profileId', input.profileId);
+  const scopes = validateScopes(input.scopes);
+  if (scopes.length === 0) throw new MarketingStreamPersistenceError('blocked projection has no scopes');
+  if (!Number.isFinite(input.blockedAt.getTime())) {
+    throw new MarketingStreamPersistenceError('blocked projection timestamp is invalid');
+  }
+  if (!Number.isInteger(input.retryAttempt) || input.retryAttempt < 0) {
+    throw new MarketingStreamPersistenceError('blocked projection retry attempt is invalid');
+  }
+  if (!Number.isInteger(input.retryLimit) || input.retryLimit < 1) {
+    throw new MarketingStreamPersistenceError('blocked projection retry limit is invalid');
+  }
+  if (input.reason.trim().length === 0) {
+    throw new MarketingStreamPersistenceError('blocked projection reason is empty');
+  }
+  const scopeKeys = scopes.map(marketingStreamScopeKey);
+  const [row] = await handle.sql<ProjectionBlockWireRow[]>`
+    insert into public.marketing_stream_projection_blocks (
+      org_id, profile_id, scope_keys, first_blocked_at, last_blocked_at,
+      retry_count, alert_state, last_reason
+    ) values (
+      ${input.orgId}, ${input.profileId}, ${scopeKeys}::text[],
+      ${input.blockedAt.toISOString()}::timestamptz,
+      ${input.blockedAt.toISOString()}::timestamptz,
+      ${input.retryAttempt},
+      ${input.retryAttempt >= input.retryLimit ? 'alerted' : 'pending'},
+      ${input.reason.trim()}
+    )
+    on conflict (org_id, profile_id) do update
+       set scope_keys = (
+             select array_agg(distinct scope_key order by scope_key)
+               from unnest(
+                 public.marketing_stream_projection_blocks.scope_keys || excluded.scope_keys
+               ) as scope_key
+           ),
+           last_blocked_at = greatest(
+             public.marketing_stream_projection_blocks.last_blocked_at,
+             excluded.last_blocked_at
+           ),
+           retry_count = greatest(
+             public.marketing_stream_projection_blocks.retry_count,
+             excluded.retry_count
+           ),
+           alert_state = case
+             when public.marketing_stream_projection_blocks.alert_state = 'alerted'
+               or greatest(
+                 public.marketing_stream_projection_blocks.retry_count,
+                 excluded.retry_count
+               ) >= ${input.retryLimit}
+             then 'alerted'
+             else 'pending'
+           end,
+           last_reason = excluded.last_reason
+    returning org_id, profile_id, scope_keys, first_blocked_at,
+              last_blocked_at, retry_count, alert_state, last_reason
+  `;
+  if (!row) throw new MarketingStreamPersistenceError('blocked projection upsert returned no row');
+  return rowToProjectionBlock(row);
+}
+
+export async function readMarketingStreamProjectionBlock(
+  handle: DbHandle,
+  input: { orgId: string; profileId: string },
+): Promise<MarketingStreamProjectionBlock | null> {
+  assertUuid('orgId', input.orgId);
+  assertUuid('profileId', input.profileId);
+  const [row] = await handle.sql<ProjectionBlockWireRow[]>`
+    select org_id, profile_id, scope_keys, first_blocked_at,
+           last_blocked_at, retry_count, alert_state, last_reason
+      from public.marketing_stream_projection_blocks
+     where org_id = ${input.orgId} and profile_id = ${input.profileId}
+  `;
+  return row ? rowToProjectionBlock(row) : null;
+}
+
+export async function clearMarketingStreamProjectionBlock(
+  handle: DbHandle,
+  input: { orgId: string; profileId: string },
+): Promise<boolean> {
+  assertUuid('orgId', input.orgId);
+  assertUuid('profileId', input.profileId);
+  const rows = await handle.sql<{ profile_id: string }[]>`
+    delete from public.marketing_stream_projection_blocks
+     where org_id = ${input.orgId} and profile_id = ${input.profileId}
+    returning profile_id
+  `;
+  if (rows.length > 1) throw new MarketingStreamPersistenceError('cleared more than one projection block');
+  return rows.length === 1;
 }
 
 /**
@@ -751,6 +881,30 @@ function rowToFact(row: FactWireRow): MarketingStreamHourlyFactValue {
     settlingState: row.settling_state,
     sourceEvents: Number(row.source_events),
   });
+}
+
+function rowToProjectionBlock(row: ProjectionBlockWireRow): MarketingStreamProjectionBlock {
+  return {
+    orgId: row.org_id,
+    profileId: row.profile_id,
+    scopes: uniqueScopes(row.scope_keys.map(marketingStreamScopeFromKey)),
+    firstBlockedAt: toIso(row.first_blocked_at),
+    lastBlockedAt: toIso(row.last_blocked_at),
+    retryCount: Number(row.retry_count),
+    alertState: row.alert_state,
+    lastReason: row.last_reason,
+  };
+}
+
+function marketingStreamScopeFromKey(value: string): MarketingStreamScope {
+  const separator = value.indexOf('|');
+  if (separator < 1) throw new MarketingStreamPersistenceError('stored projection block has an invalid scope');
+  const adProduct = value.slice(0, separator);
+  const utcHour = value.slice(separator + 1);
+  if (!['SP', 'SB', 'SD'].includes(adProduct)) {
+    throw new MarketingStreamPersistenceError('stored projection block has an invalid ad product');
+  }
+  return { adProduct: adProduct as AdProduct, utcHour: truncateUtcHour(utcHour) };
 }
 
 async function latestEventsForScopes(
