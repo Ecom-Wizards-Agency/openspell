@@ -36,7 +36,9 @@ const REJECTED_BODY = /role=["']alert["']|Application error|Internal Server Erro
 const ROUTES = [
   { route: '/', expectedText: 'Dashboard' },
   { route: '/dashboard', expectedText: 'Dashboard' },
-  { route: '/grid', expectedText: 'data-testid="grid-scroller"' },
+  // The complete Grid hydrates after the server document arrives. Its default
+  // entity heading is server-rendered; the scroller test id is not.
+  { route: '/grid', expectedText: 'Search terms' },
   { route: '/optimizer', expectedText: 'Campaign Optimizer' },
   { route: '/optimizer/groups', expectedText: 'Optimization Groups' },
   { route: '/creative', expectedText: 'Creative Performance' },
