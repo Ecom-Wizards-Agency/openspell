@@ -2,6 +2,7 @@
 
 import type { ReactNode } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { Period } from '../../app/_lib/periods';
 import { beginRouteNavigation } from '../performance/navigation';
 import { dateRangeHref, dateRangePresets, selectedDateRangeLabel } from './date-range';
@@ -17,6 +18,7 @@ export function DateRangePicker({
   today: string;
   preserved?: Readonly<Record<string, string | undefined>>;
 }): ReactNode {
+  const router = useRouter();
   const presets = dateRangePresets(today);
   const lastCompleteDay = presets[0]?.period.end ?? today;
   const selectedLabel = selectedDateRangeLabel(period, today);
@@ -58,7 +60,21 @@ export function DateRangePicker({
             );
           })}
         </nav>
-        <form action={path} method="get" className="wa-date-range__custom">
+        <form
+          action={path}
+          method="get"
+          className="wa-date-range__custom"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const data = new FormData(event.currentTarget);
+            const params = new URLSearchParams();
+            for (const [name, value] of data.entries()) {
+              if (typeof value === 'string') params.append(name, value);
+            }
+            beginRouteNavigation();
+            router.push(`${path}?${params.toString()}`);
+          }}
+        >
           {hidden.map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />)}
           <strong>Custom range</strong>
           <div className="wa-date-range__fields">
