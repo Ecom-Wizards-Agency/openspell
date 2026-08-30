@@ -857,6 +857,209 @@ describe('integration handler wiring', () => {
   });
 });
 
+describe('terminal report lifecycle invariant', () => {
+  const cases = [
+    {
+      phase: 'request' as const,
+      payload: {
+        type: 'report.request' as const,
+        orgId,
+        profileId,
+        reportType: 'spCampaigns' as const,
+        startDate: '2026-08-29',
+        endDate: '2026-08-29',
+      },
+      expectedReportRequestId: jobId,
+    },
+    {
+      phase: 'poll' as const,
+      payload: {
+        type: 'report.poll' as const,
+        orgId,
+        profileId,
+        reportRequestId,
+        amazonReportId: 'amazon-report',
+        attempt: 0,
+      },
+      expectedReportRequestId: reportRequestId,
+    },
+    {
+      phase: 'fetch' as const,
+      payload: {
+        type: 'report.fetch' as const,
+        orgId,
+        profileId,
+        reportRequestId,
+        amazonReportId: 'amazon-report',
+        downloadUrl: 'https://reports.invalid/terminal',
+      },
+      expectedReportRequestId: reportRequestId,
+    },
+  ];
+
+  it.each(cases)('fails the tenant-scoped ledger when $phase exhausts retries', async (testCase) => {
+    const job: ClaimedJob = {
+      id: jobId,
+      orgId,
+      profileId,
+      jobType: testCase.payload.type,
+      payload: testCase.payload,
+      attempts: 5,
+      maxAttempts: 5,
+      dedupeKey: null,
+      claimedBy: 'terminal-worker',
+    };
+    let claimed = false;
+    const terminalCalls: Array<{
+      scope: { reportRequestId: string; orgId: string; profileId: string };
+      error: string;
+    }> = [];
+    const report: ReportRequestState = {
+      id: testCase.expectedReportRequestId,
+      orgId,
+      profileId,
+      reportType: 'spCampaigns',
+      startDate: '2026-08-29',
+      endDate: '2026-08-29',
+      source: 'amazon_api',
+      amazonReportId: testCase.phase === 'request' ? null : 'amazon-report',
+      requestedAt: new Date('2026-08-29T00:00:00Z'),
+      pollAttempts: 0,
+    };
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      ensureReportRequest: async () => report,
+      getReportRequest: async () => report,
+      failTerminalReport: async (scope, error) => {
+        terminalCalls.push({ scope, error });
+        return true;
+      },
+    };
+    const worker = new SyncWorker({
+      workerId: 'terminal-worker',
+      store,
+      adsApi: new TerminalPhaseFailureApi(testCase.phase),
+      buckets: new RegionTokenBuckets(2),
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(terminalCalls).toEqual([{
+      scope: { reportRequestId: testCase.expectedReportRequestId, orgId, profileId },
+      error: 'report lifecycle stopped after exhausting its retry budget',
+    }]);
+  });
+
+  it('keeps an unfinished retryable report pending while attempts remain', async () => {
+    const payload: Extract<JobPayload, { type: 'report.fetch' }> = {
+      type: 'report.fetch',
+      orgId,
+      profileId,
+      reportRequestId,
+      amazonReportId: 'amazon-report',
+      downloadUrl: 'https://reports.invalid/retry',
+    };
+    const job: ClaimedJob = {
+      id: jobId,
+      orgId,
+      profileId,
+      jobType: payload.type,
+      payload,
+      attempts: 1,
+      maxAttempts: 5,
+      dedupeKey: null,
+      claimedBy: 'retry-worker',
+    };
+    let claimed = false;
+    let terminalCalls = 0;
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      getReportRequest: async () => ({
+        id: reportRequestId,
+        orgId,
+        profileId,
+        reportType: 'spCampaigns',
+        startDate: '2026-08-29',
+        endDate: '2026-08-29',
+        source: 'amazon_api',
+        amazonReportId: 'amazon-report',
+        requestedAt: new Date('2026-08-29T00:00:00Z'),
+        pollAttempts: 0,
+      }),
+      failTerminalReport: async () => (terminalCalls += 1, true),
+    };
+    const worker = new SyncWorker({
+      workerId: 'retry-worker',
+      store,
+      adsApi: new TerminalPhaseFailureApi('fetch'),
+      buckets: new RegionTokenBuckets(2),
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(terminalCalls).toBe(0);
+  });
+
+  it('does not block a successful report when only queue finalization fails', async () => {
+    const payload: Extract<JobPayload, { type: 'report.poll' }> = {
+      type: 'report.poll',
+      orgId,
+      profileId,
+      reportRequestId,
+      amazonReportId: 'amazon-report',
+      attempt: 0,
+    };
+    const job: ClaimedJob = {
+      id: jobId,
+      orgId,
+      profileId,
+      jobType: payload.type,
+      payload,
+      attempts: 5,
+      maxAttempts: 5,
+      dedupeKey: null,
+      claimedBy: 'finalization-worker',
+    };
+    let claimed = false;
+    let terminalCalls = 0;
+    let finishCalls = 0;
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      getReportRequest: async () => ({
+        id: reportRequestId,
+        orgId,
+        profileId,
+        reportType: 'spCampaigns',
+        startDate: '2026-08-29',
+        endDate: '2026-08-29',
+        source: 'amazon_api',
+        amazonReportId: 'amazon-report',
+        requestedAt: new Date(),
+        pollAttempts: 0,
+      }),
+      finish: async () => {
+        finishCalls += 1;
+        throw new Error('synthetic queue finalization failure');
+      },
+      failTerminalReport: async () => (terminalCalls += 1, true),
+    };
+    const worker = new SyncWorker({
+      workerId: 'finalization-worker',
+      store,
+      adsApi: new OneRowApi(),
+      buckets: new RegionTokenBuckets(2),
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(finishCalls).toBe(1);
+    expect(terminalCalls).toBe(0);
+  });
+});
+
 describe('resolveSourcePath', () => {
   it('reads a relative payload path against the configured inbox root', () => {
     expect(resolveSourcePath('profile-1/2026-08-13', '/srv/inbox')).toBe('/srv/inbox/profile-1/2026-08-13');
@@ -910,6 +1113,7 @@ function stubStore(): WorkerStore {
     ensureReportPartitions: async () => ({ expectedMonths: 0, matchedMonths: 0, createdMonths: 0 }),
     promoteReportDate: async () => { throw new Error('unused'); },
     failReport: async () => {},
+    failTerminalReport: async () => false,
     loadFacts: async () => 0,
     completeReport: async () => {},
     finishAttributedReport: async () => {},
@@ -952,6 +1156,30 @@ class OneRowApi implements AdsApiClient {
 class ExpiredDownloadApi extends OneRowApi {
   override async downloadReport(): Promise<AsyncIterable<Uint8Array>> {
     throw new DownloadUrlExpiredError('synthetic expired URL');
+  }
+}
+
+class TerminalPhaseFailureApi extends OneRowApi {
+  constructor(private readonly phase: 'request' | 'poll' | 'fetch') {
+    super();
+  }
+
+  override async createReport(input: CreateReportInput): Promise<{ reportId: string }> {
+    if (this.phase === 'request') throw new Error('synthetic request failure');
+    return super.createReport(input);
+  }
+
+  override async getReport(
+    profile: AdsProfileContext,
+    reportId: string,
+  ): Promise<AdsReportStatus> {
+    if (this.phase === 'poll') throw new Error('synthetic poll failure');
+    return super.getReport(profile, reportId);
+  }
+
+  override async downloadReport(): Promise<AsyncIterable<Uint8Array>> {
+    if (this.phase === 'fetch') throw new Error('synthetic fetch failure');
+    return super.downloadReport();
   }
 }
 

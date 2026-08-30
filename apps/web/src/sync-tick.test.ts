@@ -16,6 +16,7 @@ import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import {
   CRON_SYNC_JOB_TYPES,
+  creativeSyncProducerEnabledFromEnv,
   cronSyncJobTypesFromEnv,
   runSyncTick,
   SYNC_TICK_LOCK_KEY,
@@ -45,6 +46,29 @@ describe('cron claim filter', () => {
   it('fails closed for a malformed deployment handoff', () => {
     expect(() => cronSyncJobTypesFromEnv({ OPENSPELL_EVO_REPORT_LANE_READY: 'true' }))
       .toThrow(/OPENSPELL_EVO_REPORT_LANE_READY/);
+  });
+
+  it('keeps the Creative producer inert until both exact activation flags are set', () => {
+    expect(creativeSyncProducerEnabledFromEnv({})).toBe(false);
+    expect(creativeSyncProducerEnabledFromEnv({
+      OPENSPELL_EVO_REPORT_LANE_READY: '1',
+      OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '0',
+    })).toBe(false);
+    expect(creativeSyncProducerEnabledFromEnv({
+      OPENSPELL_EVO_REPORT_LANE_READY: '1',
+      OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
+    })).toBe(true);
+  });
+
+  it('refuses malformed or premature Creative producer activation', () => {
+    expect(() => creativeSyncProducerEnabledFromEnv({
+      OPENSPELL_EVO_REPORT_LANE_READY: '1',
+      OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: 'true',
+    })).toThrow(/OPENSPELL_CREATIVE_SYNC_PRODUCER_READY/);
+    expect(() => creativeSyncProducerEnabledFromEnv({
+      OPENSPELL_EVO_REPORT_LANE_READY: '0',
+      OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
+    })).toThrow(/exclusive Evo report lane/);
   });
 });
 
@@ -119,6 +143,7 @@ describe.skipIf(!available)('runSyncTick', () => {
     const worker = new FakeWorker();
     let bidSeriesRuns = 0;
     let recommendationScheduleRuns = 0;
+    let creativeScheduleRuns = 0;
 
     const result = await runSyncTick({
       sql: database.sql,
@@ -127,6 +152,17 @@ describe.skipIf(!available)('runSyncTick', () => {
       recommendationSchedules: async () => {
         recommendationScheduleRuns += 1;
         return 3;
+      },
+      creativeSyncSchedules: async () => {
+        creativeScheduleRuns += 1;
+        return {
+          enabledProfiles: 3,
+          offeredProfiles: 2,
+          deferredPendingProfiles: 1,
+          enqueuedJobs: 1,
+          deduplicatedJobs: 1,
+          observations: [],
+        };
       },
       bidSeries: async () => {
         bidSeriesRuns += 1;
@@ -144,6 +180,14 @@ describe.skipIf(!available)('runSyncTick', () => {
     expect(store.provisioned).toEqual(['profile']);
     expect(result.provisioned).toBe(2);
     expect(recommendationScheduleRuns).toBe(1);
+    expect(creativeScheduleRuns).toBe(1);
+    expect(result.creativeSync).toEqual({
+      enabledProfiles: 3,
+      offeredProfiles: 2,
+      deferredPendingProfiles: 1,
+      enqueuedJobs: 1,
+      deduplicatedJobs: 1,
+    });
     expect(result.enqueued).toBeGreaterThanOrEqual(3);
     expect(worker.drains).toBe(1);
     expect(bidSeriesRuns).toBe(1);

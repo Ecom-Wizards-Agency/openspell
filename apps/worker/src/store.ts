@@ -187,6 +187,12 @@ export interface WorkerStore {
   ): Promise<ReportPartitionCounts>;
   promoteReportDate(input: StagedReportDate): Promise<ReportDatePromotionResult>;
   failReport(reportRequestId: string, error: string): Promise<void>;
+  /** Fail an unfinished ledger only inside the claimed job's tenant scope. */
+  failTerminalReport(scope: {
+    reportRequestId: string;
+    orgId: string;
+    profileId: string;
+  }, error: string): Promise<boolean>;
   loadFacts(batch: ParsedFactBatch): Promise<number>;
   completeReport(
     reportRequestId: string,
@@ -693,6 +699,29 @@ export class PostgresWorkerStore implements WorkerStore {
        returning id
     `;
     if (rows.length !== 1) throw new Error(`failed report update matched ${rows.length} rows`);
+  }
+
+  async failTerminalReport(scope: {
+    reportRequestId: string;
+    orgId: string;
+    profileId: string;
+  }, error: string): Promise<boolean> {
+    const rows = await this.handle.sql<{ id: string }[]>`
+      update public.report_requests
+         set status = 'failed'::public.report_status,
+             completed_at = now(),
+             next_poll_at = null,
+             error = ${error}
+       where id = ${scope.reportRequestId}
+         and org_id = ${scope.orgId}
+         and profile_id = ${scope.profileId}
+         and status in ('pending'::public.report_status, 'processing'::public.report_status)
+      returning id
+    `;
+    if (rows.length > 1) {
+      throw new Error(`terminal report update matched ${rows.length} rows`);
+    }
+    return rows.length === 1;
   }
 
   async loadFacts(batch: ParsedFactBatch): Promise<number> {

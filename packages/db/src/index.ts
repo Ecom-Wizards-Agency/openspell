@@ -23,6 +23,7 @@ export * from './schema/index.js';
 export * from './queries/chunk.js';
 export * from './queries/campaign-update.js';
 export * from './queries/creative-performance.js';
+export * from './queries/creative-sync-producer.js';
 export * from './queries/dayparting.js';
 export * from './queries/connections.js';
 export * from './queries/entities.js';
