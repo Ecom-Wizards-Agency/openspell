@@ -24,7 +24,6 @@ import { Suspense } from 'react';
 import { redirect } from 'next/navigation';
 import { analyzeAccount, classifyCampaignCategory, computePacing, evaluate, pacingFlag } from '@wizard-ads/core';
 import type { DailyRow, Flag } from '@wizard-ads/core';
-import { readOptimizationWorkspace } from '@wizard-ads/db';
 import type { DbHandle } from '@wizard-ads/db';
 import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 import { assessFreshness } from '@wizard-ads/ui';
@@ -38,7 +37,7 @@ import { kpiTiles, totalsOf } from '../../src/optimizer/view';
 import type { FlagView, PacingView } from '../../src/ui/dashboard';
 import { page } from '../../src/ui/tokens';
 import { OperatorContext } from '../../src/ui/operator-context';
-import { readStrategyEvidence } from '../../src/strategy/overview';
+import { readDashboardOperatingStatus } from '../../src/dashboard/operating-status';
 import { loadCampaignDailyRows, loadProfileDailyRows, loadReportLedger } from '../_lib/dashboard-data';
 import { withExistingDatabase } from '../_lib/db';
 import { addDays, periodFromParams, settledComparisonWindows, todayIso } from '../_lib/periods';
@@ -376,13 +375,10 @@ async function OperatingStatus({
   orgId: string;
   profileId: string;
 }) {
-  const [workspace, evidence] = await Promise.all([
-    readOptimizationWorkspace(handle, { orgId, profileId }),
-    readStrategyEvidence(handle, { orgId, profileId }),
-  ]);
-  const openBatch = evidence.batches.find((batch) => batch.status === 'staged') ?? null;
-  const stockNeedsReview = evidence.knowledge.stockSignals > 0;
-  const observationNeedsReview = evidence.observations.revert > 0 || evidence.observations.settling > 0;
+  const status = await readDashboardOperatingStatus(handle, { orgId, profileId });
+  const openBatch = status.stagedBatch;
+  const stockNeedsReview = status.stockSignals > 0;
+  const observationNeedsReview = status.observations.revert > 0 || status.observations.settling > 0;
 
   return (
     <div id="operating-status">
@@ -396,17 +392,17 @@ async function OperatingStatus({
             label="Stock gate"
             value={stockNeedsReview ? 'Review' : 'Unknown'}
             detail={stockNeedsReview
-              ? `${evidence.knowledge.stockSignals} stock signal${evidence.knowledge.stockSignals === 1 ? '' : 's'} need review.`
+              ? `${status.stockSignals} stock signal${status.stockSignals === 1 ? '' : 's'} need review.`
               : 'No validated inventory signal is available.'}
             tone={stockNeedsReview ? 'warn' : 'neutral'}
           />
           <OperatingSignal
             label="Optimization groups"
-            value={`${workspace.assignedCampaigns}/${workspace.campaigns.length} assigned`}
-            detail={workspace.unassignedCampaigns === 0
-              ? `${workspace.groups.length} group${workspace.groups.length === 1 ? '' : 's'} cover the campaign roster.`
-              : `${workspace.unassignedCampaigns} campaign${workspace.unassignedCampaigns === 1 ? '' : 's'} still need a group.`}
-            tone={workspace.unassignedCampaigns === 0 && workspace.campaigns.length > 0 ? 'good' : 'warn'}
+            value={`${status.campaigns.assigned}/${status.campaigns.total} assigned`}
+            detail={status.campaigns.unassigned === 0
+              ? `${status.groupCount} group${status.groupCount === 1 ? '' : 's'} cover the campaign roster.`
+              : `${status.campaigns.unassigned} campaign${status.campaigns.unassigned === 1 ? '' : 's'} still need a group.`}
+            tone={status.campaigns.unassigned === 0 && status.campaigns.total > 0 ? 'good' : 'warn'}
           />
           <OperatingSignal
             label="Open export batch"
@@ -418,13 +414,13 @@ async function OperatingStatus({
           />
           <OperatingSignal
             label="Evidence loop"
-            value={evidence.observations.revert > 0
-              ? `${evidence.observations.revert} revert`
-              : evidence.observations.settling > 0
-                ? `${evidence.observations.settling} observing`
-                : `${evidence.observations.complete} complete`}
-            detail={`${evidence.observations.synchronized} synchronized · ${evidence.observations.hold} hold`}
-            tone={evidence.observations.revert > 0 ? 'bad' : observationNeedsReview ? 'warn' : 'neutral'}
+            value={status.observations.revert > 0
+              ? `${status.observations.revert} revert`
+              : status.observations.settling > 0
+                ? `${status.observations.settling} observing`
+                : `${status.observations.complete} complete`}
+            detail={`${status.observations.synchronized} synchronized · ${status.observations.hold} hold`}
+            tone={status.observations.revert > 0 ? 'bad' : observationNeedsReview ? 'warn' : 'neutral'}
           />
         </div>
         <div className="wa-operating-status__actions">
