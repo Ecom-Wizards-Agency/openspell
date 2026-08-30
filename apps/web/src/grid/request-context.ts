@@ -188,6 +188,10 @@ interface GridRequestAuthorizationAdapters {
   identify: typeof gridRequestSubject;
   openDatabase: typeof openWebDatabase;
   resolveReceipt: typeof resolveGridReadReceipt;
+  enforceAssurance?: (
+    subject: GridRequestSubject,
+    receipt: GridReadReceipt,
+  ) => Promise<void>;
 }
 
 interface AuthorizeGridRequestInput {
@@ -205,7 +209,44 @@ const DEFAULT_AUTHORIZATION_ADAPTERS: GridRequestAuthorizationAdapters = {
   identify: gridRequestSubject,
   openDatabase: openWebDatabase,
   resolveReceipt: resolveGridReadReceipt,
+  enforceAssurance: enforceGridAssurance,
 };
+
+/** Keep the Grid hot path unchanged until a rollout policy can refuse access. */
+async function enforceGridAssurance(
+  subject: GridRequestSubject,
+  receipt: GridReadReceipt,
+): Promise<void> {
+  const { authFeatureConfig } = await import('../auth/config');
+  const {
+    authorizeOperatorRole,
+    currentOperatorIdentity,
+    operatorAssuranceEnforced,
+  } = await import('../auth/security-authorization');
+  const config = authFeatureConfig();
+  if (!operatorAssuranceEnforced(config)) return;
+
+  const identity = await currentOperatorIdentity(config);
+  if (identity.user === null || identity.user.id !== subject.userId) {
+    throw new RequestAuthError('Authentication required', 401, 'authentication_required');
+  }
+  const authorization = authorizeOperatorRole(identity, receipt.role, '/grid');
+  if (authorization.status === 'challenge') {
+    throw new RequestAuthError(
+      'Additional authentication required',
+      403,
+      'additional_authentication_required',
+      authorization.href,
+    );
+  }
+  if (authorization.status === 'error') {
+    throw new RequestAuthError(
+      'Account security could not be verified',
+      503,
+      'authentication_unavailable',
+    );
+  }
+}
 
 /**
  * Construct the Grid's one deep authorization operation.
@@ -229,6 +270,7 @@ export function createGridRequestAuthorizer(
         subject,
         input.candidateProfileId,
       );
+      await adapters.enforceAssurance?.(subject, receipt);
       return { database, receipt };
     } catch (error) {
       // The caller never receives a handle when authorization fails, so this

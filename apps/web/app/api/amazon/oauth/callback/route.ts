@@ -21,7 +21,11 @@
 import { NextResponse } from 'next/server';
 import { amazonOAuthConfig, secureCookies, stateSigningKey } from '../../../../../src/env';
 import { can } from '../../../../../src/auth/roles';
-import { currentUser } from '../../../../../src/auth/session';
+import { authOrigin } from '../../../../../src/auth/origin';
+import {
+  authorizeOperatorRole,
+  currentOperatorIdentity,
+} from '../../../../../src/auth/security-authorization';
 import { database } from '../../../../../src/data/db';
 import { membershipFor, resolveOrgContext } from '../../../../../src/data/orgs';
 import {
@@ -55,7 +59,11 @@ export async function GET(request: Request): Promise<Response> {
     return finish(secure, failure(stateMessage(verification.reason)));
   }
 
-  const user = await currentUser();
+  const identity = await currentOperatorIdentity();
+  const user = identity.user;
+  if (identity.security?.state === 'unavailable') {
+    return finish(secure, failure('account security could not be verified; start again'));
+  }
   if (!user) return finish(secure, failure('your session ended; sign in and try again'));
   if (user.id !== verification.claims.sub) {
     return finish(secure, failure('this authorization was started by a different session'));
@@ -68,6 +76,13 @@ export async function GET(request: Request): Promise<Response> {
   const membership = membershipFor(context, verification.claims.org);
   if (!membership || !can(membership.role, 'manageConnection')) {
     return finish(secure, failure('you may no longer connect Amazon Ads for that organisation'));
+  }
+  const authorization = authorizeOperatorRole(identity, membership.role, SETTINGS);
+  if (authorization.status !== 'ok') {
+    return finish(
+      secure,
+      failure('verify account security from Settings, then start the connection again'),
+    );
   }
 
   // Amazon's own refusal (the operator declined, or the app is misconfigured).
@@ -137,8 +152,7 @@ function finish(secure: boolean, location: string): Response {
  * an attacker controls is an open redirect.
  */
 function absolute(path: string): string {
-  const base = process.env['WIZARD_ADS_APP_URL'] || 'http://localhost:3000';
-  return new URL(path, base).toString();
+  return new URL(path, authOrigin()).toString();
 }
 
 function failure(message: string): string {

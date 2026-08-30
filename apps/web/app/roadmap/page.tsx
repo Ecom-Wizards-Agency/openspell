@@ -11,7 +11,7 @@ import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { listFeedbackItems } from '@wizard-ads/db';
 import { can } from '../../src/auth/roles';
-import { isUnauthenticated, openWebDatabase, requestActor } from '../../src/server/request-context';
+import { authenticationDestination, openWebDatabase, requestActor } from '../../src/server/request-context';
 import { requireOrgRole } from '../../src/server/org-role';
 import { toUiItem } from '../../src/feedback/ui';
 import { heading, muted, page } from '../../src/ui/tokens';
@@ -43,7 +43,8 @@ export default async function RoadmapPage() {
     );
   } catch (error) {
     // A page, not an API: an anonymous visitor gets the login screen.
-    if (isUnauthenticated(error)) redirect('/login');
+    const authDestination = authenticationDestination(error);
+    if (authDestination !== null) redirect(authDestination);
     const message = error instanceof Error ? error.message : 'The roadmap is unavailable';
     return (
       <main style={page}>

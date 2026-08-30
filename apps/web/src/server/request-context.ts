@@ -40,12 +40,19 @@ export interface RequestActor {
   orgId: string;
 }
 
+export type RequestAuthCode =
+  | 'authentication_required'
+  | 'additional_authentication_required'
+  | 'authentication_unavailable';
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class RequestAuthError extends Error {
   constructor(
     message: string,
     readonly status: 401 | 403 | 503,
+    readonly code: RequestAuthCode | null = null,
+    readonly location: string | null = null,
   ) {
     super(message);
     this.name = 'RequestAuthError';
@@ -63,6 +70,15 @@ export class RequestAuthError extends Error {
  */
 export function isUnauthenticated(error: unknown): boolean {
   return error instanceof RequestAuthError && error.status === 401;
+}
+
+/** Page callers redirect only for real authentication continuations. */
+export function authenticationDestination(error: unknown): string | null {
+  if (!(error instanceof RequestAuthError)) return null;
+  if (error.code === 'additional_authentication_required' && error.location !== null) {
+    return error.location;
+  }
+  return error.status === 401 ? '/login' : null;
 }
 
 function equalSecret(supplied: string, expected: string): boolean {
@@ -127,9 +143,21 @@ export function actorFromHeaders(
  * these handlers as plain functions.
  */
 async function actorFromSession(): Promise<RequestActor> {
-  const { currentUser } = await import('../auth/session');
-  const user = await currentUser();
-  if (!user) throw new RequestAuthError('Authentication required', 401);
+  const { currentOperatorIdentity, authorizeOperatorRole } = await import(
+    '../auth/security-authorization'
+  );
+  const identity = await currentOperatorIdentity();
+  const user = identity.user;
+  if (!user) {
+    if (identity.security?.state === 'unavailable') {
+      throw new RequestAuthError(
+        'Account security could not be verified',
+        503,
+        'authentication_unavailable',
+      );
+    }
+    throw new RequestAuthError('Authentication required', 401, 'authentication_required');
+  }
 
   const { database } = await import('../data/db');
   const handle = database();
@@ -138,6 +166,22 @@ async function actorFromSession(): Promise<RequestActor> {
   const { resolveOrgContext } = await import('../data/orgs');
   const context = await resolveOrgContext(handle, user);
   if (!context.active) throw new RequestAuthError('Resource not found', 403);
+  const authorization = authorizeOperatorRole(identity, context.active.role, '/dashboard');
+  if (authorization.status === 'challenge') {
+    throw new RequestAuthError(
+      'Additional authentication required',
+      403,
+      'additional_authentication_required',
+      authorization.href,
+    );
+  }
+  if (authorization.status === 'error') {
+    throw new RequestAuthError(
+      'Account security could not be verified',
+      503,
+      'authentication_unavailable',
+    );
+  }
   return { userId: user.id, orgId: context.active.orgId };
 }
 
@@ -171,7 +215,14 @@ export async function requireOrgMembership(
 
 export function errorResponse(error: unknown): Response {
   if (error instanceof RequestAuthError) {
-    return Response.json({ error: error.message }, { status: error.status });
+    return Response.json(
+      {
+        error: error.message,
+        ...(error.code === null ? {} : { code: error.code }),
+        ...(error.location === null ? {} : { location: error.location }),
+      },
+      { status: error.status },
+    );
   }
   if (error instanceof SyntaxError) {
     return Response.json({ error: 'Malformed JSON request' }, { status: 400 });

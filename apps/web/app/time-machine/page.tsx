@@ -21,7 +21,7 @@ import {
 } from '@wizard-ads/db';
 import type { ChangeSource, TimelineEntry } from '@wizard-ads/db';
 import {
-  isUnauthenticated,
+  authenticationDestination,
   openWebDatabase,
   requestActor,
   requireOrgMembership,
@@ -418,7 +418,8 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
       </main>
     );
   } catch (error) {
-    if (isUnauthenticated(error)) redirect('/login');
+    const authDestination = authenticationDestination(error);
+    if (authDestination !== null) redirect(authDestination);
     const message = error instanceof Error ? error.message : 'The change history is unavailable';
     return (
       <main style={main}>

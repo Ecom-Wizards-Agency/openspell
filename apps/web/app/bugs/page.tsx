@@ -5,7 +5,7 @@ import { listBugBoard } from '@wizard-ads/db';
 import { can } from '../../src/auth/roles';
 import { toUiItem } from '../../src/feedback/ui';
 import { requireOrgRole } from '../../src/server/org-role';
-import { isUnauthenticated, openWebDatabase, requestActor } from '../../src/server/request-context';
+import { authenticationDestination, openWebDatabase, requestActor } from '../../src/server/request-context';
 import { heading, muted, page } from '../../src/ui/tokens';
 import { BugBoardView } from './board';
 
@@ -30,7 +30,8 @@ export default async function BugsPage() {
       />
     );
   } catch (error) {
-    if (isUnauthenticated(error)) redirect('/login');
+    const authDestination = authenticationDestination(error);
+    if (authDestination !== null) redirect(authDestination);
     const message = error instanceof Error ? error.message : 'The bug board is unavailable';
     return (
       <main style={page}>

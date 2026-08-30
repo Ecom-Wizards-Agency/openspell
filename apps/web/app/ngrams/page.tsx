@@ -16,7 +16,7 @@ import type { CSSProperties } from 'react';
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import {
-  isUnauthenticated,
+  authenticationDestination,
   openWebDatabase,
   requestActor,
   requireOrgMembership,
@@ -109,7 +109,8 @@ export default async function NgramsPage({ searchParams }: { searchParams: Searc
   } catch (error) {
     // A page, not an API: an anonymous visitor gets the login screen rather
     // than a 200 that reads "Authentication required".
-    if (isUnauthenticated(error)) redirect('/login');
+    const authDestination = authenticationDestination(error);
+    if (authDestination !== null) redirect(authDestination);
     const message = error instanceof Error ? error.message : 'The explorer is unavailable';
     return (
       <main style={main}>

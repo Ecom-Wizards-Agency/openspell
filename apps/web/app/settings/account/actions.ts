@@ -1,12 +1,14 @@
 'use server';
 
-import { gateAction } from '../../../src/auth/guard';
+import { gateAccountSecurityAction } from '../../../src/auth/guard';
+import { authorizeSecurityChange } from '../../../src/auth/security-authorization';
 import { supabaseConfigured, supabaseServerClient } from '../../../src/auth/supabase';
 import { passwordChangeError } from './password-policy';
 
 export type PasswordActionResult =
   | { status: 'idle' }
   | { status: 'ok'; message: string }
+  | { status: 'challenge'; message: string; href: string }
   | { status: 'error'; message: string };
 
 const PASSWORD_FIELD = ['pass', 'word'].join('') as 'password';
@@ -17,7 +19,17 @@ export async function changePassword(
   formData: FormData,
 ): Promise<PasswordActionResult> {
   try {
-    await gateAction();
+    await gateAccountSecurityAction();
+    const authorization = await authorizeSecurityChange('/settings/account');
+    if (authorization.status !== 'ok') {
+      return authorization.status === 'challenge'
+        ? {
+            status: 'challenge',
+            message: 'Verify your authenticator before replacing the password.',
+            href: authorization.href,
+          }
+        : { status: 'error', message: authorization.message };
+    }
     const passphrase = String(formData.get(PASSWORD_FIELD) ?? '');
     const confirmation = String(formData.get('confirmation') ?? '');
     const validationError = passwordChangeError(passphrase, confirmation);

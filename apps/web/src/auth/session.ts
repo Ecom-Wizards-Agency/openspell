@@ -21,10 +21,22 @@
  */
 import { cookies } from 'next/headers';
 import { cache } from 'react';
-import { E2E_USER_COOKIE, E2E_USER_EMAIL_COOKIE } from '../cookies';
+import {
+  E2E_AAL_CURRENT_COOKIE,
+  E2E_AAL_NEXT_COOKIE,
+  E2E_USER_COOKIE,
+  E2E_USER_EMAIL_COOKIE,
+} from '../cookies';
+import { isAssuranceLevel } from './assurance';
+import type { AssuranceLevel, SessionSecurity } from './assurance';
 import { supabaseConfigured, supabaseServerClient } from './supabase';
 
-export { E2E_USER_COOKIE, E2E_USER_EMAIL_COOKIE };
+export {
+  E2E_AAL_CURRENT_COOKIE,
+  E2E_AAL_NEXT_COOKIE,
+  E2E_USER_COOKIE,
+  E2E_USER_EMAIL_COOKIE,
+};
 
 export interface SessionUser {
   id: string;
@@ -59,6 +71,59 @@ async function readCurrentUser(): Promise<SessionUser | null> {
   return { id: data.user.id, email: data.user.email ?? null };
 }
 
+async function readCurrentSessionSecurity(): Promise<SessionSecurity> {
+  if (e2eAuthEnabled()) {
+    const store = await cookies();
+    const id = store.get(E2E_USER_COOKIE)?.value;
+    if (id) {
+      const currentValue = store.get(E2E_AAL_CURRENT_COOKIE)?.value ?? 'aal2';
+      const nextValue = store.get(E2E_AAL_NEXT_COOKIE)?.value ?? 'aal2';
+      if (!isAssuranceLevel(currentValue) || !isAssuranceLevel(nextValue)) {
+        return { state: 'unavailable', reason: 'unknown-assurance' };
+      }
+      return {
+        state: 'authenticated',
+        user: {
+          id,
+          email: store.get(E2E_USER_EMAIL_COOKIE)?.value ?? null,
+        },
+        current: currentValue,
+        next: nextValue,
+      };
+    }
+  }
+
+  if (!supabaseConfigured()) return { state: 'anonymous' };
+
+  const supabase = await supabaseServerClient();
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  if (userError) return { state: 'unavailable', reason: 'provider-error' };
+  if (!userData.user) return { state: 'anonymous' };
+
+  const { data: assurance, error: assuranceError } =
+    await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+  if (assuranceError || !assurance) {
+    return { state: 'unavailable', reason: 'provider-error' };
+  }
+
+  const current = normalizeAssurance(assurance.currentLevel, null);
+  const next = normalizeAssurance(assurance.nextLevel, current);
+  if (current === null || next === null) {
+    return { state: 'unavailable', reason: 'unknown-assurance' };
+  }
+  return {
+    state: 'authenticated',
+    user: { id: userData.user.id, email: userData.user.email ?? null },
+    current,
+    next,
+  };
+}
+
+function normalizeAssurance(value: unknown, fallback: AssuranceLevel | null): AssuranceLevel | null {
+  if (value === null || value === undefined) return fallback ?? 'aal1';
+  return isAssuranceLevel(value) ? value : null;
+}
+
 /**
  * One authoritative Supabase validation per Server Component render.
  *
@@ -68,3 +133,6 @@ async function readCurrentUser(): Promise<SessionUser | null> {
  * tests outside a Server Component render retain the uncached call semantics.
  */
 export const currentUser = cache(readCurrentUser);
+
+/** Verified user plus provider-neutral assurance for MFA policy decisions. */
+export const currentSessionSecurity = cache(readCurrentSessionSecurity);

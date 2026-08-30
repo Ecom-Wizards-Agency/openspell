@@ -24,3 +24,9 @@ export const E2E_USER_COOKIE = 'wizard_ads_e2e_user';
 
 /** Test-only email paired with `E2E_USER_COOKIE` for invitation acceptance. */
 export const E2E_USER_EMAIL_COOKIE = 'wizard_ads_e2e_user_email';
+
+/** Test-only current assurance. Valid only beside `E2E_USER_COOKIE`. */
+export const E2E_AAL_CURRENT_COOKIE = 'wizard_ads_e2e_aal_current';
+
+/** Test-only next available assurance. Valid only beside `E2E_USER_COOKIE`. */
+export const E2E_AAL_NEXT_COOKIE = 'wizard_ads_e2e_aal_next';

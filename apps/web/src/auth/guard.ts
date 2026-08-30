@@ -18,6 +18,10 @@ import { isDatabaseUnreachable } from '../db-unreachable';
 import { database, requireDatabase } from '../data/db';
 import { resolveOrgContext } from '../data/orgs';
 import type { Membership, OrgContext } from '../data/orgs';
+import {
+  authorizeOperatorRole,
+  currentOperatorIdentity,
+} from './security-authorization';
 import { currentUser } from './session';
 
 export type Gate =
@@ -26,8 +30,23 @@ export type Gate =
   | { state: 'no-org'; context: OrgContext };
 
 export async function gate(): Promise<Gate> {
-  const user = await currentUser();
-  if (!user) redirect('/login');
+  return resolvePageGate(true);
+}
+
+/** Account security must remain reachable when policy requires MFA enrollment. */
+export async function gateAccountSecurity(): Promise<Gate> {
+  return resolvePageGate(false);
+}
+
+async function resolvePageGate(enforceAssurance: boolean): Promise<Gate> {
+  const identity = enforceAssurance ? await currentOperatorIdentity() : null;
+  const user = identity === null ? await currentUser() : identity.user;
+  if (!user) {
+    if (identity?.security?.state === 'unavailable') {
+      redirect('/login?error=account+security+could+not+be+verified');
+    }
+    redirect('/login');
+  }
 
   const handle = database();
   if (handle === null) return { state: 'no-database' };
@@ -40,6 +59,14 @@ export async function gate(): Promise<Gate> {
     throw error;
   }
   if (!context.active) return { state: 'no-org', context };
+
+  if (identity !== null) {
+    const authorization = authorizeOperatorRole(identity, context.active.role, '/dashboard');
+    if (authorization.status === 'challenge') redirect(authorization.href);
+    if (authorization.status === 'error') {
+      redirect('/login?error=account+security+could+not+be+verified');
+    }
+  }
   return { state: 'ok', handle, context };
 }
 
@@ -48,6 +75,23 @@ export async function gate(): Promise<Gate> {
  * message on: anything short of a usable context throws.
  */
 export async function gateAction(): Promise<{ handle: DbHandle; active: Membership }> {
+  const identity = await currentOperatorIdentity();
+  const user = identity.user;
+  if (!user) throw new Error('not signed in');
+  const handle = requireDatabase();
+  const context = await resolveOrgContext(handle, user);
+  const active = context.active;
+  if (!active) throw new Error('you belong to no organisation');
+  const authorization = authorizeOperatorRole(identity, active.role, '/dashboard');
+  if (authorization.status !== 'ok') throw new Error('additional authentication required');
+  return { handle, active };
+}
+
+/** Account-security actions still require membership, but apply their own step-up rule. */
+export async function gateAccountSecurityAction(): Promise<{
+  handle: DbHandle;
+  active: Membership;
+}> {
   const user = await currentUser();
   if (!user) throw new Error('not signed in');
   const handle = requireDatabase();

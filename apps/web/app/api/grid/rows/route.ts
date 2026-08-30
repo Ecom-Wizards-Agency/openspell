@@ -122,7 +122,14 @@ function gridPayloadResponse(
 
 function gridErrorResponse(error: unknown): Response {
   if (error instanceof RequestAuthError) {
-    return json({ error: error.message }, { status: error.status });
+    return json(
+      {
+        error: error.message,
+        ...(error.code === null ? {} : { code: error.code }),
+        ...(error.location === null ? {} : { location: error.location }),
+      },
+      { status: error.status },
+    );
   }
   if (error instanceof GridRequestError) {
     return json({ error: error.message }, { status: 400 });

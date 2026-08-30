@@ -7,6 +7,7 @@
  * sign-out means the same thing as a real one.
  */
 import { NextResponse } from 'next/server';
+import { authOrigin } from '../../../src/auth/origin';
 import { E2E_USER_COOKIE, e2eAuthEnabled } from '../../../src/auth/session';
 import { safeNextPath } from '../../../src/auth/next-path';
 import { supabaseConfigured, supabaseServerClient } from '../../../src/auth/supabase';
@@ -23,7 +24,7 @@ export async function POST(request: Request): Promise<Response> {
 
   const requestUrl = new URL(request.url);
   const next = safeNextPath(requestUrl.searchParams.get('next'), '/login');
-  const response = NextResponse.redirect(new URL(next, requestUrl), 303);
+  const response = NextResponse.redirect(new URL(next, authOrigin()), 303);
   response.cookies.delete(ORG_COOKIE);
   if (e2eAuthEnabled()) response.cookies.delete(E2E_USER_COOKIE);
   return response;

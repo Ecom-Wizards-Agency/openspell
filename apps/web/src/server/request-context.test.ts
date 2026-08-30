@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   RequestAuthError,
   actorFromHeaders,
+  authenticationDestination,
   e2eAuthBridgeEnabled,
   isUnauthenticated,
   requestActor,
@@ -104,5 +105,22 @@ describe('isUnauthenticated', () => {
     expect(isUnauthenticated(new Error('Authentication required'))).toBe(false);
     expect(isUnauthenticated({ status: 401 })).toBe(false);
     expect(isUnauthenticated(null)).toBe(false);
+  });
+
+  it('keeps MFA continuations distinct from a primary sign-in redirect', () => {
+    const location = '/auth/mfa/challenge?next=%2Fdashboard';
+    expect(
+      authenticationDestination(
+        new RequestAuthError(
+          'Additional authentication required',
+          403,
+          'additional_authentication_required',
+          location,
+        ),
+      ),
+    ).toBe(location);
+    expect(authenticationDestination(new RequestAuthError('Authentication required', 401)))
+      .toBe('/login');
+    expect(authenticationDestination(new RequestAuthError('Resource not found', 403))).toBeNull();
   });
 });

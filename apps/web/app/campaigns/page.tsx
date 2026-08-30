@@ -2,7 +2,7 @@
 import { headers } from 'next/headers';
 import { redirect, unstable_rethrow } from 'next/navigation';
 import {
-  isUnauthenticated,
+  authenticationDestination,
   openWebDatabase,
   requestActor,
   requireOrgMembership,
@@ -60,7 +60,8 @@ export default async function CampaignsPage({ searchParams }: { searchParams: Se
     );
   } catch (error) {
     unstable_rethrow(error);
-    if (isUnauthenticated(error)) redirect('/login');
+    const authDestination = authenticationDestination(error);
+    if (authDestination !== null) redirect(authDestination);
     const message = error instanceof Error ? error.message : 'Campaign Builder is unavailable';
     return (
       <main className="wa-page">

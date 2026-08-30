@@ -13,7 +13,11 @@
 import { NextResponse } from 'next/server';
 import { amazonOAuthConfig, secureCookies, stateSigningKey } from '../../../../../src/env';
 import { authorize, Forbidden } from '../../../../../src/auth/roles';
-import { currentUser } from '../../../../../src/auth/session';
+import { authOrigin } from '../../../../../src/auth/origin';
+import {
+  authorizeOperatorRole,
+  currentOperatorIdentity,
+} from '../../../../../src/auth/security-authorization';
 import { database } from '../../../../../src/data/db';
 import { resolveOrgContext } from '../../../../../src/data/orgs';
 import { createNonce, createState, nonceCookie } from '../../../../../src/oauth/state';
@@ -22,7 +26,11 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request): Promise<Response> {
-  const user = await currentUser();
+  const identity = await currentOperatorIdentity();
+  const user = identity.user;
+  if (identity.security?.state === 'unavailable') {
+    return problem(503, 'account security could not be verified');
+  }
   if (!user) return problem(401, 'sign in first');
 
   const handle = database();
@@ -31,6 +39,18 @@ export async function GET(request: Request): Promise<Response> {
   const requestedOrg = new URL(request.url).searchParams.get('org');
   const context = await resolveOrgContext(handle, user, requestedOrg);
   if (!context.active) return problem(403, 'you belong to no organisation');
+
+  const authorization = authorizeOperatorRole(
+    identity,
+    context.active.role,
+    `/api/amazon/oauth/start${requestedOrg ? `?${new URLSearchParams({ org: requestedOrg })}` : ''}`,
+  );
+  if (authorization.status === 'challenge') {
+    return NextResponse.redirect(new URL(authorization.href, authOrigin()), 303);
+  }
+  if (authorization.status === 'error') {
+    return problem(503, 'account security could not be verified');
+  }
 
   try {
     authorize(context.active.role, 'manageConnection');

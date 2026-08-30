@@ -17,7 +17,7 @@ import {
   listEntityChangesInWindow,
   listExperimentEvents,
 } from '@wizard-ads/db';
-import { isUnauthenticated, openWebDatabase, requestActor } from '../../../src/server/request-context';
+import { authenticationDestination, openWebDatabase, requestActor } from '../../../src/server/request-context';
 import { requireOrgRole } from '../../../src/server/org-role';
 import { can } from '../../../src/auth/roles';
 import { listProfileOptions, loadExperimentSpendSeries } from '../../../src/experiments/data';
@@ -38,7 +38,8 @@ export default async function ExperimentDetailPage({ params }: { params: RoutePa
   try {
     detail = await loadDetail(database, experimentId);
   } catch (error) {
-    if (isUnauthenticated(error)) redirect('/login');
+    const authDestination = authenticationDestination(error);
+    if (authDestination !== null) redirect(authDestination);
     const message = error instanceof Error ? error.message : 'Experiment is unavailable';
     return (
       <main style={page}>
