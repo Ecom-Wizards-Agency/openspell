@@ -16,7 +16,7 @@ import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import {
   CRON_SYNC_JOB_TYPES,
-  creativeSyncProducerEnabledFromEnv,
+  creativeSyncPilotFromEnv,
   cronSyncJobTypesFromEnv,
   runSyncTick,
   SYNC_TICK_LOCK_KEY,
@@ -24,6 +24,7 @@ import {
 import type { SyncTickStore, SyncTickWorker } from './server/sync-tick';
 
 const available = await databaseAvailable();
+const PROFILE_ONE = '11111111-2222-4333-8444-555555555555';
 
 describe('cron claim filter', () => {
   it('enumerates Amazon jobs and recommendations, excluding integration work', () => {
@@ -49,26 +50,32 @@ describe('cron claim filter', () => {
   });
 
   it('keeps the Creative producer inert until both exact activation flags are set', () => {
-    expect(creativeSyncProducerEnabledFromEnv({})).toBe(false);
-    expect(creativeSyncProducerEnabledFromEnv({
+    expect(creativeSyncPilotFromEnv({})).toEqual({ enabled: false, profileIds: [] });
+    expect(creativeSyncPilotFromEnv({
       OPENSPELL_EVO_REPORT_LANE_READY: '1',
       OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '0',
-    })).toBe(false);
-    expect(creativeSyncProducerEnabledFromEnv({
+      OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST: 'malformed-but-ignored',
+    })).toEqual({ enabled: false, profileIds: [] });
+    expect(creativeSyncPilotFromEnv({
       OPENSPELL_EVO_REPORT_LANE_READY: '1',
       OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
-    })).toBe(true);
+      OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST: PROFILE_ONE,
+    })).toEqual({ enabled: true, profileIds: [PROFILE_ONE] });
   });
 
   it('refuses malformed or premature Creative producer activation', () => {
-    expect(() => creativeSyncProducerEnabledFromEnv({
+    expect(() => creativeSyncPilotFromEnv({
       OPENSPELL_EVO_REPORT_LANE_READY: '1',
       OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: 'true',
     })).toThrow(/OPENSPELL_CREATIVE_SYNC_PRODUCER_READY/);
-    expect(() => creativeSyncProducerEnabledFromEnv({
+    expect(() => creativeSyncPilotFromEnv({
       OPENSPELL_EVO_REPORT_LANE_READY: '0',
       OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
     })).toThrow(/exclusive Evo report lane/);
+    expect(() => creativeSyncPilotFromEnv({
+      OPENSPELL_EVO_REPORT_LANE_READY: '1',
+      OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
+    })).toThrow(/OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST/);
   });
 });
 
@@ -156,12 +163,30 @@ describe.skipIf(!available)('runSyncTick', () => {
       creativeSyncSchedules: async () => {
         creativeScheduleRuns += 1;
         return {
-          enabledProfiles: 3,
-          offeredProfiles: 2,
+          requestedProfiles: 4,
+          eligibleProfiles: 2,
+          ineligibleProfiles: 1,
           deferredPendingProfiles: 1,
           enqueuedJobs: 1,
           deduplicatedJobs: 1,
-          observations: [],
+          observations: [
+            {
+              orgId: '22222222-3333-4444-8555-666666666666',
+              profileId: PROFILE_ONE,
+              localDate: '2026-08-30',
+              dedupeKey: ['creative.sync', 'SB', PROFILE_ONE, '2026-08-30'].join(':'),
+              jobId: '77777777-8888-4999-8aaa-bbbbbbbbbbbb',
+              enqueued: true,
+            },
+            {
+              orgId: '22222222-3333-4444-8555-666666666666',
+              profileId: 'cccccccc-dddd-4eee-8fff-111111111111',
+              localDate: '2026-08-30',
+              dedupeKey: ['creative.sync', 'SB', 'synthetic-second', '2026-08-30'].join(':'),
+              jobId: '33333333-4444-4555-8666-777777777777',
+              enqueued: false,
+            },
+          ],
         };
       },
       bidSeries: async () => {
@@ -182,12 +207,16 @@ describe.skipIf(!available)('runSyncTick', () => {
     expect(recommendationScheduleRuns).toBe(1);
     expect(creativeScheduleRuns).toBe(1);
     expect(result.creativeSync).toEqual({
-      enabledProfiles: 3,
-      offeredProfiles: 2,
+      requestedProfiles: 4,
+      eligibleProfiles: 2,
+      ineligibleProfiles: 1,
       deferredPendingProfiles: 1,
       enqueuedJobs: 1,
       deduplicatedJobs: 1,
     });
+    const publicResult = JSON.stringify(result);
+    expect(publicResult).not.toContain(PROFILE_ONE);
+    expect(publicResult).not.toContain('creative.sync:SB:');
     expect(result.enqueued).toBeGreaterThanOrEqual(3);
     expect(worker.drains).toBe(1);
     expect(bidSeriesRuns).toBe(1);

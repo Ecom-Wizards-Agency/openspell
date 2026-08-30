@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV,
   DEFAULT_VERCEL_CRON_JOB_TYPES,
   EVO_REPORT_LANE_JOB_TYPES,
   REDUCED_VERCEL_CRON_JOB_TYPES,
+  parseCreativeSyncProfileAllowlist,
+  resolveCreativeSyncPilotPolicy,
   resolveWorkerDeploymentPolicy,
   vercelCronJobTypesFromEnv,
 } from './deployment-role.js';
+
+const PROFILE_ONE = '11111111-2222-4333-8444-555555555555';
+const PROFILE_TWO = '66666666-7777-4888-8999-aaaaaaaaaaaa';
 
 describe('queue deployment ownership', () => {
   it('preserves the complete current Vercel ownership when the handoff is absent', () => {
@@ -73,5 +79,47 @@ describe('queue deployment ownership', () => {
       .toThrow(/WORKER_DEPLOYMENT_ROLE/);
     expect(() => resolveWorkerDeploymentPolicy('report', EVO_REPORT_LANE_JOB_TYPES))
       .toThrow(/WORKER_DEPLOYMENT_ROLE/);
+  });
+});
+
+describe('bounded Creative producer cohort', () => {
+  it('keeps an absent or zero producer fully inert without inspecting the cohort', () => {
+    expect(resolveCreativeSyncPilotPolicy({})).toEqual({ enabled: false, profileIds: [] });
+    expect(resolveCreativeSyncPilotPolicy({
+      OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '0',
+      [CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV]: 'not-a-uuid',
+    })).toEqual({ enabled: false, profileIds: [] });
+  });
+
+  it('requires the exclusive lane and a non-empty canonical cohort when enabled', () => {
+    expect(resolveCreativeSyncPilotPolicy({
+      OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
+      OPENSPELL_EVO_REPORT_LANE_READY: '1',
+      [CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV]: ` ${PROFILE_ONE.toUpperCase()},${PROFILE_TWO} `,
+    })).toEqual({ enabled: true, profileIds: [PROFILE_ONE, PROFILE_TWO] });
+    expect(() => resolveCreativeSyncPilotPolicy({
+      OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
+      OPENSPELL_EVO_REPORT_LANE_READY: '0',
+      [CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV]: PROFILE_ONE,
+    })).toThrow(/exclusive Evo report lane/);
+    expect(() => resolveCreativeSyncPilotPolicy({
+      OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
+      OPENSPELL_EVO_REPORT_LANE_READY: '1',
+    })).toThrow(new RegExp(CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV));
+  });
+
+  it('rejects malformed, empty-token, and duplicate cohorts without echoing identifiers', () => {
+    const malformed = 'not-a-profile-id';
+    for (const value of ['', malformed, `${PROFILE_ONE},`, `${PROFILE_ONE},${PROFILE_ONE.toUpperCase()}`]) {
+      let message = '';
+      try {
+        parseCreativeSyncProfileAllowlist(value);
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).toContain(CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV);
+      expect(message).not.toContain(malformed);
+      expect(message).not.toContain(PROFILE_ONE);
+    }
   });
 });

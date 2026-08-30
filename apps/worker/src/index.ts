@@ -4,6 +4,7 @@ export * from './deployment-role.js';
 export * from './config.js';
 export * from './crosscheck.js';
 export * from './creative-performance.js';
+export * from './creative-pilot-preflight.js';
 export * from './sb-video-ingestion.js';
 export * from './datadive.js';
 export * from './dayparting.js';

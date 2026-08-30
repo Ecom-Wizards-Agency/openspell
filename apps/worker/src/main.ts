@@ -101,11 +101,12 @@ const worker = new SyncWorker({
 });
 marketingStream?.start();
 const health = await startHealthServer(worker, config.port, {
-  marketingStream,
-  queueOwnership: {
+  deployment: {
+    revision: config.revision,
     role: config.deploymentRole,
     jobTypes: config.jobTypes ?? 'all',
   },
+  marketingStream,
 });
 const authHealth = config.startsBackgroundPasses && adsApi
   ? new AuthHealthMonitor(worker, config.authHealthcheckIntervalMs)

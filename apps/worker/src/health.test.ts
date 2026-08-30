@@ -5,11 +5,17 @@ import { closeServer, startHealthServer } from './health.js';
 
 describe('worker health readiness', () => {
   const servers: Awaited<ReturnType<typeof startHealthServer>>[] = [];
+  const deployment = {
+    revision: 'abcdef1234567',
+    role: 'evo-report-lane' as const,
+    jobTypes: ['creative.sync', 'report.request', 'report.poll', 'report.fetch'] as const,
+  };
   afterEach(async () => Promise.all(servers.splice(0).map(closeServer)));
 
   it('degrades readiness when enabled Marketing Stream ingestion is not running', async () => {
     const worker = { status: () => ({ workerId: 'synthetic', stopping: false, running: 0 }) } as SyncWorker;
     const server = await startHealthServer(worker, 0, {
+      deployment,
       marketingStream: {
         status: () => ({ enabled: true, running: false, stopping: false }),
       },
@@ -25,6 +31,7 @@ describe('worker health readiness', () => {
     const worker = { status: () => ({ workerId: 'synthetic', stopping: false, running: 0 }) } as SyncWorker;
     for (const [consecutiveFailures, expected] of [[0, 200], [3, 503]] as const) {
       const server = await startHealthServer(worker, 0, {
+        deployment,
         marketingStream: { status: () => ({
           enabled: true, running: true, stopping: false, queueConfigured: true,
           consecutiveFailures, lastSuccessAt: null,
@@ -39,21 +46,36 @@ describe('worker health readiness', () => {
   it('reports only the sanitized role and queue allowlist for deployment ownership', async () => {
     const worker = { status: () => ({ workerId: 'synthetic', stopping: false, running: 0 }) } as SyncWorker;
     const server = await startHealthServer(worker, 0, {
-      queueOwnership: {
-        role: 'evo-report-lane',
-        jobTypes: ['creative.sync', 'report.request', 'report.poll', 'report.fetch'],
-      },
+      deployment,
     });
     servers.push(server);
     const { port } = server.address() as AddressInfo;
     const response = await fetch(`http://127.0.0.1:${port}/healthz`);
     await expect(response.json()).resolves.toMatchObject({
-      components: {
-        queueOwnership: {
-          role: 'evo-report-lane',
-          jobTypes: ['creative.sync', 'report.request', 'report.poll', 'report.fetch'],
-        },
+      worker: { stopping: false, running: 0 },
+      deployment: {
+        revision: 'abcdef1234567',
+        role: 'evo-report-lane',
+        jobTypes: ['creative.sync', 'report.request', 'report.poll', 'report.fetch'],
       },
     });
+    expect(JSON.stringify(await (await fetch(`http://127.0.0.1:${port}/healthz`)).json()))
+      .not.toContain('synthetic');
+  });
+
+  it('never echoes an embedding caller\'s unsanitized revision value', async () => {
+    const worker = {
+      status: () => ({ workerId: 'synthetic', stopping: false, running: 0 }),
+    } as SyncWorker;
+    const server = await startHealthServer(worker, 0, {
+      deployment: { ...deployment, revision: 'release/private-host-detail' },
+    });
+    servers.push(server);
+    const { port } = server.address() as AddressInfo;
+    const payload = await (await fetch(`http://127.0.0.1:${port}/healthz`)).json() as {
+      deployment: { revision: string };
+    };
+    expect(payload.deployment.revision).toBe('unknown');
+    expect(JSON.stringify(payload)).not.toContain('private-host-detail');
   });
 });

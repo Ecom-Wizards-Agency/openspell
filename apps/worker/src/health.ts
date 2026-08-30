@@ -5,6 +5,11 @@ import type { WorkerDeploymentRole } from './deployment-role.js';
 import type { JobType } from '@wizard-ads/shared';
 
 export interface WorkerHealthComponents {
+  deployment: {
+    revision: string;
+    role: WorkerDeploymentRole;
+    jobTypes: readonly JobType[] | 'all';
+  };
   marketingStream?: { status(): {
     enabled: boolean;
     running: boolean;
@@ -14,17 +19,12 @@ export interface WorkerHealthComponents {
     queueConfigured?: boolean;
     consecutiveFailures?: number;
   } };
-  /** Sanitized queue policy only; never render hostnames or environment values. */
-  queueOwnership?: {
-    role: WorkerDeploymentRole;
-    jobTypes: readonly JobType[] | 'all';
-  };
 }
 
 export function startHealthServer(
   worker: SyncWorker,
   port: number,
-  components: WorkerHealthComponents = {},
+  components: WorkerHealthComponents,
 ): Promise<Server> {
   const server = createServer((request, response) => {
     if (request.method !== 'GET' || request.url !== '/healthz') {
@@ -38,12 +38,19 @@ export function startHealthServer(
       || marketingStream.queueConfigured === false
       || (marketingStream.consecutiveFailures ?? 0) >= MARKETING_STREAM_SUSTAINED_FAILURE_THRESHOLD
     );
+    const workerStatus = worker.status();
     const body = JSON.stringify({
       status: streamDead ? 'degraded' : 'ok',
-      ...worker.status(),
+      worker: {
+        stopping: workerStatus.stopping,
+        running: workerStatus.running,
+      },
+      deployment: {
+        ...components.deployment,
+        revision: publicWorkerRevision(components.deployment.revision),
+      },
       components: {
         marketingStream,
-        ...(components.queueOwnership ? { queueOwnership: components.queueOwnership } : {}),
       },
     });
     response.writeHead(streamDead ? 503 : 200, {
@@ -55,6 +62,11 @@ export function startHealthServer(
     server.once('error', reject);
     server.listen(port, '0.0.0.0', () => resolve(server));
   });
+}
+
+function publicWorkerRevision(value: string): string {
+  const revision = value.trim().toLowerCase();
+  return /^[0-9a-f]{7,64}$/.test(revision) ? revision : 'unknown';
 }
 
 export function closeServer(server: Server): Promise<void> {

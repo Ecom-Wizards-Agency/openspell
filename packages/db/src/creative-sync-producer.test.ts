@@ -47,10 +47,15 @@ describe.skipIf(!available)('daily Creative sync producer', () => {
 
   it('offers each enabled profile once for its own local date and deduplicates retries', async () => {
     const observedAt = new Date('2026-08-30T00:30:00.000Z');
-    const first = await enqueueDailyCreativeSyncJobs(database, observedAt);
+    const first = await enqueueDailyCreativeSyncJobs(
+      database,
+      [utcProfileId, westProfileId],
+      observedAt,
+    );
     expect(first).toMatchObject({
-      enabledProfiles: 2,
-      offeredProfiles: 2,
+      requestedProfiles: 2,
+      eligibleProfiles: 2,
+      ineligibleProfiles: 0,
       deferredPendingProfiles: 0,
       enqueuedJobs: 2,
       deduplicatedJobs: 0,
@@ -61,10 +66,15 @@ describe.skipIf(!available)('daily Creative sync producer', () => {
     ].sort());
     expect(new Set(first.observations.map((row) => row.dedupeKey)).size).toBe(2);
 
-    const retry = await enqueueDailyCreativeSyncJobs(database, observedAt);
+    const retry = await enqueueDailyCreativeSyncJobs(
+      database,
+      [utcProfileId, westProfileId],
+      observedAt,
+    );
     expect(retry).toMatchObject({
-      enabledProfiles: 2,
-      offeredProfiles: 2,
+      requestedProfiles: 2,
+      eligibleProfiles: 2,
+      ineligibleProfiles: 0,
       deferredPendingProfiles: 0,
       enqueuedJobs: 0,
       deduplicatedJobs: 2,
@@ -111,10 +121,15 @@ describe.skipIf(!available)('daily Creative sync producer', () => {
          true, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     `;
     const observedAt = new Date('2026-08-31T08:30:00.000Z');
-    const deferred = await enqueueDailyCreativeSyncJobs(database, observedAt);
+    const deferred = await enqueueDailyCreativeSyncJobs(
+      database,
+      [utcProfileId, westProfileId],
+      observedAt,
+    );
     expect(deferred).toMatchObject({
-      enabledProfiles: 2,
-      offeredProfiles: 1,
+      requestedProfiles: 2,
+      eligibleProfiles: 1,
+      ineligibleProfiles: 0,
       deferredPendingProfiles: 1,
       enqueuedJobs: 1,
       deduplicatedJobs: 0,
@@ -125,10 +140,15 @@ describe.skipIf(!available)('daily Creative sync producer', () => {
     await database.sql`
       update public.creative_sync_snapshots set status = 'blocked' where id = ${snapshotId}
     `;
-    const afterTerminal = await enqueueDailyCreativeSyncJobs(database, observedAt);
+    const afterTerminal = await enqueueDailyCreativeSyncJobs(
+      database,
+      [utcProfileId, westProfileId],
+      observedAt,
+    );
     expect(afterTerminal).toMatchObject({
-      enabledProfiles: 2,
-      offeredProfiles: 2,
+      requestedProfiles: 2,
+      eligibleProfiles: 2,
+      ineligibleProfiles: 0,
       deferredPendingProfiles: 0,
       enqueuedJobs: 1,
       deduplicatedJobs: 1,
@@ -140,11 +160,13 @@ describe.skipIf(!available)('daily Creative sync producer', () => {
 
     const nextDay = await enqueueDailyCreativeSyncJobs(
       database,
+      [utcProfileId, westProfileId],
       new Date('2026-09-01T08:30:00.000Z'),
     );
     expect(nextDay).toMatchObject({
-      enabledProfiles: 2,
-      offeredProfiles: 2,
+      requestedProfiles: 2,
+      eligibleProfiles: 2,
+      ineligibleProfiles: 0,
       deferredPendingProfiles: 0,
       enqueuedJobs: 2,
       deduplicatedJobs: 0,
@@ -153,5 +175,37 @@ describe.skipIf(!available)('daily Creative sync producer', () => {
       '2026-09-01',
       '2026-09-01',
     ]);
+  });
+
+  it('offers only the bounded cohort and accounts for unknown or disabled requests', async () => {
+    const unknownProfileId = '99999999-aaaa-4bbb-8ccc-dddddddddddd';
+    const disabled = await database.sql<{ id: string }[]>`
+      select id from public.ad_profiles
+       where org_id = ${orgId} and not sync_enabled
+       limit 1
+    `;
+    const result = await enqueueDailyCreativeSyncJobs(
+      database,
+      [utcProfileId, disabled[0]?.id ?? unknownProfileId, unknownProfileId],
+      new Date('2026-09-03T00:30:00.000Z'),
+    );
+    expect(result).toMatchObject({
+      requestedProfiles: 3,
+      eligibleProfiles: 1,
+      ineligibleProfiles: 2,
+      deferredPendingProfiles: 0,
+      enqueuedJobs: 1,
+      deduplicatedJobs: 0,
+    });
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0]?.profileId).toBe(utcProfileId);
+  });
+
+  it('rejects an empty, malformed, or duplicate cohort before querying', async () => {
+    await expect(enqueueDailyCreativeSyncJobs(database, [])).rejects.toThrow(/pilot cohort/);
+    await expect(enqueueDailyCreativeSyncJobs(database, ['not-a-uuid']))
+      .rejects.toThrow(/pilot cohort/);
+    await expect(enqueueDailyCreativeSyncJobs(database, [utcProfileId, utcProfileId]))
+      .rejects.toThrow(/pilot cohort/);
   });
 });

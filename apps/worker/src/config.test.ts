@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { configFromEnv, workerJobTypesFromEnv } from './config.js';
+import { configFromEnv, workerJobTypesFromEnv, workerRevisionFromEnv } from './config.js';
 
 describe('WORKER_JOB_TYPES', () => {
   it('uses the whole queue when absent', () => {
@@ -31,6 +31,7 @@ describe('worker deployment role', () => {
   it('preserves the general all-queue startup defaults', () => {
     expect(configFromEnv(base)).toMatchObject({
       deploymentRole: 'general',
+      revision: 'unknown',
       jobTypes: undefined,
       startsBackgroundPasses: true,
     });
@@ -42,8 +43,10 @@ describe('worker deployment role', () => {
       NODE_ENV: 'production',
       WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
       WORKER_JOB_TYPES: 'report.fetch,creative.sync,report.request,report.poll',
+      OPENSPELL_WORKER_REVISION: 'ABCDEF1234567',
     })).toMatchObject({
       deploymentRole: 'evo-report-lane',
+      revision: 'abcdef1234567',
       jobTypes: ['creative.sync', 'report.request', 'report.poll', 'report.fetch'],
       startsBackgroundPasses: false,
     });
@@ -60,6 +63,17 @@ describe('worker deployment role', () => {
       WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
       ...(jobTypes === undefined ? {} : { WORKER_JOB_TYPES: jobTypes }),
     })).toThrow(/WORKER_JOB_TYPES must exactly match/);
+  });
+});
+
+describe('worker revision metadata', () => {
+  it('accepts only a sanitized Git object id and never echoes a rejected value', () => {
+    expect(workerRevisionFromEnv({ OPENSPELL_WORKER_REVISION: ' ABCDEF1 ' }))
+      .toBe('abcdef1');
+    expect(workerRevisionFromEnv({})).toBe('unknown');
+    const rejected = 'release/private-host-detail';
+    expect(() => workerRevisionFromEnv({ OPENSPELL_WORKER_REVISION: rejected }))
+      .toThrowError('OPENSPELL_WORKER_REVISION must be a 7-64 character hexadecimal Git object id');
   });
 });
 
