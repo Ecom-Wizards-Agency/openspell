@@ -11,6 +11,8 @@ export function OperatorContext({
   path,
   period,
   today,
+  includeToday = false,
+  selectedPresetId,
   preserved,
 }: {
   account: string;
@@ -20,6 +22,8 @@ export function OperatorContext({
   path: string;
   period: Period;
   today: string;
+  includeToday?: boolean;
+  selectedPresetId?: string;
   preserved: Readonly<Record<string, string | undefined>>;
 }): ReactNode {
   return (
@@ -36,7 +40,14 @@ export function OperatorContext({
       </div>
       <div className="wa-operator-context__range">
         <span className="wa-label">Reporting window</span>
-        <DateRangePicker path={path} period={period} today={today} preserved={preserved} />
+        <DateRangePicker
+          path={path}
+          period={period}
+          today={today}
+          includeToday={includeToday}
+          selectedPresetId={selectedPresetId}
+          preserved={preserved}
+        />
       </div>
     </section>
   );

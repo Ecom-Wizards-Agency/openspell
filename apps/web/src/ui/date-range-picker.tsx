@@ -11,20 +11,24 @@ export function DateRangePicker({
   path,
   period,
   today,
+  includeToday = false,
+  selectedPresetId,
   preserved = {},
 }: {
   path: string;
   period: Period;
   today: string;
+  includeToday?: boolean;
+  selectedPresetId?: string;
   preserved?: Readonly<Record<string, string | undefined>>;
 }): ReactNode {
   const router = useRouter();
   const root = useRef<HTMLDetailsElement | null>(null);
-  const presets = dateRangePresets(today);
-  const lastCompleteDay = presets[0]?.period.end ?? today;
-  const selectedLabel = selectedDateRangeLabel(period, today);
+  const presets = dateRangePresets(today, includeToday);
+  const latestSelectableDay = presets[0]?.period.end ?? today;
+  const selectedLabel = selectedDateRangeLabel(period, today, includeToday, selectedPresetId);
   const hidden = Object.entries(preserved).filter(
-    ([key, value]) => value !== undefined && key !== 'from' && key !== 'to',
+    ([key, value]) => value !== undefined && key !== 'from' && key !== 'to' && key !== 'preset',
   ) as Array<[string, string]>;
 
   return (
@@ -42,15 +46,17 @@ export function DateRangePicker({
       <div className="wa-date-range__popover">
         <div className="wa-date-range__heading">
           <strong>Date range</strong>
-          <span>Complete days only</span>
+          <span>{includeToday ? 'Includes today · still settling' : 'Complete days only'}</span>
         </div>
         <nav className="wa-date-range__presets" aria-label="Date range presets">
           {presets.map((preset) => {
-            const active = preset.label === selectedLabel;
+            const active = preset.id === selectedPresetId
+              ? preset.period.start === period.start && preset.period.end === period.end
+              : selectedPresetId === undefined && preset.label === selectedLabel;
             return (
               <Link
                 aria-current={active ? 'date' : undefined}
-                href={dateRangeHref(path, preset.period, preserved)}
+                href={dateRangeHref(path, preset.period, { ...preserved, preset: preset.id })}
                 prefetch={false}
                 onClick={() => root.current?.removeAttribute('open')}
                 key={preset.id}
@@ -85,7 +91,7 @@ export function DateRangePicker({
             </label>
             <label>
               <span>To</span>
-              <input className="wa-input wa-input--sm" name="to" type="date" defaultValue={period.end} max={lastCompleteDay} required />
+              <input className="wa-input wa-input--sm" name="to" type="date" defaultValue={period.end} max={latestSelectableDay} required />
             </label>
           </div>
           <button className="wa-btn wa-btn--primary wa-btn--sm" type="submit">Apply range</button>
