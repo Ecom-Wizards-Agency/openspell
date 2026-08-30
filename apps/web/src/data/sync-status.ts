@@ -2,11 +2,13 @@
  * Sync status, v0.
  *
  * Operator trust starts here (docs/PLAN.md, v1 module scope item 3), so the
- * page shows the two ledgers unedited: what the queue is doing and what the
- * report requests did. Two things it deliberately does *not* do:
+ * page shows what the queue is doing and what the report requests did. Raw
+ * provider and database failures stay in the worker's operational logs; this
+ * user-facing boundary emits only bounded, actionable summaries. Two things it
+ * deliberately does *not* do:
  *
- *  - It does not summarise a failure into a colour. The error text is the
- *    column, because "amber" has never once told anyone what to fix.
+ *  - It does not summarise a failure into a colour. A safe failure category is
+ *    also shown, because "amber" has never once told anyone what to fix.
  *  - It does not compute freshness from `updated_at`. Freshness is the newest
  *    *fact date* the profile has, which is the number an operator is actually
  *    asking about when they ask whether the data is current.
@@ -70,6 +72,38 @@ export interface SyncStatus {
 
 const JOB_LIMIT = 100;
 const REPORT_LIMIT = 100;
+
+/**
+ * Convert an untrusted worker/provider error into an operator-safe category.
+ *
+ * Database drivers routinely include SQL statements, bind parameters and
+ * identifiers in Error.message. Provider responses can contain request IDs or
+ * echoed inputs. None of that belongs in an authenticated HTML response, so
+ * this function is intentionally allowlist-based and never interpolates the
+ * source string.
+ */
+export function syncFailureLabel(error: string | null): string | null {
+  if (!error) return null;
+
+  const normalized = error.toLowerCase();
+  if (/row[- ]count|reconcil|counts? (?:do not|don't) match|count mismatch/.test(normalized)) {
+    return 'Row-count reconciliation failed. The affected report was not promoted.';
+  }
+  if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|invalid_grant|refresh token/.test(normalized)) {
+    return 'Amazon authorization failed. Reconnect the integration before retrying.';
+  }
+  if (/\b429\b|throttl|rate limit|too many requests/.test(normalized)) {
+    return 'Amazon rate limit reached. The worker will retry within its retry policy.';
+  }
+  if (/timed? out|timeout|econnreset|enotfound|network|socket hang up/.test(normalized)) {
+    return 'The upstream request did not complete. Retry after connectivity recovers.';
+  }
+  if (/failed query|database|postgres|constraint|duplicate key|syntax error/.test(normalized)) {
+    return 'The data load failed before promotion. Review the private worker log.';
+  }
+
+  return 'Sync failed. Review the private worker log for the underlying cause.';
+}
 
 export async function loadSyncStatus(
   handle: DbHandle,
@@ -211,7 +245,7 @@ export async function loadSyncStatus(
       runAfter: row.run_after,
       startedAt: row.started_at,
       finishedAt: row.finished_at,
-      lastError: row.last_error,
+      lastError: syncFailureLabel(row.last_error),
     })),
     reports: reports.map((row) => ({
       id: row.id,
@@ -231,7 +265,7 @@ export async function loadSyncStatus(
       promotedRows: row.promoted_rows === null ? null : Number(row.promoted_rows),
       unpromotedRows: row.unpromoted_rows === null ? null : Number(row.unpromoted_rows),
       accountingComplete: row.accounting_complete,
-      error: row.error,
+      error: syncFailureLabel(row.error),
     })),
   };
 }
