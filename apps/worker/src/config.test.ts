@@ -25,6 +25,44 @@ describe('WORKER_JOB_TYPES', () => {
   });
 });
 
+describe('worker deployment role', () => {
+  const base = { DATABASE_URL: 'postgres://synthetic.invalid/db' };
+
+  it('preserves the general all-queue startup defaults', () => {
+    expect(configFromEnv(base)).toMatchObject({
+      deploymentRole: 'general',
+      jobTypes: undefined,
+      startsBackgroundPasses: true,
+    });
+  });
+
+  it('requires and canonicalizes the exact Evo report allowlist', () => {
+    expect(configFromEnv({
+      ...base,
+      NODE_ENV: 'production',
+      WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
+      WORKER_JOB_TYPES: 'report.fetch,creative.sync,report.request,report.poll',
+    })).toMatchObject({
+      deploymentRole: 'evo-report-lane',
+      jobTypes: ['creative.sync', 'report.request', 'report.poll', 'report.fetch'],
+      startsBackgroundPasses: false,
+    });
+  });
+
+  it.each([
+    undefined,
+    'report.request,report.poll,report.fetch',
+    'creative.sync,report.request,report.poll,report.fetch,entity.sync',
+  ])('fails production startup for an absent, partial, or foreign Evo allowlist: %j', (jobTypes) => {
+    expect(() => configFromEnv({
+      ...base,
+      NODE_ENV: 'production',
+      WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
+      ...(jobTypes === undefined ? {} : { WORKER_JOB_TYPES: jobTypes }),
+    })).toThrow(/WORKER_JOB_TYPES must exactly match/);
+  });
+});
+
 describe('Marketing Stream configuration', () => {
   it('stays disabled when no queue URL is present and trims a configured URL', () => {
     const base = { DATABASE_URL: 'postgres://synthetic.invalid/db' };

@@ -44,6 +44,10 @@ import type {
 import { PostgresBidSeriesStore } from './bid-series.js';
 import { createCrosscheckIngest } from './crosscheck.js';
 import { createDataDiveRankSyncHandler, type DataDiveRankClient } from './datadive.js';
+import {
+  EVO_REPORT_LANE_JOB_TYPES,
+  REDUCED_VERCEL_CRON_JOB_TYPES,
+} from './deployment-role.js';
 import { RegionTokenBuckets } from './region-token-buckets.js';
 import {
   PostgresRecommendationRunStore,
@@ -766,6 +770,57 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     }).toEqual({ calls: 100, succeeded: 100, claimers: 2, rows: 100 });
     expect(api.maxActiveCreates).toBeLessThanOrEqual(2);
   }, 60_000);
+
+  it('gives the reduced Vercel and Evo report claimers disjoint queued rows', async () => {
+    const reportRequestId = '88888888-8888-4888-8888-888888888888';
+    const runId = '99999999-9999-4999-8999-999999999999';
+    const payloads = [
+      { type: 'entity.sync', orgId, profileId },
+      { type: 'recommendations.run', orgId, profileId, runId, lookbackDays: 7 },
+      { type: 'creative.sync', orgId, profileId, startDate: today, endDate: today, adProduct: 'SB' },
+      { type: 'report.request', orgId, profileId, reportType: 'sbAds', startDate: today, endDate: today },
+      { type: 'report.poll', orgId, profileId, reportRequestId, amazonReportId: 'report-1', attempt: 0 },
+      {
+        type: 'report.fetch', orgId, profileId, reportRequestId, amazonReportId: 'report-1',
+        downloadUrl: 'https://reports.invalid/report-1',
+      },
+      { type: 'keepa.sync', orgId, profileId, includeCompetitors: false },
+    ] as const;
+    for (const [index, payload] of payloads.entries()) {
+      await database.sql`
+        insert into public.sync_jobs (org_id, profile_id, job_type, payload, dedupe_key)
+        values (
+          ${orgId}, ${profileId}, ${payload.type}, ${JSON.stringify(payload)}::jsonb,
+          ${`lane-ownership:${index}`}
+        )
+      `;
+    }
+
+    const [vercelClaims, evoClaims] = await Promise.all([
+      new PostgresWorkerStore(database).claim(
+        'vercel-reduced', 10, REDUCED_VERCEL_CRON_JOB_TYPES,
+      ),
+      new PostgresWorkerStore(database).claim(
+        'evo-report', 10, EVO_REPORT_LANE_JOB_TYPES,
+      ),
+    ]);
+
+    expect(vercelClaims.map((job) => job.jobType).sort()).toEqual([
+      'entity.sync', 'recommendations.run',
+    ]);
+    expect(evoClaims.map((job) => job.jobType).sort()).toEqual([
+      'creative.sync', 'report.fetch', 'report.poll', 'report.request',
+    ]);
+    const claimedIds = [...vercelClaims, ...evoClaims].map((job) => job.id);
+    expect(claimedIds).toHaveLength(6);
+    expect(new Set(claimedIds).size).toBe(6);
+    const [foreign] = await database.sql<{ status: string; claimed_by: string | null }[]>`
+      select status, claimed_by
+        from public.sync_jobs
+       where dedupe_key = 'lane-ownership:6'
+    `;
+    expect(foreign).toEqual({ status: 'queued', claimed_by: null });
+  });
 
   // -------------------------------------------------------------------------
   // Schedules

@@ -30,15 +30,20 @@
  */
 import type { Sql } from '@wizard-ads/db';
 import type { JobType } from '@wizard-ads/shared';
+import {
+  DEFAULT_VERCEL_CRON_JOB_TYPES,
+  vercelCronJobTypesFromEnv,
+} from '@wizard-ads/worker/deployment-role';
 
 /** Queue work owned by Vercel cron; integration jobs stay on the always-on host. */
-export const CRON_SYNC_JOB_TYPES = [
-  'entity.sync',
-  'report.request',
-  'report.poll',
-  'report.fetch',
-  'recommendations.run',
-] as const satisfies readonly JobType[];
+export const CRON_SYNC_JOB_TYPES = DEFAULT_VERCEL_CRON_JOB_TYPES satisfies readonly JobType[];
+
+/** Resolve the deployment-gated claim surface before any database or Amazon work. */
+export function cronSyncJobTypesFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): readonly JobType[] {
+  return vercelCronJobTypesFromEnv(env['OPENSPELL_EVO_REPORT_LANE_READY']);
+}
 
 /**
  * The advisory-lock key for the sync tick. Arbitrary but fixed: any other

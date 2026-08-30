@@ -1,5 +1,9 @@
 import { connectionStringFromEnv } from '@wizard-ads/db';
 import { JobType, type JobType as JobTypeValue } from '@wizard-ads/shared';
+import {
+  resolveWorkerDeploymentPolicy,
+  type WorkerDeploymentRole,
+} from './deployment-role.js';
 
 export interface WorkerConfig {
   databaseUrl: string;
@@ -10,6 +14,10 @@ export interface WorkerConfig {
   maxConcurrentJobs: number;
   /** Queue types this runtime may claim. Undefined means the whole queue. */
   jobTypes: readonly JobTypeValue[] | undefined;
+  /** Sanitized deployment identity; never derived from a hostname or secret. */
+  deploymentRole: WorkerDeploymentRole;
+  /** Whether this process hosts timers and independent background consumers. */
+  startsBackgroundPasses: boolean;
   /**
    * Root of the crosscheck export inbox (WP-10). A path, so a mounted bucket
    * works. Never a tracked default: a schedule's payload carries only the
@@ -56,6 +64,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
   if ((spApiClientId === undefined) !== (spApiClientSecret === undefined)) {
     throw new Error('SP_API_LWA_CLIENT_ID and SP_API_LWA_CLIENT_SECRET must be configured together');
   }
+  const deployment = resolveWorkerDeploymentPolicy(
+    env['WORKER_DEPLOYMENT_ROLE'],
+    workerJobTypesFromEnv(env['WORKER_JOB_TYPES']),
+  );
   return {
     databaseUrl: connectionStringFromEnv(env),
     workerId: env['WORKER_ID'] ?? `worker-${process.pid}`,
@@ -63,7 +75,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     pollIntervalMs: positiveInteger(env['WORKER_POLL_INTERVAL_MS'], 1_000, 'WORKER_POLL_INTERVAL_MS'),
     claimBatchSize: positiveInteger(env['WORKER_CLAIM_BATCH_SIZE'], 10, 'WORKER_CLAIM_BATCH_SIZE'),
     maxConcurrentJobs: positiveInteger(env['WORKER_MAX_CONCURRENT_JOBS'], 10, 'WORKER_MAX_CONCURRENT_JOBS'),
-    jobTypes: workerJobTypesFromEnv(env['WORKER_JOB_TYPES']),
+    jobTypes: deployment.jobTypes,
+    deploymentRole: deployment.role,
+    startsBackgroundPasses: deployment.startsBackgroundPasses,
     crosscheckInboxDir: env['CROSSCHECK_INBOX_DIR'] || undefined,
     authHealthcheckIntervalMs:
       positiveInteger(env['WORKER_AUTH_HEALTHCHECK_MINUTES'], 60, 'WORKER_AUTH_HEALTHCHECK_MINUTES') * 60_000,

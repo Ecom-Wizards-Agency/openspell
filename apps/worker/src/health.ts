@@ -1,6 +1,8 @@
 import { createServer, type Server } from 'node:http';
 import type { SyncWorker } from './worker.js';
 import { MARKETING_STREAM_SUSTAINED_FAILURE_THRESHOLD } from './marketing-stream-sqs.js';
+import type { WorkerDeploymentRole } from './deployment-role.js';
+import type { JobType } from '@wizard-ads/shared';
 
 export interface WorkerHealthComponents {
   marketingStream?: { status(): {
@@ -12,6 +14,11 @@ export interface WorkerHealthComponents {
     queueConfigured?: boolean;
     consecutiveFailures?: number;
   } };
+  /** Sanitized queue policy only; never render hostnames or environment values. */
+  queueOwnership?: {
+    role: WorkerDeploymentRole;
+    jobTypes: readonly JobType[] | 'all';
+  };
 }
 
 export function startHealthServer(
@@ -36,6 +43,7 @@ export function startHealthServer(
       ...worker.status(),
       components: {
         marketingStream,
+        ...(components.queueOwnership ? { queueOwnership: components.queueOwnership } : {}),
       },
     });
     response.writeHead(streamDead ? 503 : 200, {
