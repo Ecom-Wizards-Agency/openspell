@@ -15,15 +15,18 @@ serves that revision or that Amazon accepted the request.
 ## API dialect boundary
 
 OpenSpell currently reads and writes typed payloads for the legacy Sponsored Products v3 (`/sp/`)
-and Sponsored Brands v4 (`/sb/v4/`) APIs. Amazon's current campaign-management migration target for
-SP and SB is the Unified API (`/adsApi/v1/{create|query|update|delete}/...`). OpenSpell has no Unified
-SP/SB client at the reviewed revision.
+and Sponsored Brands v4 (`/sb/v4/`) APIs. Amazon describes the Unified API
+(`/adsApi/v1/{create|query|update|delete}/...`) as the current common model across Sponsored
+Products, Sponsored Brands, Sponsored Display and additional ad products. The pinned migration
+artifacts in this map specify SP and SB; they do not prove that every Unified action is enabled for
+every product, resource, marketplace or profile. OpenSpell has no Unified client at the reviewed
+revision.
 
-New SP and SB creation work must capability-probe the Unified API per profile and prefer it where
-the profile and resource are supported. Unified does not replace the separate Reporting APIs.
-Legacy product APIs remain necessary for product-specific seams such as budget usage and several
-recommendation APIs. Sponsored Display remains on its product-specific API. One immutable plan uses
-one proven dialect per resource; it never switches dialect after an ambiguous provider outcome.
+New SP, SB and Display creation work must capability-probe the exact Unified action per profile and
+resource, and prefer it where that operation is supported. Unified does not replace the separate
+Reporting APIs. Product-specific APIs remain necessary for seams such as budget usage,
+recommendations and any operation whose Unified action is unavailable. One immutable plan uses one
+proven dialect per resource; it never switches dialect after an ambiguous provider outcome.
 
 ## Credential boundary
 
@@ -52,7 +55,7 @@ directly.
 | Advertising profiles and regional discovery | Profiles API | Implemented | Implemented | Account connection and selection | Live-used; deployed revision still requires proof |
 | SP campaigns, ad groups, keywords, targets, negatives and product ads | Legacy SP v3 is used; Unified SP is available but absent from OpenSpell | Legacy client implemented and paginated | Current-state mirror implemented | Grid and campaign review | Legacy read path live-used with page/upsert counts |
 | SB campaigns and ad groups | Legacy SB v4 is used; Unified SB is available but absent from OpenSpell | Legacy client implemented with v4 pagination | Current-state mirror implemented | Grid and campaign context | Legacy read path live-used; ads and targets remain incomplete |
-| Display campaigns and ad groups | Product-specific SD API; Amazon also exposes product ads, targets and creatives | Campaign/ad-group client implemented with offset pagination | Current-state mirror implemented for those two resources | Grid and campaign context | Read path live-used; deeper entities are not mirrored |
+| Display campaigns and ad groups | Amazon describes Unified as the common model, while product-specific SD endpoints remain; exact action support is capability-dependent | Product-specific campaign/ad-group client implemented with offset pagination; no Unified client | Current-state mirror implemented for those two resources | Grid and campaign context | Product-specific read path live-used; deeper entities and Unified actions are not verified |
 | SP campaign, targeting, search-term and placement reports | Reporting v3 | Implemented | Complete dates replace canonical snapshots under promotion watermarks | Dashboard, Grid, Optimizer and Time Machine evidence | Current core path; live count crosschecks remain a release gate |
 | SB and Display campaign reports | Reporting v3 | Implemented | Legacy upsert loader, not complete-date replacement | Dashboard and Grid rollups | Available with weaker restatement semantics than SP |
 | SB ad-level video report | Reporting v3 | Contract and parser implemented | Observed ad-to-asset mapping gates implemented | Creative Performance | Authoritative live Asset-ID/version and row-count parity remains open |
@@ -74,9 +77,9 @@ directly.
 
 SP-API approval is not a prerequisite for this Advertising API program:
 
-- create and manage SP and SB/SB Video through capability-probed Unified endpoints, and Display
-  through its product-specific endpoints, after their clients and dependency-ordered worker plans
-  are implemented;
+- create and manage SP, SB/SB Video and Display through capability-probed Unified actions where
+  supported, retaining product-specific endpoints only for proven required seams, after their
+  clients and dependency-ordered worker plans are implemented;
 - update supported bids, budgets, placements, targeting and states through approved worker batches;
 - build a version-aware Asset Library picker from complete, counted pagination and use only assets
   proven eligible for the intended ad program and marketplace;
@@ -201,6 +204,7 @@ are pinned to Amazon's `ads-advanced-tools-docs` revision
 - [Unified Sponsored Products OpenAPI](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/api-specs/unified-api-sp.json)
 - [Unified Sponsored Brands OpenAPI](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/api-specs/unified-api-sb.json)
 - [Sponsored Brands formats and migration guide](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/skills/amazon-ads-sb-collections/SKILL.md)
+- [Amazon clarification on the Unified v1 product boundary](https://github.com/amzn/ads-advanced-tools-docs/discussions/429)
 - [Amazon Ads API Postman collection](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/postman/Amazon_Ads_API.postman_collection.json)
 - [Media Library upload deprecation and original-video describe retrieval](https://github.com/amzn/ads-advanced-tools-docs/discussions/139)
 - [Unified Reporting general availability and lifecycle](https://advertising.amazon.com/resources/whats-new/streamline-campaign-analysis-with-unified-reporting)

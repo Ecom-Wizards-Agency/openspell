@@ -19,6 +19,8 @@ part of this package.
 - Every implemented/missing claim is traceable to the revision-stamped repository source.
 - Amazon platform claims name the exact Unified, legacy or product-specific dialect and are
   traceable to revision-pinned primary Amazon specifications or current lifecycle guidance.
+- Unified's cross-product model is kept distinct from action-level availability; a common model
+  does not prove that a requested resource is enabled for one profile or marketplace.
 - SP, SB, SB Video and Display creation are distinguished.
 - Current Asset Library upload/registration is separated from deprecated `/media/upload` and legacy
   `/media/describe` original-video retrieval, and asset response `version`, registration
