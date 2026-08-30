@@ -129,4 +129,3 @@ These questions block adapters or live execution, not the provider-neutral graph
 
 Implement the shared node/plan/evidence schemas and invariant tests without changing the current
 queue union or any provider, database, worker, web, migration, or deployment code.
-
