@@ -282,6 +282,7 @@ function sbStoreSpotlightPlan(): CampaignCreationPlanType {
       rollback: 'none',
       payload: {
         format: 'sb_store_spotlight',
+        name: 'Synthetic Store ad',
         adGroup: { source: 'plan_node', kind: 'ad_group', nodeId: adGroupId },
         brand: { source: 'plan_node', kind: 'brand', nodeId: brandId },
         landingPage: {
@@ -341,34 +342,176 @@ function sbStoreSpotlightPlan(): CampaignCreationPlanType {
   });
 }
 
-function completedSpExecutionEvidence() {
-  const plan = spPlan();
+function sbProductVideoPlan(): CampaignCreationPlanType {
+  const brandNodeId = '00000000-0000-4000-8000-000000000070';
+  const videoAssetNodeId = '00000000-0000-4000-8000-000000000071';
+  const campaignNodeId = '00000000-0000-4000-8000-000000000072';
+  const adGroupNodeId = '00000000-0000-4000-8000-000000000073';
+  const adNodeId = '00000000-0000-4000-8000-000000000074';
+  const nodes = orderCampaignCreationNodes([
+    CampaignCreationNode.parse({
+      nodeId: brandNodeId,
+      kind: 'eligibility.require_brand',
+      adProduct: 'SB',
+      apiDialect: 'unified_ads_v1',
+      dependsOn: [],
+      fingerprint: sha('1'),
+      effect: 'read_check',
+      rollback: 'not_applicable',
+      payload: {
+        brandId: 'BRAND-VIDEO-1',
+        brandEntityId: 'BRAND-ENTITY-VIDEO-1',
+        brandName: 'Synthetic video brand',
+      },
+    }),
+    CampaignCreationNode.parse({
+      nodeId: videoAssetNodeId,
+      kind: 'asset.require_existing',
+      adProduct: 'SB',
+      apiDialect: 'unified_ads_v1',
+      dependsOn: [],
+      fingerprint: sha('2'),
+      effect: 'read_check',
+      rollback: 'not_applicable',
+      payload: { assetId: 'VIDEO-ASSET-1', version: '7', purpose: 'video' },
+    }),
+    CampaignCreationNode.parse({
+      nodeId: campaignNodeId,
+      kind: 'campaign.create',
+      adProduct: 'SB',
+      apiDialect: 'unified_ads_v1',
+      dependsOn: [brandNodeId],
+      fingerprint: sha('3'),
+      effect: 'irreversible_create',
+      rollback: 'none',
+      payload: {
+        name: 'Synthetic video campaign',
+        state: 'paused',
+        budget: { amount: 10, type: 'daily', currencyCode: 'USD' },
+        startDate: '2026-08-31',
+        endDate: null,
+        portfolioId: null,
+        settings: {
+          product: 'SB',
+          targetingType: 'manual',
+          format: 'product_video',
+          brand: { source: 'plan_node', kind: 'brand', nodeId: brandNodeId },
+        },
+      },
+    }),
+    CampaignCreationNode.parse({
+      nodeId: adGroupNodeId,
+      kind: 'ad_group.create',
+      adProduct: 'SB',
+      apiDialect: 'unified_ads_v1',
+      dependsOn: [campaignNodeId],
+      fingerprint: sha('4'),
+      effect: 'irreversible_create',
+      rollback: 'none',
+      payload: {
+        campaign: { source: 'plan_node', kind: 'campaign', nodeId: campaignNodeId },
+        name: 'Synthetic video ad group',
+        state: 'paused',
+        defaultBid: null,
+      },
+    }),
+    CampaignCreationNode.parse({
+      nodeId: adNodeId,
+      kind: 'ad.create',
+      adProduct: 'SB',
+      apiDialect: 'unified_ads_v1',
+      dependsOn: [videoAssetNodeId, adGroupNodeId].sort(),
+      fingerprint: sha('5'),
+      effect: 'irreversible_create',
+      rollback: 'none',
+      payload: {
+        format: 'sb_product_video',
+        name: 'Synthetic product video ad',
+        adGroup: { source: 'plan_node', kind: 'ad_group', nodeId: adGroupNodeId },
+        brand: null,
+        logoAsset: null,
+        headline: null,
+        enableCreativeAutoTranslation: null,
+        landingPage: null,
+        products: [],
+        videoAsset: { source: 'plan_node', kind: 'asset', nodeId: videoAssetNodeId },
+        state: 'paused',
+      },
+    }),
+  ]);
+  return CampaignCreationPlan.parse({
+    schemaVersion: 'openspell.campaign-creation-plan.v1',
+    id: '00000000-0000-4000-8000-000000000075',
+    orgId: ORG_ID,
+    profileId: PROFILE_ID,
+    marketplaceId: 'MARKETPLACE-1',
+    adProduct: 'SB',
+    apiDialect: 'unified_ads_v1',
+    generatedAt: '2026-08-30T00:00:00.000Z',
+    frozenAt: '2026-08-30T00:01:00.000Z',
+    expiresAt: '2026-08-30T01:01:00.000Z',
+    nodes,
+    counts: {
+      totalNodes: 5,
+      readChecks: 2,
+      irreversibleCreates: 3,
+      byKind: {
+        'eligibility.require_product': 0,
+        'eligibility.require_brand': 1,
+        'eligibility.require_store': 0,
+        'asset.require_existing': 1,
+        'campaign.create': 1,
+        'ad_group.create': 1,
+        'target.create': 0,
+        'ad.create': 1,
+        'creative.create': 0,
+      },
+    },
+    fingerprint: sha('c'),
+    noRollbackAcknowledgement: {
+      required: true,
+      rollback: 'none',
+      compensatingAction: 'separate_reviewed_pause_or_archive',
+    },
+  });
+}
+
+function completedSpExecutionEvidence(plan: CampaignCreationPlanType = spPlan()) {
   const providerResults = plan.nodes.map((node, index) => ({
     effect: node.effect,
     planId: plan.id,
     nodeId: node.nodeId,
     executionId: EXECUTION_ID,
     attemptId: `00000000-0000-4000-8000-${String(index + 101).padStart(12, '0')}`,
-    providerCallId: CALL_ID,
+    providerCallId: `00000000-0000-4000-8000-${String(index + 201).padStart(12, '0')}`,
     nodeFingerprint: node.fingerprint,
-    requestIndex: index,
+    requestIndex: null,
     outcome: node.effect === 'read_check' ? 'passed' : 'succeeded',
-    providerEntityId: `ENTITY-${index + 1}`,
+    providerEntityId: node.kind === 'eligibility.require_product' ? node.payload.asin
+      : node.kind === 'eligibility.require_brand' ? node.payload.brandId
+        : node.kind === 'eligibility.require_store' ? node.payload.storeId
+          : node.kind === 'asset.require_existing' ? node.payload.assetId
+            : `ENTITY-${index + 1}`,
+    providerEntityVersion: node.kind === 'asset.require_existing' ? node.payload.version : null,
     providerCode: null,
     sanitizedMessage: null,
     providerRequestId: 'REQUEST-1',
     responseDigest: sha(String((index + 1) % 10)),
-    startedAt: '2026-08-30T00:02:00.000Z',
-    completedAt: '2026-08-30T00:02:01.000Z',
+    startedAt: `2026-08-30T00:02:${String(index * 2).padStart(2, '0')}.000Z`,
+    completedAt: `2026-08-30T00:02:${String(index * 2 + 1).padStart(2, '0')}.000Z`,
   }));
   const observations = plan.nodes
     .filter((node) => node.effect === 'irreversible_create')
-    .map((node, index) => ({
+    .map((node) => ({
+      providerResult: providerResults.find((result) => result.nodeId === node.nodeId),
+      node,
+    }))
+    .map(({ node, providerResult }) => ({
       planId: plan.id,
       nodeId: node.nodeId,
       executionId: EXECUTION_ID,
       nodeFingerprint: node.fingerprint,
-      providerEntityId: `ENTITY-${index + 2}`,
+      providerEntityId: providerResult?.providerEntityId,
       observation: 'observed',
       amazonModerationStatus: 'not_applicable',
       deliveryStatus: 'not_delivering',
@@ -384,15 +527,70 @@ function completedSpExecutionEvidence() {
     snapshot: {
       status: 'succeeded',
       accounting: {
-        operatorApproved: 4,
+        operatorApproved: plan.counts.irreversibleCreates,
         pendingDispatch: 0,
-        attempted: 4,
-        succeeded: 4,
+        attempted: plan.counts.irreversibleCreates,
+        succeeded: plan.counts.irreversibleCreates,
         failed: 0,
         ambiguous: 0,
         refusedAtExecution: 0,
         blockedByDependency: 0,
-        observed: 4,
+        observed: plan.counts.irreversibleCreates,
+        pendingObservation: 0,
+        observationNotFound: 0,
+        observationConflict: 0,
+        readChecksRequested: plan.counts.readChecks,
+        readChecksPending: 0,
+        readChecksPassed: plan.counts.readChecks,
+        readChecksRefused: 0,
+        readChecksFailed: 0,
+      },
+    },
+  };
+}
+
+function failedCampaignExecutionEvidence() {
+  const completed = completedSpExecutionEvidence();
+  const campaignResult = completed.providerResults.find(
+    (result) => result.nodeId === CAMPAIGN_NODE_ID,
+  );
+  if (campaignResult === undefined) throw new Error('synthetic campaign result missing');
+  const providerResults = [
+    completed.providerResults[0],
+    {
+      ...campaignResult,
+      outcome: 'failed',
+      providerEntityId: null,
+      providerCode: 'SYNTHETIC_FAILURE',
+    },
+  ];
+  const nonProviderDispositions = completed.plan.nodes
+    .filter((node) => node.effect === 'irreversible_create' && node.nodeId !== CAMPAIGN_NODE_ID)
+    .map((node) => ({
+      planId: completed.plan.id,
+      nodeId: node.nodeId,
+      executionId: completed.executionId,
+      nodeFingerprint: node.fingerprint,
+      outcome: 'blocked_by_dependency',
+      sanitizedReason: 'A required predecessor failed.',
+    }));
+  return {
+    ...completed,
+    providerResults,
+    nonProviderDispositions,
+    observations: [],
+    snapshot: {
+      status: 'failed',
+      accounting: {
+        operatorApproved: 4,
+        pendingDispatch: 0,
+        attempted: 1,
+        succeeded: 0,
+        failed: 1,
+        ambiguous: 0,
+        refusedAtExecution: 0,
+        blockedByDependency: 3,
+        observed: 0,
         pendingObservation: 0,
         observationNotFound: 0,
         observationConflict: 0,
@@ -502,6 +700,7 @@ describe('campaign creation plan', () => {
       rollback: 'none',
       payload: {
         format: 'sb_product_collection_manual',
+        name: 'Synthetic manual collection ad',
         adGroup: ref('ad_group', 41),
         brand: ref('brand', 42),
         products: [ref('product', 43), ref('product', 44), ref('product', 45)],
@@ -518,6 +717,7 @@ describe('campaign creation plan', () => {
       nodeId: '00000000-0000-4000-8000-000000000046',
       payload: {
         format: 'sb_product_collection_automatic',
+        name: 'Synthetic automatic collection ad',
         adGroup: ref('ad_group', 41),
         brand: ref('brand', 42),
         logoAsset: null,
@@ -639,6 +839,232 @@ describe('campaign creation plan', () => {
         state: 'paused',
       },
     }).success).toBe(false);
+    expect(CampaignCreationNode.safeParse({
+      ...target,
+      payload: {
+        targetType: 'expression',
+        parent: { source: 'plan_node', kind: 'ad_group', nodeId: AD_GROUP_NODE_ID },
+        scope: 'ad_group',
+        polarity: 'negative',
+        expression: [{ type: 'close_match', value: null }],
+        bid: null,
+        state: 'paused',
+      },
+    }).success).toBe(false);
+    expect(CampaignCreationNode.safeParse({
+      ...target,
+      payload: {
+        targetType: 'expression',
+        parent: { source: 'plan_node', kind: 'ad_group', nodeId: AD_GROUP_NODE_ID },
+        scope: 'ad_group',
+        polarity: 'positive',
+        expression: [{ type: 'asin_same_as', value: null }],
+        bid: 1.01,
+        state: 'paused',
+      },
+    }).success).toBe(false);
+  });
+
+  it('models Unified SB targetDetails variants and rejects legacy target payloads', () => {
+    const plan = sbStoreSpotlightPlan();
+    const adGroup = plan.nodes.find((node) => node.kind === 'ad_group.create');
+    if (adGroup === undefined) throw new Error('synthetic SB ad group missing');
+    const target = CampaignCreationNode.parse({
+      nodeId: '00000000-0000-4000-8000-000000000032',
+      kind: 'target.create',
+      adProduct: 'SB',
+      apiDialect: 'unified_ads_v1',
+      dependsOn: [adGroup.nodeId],
+      fingerprint: sha('c'),
+      effect: 'irreversible_create',
+      rollback: 'none',
+      payload: {
+        targetType: 'sb_theme',
+        parent: { source: 'plan_node', kind: 'ad_group', nodeId: adGroup.nodeId },
+        polarity: 'positive',
+        matchType: 'keywords_related_to_your_landing_pages',
+        bid: 1.01,
+        state: 'paused',
+      },
+    });
+    const withTheme = {
+      ...plan,
+      nodes: orderCampaignCreationNodes([...plan.nodes, target]),
+      counts: {
+        ...plan.counts,
+        totalNodes: plan.counts.totalNodes + 1,
+        irreversibleCreates: plan.counts.irreversibleCreates + 1,
+        byKind: { ...plan.counts.byKind, 'target.create': 1 },
+      },
+    };
+    expect(CampaignCreationPlan.safeParse(withTheme).success).toBe(true);
+
+    for (const payload of [
+      {
+        targetType: 'sb_keyword',
+        parent: { source: 'plan_node', kind: 'ad_group', nodeId: adGroup.nodeId },
+        polarity: 'negative',
+        text: 'synthetic keyword',
+        matchType: 'exact',
+        bid: null,
+        state: 'paused',
+      },
+      {
+        targetType: 'sb_product',
+        parent: { source: 'plan_node', kind: 'ad_group', nodeId: adGroup.nodeId },
+        polarity: 'positive',
+        asin: 'B000000009',
+        bid: 1.01,
+        state: 'paused',
+      },
+      {
+        targetType: 'sb_product_category',
+        parent: { source: 'plan_node', kind: 'ad_group', nodeId: adGroup.nodeId },
+        polarity: 'positive',
+        categoryId: 'CATEGORY-1',
+        brandId: null,
+        priceGreaterThan: null,
+        priceLessThan: 50,
+        ratingGreaterThan: 4,
+        ratingLessThan: null,
+        bid: 1.01,
+        state: 'paused',
+      },
+    ] as const) {
+      expect(CampaignCreationNode.safeParse({ ...target, payload }).success).toBe(true);
+    }
+
+    const legacyKeyword = CampaignCreationNode.parse({
+      ...target,
+      payload: {
+        targetType: 'keyword',
+        parent: { source: 'plan_node', kind: 'ad_group', nodeId: adGroup.nodeId },
+        scope: 'ad_group',
+        polarity: 'positive',
+        text: 'synthetic keyword',
+        matchType: 'exact',
+        bid: 1.01,
+        state: 'paused',
+      },
+    });
+    expect(CampaignCreationPlan.safeParse({
+      ...withTheme,
+      nodes: orderCampaignCreationNodes([...plan.nodes, legacyKeyword]),
+    }).success).toBe(false);
+  });
+
+  it('keeps Sponsored Display tactic and target semantics closed', () => {
+    const nodes = spNodes().map((node) => {
+      const common = { ...node, adProduct: 'SD', apiDialect: 'sd_legacy' } as const;
+      if (node.kind === 'campaign.create') {
+        return CampaignCreationNode.parse({
+          ...common,
+          payload: { ...node.payload, settings: { product: 'SD', tactic: 'contextual' } },
+        });
+      }
+      if (node.kind === 'ad.create') {
+        return CampaignCreationNode.parse({
+          ...common,
+          payload: { ...node.payload, format: 'sd_product_ad' },
+        });
+      }
+      if (node.kind === 'target.create') {
+        return CampaignCreationNode.parse({
+          ...common,
+          payload: {
+            targetType: 'sd_product',
+            parent: { source: 'plan_node', kind: 'ad_group', nodeId: AD_GROUP_NODE_ID },
+            polarity: 'positive',
+            asin: 'B000000009',
+            bid: 1.01,
+            state: 'paused',
+          },
+        });
+      }
+      return CampaignCreationNode.parse(common);
+    });
+    const plan = CampaignCreationPlan.parse({
+      ...spPlan(),
+      adProduct: 'SD',
+      apiDialect: 'sd_legacy',
+      nodes,
+    });
+    const mismatchedTactic = plan.nodes.map((node) => node.kind === 'campaign.create'
+      ? {
+          ...node,
+          payload: { ...node.payload, settings: { product: 'SD', tactic: 'audience' } },
+        }
+      : node);
+    expect(CampaignCreationPlan.safeParse({ ...plan, nodes: mismatchedTactic }).success)
+      .toBe(false);
+  });
+
+  it('uses one named Unified SB product-video shape and preserves Asset ID/version', () => {
+    const plan = sbProductVideoPlan();
+    expect(plan.counts.byKind['asset.require_existing']).toBe(1);
+    expect(CampaignCreationPlan.safeParse({
+      ...plan,
+      nodes: plan.nodes.map((node) => node.kind === 'asset.require_existing'
+        ? { ...node, payload: { ...node.payload, purpose: 'image' } }
+        : node),
+    }).success).toBe(false);
+
+    const ref = (kind: 'ad_group' | 'brand' | 'product' | 'store' | 'asset', suffix: number) => ({
+      source: 'plan_node' as const,
+      kind,
+      nodeId: `00000000-0000-4000-8000-${String(suffix).padStart(12, '0')}`,
+    });
+    const video = {
+      nodeId: '00000000-0000-4000-8000-000000000060',
+      kind: 'ad.create',
+      adProduct: 'SB',
+      apiDialect: 'unified_ads_v1',
+      dependsOn: [],
+      fingerprint: sha('6'),
+      effect: 'irreversible_create',
+      rollback: 'none',
+      payload: {
+        format: 'sb_product_video',
+        name: 'Synthetic video ad',
+        adGroup: ref('ad_group', 61),
+        brand: null,
+        logoAsset: null,
+        headline: null,
+        enableCreativeAutoTranslation: null,
+        landingPage: null,
+        products: [],
+        videoAsset: ref('asset', 62),
+        state: 'paused',
+      },
+    } as const;
+    expect(CampaignCreationNode.safeParse(video).success).toBe(true);
+    expect(CampaignCreationNode.safeParse({
+      ...video,
+      payload: { ...video.payload, name: undefined },
+    }).success).toBe(false);
+    expect(CampaignCreationNode.safeParse({
+      ...video,
+      payload: { ...video.payload, format: 'sb_brand_video' },
+    }).success).toBe(false);
+
+    const asset = CampaignCreationNode.parse({
+      nodeId: '00000000-0000-4000-8000-000000000062',
+      kind: 'asset.require_existing',
+      adProduct: 'SB',
+      apiDialect: 'unified_ads_v1',
+      dependsOn: [],
+      fingerprint: sha('7'),
+      effect: 'read_check',
+      rollback: 'not_applicable',
+      payload: { assetId: 'VIDEO-ASSET-1', version: '7', purpose: 'video' },
+    });
+    if (asset.kind !== 'asset.require_existing') throw new Error('synthetic video asset missing');
+    const changedAsset = CampaignCreationNode.parse({
+      ...asset,
+      payload: { ...asset.payload, version: '8' },
+    });
+    expect(serializeCampaignCreationNodeFingerprint(changedAsset))
+      .not.toBe(serializeCampaignCreationNodeFingerprint(asset));
   });
 
   it('uses chronological instants and lowercase canonical UUIDs', () => {
@@ -651,6 +1077,25 @@ describe('campaign creation plan', () => {
     expect(CampaignCreationNode.safeParse({
       ...spNodes()[0],
       nodeId: 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA',
+    }).success).toBe(false);
+    const campaign = spNodes()[1];
+    if (campaign?.kind !== 'campaign.create') throw new Error('synthetic campaign missing');
+    expect(CampaignCreationNode.safeParse({
+      ...campaign,
+      payload: { ...campaign.payload, startDate: '2026-99-99' },
+    }).success).toBe(false);
+    expect(CampaignCreationNode.safeParse({
+      ...campaign,
+      payload: { ...campaign.payload, startDate: '2026-02-29' },
+    }).success).toBe(false);
+    expect(CampaignCreationNode.safeParse({
+      ...campaign,
+      adProduct: 'SD',
+      apiDialect: 'sd_legacy',
+      payload: {
+        ...campaign.payload,
+        settings: { product: 'SD', tactic: 'invented-provider-tactic' },
+      },
     }).success).toBe(false);
   });
 
@@ -724,6 +1169,7 @@ describe('campaign creation approval and evidence', () => {
       providerCallId: CALL_ID,
       nodeFingerprint: sha('a'),
       requestIndex: 0,
+      providerEntityVersion: null,
       providerCode: null,
       sanitizedMessage: null,
       providerRequestId: null,
@@ -890,6 +1336,125 @@ describe('campaign creation approval and evidence', () => {
     };
     expect(CampaignCreationExecutionEvidence.parse(notFound).snapshot.accounting.observationNotFound)
       .toBe(1);
+  });
+
+  it('enforces preflight identity, provider-identity uniqueness, and canonical evidence order', () => {
+    const evidence = completedSpExecutionEvidence();
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...evidence,
+      providerResults: evidence.providerResults.map((result, index) => index === 0
+        ? { ...result, providerEntityId: 'B999999999' }
+        : result),
+    }).success).toBe(false);
+    const sbEvidence = completedSpExecutionEvidence(sbProductVideoPlan());
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...sbEvidence,
+      providerResults: sbEvidence.providerResults.map((result) => result.effect === 'read_check'
+        && result.providerEntityVersion !== null
+        ? { ...result, providerEntityVersion: 'wrong-version' }
+        : result),
+    }).success).toBe(false);
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...evidence,
+      providerResults: [...evidence.providerResults].reverse(),
+    }).success).toBe(false);
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...evidence,
+      providerResults: evidence.providerResults.map((result) => (
+        result.nodeId === AD_NODE_ID
+          ? { ...result, providerCallId: CALL_ID, requestIndex: 0 }
+          : result.nodeId === TARGET_NODE_ID
+            ? { ...result, providerCallId: CALL_ID, requestIndex: 2 }
+            : result
+      )),
+    }).success).toBe(false);
+
+    const plan = spPlan();
+    const secondTarget = CampaignCreationNode.parse({
+      ...plan.nodes.find((node) => node.nodeId === TARGET_NODE_ID),
+      nodeId: '00000000-0000-4000-8000-000000000016',
+      fingerprint: sha('6'),
+    });
+    const twoTargetPlan = CampaignCreationPlan.parse({
+      ...plan,
+      nodes: orderCampaignCreationNodes([...plan.nodes, secondTarget]),
+      counts: {
+        ...plan.counts,
+        totalNodes: 6,
+        irreversibleCreates: 5,
+        byKind: { ...plan.counts.byKind, 'target.create': 2 },
+      },
+    });
+    const duplicateIdentity = completedSpExecutionEvidence(twoTargetPlan);
+    const targetNodeIds = new Set([TARGET_NODE_ID, secondTarget.nodeId]);
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...duplicateIdentity,
+      providerResults: duplicateIdentity.providerResults.map((result) => targetNodeIds.has(result.nodeId)
+        ? { ...result, providerEntityId: 'TARGET-SAME' }
+        : result),
+      observations: duplicateIdentity.observations.map((observation) => targetNodeIds.has(observation.nodeId)
+        ? { ...observation, providerEntityId: 'TARGET-SAME' }
+        : observation),
+    }).success).toBe(false);
+  });
+
+  it('enforces execution dependencies and provider/observation chronology', () => {
+    const evidence = completedSpExecutionEvidence();
+    const campaignResult = evidence.providerResults.find(
+      (result) => result.nodeId === CAMPAIGN_NODE_ID,
+    );
+    if (campaignResult === undefined) throw new Error('synthetic campaign result missing');
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...evidence,
+      providerResults: evidence.providerResults.map((result) => result.nodeId === AD_GROUP_NODE_ID
+        ? { ...result, startedAt: campaignResult.startedAt }
+        : result),
+    }).success).toBe(false);
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...evidence,
+      observations: evidence.observations.map((observation, index) => index === 0
+        ? { ...observation, observedAt: campaignResult.startedAt }
+        : observation),
+    }).success).toBe(false);
+
+    const failed = failedCampaignExecutionEvidence();
+    expect(CampaignCreationExecutionEvidence.parse(failed).snapshot.status).toBe('failed');
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...failed,
+      snapshot: { ...failed.snapshot, status: 'partial_failed' },
+    }).success).toBe(false);
+
+    const adGroupResult = evidence.providerResults.find(
+      (result) => result.nodeId === AD_GROUP_NODE_ID,
+    );
+    const adGroupObservation = evidence.observations.find(
+      (observation) => observation.nodeId === AD_GROUP_NODE_ID,
+    );
+    if (adGroupResult === undefined || adGroupObservation === undefined) {
+      throw new Error('synthetic ad-group evidence missing');
+    }
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...failed,
+      providerResults: [...failed.providerResults, adGroupResult],
+      nonProviderDispositions: failed.nonProviderDispositions.filter(
+        (disposition) => disposition.nodeId !== AD_GROUP_NODE_ID,
+      ),
+      observations: [adGroupObservation],
+    }).success).toBe(false);
+
+    const campaignDisposition = {
+      planId: failed.plan.id,
+      nodeId: CAMPAIGN_NODE_ID,
+      executionId: failed.executionId,
+      nodeFingerprint: campaignResult.nodeFingerprint,
+      outcome: 'blocked_by_dependency',
+      sanitizedReason: 'No dependency actually failed.',
+    } as const;
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...failed,
+      providerResults: failed.providerResults.slice(0, 1),
+      nonProviderDispositions: [campaignDisposition, ...failed.nonProviderDispositions],
+    }).success).toBe(false);
   });
 
   it('reserves future creation jobs without making them claimable by current workers', () => {

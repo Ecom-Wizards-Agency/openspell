@@ -69,7 +69,29 @@ optional logo and exclusions; Amazon generates their title and landing experienc
 Collections carry 3–10 products, shared brand identity, optional logo/title and an ASIN-list or
 checked Store landing. Store Spotlight carries one checked logo plus exactly three unique
 Store-page/product cards; the Store page supplies the card imagery. The contract uses a
-conservative 100-exclusion ceiling while Amazon's current guide and OpenAPI disagree.
+conservative local supported-subset ceiling of 100 automatic exclusions. This is not represented
+as Amazon's provider maximum: the pinned unified SB OpenAPI publishes `maxItems: 1000` at
+[`unified-api-sb.json` lines 2822–2841](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/api-specs/unified-api-sb.json#L2822-L2841),
+while Amazon's pinned Collections migration skill says 100 in its summary, optional-field notes,
+and FAQ at
+[`SKILL.md` lines 16–25](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/skills/amazon-ads-sb-collections/SKILL.md#L16-L25),
+[`lines 167–169`](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/skills/amazon-ads-sb-collections/SKILL.md#L167-L169),
+and [`lines 797–799`](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/skills/amazon-ads-sb-collections/SKILL.md#L797-L799),
+but also says 1000 in its comparison table at
+[`SKILL.md` lines 600–603](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/skills/amazon-ads-sb-collections/SKILL.md#L600-L603).
+
+Unified SB targets use four semantic `targetDetails` variants—keyword, product,
+product-category refinement, and theme—and never reuse the legacy SP/SD expression envelope, as
+enumerated by the pinned
+[`SBCreateTargetDetails`](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/api-specs/unified-api-sb.json#L3779-L3828)
+schema.
+Unified SB ads carry their required name. Product video is one shape matching
+`productVideoSettings`: exactly one checked video Asset ID/version is required; brand, logo,
+headline, landing page, auto-translation preference, and zero to three products are optional. Those
+cardinalities come from pinned
+[`SBCreateProductVideoSettings`](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/api-specs/unified-api-sb.json#L3531-L3579),
+and the ad name is required by pinned
+[`SBAdCreate`](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/api-specs/unified-api-sb.json#L385-L425).
 
 Canonical serializers deliberately produce preimages rather than hashes. `packages/shared`
 depends only on Zod and stays runtime-neutral; Node-capable persistence and worker boundaries own
@@ -97,9 +119,14 @@ dependency-pure.
 
 The current-evidence bundle closes every approved create into exactly one provider result or
 non-provider disposition, closes every successful or ambiguous provider result into exactly one
-current observation, and rejects duplicate provider call positions. Its snapshot is recomputed
-from the node-level evidence, including explicit `not_found` observations; callers cannot declare
-an execution successful, refused, or blocked while contradictory evidence exists.
+current observation, and rejects duplicate or incomplete provider call positions. Provider results,
+dispositions, and observations use canonical plan order. Preflight outcomes must reproduce the
+planned provider identity and exact Asset version; created provider identities are unique per
+resource kind. A create may run only after every dependency succeeds, and its start and observation
+times cannot predate the corresponding dependency/result completion. Its snapshot is recomputed
+from the node-level evidence, including explicit `not_found` observations and a distinct terminal
+`failed` status; callers cannot declare an execution successful, partially failed, failed, refused,
+or blocked while contradictory evidence exists.
 - We accept a future job union that is not yet part of `JobPayload` in exchange for making it
   impossible for the current worker to claim an unsupported creation job.
 - We accept one-resource dispatch for unproven non-indexed provider responses in exchange for
