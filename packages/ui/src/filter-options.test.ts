@@ -31,6 +31,12 @@ describe('categorical filter options', () => {
     ]);
   });
 
+  it('trims categorical values before deduplication and filtering', () => {
+    expect(buildCategoricalOptions([row('1', ' Enabled '), row('2', 'Enabled')], 'state')).toEqual([
+      { value: 'Enabled', label: 'Enabled' },
+    ]);
+  });
+
   it('gives booleans useful labels without changing their filter values', () => {
     expect(buildCategoricalOptions([row('1', true), row('2', false)], 'state')).toEqual([
       { value: 'false', label: 'No' },

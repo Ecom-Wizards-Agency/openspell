@@ -15,7 +15,7 @@
  * that reads `<KEY> <operator> <value>` covers every column at every level, and
  * an operator who learns it once never learns it again.
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { EntityLevel, GridColumn } from './columns.js';
 import { ENTITY_LABELS, ENTITY_LEVELS, filterKindForColumn } from './columns.js';
@@ -103,6 +103,7 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
   const [draftValues, setDraftValues] = useState<string[]>([]);
   const [valuePickerOpen, setValuePickerOpen] = useState(false);
   const [optionSearch, setOptionSearch] = useState('');
+  const valueTriggerRef = useRef<HTMLButtonElement>(null);
 
   const filters = props.filter.groups[0]?.filters ?? [];
   const dimensions = useMemo(
@@ -192,9 +193,11 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
         {draftKind === 'categorical' ? (
           <div style={valuePickerWrap}>
             <button
+              ref={valueTriggerRef}
               type="button"
               aria-label="Filter values"
               aria-expanded={valuePickerOpen}
+              aria-haspopup="dialog"
               onClick={() => setValuePickerOpen((open) => !open)}
               style={{ ...control, ...valueTrigger }}
             >
@@ -204,8 +207,19 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
               <span aria-hidden>▾</span>
             </button>
             {valuePickerOpen ? (
-              <div role="dialog" aria-label={`${draftColumn?.header ?? 'Filter'} values`} style={valuePicker}>
+              <div
+                role="dialog"
+                aria-label={`${draftColumn?.header ?? 'Filter'} values`}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Escape') return;
+                  event.preventDefault();
+                  setValuePickerOpen(false);
+                  valueTriggerRef.current?.focus();
+                }}
+                style={valuePicker}
+              >
                 <input
+                  autoFocus
                   aria-label="Search filter values"
                   value={optionSearch}
                   onChange={(event) => setOptionSearch(event.target.value)}

@@ -131,6 +131,19 @@ describe('GridToolbar filter draft', () => {
     expect(buildGridModel(model.rows, { filter: emitted }).matched).toBeGreaterThan(0);
   });
 
+  it('moves focus into the value picker and returns it to the trigger on Escape', () => {
+    renderToolbar();
+    fireEvent.change(screen.getByLabelText('Filter column'), { target: { value: 'MATCH_TYPE' } });
+    const trigger = screen.getByLabelText('Filter values');
+    fireEvent.click(trigger);
+
+    const search = screen.getByLabelText('Search filter values');
+    expect(document.activeElement).toBe(search);
+    fireEvent.keyDown(search, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Match values' })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it('keeps options that another active filter hid from the model', () => {
     const allRows = model.rows;
     const filteredModel = buildGridModel(allRows, {

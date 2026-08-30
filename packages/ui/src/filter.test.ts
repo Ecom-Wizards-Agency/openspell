@@ -96,6 +96,22 @@ describe('text filters', () => {
     ).toBe(true);
   });
 
+  it('normalizes surrounding whitespace for exact categorical matches', () => {
+    const padded = row({ dimensions: { ...row().dimensions, campaign_state: ' Enabled ' } });
+    expect(
+      evaluateFilter(padded, {
+        key: 'CAMPAIGN_STATE',
+        conditions: [{ operator: 'IN', values: ['Enabled'] }],
+      }),
+    ).toBe(true);
+    expect(
+      evaluateFilter(padded, {
+        key: 'CAMPAIGN_STATE',
+        conditions: [{ operator: 'NOT_IN', values: [' enabled '] }],
+      }),
+    ).toBe(false);
+  });
+
   it('compares a numeric dimension numerically', () => {
     expect(evaluateFilter(row(), { key: 'BID', conditions: [{ operator: '>', values: ['0.5'] }] })).toBe(true);
     expect(evaluateFilter(row(), { key: 'BID', conditions: [{ operator: '>', values: ['1.5'] }] })).toBe(false);
