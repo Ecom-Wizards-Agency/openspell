@@ -68,6 +68,18 @@ test('the timeline shows both a sync-detected change and an operator apply', asy
   await expect(marker.getByTestId('entry-goto')).toHaveAttribute('href', expected);
 });
 
+test('the active account is compact and the roster is not rendered as link navigation', async ({ page }) => {
+  await open(page);
+
+  const account = page.getByTestId('time-machine-active-account');
+  await expect(account).toBeVisible();
+  await expect(account.getByText('Active account', { exact: true })).toBeVisible();
+  await expect(account.getByTestId('time-machine-profile')).toHaveValue(PROFILE_A);
+  await expect(account.locator('option')).not.toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'Profiles' })).toHaveCount(0);
+  await expect(account.locator('a[href*="/time-machine?profile="]')).toHaveCount(0);
+});
+
 test('the initial response is bounded and older history remains reachable', async ({ page }) => {
   const response = await page.goto(url());
   if (response === null) throw new Error('Time Machine navigation returned no document response');

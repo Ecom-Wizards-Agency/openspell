@@ -29,6 +29,7 @@ import {
 import { listOrgProfiles, selectOrgProfile } from '../../src/recommendations/data';
 import { requireOrgRole } from '../../src/server/org-role';
 import { can } from '../../src/auth/roles';
+import { ActiveAccountSelector } from './active-account-selector';
 import { ReversionPanel } from './reversion-panel';
 
 export const runtime = 'nodejs';
@@ -215,25 +216,15 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
 
     return (
       <main style={main} data-interactive="true">
-        <header style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-          <h1 style={heading}>Time Machine</h1>
-          <p style={muted}>
-            {profile.label}{' · '}{profile.countryCode}{' · '}exported batches, synchronized evidence, and
-            external account changes. Reviewing this history does not change Amazon.
-          </p>
-          {profiles.length > 1 ? (
-            <nav style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }} aria-label="Profiles">
-              {profiles.map((option) => (
-                <a
-                  key={option.id}
-                  href={`/time-machine?profile=${option.id}`}
-                  style={{ ...pill, fontWeight: option.id === profile.id ? 600 : 400 }}
-                >
-                  {option.label}
-                </a>
-              ))}
-            </nav>
-          ) : null}
+        <header style={pageHeader}>
+          <div style={pageHeading}>
+            <h1 style={heading}>Time Machine</h1>
+            <p style={muted}>
+              Exported batches, synchronized evidence, and external account changes. Reviewing this
+              history does not change Amazon.
+            </p>
+          </div>
+          <ActiveAccountSelector profiles={profiles} activeProfileId={profile.id} />
         </header>
 
         {reversionBatches.length === 0 ? null : (
@@ -454,6 +445,21 @@ const pagination: CSSProperties = {
   alignItems: 'center',
   display: 'flex',
   justifyContent: 'space-between',
+};
+
+const pageHeader: CSSProperties = {
+  alignItems: 'flex-start',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '1rem',
+  justifyContent: 'space-between',
+};
+
+const pageHeading: CSSProperties = {
+  display: 'flex',
+  flex: '1 1 28rem',
+  flexDirection: 'column',
+  gap: '0.5rem',
 };
 
 const heading: CSSProperties = { fontSize: '1.5rem', margin: 0 };
