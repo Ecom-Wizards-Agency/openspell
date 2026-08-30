@@ -1,9 +1,9 @@
 /**
  * The one entry point for this app's browser tests.
  *
- * ## Why there are two suites and not one
+ * ## Why there are three suites and not one
  *
- * `apps/web` carries two end-to-end suites that need mutually exclusive
+ * `apps/web` carries three end-to-end suites that need mutually exclusive
  * servers, so they run one after the other rather than under a single config:
  *
  *  - **tags-goto** (WP-08, and WP-15's feedback surfaces) serves a
@@ -21,9 +21,9 @@
  *    mean disabling that guard, which is the guard's whole point.
  *
  * Merging them would mean weakening one guard or accepting a suite that cannot
- * hydrate. Sequential is the honest answer: two named configs, one runner.
+ * hydrate. Sequential is the honest answer: three named configs, one runner.
  *
- * Each suite owns its own database, and the two never overlap: this file
+ * Each suite owns its own database, and the three never overlap: this file
  * creates and drops the tags-goto database, while the auth suite's
  * `global-setup.ts` creates and drops its own (plus the fake Amazon and the dev
  * server). The admin connection comes from `WIZARD_ADS_TEST_DATABASE_URL` (or

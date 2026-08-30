@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { columnsFor } from '@wizard-ads/ui';
 import type { EntityLevel, GridRow, SavedView, ViewStore } from '@wizard-ads/ui';
 import { GridWorkspace, experimentScopeIds, withValidGrouping } from './grid-client';
+
+const navigation = vi.hoisted(() => ({ push: vi.fn() }));
+vi.mock('next/navigation', () => ({ useRouter: () => navigation }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const mounted: Array<{ unmount: () => void }> = [];
@@ -15,6 +17,8 @@ afterEach(() => {
     for (const root of mounted.splice(0)) root.unmount();
   });
   document.body.replaceChildren();
+  navigation.push.mockReset();
+  vi.unstubAllGlobals();
 });
 
 function view(groupBy: readonly string[]): SavedView {
@@ -143,7 +147,6 @@ function workspaceProps(
 ): Parameters<typeof GridWorkspace>[0] {
   return {
     entity,
-    rows: [row(entity)],
     currencyCode: 'USD',
     profileId: 'synthetic-profile',
     period: { start: '2026-08-01', end: '2026-08-29' },
@@ -154,31 +157,29 @@ function workspaceProps(
   };
 }
 
-describe('grid saved-view grouping', () => {
-  it('renders no view-derived interaction until the saved layout is restored', () => {
-    const markup = renderToStaticMarkup(
-      createElement(GridWorkspace, {
-        entity: 'campaigns',
-        rows: [],
-        currencyCode: 'USD',
-        profileId: 'synthetic-profile',
-        period: { start: '2026-08-01', end: '2026-08-29' },
-        comparisonPeriod: { start: '2026-07-03', end: '2026-07-31' },
-        freshness,
-        campaignId: null,
-        viewStore: null,
-      }),
-    );
+function stubGridFetch(): void {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const entity = new URL(String(input), 'http://localhost').searchParams.get(
+        'entity',
+      ) as EntityLevel;
+      const rows = [row(entity)];
+      return Response.json({ rows, rowCount: rows.length, truncated: false });
+    }),
+  );
+}
 
-    expect(markup).toContain('data-testid="grid-workspace"');
-    expect(markup).toContain('data-ready="false"');
-    expect(markup).toContain('data-testid="grid-toolbar-readiness"');
-    expect(markup).toContain('data-testid="grid-layout-restoring"');
-    expect(markup).not.toContain('data-testid="grid-start-experiment"');
-    expect(markup).not.toContain('data-testid="grid-scroller"');
+async function flushGridLoad(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
   });
+}
 
+describe('grid saved-view grouping', () => {
   it('binds readiness to the current entity and restores scope before allowing interactions', async () => {
+    stubGridFetch();
     const store = new DeferredViewStore();
     const host = document.createElement('div');
     document.body.append(host);
@@ -186,7 +187,9 @@ describe('grid saved-view grouping', () => {
     mounted.push(root);
 
     act(() => root.render(createElement(GridWorkspace, workspaceProps('campaigns', store))));
-    expect(host.querySelector('[data-testid="grid-workspace"]')?.getAttribute('data-ready')).toBe('false');
+    await flushGridLoad();
+    expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('false');
+    expect(host.querySelector('[data-testid="grid-layout-restoring"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="grid-scroller"]')).toBeNull();
 
     await act(async () => {
@@ -204,7 +207,7 @@ describe('grid saved-view grouping', () => {
       await Promise.resolve();
     });
 
-    expect(host.querySelector('[data-testid="grid-workspace"]')?.getAttribute('data-ready')).toBe('true');
+    expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('true');
     expect(host.querySelector('[role="treegrid"]')).not.toBeNull();
     expect(host.querySelector('[role="columnheader"][aria-label="Clicks"]')?.getAttribute('aria-sort')).toBe('ascending');
     expect(host.querySelector<HTMLAnchorElement>('[data-testid="grid-start-experiment"]')?.getAttribute('href')).toContain('campaigns=c-1');
@@ -212,7 +215,8 @@ describe('grid saved-view grouping', () => {
     // A prop-key change is synchronous. The old ready scope must never leak
     // through one render while the new target layout is still unresolved.
     act(() => root.render(createElement(GridWorkspace, workspaceProps('targets', store))));
-    expect(host.querySelector('[data-testid="grid-workspace"]')?.getAttribute('data-ready')).toBe('false');
+    await flushGridLoad();
+    expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('false');
     expect(host.querySelector('[data-testid="grid-scroller"]')).toBeNull();
     expect(host.querySelector('[data-testid="grid-start-experiment"]')).toBeNull();
 
@@ -231,7 +235,7 @@ describe('grid saved-view grouping', () => {
       await Promise.resolve();
     });
 
-    expect(host.querySelector('[data-testid="grid-workspace"]')?.getAttribute('data-ready')).toBe('true');
+    expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('true');
     expect(host.querySelector<HTMLAnchorElement>('[data-testid="grid-start-experiment"]')?.getAttribute('href')).toContain('targets=kw-1');
     const spend = host.querySelector<HTMLElement>('[role="columnheader"][aria-label="Spend"]');
     expect(spend?.getAttribute('aria-sort')).toBe('descending');
@@ -244,6 +248,7 @@ describe('grid saved-view grouping', () => {
   });
 
   it('falls open to the exact default scope and ignores rejection from a cancelled scope', async () => {
+    stubGridFetch();
     const store = new RejectingViewStore();
     const host = document.createElement('div');
     document.body.append(host);
@@ -251,32 +256,35 @@ describe('grid saved-view grouping', () => {
     mounted.push(root);
 
     act(() => root.render(createElement(GridWorkspace, workspaceProps('campaigns', store))));
+    await flushGridLoad();
     await act(async () => {
       store.fail('campaigns');
       await Promise.resolve();
     });
 
-    expect(host.querySelector('[data-testid="grid-workspace"]')?.getAttribute('data-ready')).toBe('true');
+    expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('true');
     expect(host.querySelector('[role="grid"]')).not.toBeNull();
     expect(host.querySelector('[role="columnheader"][aria-label="Spend"]')?.getAttribute('aria-sort')).toBe('descending');
     expect(host.querySelector<HTMLAnchorElement>('[data-testid="grid-start-experiment"]')?.getAttribute('href')).toContain('campaigns=c-1');
 
     act(() => root.render(createElement(GridWorkspace, workspaceProps('targets', store))));
+    await flushGridLoad();
     act(() => root.render(createElement(GridWorkspace, workspaceProps('ad_groups', store))));
-    expect(host.querySelector('[data-testid="grid-workspace"]')?.getAttribute('data-ready')).toBe('false');
+    await flushGridLoad();
+    expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('false');
 
     await act(async () => {
       store.fail('targets');
       await Promise.resolve();
     });
-    expect(host.querySelector('[data-testid="grid-workspace"]')?.getAttribute('data-ready')).toBe('false');
+    expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('false');
     expect(host.querySelector('[data-testid="grid-scroller"]')).toBeNull();
 
     await act(async () => {
       store.fail('ad_groups');
       await Promise.resolve();
     });
-    expect(host.querySelector('[data-testid="grid-workspace"]')?.getAttribute('data-ready')).toBe('true');
+    expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('true');
     expect(host.querySelector('[role="grid"]')).not.toBeNull();
   });
 

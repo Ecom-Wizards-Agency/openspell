@@ -33,9 +33,9 @@ test('grid restores the matching saved filter, grouping, and sort before becomin
     },
   );
 
-  // Hold hydration so the server-rendered, pre-ready contract is observable
-  // without timing guesses. Releasing the promise lets the real Next chunks
-  // hydrate and the real LocalViewStore restore the saved layout.
+  // Hold hydration so the server-rendered data boundary is observable without
+  // timing guesses. Releasing the promise lets the real Next chunks fetch the
+  // complete rows and restore the saved layout before exposing controls.
   let releaseChunks = (): void => {};
   const chunksReleased = new Promise<void>((resolve) => {
     releaseChunks = resolve;
@@ -47,10 +47,9 @@ test('grid restores the matching saved filter, grouping, and sort before becomin
 
   const gridQuery = new URLSearchParams({ profile: fixtureProfileId, entity: 'campaigns' });
   await page.goto(`/grid?${gridQuery.toString()}`, { waitUntil: 'commit' });
-  const workspace = page.getByTestId('grid-workspace');
   try {
-    await expect(workspace).toHaveAttribute('data-ready', 'false');
-    await expect(page.getByTestId('grid-layout-restoring')).toBeVisible();
+    await expect(page.getByTestId('grid-data-loading')).toBeVisible();
+    await expect(page.getByTestId('grid-data-ready')).toHaveCount(0);
     await expect(page.getByTestId('grid-scroller')).toHaveCount(0);
     await expect(page.getByTestId('grid-start-experiment')).toHaveCount(0);
     const preReadyLayout = await page.evaluate(() => {
@@ -70,6 +69,7 @@ test('grid restores the matching saved filter, grouping, and sort before becomin
     releaseChunks();
   }
 
+  const workspace = page.getByTestId('grid-data-ready');
   await expect(workspace).toHaveAttribute('data-ready', 'true');
   await expect(page.getByRole('treegrid', { name: 'Results grouped by campaign_state' })).toBeVisible();
   await expect(page.getByRole('columnheader', { name: 'Clicks' })).toHaveAttribute('aria-sort', 'ascending');
@@ -98,11 +98,10 @@ test('grid adds, reorders, and removes truthful nested grouping levels', async (
   await signIn(page, 'admin');
   await page.goto('/grid?entity=campaigns');
   await expect(page.getByRole('heading', { name: 'Campaigns', exact: true })).toBeVisible();
+  // The complete row payload and saved layout must both be ready before an
+  // early date-range or grouping change can be accepted.
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
   await expectDateRangePresets(page);
-  // Server-rendered controls are visible before React owns them. The grid only
-  // becomes ready after hydration and saved-layout restoration, either of
-  // which could otherwise discard an early grouping change.
-  await expect(page.getByTestId('grid-workspace')).toHaveAttribute('data-ready', 'true');
 
   const addLevel = page.getByLabel('Add grouping level');
   await addLevel.selectOption({ label: 'State' });
