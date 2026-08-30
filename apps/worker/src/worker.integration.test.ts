@@ -109,6 +109,15 @@ class FakeAdsApi implements AdsApiClient {
   async listProfiles(_region: Region): Promise<readonly string[]> { return []; }
 }
 
+class TerminalDownloadFailureApi extends FakeAdsApi {
+  downloadCalls = 0;
+
+  override async downloadReport(): Promise<AsyncIterable<Uint8Array>> {
+    this.downloadCalls += 1;
+    throw new Error('synthetic terminal download failure');
+  }
+}
+
 describe.skipIf(!available)('worker + real Postgres', () => {
   let database: TestDatabase;
   let orgId: string;
@@ -820,6 +829,81 @@ describe.skipIf(!available)('worker + real Postgres', () => {
        where dedupe_key = 'lane-ownership:6'
     `;
     expect(foreign).toEqual({ status: 'queued', claimed_by: null });
+  });
+
+  it('blocks a Creative snapshot when report fetch exhausts its retry budget', async () => {
+    const snapshotId = '12121212-1212-4212-8212-121212121212';
+    const reportId = '13131313-1313-4313-8313-131313131313';
+    const fetchJobId = '14141414-1414-4414-8414-141414141414';
+    await database.sql`
+      insert into public.creative_sync_snapshots
+        (id, org_id, profile_id, start_date, end_date, observed_at,
+         mapping_provenance, historical_validity, status, pagination_complete,
+         fact_promotion_allowed, source_assets, parsed_assets, source_ads, parsed_ads,
+         mapped, legacy, unsupported, ambiguous, unmapped)
+      values
+        (${snapshotId}, ${orgId}, ${profileId}, ${today}, ${today}, now(),
+         'current_sb_ad_snapshot', 'unproven_current_snapshot', 'report_pending', true,
+         true, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    `;
+    await database.sql`
+      insert into public.report_requests
+        (id, org_id, profile_id, report_type, start_date, end_date,
+         amazon_report_id, status, creative_sync_snapshot_id)
+      values
+        (${reportId}, ${orgId}, ${profileId}, 'sbAds', ${today}, ${today},
+         'synthetic-report', 'processing', ${snapshotId})
+    `;
+    const payload = {
+      type: 'report.fetch',
+      orgId,
+      profileId,
+      reportRequestId: reportId,
+      amazonReportId: 'synthetic-report',
+      downloadUrl: 'https://reports.invalid/terminal',
+    } as const;
+    await database.sql`
+      insert into public.sync_jobs
+        (id, org_id, profile_id, job_type, payload, dedupe_key, attempts, max_attempts)
+      values
+        (${fetchJobId}, ${orgId}, ${profileId}, 'report.fetch',
+         ${JSON.stringify(payload)}::jsonb, 'creative-terminal-fetch', 4, 5)
+    `;
+    const api = new TerminalDownloadFailureApi();
+    const worker = new SyncWorker({
+      workerId: 'creative-terminal-fetch',
+      store: new PostgresWorkerStore(database),
+      adsApi: api,
+      buckets: new RegionTokenBuckets(2),
+      logger: quietLogger,
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    const [job] = await database.sql<{ status: string; attempts: number; last_error: string | null }[]>`
+      select status::text as status, attempts, last_error
+        from public.sync_jobs
+       where id = ${fetchJobId}
+    `;
+    const [report] = await database.sql<{ status: string; error: string | null }[]>`
+      select status::text as status, error
+        from public.report_requests
+       where id = ${reportId}
+    `;
+    const [snapshot] = await database.sql<{ status: string }[]>`
+      select status from public.creative_sync_snapshots where id = ${snapshotId}
+    `;
+    expect(api.createCalls).toBe(0);
+    expect(api.downloadCalls).toBe(1);
+    expect(job).toMatchObject({
+      status: 'dead',
+      attempts: 5,
+      last_error: 'synthetic terminal download failure',
+    });
+    expect(report).toEqual({
+      status: 'failed',
+      error: 'report lifecycle stopped after exhausting its retry budget',
+    });
+    expect(snapshot).toEqual({ status: 'blocked' });
   });
 
   // -------------------------------------------------------------------------

@@ -239,55 +239,94 @@ export class SyncWorker {
   }
 
   private async runClaimed(job: ClaimedJob): Promise<void> {
+    let result: Record<string, unknown>;
     try {
-      const result = await this.execute(job);
-      await this.store.finish(job.id, 'succeeded', { result });
+      result = await this.execute(job);
     } catch (error) {
-      if (error instanceof SqpWorkflowPendingError) {
-        const retryIn = `${error.retryAfterSeconds} seconds`;
-        if (this.store.defer) {
-          await this.store.defer(job.id, retryIn);
-        } else {
-          // Adapter/test stores predating queue deferral retain the safe legacy
-          // behavior. The production Postgres store never takes this branch.
-          await this.store.finish(job.id, 'failed', {
-            error: errorMessage(error).slice(0, 4_000),
-            retryIn,
-          });
-        }
-        this.logger.info('sync job deferred for provider processing', {
-          jobId: job.id,
-          type: job.jobType,
-          retryAfterSeconds: error.retryAfterSeconds,
-        });
-        return;
-      }
-      if (
-        error instanceof PermanentJobError ||
-        error instanceof SqpWorkflowPermanentError ||
-        error instanceof SpApiParseError ||
-        (error instanceof SpApiAuthError && !error.retryable) ||
-        (error instanceof SpApiError && !error.retryable) ||
-        isPermanentCrosscheckError(error)
-      ) {
-        await this.store.deadLetter(job.id, errorMessage(error).slice(0, 4_000));
-        this.logger.error('sync job dead-lettered', {
-          jobId: job.id, type: job.jobType, error: errorMessage(error),
-        });
-        return;
-      }
-      const explicitRetry = error instanceof AdsApiRetryableError || error instanceof RetryableJobError
-        ? error.retryAfterSeconds
-        : undefined;
-      const retrySeconds = explicitRetry !== undefined
-        ? explicitRetry
-        : Math.min(60 * 2 ** Math.max(job.attempts - 1, 0), 30 * 60);
-      await this.store.finish(job.id, 'failed', {
-        error: errorMessage(error).slice(0, 4_000),
-        retryIn: `${retrySeconds} seconds`,
-      });
-      this.logger.error('sync job failed', { jobId: job.id, type: job.jobType, error: errorMessage(error) });
+      await this.handleClaimedFailure(job, error);
+      return;
     }
+    // Queue finalization is deliberately outside the execution catch. If this
+    // write fails after the provider/loader succeeded, stale-claim recovery may
+    // replay the idempotent job; it must not misclassify the successful report
+    // execution as terminal and block its Creative snapshot.
+    await this.store.finish(job.id, 'succeeded', { result });
+  }
+
+  private async handleClaimedFailure(job: ClaimedJob, error: unknown): Promise<void> {
+    if (error instanceof SqpWorkflowPendingError) {
+      const retryIn = `${error.retryAfterSeconds} seconds`;
+      if (this.store.defer) {
+        await this.store.defer(job.id, retryIn);
+      } else {
+        // Adapter/test stores predating queue deferral retain the safe legacy
+        // behavior. The production Postgres store never takes this branch.
+        await this.store.finish(job.id, 'failed', {
+          error: errorMessage(error).slice(0, 4_000),
+          retryIn,
+        });
+      }
+      this.logger.info('sync job deferred for provider processing', {
+        jobId: job.id,
+        type: job.jobType,
+        retryAfterSeconds: error.retryAfterSeconds,
+      });
+      return;
+    }
+    if (isPermanentJobFailure(error)) {
+      await this.failTerminalReportIfPresent(
+        job,
+        'report lifecycle stopped after a non-retryable failure',
+      );
+      await this.store.deadLetter(job.id, errorMessage(error).slice(0, 4_000));
+      this.logger.error('sync job dead-lettered', {
+        jobId: job.id, type: job.jobType, error: errorMessage(error),
+      });
+      return;
+    }
+    const explicitRetry = error instanceof AdsApiRetryableError || error instanceof RetryableJobError
+      ? error.retryAfterSeconds
+      : undefined;
+    const retrySeconds = explicitRetry !== undefined
+      ? explicitRetry
+      : Math.min(60 * 2 ** Math.max(job.attempts - 1, 0), 30 * 60);
+    if (job.attempts >= job.maxAttempts) {
+      await this.failTerminalReportIfPresent(
+        job,
+        'report lifecycle stopped after exhausting its retry budget',
+      );
+    }
+    await this.store.finish(job.id, 'failed', {
+      error: errorMessage(error).slice(0, 4_000),
+      retryIn: `${retrySeconds} seconds`,
+    });
+    this.logger.error('sync job failed', {
+      jobId: job.id,
+      type: job.jobType,
+      error: errorMessage(error),
+    });
+  }
+
+  private async failTerminalReportIfPresent(job: ClaimedJob, error: string): Promise<void> {
+    const parsed = JobPayload.safeParse(job.payload);
+    if (!parsed.success) return;
+    const payload = parsed.data;
+    if (
+      payload.type !== job.jobType ||
+      payload.orgId !== job.orgId ||
+      payload.profileId !== job.profileId
+    ) return;
+    const reportRequestId = payload.type === 'report.request'
+      ? job.id
+      : payload.type === 'report.poll' || payload.type === 'report.fetch'
+        ? payload.reportRequestId
+        : undefined;
+    if (reportRequestId === undefined) return;
+    await this.store.failTerminalReport({
+      reportRequestId,
+      orgId: job.orgId,
+      profileId: job.profileId,
+    }, error);
   }
 
   private async execute(job: ClaimedJob): Promise<Record<string, unknown>> {
@@ -1124,4 +1163,13 @@ function delay(milliseconds: number): Promise<void> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isPermanentJobFailure(error: unknown): boolean {
+  return error instanceof PermanentJobError ||
+    error instanceof SqpWorkflowPermanentError ||
+    error instanceof SpApiParseError ||
+    (error instanceof SpApiAuthError && !error.retryable) ||
+    (error instanceof SpApiError && !error.retryable) ||
+    isPermanentCrosscheckError(error);
 }
