@@ -17,19 +17,23 @@
  */
 import { spawn } from 'node:child_process';
 import { chromium } from '@playwright/test';
+import type { BrowserContext } from '@playwright/test';
+import { PROFILE_COOKIE } from '../src/cookies';
 
 const PRODUCTION_ORIGIN = process.env['OPENSPELL_PRODUCTION_ORIGIN']
   ?? 'https://ads.ecomwizards.agency';
 const CDP_URL = process.env['OPENSPELL_CDP_URL'] ?? 'http://127.0.0.1:9222';
 const AUTH_COOKIE = /^sb-.*-auth-token(?:\.\d+)?$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CANDIDATE_HOST = /^wizard-[a-z0-9]+-ecom-wizards\.vercel\.app$/;
 const STATUS_MARKER = 'OPENSPELL_STATUS:';
+const FINAL_URL_MARKER = 'OPENSPELL_FINAL_URL:';
 const REJECTED_BODY = /role=["']alert["']|Application error|Internal Server Error|Login – Vercel/i;
 
 const ROUTES = [
   { route: '/', expectedText: 'Dashboard' },
   { route: '/dashboard', expectedText: 'Dashboard' },
-  { route: '/grid', expectedText: 'Campaigns' },
+  { route: '/grid', expectedText: 'Search terms' },
   { route: '/optimizer', expectedText: 'Campaign Optimizer' },
   { route: '/optimizer/groups', expectedText: 'Optimization Groups' },
   { route: '/creative', expectedText: 'Creative Performance' },
@@ -43,7 +47,17 @@ const ROUTES = [
 interface RouteResult {
   route: string;
   status: number | null;
+  finalPath: string | null;
+  finalProfileMatched: boolean;
   checkDurationMs: number;
+  responseBytes: number;
+  htmlDocumentFound: boolean;
+  appShellFound: boolean;
+  nextRedirectFound: boolean;
+  expectedTextFound: boolean;
+  rejectedBodyFound: boolean;
+  loginPageFound: boolean;
+  noProfileFound: boolean;
   passed: boolean;
 }
 
@@ -60,29 +74,74 @@ async function main(): Promise<void> {
     throw new Error('No Chrome context is available through CDP.');
   }
 
-  const sourceCookies = (await sourceContext.cookies(production.origin))
-    .filter((cookie) => AUTH_COOKIE.test(cookie.name));
+  const browserCookies = await sourceContext.cookies(production.origin);
+  const sourceCookies = browserCookies.filter((cookie) => AUTH_COOKIE.test(cookie.name));
   if (sourceCookies.length === 0) {
     throw new Error('The Chrome session has no reusable OpenSpell authentication cookies.');
+  }
+  const profileCookie = browserCookies.find((cookie) => cookie.name === PROFILE_COOKIE);
+  const profileId = profileCookie?.value ?? await selectedProfileId(sourceContext, production);
+  if (profileId === null || !UUID.test(profileId)) {
+    throw new Error('The Chrome session has no reusable active OpenSpell profile selection.');
   }
   const cookieHeader = sourceCookies
     .map((cookie) => `${cookie.name}=${cookie.value}`)
     .join('; ');
 
-  const results: RouteResult[] = [];
-  for (const check of ROUTES) {
-    results.push(await verifyRoute(candidate, check, cookieHeader));
-  }
+  // Supabase access tokens can cross their expiry boundary during a serial
+  // sweep. Evaluate the immutable artifact concurrently against one captured
+  // auth state so later routes cannot become false login failures merely
+  // because earlier read-only checks consumed the remaining token lifetime.
+  const results = await Promise.all(
+    ROUTES.map((check) => verifyRoute(candidate, check, cookieHeader, profileId)),
+  );
 
   const passed = results.every((result) => result.passed);
   console.log(JSON.stringify({ candidate: candidate.origin, passed, routes: results }, null, 2));
   if (!passed) process.exitCode = 1;
 }
 
+async function selectedProfileId(
+  context: BrowserContext,
+  production: URL,
+): Promise<string | null> {
+  const pages = context.pages().filter((page) => new URL(page.url()).origin === production.origin);
+  for (const page of pages) {
+    const candidates = await page.evaluate((cookieName) => {
+      const values: Array<string | null> = [
+        new URL(window.location.href).searchParams.get('profile'),
+      ];
+      const remembered = document.cookie
+        .split(';')
+        .map((part) => part.trim())
+        .find((part) => part.startsWith(`${cookieName}=`));
+      if (remembered !== undefined) values.push(decodeURIComponent(remembered.split('=').slice(1).join('=')));
+      for (const element of document.querySelectorAll<HTMLElement>(
+        '[data-profile-id], input[name="profile"], input[name="profileId"], select[name*="profile" i]',
+      )) {
+        values.push(
+          element.dataset['profileId']
+          ?? (element instanceof HTMLInputElement || element instanceof HTMLSelectElement
+            ? element.value
+            : null),
+        );
+      }
+      for (const anchor of document.querySelectorAll<HTMLAnchorElement>('a[href*="profile="]')) {
+        values.push(new URL(anchor.href, window.location.href).searchParams.get('profile'));
+      }
+      return values;
+    }, PROFILE_COOKIE);
+    const profile = candidates.find((candidate) => candidate !== null && UUID.test(candidate));
+    if (profile !== undefined) return profile;
+  }
+  return null;
+}
+
 async function verifyRoute(
   candidate: URL,
   check: { route: string; expectedText: string },
   cookieHeader: string,
+  profileId: string,
 ): Promise<RouteResult> {
   const startedAt = performance.now();
   const args = [
@@ -99,33 +158,60 @@ async function verifyRoute(
     '--max-redirs',
     '5',
     '--write-out',
-    `${STATUS_MARKER}%{http_code}`,
+    `${STATUS_MARKER}%{http_code}\n${FINAL_URL_MARKER}%{url_effective}`,
   ];
 
-  const result = await spawnWithInput('vercel', args, curlConfig(cookieHeader));
+  const result = await spawnWithInput('vercel', args, curlConfig(cookieHeader, profileId));
   const markerIndex = result.stdout.lastIndexOf(STATUS_MARKER);
   const responseBody = markerIndex < 0 ? '' : result.stdout.slice(0, markerIndex);
   const statusMatch = markerIndex < 0
     ? null
     : result.stdout.slice(markerIndex).match(new RegExp(`${STATUS_MARKER}(\\d{3})`));
   const status = statusMatch?.[1] === undefined ? null : Number(statusMatch[1]);
-  const artifactMatched = responseBody.includes(check.expectedText) && !REJECTED_BODY.test(responseBody);
+  const finalUrlMatch = markerIndex < 0
+    ? null
+    : result.stdout.slice(markerIndex).match(new RegExp(`${FINAL_URL_MARKER}([^\\s]+)`));
+  const finalUrl = finalUrlMatch?.[1] === undefined ? null : new URL(finalUrlMatch[1]);
+  const finalPath = finalUrl?.pathname ?? null;
+  const expectedTextFound = responseBody.includes(check.expectedText);
+  const rejectedBodyFound = REJECTED_BODY.test(responseBody);
+  const loginPageFound = responseBody.includes('Email me a sign-in link');
+  const noProfileFound = responseBody.includes('Choose an advertising profile');
+  const expectedFinalPath = check.route === '/' ? '/dashboard' : check.route;
   return {
     route: check.route,
     status,
+    finalPath,
+    finalProfileMatched: finalUrl?.searchParams.get('profile') === profileId,
     checkDurationMs: Math.round(performance.now() - startedAt),
-    passed: result.exitCode === 0 && status === 200 && artifactMatched,
+    responseBytes: Buffer.byteLength(responseBody),
+    htmlDocumentFound: /<!DOCTYPE html>/i.test(responseBody),
+    appShellFound: responseBody.includes('data-testid="app-nav"'),
+    nextRedirectFound: responseBody.includes('NEXT_REDIRECT'),
+    expectedTextFound,
+    rejectedBodyFound,
+    loginPageFound,
+    noProfileFound,
+    passed:
+      result.exitCode === 0
+      && status === 200
+      && finalPath === expectedFinalPath
+      && finalUrl?.searchParams.get('profile') === profileId
+      && !responseBody.includes('NEXT_REDIRECT')
+      && expectedTextFound
+      && !rejectedBodyFound,
   };
 }
 
-function curlConfig(cookieHeader: string): string {
+function curlConfig(cookieHeader: string, profileId: string): string {
   // curl config uses double-quoted values. Auth cookie values are URL-safe, but
   // escaping both special characters keeps this stdin boundary correct.
   if (/[\r\n]/.test(cookieHeader)) {
     throw new Error('Authentication cookie shape is invalid.');
   }
   const escaped = cookieHeader.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
-  return `header = "Cookie: ${escaped}"\nmax-time = 30\n`;
+  const profileQuery = new URLSearchParams({ profile: profileId }).toString();
+  return `header = "Cookie: ${escaped}"\nurl-query = "${profileQuery}"\nmax-time = 30\n`;
 }
 
 function spawnWithInput(
