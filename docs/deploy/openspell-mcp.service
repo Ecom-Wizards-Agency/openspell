@@ -1,0 +1,57 @@
+[Unit]
+Description=OpenSpell MCP service
+Documentation=https://github.com/Ecom-Wizards-Agency/openspell
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=30min
+StartLimitBurst=6
+
+[Service]
+Type=exec
+DynamicUser=yes
+LoadCredentialEncrypted=openspell-mcp-database-url:/etc/credstore.encrypted/openspell-mcp-database-url
+Environment=HOME=/var/lib/openspell-mcp
+Environment=NODE_ENV=production
+Environment=WIZARD_ADS_MCP_HOST=127.0.0.1
+Environment=WIZARD_ADS_MCP_PORT=8787
+Environment=WIZARD_ADS_WEB_BASE_URL=https://ads.ecomwizards.agency
+EnvironmentFile=/opt/openspell-mcp/current/revision.conf
+ExecStart=/usr/local/bin/node /opt/openspell-mcp/current/node_modules/tsx/dist/cli.mjs /opt/openspell-mcp/current/bin/openspell-mcp-launch.mjs
+ExecStartPost=/usr/local/bin/node /opt/openspell-mcp/current/bin/openspell-mcp-health.mjs http://127.0.0.1:8787/healthz ${WIZARD_ADS_MCP_REVISION} 90
+Restart=on-failure
+RestartSec=15s
+RestartSteps=6
+RestartMaxDelaySec=15min
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+StateDirectory=openspell-mcp
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+TasksMax=256
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target
