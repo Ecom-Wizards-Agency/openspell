@@ -46,10 +46,10 @@ complete affected UTC-hour scopes and schedules later settling transitions.
 9. Missing tenant policy accumulates affected scopes in one durable profile
    block. At most one retry is queued per profile/hour, retries cap after 24
    attempts with an alert state, and the next successful profile job replays
-   and clears every accumulated scope. Scope accumulation is capped at 4,096;
-   overflow fails visibly without acknowledging the raw delivery. An operator
-   can requeue any retained message for an alerted quiet profile; the handler
-   always unions that message's scopes with the durable block.
+   and clears accumulated scopes in bounded 256-scope pages. Each scope is a
+   durable row, so no fixed array cap can orphan evidence after the SQS receipt
+   is acknowledged. `requeueMarketingStreamBlockedProfile` gives operators an
+   executable recovery path for alerted quiet profiles with no new traffic.
 
 ## Local verification
 

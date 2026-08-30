@@ -7,7 +7,10 @@ import type {
 } from '@wizard-ads/db';
 import type { MarketingStreamNormalizeJob } from '@wizard-ads/shared';
 import type { MarketingStreamStore } from './dayparting.js';
-import { createMarketingStreamNormalizeHandler } from './marketing-stream-normalize.js';
+import {
+  createMarketingStreamNormalizeHandler,
+  requeueMarketingStreamBlockedProfile,
+} from './marketing-stream-normalize.js';
 import { MarketingStreamConfigurationError } from './marketing-stream-sqs.js';
 
 const ORG = '81818181-8181-4181-8181-818181818181';
@@ -15,6 +18,24 @@ const PROFILE = '82828282-8282-4282-8282-828282828282';
 const HOUR = '2026-08-01T10:00:00.000Z';
 
 describe('Marketing Stream queued normalization', () => {
+  it('provides an executable operator recovery for an alerted quiet profile', async () => {
+    const queued: MarketingStreamNormalizeJob[] = [];
+    await expect(requeueMarketingStreamBlockedProfile({
+      handle: {} as DbHandle,
+      queue: { enqueue: async (payload) => { queued.push(payload); return true; } },
+      orgId: ORG,
+      profileId: PROFILE,
+      runAt: new Date('2026-08-01T12:00:00.000Z'),
+      readBlock: async () => ({
+        orgId: ORG, profileId: PROFILE, scopes: [{ adProduct: 'SP', utcHour: HOUR }],
+        firstBlockedAt: HOUR, lastBlockedAt: HOUR, retryCount: 24, alertState: 'alerted',
+        lastReason: 'policy absent', blockToken: '83838383-8383-4383-8383-838383838383',
+        pendingScopeCount: 1,
+      }),
+    })).resolves.toBe(true);
+    expect(queued).toEqual([{ type: 'marketing_stream.normalize', orgId: ORG, profileId: PROFILE,
+      messageIds: [], replayBlockedProfile: true }]);
+  });
   it('replays a complete scope, reconciles counts, and schedules its aging transition', async () => {
     const replacements: string[][] = [];
     const scheduled: Date[] = [];
@@ -305,7 +326,8 @@ function projectionBlocks(seed?: { scopes: MarketingStreamScope[] }) {
     retryCount: 0,
     alertState: 'pending',
     lastReason: 'policy absent',
-    generation: 1,
+    blockToken: '83838383-8383-4383-8383-838383838383',
+    pendingScopeCount: seed.scopes.length,
   } : null;
   return {
     mark: async (input: {
@@ -334,16 +356,23 @@ function projectionBlocks(seed?: { scopes: MarketingStreamScope[] }) {
           ? 'alerted'
           : block?.alertState ?? 'pending',
         lastReason: input.reason,
-        generation: (block?.generation ?? 0) + 1,
+        blockToken: block?.blockToken === '83838383-8383-4383-8383-838383838383'
+          ? '84848484-8484-4484-8484-848484848484'
+          : '83838383-8383-4383-8383-838383838383',
+        pendingScopeCount: scopes.size,
       };
       return block;
     },
     read: async (_input: { orgId: string; profileId: string }) => block,
-    clear: async (input: { orgId: string; profileId: string; expectedGeneration: number }) => {
-      const existed = block?.generation === input.expectedGeneration;
-      if (!existed) return false;
+    clear: async (input: {
+      orgId: string; profileId: string; expectedBlockToken: string;
+      processedScopes: readonly MarketingStreamScope[];
+    }) => {
+      const existed = block?.blockToken === input.expectedBlockToken;
+      if (!existed) return { matched: false, cleared: false, processedScopes: 0, remainingScopes: 0 };
+      const processedScopes = input.processedScopes.length;
       block = null;
-      return existed;
+      return { matched: true, cleared: true, processedScopes, remainingScopes: 0 };
     },
   };
 }

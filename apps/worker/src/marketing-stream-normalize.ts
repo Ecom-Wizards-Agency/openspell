@@ -8,6 +8,7 @@ import {
   readMarketingStreamProjectionBlock,
   type DbHandle,
   type MarketingStreamProjectionBlock,
+  type MarketingStreamProjectionBlockCompletion,
   type MarketingStreamScope,
 } from '@wizard-ads/db';
 import type { MarketingStreamNormalizeJob } from '@wizard-ads/shared';
@@ -46,7 +47,12 @@ interface MarketingStreamProjectionBlockStore {
     reason: string;
   }): Promise<MarketingStreamProjectionBlock>;
   read(input: { orgId: string; profileId: string }): Promise<MarketingStreamProjectionBlock | null>;
-  clear(input: { orgId: string; profileId: string; expectedGeneration: number }): Promise<boolean>;
+  clear(input: {
+    orgId: string;
+    profileId: string;
+    expectedBlockToken: string;
+    processedScopes: readonly MarketingStreamScope[];
+  }): Promise<MarketingStreamProjectionBlockCompletion>;
 }
 
 export function createMarketingStreamNormalizeHandler(input: {
@@ -69,7 +75,9 @@ export function createMarketingStreamNormalizeHandler(input: {
   const now = input.now ?? (() => new Date());
 
   return async (payload) => {
-    const resolved = await resolveScopes(input.handle, payload);
+    const resolved = payload.messageIds.length === 0
+      ? { requestedMessages: 0, foundMessages: 0, scopes: [] }
+      : await resolveScopes(input.handle, payload);
     const observedAt = now();
     let context: Awaited<ReturnType<MarketingStreamRuntimeContextLoader['load']>>;
     try {
@@ -138,11 +146,20 @@ export function createMarketingStreamNormalizeHandler(input: {
     ) {
       throw new MarketingStreamNormalizationError('replay projection counts do not reconcile');
     }
-    const blockedProjectionCleared = blocked === null ? false : await blocks.clear({
+    const completion = blocked === null ? null : await blocks.clear({
       orgId: payload.orgId,
       profileId: payload.profileId,
-      expectedGeneration: blocked.generation,
+      expectedBlockToken: blocked.blockToken,
+      processedScopes: blocked.scopes,
     });
+    const recoveryCreated = completion !== null && completion.matched && completion.remainingScopes > 0
+      ? await input.queue.enqueue(
+          { type: 'marketing_stream.normalize', orgId: payload.orgId, profileId: payload.profileId,
+            messageIds: [], replayBlockedProfile: true },
+          observedAt,
+          blockedRecoveryDedupeKey(payload, blocked!.blockToken, completion.remainingScopes),
+        )
+      : false;
 
     const transitionAt = nextMarketingStreamTransitionAt(snapshot, policy);
     let transitionCreated = false;
@@ -169,7 +186,10 @@ export function createMarketingStreamNormalizeHandler(input: {
       foundMessages: resolved.foundMessages,
       requestedScopes: replayScopes.length,
       recoveredBlockedScopes: blocked?.scopes.length ?? 0,
-      blockedProjectionCleared,
+      blockedProjectionCleared: completion?.cleared ?? false,
+      blockedProjectionMatched: completion?.matched ?? false,
+      remainingBlockedScopes: completion?.remainingScopes ?? 0,
+      recoveryCreated,
       sourceRows: snapshot.events.length,
       refusedRows: normalized.refusals.length,
       replacedScopes: projection.scopesReplaced,
@@ -180,6 +200,34 @@ export function createMarketingStreamNormalizeHandler(input: {
       transitionCreated,
     };
   };
+}
+
+/** Explicit recovery entrypoint for an alerted quiet profile with no new Stream traffic. */
+export async function requeueMarketingStreamBlockedProfile(input: {
+  handle: DbHandle;
+  queue: MarketingStreamNormalizeQueue;
+  orgId: string;
+  profileId: string;
+  runAt?: Date;
+  readBlock?: (scope: { orgId: string; profileId: string }) => Promise<MarketingStreamProjectionBlock | null>;
+}): Promise<boolean> {
+  const block = await (input.readBlock ?? ((scope) => readMarketingStreamProjectionBlock(input.handle, scope)))(input);
+  if (!block) return false;
+  const runAt = input.runAt ?? new Date();
+  return input.queue.enqueue(
+    { type: 'marketing_stream.normalize', orgId: input.orgId, profileId: input.profileId,
+      messageIds: [], replayBlockedProfile: true },
+    runAt,
+    blockedRecoveryDedupeKey(input, block.blockToken, block.pendingScopeCount),
+  );
+}
+
+function blockedRecoveryDedupeKey(
+  input: { orgId: string; profileId: string },
+  blockToken: string,
+  remainingScopes: number,
+): string {
+  return ['marketing-stream', 'blocked-recovery', input.orgId, input.profileId, blockToken, remainingScopes].join(':');
 }
 
 function configurationRetryDedupeKey(

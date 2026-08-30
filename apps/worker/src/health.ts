@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import type { SyncWorker } from './worker.js';
+import { MARKETING_STREAM_SUSTAINED_FAILURE_THRESHOLD } from './marketing-stream-sqs.js';
 
 export interface WorkerHealthComponents {
   marketingStream?: { status(): {
@@ -8,6 +9,8 @@ export interface WorkerHealthComponents {
     stopping: boolean;
     lastSuccessAt?: string | null;
     lastErrorAt?: string | null;
+    queueConfigured?: boolean;
+    consecutiveFailures?: number;
   } };
 }
 
@@ -22,7 +25,12 @@ export function startHealthServer(
       return;
     }
     const marketingStream = components.marketingStream?.status() ?? { enabled: false, running: false, stopping: false };
-    const streamDead = marketingStream.enabled && (!marketingStream.running || marketingStream.stopping);
+    const streamDead = marketingStream.enabled && (
+      !marketingStream.running
+      || marketingStream.stopping
+      || marketingStream.queueConfigured === false
+      || (marketingStream.consecutiveFailures ?? 0) >= MARKETING_STREAM_SUSTAINED_FAILURE_THRESHOLD
+    );
     const body = JSON.stringify({
       status: streamDead ? 'degraded' : 'ok',
       ...worker.status(),

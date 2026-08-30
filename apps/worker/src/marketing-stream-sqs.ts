@@ -46,6 +46,7 @@ const LONG_POLL_SECONDS = 20;
 const RETRY_BASE_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
 const SQS_OPERATION_TIMEOUT_MS = 30_000;
+export const MARKETING_STREAM_SUSTAINED_FAILURE_THRESHOLD = 3;
 
 export interface MarketingStreamQueueMessage {
   messageId: string | null;
@@ -231,6 +232,8 @@ export interface MarketingStreamConsumerStatus {
   lastSuccessAt: string | null;
   lastErrorAt: string | null;
   lastErrorKind: string | null;
+  queueConfigured: boolean;
+  consecutiveFailures: number;
 }
 
 export type MarketingStreamProcessor = (
@@ -308,6 +311,7 @@ export class MarketingStreamSqsConsumer {
   private lastErrorAt: string | null = null;
   private lastErrorKind: string | null = null;
   private queueConfiguration: MarketingStreamQueueConfiguration | null = null;
+  private consecutiveFailures = 0;
   private readonly visibilityHeartbeatIntervalMs: number | undefined;
 
   constructor(options: MarketingStreamSqsConsumerOptions) {
@@ -337,6 +341,8 @@ export class MarketingStreamSqsConsumer {
       lastSuccessAt: this.lastSuccessAt,
       lastErrorAt: this.lastErrorAt,
       lastErrorKind: this.lastErrorKind,
+      queueConfigured: this.queueConfiguration !== null,
+      consecutiveFailures: this.consecutiveFailures,
     };
   }
 
@@ -359,6 +365,7 @@ export class MarketingStreamSqsConsumer {
 
   /** One long poll, exposed for deterministic runtime tests. */
   async pollOnce(signal: AbortSignal = new AbortController().signal): Promise<number> {
+    const failuresBefore = this.counters.failed;
     await this.ensureQueueConfiguration(operationSignal(signal));
     if (signal.aborted) throw abortError();
     const messages = await this.queue.receive(this.queueUrl, operationSignal(signal));
@@ -411,25 +418,24 @@ export class MarketingStreamSqsConsumer {
       }
     }
     for (const group of groups.values()) await this.processGroup(group, signal);
+    this.consecutiveFailures = this.counters.failed > failuresBefore ? this.consecutiveFailures + 1 : 0;
     return messages.length;
   }
 
   private async run(signal: AbortSignal): Promise<void> {
-    let consecutiveFailures = 0;
     while (!signal.aborted) {
       try {
         await this.pollOnce(signal);
-        consecutiveFailures = 0;
       } catch (error) {
         if (signal.aborted || isAbortError(error)) break;
-        consecutiveFailures += 1;
+        this.consecutiveFailures += 1;
         this.counters.providerFailures += 1;
         this.recordError(error);
         this.logger.error('Marketing Stream SQS receive failed', {
           errorKind: errorKind(error),
           retrying: true,
         });
-        const retryMs = Math.min(RETRY_BASE_MS * (2 ** Math.min(consecutiveFailures - 1, 5)), RETRY_MAX_MS);
+        const retryMs = Math.min(RETRY_BASE_MS * (2 ** Math.min(this.consecutiveFailures - 1, 5)), RETRY_MAX_MS);
         await this.sleep(retryMs, signal).catch((sleepError: unknown) => {
           if (!signal.aborted && !isAbortError(sleepError)) throw sleepError;
         });
