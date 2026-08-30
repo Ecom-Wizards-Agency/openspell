@@ -3,12 +3,8 @@ import { ENTITY_LEVELS } from '@wizard-ads/ui';
 import type { EntityLevel } from '@wizard-ads/ui';
 import { loadGridRows } from '../../../_lib/grid-data';
 import { precedingPeriod } from '../../../_lib/periods';
-import { requireOrgRole } from '../../../../src/server/org-role';
-import {
-  openWebDatabase,
-  requestActor,
-  RequestAuthError,
-} from '../../../../src/server/request-context';
+import { authorizeGridRequest } from '../../../../src/grid/request-context';
+import { RequestAuthError } from '../../../../src/server/request-context';
 import { finalizeTimedGridResponse, GridServerTiming } from './server-timing';
 import { serializeGridPayloadWithinBudget } from './serialize';
 
@@ -38,6 +34,20 @@ interface GridRowsQuery {
   period: { start: string; end: string };
 }
 
+interface ParsedGridRowsQuery {
+  ok: true;
+  query: GridRowsQuery;
+  candidateProfileId: string;
+}
+
+interface RejectedGridRowsQuery {
+  ok: false;
+  error: GridRequestError;
+  candidateProfileId: string | null;
+}
+
+type GridRowsQueryAttempt = ParsedGridRowsQuery | RejectedGridRowsQuery;
+
 function isCalendarDate(value: string): boolean {
   if (!ISO_DATE.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00.000Z`);
@@ -64,6 +74,29 @@ export function parseGridRowsQuery(requestUrl: string): GridRowsQuery {
     entity: entity as EntityLevel,
     period: { start: from, end: to },
   };
+}
+
+/** Parse without changing the authentication-before-input-refusal contract. */
+function attemptGridRowsQuery(requestUrl: string): GridRowsQueryAttempt {
+  let candidateProfileId: string | null = null;
+  try {
+    const rawProfileId = new URL(requestUrl).searchParams.get('profile') ?? '';
+    candidateProfileId = UUID.test(rawProfileId) ? rawProfileId : null;
+    return {
+      ok: true,
+      query: parseGridRowsQuery(requestUrl),
+      candidateProfileId: rawProfileId,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error:
+        error instanceof GridRequestError
+          ? error
+          : new GridRequestError('Could not parse Grid request'),
+      candidateProfileId,
+    };
+  }
 }
 
 function json(value: unknown, init: { status?: number } = {}): Response {
@@ -97,49 +130,68 @@ function gridErrorResponse(error: unknown): Response {
   return json({ error: 'Could not load Grid rows' }, { status: 500 });
 }
 
-export async function GET(request: Request): Promise<Response> {
-  const timing = new GridServerTiming();
-  let database: ReturnType<typeof openWebDatabase> | null = null;
-  let success: Response | null = null;
-  try {
-    database = openWebDatabase();
-    const actor = await requestActor(request.headers);
-    timing.mark('actor');
-    await requireOrgRole(database, actor);
-    timing.mark('role');
-    const { profileId, entity, period } = parseGridRowsQuery(request.url);
-
-    // The browser supplies only the profile identity. Currency and tenancy are
-    // server-owned facts, resolved together so a foreign and an unknown profile
-    // are indistinguishable from outside the organization.
-    const [profile] = await database.sql<{ currency_code: string }[]>`
-      select currency_code::text as currency_code
-        from public.ad_profiles
-       where org_id = ${actor.orgId}
-         and id = ${profileId}
-       limit 1
-    `;
-    timing.mark('profile');
-    if (profile === undefined) return json({ error: 'Not found' }, { status: 404 });
-
-    const payload = await loadGridRows(database, entity, {
-      orgId: actor.orgId,
-      profileId,
-      currencyCode: profile.currency_code,
-      period,
-      comparison: precedingPeriod(period),
-    });
-    timing.mark('rows');
-
-    success = gridPayloadResponse(payload, timing);
-    return success;
-  } catch (error) {
-    return gridErrorResponse(error);
-  } finally {
-    const openedDatabase = database;
-    if (openedDatabase !== null) {
-      if (success === null) await openedDatabase.close();
-      else await finalizeTimedGridResponse(success, timing, () => openedDatabase.close());
-    }
-  }
+interface GridRowsRouteRuntime {
+  authorizeRequest: typeof authorizeGridRequest;
+  loadRows: typeof loadGridRows;
 }
+
+const DEFAULT_RUNTIME: GridRowsRouteRuntime = {
+  authorizeRequest: authorizeGridRequest,
+  loadRows: loadGridRows,
+};
+
+/** Exported only so route tests can prove handle identity and close cardinality. */
+export function createGridRowsGet(
+  runtime: GridRowsRouteRuntime = DEFAULT_RUNTIME,
+): (request: Request) => Promise<Response> {
+  return async (request: Request): Promise<Response> => {
+    const timing = new GridServerTiming();
+    const queryAttempt = attemptGridRowsQuery(request.url);
+    let database: Awaited<ReturnType<typeof authorizeGridRequest>>['database'] | null = null;
+    let success: Response | null = null;
+    try {
+      // One deep operation establishes identity before opening a database and
+      // returns the same handle whose receipt scopes the facts query. Invalid
+      // input is retained but not refused until membership is established.
+      const authorized = await runtime.authorizeRequest({
+        headers: request.headers,
+        candidateProfileId: queryAttempt.candidateProfileId,
+        identityVerified: () => timing.mark('actor'),
+      });
+      database = authorized.database;
+      const { receipt } = authorized;
+      timing.mark('role');
+
+      if (!queryAttempt.ok) throw queryAttempt.error;
+      timing.mark('profile');
+      if (receipt.profileId === null || receipt.currencyCode === null) {
+        return json({ error: 'Not found' }, { status: 404 });
+      }
+      const { entity, period } = queryAttempt.query;
+
+      // Tenant, profile, and currency all come from one membership-fenced
+      // receipt. The browser cannot splice together pieces from other orgs.
+      const payload = await runtime.loadRows(database, entity, {
+        orgId: receipt.orgId,
+        profileId: receipt.profileId,
+        currencyCode: receipt.currencyCode,
+        period,
+        comparison: precedingPeriod(period),
+      });
+      timing.mark('rows');
+
+      success = gridPayloadResponse(payload, timing);
+      return success;
+    } catch (error) {
+      return gridErrorResponse(error);
+    } finally {
+      const openedDatabase = database;
+      if (openedDatabase !== null) {
+        if (success === null) await openedDatabase.close();
+        else await finalizeTimedGridResponse(success, timing, () => openedDatabase.close());
+      }
+    }
+  };
+}
+
+export const GET = createGridRowsGet();

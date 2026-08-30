@@ -41,7 +41,9 @@ export async function listMemberships(handle: DbHandle, userId: string): Promise
     from public.org_members m
     join public.orgs o on o.id = m.org_id
     where m.user_id = ${userId}
-    order by o.name
+    -- Display names are not unique. The id tie-break keeps the page shell and
+    -- the Grid request receipt on one canonical fallback membership.
+    order by o.name, o.id
   `;
   return rows.map((row) => ({
     orgId: row.org_id,
