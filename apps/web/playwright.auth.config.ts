@@ -1,5 +1,5 @@
 /**
- * End-to-end configuration for auth, OAuth and roles (WP-04).
+ * End-to-end configuration for auth, OAuth and operator navigation (WP-04).
  *
  * There is no default `playwright.config.ts` in this app on purpose: the
  * browser suites have different server or process-isolation needs, so each has
@@ -28,7 +28,11 @@ export default defineConfig({
   // Keeping it here makes Next dev retain that route graph and payload while
   // compiling every guarded route, eventually exhausting the bounded E2E heap
   // on shared runners for reasons unrelated to the later role assertions.
-  testMatch: /(oauth|roles|guards|members|dashboard|grid|profile-context)\.spec\.ts$/,
+  // The settings-heavy role matrix has its own fresh authenticated process.
+  // Keeping it here made Next retain both the complete operator route graph
+  // and every settings graph until the runner reached its bounded heap after
+  // all preceding assertions had already passed.
+  testMatch: /(oauth|guards|members|dashboard|grid|profile-context)\.spec\.ts$/,
   // The cross-route dashboard acceptance file compiles several large operator
   // routes and owns a fresh Next process through its dedicated configuration.
   testIgnore: /route-acceptance\.dashboard\.spec\.ts$/,

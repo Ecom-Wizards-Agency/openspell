@@ -3,6 +3,7 @@ export const E2E_SUITES = [
   'tags-goto',
   'grid-performance',
   'auth',
+  'auth-roles',
   'route-acceptance',
 ] as const;
 export type E2ESuite = (typeof E2E_SUITES)[number];
