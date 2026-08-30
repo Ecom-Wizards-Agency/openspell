@@ -12,6 +12,7 @@
  * Everything runs against a real Next server on a real migrated database; see
  * `e2e/run.ts`, which also seeds the run and the search terms.
  */
+import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
@@ -166,7 +167,45 @@ test.describe('n-gram explorer', () => {
     await page.getByRole('button', { name: 'Unigrams' }).click();
     await expect(page.getByTestId('gram-count')).not.toHaveText(bigrams);
 
+    // The explorer now uses the same composable filter model as the main Grid.
+    // Filter one exact gram and prove the result count and export agree.
+    const gramRows = page.getByTestId('grid-row');
+    const firstGram =
+      (await gramRows.first().getByRole('cell').first().textContent())?.trim() ?? '';
+    const secondGram =
+      (await gramRows.nth(1).getByRole('cell').first().textContent())?.trim() ?? '';
+    expect(firstGram).not.toBe('');
+    expect(secondGram).not.toBe('');
+    expect(secondGram).not.toBe(firstGram);
+    await page.getByLabel('Filter column').selectOption('GRAM');
+    await page.getByLabel('Filter operator').selectOption('=');
+    await page.getByLabel('Filter value').fill(firstGram);
+    await page.getByRole('button', { name: 'Add' }).click();
+    await expect(page.getByTestId('filtered-gram-count')).toHaveText(/1 of \d+ grams/);
+    const exportButton = page.getByRole('button', { name: /Export CSV \(1 of \d+\)/ });
+    await expect(exportButton).toBeVisible();
+    await expect(page.getByTestId('grid-row')).toHaveCount(1);
+
+    const [download] = await Promise.all([page.waitForEvent('download'), exportButton.click()]);
+    const downloadPath = await download.path();
+    expect(downloadPath).not.toBeNull();
+    expect(download.suggestedFilename()).toMatch(/^openspell-n-gram-explorer-/);
+    const csv = await readFile(downloadPath!, 'utf8');
+    expect(csv.trim().split(/\r?\n/)).toHaveLength(3);
+
     // Click a gram to see the terms behind it: you negate terms, not grams.
+    await page.getByTestId('grid-row').first().click();
+    await page.getByRole('button', { name: /Select all \d+/ }).click();
+
+    // A new filter clears the old, now-hidden action scope.
+    await page.getByRole('button', { name: 'Remove filter GRAM' }).click();
+    await page.getByLabel('Filter value').fill(secondGram);
+    await page.getByRole('button', { name: 'Add' }).click();
+    await expect(page.getByTestId('gram-terms')).toHaveCount(0);
+    await expect(
+      page.getByText('Select a gram to see the search terms behind it and propose negatives.'),
+    ).toBeVisible();
+
     await page.getByTestId('grid-row').first().click();
     const terms = page.getByTestId('gram-terms');
     await expect(terms).toBeVisible();
