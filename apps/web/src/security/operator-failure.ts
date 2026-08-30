@@ -20,7 +20,7 @@ export function operatorFailureLabel(error: string | null | undefined): string |
     return 'The authorization was opened in a different browser session. Start again here.';
   }
   if (/authorization state was altered/.test(normalized)) {
-    return 'The authorization response was rejected. Nothing was stored.';
+    return 'The altered authorization response was rejected. Nothing was stored.';
   }
   if (/row[- ]count|reconcil|counts? (?:do not|don't) match|count mismatch/.test(normalized)) {
     return 'Row-count reconciliation failed. The affected report was not promoted.';

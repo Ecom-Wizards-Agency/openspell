@@ -36,7 +36,7 @@ describe('operator failure labels', () => {
       'The authorization link expired. Start the connection again.',
     );
     expect(operatorFailureLabel('the authorization state was altered and was rejected')).toBe(
-      'The authorization response was rejected. Nothing was stored.',
+      'The altered authorization response was rejected. Nothing was stored.',
     );
   });
 });
