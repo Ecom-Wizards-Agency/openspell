@@ -20,6 +20,7 @@
  */
 import { expect, test } from '@playwright/test';
 import { signIn, signOut } from './support/auth';
+import { readState } from './support/fixture';
 
 /** Every screen the nav offers. None of them may render to a stranger. */
 const GUARDED = [
@@ -89,9 +90,15 @@ test('the index sends an anonymous visitor directly to sign in', async ({ page }
   await expect(page.getByRole('heading', { name: 'OpenSpell' })).toBeVisible();
 });
 
-test('the index names the signed-in user and offers a way out', async ({ page }) => {
+test('the index opens the signed-in operator dashboard with its active profile', async ({ page }) => {
   await signIn(page, 'admin');
   await page.goto('/');
+  const { fixtureProfileId } = await readState();
+
+  await page.waitForURL((url) =>
+    url.pathname === '/dashboard' && url.searchParams.get('profile') === fixtureProfileId,
+  );
+  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
 
   const nav = page.getByTestId('app-nav');
   await expect(nav).toBeVisible();
@@ -101,13 +108,8 @@ test('the index names the signed-in user and offers a way out', async ({ page })
   await expect(nav.getByTestId('nav-signout')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(nav.getByTestId('nav-signin')).toHaveCount(0);
-  await expect(page.getByTestId('home-signed-in')).toBeVisible();
+  await expect(page.getByTestId('home-signed-in')).toHaveCount(0);
   await expect(page.getByTestId('feedback-entry')).toBeVisible();
-
-  // The bar reaches every screen; the dashboard is the one an operator opens.
-  await nav.getByRole('link', { name: 'Dashboard' }).click();
-  await expect(page).toHaveURL(/\/dashboard/);
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
 });
 
 test('every guarded screen sends an anonymous visitor to the login page', async ({ page }) => {
