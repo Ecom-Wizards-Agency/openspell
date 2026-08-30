@@ -237,6 +237,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
         />
 
         <CampaignWorkspace
+          key={`${profile.id}:${period.start}:${period.end}`}
           rows={campaignRows}
           currencyCode={profile.currencyCode}
           profileId={profile.id}
