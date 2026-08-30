@@ -46,6 +46,9 @@ async function open(page: Page, params: Record<string, string> = {}): Promise<vo
 test('the timeline shows both a sync-detected change and an operator apply', async ({ page }) => {
   await open(page);
 
+  await expect(page.getByTestId('reversion-preview')).toHaveCount(0);
+  await expect(page.getByTestId('time-machine-batch-prompt')).toBeVisible();
+
   // Both source kinds are present and labelled.
   expect(await page.getByTestId('entry-source').filter({ hasText: 'Sync' }).count()).toBeGreaterThan(0);
   expect(await page.getByTestId('entry-source').filter({ hasText: 'Applied' }).count()).toBeGreaterThan(0);
@@ -63,6 +66,50 @@ test('the timeline shows both a sync-detected change and an operator apply', asy
   // A campaign entry deep-links into the grid where the change can be inspected.
   const expected = `${GRID}?${new URLSearchParams({ profile: PROFILE_A, entity: 'campaigns' })}`;
   await expect(marker.getByTestId('entry-goto')).toHaveAttribute('href', expected);
+});
+
+test('the initial response is bounded and older history remains reachable', async ({ page }) => {
+  const response = await page.goto(url());
+  if (response === null) throw new Error('Time Machine navigation returned no document response');
+  expect((await response.body()).byteLength).toBeLessThan(750_000);
+  await expect(page.getByTestId('timeline-entry')).toHaveCount(50);
+  await expect(page.getByTestId('timeline-newer')).toHaveCount(0);
+
+  await page.getByTestId('timeline-older').click();
+  await expect(page).toHaveURL(/before_at=/);
+  await expect(page).toHaveURL(/before_id=/);
+  await expect(page.getByTestId('timeline-entry')).not.toHaveCount(0);
+  await expect(page.getByTestId('timeline-newer')).toBeVisible();
+
+  await page.getByTestId('timeline-newer').click();
+  await expect(page).not.toHaveURL(/before_at=/);
+  await expect(page).not.toHaveURL(/before_id=/);
+  await expect(page.getByText(MARKER)).toHaveCount(1);
+});
+
+test('an exhausted history cursor offers a safe return to the newest changes', async ({ page }) => {
+  await open(page, {
+    before_at: '2000-01-01T00:00:00.000Z',
+    before_id: `change:${'0'.repeat(8)}-${'0'.repeat(4)}-4000-8000-${'0'.repeat(12)}`,
+  });
+
+  await expect(page.getByTestId('timeline-empty-cursor')).toBeVisible();
+  await expect(page.getByTestId('timeline-newer')).toBeVisible();
+  await page.getByTestId('timeline-newer').click();
+  await expect(page.getByText(MARKER)).toHaveCount(1);
+});
+
+test('PostgreSQL-incompatible cursor timestamps are ignored before the query', async ({ page }) => {
+  for (const beforeAt of ['2026-02-31T00:00:00.000Z', '0000-01-01T00:00:00.000Z']) {
+    await open(page, {
+      before_at: beforeAt,
+      before_id: 'change:47',
+    });
+
+    await expect(page.getByText(MARKER)).toHaveCount(1);
+    await expect(page.getByTestId('timeline-newer')).toHaveCount(0);
+    await expect(page.locator('main').getByRole('alert')).toHaveCount(0);
+  }
 });
 
 test('reviews uniquely synchronized evidence and exports an exact inverse file', async ({ page }) => {
