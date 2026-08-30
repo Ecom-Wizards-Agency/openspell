@@ -1,9 +1,9 @@
 /**
  * The one entry point for this app's browser tests.
  *
- * ## Why there are three suites and not one
+ * ## Why there are four suites and not one
  *
- * `apps/web` carries three end-to-end suites that need mutually exclusive
+ * `apps/web` carries four end-to-end suites that need mutually exclusive
  * servers, so they run one after the other rather than under a single config:
  *
  *  - **tags-goto** (WP-08, and WP-15's feedback surfaces) serves a
@@ -14,6 +14,10 @@
  *  - **grid-performance** serves the same authenticated `next dev` boundary in
  *    its own process. Its large fixture must not leave retained route/payload
  *    memory behind while the complete role suite compiles every other route.
+ *  - **route-acceptance** uses the authenticated boundary in a fresh process.
+ *    It compiles the optimizer, creative, strategy, and dashboard routes; doing
+ *    that after the complete auth sweep leaves enough development route graphs
+ *    retained to exhaust a bounded CI heap even though every assertion passes.
  *  - **auth** (WP-04) serves `next dev`. Supabase Auth is a hosted service — a
  *    magic link means an inbox — so the suite signs in through a test-only
  *    seam (`WIZARD_ADS_E2E_AUTH=1`) that *refuses to run under
@@ -21,18 +25,19 @@
  *    mean disabling that guard, which is the guard's whole point.
  *
  * Merging them would mean weakening one guard or accepting a suite that cannot
- * hydrate. Sequential is the honest answer: three named configs, one runner.
+ * hydrate. Sequential is the honest answer: four named configs, one runner.
  *
- * Each suite owns its own database, and the three never overlap: this file
- * creates and drops the tags-goto database, while the auth suite's
+ * Each suite owns its own database, and the four never overlap: this file
+ * creates and drops the tags-goto database, while each authenticated suite's
  * `global-setup.ts` creates and drops its own (plus the fake Amazon and the dev
  * server). The admin connection comes from `WIZARD_ADS_TEST_DATABASE_URL` (or
  * `DATABASE_URL`), the same variable the Vitest database suites use.
  *
- *   pnpm --filter @wizard-ads/web test:e2e             # all three, in order
+ *   pnpm --filter @wizard-ads/web test:e2e             # all four, in order
  *   pnpm --filter @wizard-ads/web test:e2e:tags-goto   # just WP-08
  *   pnpm --filter @wizard-ads/web test:e2e:grid-performance
  *   pnpm --filter @wizard-ads/web test:e2e:auth        # auth/roles without the isolated Grid load
+ *   pnpm --filter @wizard-ads/web test:e2e:route-acceptance
  *   WIZARD_ADS_E2E_CPU_RATE=10 pnpm --filter @wizard-ads/web test:e2e:auth
  *
  * `WIZARD_ADS_E2E_CPU_RATE` accepts whole numbers from 1 through 10. That is
@@ -425,7 +430,10 @@ async function tagsGoto(playwrightArgs: string[]): Promise<number> {
  * here: these specs exercise the real session cookie path.
  */
 async function authenticated(
-  config: 'playwright.auth.config.ts' | 'playwright.grid-performance.config.ts',
+  config:
+    | 'playwright.auth.config.ts'
+    | 'playwright.grid-performance.config.ts'
+    | 'playwright.route-acceptance.config.ts',
   playwrightArgs: string[],
 ): Promise<number> {
   const env = { ...process.env };
@@ -445,6 +453,10 @@ async function auth(playwrightArgs: string[]): Promise<number> {
 async function gridPerformance(playwrightArgs: string[]): Promise<number> {
   return await authenticated('playwright.grid-performance.config.ts', playwrightArgs);
 }
+
+async function routeAcceptance(playwrightArgs: string[]): Promise<number> {
+  return await authenticated('playwright.route-acceptance.config.ts', playwrightArgs);
+}
 async function main(): Promise<number> {
   const { suites, playwrightArgs } = parseE2EArgs(process.argv.slice(2));
 
@@ -462,7 +474,9 @@ async function main(): Promise<number> {
         ? await tagsGoto(playwrightArgs)
         : suite === 'grid-performance'
           ? await gridPerformance(playwrightArgs)
-          : await auth(playwrightArgs);
+          : suite === 'auth'
+            ? await auth(playwrightArgs)
+            : await routeAcceptance(playwrightArgs);
     // Every suite runs even when an earlier one fails: a red run should report
     // the whole picture, not just the first thing that broke.
     if (code !== 0) worst = code;

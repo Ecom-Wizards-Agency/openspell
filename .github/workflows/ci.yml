@@ -113,10 +113,10 @@ jobs:
         run: pnpm --filter @wizard-ads/web run build
 
       - name: Test e2e (serial)
-        # e2e/run.ts executes its three database-owning suites in order; every
+        # e2e/run.ts executes its four database-owning suites in order; every
         # Playwright config also pins workers to one. The large Grid fixture has
-        # its own process so Next dev releases its retained route graph before
-        # the complete auth/role sweep.
+        # its own process, and cross-route acceptance gets another fresh process,
+        # so Next dev releases retained route graphs between bounded suites.
         run: pnpm --filter @wizard-ads/web run test:e2e
 
       - name: Upload Playwright report
