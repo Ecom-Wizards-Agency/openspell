@@ -39,9 +39,10 @@ tokens never reach handlers or the audit payload. An audit-write failure fails
 the analytical call because an unaudited result cannot support the product's
 read-only claim.
 
-The health route runs a database probe. Its response is limited to service name,
-version, a validated hexadecimal Git object id (or `unknown`), and database
-readiness. Probe errors and configuration values are not returned.
+The health route runs a database probe. Its response is limited to service and
+static product names, version, a validated hexadecimal Git object id (or
+`unknown`), and database readiness. Probe errors and configuration values are
+not returned.
 
 ## Design decision
 
