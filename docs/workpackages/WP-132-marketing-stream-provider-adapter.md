@@ -22,9 +22,13 @@ official reference implementation at commit
 
 The adapter supports the six traffic/conversion datasets for SP, SB, and SD,
 plus campaign-scoped `budget-usage`. The provider record itself is retained in
-the raw ledger. `idempotency_id` is the event identity. Sponsored-ads
-restatements are incremental records with distinct identities, so the adapter
-does not invent a revision number or replace another provider record.
+the raw ledger. Traffic and conversion use the required `idempotency_id` as
+event identity. Budget-usage carries no such field, so its identity combines
+the immutable provider route, campaign budget scope, product, observation
+timestamp, and the complete canonical record hash. Exact redelivery dedupes;
+a later observation remains distinct. Sponsored-ads restatements are
+incremental records with distinct identities, so the adapter does not invent
+a revision number or replace another provider record.
 
 ## Identity and normalization rules
 

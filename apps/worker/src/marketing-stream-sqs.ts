@@ -225,6 +225,8 @@ export interface MarketingStreamConsumerStatus {
   normalizeJobsOffered: number;
   normalizeJobsCreated: number;
   normalizeJobsAlreadyPresent: number;
+  visibilityHeartbeats: number;
+  visibilityHeartbeatFailures: number;
   lastSuccessAt: string | null;
   lastErrorAt: string | null;
   lastErrorKind: string | null;
@@ -262,6 +264,8 @@ export interface MarketingStreamSqsConsumerOptions {
   scheduler?: MarketingStreamNormalizeScheduler;
   now?: () => Date;
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+  /** Test seam; production derives one third of the configured visibility timeout. */
+  visibilityHeartbeatIntervalMs?: number;
   logger?: MarketingStreamConsumerLogger;
 }
 
@@ -292,6 +296,8 @@ export class MarketingStreamSqsConsumer {
     normalizeJobsOffered: 0,
     normalizeJobsCreated: 0,
     normalizeJobsAlreadyPresent: 0,
+    visibilityHeartbeats: 0,
+    visibilityHeartbeatFailures: 0,
   };
   private controller: AbortController | null = null;
   private loop: Promise<void> | null = null;
@@ -301,6 +307,7 @@ export class MarketingStreamSqsConsumer {
   private lastErrorAt: string | null = null;
   private lastErrorKind: string | null = null;
   private queueConfiguration: MarketingStreamQueueConfiguration | null = null;
+  private readonly visibilityHeartbeatIntervalMs: number | undefined;
 
   constructor(options: MarketingStreamSqsConsumerOptions) {
     if (options.queueUrl.trim().length === 0) {
@@ -315,6 +322,7 @@ export class MarketingStreamSqsConsumer {
     this.scheduler = options.scheduler;
     this.now = options.now ?? (() => new Date());
     this.sleep = options.sleep ?? abortableDelay;
+    this.visibilityHeartbeatIntervalMs = options.visibilityHeartbeatIntervalMs;
     this.logger = options.logger ?? consoleLogger;
   }
 
@@ -356,15 +364,36 @@ export class MarketingStreamSqsConsumer {
     this.counters.received += messages.length;
     const groups = new Map<string, PreparedMarketingStreamDelivery[]>();
     for (const message of messages) {
+      let heartbeat: MarketingStreamVisibilityHeartbeat | null = null;
       try {
         if (!message.body) throw new MarketingStreamDeliveryError('SQS delivery has no body');
         if (!message.receiptHandle) throw new MarketingStreamDeliveryError('SQS delivery has no receipt handle');
         if (this.queue.extendVisibility && this.queueConfiguration) {
-          await this.queue.extendVisibility(
-            this.queueUrl,
-            message.receiptHandle,
+          const intervalMs = visibilityHeartbeatInterval(
             this.queueConfiguration.visibilityTimeoutSeconds,
+            this.visibilityHeartbeatIntervalMs,
           );
+          heartbeat = new MarketingStreamVisibilityHeartbeat({
+            renew: async () => {
+              await this.queue.extendVisibility!(
+                this.queueUrl,
+                message.receiptHandle!,
+                this.queueConfiguration!.visibilityTimeoutSeconds,
+              );
+              this.counters.visibilityHeartbeats += 1;
+            },
+            intervalMs,
+            delay: abortableDelay,
+            onFailure: (error) => {
+              this.counters.visibilityHeartbeatFailures += 1;
+              this.recordError(error);
+              this.logger.error('Marketing Stream visibility heartbeat failed', {
+                messageId: message.messageId,
+                errorKind: errorKind(error),
+              });
+            },
+          });
+          await heartbeat.start();
         }
         const payload = parseMarketingStreamSqsBody(message.body);
         const envelope = payload.kind === 'envelope'
@@ -372,9 +401,10 @@ export class MarketingStreamSqsConsumer {
           : await this.providerEnvelope(payload.record);
         const key = `${envelope.orgId}|${envelope.profileId}`;
         const group = groups.get(key) ?? [];
-        group.push({ message, envelope });
+        group.push({ message, envelope, heartbeat });
         groups.set(key, group);
       } catch (error) {
+        await heartbeat?.stop();
         this.recordDeliveryFailure(message, error);
       }
     }
@@ -410,6 +440,7 @@ export class MarketingStreamSqsConsumer {
     if (!first) return;
     this.inFlight += group.length;
     try {
+      assertHealthyHeartbeats(group);
       const envelope = mergeDeliveryGroup(group);
       const receivedEvents = envelope.events.length;
       let insertedEvents = 0;
@@ -420,6 +451,7 @@ export class MarketingStreamSqsConsumer {
           profileId: envelope.profileId,
           events: envelope.events,
         });
+        assertHealthyHeartbeats(group);
         if (
           append.offeredMessages !== receivedEvents
           || append.insertedMessages + append.duplicateMessages !== receivedEvents
@@ -439,6 +471,7 @@ export class MarketingStreamSqsConsumer {
           runAt: this.now(),
           dedupeKey: normalizeDedupeKey(envelope.orgId, envelope.profileId, messageIds),
         });
+        assertHealthyHeartbeats(group);
         if (created) this.counters.normalizeJobsCreated += 1;
         else this.counters.normalizeJobsAlreadyPresent += 1;
       } else {
@@ -470,6 +503,7 @@ export class MarketingStreamSqsConsumer {
           events: envelope.events,
           policy: { ...context, now: this.now() },
         });
+        assertHealthyHeartbeats(group);
         assertCompletedEnvelope(envelope, result);
         insertedEvents = result.append.insertedMessages;
         duplicateEvents = result.append.duplicateMessages;
@@ -477,7 +511,7 @@ export class MarketingStreamSqsConsumer {
         this.counters.rawRowsDuplicated += duplicateEvents;
       }
 
-      for (const delivery of group) await this.acknowledge(delivery.message);
+      for (const delivery of group) await this.acknowledge(delivery);
       this.logger.info('Marketing Stream profile group retained and queued', {
         deliveries: group.length,
         receivedEvents,
@@ -487,13 +521,16 @@ export class MarketingStreamSqsConsumer {
     } catch (error) {
       for (const delivery of group) this.recordDeliveryFailure(delivery.message, error);
     } finally {
+      await Promise.all(group.map((delivery) => delivery.heartbeat?.stop()));
       this.inFlight -= group.length;
     }
   }
 
-  private async acknowledge(message: MarketingStreamQueueMessage): Promise<void> {
+  private async acknowledge(delivery: PreparedMarketingStreamDelivery): Promise<void> {
+    const { message, heartbeat } = delivery;
     if (!message.receiptHandle) throw new MarketingStreamDeliveryError('SQS delivery has no receipt handle');
     try {
+      heartbeat?.throwIfFailed();
       await this.queue.delete(this.queueUrl, message.receiptHandle);
       this.counters.acknowledged += 1;
       this.lastSuccessAt = this.now().toISOString();
@@ -521,6 +558,15 @@ export class MarketingStreamSqsConsumer {
     if (this.queueConfiguration !== null || !this.queue.configuration) return;
     this.queueConfiguration = await this.queue.configuration(this.queueUrl);
     assertQueueConfiguration(this.queueConfiguration);
+    if (!this.queue.extendVisibility) {
+      throw new MarketingStreamConfigurationError(
+        'Marketing Stream SQS client must renew message visibility while processing',
+      );
+    }
+    visibilityHeartbeatInterval(
+      this.queueConfiguration.visibilityTimeoutSeconds,
+      this.visibilityHeartbeatIntervalMs,
+    );
   }
 
   private recordError(error: unknown): void {
@@ -566,7 +612,10 @@ type SupportedProviderDatasetId = AmazonMarketingStreamDatasetId;
 export interface ParsedMarketingStreamProviderRecord {
   advertiserId: string;
   marketplaceId: string;
-  idempotencyId: string;
+  /** Provider idempotency key for traffic/conversion; budget records do not carry one. */
+  idempotencyId: string | null;
+  /** Dataset-specific immutable ledger identity. */
+  providerEventId: string;
   datasetId: SupportedProviderDatasetId;
   dataset: MarketingStreamLedgerEventValue['dataset'];
   adProduct: MarketingStreamLedgerEventValue['adProduct'];
@@ -583,6 +632,7 @@ export type ParsedMarketingStreamSqsBody =
 interface PreparedMarketingStreamDelivery {
   message: MarketingStreamQueueMessage;
   envelope: MarketingStreamBatchEnvelopeValue;
+  heartbeat: MarketingStreamVisibilityHeartbeat | null;
 }
 
 /** Accept direct SQS delivery or the normal SNS notification wrapper. */
@@ -611,7 +661,13 @@ export function parseMarketingStreamProviderRecord(value: unknown): ParsedMarket
   const datasetId = providerDatasetId(value['dataset_id']);
   const advertiserId = providerString(value['advertiser_id'], 'advertiser_id');
   const marketplaceId = providerString(value['marketplace_id'], 'marketplace_id');
-  const idempotencyId = providerString(value['idempotency_id'], 'idempotency_id');
+  const idempotencyId = datasetId === 'budget-usage'
+    ? null
+    : providerString(value['idempotency_id'], 'idempotency_id');
+  const providerEventId = idempotencyId ?? budgetProviderEventId(value, {
+    advertiserId,
+    marketplaceId,
+  });
   const dataset = datasetId === 'budget-usage'
     ? 'budget_usage'
     : datasetId.endsWith('-traffic') ? 'traffic' : 'conversion';
@@ -629,6 +685,7 @@ export function parseMarketingStreamProviderRecord(value: unknown): ParsedMarket
     advertiserId,
     marketplaceId,
     idempotencyId,
+    providerEventId,
     datasetId,
     dataset,
     adProduct,
@@ -671,7 +728,7 @@ export function marketingStreamProviderEnvelope(
       datasetId: record.datasetId,
       advertiserId: record.advertiserId,
       marketplaceId: record.marketplaceId,
-      eventId: record.idempotencyId,
+      eventId: record.providerEventId,
     },
   });
   return MarketingStreamBatchEnvelope.parse({
@@ -805,8 +862,37 @@ function providerMessageId(record: ParsedMarketingStreamProviderRecord): string 
     record.datasetId,
     record.advertiserId,
     record.marketplaceId,
-    record.idempotencyId,
+    record.providerEventId,
   ].join(':');
+}
+
+/**
+ * Amazon's budget-usage schema has no `idempotency_id`. Its immutable
+ * observation identity is therefore the provider routing identity, campaign
+ * budget scope, product, observation timestamp, and a hash of the complete
+ * canonical provider record. Exact SQS/SNS redelivery produces the same key;
+ * a later observation (including a lower corrected usage value) remains a
+ * distinct ledger event.
+ */
+function budgetProviderEventId(
+  value: Record<string, unknown>,
+  identity: { advertiserId: string; marketplaceId: string },
+): string {
+  const canonicalRecordHash = createHash('sha256').update(stableJson(value)).digest('hex');
+  const immutableIdentity = {
+    datasetId: 'budget-usage',
+    advertiserId: identity.advertiserId,
+    marketplaceId: identity.marketplaceId,
+    budgetScopeType: providerString(value['budget_scope_type'], 'budget_scope_type'),
+    budgetScopeId: providerString(value['budget_scope_id'], 'budget_scope_id'),
+    advertisingProductType: providerString(
+      value['advertising_product_type'],
+      'advertising_product_type',
+    ).toLowerCase(),
+    observedAt: providerInstant(value['usage_updated_timestamp'], 'usage_updated_timestamp'),
+    canonicalRecordHash,
+  };
+  return `budget:${createHash('sha256').update(stableJson(immutableIdentity)).digest('hex')}`;
 }
 
 function mergeDeliveryGroup(
@@ -921,6 +1007,86 @@ function assertQueueConfiguration(configuration: MarketingStreamQueueConfigurati
   }
   if (!configuration.deadLetterQueueConfigured) {
     throw new MarketingStreamConfigurationError('Marketing Stream SQS must have a dead-letter queue');
+  }
+}
+
+function visibilityHeartbeatInterval(
+  visibilityTimeoutSeconds: number,
+  overrideMs: number | undefined,
+): number {
+  const timeoutMs = visibilityTimeoutSeconds * 1_000;
+  const intervalMs = overrideMs ?? Math.floor(timeoutMs / 3);
+  if (
+    !Number.isInteger(intervalMs)
+    || intervalMs < 1
+    || intervalMs > Math.floor(timeoutMs / 2)
+  ) {
+    throw new MarketingStreamConfigurationError(
+      'Marketing Stream visibility heartbeat must be a positive interval no greater than half the queue timeout',
+    );
+  }
+  return intervalMs;
+}
+
+function assertHealthyHeartbeats(group: readonly PreparedMarketingStreamDelivery[]): void {
+  for (const delivery of group) delivery.heartbeat?.throwIfFailed();
+}
+
+class MarketingStreamVisibilityHeartbeat {
+  private readonly controller = new AbortController();
+  private loop: Promise<void> | null = null;
+  private failure: unknown = null;
+
+  constructor(private readonly input: {
+    renew: () => Promise<void>;
+    intervalMs: number;
+    delay: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+    onFailure: (error: unknown) => void;
+  }) {}
+
+  async start(): Promise<void> {
+    await this.renew();
+    this.loop = this.run();
+  }
+
+  throwIfFailed(): void {
+    if (this.failure !== null) throw this.failure;
+  }
+
+  async stop(): Promise<void> {
+    this.controller.abort();
+    await this.loop;
+    this.loop = null;
+  }
+
+  private async run(): Promise<void> {
+    while (!this.controller.signal.aborted) {
+      try {
+        await this.input.delay(this.input.intervalMs, this.controller.signal);
+        if (this.controller.signal.aborted) return;
+        await this.renew();
+      } catch (error) {
+        if (this.controller.signal.aborted && isAbortError(error)) return;
+        this.fail(error);
+        return;
+      }
+    }
+  }
+
+  private async renew(): Promise<void> {
+    try {
+      await this.input.renew();
+    } catch (error) {
+      this.fail(error);
+      throw error;
+    }
+  }
+
+  private fail(error: unknown): void {
+    if (this.failure !== null) return;
+    this.failure = error;
+    this.input.onFailure(error);
+    this.controller.abort();
   }
 }
 

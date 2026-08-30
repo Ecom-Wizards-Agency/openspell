@@ -4,7 +4,9 @@ import type {
   MarketingStreamBatchEnvelope,
   MarketingStreamLedgerEvent,
 } from '@wizard-ads/shared';
+import type { MarketingStreamSnapshot } from '@wizard-ads/db';
 import type { MarketingStreamStore } from './dayparting.js';
+import { normalizeMarketingStreamSnapshot } from './dayparting.js';
 import {
   MarketingStreamConfigurationError,
   MarketingStreamSqsConsumer,
@@ -20,13 +22,13 @@ const PROFILE = '75757575-7575-4575-8575-757575757575';
 const QUEUE_URL = 'https://sqs.example.invalid/synthetic';
 const US_MARKETPLACE = 'ATVPDKIKX0DER';
 
-function binding() {
+function binding(datasetId: 'sp-traffic' | 'budget-usage' = 'sp-traffic') {
   return {
     id: '78787878-7878-4878-8878-787878787878',
     orgId: ORG,
     profileId: PROFILE,
     subscriptionId: 'subscription-one',
-    datasetId: 'sp-traffic' as const,
+    datasetId,
     advertiserId: 'provider-advertiser-one',
     marketplaceId: US_MARKETPLACE,
     active: true,
@@ -139,18 +141,75 @@ describe('Marketing Stream SQS envelope', () => {
   });
 
   it('maps campaign budget usage and refuses portfolio or unsupported records', () => {
-    expect(parseMarketingStreamProviderRecord(budgetRecord())).toMatchObject({
+    const parsed = parseMarketingStreamProviderRecord(budgetRecord());
+    expect(parsed).toMatchObject({
+      idempotencyId: null,
       dataset: 'budget_usage',
       adProduct: 'SB',
       eventTime: '2026-08-01T17:21:00.000Z',
       normalizedMetric: { campaignId: 'campaign-one', budgetUsagePercent: 85 },
     });
+    expect(parsed.providerEventId).toMatch(/^budget:[a-f0-9]{64}$/);
     expect(() => parseMarketingStreamProviderRecord({
       ...budgetRecord(), budget_scope_type: 'PORTFOLIO',
     })).toThrow(/not campaign scoped/);
     expect(() => parseMarketingStreamProviderRecord({
       ...trafficRecord(), dataset_id: 'sb-rich-media',
     })).toThrow(/not supported/);
+  });
+
+  it('deduplicates exact native budget redelivery but projects a later lower observation', () => {
+    const first = parseMarketingStreamProviderRecord(budgetRecord());
+    const duplicate = parseMarketingStreamProviderRecord({ ...budgetRecord() });
+    const later = parseMarketingStreamProviderRecord({
+      ...budgetRecord(),
+      budget_usage_percentage: 71,
+      usage_updated_timestamp: '2026-08-01T10:31:00-07:00',
+    });
+    expect(duplicate.providerEventId).toBe(first.providerEventId);
+    expect(later.providerEventId).not.toBe(first.providerEventId);
+
+    const firstEvent = marketingStreamProviderEnvelope(
+      first,
+      binding('budget-usage'),
+      new Date('2026-08-01T17:22:00.000Z'),
+    ).events[0]!;
+    const laterEvent = marketingStreamProviderEnvelope(
+      later,
+      binding('budget-usage'),
+      new Date('2026-08-01T17:32:00.000Z'),
+    ).events[0]!;
+    expect(marketingStreamProviderEnvelope(
+      duplicate,
+      binding('budget-usage'),
+      new Date('2026-08-01T17:23:00.000Z'),
+    ).events[0]?.messageId).toBe(firstEvent.messageId);
+
+    const scope = { adProduct: 'SB' as const, utcHour: '2026-08-01T17:00:00.000Z' };
+    const snapshot: MarketingStreamSnapshot = {
+      orgId: ORG,
+      profileId: PROFILE,
+      scopes: [scope],
+      events: [
+        { ...firstEvent, id: 'event-row-one', orgId: ORG },
+        { ...laterEvent, id: 'event-row-two', orgId: ORG },
+      ],
+      sourceEventIds: { 'SB|2026-08-01T17:00:00.000Z': ['event-row-one', 'event-row-two'] },
+    };
+    const normalized = normalizeMarketingStreamSnapshot(snapshot, {
+      profileTimeZone: 'UTC',
+      currencyCode: 'USD',
+      settlingWindowHours: 4,
+      budgetCappedAtPercent: 80,
+      now: new Date('2026-08-01T18:00:00.000Z'),
+    });
+    expect(normalized.refusals).toEqual([]);
+    expect(normalized.facts).toHaveLength(1);
+    expect(normalized.facts[0]).toMatchObject({
+      budgetUsagePercent: 71,
+      budgetCapped: false,
+      sourceEvents: 2,
+    });
   });
 
 });
@@ -214,6 +273,108 @@ describe('Marketing Stream SQS acknowledgement', () => {
       normalizeJobsOffered: 1,
       normalizeJobsCreated: 1,
       normalizeJobsAlreadyPresent: 0,
+      visibilityHeartbeats: 2,
+      visibilityHeartbeatFailures: 0,
+    });
+  });
+
+  it('renews visibility throughout slow append, enqueue, and delete stages', async () => {
+    let renewals = 0;
+    const stages: string[] = [];
+    const base = unusedStore();
+    const consumer = new MarketingStreamSqsConsumer({
+      queueUrl: QUEUE_URL,
+      queue: {
+        receive: async () => [delivery(batchEnvelope())],
+        delete: async () => { stages.push('delete'); await delay(18); },
+        configuration: async () => ({
+          visibilityTimeoutSeconds: 30,
+          maxReceiveCount: 3,
+          deadLetterQueueConfigured: true,
+        }),
+        extendVisibility: async () => { renewals += 1; },
+        destroy: () => {},
+      },
+      store: {
+        ...base,
+        append: async ({ events }) => {
+          stages.push('append');
+          await delay(18);
+          return {
+            offeredMessages: events.length,
+            insertedMessages: events.length,
+            duplicateMessages: 0,
+            revisedMessages: 0,
+            affectedScopes: [{ adProduct: 'SP', utcHour: '2026-08-01T10:00:00.000Z' }],
+          };
+        },
+      },
+      contexts: { load: async () => policy() },
+      scheduler: {
+        enqueue: async () => { stages.push('enqueue'); await delay(18); return true; },
+      },
+      visibilityHeartbeatIntervalMs: 5,
+      logger: silentLogger(),
+    });
+
+    await consumer.pollOnce();
+    expect(stages).toEqual(['append', 'enqueue', 'delete']);
+    expect(renewals).toBeGreaterThanOrEqual(4);
+    expect(consumer.status()).toMatchObject({
+      acknowledged: 1,
+      failed: 0,
+      visibilityHeartbeatFailures: 0,
+    });
+  });
+
+  it('fails safely without enqueue or delete when visibility renewal fails', async () => {
+    let renewals = 0;
+    let scheduled = 0;
+    let deleted = 0;
+    const base = unusedStore();
+    const consumer = new MarketingStreamSqsConsumer({
+      queueUrl: QUEUE_URL,
+      queue: {
+        receive: async () => [delivery(batchEnvelope())],
+        delete: async () => { deleted += 1; },
+        configuration: async () => ({
+          visibilityTimeoutSeconds: 30,
+          maxReceiveCount: 3,
+          deadLetterQueueConfigured: true,
+        }),
+        extendVisibility: async () => {
+          renewals += 1;
+          if (renewals > 1) throw new Error('synthetic heartbeat failure');
+        },
+        destroy: () => {},
+      },
+      store: {
+        ...base,
+        append: async ({ events }) => {
+          await delay(18);
+          return {
+            offeredMessages: events.length,
+            insertedMessages: events.length,
+            duplicateMessages: 0,
+            revisedMessages: 0,
+            affectedScopes: [{ adProduct: 'SP', utcHour: '2026-08-01T10:00:00.000Z' }],
+          };
+        },
+      },
+      contexts: { load: async () => policy() },
+      scheduler: { enqueue: async () => { scheduled += 1; return true; } },
+      visibilityHeartbeatIntervalMs: 5,
+      logger: silentLogger(),
+    });
+
+    await consumer.pollOnce();
+    expect(scheduled).toBe(0);
+    expect(deleted).toBe(0);
+    expect(consumer.status()).toMatchObject({
+      acknowledged: 0,
+      failed: 1,
+      visibilityHeartbeatFailures: 1,
+      lastErrorKind: 'Error',
     });
   });
 
@@ -595,6 +756,7 @@ describe('Marketing Stream SQS acknowledgement', () => {
           maxReceiveCount: 3,
           deadLetterQueueConfigured: true,
         }),
+        extendVisibility: async () => {},
         destroy: () => {},
       },
       store: unusedStore(),
@@ -694,7 +856,6 @@ function conversionRecord(product: 'sp' | 'sb' | 'sd'): Record<string, unknown> 
 
 function budgetRecord(): Record<string, unknown> {
   return {
-    idempotency_id: 'budget-event-one',
     dataset_id: 'budget-usage',
     marketplace_id: US_MARKETPLACE,
     advertiser_id: 'provider-advertiser-one',
@@ -776,4 +937,8 @@ function result(
 
 function silentLogger() {
   return { info: () => {}, error: () => {} };
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

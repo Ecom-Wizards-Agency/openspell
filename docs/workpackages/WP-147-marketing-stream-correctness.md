@@ -35,12 +35,18 @@ complete affected UTC-hour scopes and schedules later settling transitions.
 6. One SQS poll is grouped by `(organization, profile)`. A failed group does not
    block another profile, and a delivery is deleted only after raw rows and its
    normalize job are durable or verified as duplicates.
-7. Queue visibility is extended before processing. Production queue startup
-   fails closed without a valid visibility timeout and SQS-managed DLQ redrive
+7. Queue visibility is renewed before and throughout append, job enqueue, and
+   acknowledgement. Heartbeats are cancelled in `finally`; renewal failure is
+   recorded and leaves the delivery for redrive. Production queue startup
+   fails closed without a bounded visibility timeout and SQS-managed DLQ
    policy; poison messages are never manually discarded.
 8. Settling begins at the end of the UTC event hour. Late traffic/conversion
    evidence reopens the scope as revised for another configured window;
    budget-only updates do not reopen conversion maturity.
+9. Missing tenant policy accumulates affected scopes in one durable profile
+   block. At most one retry is queued per profile/hour, retries cap after 24
+   attempts with an alert state, and the next successful profile job replays
+   and clears every accumulated scope.
 
 ## Local verification
 
@@ -49,6 +55,8 @@ complete affected UTC-hour scopes and schedules later settling transitions.
 - Strict offset, grouping, partial failure, redelivery, queue visibility, DLQ,
   and count-reconciliation tests.
 - Real queued normalize-handler and aging-transition tests.
+- Provider-native binding → raw ledger → durable job → normalization → aging
+  transition integration with duplicate and later-lower budget observations.
 - Disposable-Postgres migration, RLS, binding, identity-collision,
   append/projection lock, stale-write, and read-back tests.
 - Repository hygiene and explicit no-Amazon-write assertion.
