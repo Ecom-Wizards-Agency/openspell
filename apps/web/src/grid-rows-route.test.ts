@@ -10,6 +10,7 @@ import {
   GRID_RESPONSE_BODY_BUDGET_BYTES,
   serializeGridPayloadWithinBudget,
 } from '../app/api/grid/rows/serialize.js';
+import { GRID_SERVER_TIMING_SPANS } from '../app/api/grid/rows/server-timing.js';
 
 const available = await databaseAvailable();
 const USER_A = '14141414-1414-4414-8414-141414141414';
@@ -218,6 +219,16 @@ describe.skipIf(!available)('Grid rows route', () => {
     expect(response.headers.get('cache-control')).toContain('no-store');
     expect(response.headers.get('vary')).toBe('Cookie');
     expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+    const serverTiming = response.headers.get('server-timing') ?? '';
+    expect(serverTiming.split(', ').map((span) => span.split(';')[0])).toEqual([
+      ...GRID_SERVER_TIMING_SPANS,
+      'total',
+    ]);
+    expect(serverTiming).toMatch(
+      /^actor;dur=\d+\.\d{2}, role;dur=\d+\.\d{2}, profile;dur=\d+\.\d{2}, rows;dur=\d+\.\d{2}, serialize;dur=\d+\.\d{2}, total;dur=\d+\.\d{2}$/,
+    );
+    expect(serverTiming).not.toContain(profileA);
+    expect(serverTiming).not.toContain(orgA);
 
     const payload = (await response.json()) as {
       rows: Array<{ currencyCode: string; comparison: { spend: number } | null }>;
