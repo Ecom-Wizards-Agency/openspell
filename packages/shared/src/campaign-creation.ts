@@ -2,7 +2,6 @@ import { z } from 'zod';
 import {
   BiddingStrategy,
   BudgetType,
-  TargetExpression,
   TargetingType,
 } from './entities.js';
 import {
@@ -21,6 +20,21 @@ export type CampaignCreationSha256 = z.infer<typeof CampaignCreationSha256>;
 
 const CampaignCreationUuid = Uuid.refine((value) => value === value.toLowerCase(), {
   message: 'campaign creation UUIDs must use lowercase canonical form',
+});
+
+function isRealCalendarDate(value: string): boolean {
+  const [yearText, monthText, dayText] = value.split('-');
+  if (yearText === undefined || monthText === undefined || dayText === undefined) return false;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysByMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return month >= 1 && month <= 12 && day >= 1 && day <= (daysByMonth[month - 1] ?? 0);
+}
+
+const CampaignCreationIsoDate = IsoDate.refine(isRealCalendarDate, {
+  message: 'campaign creation date must be a real Gregorian calendar date',
 });
 
 export const CampaignCreationApiDialect = z.enum([
@@ -176,7 +190,6 @@ export const SponsoredBrandsCreationFormat = z.enum([
   'product_collection_automatic',
   'store_spotlight',
   'product_video',
-  'brand_video',
 ]);
 export type SponsoredBrandsCreationFormat = z.infer<typeof SponsoredBrandsCreationFormat>;
 
@@ -195,7 +208,7 @@ const CampaignSettings = z.discriminatedUnion('product', [
   }).strict(),
   z.object({
     product: z.literal('SD'),
-    tactic: z.string().min(1).max(160),
+    tactic: z.enum(['contextual', 'audience']),
   }).strict(),
 ]);
 
@@ -206,8 +219,8 @@ const CreateCampaignNode = z.object({
     name: z.string().min(1).max(256),
     state: z.literal('paused'),
     budget: CampaignCreationBudget,
-    startDate: IsoDate,
-    endDate: IsoDate.nullable(),
+    startDate: CampaignCreationIsoDate,
+    endDate: CampaignCreationIsoDate.nullable(),
     portfolioId: AmazonId.nullable(),
     settings: CampaignSettings,
   }).strict(),
@@ -226,18 +239,25 @@ const CreateAdGroupNode = z.object({
 
 const PositiveKeywordMatchType = z.enum(['exact', 'phrase', 'broad']);
 const NegativeKeywordMatchType = z.enum(['negative_exact', 'negative_phrase']);
-const CampaignCreationExpression = TargetExpression.extend({
+const ProductExpression = z.object({
   type: z.enum([
     'asin_same_as',
     'asin_expanded_from',
     'asin_brand_same_as',
     'asin_category_same_as',
+  ]),
+  value: z.string().trim().min(1),
+}).strict();
+const AutomaticExpression = z.object({
+  type: z.enum([
     'close_match',
     'loose_match',
     'substitutes',
     'complements',
   ]),
+  value: z.null(),
 }).strict();
+const CampaignCreationExpression = z.union([ProductExpression, AutomaticExpression]);
 
 const KeywordTargetPayload = z.object({
   targetType: z.literal('keyword'),
@@ -282,12 +302,124 @@ const ExpressionTargetPayload = z.object({
   if (value.polarity === 'negative' && value.bid !== null) {
     context.addIssue({ code: 'custom', path: ['bid'], message: 'negative targets cannot carry a bid' });
   }
+  if (value.polarity === 'negative'
+    && value.expression.some((expression) => AutomaticExpression.safeParse(expression).success)) {
+    context.addIssue({ code: 'custom', path: ['expression'], message: 'automatic targeting clauses cannot be negative' });
+  }
 });
+
+const UnifiedSponsoredBrandsTargetBase = {
+  parent: plannedResourceRef('ad_group'),
+  polarity: z.enum(['positive', 'negative']),
+  bid: z.number().finite().positive().nullable(),
+  state: z.literal('paused'),
+};
+
+const UnifiedSponsoredBrandsKeywordTargetPayload = z.object({
+  targetType: z.literal('sb_keyword'),
+  ...UnifiedSponsoredBrandsTargetBase,
+  text: z.string().trim().min(1).max(512),
+  matchType: PositiveKeywordMatchType,
+}).strict().superRefine((value, context) => {
+  if (value.polarity === 'negative' && value.bid !== null) {
+    context.addIssue({ code: 'custom', path: ['bid'], message: 'negative targets cannot carry a bid' });
+  }
+});
+
+const UnifiedSponsoredBrandsProductTargetPayload = z.object({
+  targetType: z.literal('sb_product'),
+  ...UnifiedSponsoredBrandsTargetBase,
+  asin: AmazonId,
+}).strict().superRefine((value, context) => {
+  if (value.polarity === 'negative' && value.bid !== null) {
+    context.addIssue({ code: 'custom', path: ['bid'], message: 'negative targets cannot carry a bid' });
+  }
+});
+
+const UnifiedSponsoredBrandsProductCategoryTargetPayload = z.object({
+  targetType: z.literal('sb_product_category'),
+  ...UnifiedSponsoredBrandsTargetBase,
+  categoryId: AmazonId,
+  brandId: AmazonId.nullable(),
+  priceGreaterThan: z.number().finite().nonnegative().nullable(),
+  priceLessThan: z.number().finite().nonnegative().nullable(),
+  ratingGreaterThan: z.number().finite().min(0).max(5).nullable(),
+  ratingLessThan: z.number().finite().min(0).max(5).nullable(),
+}).strict().superRefine((value, context) => {
+  if (value.polarity === 'negative' && value.bid !== null) {
+    context.addIssue({ code: 'custom', path: ['bid'], message: 'negative targets cannot carry a bid' });
+  }
+  if (value.priceGreaterThan !== null && value.priceLessThan !== null
+    && value.priceGreaterThan > value.priceLessThan) {
+    context.addIssue({ code: 'custom', path: ['priceLessThan'], message: 'maximum price cannot be below minimum price' });
+  }
+  if (value.ratingGreaterThan !== null && value.ratingLessThan !== null
+    && value.ratingGreaterThan > value.ratingLessThan) {
+    context.addIssue({ code: 'custom', path: ['ratingLessThan'], message: 'maximum rating cannot be below minimum rating' });
+  }
+});
+
+const UnifiedSponsoredBrandsThemeTargetPayload = z.object({
+  targetType: z.literal('sb_theme'),
+  ...UnifiedSponsoredBrandsTargetBase,
+  matchType: z.enum([
+    'keywords_related_to_your_brand',
+    'keywords_related_to_your_landing_pages',
+  ]),
+}).strict().superRefine((value, context) => {
+  if (value.polarity === 'negative' && value.bid !== null) {
+    context.addIssue({ code: 'custom', path: ['bid'], message: 'negative targets cannot carry a bid' });
+  }
+});
+
+const SponsoredDisplayTargetBase = {
+  parent: plannedResourceRef('ad_group'),
+  polarity: z.enum(['positive', 'negative']),
+  bid: z.number().finite().positive().nullable(),
+  state: z.literal('paused'),
+};
+
+function rejectNegativeTargetBid(
+  value: { polarity: 'positive' | 'negative'; bid: number | null },
+  context: z.RefinementCtx,
+): void {
+  if (value.polarity === 'negative' && value.bid !== null) {
+    context.addIssue({ code: 'custom', path: ['bid'], message: 'negative targets cannot carry a bid' });
+  }
+}
+
+const SponsoredDisplayProductTargetPayload = z.object({
+  targetType: z.literal('sd_product'),
+  ...SponsoredDisplayTargetBase,
+  asin: AmazonId,
+}).strict().superRefine(rejectNegativeTargetBid);
+
+const SponsoredDisplayCategoryTargetPayload = z.object({
+  targetType: z.literal('sd_category'),
+  ...SponsoredDisplayTargetBase,
+  categoryId: AmazonId,
+}).strict().superRefine(rejectNegativeTargetBid);
+
+const SponsoredDisplayAudienceTargetPayload = z.object({
+  targetType: z.literal('sd_audience'),
+  ...SponsoredDisplayTargetBase,
+  audienceId: AmazonId,
+}).strict().superRefine(rejectNegativeTargetBid);
 
 const CreateTargetNode = z.object({
   ...createNodeBase,
   kind: z.literal('target.create'),
-  payload: z.discriminatedUnion('targetType', [KeywordTargetPayload, ExpressionTargetPayload]),
+  payload: z.discriminatedUnion('targetType', [
+    KeywordTargetPayload,
+    ExpressionTargetPayload,
+    UnifiedSponsoredBrandsKeywordTargetPayload,
+    UnifiedSponsoredBrandsProductTargetPayload,
+    UnifiedSponsoredBrandsProductCategoryTargetPayload,
+    UnifiedSponsoredBrandsThemeTargetPayload,
+    SponsoredDisplayProductTargetPayload,
+    SponsoredDisplayCategoryTargetPayload,
+    SponsoredDisplayAudienceTargetPayload,
+  ]),
 }).strict();
 
 const StoreLandingPage = z.object({
@@ -311,6 +443,22 @@ const StoreSpotlightCard = z.object({
   product: plannedResourceRef('product'),
 }).strict();
 
+const ProductDetailLandingPage = z.object({
+  type: z.literal('detail_page'),
+  product: plannedResourceRef('product'),
+}).strict();
+
+const SponsoredBrandsVideoLandingPage = z.discriminatedUnion('type', [
+  ProductDetailLandingPage,
+  StoreLandingPage,
+]);
+
+const sponsoredBrandsAdBase = {
+  name: z.string().trim().min(1).max(256),
+  adGroup: plannedResourceRef('ad_group'),
+  state: z.literal('paused'),
+};
+
 const AdPayload = z.discriminatedUnion('format', [
   z.object({
     format: z.literal('sp_product_ad'),
@@ -320,7 +468,7 @@ const AdPayload = z.discriminatedUnion('format', [
   }).strict(),
   z.object({
     format: z.literal('sb_product_collection_manual'),
-    adGroup: plannedResourceRef('ad_group'),
+    ...sponsoredBrandsAdBase,
     brand: plannedResourceRef('brand'),
     products: z.array(plannedResourceRef('product')).min(3).max(10),
     logoAsset: plannedResourceRef('asset').nullable(),
@@ -330,38 +478,31 @@ const AdPayload = z.discriminatedUnion('format', [
   }).strict(),
   z.object({
     format: z.literal('sb_product_collection_automatic'),
-    adGroup: plannedResourceRef('ad_group'),
+    ...sponsoredBrandsAdBase,
     brand: plannedResourceRef('brand'),
     logoAsset: plannedResourceRef('asset').nullable(),
+    // Deliberate local supported subset: pinned Amazon sources conflict between 100 and 1000.
     productExclusions: z.array(plannedResourceRef('product')).max(100),
-    state: z.literal('paused'),
   }).strict(),
   z.object({
     format: z.literal('sb_store_spotlight'),
-    adGroup: plannedResourceRef('ad_group'),
+    ...sponsoredBrandsAdBase,
     brand: plannedResourceRef('brand'),
     landingPage: StoreLandingPage,
     logoAsset: plannedResourceRef('asset'),
     headline: z.string().trim().min(1).max(128),
     cards: z.tuple([StoreSpotlightCard, StoreSpotlightCard, StoreSpotlightCard]),
-    state: z.literal('paused'),
   }).strict(),
   z.object({
     format: z.literal('sb_product_video'),
-    adGroup: plannedResourceRef('ad_group'),
-    product: plannedResourceRef('product'),
+    ...sponsoredBrandsAdBase,
+    brand: plannedResourceRef('brand').nullable(),
+    logoAsset: plannedResourceRef('asset').nullable(),
+    headline: z.string().trim().min(1).max(128).nullable(),
+    enableCreativeAutoTranslation: z.boolean().nullable(),
+    landingPage: SponsoredBrandsVideoLandingPage.nullable(),
+    products: z.array(plannedResourceRef('product')).max(3),
     videoAsset: plannedResourceRef('asset'),
-    state: z.literal('paused'),
-  }).strict(),
-  z.object({
-    format: z.literal('sb_brand_video'),
-    adGroup: plannedResourceRef('ad_group'),
-    brand: plannedResourceRef('brand'),
-    store: plannedResourceRef('store'),
-    logoAsset: plannedResourceRef('asset'),
-    videoAsset: plannedResourceRef('asset'),
-    headline: z.string().trim().min(1).max(128),
-    state: z.literal('paused'),
   }).strict(),
   z.object({
     format: z.literal('sd_product_ad'),
@@ -483,6 +624,16 @@ function requirementIdentityKey(node: CampaignCreationNode): string | undefined 
   }
 }
 
+function expectedRequirementProviderEntityId(node: CampaignCreationNode): string | undefined {
+  switch (node.kind) {
+    case 'eligibility.require_product': return node.payload.asin;
+    case 'eligibility.require_brand': return node.payload.brandId;
+    case 'eligibility.require_store': return node.payload.storeId;
+    case 'asset.require_existing': return node.payload.assetId;
+    default: return undefined;
+  }
+}
+
 function nodeReferences(node: CampaignCreationNode): CampaignCreationResourceRef[] {
   switch (node.kind) {
     case 'eligibility.require_product':
@@ -502,11 +653,19 @@ function nodeReferences(node: CampaignCreationNode): CampaignCreationResourceRef
       const payload = node.payload;
       switch (payload.format) {
         case 'sp_product_ad':
-        case 'sb_product_video':
         case 'sd_product_ad':
-          return [payload.adGroup, payload.product, ...(
-            payload.format === 'sb_product_video' ? [payload.videoAsset] : []
-          )];
+          return [payload.adGroup, payload.product];
+        case 'sb_product_video':
+          return [
+            payload.adGroup,
+            payload.videoAsset,
+            ...payload.products,
+            ...(payload.brand === null ? [] : [payload.brand]),
+            ...(payload.logoAsset === null ? [] : [payload.logoAsset]),
+            ...(payload.landingPage === null ? [] : payload.landingPage.type === 'store'
+              ? [payload.landingPage.store]
+              : [payload.landingPage.product]),
+          ];
         case 'sb_product_collection_manual':
           return [
             payload.adGroup,
@@ -531,14 +690,6 @@ function nodeReferences(node: CampaignCreationNode): CampaignCreationResourceRef
             payload.landingPage.store,
             payload.logoAsset,
             ...payload.cards.flatMap((card) => [card.landingPage.store, card.product]),
-          ];
-        case 'sb_brand_video':
-          return [
-            payload.adGroup,
-            payload.brand,
-            payload.store,
-            payload.logoAsset,
-            payload.videoAsset,
           ];
       }
     }
@@ -813,16 +964,29 @@ export const CampaignCreationPlan = z.object({
         case 'sd_product_ad':
           requireCheckedResource(payload.product, 'product');
           break;
-        case 'sb_product_video':
-          requireCheckedResource(payload.product, 'product');
+        case 'sb_product_video': {
+          if (payload.brand !== null) requireCampaignBrand(payload.brand);
+          if (payload.logoAsset !== null) {
+            requireCheckedResource(payload.logoAsset, 'asset', 'logo');
+          }
+          const productKeys = payload.products.map(referenceKey);
+          if (new Set(productKeys).size !== productKeys.length) {
+            context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', 'products'], message: 'video products must be unique' });
+          }
+          payload.products.forEach((product) => requireCheckedResource(product, 'product'));
+          if (payload.landingPage?.type === 'detail_page') {
+            requireCheckedResource(payload.landingPage.product, 'product');
+          }
+          if (payload.landingPage?.type === 'store') {
+            const store = requireCheckedResource(payload.landingPage.store, 'store');
+            if (payload.landingPage.pageId !== null && store?.kind === 'eligibility.require_store'
+              && !store.payload.pageIds.includes(payload.landingPage.pageId)) {
+              context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', 'landingPage', 'pageId'], message: 'landing page is absent from the checked Store' });
+            }
+          }
           requireCheckedResource(payload.videoAsset, 'asset', 'video');
           break;
-        case 'sb_brand_video':
-          requireCampaignBrand(payload.brand);
-          requireCheckedResource(payload.store, 'store');
-          requireCheckedResource(payload.logoAsset, 'asset', 'logo');
-          requireCheckedResource(payload.videoAsset, 'asset', 'video');
-          break;
+        }
         case 'sb_product_collection_manual': {
           requireCampaignBrand(payload.brand);
           const productKeys = payload.products.map(referenceKey);
@@ -884,11 +1048,48 @@ export const CampaignCreationPlan = z.object({
 
     if (node.kind === 'target.create') {
       const parentCampaign = campaignForParent(node.payload.parent, byId);
+      const unifiedSponsoredBrandsTarget = node.payload.targetType.startsWith('sb_');
+      const sponsoredDisplayTarget = node.payload.targetType.startsWith('sd_');
+      if (node.adProduct === 'SB' && !unifiedSponsoredBrandsTarget) {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'payload'], message: 'Unified Sponsored Brands targets require a typed SB targetDetails variant' });
+      }
+      if (node.adProduct !== 'SB' && unifiedSponsoredBrandsTarget) {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'payload'], message: 'Unified Sponsored Brands targetDetails cannot be used by another ad product' });
+      }
+      if (node.adProduct === 'SD' && !sponsoredDisplayTarget) {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'payload'], message: 'Sponsored Display targets require a typed SD target variant' });
+      }
+      if (node.adProduct !== 'SD' && sponsoredDisplayTarget) {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'payload'], message: 'Sponsored Display target variants cannot be used by another ad product' });
+      }
+      if (node.adProduct === 'SP'
+        && node.payload.targetType !== 'keyword'
+        && node.payload.targetType !== 'expression') {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'payload'], message: 'Sponsored Products targets require a keyword or SP expression variant' });
+      }
+      if (node.adProduct === 'SP' && node.payload.targetType === 'expression') {
+        const hasAutomaticClause = node.payload.expression.some(
+          (expression) => AutomaticExpression.safeParse(expression).success,
+        );
+        if (parentCampaign?.kind === 'campaign.create'
+          && parentCampaign.payload.settings.product === 'SP'
+          && parentCampaign.payload.settings.targetingType === 'manual'
+          && hasAutomaticClause) {
+          context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', 'expression'], message: 'manual Sponsored Products campaigns cannot create automatic targeting clauses' });
+        }
+      }
       if (parentCampaign?.kind === 'campaign.create'
         && parentCampaign.payload.settings.product === 'SB'
         && parentCampaign.payload.settings.format === 'product_collection_automatic'
-        && node.payload.targetType !== 'keyword') {
+        && node.payload.targetType !== 'sb_keyword') {
         context.addIssue({ code: 'custom', path: ['nodes', index, 'payload'], message: 'automatic Sponsored Brands collections support keyword targeting only' });
+      }
+      if (parentCampaign?.kind === 'campaign.create'
+        && parentCampaign.payload.settings.product === 'SD') {
+        const audienceTarget = node.payload.targetType === 'sd_audience';
+        if ((parentCampaign.payload.settings.tactic === 'audience') !== audienceTarget) {
+          context.addIssue({ code: 'custom', path: ['nodes', index, 'payload'], message: 'Sponsored Display target variant differs from the campaign tactic' });
+        }
       }
     }
 
@@ -1001,6 +1202,7 @@ export const CampaignCreationProviderResult = z.discriminatedUnion('effect', [
     requestIndex: z.number().int().nonnegative().nullable(),
     outcome: z.enum(['passed', 'refused', 'failed']),
     providerEntityId: AmazonId.nullable(),
+    providerEntityVersion: z.string().min(1).nullable(),
     providerCode: z.string().max(160).nullable(),
     sanitizedMessage: z.string().max(512).nullable(),
     providerRequestId: z.string().min(1).max(256).nullable(),
@@ -1013,6 +1215,9 @@ export const CampaignCreationProviderResult = z.discriminatedUnion('effect', [
     }
     if (value.outcome !== 'passed' && value.providerEntityId !== null) {
       context.addIssue({ code: 'custom', path: ['providerEntityId'], message: 'a refused or failed check cannot claim a provider resource' });
+    }
+    if (value.outcome !== 'passed' && value.providerEntityVersion !== null) {
+      context.addIssue({ code: 'custom', path: ['providerEntityVersion'], message: 'a refused or failed check cannot claim a provider resource version' });
     }
     if (instantMillis(value.completedAt) < instantMillis(value.startedAt)) {
       context.addIssue({ code: 'custom', path: ['completedAt'], message: 'provider result cannot complete before it starts' });
@@ -1029,6 +1234,7 @@ export const CampaignCreationProviderResult = z.discriminatedUnion('effect', [
     requestIndex: z.number().int().nonnegative().nullable(),
     outcome: z.enum(['succeeded', 'failed', 'ambiguous']),
     providerEntityId: AmazonId.nullable(),
+    providerEntityVersion: z.null(),
     providerCode: z.string().max(160).nullable(),
     sanitizedMessage: z.string().max(512).nullable(),
     providerRequestId: z.string().min(1).max(256).nullable(),
@@ -1097,6 +1303,7 @@ export const CampaignCreationExecutionStatus = z.enum([
   'running',
   'awaiting_observation',
   'succeeded',
+  'failed',
   'partial_failed',
   'ambiguous',
   'refused',
@@ -1176,9 +1383,17 @@ export const CampaignCreationExecutionSnapshot = z.object({
   if (snapshot.status === 'partial_failed'
     && (!noDispatchPending || !noObservationPending || !noReadPending
       || counts.observationConflict !== 0
+      || counts.succeeded + counts.ambiguous === 0
       || counts.failed + counts.refusedAtExecution + counts.blockedByDependency
         + counts.observationNotFound + counts.readChecksRefused + counts.readChecksFailed === 0)) {
-    context.addIssue({ code: 'custom', path: ['status'], message: 'partial failure must be terminal and contain a refused, failed, or blocked outcome' });
+    context.addIssue({ code: 'custom', path: ['status'], message: 'partial failure must be terminal and contain both provider-created and unsuccessful work' });
+  }
+  if (snapshot.status === 'failed'
+    && (!noDispatchPending || !noObservationPending || !noReadPending
+      || counts.observationConflict !== 0 || counts.failed === 0
+      || counts.succeeded + counts.ambiguous !== 0
+      || counts.refusedAtExecution !== 0)) {
+    context.addIssue({ code: 'custom', path: ['status'], message: 'failed execution requires provider failure with no provider-created resources' });
   }
   if (snapshot.status === 'ambiguous'
     && (!noDispatchPending || !noObservationPending || !noReadPending
@@ -1233,8 +1448,12 @@ export const CampaignCreationExecutionEvidence = z.object({
   snapshot: CampaignCreationExecutionSnapshot,
 }).strict().superRefine((evidence, context) => {
   const nodesById = new Map(evidence.plan.nodes.map((node) => [node.nodeId, node]));
+  const planPosition = new Map(evidence.plan.nodes.map((node, index) => [node.nodeId, index]));
   const resultsByNode = new Map<string, CampaignCreationProviderResult>();
   const providerPositions = new Set<string>();
+  const providerCallIndexes = new Map<string, Array<number | null>>();
+  const providerEntityOwners = new Map<string, string>();
+  let previousResultPosition = -1;
 
   for (const [index, result] of evidence.providerResults.entries()) {
     const node = nodesById.get(result.nodeId);
@@ -1242,6 +1461,26 @@ export const CampaignCreationExecutionEvidence = z.object({
       || node === undefined || node.fingerprint !== result.nodeFingerprint
       || node.effect !== result.effect) {
       context.addIssue({ code: 'custom', path: ['providerResults', index], message: 'provider result does not match its exact plan node and execution' });
+    }
+    const currentPosition = planPosition.get(result.nodeId);
+    if (currentPosition !== undefined && currentPosition <= previousResultPosition) {
+      context.addIssue({ code: 'custom', path: ['providerResults', index], message: 'provider results must follow canonical plan-node order' });
+    }
+    if (currentPosition !== undefined) previousResultPosition = currentPosition;
+    if (instantMillis(result.startedAt) < instantMillis(evidence.plan.frozenAt)) {
+      context.addIssue({ code: 'custom', path: ['providerResults', index, 'startedAt'], message: 'provider work cannot begin before the plan is frozen' });
+    }
+    if (node?.effect === 'read_check' && result.effect === 'read_check'
+      && result.outcome === 'passed'
+      && result.providerEntityId !== expectedRequirementProviderEntityId(node)) {
+      context.addIssue({ code: 'custom', path: ['providerResults', index, 'providerEntityId'], message: 'passed preflight identity differs from the exact planned provider resource' });
+    }
+    if (node?.effect === 'read_check' && result.effect === 'read_check'
+      && result.outcome === 'passed'
+      && result.providerEntityVersion !== (node.kind === 'asset.require_existing'
+        ? node.payload.version
+        : null)) {
+      context.addIssue({ code: 'custom', path: ['providerResults', index, 'providerEntityVersion'], message: 'passed preflight version differs from the exact planned Asset version' });
     }
     if (resultsByNode.has(result.nodeId)) {
       context.addIssue({ code: 'custom', path: ['providerResults', index, 'nodeId'], message: 'execution evidence must contain one current provider result per node' });
@@ -1253,9 +1492,35 @@ export const CampaignCreationExecutionEvidence = z.object({
       context.addIssue({ code: 'custom', path: ['providerResults', index], message: 'provider call positions must be unique' });
     }
     providerPositions.add(providerPosition);
+    providerCallIndexes.set(result.providerCallId, [
+      ...(providerCallIndexes.get(result.providerCallId) ?? []),
+      result.requestIndex,
+    ]);
+    if (node?.effect === 'irreversible_create' && result.effect === 'irreversible_create'
+      && result.providerEntityId !== null) {
+      const identity = `${producedResourceKind(node)}:${result.providerEntityId}`;
+      const owner = providerEntityOwners.get(identity);
+      if (owner !== undefined && owner !== result.nodeId) {
+        context.addIssue({ code: 'custom', path: ['providerResults', index, 'providerEntityId'], message: `provider resource identity is already claimed by node ${owner}` });
+      } else {
+        providerEntityOwners.set(identity, result.nodeId);
+      }
+    }
+  }
+
+  for (const [providerCallId, indexes] of providerCallIndexes) {
+    const sortedIndexes = indexes.filter((value): value is number => value !== null)
+      .sort((left, right) => left - right);
+    const canonicalIndexes = sortedIndexes.map((_, index) => index);
+    if ((indexes.includes(null) && indexes.length !== 1)
+      || (!indexes.includes(null)
+        && JSON.stringify(sortedIndexes) !== JSON.stringify(canonicalIndexes))) {
+      context.addIssue({ code: 'custom', path: ['providerResults'], message: `provider call ${providerCallId} result positions must be a complete zero-based sequence` });
+    }
   }
 
   const dispositionsByNode = new Map<string, CampaignCreationNonProviderDisposition>();
+  let previousDispositionPosition = -1;
   for (const [index, disposition] of evidence.nonProviderDispositions.entries()) {
     const node = nodesById.get(disposition.nodeId);
     if (disposition.planId !== evidence.plan.id
@@ -1264,6 +1529,11 @@ export const CampaignCreationExecutionEvidence = z.object({
       || node.fingerprint !== disposition.nodeFingerprint) {
       context.addIssue({ code: 'custom', path: ['nonProviderDispositions', index], message: 'disposition does not match an exact create node and execution' });
     }
+    const currentPosition = planPosition.get(disposition.nodeId);
+    if (currentPosition !== undefined && currentPosition <= previousDispositionPosition) {
+      context.addIssue({ code: 'custom', path: ['nonProviderDispositions', index], message: 'dispositions must follow canonical plan-node order' });
+    }
+    if (currentPosition !== undefined) previousDispositionPosition = currentPosition;
     if (dispositionsByNode.has(disposition.nodeId) || resultsByNode.has(disposition.nodeId)) {
       context.addIssue({ code: 'custom', path: ['nonProviderDispositions', index, 'nodeId'], message: 'create node is accounted more than once' });
     } else {
@@ -1272,8 +1542,10 @@ export const CampaignCreationExecutionEvidence = z.object({
   }
 
   const observationsByNode = new Map<string, CampaignCreationResourceObservation>();
+  let previousObservationPosition = -1;
   for (const [index, observation] of evidence.observations.entries()) {
     const result = resultsByNode.get(observation.nodeId);
+    const node = nodesById.get(observation.nodeId);
     if (observation.planId !== evidence.plan.id
       || observation.executionId !== evidence.executionId
       || result?.effect !== 'irreversible_create'
@@ -1283,10 +1555,89 @@ export const CampaignCreationExecutionEvidence = z.object({
         && observation.providerEntityId !== result.providerEntityId)) {
       context.addIssue({ code: 'custom', path: ['observations', index], message: 'observation does not match an observable create result' });
     }
+    const currentPosition = planPosition.get(observation.nodeId);
+    if (currentPosition !== undefined && currentPosition <= previousObservationPosition) {
+      context.addIssue({ code: 'custom', path: ['observations', index], message: 'observations must follow canonical plan-node order' });
+    }
+    if (currentPosition !== undefined) previousObservationPosition = currentPosition;
+    if (result !== undefined
+      && instantMillis(observation.observedAt) < instantMillis(result.completedAt)) {
+      context.addIssue({ code: 'custom', path: ['observations', index, 'observedAt'], message: 'resource observation cannot predate its provider result' });
+    }
     if (observationsByNode.has(observation.nodeId)) {
       context.addIssue({ code: 'custom', path: ['observations', index, 'nodeId'], message: 'execution evidence must contain one current observation per node' });
     } else {
       observationsByNode.set(observation.nodeId, observation);
+    }
+    if (node?.effect === 'irreversible_create' && observation.providerEntityId !== null) {
+      const identity = `${producedResourceKind(node)}:${observation.providerEntityId}`;
+      const owner = providerEntityOwners.get(identity);
+      if (owner !== undefined && owner !== observation.nodeId) {
+        context.addIssue({ code: 'custom', path: ['observations', index, 'providerEntityId'], message: `provider resource identity is already claimed by node ${owner}` });
+      } else {
+        providerEntityOwners.set(identity, observation.nodeId);
+      }
+    }
+  }
+
+  const dependencyState = (dependencyId: string): {
+    state: 'satisfied' | 'pending' | 'terminal_unsatisfied';
+    completedAt?: string;
+  } => {
+    const result = resultsByNode.get(dependencyId);
+    if (result?.effect === 'read_check') {
+      return result.outcome === 'passed'
+        ? { state: 'satisfied', completedAt: result.completedAt }
+        : { state: 'terminal_unsatisfied' };
+    }
+    if (result?.effect === 'irreversible_create') {
+      if (result.outcome === 'succeeded') {
+        return { state: 'satisfied', completedAt: result.completedAt };
+      }
+      if (result.outcome === 'failed') return { state: 'terminal_unsatisfied' };
+      const observation = observationsByNode.get(dependencyId);
+      if (observation?.observation === 'observed') {
+        return { state: 'satisfied', completedAt: observation.observedAt };
+      }
+      if (observation?.observation === 'not_found' || observation?.observation === 'conflict') {
+        return { state: 'terminal_unsatisfied' };
+      }
+      return { state: 'pending' };
+    }
+    const disposition = dispositionsByNode.get(dependencyId);
+    if (disposition?.outcome === 'pending_dispatch') return { state: 'pending' };
+    if (disposition !== undefined) return { state: 'terminal_unsatisfied' };
+    return { state: 'pending' };
+  };
+
+  for (const node of evidence.plan.nodes) {
+    if (node.effect !== 'irreversible_create') continue;
+    const dependencies = node.dependsOn.map(dependencyState);
+    const result = resultsByNode.get(node.nodeId);
+    const disposition = dispositionsByNode.get(node.nodeId);
+    if (result?.effect === 'irreversible_create') {
+      if (dependencies.some((dependency) => dependency.state !== 'satisfied')) {
+        context.addIssue({ code: 'custom', path: ['providerResults'], message: `create node ${node.nodeId} ran before all dependencies succeeded` });
+      }
+      if (node.dependsOn.some((dependencyId) => (
+        resultsByNode.get(dependencyId)?.providerCallId === result.providerCallId
+      ))) {
+        context.addIssue({ code: 'custom', path: ['providerResults'], message: `create node ${node.nodeId} shares a provider call with its dependency` });
+      }
+      if (dependencies.some((dependency) => dependency.completedAt !== undefined
+        && instantMillis(result.startedAt) < instantMillis(dependency.completedAt))) {
+        context.addIssue({ code: 'custom', path: ['providerResults'], message: `create node ${node.nodeId} started before a dependency completed` });
+      }
+    }
+    const hasTerminalDependency = dependencies.some(
+      (dependency) => dependency.state === 'terminal_unsatisfied',
+    );
+    if (disposition?.outcome === 'blocked_by_dependency' && !hasTerminalDependency) {
+      context.addIssue({ code: 'custom', path: ['nonProviderDispositions'], message: `create node ${node.nodeId} claims a dependency block without a terminal failed dependency` });
+    }
+    if ((disposition?.outcome === 'pending_dispatch'
+      || disposition?.outcome === 'refused_at_execution') && hasTerminalDependency) {
+      context.addIssue({ code: 'custom', path: ['nonProviderDispositions'], message: `create node ${node.nodeId} must be blocked by its terminal failed dependency` });
     }
   }
 
