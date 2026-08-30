@@ -18,21 +18,21 @@ describe('web E2E runner arguments', () => {
 
   it('preserves Playwright options while selecting every suite', () => {
     expect(parseE2EArgs(['--grep', 'readiness'])).toEqual({
-      suites: ['tags-goto', 'grid-performance', 'auth'],
+      suites: ['tags-goto', 'grid-performance', 'auth', 'route-acceptance'],
       playwrightArgs: ['--grep', 'readiness'],
     });
   });
 
   it('does not forward the all-suite selector to Playwright', () => {
     expect(parseE2EArgs(['all', '--', 'grid.spec.ts'])).toEqual({
-      suites: ['tags-goto', 'grid-performance', 'auth'],
+      suites: ['tags-goto', 'grid-performance', 'auth', 'route-acceptance'],
       playwrightArgs: ['grid.spec.ts'],
     });
   });
 
   it('rejects an unknown suite instead of silently running everything', () => {
     expect(() => parseE2EArgs(['unknown'])).toThrow(
-      "Unknown suite 'unknown'. Expected one of: tags-goto, grid-performance, auth, all.",
+      "Unknown suite 'unknown'. Expected one of: tags-goto, grid-performance, auth, route-acceptance, all.",
     );
   });
 });

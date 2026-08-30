@@ -1,5 +1,10 @@
 /** Pure command-line parsing for the web E2E runner. */
-export const E2E_SUITES = ['tags-goto', 'grid-performance', 'auth'] as const;
+export const E2E_SUITES = [
+  'tags-goto',
+  'grid-performance',
+  'auth',
+  'route-acceptance',
+] as const;
 export type E2ESuite = (typeof E2E_SUITES)[number];
 
 export interface E2EInvocation {
