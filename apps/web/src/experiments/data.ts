@@ -61,6 +61,95 @@ export function selectProfileId(
   return (match ?? profiles[0])?.id ?? null;
 }
 
+export interface ExperimentCampaignOption {
+  id: string;
+  name: string;
+  available: boolean;
+}
+
+export interface ExperimentProductOption {
+  asin: string;
+  name: string | null;
+  sku: string | null;
+  available: boolean;
+}
+
+export interface ExperimentScopeOptions {
+  campaigns: ExperimentCampaignOption[];
+  products: ExperimentProductOption[];
+}
+
+/**
+ * Current Amazon entities that can scope an experiment.
+ *
+ * Deleted campaigns remain in the result so a deep link or historical scope
+ * can be named honestly. Product ads are collapsed to one ASIN: an ASIN can be
+ * advertised by several ads, but it is still one product selection here.
+ *
+ * The entity mirror does not currently synchronize a catalog image URL. Do not
+ * derive or guess one from an ASIN; the UI cleanly omits imagery until a
+ * reliable, already-synchronized source exists.
+ */
+export async function listExperimentScopeOptions(
+  handle: Pick<RequestDatabase, 'sql'>,
+  input: { orgId: string; profileId: string },
+): Promise<ExperimentScopeOptions> {
+  const [campaignRows, productRows] = await Promise.all([
+    handle.sql<{
+      amazon_id: string;
+      name: string | null;
+      available: boolean;
+    }[]>`
+      select amazon_id,
+             name,
+             deleted_at is null as available
+        from public.campaigns
+       where org_id = ${input.orgId}
+         and profile_id = ${input.profileId}
+       order by deleted_at nulls first, name nulls last, amazon_id
+    `,
+    handle.sql<{
+      asin: string;
+      name: string | null;
+      sku: string | null;
+      available: boolean;
+    }[]>`
+      select asin,
+             max(nullif(btrim(name), '')) filter (
+               where nullif(btrim(name), '') is distinct from asin
+                 and nullif(btrim(name), '') is distinct from nullif(btrim(sku), '')
+             ) as name,
+             max(nullif(btrim(sku), '')) as sku,
+             bool_or(deleted_at is null) as available
+        from public.product_ads
+       where org_id = ${input.orgId}
+         and profile_id = ${input.profileId}
+         and nullif(btrim(asin), '') is not null
+       group by asin
+       order by max(nullif(btrim(name), '')) nulls last, asin
+    `,
+  ]);
+
+  return {
+    campaigns: campaignRows.map((row) => ({
+      id: row.amazon_id,
+      name: row.name?.trim() || 'Unnamed campaign',
+      available: row.available,
+    })),
+    products: productRows.map((row) => ({
+      asin: row.asin,
+      // Amazon's SP product-ad endpoint commonly repeats the ASIN or SKU in
+      // `name`. Treat that as an identifier fallback, not a product title.
+      name:
+        row.name !== null && row.name !== row.asin && row.name !== row.sku
+          ? row.name
+          : null,
+      sku: row.sku,
+      available: row.available,
+    })),
+  };
+}
+
 export interface ProfileTestSignals {
   goal: string | null;
   campaignNames: string[];

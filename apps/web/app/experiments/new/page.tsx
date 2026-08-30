@@ -12,7 +12,11 @@ import { redirect } from 'next/navigation';
 import { isUnauthenticated, openWebDatabase, requestActor } from '../../../src/server/request-context';
 import { requireCapability } from '../../../src/server/org-role';
 import { idList } from '../../../src/experiments/http';
-import { listProfileOptions, selectProfileId } from '../../../src/experiments/data';
+import {
+  listExperimentScopeOptions,
+  listProfileOptions,
+  selectProfileId,
+} from '../../../src/experiments/data';
 import { heading, muted, page } from '../../../src/ui/tokens';
 import { NewExperimentForm } from './form';
 import type { PrefilledScope } from './form';
@@ -35,6 +39,13 @@ export default async function NewExperimentPage({ searchParams }: { searchParams
     const query = await searchParams;
     const profiles = await listProfileOptions(database, actor.orgId);
     const selectedProfileId = selectProfileId(profiles, single(query['profile']));
+    const scopeOptions =
+      selectedProfileId === null
+        ? { campaigns: [], products: [] }
+        : await listExperimentScopeOptions(database, {
+            orgId: actor.orgId,
+            profileId: selectedProfileId,
+          });
 
     const scope: PrefilledScope = {
       campaignIds: idList(query['campaigns']) ?? [],
@@ -50,6 +61,7 @@ export default async function NewExperimentPage({ searchParams }: { searchParams
         selectedProfileId={selectedProfileId}
         prefillName={single(query['name']) ?? ''}
         scope={scope}
+        initialScopeOptions={scopeOptions}
       />
     );
   } catch (error) {
