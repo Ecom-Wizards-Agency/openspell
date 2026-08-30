@@ -70,8 +70,26 @@ export const MarketingStreamLedgerEvent = z.object({
   payloadHash: z.string().min(1),
   rawPayload: z.record(z.string(), z.unknown()),
   provider: MarketingStreamProviderIdentity.optional(),
+}).superRefine((event, context) => {
+  if (!event.provider) return;
+  const expected = providerDatasetContract(event.provider.datasetId);
+  if (event.dataset !== expected.dataset) {
+    context.addIssue({ code: 'custom', path: ['dataset'], message: 'dataset conflicts with provider dataset' });
+  }
+  if (expected.adProduct !== null && event.adProduct !== expected.adProduct) {
+    context.addIssue({ code: 'custom', path: ['adProduct'], message: 'ad product conflicts with provider dataset' });
+  }
 });
 export type MarketingStreamLedgerEvent = z.infer<typeof MarketingStreamLedgerEvent>;
+
+function providerDatasetContract(datasetId: AmazonMarketingStreamDatasetId): {
+  dataset: z.infer<typeof MarketingStreamDataset>;
+  adProduct: z.infer<typeof AdProduct> | null;
+} {
+  if (datasetId === 'budget-usage') return { dataset: 'budget_usage', adProduct: null };
+  const [product, kind] = datasetId.split('-') as ['sp' | 'sb' | 'sd', 'traffic' | 'conversion'];
+  return { dataset: kind, adProduct: product.toUpperCase() as z.infer<typeof AdProduct> };
+}
 
 /**
  * One transport-neutral unit delivered through the private SQS queue.

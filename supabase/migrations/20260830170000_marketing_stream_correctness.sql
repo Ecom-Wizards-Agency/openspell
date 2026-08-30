@@ -96,11 +96,22 @@ alter table public.marketing_stream_events
       'sd-traffic', 'sd-conversion',
       'budget-usage'
     )
+  ),
+  add constraint marketing_stream_events_provider_contract_check check (
+    provider_dataset_id is null or
+    (provider_dataset_id = 'sp-traffic' and dataset = 'traffic' and ad_product = 'SP') or
+    (provider_dataset_id = 'sp-conversion' and dataset = 'conversion' and ad_product = 'SP') or
+    (provider_dataset_id = 'sb-traffic' and dataset = 'traffic' and ad_product = 'SB') or
+    (provider_dataset_id = 'sb-conversion' and dataset = 'conversion' and ad_product = 'SB') or
+    (provider_dataset_id = 'sd-traffic' and dataset = 'traffic' and ad_product = 'SD') or
+    (provider_dataset_id = 'sd-conversion' and dataset = 'conversion' and ad_product = 'SD') or
+    (provider_dataset_id = 'budget-usage' and dataset = 'budget_usage')
   );
 
 create unique index marketing_stream_events_provider_identity_key
   on public.marketing_stream_events
-    (binding_id, provider_dataset_id, provider_event_id)
+    (profile_id, provider_dataset_id, provider_advertiser_id,
+     provider_marketplace_id, provider_event_id)
   where binding_id is not null;
 
 -- One durable profile-level block accumulates every scope whose projection
@@ -116,6 +127,7 @@ create table public.marketing_stream_projection_blocks (
   retry_count integer not null default 0,
   alert_state text not null default 'pending',
   last_reason text not null,
+  generation bigint not null default 1,
   updated_at timestamptz not null default now(),
   primary key (org_id, profile_id),
   constraint marketing_stream_projection_blocks_profile_fkey
@@ -123,6 +135,8 @@ create table public.marketing_stream_projection_blocks (
     references public.ad_profiles (org_id, id) on delete cascade,
   constraint marketing_stream_projection_blocks_scopes_nonempty
     check (cardinality(scope_keys) > 0),
+  constraint marketing_stream_projection_blocks_scopes_bounded
+    check (cardinality(scope_keys) <= 4096),
   constraint marketing_stream_projection_blocks_retry_nonnegative
     check (retry_count >= 0),
   constraint marketing_stream_projection_blocks_alert_state_check

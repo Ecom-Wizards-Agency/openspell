@@ -46,7 +46,7 @@ interface MarketingStreamProjectionBlockStore {
     reason: string;
   }): Promise<MarketingStreamProjectionBlock>;
   read(input: { orgId: string; profileId: string }): Promise<MarketingStreamProjectionBlock | null>;
-  clear(input: { orgId: string; profileId: string }): Promise<boolean>;
+  clear(input: { orgId: string; profileId: string; expectedGeneration: number }): Promise<boolean>;
 }
 
 export function createMarketingStreamNormalizeHandler(input: {
@@ -138,7 +138,11 @@ export function createMarketingStreamNormalizeHandler(input: {
     ) {
       throw new MarketingStreamNormalizationError('replay projection counts do not reconcile');
     }
-    const blockedProjectionCleared = blocked === null ? false : await blocks.clear(payload);
+    const blockedProjectionCleared = blocked === null ? false : await blocks.clear({
+      orgId: payload.orgId,
+      profileId: payload.profileId,
+      expectedGeneration: blocked.generation,
+    });
 
     const transitionAt = nextMarketingStreamTransitionAt(snapshot, policy);
     let transitionCreated = false;

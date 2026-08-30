@@ -117,6 +117,7 @@ describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
       duplicateMessages: 3,
       revisedMessages: 0,
     });
+    expect(redelivery.sourceFingerprint).toBe(appended.sourceFingerprint);
 
     const scope = appended.affectedScopes[0]!;
     const original = await snapshotLatestMarketingStreamEvents(database, { orgId, profileId, scopes: [scope] });
@@ -142,8 +143,9 @@ describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
       payloadHash: 'conversion-revision-two',
       receivedAt: '2026-06-03T00:00:00.000Z',
     });
-    expect(await appendMarketingStreamEvents(database, { orgId, profileId, events: [revisionTwo] }))
-      .toMatchObject({ insertedMessages: 1, revisedMessages: 1, duplicateMessages: 0 });
+    const revisedAppend = await appendMarketingStreamEvents(database, { orgId, profileId, events: [revisionTwo] });
+    expect(revisedAppend).toMatchObject({ insertedMessages: 1, revisedMessages: 1, duplicateMessages: 0 });
+    expect(revisedAppend.sourceFingerprint).not.toBe(appended.sourceFingerprint);
 
     await expect(replaceMarketingStreamHourlyFacts(database, {
       orgId,
@@ -210,8 +212,34 @@ describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
     expect(await appendMarketingStreamEvents(database, {
       orgId, profileId, events: [providerEvent],
     })).toMatchObject({ insertedMessages: 1, duplicateMessages: 0 });
+    await expect(database.sql`
+      update public.marketing_stream_events
+         set ad_product = 'SB'::public.ad_product
+       where profile_id = ${profileId} and message_id = ${providerEvent.messageId}
+    `).rejects.toThrow(/marketing_stream_events_provider_contract_check/i);
     expect(await appendMarketingStreamEvents(database, {
       orgId, profileId, events: [providerEvent],
+    })).toMatchObject({ insertedMessages: 0, duplicateMessages: 1 });
+    await database.sql`update public.marketing_stream_subscription_bindings set active = false where id = ${binding.id}`;
+    const [rotated] = await database.sql<{ id: string }[]>`
+      insert into public.marketing_stream_subscription_bindings (
+        org_id, profile_id, subscription_id, provider_dataset_id, advertiser_id, marketplace_id
+      ) values (
+        ${orgId}, ${profileId}, 'subscription-rotated', ${binding.datasetId},
+        ${binding.advertiserId}, ${binding.marketplaceId}
+      ) returning id
+    `;
+    expect(await appendMarketingStreamEvents(database, {
+      orgId,
+      profileId,
+      events: [{
+        ...providerEvent,
+        provider: {
+          ...providerEvent.provider!,
+          bindingId: rotated!.id,
+          subscriptionId: 'subscription-rotated',
+        },
+      }],
     })).toMatchObject({ insertedMessages: 0, duplicateMessages: 1 });
     await expect(appendMarketingStreamEvents(database, {
       orgId,
@@ -324,7 +352,10 @@ describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
   });
 
   it('consolidates bounded missing-policy state and clears it after recovery', async () => {
-    await clearMarketingStreamProjectionBlock(database, { orgId, profileId });
+    const existingBlock = await readMarketingStreamProjectionBlock(database, { orgId, profileId });
+    if (existingBlock) await clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedGeneration: existingBlock.generation,
+    });
     const firstScope = { adProduct: 'SP' as const, utcHour: firstHour };
     const secondScope = { adProduct: 'SB' as const, utcHour: secondHour };
     await expect(markMarketingStreamProjectionBlocked(database, {
@@ -351,9 +382,36 @@ describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
     });
     await expect(readMarketingStreamProjectionBlock(database, { orgId, profileId }))
       .resolves.toMatchObject({ retryCount: 2, alertState: 'alerted', lastReason: 'synthetic policy still absent' });
-    await expect(clearMarketingStreamProjectionBlock(database, { orgId, profileId })).resolves.toBe(true);
-    await expect(clearMarketingStreamProjectionBlock(database, { orgId, profileId })).resolves.toBe(false);
+    const block = await readMarketingStreamProjectionBlock(database, { orgId, profileId });
+    expect(block).not.toBeNull();
+    await expect(clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedGeneration: block!.generation,
+    })).resolves.toBe(true);
+    await expect(clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedGeneration: block!.generation,
+    })).resolves.toBe(false);
     await expect(readMarketingStreamProjectionBlock(database, { orgId, profileId })).resolves.toBeNull();
+  });
+
+  it('does not let an older successful replay clear a concurrently renewed policy block', async () => {
+    const scope = { adProduct: 'SP' as const, utcHour: firstHour };
+    const first = await markMarketingStreamProjectionBlocked(database, {
+      orgId, profileId, scopes: [scope], blockedAt: new Date('2026-06-02T10:00:00.000Z'),
+      retryAttempt: 0, retryLimit: 2, reason: 'synthetic policy absent',
+    });
+    const newer = await markMarketingStreamProjectionBlocked(database, {
+      orgId, profileId, scopes: [scope], blockedAt: new Date('2026-06-02T11:00:00.000Z'),
+      retryAttempt: 1, retryLimit: 2, reason: 'synthetic concurrent renewal',
+    });
+    expect(newer.generation).toBeGreaterThan(first.generation);
+    await expect(clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedGeneration: first.generation,
+    })).resolves.toBe(false);
+    await expect(readMarketingStreamProjectionBlock(database, { orgId, profileId }))
+      .resolves.toMatchObject({ generation: newer.generation, lastReason: 'synthetic concurrent renewal' });
+    await expect(clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedGeneration: newer.generation,
+    })).resolves.toBe(true);
   });
 
   it('recomputes both old and new scopes when a latest revision moves hours', async () => {

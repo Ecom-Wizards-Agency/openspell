@@ -45,6 +45,7 @@ const RECEIVE_BATCH_SIZE = 10;
 const LONG_POLL_SECONDS = 20;
 const RETRY_BASE_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
+const SQS_OPERATION_TIMEOUT_MS = 30_000;
 
 export interface MarketingStreamQueueMessage {
   messageId: string | null;
@@ -56,9 +57,9 @@ export interface MarketingStreamQueueMessage {
 /** Narrow transport seam: unit tests never need AWS credentials or a queue. */
 export interface MarketingStreamQueueClient {
   receive(queueUrl: string, signal: AbortSignal): Promise<MarketingStreamQueueMessage[]>;
-  delete(queueUrl: string, receiptHandle: string): Promise<void>;
-  configuration?(queueUrl: string): Promise<MarketingStreamQueueConfiguration>;
-  extendVisibility?(queueUrl: string, receiptHandle: string, seconds: number): Promise<void>;
+  delete(queueUrl: string, receiptHandle: string, signal: AbortSignal): Promise<void>;
+  configuration?(queueUrl: string, signal: AbortSignal): Promise<MarketingStreamQueueConfiguration>;
+  extendVisibility?(queueUrl: string, receiptHandle: string, seconds: number, signal: AbortSignal): Promise<void>;
   destroy(): void;
 }
 
@@ -81,15 +82,15 @@ export class AwsMarketingStreamQueueClient implements MarketingStreamQueueClient
     return (response.Messages ?? []).map(toQueueMessage);
   }
 
-  async delete(queueUrl: string, receiptHandle: string): Promise<void> {
-    await this.client.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: receiptHandle }));
+  async delete(queueUrl: string, receiptHandle: string, signal: AbortSignal): Promise<void> {
+    await this.client.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: receiptHandle }), { abortSignal: signal });
   }
 
-  async configuration(queueUrl: string): Promise<MarketingStreamQueueConfiguration> {
+  async configuration(queueUrl: string, signal: AbortSignal): Promise<MarketingStreamQueueConfiguration> {
     const response = await this.client.send(new GetQueueAttributesCommand({
       QueueUrl: queueUrl,
       AttributeNames: ['VisibilityTimeout', 'RedrivePolicy'],
-    }));
+    }), { abortSignal: signal });
     const visibilityTimeoutSeconds = Number(response.Attributes?.VisibilityTimeout);
     const redrivePolicy = parseRedrivePolicy(response.Attributes?.RedrivePolicy);
     const configuration = {
@@ -101,12 +102,12 @@ export class AwsMarketingStreamQueueClient implements MarketingStreamQueueClient
     return configuration;
   }
 
-  async extendVisibility(queueUrl: string, receiptHandle: string, seconds: number): Promise<void> {
+  async extendVisibility(queueUrl: string, receiptHandle: string, seconds: number, signal: AbortSignal): Promise<void> {
     await this.client.send(new ChangeMessageVisibilityCommand({
       QueueUrl: queueUrl,
       ReceiptHandle: receiptHandle,
       VisibilityTimeout: seconds,
-    }));
+    }), { abortSignal: signal });
   }
 
   destroy(): void {
@@ -358,9 +359,9 @@ export class MarketingStreamSqsConsumer {
 
   /** One long poll, exposed for deterministic runtime tests. */
   async pollOnce(signal: AbortSignal = new AbortController().signal): Promise<number> {
-    await this.ensureQueueConfiguration();
+    await this.ensureQueueConfiguration(operationSignal(signal));
     if (signal.aborted) throw abortError();
-    const messages = await this.queue.receive(this.queueUrl, signal);
+    const messages = await this.queue.receive(this.queueUrl, operationSignal(signal));
     this.counters.received += messages.length;
     const groups = new Map<string, PreparedMarketingStreamDelivery[]>();
     for (const message of messages) {
@@ -379,6 +380,7 @@ export class MarketingStreamSqsConsumer {
                 this.queueUrl,
                 message.receiptHandle!,
                 this.queueConfiguration!.visibilityTimeoutSeconds,
+                operationSignal(signal),
               );
               this.counters.visibilityHeartbeats += 1;
             },
@@ -408,7 +410,7 @@ export class MarketingStreamSqsConsumer {
         this.recordDeliveryFailure(message, error);
       }
     }
-    for (const group of groups.values()) await this.processGroup(group);
+    for (const group of groups.values()) await this.processGroup(group, signal);
     return messages.length;
   }
 
@@ -435,7 +437,7 @@ export class MarketingStreamSqsConsumer {
     }
   }
 
-  private async processGroup(group: readonly PreparedMarketingStreamDelivery[]): Promise<void> {
+  private async processGroup(group: readonly PreparedMarketingStreamDelivery[], signal: AbortSignal): Promise<void> {
     const first = group[0];
     if (!first) return;
     this.inFlight += group.length;
@@ -469,7 +471,14 @@ export class MarketingStreamSqsConsumer {
           profileId: envelope.profileId,
           messageIds,
           runAt: this.now(),
-          dedupeKey: normalizeDedupeKey(envelope.orgId, envelope.profileId, messageIds),
+          dedupeKey: normalizeDedupeKey(
+            envelope.orgId,
+            envelope.profileId,
+            append.sourceFingerprint ?? envelope.events
+              .map((event) => `${event.dataset}|${event.messageId}|${event.revision}|${event.payloadHash}`)
+              .sort()
+              .join('\n'),
+          ),
         });
         assertHealthyHeartbeats(group);
         if (created) this.counters.normalizeJobsCreated += 1;
@@ -511,7 +520,7 @@ export class MarketingStreamSqsConsumer {
         this.counters.rawRowsDuplicated += duplicateEvents;
       }
 
-      for (const delivery of group) await this.acknowledge(delivery);
+      for (const delivery of group) await this.acknowledge(delivery, signal);
       this.logger.info('Marketing Stream profile group retained and queued', {
         deliveries: group.length,
         receivedEvents,
@@ -526,12 +535,12 @@ export class MarketingStreamSqsConsumer {
     }
   }
 
-  private async acknowledge(delivery: PreparedMarketingStreamDelivery): Promise<void> {
+  private async acknowledge(delivery: PreparedMarketingStreamDelivery, signal: AbortSignal): Promise<void> {
     const { message, heartbeat } = delivery;
     if (!message.receiptHandle) throw new MarketingStreamDeliveryError('SQS delivery has no receipt handle');
     try {
       heartbeat?.throwIfFailed();
-      await this.queue.delete(this.queueUrl, message.receiptHandle);
+      await this.queue.delete(this.queueUrl, message.receiptHandle, operationSignal(signal));
       this.counters.acknowledged += 1;
       this.lastSuccessAt = this.now().toISOString();
     } catch (error) {
@@ -554,9 +563,9 @@ export class MarketingStreamSqsConsumer {
     });
   }
 
-  private async ensureQueueConfiguration(): Promise<void> {
+  private async ensureQueueConfiguration(signal: AbortSignal): Promise<void> {
     if (this.queueConfiguration !== null || !this.queue.configuration) return;
-    this.queueConfiguration = await this.queue.configuration(this.queueUrl);
+    this.queueConfiguration = await this.queue.configuration(this.queueUrl, signal);
     assertQueueConfiguration(this.queueConfiguration);
     if (!this.queue.extendVisibility) {
       throw new MarketingStreamConfigurationError(
@@ -911,12 +920,16 @@ function mergeDeliveryGroup(
 function normalizeDedupeKey(
   orgId: string,
   profileId: string,
-  messageIds: readonly string[],
+  sourceFingerprint: string,
 ): string {
   const fingerprint = createHash('sha256')
-    .update(JSON.stringify({ orgId, profileId, messageIds: [...messageIds].sort() }))
+    .update(JSON.stringify({ orgId, profileId, sourceFingerprint }))
     .digest('hex');
   return `marketing-stream:normalize:${fingerprint}`;
+}
+
+function operationSignal(parent: AbortSignal): AbortSignal {
+  return AbortSignal.any([parent, AbortSignal.timeout(SQS_OPERATION_TIMEOUT_MS)]);
 }
 
 function stableJson(value: unknown): string {

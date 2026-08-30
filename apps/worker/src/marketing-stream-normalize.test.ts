@@ -305,6 +305,7 @@ function projectionBlocks(seed?: { scopes: MarketingStreamScope[] }) {
     retryCount: 0,
     alertState: 'pending',
     lastReason: 'policy absent',
+    generation: 1,
   } : null;
   return {
     mark: async (input: {
@@ -333,12 +334,14 @@ function projectionBlocks(seed?: { scopes: MarketingStreamScope[] }) {
           ? 'alerted'
           : block?.alertState ?? 'pending',
         lastReason: input.reason,
+        generation: (block?.generation ?? 0) + 1,
       };
       return block;
     },
     read: async (_input: { orgId: string; profileId: string }) => block,
-    clear: async (_input: { orgId: string; profileId: string }) => {
-      const existed = block !== null;
+    clear: async (input: { orgId: string; profileId: string; expectedGeneration: number }) => {
+      const existed = block?.generation === input.expectedGeneration;
+      if (!existed) return false;
       block = null;
       return existed;
     },

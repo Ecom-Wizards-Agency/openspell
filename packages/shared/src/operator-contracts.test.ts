@@ -469,6 +469,30 @@ describe('Marketing Stream and dayparting', () => {
         eventId: 'provider-event-synthetic',
       },
     }).provider?.eventId).toBe('provider-event-synthetic');
+    expect(MarketingStreamLedgerEvent.safeParse({
+      ...event,
+      adProduct: 'SP',
+      provider: {
+        bindingId: binding.id,
+        subscriptionId: binding.subscriptionId,
+        datasetId: binding.datasetId,
+        advertiserId: binding.advertiserId,
+        marketplaceId: binding.marketplaceId,
+        eventId: 'provider-event-mismatched-product',
+      },
+    }).success).toBe(false);
+    expect(MarketingStreamLedgerEvent.safeParse({
+      ...event,
+      dataset: 'traffic',
+      provider: {
+        bindingId: binding.id,
+        subscriptionId: binding.subscriptionId,
+        datasetId: binding.datasetId,
+        advertiserId: binding.advertiserId,
+        marketplaceId: binding.marketplaceId,
+        eventId: 'provider-event-mismatched-dataset',
+      },
+    }).success).toBe(false);
 
     const fact = MarketingStreamHourlyFact.parse({
       profileId: PROFILE_ID,

@@ -8,6 +8,7 @@
  * IDs under a scoped advisory lock and refuses a stale calculation instead of
  * allowing an out-of-order worker to overwrite newer evidence.
  */
+import { createHash } from 'node:crypto';
 import type { Sql } from '../client.js';
 import {
   DaypartingScheduleProposal,
@@ -41,6 +42,8 @@ export interface MarketingStreamAppendResult {
   duplicateMessages: number;
   revisedMessages: number;
   affectedScopes: MarketingStreamScope[];
+  /** Fingerprint of the latest canonical ledger revisions in affected scopes. */
+  sourceFingerprint?: string | null;
 }
 
 export interface MarketingStreamSnapshot {
@@ -68,6 +71,7 @@ export interface MarketingStreamProjectionBlock {
   retryCount: number;
   alertState: 'pending' | 'alerted';
   lastReason: string;
+  generation: number;
 }
 
 export interface ReadMarketingStreamFactsInput {
@@ -85,6 +89,8 @@ export class MarketingStreamPersistenceError extends Error {
     this.name = 'MarketingStreamPersistenceError';
   }
 }
+
+const MAX_BLOCKED_MARKETING_STREAM_SCOPES = 4_096;
 
 /** Resolve provider traffic only through an explicit active subscription binding. */
 export async function resolveMarketingStreamSubscriptionBinding(
@@ -196,6 +202,7 @@ interface ProjectionBlockWireRow {
   retry_count: number;
   alert_state: 'pending' | 'alerted';
   last_reason: string;
+  generation: number | string;
 }
 
 /** Append valid shared-contract events without collapsing later revisions. */
@@ -239,6 +246,7 @@ export async function appendMarketingStreamEvents(
       duplicateMessages,
       revisedMessages: 0,
       affectedScopes: [],
+      sourceFingerprint: null,
     };
   }
 
@@ -340,12 +348,17 @@ export async function appendMarketingStreamEvents(
       adProduct: row.ad_product,
       utcHour: truncateUtcHour(row.event_time),
     })));
+    const latest = await latestEventsForScopes(sql, input.orgId, input.profileId, affectedScopes);
+    const sourceFingerprint = createHash('sha256')
+      .update(latest.map((event) => event.id).sort().join('\n'))
+      .digest('hex');
     return {
       offeredMessages: input.events.length,
       insertedMessages,
       duplicateMessages,
       revisedMessages,
       affectedScopes,
+      sourceFingerprint,
     };
   });
 }
@@ -444,17 +457,20 @@ export async function markMarketingStreamProjectionBlocked(
     throw new MarketingStreamPersistenceError('blocked projection reason is empty');
   }
   const scopeKeys = scopes.map(marketingStreamScopeKey);
+  if (scopeKeys.length > MAX_BLOCKED_MARKETING_STREAM_SCOPES) {
+    throw new MarketingStreamPersistenceError('blocked projection exceeds the bounded scope limit');
+  }
   const [row] = await handle.sql<ProjectionBlockWireRow[]>`
     insert into public.marketing_stream_projection_blocks (
       org_id, profile_id, scope_keys, first_blocked_at, last_blocked_at,
-      retry_count, alert_state, last_reason
+      retry_count, alert_state, last_reason, generation
     ) values (
       ${input.orgId}, ${input.profileId}, ${scopeKeys}::text[],
       ${input.blockedAt.toISOString()}::timestamptz,
       ${input.blockedAt.toISOString()}::timestamptz,
       ${input.retryAttempt},
       ${input.retryAttempt >= input.retryLimit ? 'alerted' : 'pending'},
-      ${input.reason.trim()}
+      ${input.reason.trim()}, 1
     )
     on conflict (org_id, profile_id) do update
        set scope_keys = (
@@ -480,11 +496,18 @@ export async function markMarketingStreamProjectionBlocked(
              then 'alerted'
              else 'pending'
            end,
-           last_reason = excluded.last_reason
+           last_reason = excluded.last_reason,
+           generation = public.marketing_stream_projection_blocks.generation + 1
+     where cardinality((
+             select array_agg(distinct scope_key)
+               from unnest(
+                 public.marketing_stream_projection_blocks.scope_keys || excluded.scope_keys
+               ) as scope_key
+           )) <= ${MAX_BLOCKED_MARKETING_STREAM_SCOPES}
     returning org_id, profile_id, scope_keys, first_blocked_at,
-              last_blocked_at, retry_count, alert_state, last_reason
+              last_blocked_at, retry_count, alert_state, last_reason, generation
   `;
-  if (!row) throw new MarketingStreamPersistenceError('blocked projection upsert returned no row');
+  if (!row) throw new MarketingStreamPersistenceError('blocked projection exceeds the bounded scope limit');
   return rowToProjectionBlock(row);
 }
 
@@ -496,7 +519,7 @@ export async function readMarketingStreamProjectionBlock(
   assertUuid('profileId', input.profileId);
   const [row] = await handle.sql<ProjectionBlockWireRow[]>`
     select org_id, profile_id, scope_keys, first_blocked_at,
-           last_blocked_at, retry_count, alert_state, last_reason
+           last_blocked_at, retry_count, alert_state, last_reason, generation
       from public.marketing_stream_projection_blocks
      where org_id = ${input.orgId} and profile_id = ${input.profileId}
   `;
@@ -505,13 +528,14 @@ export async function readMarketingStreamProjectionBlock(
 
 export async function clearMarketingStreamProjectionBlock(
   handle: DbHandle,
-  input: { orgId: string; profileId: string },
+  input: { orgId: string; profileId: string; expectedGeneration: number },
 ): Promise<boolean> {
   assertUuid('orgId', input.orgId);
   assertUuid('profileId', input.profileId);
   const rows = await handle.sql<{ profile_id: string }[]>`
     delete from public.marketing_stream_projection_blocks
      where org_id = ${input.orgId} and profile_id = ${input.profileId}
+       and generation = ${input.expectedGeneration}
     returning profile_id
   `;
   if (rows.length > 1) throw new MarketingStreamPersistenceError('cleared more than one projection block');
@@ -809,9 +833,7 @@ function sameProviderIdentity(
   right: MarketingStreamLedgerEventValue['provider'],
 ): boolean {
   if (left === undefined || right === undefined) return left === right;
-  return left.bindingId === right.bindingId
-    && left.subscriptionId === right.subscriptionId
-    && left.datasetId === right.datasetId
+  return left.datasetId === right.datasetId
     && left.advertiserId === right.advertiserId
     && left.marketplaceId === right.marketplaceId
     && left.eventId === right.eventId;
@@ -893,6 +915,7 @@ function rowToProjectionBlock(row: ProjectionBlockWireRow): MarketingStreamProje
     retryCount: Number(row.retry_count),
     alertState: row.alert_state,
     lastReason: row.last_reason,
+    generation: Number(row.generation),
   };
 }
 

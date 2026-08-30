@@ -26,9 +26,9 @@ complete affected UTC-hour scopes and schedules later settling transitions.
    even when it is lower than an older observation.
 3. Provider timestamps must carry `Z` or an explicit numeric offset before
    they are normalized to UTC.
-4. Provider identity is unique within its exact subscription binding and is
-   retained on every raw event. A binding's provider fields are protected by a
-   composite foreign key.
+4. Provider event identity is independent of delivery-route provenance, so a
+   redelivery after binding rotation deduplicates. The binding used at first
+   receipt is still retained and protected by a composite foreign key.
 5. Append and projection take the same profile advisory lock before projection
    takes sorted scope locks. Exact source-event fingerprints still reject a
    stale replacement.
@@ -46,9 +46,19 @@ complete affected UTC-hour scopes and schedules later settling transitions.
 9. Missing tenant policy accumulates affected scopes in one durable profile
    block. At most one retry is queued per profile/hour, retries cap after 24
    attempts with an alert state, and the next successful profile job replays
-   and clears every accumulated scope.
+   and clears every accumulated scope. Scope accumulation is capped at 4,096;
+   overflow fails visibly without acknowledging the raw delivery. An operator
+   can requeue any retained message for an alerted quiet profile; the handler
+   always unions that message's scopes with the durable block.
 
 ## Local verification
+
+The migration remains unapplied. Before an authorized production run, inspect
+row counts and duplicate provider identities, estimate index-build volume, and
+schedule for a low-ingestion window: the composite foreign key, validation
+checks, and provider-identity unique index can lock or scan the events table.
+Apply with an explicit lock timeout and abort rather than waiting behind live
+ingestion; verify constraints and index validity before enabling the consumer.
 
 - Shared, database, worker, and web typechecks.
 - Signed/out-of-order correction and latest-budget unit tests.
