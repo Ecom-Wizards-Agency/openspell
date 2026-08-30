@@ -33,7 +33,7 @@ const REJECTED_BODY = /role=["']alert["']|Application error|Internal Server Erro
 const ROUTES = [
   { route: '/', expectedText: 'Dashboard' },
   { route: '/dashboard', expectedText: 'Dashboard' },
-  { route: '/grid', expectedText: 'Search terms' },
+  { route: '/grid', expectedText: 'data-testid="grid-scroller"' },
   { route: '/optimizer', expectedText: 'Campaign Optimizer' },
   { route: '/optimizer/groups', expectedText: 'Optimization Groups' },
   { route: '/creative', expectedText: 'Creative Performance' },
@@ -88,13 +88,13 @@ async function main(): Promise<void> {
     .map((cookie) => `${cookie.name}=${cookie.value}`)
     .join('; ');
 
-  // Supabase access tokens can cross their expiry boundary during a serial
-  // sweep. Evaluate the immutable artifact concurrently against one captured
-  // auth state so later routes cannot become false login failures merely
-  // because earlier read-only checks consumed the remaining token lifetime.
-  const results = await Promise.all(
-    ROUTES.map((check) => verifyRoute(candidate, check, cookieHeader, profileId)),
-  );
+  // Keep database-backed route checks serial. A concurrent sweep can consume
+  // the production session pool and manufacture 500s that real navigation
+  // would never create.
+  const results: RouteResult[] = [];
+  for (const check of ROUTES) {
+    results.push(await verifyRoute(candidate, check, cookieHeader, profileId));
+  }
 
   const passed = results.every((result) => result.passed);
   console.log(JSON.stringify({ candidate: candidate.origin, passed, routes: results }, null, 2));
