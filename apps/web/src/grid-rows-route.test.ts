@@ -1,16 +1,23 @@
 /** Auth, tenancy, count, and cache contract for the complete Grid row route. */
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
+import { createRequestDatabase } from '@wizard-ads/db';
+import type { RequestDatabase } from '@wizard-ads/db';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import type { GridRow } from '@wizard-ads/ui';
-import { GET, parseGridRowsQuery } from '../app/api/grid/rows/route.js';
+import { createGridRowsGet, GET, parseGridRowsQuery } from '../app/api/grid/rows/route.js';
 import {
   GRID_RESPONSE_BODY_BUDGET_BYTES,
   serializeGridPayloadWithinBudget,
 } from '../app/api/grid/rows/serialize.js';
 import { GRID_SERVER_TIMING_SPANS } from '../app/api/grid/rows/server-timing.js';
+import { RequestAuthError } from './server/request-context.js';
+import {
+  createGridRequestAuthorizer,
+  resolveGridReadReceipt,
+} from './grid/request-context.js';
 
 const available = await databaseAvailable();
 const USER_A = '14141414-1414-4414-8414-141414141414';
@@ -65,12 +72,21 @@ describe('Grid rows route contract', () => {
   });
 
   it('contains no Amazon client, mutation, credential, or outbound fetch path', async () => {
-    const source = await readFile(
-      fileURLToPath(new URL('../app/api/grid/rows/route.ts', import.meta.url)),
-      'utf8',
-    );
+    const source = (
+      await Promise.all([
+        readFile(
+          fileURLToPath(new URL('../app/api/grid/rows/route.ts', import.meta.url)),
+          'utf8',
+        ),
+        readFile(
+          fileURLToPath(new URL('./grid/request-context.ts', import.meta.url)),
+          'utf8',
+        ),
+      ])
+    ).join('\n');
     expect(source).not.toMatch(/ads-api|sp-api|amazon token|enqueue|\bfetch\s*\(/i);
     expect(source).toContain('loadGridRows');
+    expect(source).toContain('getClaims()');
   });
 });
 
@@ -124,6 +140,160 @@ describe('Grid response byte budget', () => {
       truncated: false,
     });
     expect(nextAttempt.payload.rowCount).toBe(parsed.rowCount);
+  });
+});
+
+describe('Grid rows route runtime', () => {
+  const validQuery = new URLSearchParams({
+    profile: UNKNOWN_PROFILE,
+    entity: 'targets',
+    from: TEST_DATE,
+    to: TEST_DATE,
+  }).toString();
+  const request = (query = validQuery) => new Request(`http://localhost/api/grid/rows?${query}`);
+
+  function database() {
+    const close = vi.fn(async () => {});
+    const sql = vi.fn() as unknown as RequestDatabase['sql'];
+    return { handle: { sql, close }, close };
+  }
+
+  it('passes one request handle and only receipt-owned scope to the row loader, then closes once', async () => {
+    const { handle, close } = database();
+    const seen: unknown[] = [];
+    const get = createGridRowsGet({
+      authorizeRequest: createGridRequestAuthorizer({
+        identify: async () => ({
+          userId: USER_A,
+          organization: { mode: 'preferred' as const, orgId: null },
+        }),
+        openDatabase: () => handle,
+        resolveReceipt: async (received, _subject, candidateProfileId) => {
+          seen.push(received, candidateProfileId);
+          return {
+            orgId: '45454545-4545-4545-8545-454545454545',
+            role: 'viewer',
+            profileId: UNKNOWN_PROFILE,
+            currencyCode: 'GBP',
+          };
+        },
+      }),
+      loadRows: async (received, entity, options) => {
+        seen.push(received, entity, options);
+        return { rows: [], rowCount: 0, truncated: false };
+      },
+    });
+
+    const response = await get(request());
+    expect(response.status).toBe(200);
+    expect(seen[0]).toBe(handle);
+    expect(seen[1]).toBe(UNKNOWN_PROFILE);
+    expect(seen[2]).toBe(handle);
+    expect(seen[3]).toBe('targets');
+    expect(seen[4]).toMatchObject({
+      orgId: '45454545-4545-4545-8545-454545454545',
+      profileId: UNKNOWN_PROFILE,
+      currencyCode: 'GBP',
+    });
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(response.headers.get('server-timing')).toContain('close;dur=');
+  });
+
+  it('keeps identity, membership, input, and profile refusal in that order', async () => {
+    const invalidQuery = 'profile=not-a-profile&entity=accounts&from=nope&to=nope';
+
+    const identityDatabase = database();
+    const identityOpen = vi.fn(() => identityDatabase.handle);
+    const identityGet = createGridRowsGet({
+      authorizeRequest: createGridRequestAuthorizer({
+        identify: async () => {
+          throw new RequestAuthError('Authentication required', 401);
+        },
+        openDatabase: identityOpen,
+        resolveReceipt: async () => {
+          throw new Error('authorization must not run');
+        },
+      }),
+      loadRows: async () => {
+        throw new Error('rows must not run');
+      },
+    });
+    const identity = await identityGet(request(invalidQuery));
+    expect(identity.status).toBe(401);
+    expect(identityOpen).not.toHaveBeenCalled();
+
+    const membershipDatabase = database();
+    const membershipGet = createGridRowsGet({
+      authorizeRequest: createGridRequestAuthorizer({
+        identify: async () => ({
+          userId: USER_A,
+          organization: { mode: 'preferred' as const, orgId: null },
+        }),
+        openDatabase: () => membershipDatabase.handle,
+        resolveReceipt: async () => {
+          throw new RequestAuthError('Resource not found', 403);
+        },
+      }),
+      loadRows: async () => {
+        throw new Error('rows must not run');
+      },
+    });
+    const membership = await membershipGet(request(invalidQuery));
+    expect(membership.status).toBe(403);
+    expect(membershipDatabase.close).toHaveBeenCalledTimes(1);
+
+    const inputDatabase = database();
+    const inputGet = createGridRowsGet({
+      authorizeRequest: createGridRequestAuthorizer({
+        identify: async () => ({
+          userId: USER_A,
+          organization: { mode: 'preferred' as const, orgId: null },
+        }),
+        openDatabase: () => inputDatabase.handle,
+        resolveReceipt: async (_handle, _subject, candidateProfileId) => {
+          expect(candidateProfileId).toBeNull();
+          return {
+            orgId: '45454545-4545-4545-8545-454545454545',
+            role: 'viewer',
+            profileId: null,
+            currencyCode: null,
+          };
+        },
+      }),
+      loadRows: async () => {
+        throw new Error('rows must not run');
+      },
+    });
+    const input = await inputGet(request(invalidQuery));
+    expect(input.status).toBe(400);
+    expect(inputDatabase.close).toHaveBeenCalledTimes(1);
+
+    const profileDatabase = database();
+    const profileGet = createGridRowsGet({
+      authorizeRequest: createGridRequestAuthorizer({
+        identify: async () => ({
+          userId: USER_A,
+          organization: { mode: 'preferred' as const, orgId: null },
+        }),
+        openDatabase: () => profileDatabase.handle,
+        resolveReceipt: async () => ({
+          orgId: '45454545-4545-4545-8545-454545454545',
+          role: 'viewer',
+          profileId: null,
+          currencyCode: null,
+        }),
+      }),
+      loadRows: async () => {
+        throw new Error('rows must not run');
+      },
+    });
+    const profile = await profileGet(request());
+    expect(profile.status).toBe(404);
+    expect(profileDatabase.close).toHaveBeenCalledTimes(1);
+
+    for (const response of [identity, membership, input, profile]) {
+      expect(response.headers.has('server-timing')).toBe(false);
+    }
   });
 });
 
@@ -245,8 +415,24 @@ describe.skipIf(!available)('Grid rows route', () => {
     const invalidBridgeValue = ['wrong', 'bridge', 'value'].join('-');
     const unauthorized = await request({ bridgeValue: invalidBridgeValue });
     const forbidden = await request({ orgId: orgB });
+    const malformedUnauthorized = await request({
+      profile: 'not-a-profile',
+      entity: 'accounts',
+      from: 'nope',
+      to: 'nope',
+      bridgeValue: invalidBridgeValue,
+    });
+    const malformedForbidden = await request({
+      profile: 'not-a-profile',
+      entity: 'accounts',
+      from: 'nope',
+      to: 'nope',
+      orgId: orgB,
+    });
     expect(unauthorized.status).toBe(401);
     expect(forbidden.status).toBe(403);
+    expect(malformedUnauthorized.status).toBe(401);
+    expect(malformedForbidden.status).toBe(403);
     expect(unauthorized.headers.has('server-timing')).toBe(false);
     expect(forbidden.headers.has('server-timing')).toBe(false);
 
@@ -268,6 +454,62 @@ describe.skipIf(!available)('Grid rows route', () => {
     ]);
     expect(attempts.map((response) => response.status)).toEqual([400, 400, 400, 400]);
     expect(attempts.every((response) => !response.headers.has('server-timing'))).toBe(true);
+  });
+
+  it('selects a valid preference, falls back deterministically, and keeps bridge orgs exact', async () => {
+    const requestDatabase = createRequestDatabase(database.connectionString);
+    try {
+      const fallback = await resolveGridReadReceipt(
+        requestDatabase,
+        { userId: USER_A, organization: { mode: 'preferred', orgId: null } },
+        profileA,
+      );
+      expect(fallback).toMatchObject({ orgId: orgA, profileId: profileA, currencyCode: 'USD' });
+
+      await database.sql`
+        insert into public.org_members (org_id, user_id, role)
+        values (${orgB}, ${USER_A}, 'analyst')
+      `;
+
+      const preferred = await resolveGridReadReceipt(
+        requestDatabase,
+        { userId: USER_A, organization: { mode: 'preferred', orgId: orgB } },
+        profileB,
+      );
+      expect(preferred).toMatchObject({
+        orgId: orgB,
+        role: 'analyst',
+        profileId: profileB,
+        currencyCode: 'USD',
+      });
+
+      const deterministicFallback = await resolveGridReadReceipt(
+        requestDatabase,
+        { userId: USER_A, organization: { mode: 'preferred', orgId: null } },
+        profileA,
+      );
+      expect(deterministicFallback).toMatchObject({ orgId: orgA, profileId: profileA });
+
+      const exact = await resolveGridReadReceipt(
+        requestDatabase,
+        { userId: USER_A, organization: { mode: 'exact', orgId: orgB } },
+        profileB,
+      );
+      expect(exact).toEqual(preferred);
+
+      await expect(
+        resolveGridReadReceipt(
+          requestDatabase,
+          {
+            userId: USER_A,
+            organization: { mode: 'exact', orgId: UNKNOWN_PROFILE },
+          },
+          profileA,
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+    } finally {
+      await requestDatabase.close();
+    }
   });
 
 });
