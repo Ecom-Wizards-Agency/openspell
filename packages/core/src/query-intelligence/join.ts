@@ -58,15 +58,21 @@ export function joinSqpAndPpc(
   ppcFacts: readonly PpcQueryFact[],
 ): SqpPpcJoinRow[] {
   const byExact = new Map<string, SqpWeeklyFact[]>();
-  const asinsByQueryWeek = new Map<string, string[]>();
+  const asinSetsByQueryWeek = new Map<string, Set<string>>();
 
   for (const sqp of sqpFacts) {
     const normalized = normalizeQuery(sqp.normalizedQuery || sqp.searchQuery);
     const qKey = queryWeekKey(sqp.profileId, sqp.marketplaceId, sqp.weekStart, normalized);
     const eKey = exactKey(sqp.profileId, sqp.marketplaceId, sqp.weekStart, normalized, sqp.asin);
     byExact.set(eKey, [...(byExact.get(eKey) ?? []), sqp]);
-    asinsByQueryWeek.set(qKey, uniqueSorted([...(asinsByQueryWeek.get(qKey) ?? []), sqp.asin]));
+    const asins = asinSetsByQueryWeek.get(qKey) ?? new Set<string>();
+    asins.add(sqp.asin.toUpperCase());
+    asinSetsByQueryWeek.set(qKey, asins);
   }
+
+  const asinsByQueryWeek = new Map(
+    [...asinSetsByQueryWeek].map(([key, values]) => [key, [...values].sort()] as const),
+  );
 
   return ppcFacts.map((ppc) => {
     const normalizedQuery = normalizeQuery(ppc.searchTerm);
