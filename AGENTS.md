@@ -1,4 +1,4 @@
-# OpenSpell (`wizard-ads` repository)
+# OpenSpell
 
 This file is the single source of truth for agent behavior in this repository, for
 every assistant. It routes and it rules. Each work package brief in
@@ -12,8 +12,8 @@ Reporting v3 ingestion, analytics, and bid recommendations, plus the pieces the
 commercial tools do not have (search-query-versus-PPC analysis, rank reconciliation,
 BSR proximity alerts, a creative hub, off-Amazon placement control).
 
-The public repository and package scope remain `wizard-ads` / `@wizard-ads/*` until a
-separately planned infrastructure migration changes those stable identifiers. User-facing
+The repository is `openspell`. Package scopes remain `@wizard-ads/*` until a separately
+planned infrastructure migration changes those stable internal identifiers. User-facing
 product copy, metadata, and connection guidance use **OpenSpell**.
 
 Three facts shape every design decision in here:
@@ -78,7 +78,7 @@ Three rules inside that, each one load-bearing rather than stylistic:
 `eslint.config.js` enforces all three with `no-restricted-imports`. A violation is a
 lint failure, not a code review comment.
 
-wizard-ads consumes nothing from any sibling project at runtime.
+OpenSpell consumes nothing from any sibling project at runtime.
 
 ## Contract authority
 
@@ -174,8 +174,9 @@ Four rules:
 - **(a) No absolute home-directory paths.** Use a repo-relative path, an environment
   variable, or a gitignored pointer file in `_local/`.
 - **(b) No credentials.** Prefix patterns, credential-shaped assignments, and a basic
-  entropy check. Secrets belong in the deployment platform's environment or in
-  Supabase Vault, never in a file.
+  entropy check. Long-lived secrets are authoritative in 1Password and injected into
+  approved runtimes; database-managed secrets may live in Supabase Vault. Never place a
+  real secret in the repository or a local `.env` file.
 - **(c) No client names.** Terms come from `_local/hygiene-denylist.txt`, which is
   gitignored. Copy `_local/hygiene-denylist.TEMPLATE.txt` to create it. The check
   warns and skips when the file is absent, so a fresh clone is not blocked.
@@ -211,6 +212,6 @@ Individually: `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm hygiene`.
 Node 22 or newer, pnpm as declared in `package.json`. Workspace packages are consumed
 as TypeScript source, so there is no build step between them.
 
-Live Amazon smoke tests load credentials through the approved secret manager and read bounded
-authorization from gitignored `_local/` configuration. Never print or hardcode a credential,
-and never commit one for "just a test".
+Live Amazon smoke tests receive credentials from the authorized 1Password service account at
+runtime and read bounded, non-secret authorization from gitignored `_local/` configuration.
+Never print, copy, or hardcode a credential, and never commit one for "just a test".
