@@ -16,6 +16,7 @@
  * Styling is WP-06's job. This is a table.
  */
 import type { DbHandle } from '@wizard-ads/db';
+import { operatorFailureLabel } from '../security/operator-failure';
 
 export interface JobRow {
   id: string;
@@ -72,38 +73,6 @@ export interface SyncStatus {
 
 const JOB_LIMIT = 100;
 const REPORT_LIMIT = 100;
-
-/**
- * Convert an untrusted worker/provider error into an operator-safe category.
- *
- * Database drivers routinely include SQL statements, bind parameters and
- * identifiers in Error.message. Provider responses can contain request IDs or
- * echoed inputs. None of that belongs in an authenticated HTML response, so
- * this function is intentionally allowlist-based and never interpolates the
- * source string.
- */
-export function syncFailureLabel(error: string | null): string | null {
-  if (!error) return null;
-
-  const normalized = error.toLowerCase();
-  if (/row[- ]count|reconcil|counts? (?:do not|don't) match|count mismatch/.test(normalized)) {
-    return 'Row-count reconciliation failed. The affected report was not promoted.';
-  }
-  if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|invalid_grant|refresh token/.test(normalized)) {
-    return 'Amazon authorization failed. Reconnect the integration before retrying.';
-  }
-  if (/\b429\b|throttl|rate limit|too many requests/.test(normalized)) {
-    return 'Amazon rate limit reached. The worker will retry within its retry policy.';
-  }
-  if (/timed? out|timeout|econnreset|enotfound|network|socket hang up/.test(normalized)) {
-    return 'The upstream request did not complete. Retry after connectivity recovers.';
-  }
-  if (/failed query|database|postgres|constraint|duplicate key|syntax error/.test(normalized)) {
-    return 'The data load failed before promotion. Review the private worker log.';
-  }
-
-  return 'Sync failed. Review the private worker log for the underlying cause.';
-}
 
 export async function loadSyncStatus(
   handle: DbHandle,
@@ -245,7 +214,7 @@ export async function loadSyncStatus(
       runAfter: row.run_after,
       startedAt: row.started_at,
       finishedAt: row.finished_at,
-      lastError: syncFailureLabel(row.last_error),
+      lastError: operatorFailureLabel(row.last_error),
     })),
     reports: reports.map((row) => ({
       id: row.id,
@@ -265,7 +234,7 @@ export async function loadSyncStatus(
       promotedRows: row.promoted_rows === null ? null : Number(row.promoted_rows),
       unpromotedRows: row.unpromoted_rows === null ? null : Number(row.unpromoted_rows),
       accountingComplete: row.accounting_complete,
-      error: syncFailureLabel(row.error),
+      error: operatorFailureLabel(row.error),
     })),
   };
 }

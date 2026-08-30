@@ -12,6 +12,7 @@ import { can } from '../../../src/auth/roles';
 import { gate } from '../../../src/auth/guard';
 import { listConnections } from '../../../src/data/connections';
 import { loadRoster } from '../../../src/data/profiles';
+import { operatorFailureLabel } from '../../../src/security/operator-failure';
 import { Shell } from '../../../src/ui/shell';
 import { banner, heading, muted, page, subheading, table, td, th } from '../../../src/ui/tokens';
 
@@ -76,7 +77,7 @@ export default async function ConnectionsPage({ searchParams }: Props): Promise<
 
         {query.oauth_error ? (
           <p style={banner('bad')} data-testid="oauth-error">
-            {query.oauth_error}
+            {operatorFailureLabel(query.oauth_error)}
           </p>
         ) : null}
 
