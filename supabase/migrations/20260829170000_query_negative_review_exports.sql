@@ -19,6 +19,15 @@ alter table public.contextual_negative_proposals
     or (status <> 'proposed' and decided_at is not null)
   );
 
+-- Browser clients retain tenant-scoped reads, but every review mutation must
+-- pass through the capability-checked server route so it is locked, version
+-- checked, counted, and audited atomically. The connection behind that route
+-- is service-backed; authenticated JWTs cannot bypass it with direct SQL.
+drop policy if exists tenant_insert on public.contextual_negative_proposals;
+drop policy if exists tenant_update on public.contextual_negative_proposals;
+drop policy if exists tenant_delete on public.contextual_negative_proposals;
+revoke insert, update, delete on public.contextual_negative_proposals from authenticated;
+
 create unique index contextual_negative_proposals_org_profile_id_key
   on public.contextual_negative_proposals (org_id, profile_id, id);
 
@@ -95,12 +104,36 @@ create table public.contextual_negative_export_items (
 create index contextual_negative_export_items_org_export_idx
   on public.contextual_negative_export_items (org_id, export_id, ordinal);
 
+-- Both the review queue and export path retrieve the newest per-proposal audit
+-- note. Without this access path a queue of N rows performs N scans ordered by
+-- timestamp over the tenant's full audit history.
+create index audit_log_contextual_negative_target_time_idx
+  on public.audit_log
+  (org_id, target_type, target_id, created_at desc, id desc);
+
 -- Members can read the evidence. Only the service connection behind the
 -- capability-checked web route inserts it; no application role can edit it.
 select app.install_tenant_rls('public.contextual_negative_exports');
 select app.install_tenant_rls('public.contextual_negative_export_items');
 
-create or replace function app.refuse_query_negative_export_update()
+create or replace function app.guard_query_negative_export_header_update()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, pg_temp
+as $$
+begin
+  -- `created_by` deliberately uses ON DELETE SET NULL. Permit only that FK
+  -- retention transition; every byte of export evidence remains unchanged.
+  if old.created_by is not null
+     and new.created_by is null
+     and (to_jsonb(new) - 'created_by') = (to_jsonb(old) - 'created_by') then
+    return new;
+  end if;
+  raise exception 'contextual negative export evidence is immutable';
+end;
+$$;
+
+create or replace function app.refuse_query_negative_export_item_update()
 returns trigger
 language plpgsql
 set search_path = pg_catalog, pg_temp
@@ -112,11 +145,11 @@ $$;
 
 create trigger contextual_negative_exports_immutable
   before update on public.contextual_negative_exports
-  for each row execute function app.refuse_query_negative_export_update();
+  for each row execute function app.guard_query_negative_export_header_update();
 
 create trigger contextual_negative_export_items_immutable
   before update on public.contextual_negative_export_items
-  for each row execute function app.refuse_query_negative_export_update();
+  for each row execute function app.refuse_query_negative_export_item_update();
 
 comment on table public.contextual_negative_exports is
   'Immutable headers for operator-reviewed contextual-negative export artifacts. Export does not mean Amazon was updated.';

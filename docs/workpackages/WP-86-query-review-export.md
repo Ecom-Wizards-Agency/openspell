@@ -34,7 +34,10 @@ await decideContextualNegativeProposals(database, {
   orgId,
   profileId,
   marketplaceId,
-  proposalIds,
+  proposals: selectedRows.map((row) => ({
+    id: row.id,
+    expectedFingerprint: row.reviewFingerprint,
+  })),
   decision: 'dismissed',
   actorId,
   note: 'Keep this query routed to the launch ad group.',
@@ -50,7 +53,10 @@ const record = await exportAcceptedContextualNegatives(database, {
   orgId,
   profileId,
   marketplaceId,
-  proposalIds: selectedIds,
+  proposals: selectedRows.map((row) => ({
+    id: row.id,
+    expectedFingerprint: row.reviewFingerprint,
+  })),
   actorId,
   note: 'Reviewed ad-group negatives for offline bulk upload.',
 });
@@ -74,12 +80,20 @@ category, optimization-group route, match type, and reason that left Wizard
 Ads. Export rows cannot be updated, and application roles receive no direct
 write grant to the ledger.
 
-The decision function locks the in-scope rows, refuses terminal exported rows,
-requires a dismissal note, changes the status, and writes one audit event per
-changed proposal. The export function locks the requested accepted rows,
-creates one header, inserts one ordered snapshot per proposal, updates the same
-count of proposals, and reads the ledger back before committing. Routes add
-capability checks but do not repeat database policy.
+The decision function locks the explicit in-scope rows in canonical ID order,
+refuses stale fingerprints and terminal exported rows, requires a dismissal
+note, changes the status, and writes one audit event per changed proposal. The
+export function rejects an empty scope, locks the requested rows in the same
+canonical order, creates one header, inserts one ordered snapshot per proposal,
+updates the same count of proposals, and reads the ledger back before
+committing. Routes add capability checks but do not repeat database policy.
+Authenticated clients can read tenant-scoped proposals but cannot mutate them
+directly; writes use only the capability-checked service-backed route.
+
+CSV rendering prefixes formula-like cells with a literal apostrophe even when
+spaces or control bytes precede `=`, `+`, `-`, or `@`. JSON retains the exact
+authoritative stored text. Deleting an auth user may null only the export
+header's `created_by` foreign key; all evidence columns remain immutable.
 
 This is a deep interface: callers express a decision or export once while the
 module hides row locking, tenant scoping, snapshotting, hashing, audit writes,

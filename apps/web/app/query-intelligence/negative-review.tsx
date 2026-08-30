@@ -54,6 +54,12 @@ interface Filters {
 
 const EMPTY_FILTERS: Filters = { status: '', route: '', text: '' };
 
+class ReviewConflictError extends Error {}
+
+function expectation(proposal: ContextualNegativeProposalRecord) {
+  return { id: proposal.id, expectedFingerprint: proposal.reviewFingerprint };
+}
+
 export function NegativeProposalReview(props: NegativeProposalReviewProps): ReactNode {
   const [proposals, setProposals] = useState(() => [...props.proposals]);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
@@ -101,6 +107,19 @@ export function NegativeProposalReview(props: NegativeProposalReviewProps): Reac
     [selected, visible],
   );
   const exportCount = selectedIds.length > 0 ? acceptedSelected : counts.accepted;
+  const decisionScope = useMemo(
+    () => visible
+      .filter((proposal) => proposal.status !== 'exported' && selected.has(proposal.id))
+      .map(expectation),
+    [selected, visible],
+  );
+  const exportScope = useMemo(
+    () => (selectedIds.length > 0
+      ? visible.filter((proposal) => selected.has(proposal.id))
+      : proposals.filter((proposal) => proposal.status === 'accepted'))
+      .map(expectation),
+    [proposals, selected, selectedIds.length, visible],
+  );
   const lanes = useMemo(
     () => STATUS_ORDER.map((status) => ({
       status,
@@ -125,7 +144,11 @@ export function NegativeProposalReview(props: NegativeProposalReviewProps): Reac
       body: JSON.stringify(body),
     });
     const payload = (await response.json()) as Record<string, unknown>;
-    if (!response.ok) throw new Error(String(payload['error'] ?? response.statusText));
+    if (!response.ok) {
+      const message = String(payload['error'] ?? response.statusText);
+      if (payload['reloadRequired'] === true) throw new ReviewConflictError(message);
+      throw new Error(message);
+    }
     return payload;
   }, []);
 
@@ -148,22 +171,31 @@ export function NegativeProposalReview(props: NegativeProposalReviewProps): Reac
       const result = await post('/api/query-intelligence/negatives/decide', {
         profileId: props.profileId,
         marketplaceId: props.marketplaceId,
-        ids: selectedIds,
+        proposals: decisionScope,
         decision,
         note,
       });
-      const selectedSet = new Set(selectedIds);
-      const decidedAt = decision === 'proposed' ? null : new Date();
-      setProposals((current) => current.map((proposal) =>
-        selectedSet.has(proposal.id) && proposal.status !== 'exported'
-          ? {
-              ...proposal,
-              status: decision,
-              decidedAt,
-              decisionNote: note.trim() || null,
-            }
-          : proposal,
-      ));
+      const changed = result['changed'];
+      if (!Array.isArray(changed)) throw new Error('Decision response omitted changed proposal ids.');
+      const changedById = new Map(changed.map((value) => {
+        const row = value as Record<string, unknown>;
+        if (typeof row['id'] !== 'string' || typeof row['reviewFingerprint'] !== 'string') {
+          throw new Error('Decision response contained an invalid changed proposal.');
+        }
+        return [row['id'], row] as const;
+      }));
+      setProposals((current) => current.map((proposal) => {
+        const row = changedById.get(proposal.id);
+        if (row === undefined) return proposal;
+        return {
+          ...proposal,
+          status: decision,
+          decidedAt: row['decidedAt'] === null ? null : new Date(String(row['decidedAt'])),
+          decidedBy: typeof row['decidedBy'] === 'string' ? row['decidedBy'] : null,
+          decisionNote: typeof row['decisionNote'] === 'string' ? row['decisionNote'] : null,
+          reviewFingerprint: String(row['reviewFingerprint']),
+        };
+      }));
       setSelected(new Set());
       setMessage(
         `${String(result['updated'])} of ${String(result['matched'])} matched proposals moved to ` +
@@ -171,10 +203,11 @@ export function NegativeProposalReview(props: NegativeProposalReviewProps): Reac
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Decision failed');
+      if (caught instanceof ReviewConflictError) window.location.reload();
     } finally {
       setBusy(false);
     }
-  }, [note, post, props.marketplaceId, props.profileId, selectedIds]);
+  }, [decisionScope, note, post, props.marketplaceId, props.profileId, selectedIds]);
 
   const exportAccepted = useCallback(async (): Promise<void> => {
     setError(null);
@@ -197,17 +230,16 @@ export function NegativeProposalReview(props: NegativeProposalReviewProps): Reac
       const result = await post('/api/query-intelligence/negatives/export', {
         profileId: props.profileId,
         marketplaceId: props.marketplaceId,
-        ids: selectedIds.length > 0 ? selectedIds : null,
+        proposals: exportScope,
         note,
         confirmed: true,
       });
       const links = result['downloads'] as { csv: string; json: string };
-      const acceptedIds = new Set(
-        proposals
-          .filter((proposal) => proposal.status === 'accepted')
-          .filter((proposal) => selectedIds.length === 0 || selectedIds.includes(proposal.id))
-          .map((proposal) => proposal.id),
-      );
+      const exportedIds = result['exportedIds'];
+      if (!Array.isArray(exportedIds) || exportedIds.some((id) => typeof id !== 'string')) {
+        throw new Error('Export response omitted exported proposal ids.');
+      }
+      const acceptedIds = new Set(exportedIds as string[]);
       setProposals((current) => current.map((proposal) =>
         acceptedIds.has(proposal.id) ? { ...proposal, status: 'exported' } : proposal,
       ));
@@ -220,10 +252,11 @@ export function NegativeProposalReview(props: NegativeProposalReviewProps): Reac
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Export failed');
+      if (caught instanceof ReviewConflictError) window.location.reload();
     } finally {
       setBusy(false);
     }
-  }, [confirmed, exportCount, note, post, proposals, props.marketplaceId, props.profileId, selectedIds]);
+  }, [confirmed, exportCount, exportScope, note, post, props.marketplaceId, props.profileId]);
 
   return (
     <section className="wa-card" aria-labelledby="negative-review-title" data-testid="negative-review">

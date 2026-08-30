@@ -1,4 +1,7 @@
-import { exportAcceptedContextualNegatives } from '@wizard-ads/db';
+import {
+  ContextualNegativeReviewConflictError,
+  exportAcceptedContextualNegatives,
+} from '@wizard-ads/db';
 import {
   errorResponse,
   openWebDatabase,
@@ -16,7 +19,7 @@ export async function POST(request: Request): Promise<Response> {
     const body = (await request.json()) as {
       profileId?: unknown;
       marketplaceId?: unknown;
-      ids?: unknown;
+      proposals?: unknown;
       note?: unknown;
       confirmed?: unknown;
     };
@@ -30,16 +33,20 @@ export async function POST(request: Request): Promise<Response> {
     if (typeof body.note !== 'string' || body.note.trim().length === 0) {
       throw new Error('note is required');
     }
-    if (body.ids !== null && body.ids !== undefined &&
-      (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== 'string'))) {
-      throw new Error('ids must be an array of proposal ids');
+    if (!Array.isArray(body.proposals) || body.proposals.length === 0 ||
+      body.proposals.some((proposal) => {
+        if (typeof proposal !== 'object' || proposal === null) return true;
+        const row = proposal as Record<string, unknown>;
+        return typeof row['id'] !== 'string' ||
+          typeof row['expectedFingerprint'] !== 'string';
+      })) {
+      throw new Error('proposals must be a non-empty array of ids and review fingerprints');
     }
-    const ids = Array.isArray(body.ids) ? body.ids as string[] : null;
     const result = await exportAcceptedContextualNegatives(database, {
       orgId: actor.orgId,
       profileId: body.profileId,
       marketplaceId: body.marketplaceId,
-      proposalIds: ids,
+      proposals: body.proposals as { id: string; expectedFingerprint: string }[],
       actorId: actor.userId,
       note: body.note,
     });
@@ -56,6 +63,13 @@ export async function POST(request: Request): Promise<Response> {
       { status: 201 },
     );
   } catch (error) {
+    if (error instanceof ContextualNegativeReviewConflictError) {
+      return Response.json({
+        error: error.message,
+        staleProposalIds: error.proposalIds,
+        reloadRequired: true,
+      }, { status: 409 });
+    }
     return errorResponse(error);
   } finally {
     await database.close();

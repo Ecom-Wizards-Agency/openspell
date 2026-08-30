@@ -33,7 +33,13 @@ function exportRows(artifact: ContextualNegativeExportArtifact) {
 }
 
 function csvCell(value: string | null): string {
-  const text = value ?? '';
+  const source = value ?? '';
+  // Spreadsheet programs may execute formula-looking cells even when spaces,
+  // tabs, or other control bytes precede the sigil. A leading apostrophe is
+  // the portable CSV convention for forcing literal text; JSON remains exact.
+  const text = /^[\s\p{Cc}]*[=+@-]/u.test(source)
+    ? `'${source}`
+    : source;
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 

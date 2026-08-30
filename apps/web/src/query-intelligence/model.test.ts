@@ -126,6 +126,7 @@ const proposal: ContextualNegativeProposalRecord = {
   decisionNote: null,
   exportId: null,
   exportedAt: null,
+  reviewFingerprint: 'a'.repeat(64),
 };
 
 describe('Query Intelligence view model', () => {

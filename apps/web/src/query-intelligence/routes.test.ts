@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { listContextualNegativeProposals } from '@wizard-ads/db';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import { POST as DECIDE } from '../../app/api/query-intelligence/negatives/decide/route.js';
@@ -31,6 +32,16 @@ describe.skipIf(!available)('Query Intelligence review routes', () => {
     'x-wizard-ads-user-id': userId,
     'x-wizard-ads-org-id': actorOrgId,
   });
+
+  const expectations = async (ids: readonly string[]) => {
+    const proposals = await listContextualNegativeProposals(database, {
+      orgId,
+      profileId,
+      marketplaceId: MARKETPLACE,
+    });
+    const byId = new Map(proposals.map((row) => [row.id, row.reviewFingerprint] as const));
+    return ids.map((id) => ({ id, expectedFingerprint: byId.get(id) ?? '0'.repeat(64) }));
+  };
 
   beforeAll(async () => {
     database = await createTestDatabase('wp86_web_routes');
@@ -92,7 +103,7 @@ describe.skipIf(!available)('Query Intelligence review routes', () => {
       body: JSON.stringify({
         profileId,
         marketplaceId: MARKETPLACE,
-        ids: [proposalIds[2]],
+        proposals: await expectations([proposalIds[2] ?? '']),
         decision: 'dismissed',
         note: '',
       }),
@@ -105,7 +116,7 @@ describe.skipIf(!available)('Query Intelligence review routes', () => {
       body: JSON.stringify({
         profileId,
         marketplaceId: MARKETPLACE,
-        ids: proposalIds.slice(0, 2),
+        proposals: await expectations(proposalIds.slice(0, 2)),
         decision: 'accepted',
         note: 'Analyst reviewed both routes.',
       }),
@@ -119,7 +130,7 @@ describe.skipIf(!available)('Query Intelligence review routes', () => {
       body: JSON.stringify({
         profileId,
         marketplaceId: MARKETPLACE,
-        ids: [proposalIds[2]],
+        proposals: await expectations([proposalIds[2] ?? '']),
         decision: 'dismissed',
         note: 'Keep this route active.',
       }),
@@ -132,7 +143,7 @@ describe.skipIf(!available)('Query Intelligence review routes', () => {
     const body = {
       profileId,
       marketplaceId: MARKETPLACE,
-      ids: proposalIds,
+      proposals: await expectations(proposalIds),
       note: 'Offline operator export.',
       confirmed: true,
     };
@@ -150,10 +161,33 @@ describe.skipIf(!available)('Query Intelligence review routes', () => {
     }));
     expect(unconfirmed.status).toBe(400);
 
-    const response = await EXPORT(new Request('http://localhost/api/query-intelligence/negatives/export', {
+    const empty = await EXPORT(new Request('http://localhost/api/query-intelligence/negatives/export', {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ ...body, proposals: [] }),
+    }));
+    expect(empty.status).toBe(400);
+    expect(await empty.json()).toMatchObject({
+      error: expect.stringContaining('non-empty'),
+    });
+
+    await database.sql`
+      update public.contextual_negative_proposals
+         set updated_at = updated_at + interval '1 second'
+       where id = ${proposalIds[0] ?? ''}
+    `;
+    const stale = await EXPORT(new Request('http://localhost/api/query-intelligence/negatives/export', {
       method: 'POST',
       headers: headers(),
       body: JSON.stringify(body),
+    }));
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ reloadRequired: true });
+
+    const response = await EXPORT(new Request('http://localhost/api/query-intelligence/negatives/export', {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ ...body, proposals: await expectations(proposalIds) }),
     }));
     expect(response.status).toBe(201);
     const result = await response.json() as {
@@ -163,6 +197,7 @@ describe.skipIf(!available)('Query Intelligence review routes', () => {
       accepted: number;
       exported: number;
       skipped: unknown[];
+      exportedIds: string[];
       downloads: { csv: string; json: string };
       amazonUpdated: boolean;
     };
@@ -175,8 +210,34 @@ describe.skipIf(!available)('Query Intelligence review routes', () => {
       amazonUpdated: false,
     });
     expect(result.skipped).toEqual([{ id: proposalIds[2], status: 'dismissed' }]);
+    expect(result.exportedIds.sort()).toEqual(proposalIds.slice(0, 2).sort());
     expect(result.downloads.csv).toContain(exportId);
     expect(result.downloads.json).toContain(exportId);
+  });
+
+  it('returns a reload-required conflict for a stale browser decision', async () => {
+    const id = proposalIds[2] ?? '';
+    const stale = await expectations([id]);
+    await database.sql`
+      update public.contextual_negative_proposals
+         set reason = 'Newer synthetic route evidence.'
+       where id = ${id}
+    `;
+    const response = await DECIDE(new Request('http://localhost/api/query-intelligence/negatives/decide', {
+      method: 'POST',
+      headers: headers(ANALYST),
+      body: JSON.stringify({
+        profileId,
+        marketplaceId: MARKETPLACE,
+        proposals: stale,
+        decision: 'accepted',
+      }),
+    }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      reloadRequired: true,
+      staleProposalIds: [id],
+    });
   });
 
   it('downloads exact immutable CSV and JSON rows without implying an Amazon write', async () => {

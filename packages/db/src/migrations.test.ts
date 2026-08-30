@@ -239,6 +239,38 @@ describe.skipIf(!available)('migrations', () => {
     expect(anonGrants.map((row) => row.table_name)).toEqual([]);
   });
 
+  it('routes contextual-negative mutations through the server and indexes audit-note lookup', async () => {
+    const policies = await database.sql<{ cmd: string }[]>`
+      select cmd
+        from pg_catalog.pg_policies
+       where schemaname = 'public'
+         and tablename = 'contextual_negative_proposals'
+       order by cmd
+    `;
+    expect(policies.map((row) => row.cmd)).toEqual(['SELECT']);
+
+    const [grants] = await database.sql<{
+      can_insert: boolean;
+      can_update: boolean;
+      can_delete: boolean;
+    }[]>`
+      select has_table_privilege('authenticated', 'public.contextual_negative_proposals', 'insert') as can_insert,
+             has_table_privilege('authenticated', 'public.contextual_negative_proposals', 'update') as can_update,
+             has_table_privilege('authenticated', 'public.contextual_negative_proposals', 'delete') as can_delete
+    `;
+    expect(grants).toEqual({ can_insert: false, can_update: false, can_delete: false });
+
+    const [auditIndex] = await database.sql<{ indexdef: string }[]>`
+      select indexdef
+        from pg_catalog.pg_indexes
+       where schemaname = 'public'
+         and indexname = 'audit_log_contextual_negative_target_time_idx'
+    `;
+    expect(auditIndex?.indexdef).toContain(
+      '(org_id, target_type, target_id, created_at DESC, id DESC)',
+    );
+  });
+
   it('partitions every fact table by month, with no default partition', async () => {
     const rows = await database.sql<{ table_name: string; strategy: string }[]>`
       select c.relname as table_name, p.partstrat as strategy

@@ -2,16 +2,20 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '../testing/harness.js';
 import type { TestDatabase } from '../testing/harness.js';
 import {
+  ContextualNegativeReviewConflictError,
   decideContextualNegativeProposals,
   exportAcceptedContextualNegatives,
   getContextualNegativeExport,
   listContextualNegativeExports,
   listContextualNegativeProposals,
 } from './contextual-negative-review.js';
+import { asUser } from '../testing/rls.js';
 
 const available = await databaseAvailable();
 const OWNER_A = '86868686-8686-4686-8686-868686868686';
 const OWNER_B = '87878787-8787-4787-8787-878787878787';
+const ANALYST_A = '88888888-8888-4888-8888-888888888888';
+const RETIRED_ACTOR = '89898989-8989-4989-8989-898989898989';
 const MARKETPLACE = 'review-marketplace';
 
 describe.skipIf(!available)('contextual negative review and export', () => {
@@ -42,6 +46,12 @@ describe.skipIf(!available)('contextual negative review and export', () => {
     `;
     profileA = aProfile?.id ?? '';
     profileB = bProfile?.id ?? '';
+    await database.sql`select public.auth_user_stub(${ANALYST_A})`;
+    await database.sql`select public.auth_user_stub(${RETIRED_ACTOR})`;
+    await database.sql`
+      insert into public.org_members (org_id, user_id, role)
+      values (${orgA}, ${ANALYST_A}, 'analyst')
+    `;
 
     const proposals = await database.sql<{ id: string; campaign_id: string }[]>`
       insert into public.contextual_negative_proposals
@@ -76,6 +86,16 @@ describe.skipIf(!available)('contextual negative review and export', () => {
     foreignProposalId = foreign?.id ?? '';
   }, 90_000);
 
+  const expectations = async (ids: readonly string[], orgId = orgA, profileId = profileA) => {
+    const rows = await listContextualNegativeProposals(database, {
+      orgId,
+      profileId,
+      marketplaceId: MARKETPLACE,
+    });
+    const byId = new Map(rows.map((row) => [row.id, row.reviewFingerprint] as const));
+    return ids.map((id) => ({ id, expectedFingerprint: byId.get(id) ?? '0'.repeat(64) }));
+  };
+
   afterAll(async () => {
     await database?.drop();
   });
@@ -88,6 +108,29 @@ describe.skipIf(!available)('contextual negative review and export', () => {
     });
     expect(rows).toHaveLength(302);
     expect(rows.every((row) => row.status === 'proposed')).toBe(true);
+    expect(rows.every((row) => /^[0-9a-f]{64}$/u.test(row.reviewFingerprint))).toBe(true);
+  });
+
+  it('revokes direct authenticated mutations while retaining service-backed review access', async () => {
+    await asUser(database, ANALYST_A, async (sql) => {
+      await expect(sql`
+        update public.contextual_negative_proposals
+           set status = 'accepted'
+         where id = ${proposalIds[0] ?? ''}
+      `).rejects.toThrow(/permission denied/i);
+      await expect(sql`
+        delete from public.contextual_negative_proposals where id = ${proposalIds[0] ?? ''}
+      `).rejects.toThrow(/permission denied/i);
+      await expect(sql`
+        insert into public.contextual_negative_proposals
+          (org_id, profile_id, marketplace_id, campaign_id, ad_group_id,
+           search_term, normalized_query, category, source_group_role,
+           match_type, reason)
+        values (${orgA}, ${profileA}, ${MARKETPLACE}, 'direct-campaign',
+                'direct-group', 'direct query', 'direct query', 'excluded',
+                'profit', 'negative_exact', 'direct write')
+      `).rejects.toThrow(/permission denied/i);
+    });
   });
 
   it('requires a dismissal note and records exact, tenant-scoped decisions', async () => {
@@ -95,7 +138,7 @@ describe.skipIf(!available)('contextual negative review and export', () => {
       orgId: orgA,
       profileId: profileA,
       marketplaceId: MARKETPLACE,
-      proposalIds: [proposalIds[2] ?? ''],
+      proposals: await expectations([proposalIds[2] ?? '']),
       decision: 'dismissed',
       actorId: OWNER_A,
       note: '   ',
@@ -105,24 +148,25 @@ describe.skipIf(!available)('contextual negative review and export', () => {
       orgId: orgA,
       profileId: profileA,
       marketplaceId: MARKETPLACE,
-      proposalIds: [proposalIds[0] ?? '', proposalIds[1] ?? ''],
+      proposals: await expectations([proposalIds[0] ?? '', proposalIds[1] ?? '']),
       decision: 'accepted',
       actorId: OWNER_A,
       note: 'Reviewed routing and exact-match scope.',
     });
-    expect(accepted).toEqual({
+    expect(accepted).toMatchObject({
       offered: 2,
       matched: 2,
       updated: 2,
       unchanged: 0,
       refused: [],
     });
+    expect(accepted.changed.map((row) => row.id).sort()).toEqual(proposalIds.slice(0, 2).sort());
 
     const repeated = await decideContextualNegativeProposals(database, {
       orgId: orgA,
       profileId: profileA,
       marketplaceId: MARKETPLACE,
-      proposalIds: [proposalIds[0] ?? '', proposalIds[1] ?? ''],
+      proposals: await expectations([proposalIds[0] ?? '', proposalIds[1] ?? '']),
       decision: 'accepted',
       actorId: OWNER_A,
       note: 'Repeated click should not create another decision.',
@@ -133,28 +177,21 @@ describe.skipIf(!available)('contextual negative review and export', () => {
       orgId: orgA,
       profileId: profileA,
       marketplaceId: MARKETPLACE,
-      proposalIds: [proposalIds[2] ?? ''],
+      proposals: await expectations([proposalIds[2] ?? '']),
       decision: 'dismissed',
       actorId: OWNER_A,
       note: 'Keep this query in its current route.',
     });
     expect(dismissed).toMatchObject({ offered: 1, matched: 1, updated: 1 });
 
-    const foreign = await decideContextualNegativeProposals(database, {
+    await expect(decideContextualNegativeProposals(database, {
       orgId: orgA,
       profileId: profileA,
       marketplaceId: MARKETPLACE,
-      proposalIds: [foreignProposalId],
+      proposals: [{ id: foreignProposalId, expectedFingerprint: '0'.repeat(64) }],
       decision: 'accepted',
       actorId: OWNER_A,
-    });
-    expect(foreign).toEqual({
-      offered: 1,
-      matched: 0,
-      updated: 0,
-      unchanged: 0,
-      refused: [],
-    });
+    })).rejects.toBeInstanceOf(ContextualNegativeReviewConflictError);
 
     const audits = await database.sql<{ action: string; note: string }[]>`
       select action, payload ->> 'note' as note
@@ -178,7 +215,7 @@ describe.skipIf(!available)('contextual negative review and export', () => {
       orgId: orgA,
       profileId: profileA,
       marketplaceId: MARKETPLACE,
-      proposalIds: proposalIds.slice(0, 3),
+      proposals: await expectations(proposalIds.slice(0, 3)),
       actorId: OWNER_A,
       note: 'Offline review export. Amazon remains unchanged.',
     });
@@ -189,6 +226,7 @@ describe.skipIf(!available)('contextual negative review and export', () => {
       accepted: 2,
       exported: 2,
       skipped: [{ id: proposalIds[2], status: 'dismissed' }],
+      exportedIds: proposalIds.slice(0, 2).sort((left, right) => left.localeCompare(right)),
     });
     expect(result.artifactSha256).toMatch(/^[0-9a-f]{64}$/);
 
@@ -233,7 +271,7 @@ describe.skipIf(!available)('contextual negative review and export', () => {
       orgId: orgA,
       profileId: profileA,
       marketplaceId: MARKETPLACE,
-      proposalIds: [proposalIds[0] ?? ''],
+      proposals: await expectations([proposalIds[0] ?? '']),
       decision: 'proposed',
       actorId: OWNER_A,
     });
@@ -262,9 +300,113 @@ describe.skipIf(!available)('contextual negative review and export', () => {
       orgId: orgA,
       profileId: profileA,
       marketplaceId: MARKETPLACE,
-      proposalIds: proposalIds.slice(0, 2),
+      proposals: await expectations(proposalIds.slice(0, 2)),
       actorId: OWNER_A,
       note: 'No accepted rows remain in this selected set.',
     })).rejects.toThrow(/no accepted proposals/i);
+  });
+
+  it('refuses empty export scopes and stale decisions before writing anything', async () => {
+    await expect(exportAcceptedContextualNegatives(database, {
+      orgId: orgA,
+      profileId: profileA,
+      marketplaceId: MARKETPLACE,
+      proposals: [],
+      actorId: OWNER_A,
+      note: 'Empty scope must never mean every accepted proposal.',
+    })).rejects.toThrow(/select at least one proposal/i);
+
+    const id = proposalIds[3] ?? '';
+    const stale = await expectations([id]);
+    await database.sql`
+      update public.contextual_negative_proposals
+         set reason = 'A newer synthetic reason.'
+       where id = ${id}
+    `;
+    await expect(decideContextualNegativeProposals(database, {
+      orgId: orgA,
+      profileId: profileA,
+      marketplaceId: MARKETPLACE,
+      proposals: stale,
+      decision: 'accepted',
+      actorId: OWNER_A,
+    })).rejects.toBeInstanceOf(ContextualNegativeReviewConflictError);
+    const [row] = await database.sql<{ status: string }[]>`
+      select status from public.contextual_negative_proposals where id = ${id}
+    `;
+    expect(row?.status).toBe('proposed');
+  });
+
+  it('locks reversed decision scopes in one canonical order and makes the loser stale', async () => {
+    const ids = proposalIds.slice(5, 7);
+    const loaded = await expectations(ids);
+    const reversed = [...loaded].reverse();
+    const outcomes = await Promise.allSettled([
+      decideContextualNegativeProposals(database, {
+        orgId: orgA,
+        profileId: profileA,
+        marketplaceId: MARKETPLACE,
+        proposals: loaded,
+        decision: 'accepted',
+        actorId: OWNER_A,
+        note: 'Synthetic concurrent accept.',
+      }),
+      decideContextualNegativeProposals(database, {
+        orgId: orgA,
+        profileId: profileA,
+        marketplaceId: MARKETPLACE,
+        proposals: reversed,
+        decision: 'dismissed',
+        actorId: OWNER_A,
+        note: 'Synthetic concurrent dismissal.',
+      }),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+    const rejected = outcomes.find((outcome) => outcome.status === 'rejected');
+    expect(rejected).toMatchObject({
+      status: 'rejected',
+      reason: expect.any(ContextualNegativeReviewConflictError),
+    });
+    const rows = await database.sql<{ status: string }[]>`
+      select status
+        from public.contextual_negative_proposals
+       where id = any (${ids}::uuid[])
+       order by id
+    `;
+    expect(new Set(rows.map((row) => row.status)).size).toBe(1);
+  });
+
+  it('retains immutable evidence when the creating auth user is deleted', async () => {
+    const id = proposalIds[4] ?? '';
+    await decideContextualNegativeProposals(database, {
+      orgId: orgA,
+      profileId: profileA,
+      marketplaceId: MARKETPLACE,
+      proposals: await expectations([id]),
+      decision: 'accepted',
+      actorId: RETIRED_ACTOR,
+      note: 'Synthetic actor-retention test.',
+    });
+    const result = await exportAcceptedContextualNegatives(database, {
+      orgId: orgA,
+      profileId: profileA,
+      marketplaceId: MARKETPLACE,
+      proposals: await expectations([id]),
+      actorId: RETIRED_ACTOR,
+      note: 'Synthetic actor-retention export.',
+    });
+
+    await database.sql`delete from auth.users where id = ${RETIRED_ACTOR}`;
+    const [header] = await database.sql<{ created_by: string | null; row_count: number }[]>`
+      select created_by, row_count
+        from public.contextual_negative_exports
+       where id = ${result.exportId}
+    `;
+    expect(header).toEqual({ created_by: null, row_count: 1 });
+    await expect(getContextualNegativeExport(database, {
+      orgId: orgA,
+      exportId: result.exportId,
+    })).resolves.toMatchObject({ rowCount: 1 });
   });
 });

@@ -15,6 +15,11 @@ import type { DbHandle } from '../client.js';
 export type ContextualNegativeQueryHandle = Pick<DbHandle, 'sql'>;
 export type ContextualNegativeDecision = 'accepted' | 'dismissed' | 'proposed';
 
+export interface ContextualNegativeProposalExpectation {
+  id: string;
+  expectedFingerprint: string;
+}
+
 export type ContextualNegativeProposalRecord = Omit<ContextualNegativeProposalType, 'id'> & {
   id: string;
   decidedAt: Date | null;
@@ -22,6 +27,7 @@ export type ContextualNegativeProposalRecord = Omit<ContextualNegativeProposalTy
   decisionNote: string | null;
   exportId: string | null;
   exportedAt: Date | null;
+  reviewFingerprint: string;
 };
 
 export interface ContextualNegativeExportSummary {
@@ -52,6 +58,14 @@ export interface ContextualNegativeDecisionResult {
   updated: number;
   unchanged: number;
   refused: { id: string; status: 'exported' }[];
+  changed: {
+    id: string;
+    status: ContextualNegativeDecision;
+    decidedAt: Date | null;
+    decidedBy: string | null;
+    decisionNote: string | null;
+    reviewFingerprint: string;
+  }[];
 }
 
 export interface ContextualNegativeExportResult {
@@ -61,7 +75,15 @@ export interface ContextualNegativeExportResult {
   accepted: number;
   exported: number;
   skipped: { id: string; status: ContextualNegativeProposalType['status'] }[];
+  exportedIds: string[];
   artifactSha256: string;
+}
+
+export class ContextualNegativeReviewConflictError extends Error {
+  constructor(readonly proposalIds: readonly string[]) {
+    super('Proposal review changed since this page loaded. Reload and try again.');
+    this.name = 'ContextualNegativeReviewConflictError';
+  }
 }
 
 type DateValue = Date | string;
@@ -84,6 +106,7 @@ interface ProposalRow {
   decision_note: string | null;
   export_id: string | null;
   exported_at: DateValue | null;
+  updated_at: DateValue;
 }
 
 interface ExportRow {
@@ -144,6 +167,7 @@ function proposalFromRow(row: ProposalRow): ContextualNegativeProposalRecord {
     decisionNote: row.decision_note,
     exportId: row.export_id,
     exportedAt: row.exported_at === null ? null : toDate(row.exported_at),
+    reviewFingerprint: proposalFingerprint(row),
   };
 }
 
@@ -213,6 +237,60 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function proposalFingerprint(row: ProposalRow): string {
+  return sha256(`${json({
+    id: row.id,
+    profileId: row.profile_id,
+    marketplaceId: row.marketplace_id,
+    campaignId: row.campaign_id,
+    adGroupId: row.ad_group_id,
+    searchTerm: row.search_term,
+    normalizedQuery: row.normalized_query,
+    category: row.category,
+    sourceGroupRole: row.source_group_role,
+    matchType: row.match_type,
+    reason: row.reason,
+    status: row.status,
+    decidedAt: row.decided_at === null ? null : toDate(row.decided_at).toISOString(),
+    decidedBy: row.decided_by,
+    updatedAt: toDate(row.updated_at).toISOString(),
+  })}\n`);
+}
+
+function normalizeExpectations(
+  proposals: readonly ContextualNegativeProposalExpectation[],
+): ContextualNegativeProposalExpectation[] {
+  if (proposals.length === 0) throw new Error('Select at least one proposal.');
+  const byId = new Map<string, string>();
+  for (const proposal of proposals) {
+    if (!/^[0-9a-f]{64}$/u.test(proposal.expectedFingerprint)) {
+      throw new Error(`Proposal ${proposal.id} has an invalid review fingerprint.`);
+    }
+    const previous = byId.get(proposal.id);
+    if (previous !== undefined && previous !== proposal.expectedFingerprint) {
+      throw new Error(`Proposal ${proposal.id} was supplied with conflicting fingerprints.`);
+    }
+    byId.set(proposal.id, proposal.expectedFingerprint);
+  }
+  return [...byId.entries()]
+    .map(([id, expectedFingerprint]) => ({ id, expectedFingerprint }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function assertExpectedRows(
+  rows: readonly ProposalRow[],
+  expectations: readonly ContextualNegativeProposalExpectation[],
+): void {
+  const rowsById = new Map(rows.map((row) => [row.id, row] as const));
+  const conflicts = expectations
+    .filter((expectation) => {
+      const row = rowsById.get(expectation.id);
+      return row === undefined || proposalFingerprint(row) !== expectation.expectedFingerprint;
+    })
+    .map((expectation) => expectation.id);
+  if (conflicts.length > 0) throw new ContextualNegativeReviewConflictError(conflicts);
+}
+
 function snapshotHash(item: Omit<ContextualNegativeExportItem, 'snapshotSha256'>): string {
   return sha256(`${json(snapshotPayload(item))}\n`);
 }
@@ -231,7 +309,7 @@ export async function listContextualNegativeProposals(
   const rows = await handle.sql<ProposalRow[]>`
     select p.id, p.profile_id, p.marketplace_id, p.campaign_id, p.ad_group_id,
            p.search_term, p.normalized_query, p.category, p.source_group_role,
-           p.match_type, p.reason, p.status, p.decided_at, p.decided_by,
+           p.match_type, p.reason, p.status, p.decided_at, p.decided_by, p.updated_at,
            decision.decision_note, exported.export_id, exported.exported_at
       from public.contextual_negative_proposals p
       left join lateral (
@@ -292,25 +370,26 @@ export async function decideContextualNegativeProposals(
     orgId: string;
     profileId: string;
     marketplaceId: string;
-    proposalIds: readonly string[];
+    proposals: readonly ContextualNegativeProposalExpectation[];
     decision: ContextualNegativeDecision;
     actorId?: string | null;
     note?: string | null;
   },
 ): Promise<ContextualNegativeDecisionResult> {
-  const ids = [...new Set(input.proposalIds)];
+  const proposals = normalizeExpectations(input.proposals);
+  const ids = proposals.map((proposal) => proposal.id);
   const note = (input.note ?? '').trim();
   if (input.decision === 'dismissed' && note.length === 0) {
     throw new Error('A dismissal needs a note: record why this proposal is not being taken.');
   }
-  if (ids.length === 0) {
-    return { offered: 0, matched: 0, updated: 0, unchanged: 0, refused: [] };
-  }
-
   return await handle.sql.begin(async (sql) => {
-    const rows = await sql<{ id: string; status: ContextualNegativeProposalType['status'] }[]>`
-      select id, status
-        from public.contextual_negative_proposals
+    const rows = await sql<ProposalRow[]>`
+      select p.id, p.profile_id, p.marketplace_id, p.campaign_id, p.ad_group_id,
+             p.search_term, p.normalized_query, p.category, p.source_group_role,
+             p.match_type, p.reason, p.status, p.decided_at, p.decided_by,
+             null::text as decision_note, null::uuid as export_id,
+             null::timestamptz as exported_at, p.updated_at
+        from public.contextual_negative_proposals p
        where org_id = ${input.orgId}
          and profile_id = ${input.profileId}
          and marketplace_id = ${input.marketplaceId}
@@ -318,6 +397,7 @@ export async function decideContextualNegativeProposals(
        order by id
        for update
     `;
+    assertExpectedRows(rows, proposals);
     const refused = rows
       .filter((row) => row.status === 'exported')
       .map((row) => ({ id: row.id, status: 'exported' as const }));
@@ -329,7 +409,13 @@ export async function decideContextualNegativeProposals(
     const decidedAt = input.decision === 'proposed' ? null : new Date().toISOString();
     const updated = changedIds.length === 0
       ? []
-      : await sql<{ id: string }[]>`
+      : await sql<{
+          id: string;
+          status: ContextualNegativeDecision;
+          decided_at: DateValue | null;
+          decided_by: string | null;
+          updated_at: DateValue;
+        }[]>`
           update public.contextual_negative_proposals
              set status = ${input.decision},
                  decided_at = ${decidedAt}::timestamptz,
@@ -340,7 +426,7 @@ export async function decideContextualNegativeProposals(
              and marketplace_id = ${input.marketplaceId}
              and id = any (${changedIds}::uuid[])
              and status <> 'exported'
-           returning id
+           returning id, status, decided_at, decided_by, updated_at
         `;
     if (updated.length !== changedIds.length) {
       throw new Error(`Offered ${changedIds.length} proposal decisions, updated ${updated.length}`);
@@ -368,12 +454,35 @@ export async function decideContextualNegativeProposals(
       }
     }
 
+    const beforeById = new Map(rows.map((row) => [row.id, row] as const));
+    const changedResult = updated.map((row) => {
+      const before = beforeById.get(row.id);
+      if (before === undefined) throw new Error(`Updated unselected proposal ${row.id}`);
+      const after: ProposalRow = {
+        ...before,
+        status: row.status,
+        decided_at: row.decided_at,
+        decided_by: row.decided_by,
+        decision_note: note || null,
+        updated_at: row.updated_at,
+      };
+      return {
+        id: row.id,
+        status: row.status,
+        decidedAt: row.decided_at === null ? null : toDate(row.decided_at),
+        decidedBy: row.decided_by,
+        decisionNote: note || null,
+        reviewFingerprint: proposalFingerprint(after),
+      };
+    });
+
     return {
       offered: ids.length,
       matched: rows.length,
       updated: updated.length,
       unchanged,
       refused,
+      changed: changedResult,
     };
   });
 }
@@ -384,24 +493,42 @@ export async function exportAcceptedContextualNegatives(
     orgId: string;
     profileId: string;
     marketplaceId: string;
-    proposalIds?: readonly string[] | null;
+    proposals: readonly ContextualNegativeProposalExpectation[];
     actorId?: string | null;
     note: string;
   },
 ): Promise<ContextualNegativeExportResult> {
   const note = input.note.trim();
   if (note.length === 0) throw new Error('An export needs a note.');
-  const ids = input.proposalIds && input.proposalIds.length > 0
-    ? [...new Set(input.proposalIds)]
-    : null;
+  const proposals = normalizeExpectations(input.proposals);
+  const ids = proposals.map((proposal) => proposal.id);
 
   return await handle.sql.begin(async (sql) => {
+    // Lock every selected proposal in canonical UUID order before computing
+    // either a decision or an export. Overlapping requests therefore cannot
+    // deadlock by inheriting opposite browser-selection orders.
+    const locked = await sql<ProposalRow[]>`
+      select p.id, p.profile_id, p.marketplace_id, p.campaign_id, p.ad_group_id,
+             p.search_term, p.normalized_query, p.category, p.source_group_role,
+             p.match_type, p.reason, p.status, p.decided_at, p.decided_by,
+             null::text as decision_note, null::uuid as export_id,
+             null::timestamptz as exported_at, p.updated_at
+        from public.contextual_negative_proposals p
+       where p.org_id = ${input.orgId}
+         and p.profile_id = ${input.profileId}
+         and p.marketplace_id = ${input.marketplaceId}
+         and p.id = any (${ids}::uuid[])
+       order by p.id
+       for update
+    `;
+    assertExpectedRows(locked, proposals);
+
     const rows = await sql<(ProposalRow & { created_at: DateValue })[]>`
       select p.id, p.profile_id, p.marketplace_id, p.campaign_id, p.ad_group_id,
              p.search_term, p.normalized_query, p.category, p.source_group_role,
              p.match_type, p.reason, p.status, p.decided_at, p.decided_by,
              decision.decision_note, null::uuid as export_id,
-             null::timestamptz as exported_at, p.created_at
+             null::timestamptz as exported_at, p.created_at, p.updated_at
         from public.contextual_negative_proposals p
         left join lateral (
           select a.payload ->> 'note' as decision_note
@@ -416,10 +543,8 @@ export async function exportAcceptedContextualNegatives(
        where p.org_id = ${input.orgId}
          and p.profile_id = ${input.profileId}
          and p.marketplace_id = ${input.marketplaceId}
-         and (${ids}::uuid[] is null or p.id = any (${ids}::uuid[]))
-         and (${ids}::uuid[] is not null or p.status = 'accepted')
+         and p.id = any (${ids}::uuid[])
        order by p.campaign_id, p.ad_group_id, p.normalized_query, p.id
-       for update of p
     `;
     const acceptedRows = rows.filter((row) => row.status === 'accepted');
     if (acceptedRows.length === 0) throw new Error('No accepted proposals to export.');
@@ -538,11 +663,12 @@ export async function exportAcceptedContextualNegatives(
       .map((row) => ({ id: row.id, status: row.status }));
     return {
       exportId,
-      offered: ids?.length ?? rows.length,
+      offered: ids.length,
       matched: rows.length,
       accepted: acceptedRows.length,
       exported: stamped.length,
       skipped,
+      exportedIds: stamped.map((row) => row.id).sort((left, right) => left.localeCompare(right)),
       artifactSha256,
     };
   });
