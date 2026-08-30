@@ -205,17 +205,31 @@ export function normalizeMarketingStreamSnapshot(
     }
   });
 
-  const scopes = snapshot.scopes.filter((scope) => !refusalByScope.has(marketingStreamScopeKey(scope)));
+  const scopes: MarketingStreamScope[] = [];
+  const facts: MarketingStreamHourlyFactValue[] = [];
+  for (const scope of snapshot.scopes) {
+    const key = marketingStreamScopeKey(scope);
+    if (refusalByScope.has(key)) continue;
+    const parsed = recordsByScope.get(marketingStreamScopeKey(scope)) ?? [];
+    try {
+      facts.push(...aggregateScope(snapshot.profileId, scope, parsed, policy));
+      scopes.push(scope);
+    } catch (error) {
+      const refusals = refusalByScope.get(key) ?? [];
+      refusals.push({
+        index: -1,
+        messageId: null,
+        scope,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      refusalByScope.set(key, refusals);
+    }
+  }
   const allowed = new Set(scopes.map(marketingStreamScopeKey));
   const expectedSourceEventIds = Object.fromEntries(scopes.map((scope) => {
     const key = marketingStreamScopeKey(scope);
     return [key, [...(snapshot.sourceEventIds[key] ?? [])]];
   }));
-  const facts: MarketingStreamHourlyFactValue[] = [];
-  for (const scope of scopes) {
-    const parsed = recordsByScope.get(marketingStreamScopeKey(scope)) ?? [];
-    facts.push(...aggregateScope(snapshot.profileId, scope, parsed, policy));
-  }
   for (const fact of facts) {
     if (!allowed.has(marketingStreamScopeKey({ adProduct: fact.adProduct, utcHour: fact.utcHour }))) {
       throw new MarketingStreamNormalizationError('normalized a fact outside the accepted scopes');
@@ -223,6 +237,38 @@ export function normalizeMarketingStreamSnapshot(
   }
   const refusals = [...refusalByScope.values()].flat();
   return { scopes, expectedSourceEventIds, facts, refusals };
+}
+
+/** Earliest future replay needed to age a settling/revised scope. */
+export function nextMarketingStreamTransitionAt(
+  snapshot: MarketingStreamSnapshot,
+  policy: MarketingStreamNormalizationPolicy,
+): Date | null {
+  validatePolicy(policy);
+  let earliest: Date | null = null;
+  for (const scope of snapshot.scopes) {
+    const hour = new Date(truncateUtcHour(scope.utcHour));
+    const baseDueAt = new Date(
+      hour.getTime() + 3_600_000 + policy.settlingWindowHours * 3_600_000,
+    );
+    let dueAt = baseDueAt;
+    for (const event of snapshot.events) {
+      if (
+        event.dataset === 'budget_usage'
+        || marketingStreamScopeKey({ adProduct: event.adProduct, utcHour: event.eventTime })
+          !== marketingStreamScopeKey(scope)
+      ) continue;
+      const receivedAt = new Date(event.receivedAt);
+      if (receivedAt > baseDueAt) {
+        const revisedDueAt = new Date(
+          receivedAt.getTime() + policy.settlingWindowHours * 3_600_000,
+        );
+        if (revisedDueAt > dueAt) dueAt = revisedDueAt;
+      }
+    }
+    if (dueAt > policy.now && (earliest === null || dueAt < earliest)) earliest = dueAt;
+  }
+  return earliest;
 }
 
 export type DaypartingMetric = 'conversion_rate' | 'roas';
@@ -383,11 +429,27 @@ interface MetricRecord {
   purchases: number;
   sales: number;
   budgetUsagePercent: number | null;
+  budgetObservedAt: string | null;
 }
 
 interface ParsedEvent {
   event: StoredMarketingStreamEvent;
   records: MetricRecord[];
+}
+
+interface CampaignMetricAggregate {
+  impressions: number;
+  clicks: number;
+  cost: number;
+  purchases: number;
+  sales: number;
+  budgetUsage: {
+    percent: number;
+    observedAt: string;
+    receivedAt: string;
+    eventId: string;
+  } | null;
+  sourceEventIds: Set<string>;
 }
 
 interface ModelCell {
@@ -444,20 +506,22 @@ function parseMetricRecord(
 ): MetricRecord {
   if (!isRecord(value)) throw new MarketingStreamNormalizationError(`metric ${index} is not an object`);
   const campaignId = requiredString(value['campaignId'], `metric ${index} campaignId`);
+  const signed = event.provider !== undefined;
   if (event.dataset === 'traffic') {
-    const impressions = metric(value['impressions'], `metric ${index} impressions`, true);
-    const clicks = metric(value['clicks'], `metric ${index} clicks`, true);
-    if (clicks > impressions) {
+    const impressions = metric(value['impressions'], `metric ${index} impressions`, true, signed);
+    const clicks = metric(value['clicks'], `metric ${index} clicks`, true, signed);
+    if (!signed && clicks > impressions) {
       throw new MarketingStreamNormalizationError(`metric ${index} has more clicks than impressions`);
     }
     return {
       campaignId,
       impressions,
       clicks,
-      cost: metric(value['cost'], `metric ${index} cost`),
+      cost: metric(value['cost'], `metric ${index} cost`, false, signed),
       purchases: 0,
       sales: 0,
       budgetUsagePercent: null,
+      budgetObservedAt: null,
     };
   }
   if (event.dataset === 'conversion') {
@@ -466,9 +530,10 @@ function parseMetricRecord(
       impressions: 0,
       clicks: 0,
       cost: 0,
-      purchases: metric(value['purchases'], `metric ${index} purchases`, true),
-      sales: metric(value['sales'], `metric ${index} sales`),
+      purchases: metric(value['purchases'], `metric ${index} purchases`, true, signed),
+      sales: metric(value['sales'], `metric ${index} sales`, false, signed),
       budgetUsagePercent: null,
+      budgetObservedAt: null,
     };
   }
   return {
@@ -479,6 +544,7 @@ function parseMetricRecord(
     purchases: 0,
     sales: 0,
     budgetUsagePercent: metric(value['budgetUsagePercent'], `metric ${index} budgetUsagePercent`),
+    budgetObservedAt: optionalInstant(value['budgetObservedAt']) ?? event.eventTime,
   };
 }
 
@@ -488,21 +554,21 @@ function aggregateScope(
   parsedEvents: readonly ParsedEvent[],
   policy: MarketingStreamNormalizationPolicy,
 ): MarketingStreamHourlyFactValue[] {
-  const campaigns = new Map<string, {
-    impressions: number;
-    clicks: number;
-    cost: number;
-    purchases: number;
-    sales: number;
-    budgetUsagePercent: number | null;
-    sourceEventIds: Set<string>;
-  }>();
-  let latestRevisionReceivedAt: Date | null = null;
+  const campaigns = new Map<string, CampaignMetricAggregate>();
+  const utcHour = truncateUtcHour(scope.utcHour);
+  const hourDate = new Date(utcHour);
+  const baseDueAt = new Date(
+    hourDate.getTime() + 3_600_000 + policy.settlingWindowHours * 3_600_000,
+  );
+  let latestLateEvidenceAt: Date | null = null;
   for (const parsed of parsedEvents) {
-    if (parsed.event.revision > 0) {
+    if (parsed.event.dataset !== 'budget_usage') {
       const receivedAt = new Date(parsed.event.receivedAt);
-      if (latestRevisionReceivedAt === null || receivedAt > latestRevisionReceivedAt) {
-        latestRevisionReceivedAt = receivedAt;
+      if (
+        receivedAt > baseDueAt
+        && (latestLateEvidenceAt === null || receivedAt > latestLateEvidenceAt)
+      ) {
+        latestLateEvidenceAt = receivedAt;
       }
     }
     for (const record of parsed.records) {
@@ -512,7 +578,7 @@ function aggregateScope(
         cost: 0,
         purchases: 0,
         sales: 0,
-        budgetUsagePercent: null,
+        budgetUsage: null,
         sourceEventIds: new Set<string>(),
       };
       aggregate.impressions += record.impressions;
@@ -520,27 +586,33 @@ function aggregateScope(
       aggregate.cost += record.cost;
       aggregate.purchases += record.purchases;
       aggregate.sales += record.sales;
-      aggregate.budgetUsagePercent = maxNullable(aggregate.budgetUsagePercent, record.budgetUsagePercent);
+      if (record.budgetUsagePercent !== null && record.budgetObservedAt !== null) {
+        const candidate = {
+          percent: record.budgetUsagePercent,
+          observedAt: record.budgetObservedAt,
+          receivedAt: parsed.event.receivedAt,
+          eventId: parsed.event.id,
+        };
+        aggregate.budgetUsage = selectLatestBudget(aggregate.budgetUsage, candidate);
+      }
       aggregate.sourceEventIds.add(parsed.event.id);
       campaigns.set(record.campaignId, aggregate);
     }
   }
 
-  const utcHour = truncateUtcHour(scope.utcHour);
-  const hourDate = new Date(utcHour);
-  const ageHours = (policy.now.getTime() - hourDate.getTime()) / 3_600_000;
-  if (ageHours < 0) throw new MarketingStreamNormalizationError(`future Stream hour ${utcHour}`);
-  const revisionAgeHours = latestRevisionReceivedAt === null
-    ? Number.POSITIVE_INFINITY
-    : (policy.now.getTime() - latestRevisionReceivedAt.getTime()) / 3_600_000;
-  const settlingState = ageHours < policy.settlingWindowHours
+  if (policy.now < hourDate) throw new MarketingStreamNormalizationError(`future Stream hour ${utcHour}`);
+  const revisionDueAt = latestLateEvidenceAt === null
+    ? null
+    : new Date(latestLateEvidenceAt.getTime() + policy.settlingWindowHours * 3_600_000);
+  const settlingState = policy.now < baseDueAt
     ? 'settling'
-    : revisionAgeHours < policy.settlingWindowHours
+    : revisionDueAt !== null && policy.now < revisionDueAt
       ? 'revised'
       : 'settled';
   const local = profileLocalParts(policy.profileTimeZone, hourDate);
-  return [...campaigns.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([campaignId, value]) =>
-    MarketingStreamHourlyFact.parse({
+  return [...campaigns.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([campaignId, value]) => {
+    assertFinalCampaignMetrics(campaignId, value);
+    return MarketingStreamHourlyFact.parse({
       profileId,
       adProduct: scope.adProduct,
       campaignId,
@@ -555,12 +627,12 @@ function aggregateScope(
       cost: round(value.cost, 6),
       purchases: value.purchases,
       sales: round(value.sales, 6),
-      budgetUsagePercent: value.budgetUsagePercent,
-      budgetCapped: value.budgetUsagePercent !== null && value.budgetUsagePercent >= policy.budgetCappedAtPercent,
+      budgetUsagePercent: value.budgetUsage?.percent ?? null,
+      budgetCapped: value.budgetUsage !== null && value.budgetUsage.percent >= policy.budgetCappedAtPercent,
       settlingState,
       sourceEvents: value.sourceEventIds.size,
-    }),
-  );
+    });
+  });
 }
 
 function profileLocalParts(
@@ -637,12 +709,26 @@ function optionalString(value: unknown): string | null {
   return value;
 }
 
-function metric(value: unknown, label: string, integer = false): number {
+function metric(value: unknown, label: string, integer = false, signed = false): number {
   const parsed = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : Number.NaN;
-  if (!Number.isFinite(parsed) || parsed < 0 || (integer && !Number.isInteger(parsed))) {
-    throw new MarketingStreamNormalizationError(`${label} must be a non-negative${integer ? ' integer' : ''}`);
+  if (!Number.isFinite(parsed) || (!signed && parsed < 0) || (integer && !Number.isInteger(parsed))) {
+    throw new MarketingStreamNormalizationError(
+      `${label} must be a ${signed ? 'signed' : 'non-negative'}${integer ? ' integer' : ' number'}`,
+    );
   }
   return parsed;
+}
+
+function optionalInstant(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') {
+    throw new MarketingStreamNormalizationError('budgetObservedAt must be an ISO timestamp');
+  }
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    throw new MarketingStreamNormalizationError('budgetObservedAt must be an ISO timestamp');
+  }
+  return date.toISOString();
 }
 
 function readMessageId(value: unknown): string | null {
@@ -660,10 +746,45 @@ function truncateUtcHour(value: string): string {
   return date.toISOString();
 }
 
-function maxNullable(left: number | null, right: number | null): number | null {
-  if (left === null) return right;
-  if (right === null) return left;
-  return Math.max(left, right);
+function selectLatestBudget(
+  current: CampaignMetricAggregate['budgetUsage'],
+  candidate: NonNullable<CampaignMetricAggregate['budgetUsage']>,
+): NonNullable<CampaignMetricAggregate['budgetUsage']> {
+  if (current === null) return candidate;
+  const observed = candidate.observedAt.localeCompare(current.observedAt);
+  if (observed > 0) return candidate;
+  if (observed < 0) return current;
+  if (candidate.percent !== current.percent) {
+    throw new MarketingStreamNormalizationError(
+      `conflicting budget snapshots share observation time ${candidate.observedAt}`,
+    );
+  }
+  const received = candidate.receivedAt.localeCompare(current.receivedAt);
+  if (received > 0) return candidate;
+  if (received < 0) return current;
+  return candidate.eventId.localeCompare(current.eventId) > 0 ? candidate : current;
+}
+
+function assertFinalCampaignMetrics(
+  campaignId: string,
+  value: CampaignMetricAggregate,
+): void {
+  const metrics = [value.impressions, value.clicks, value.cost, value.purchases, value.sales];
+  if (metrics.some((metricValue) => !Number.isFinite(metricValue) || metricValue < 0)) {
+    throw new MarketingStreamNormalizationError(
+      `campaign ${campaignId} has a negative final aggregate`,
+    );
+  }
+  if (!Number.isInteger(value.impressions) || !Number.isInteger(value.clicks) || !Number.isInteger(value.purchases)) {
+    throw new MarketingStreamNormalizationError(
+      `campaign ${campaignId} has a non-integer count aggregate`,
+    );
+  }
+  if (value.clicks > value.impressions) {
+    throw new MarketingStreamNormalizationError(
+      `campaign ${campaignId} has more final clicks than impressions`,
+    );
+  }
 }
 
 function compareCells(left: ModelCell, right: ModelCell): number {

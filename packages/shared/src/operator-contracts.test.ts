@@ -10,9 +10,11 @@ import {
   DirectionalAdjustmentProvenance,
   FeatureJobPayload,
   JobPayload,
+  MarketingStreamSubscriptionBinding,
   MarketingStreamBatchEnvelope,
   MarketingStreamHourlyFact,
   MarketingStreamLedgerEvent,
+  MarketingStreamNormalizeJob,
   OptimizationGroup,
   OptimizationRunContext,
   QueryCategory,
@@ -446,6 +448,52 @@ describe('Marketing Stream and dayparting', () => {
     });
     expect(event.messageId).toBe('message-1');
 
+    const binding = MarketingStreamSubscriptionBinding.parse({
+      id: GROUP_ID,
+      orgId: ORG_ID,
+      profileId: PROFILE_ID,
+      subscriptionId: 'subscription-synthetic',
+      datasetId: 'sb-conversion',
+      advertiserId: 'advertiser-synthetic',
+      marketplaceId: 'marketplace-synthetic',
+      active: true,
+    });
+    expect(MarketingStreamLedgerEvent.parse({
+      ...event,
+      provider: {
+        bindingId: binding.id,
+        subscriptionId: binding.subscriptionId,
+        datasetId: binding.datasetId,
+        advertiserId: binding.advertiserId,
+        marketplaceId: binding.marketplaceId,
+        eventId: 'provider-event-synthetic',
+      },
+    }).provider?.eventId).toBe('provider-event-synthetic');
+    expect(MarketingStreamLedgerEvent.safeParse({
+      ...event,
+      adProduct: 'SP',
+      provider: {
+        bindingId: binding.id,
+        subscriptionId: binding.subscriptionId,
+        datasetId: binding.datasetId,
+        advertiserId: binding.advertiserId,
+        marketplaceId: binding.marketplaceId,
+        eventId: 'provider-event-mismatched-product',
+      },
+    }).success).toBe(false);
+    expect(MarketingStreamLedgerEvent.safeParse({
+      ...event,
+      dataset: 'traffic',
+      provider: {
+        bindingId: binding.id,
+        subscriptionId: binding.subscriptionId,
+        datasetId: binding.datasetId,
+        advertiserId: binding.advertiserId,
+        marketplaceId: binding.marketplaceId,
+        eventId: 'provider-event-mismatched-dataset',
+      },
+    }).success).toBe(false);
+
     const fact = MarketingStreamHourlyFact.parse({
       profileId: PROFILE_ID,
       adProduct: 'SB',
@@ -527,6 +575,7 @@ describe('feature jobs', () => {
         profileId: PROFILE_ID,
         type: 'marketing_stream.normalize',
         messageIds: ['message-1'],
+        configurationRetryAttempt: 1,
       },
     ];
     expect(jobs.map((job) => FeatureJobPayload.parse(job).type)).toEqual([
@@ -543,5 +592,12 @@ describe('feature jobs', () => {
       'report.promote',
       'marketing_stream.normalize',
     ]);
+    expect(MarketingStreamNormalizeJob.safeParse({
+      orgId: ORG_ID,
+      profileId: PROFILE_ID,
+      type: 'marketing_stream.normalize',
+      messageIds: ['message-1'],
+      configurationRetryAttempt: 25,
+    }).success).toBe(false);
   });
 });

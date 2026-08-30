@@ -224,7 +224,15 @@ export const ReportPromoteJob = z.object({
 export const MarketingStreamNormalizeJob = z.object({
   ...jobBase,
   type: z.literal(FeatureJobType.enum['marketing_stream.normalize']),
-  messageIds: z.array(z.string().min(1)).min(1),
+  messageIds: z.array(z.string().min(1)),
+  /** Explicit operator or continuation recovery of durable blocked scopes. */
+  replayBlockedProfile: z.boolean().optional(),
+  /** Bounded policy-configuration retry generation; absent on normal ingestion jobs. */
+  configurationRetryAttempt: z.number().int().min(1).max(24).optional(),
+}).superRefine((job, context) => {
+  if (job.messageIds.length === 0 && job.replayBlockedProfile !== true) {
+    context.addIssue({ code: 'custom', path: ['messageIds'], message: 'normalization requires messages or blocked-profile replay' });
+  }
 });
 
 export const JobPayload = z.discriminatedUnion('type', [

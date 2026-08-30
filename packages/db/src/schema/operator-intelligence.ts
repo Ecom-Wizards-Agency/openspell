@@ -24,6 +24,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import type {
+  AmazonMarketingStreamDatasetId,
   CreativeMappingProvenance,
   CreativeSyncSnapshotStatus,
   DaypartingScheduleBlock,
@@ -560,6 +561,95 @@ export const recommendationObservations = pgTable(
   ],
 );
 
+export const marketingStreamSubscriptionBindings = pgTable(
+  'marketing_stream_subscription_bindings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull(),
+    subscriptionId: text('subscription_id').notNull(),
+    providerDatasetId: text('provider_dataset_id').$type<AmazonMarketingStreamDatasetId>().notNull(),
+    advertiserId: text('advertiser_id').notNull(),
+    marketplaceId: text('marketplace_id').notNull(),
+    active: boolean('active').notNull().default(true),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.orgId, t.profileId], foreignColumns: [adProfiles.orgId, adProfiles.id] })
+      .onDelete('cascade'),
+    unique('marketing_stream_bindings_tenant_identity_key').on(t.orgId, t.profileId, t.id),
+    unique('marketing_stream_bindings_full_identity_key').on(
+      t.orgId,
+      t.profileId,
+      t.id,
+      t.subscriptionId,
+      t.providerDatasetId,
+      t.advertiserId,
+      t.marketplaceId,
+    ),
+    unique('marketing_stream_bindings_subscription_key').on(t.subscriptionId),
+    uniqueIndex('marketing_stream_bindings_active_provider_identity_key')
+      .on(t.advertiserId, t.marketplaceId, t.providerDatasetId)
+      .where(sql`${t.active}`),
+    uniqueIndex('marketing_stream_bindings_active_profile_dataset_key')
+      .on(t.profileId, t.providerDatasetId)
+      .where(sql`${t.active}`),
+    check('marketing_stream_bindings_subscription_nonempty', sql`btrim(${t.subscriptionId}) <> ''`),
+    check('marketing_stream_bindings_advertiser_nonempty', sql`btrim(${t.advertiserId}) <> ''`),
+    check('marketing_stream_bindings_marketplace_nonempty', sql`btrim(${t.marketplaceId}) <> ''`),
+    check('marketing_stream_bindings_dataset_check', sql`${t.providerDatasetId} in (
+      'sp-traffic', 'sp-conversion', 'sb-traffic', 'sb-conversion',
+      'sd-traffic', 'sd-conversion', 'budget-usage'
+    )`),
+  ],
+);
+
+export const marketingStreamProjectionBlocks = pgTable(
+  'marketing_stream_projection_blocks',
+  {
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull(),
+    blockToken: uuid('block_token').notNull().defaultRandom(),
+    firstBlockedAt: ts('first_blocked_at').notNull(),
+    lastBlockedAt: ts('last_blocked_at').notNull(),
+    retryCount: integer('retry_count').notNull().default(0),
+    alertState: text('alert_state').$type<'pending' | 'alerted'>().notNull().default('pending'),
+    lastReason: text('last_reason').notNull(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.orgId, t.profileId] }),
+    foreignKey({ columns: [t.orgId, t.profileId], foreignColumns: [adProfiles.orgId, adProfiles.id] })
+      .onDelete('cascade'),
+    check('marketing_stream_projection_blocks_retry_nonnegative', sql`${t.retryCount} >= 0`),
+    check('marketing_stream_projection_blocks_alert_state_check', sql`${t.alertState} in ('pending', 'alerted')`),
+    check('marketing_stream_projection_blocks_reason_nonempty', sql`btrim(${t.lastReason}) <> ''`),
+    check('marketing_stream_projection_blocks_time_order', sql`${t.lastBlockedAt} >= ${t.firstBlockedAt}`),
+  ],
+);
+
+export const marketingStreamProjectionBlockScopes = pgTable(
+  'marketing_stream_projection_block_scopes',
+  {
+    orgId: uuid('org_id').notNull(),
+    profileId: uuid('profile_id').notNull(),
+    adProduct: adProduct('ad_product').notNull(),
+    utcHour: ts('utc_hour').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.orgId, t.profileId, t.adProduct, t.utcHour] }),
+    foreignKey({
+      columns: [t.orgId, t.profileId],
+      foreignColumns: [marketingStreamProjectionBlocks.orgId, marketingStreamProjectionBlocks.profileId],
+    }).onDelete('cascade'),
+    index('marketing_stream_projection_block_scopes_page_idx')
+      .on(t.orgId, t.profileId, t.adProduct, t.utcHour),
+    check('marketing_stream_projection_block_scopes_hour_check', sql`${t.utcHour} = date_trunc('hour', ${t.utcHour})`),
+  ],
+);
+
 export const marketingStreamEvents = pgTable(
   'marketing_stream_events',
   {
@@ -574,6 +664,12 @@ export const marketingStreamEvents = pgTable(
     revision: integer('revision').notNull(),
     payloadHash: text('payload_hash').notNull(),
     rawPayload: jsonb('raw_payload').$type<Record<string, unknown>>().notNull(),
+    bindingId: uuid('binding_id'),
+    providerSubscriptionId: text('provider_subscription_id'),
+    providerDatasetId: text('provider_dataset_id').$type<AmazonMarketingStreamDatasetId>(),
+    providerEventId: text('provider_event_id'),
+    providerAdvertiserId: text('provider_advertiser_id'),
+    providerMarketplaceId: text('provider_marketplace_id'),
     createdAt: ts('created_at').notNull().defaultNow(),
   },
   (t) => [
@@ -585,6 +681,56 @@ export const marketingStreamEvents = pgTable(
       t.messageId,
       t.revision,
     ),
+    foreignKey({
+      columns: [
+        t.orgId,
+        t.profileId,
+        t.bindingId,
+        t.providerSubscriptionId,
+        t.providerDatasetId,
+        t.providerAdvertiserId,
+        t.providerMarketplaceId,
+      ],
+      foreignColumns: [
+        marketingStreamSubscriptionBindings.orgId,
+        marketingStreamSubscriptionBindings.profileId,
+        marketingStreamSubscriptionBindings.id,
+        marketingStreamSubscriptionBindings.subscriptionId,
+        marketingStreamSubscriptionBindings.providerDatasetId,
+        marketingStreamSubscriptionBindings.advertiserId,
+        marketingStreamSubscriptionBindings.marketplaceId,
+      ],
+    }).onDelete('restrict'),
+    uniqueIndex('marketing_stream_events_provider_identity_key')
+      .on(t.profileId, t.providerDatasetId, t.providerAdvertiserId, t.providerMarketplaceId, t.providerEventId)
+      .where(sql`${t.bindingId} is not null`),
+    check('marketing_stream_events_provider_identity_complete', sql`
+      num_nonnulls(${t.bindingId}, ${t.providerSubscriptionId}, ${t.providerDatasetId},
+        ${t.providerEventId}, ${t.providerAdvertiserId}, ${t.providerMarketplaceId}) = 0 or
+      (num_nonnulls(${t.bindingId}, ${t.providerSubscriptionId}, ${t.providerDatasetId},
+        ${t.providerEventId}, ${t.providerAdvertiserId}, ${t.providerMarketplaceId}) = 6 and
+       nullif(btrim(coalesce(${t.providerSubscriptionId}, '')), '') is not null and
+       nullif(btrim(coalesce(${t.providerDatasetId}, '')), '') is not null and
+       nullif(btrim(coalesce(${t.providerEventId}, '')), '') is not null and
+       nullif(btrim(coalesce(${t.providerAdvertiserId}, '')), '') is not null and
+       nullif(btrim(coalesce(${t.providerMarketplaceId}, '')), '') is not null)
+    `),
+    check('marketing_stream_events_provider_dataset_check', sql`
+      ${t.providerDatasetId} is null or ${t.providerDatasetId} in (
+        'sp-traffic', 'sp-conversion', 'sb-traffic', 'sb-conversion',
+        'sd-traffic', 'sd-conversion', 'budget-usage'
+      )
+    `),
+    check('marketing_stream_events_provider_contract_check', sql`
+      ${t.providerDatasetId} is null or
+      (${t.providerDatasetId} = 'sp-traffic' and ${t.dataset} = 'traffic' and ${t.adProduct} = 'SP') or
+      (${t.providerDatasetId} = 'sp-conversion' and ${t.dataset} = 'conversion' and ${t.adProduct} = 'SP') or
+      (${t.providerDatasetId} = 'sb-traffic' and ${t.dataset} = 'traffic' and ${t.adProduct} = 'SB') or
+      (${t.providerDatasetId} = 'sb-conversion' and ${t.dataset} = 'conversion' and ${t.adProduct} = 'SB') or
+      (${t.providerDatasetId} = 'sd-traffic' and ${t.dataset} = 'traffic' and ${t.adProduct} = 'SD') or
+      (${t.providerDatasetId} = 'sd-conversion' and ${t.dataset} = 'conversion' and ${t.adProduct} = 'SD') or
+      (${t.providerDatasetId} = 'budget-usage' and ${t.dataset} = 'budget_usage')
+    `),
     index('marketing_stream_events_normalize_idx').on(t.profileId, t.eventTime, t.receivedAt),
   ],
 );
@@ -659,3 +805,7 @@ export type OptimizationGroupRow = typeof optimizationGroups.$inferSelect;
 export type NewOptimizationGroup = typeof optimizationGroups.$inferInsert &
   Pick<OptimizationGroup, 'role' | 'prioritization'>;
 export type MarketingStreamEventRow = typeof marketingStreamEvents.$inferSelect;
+export type MarketingStreamSubscriptionBindingRow =
+  typeof marketingStreamSubscriptionBindings.$inferSelect;
+export type MarketingStreamProjectionBlockRow =
+  typeof marketingStreamProjectionBlocks.$inferSelect;

@@ -8,16 +8,22 @@
  * IDs under a scoped advisory lock and refuses a stale calculation instead of
  * allowing an out-of-order worker to overwrite newer evidence.
  */
+import { createHash } from 'node:crypto';
 import type { Sql } from '../client.js';
 import {
   DaypartingScheduleProposal,
   MarketingStreamHourlyFact,
   MarketingStreamLedgerEvent,
+  MarketingStreamNormalizeJob,
+  MarketingStreamSubscriptionBinding,
+  type AmazonMarketingStreamDatasetId,
   type AdProduct,
   type DaypartingScheduleProposal as DaypartingScheduleProposalValue,
   type HourSettlingState,
   type MarketingStreamHourlyFact as MarketingStreamHourlyFactValue,
   type MarketingStreamLedgerEvent as MarketingStreamLedgerEventValue,
+  type MarketingStreamNormalizeJob as MarketingStreamNormalizeJobValue,
+  type MarketingStreamSubscriptionBinding as MarketingStreamSubscriptionBindingValue,
 } from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
 
@@ -38,6 +44,8 @@ export interface MarketingStreamAppendResult {
   duplicateMessages: number;
   revisedMessages: number;
   affectedScopes: MarketingStreamScope[];
+  /** Fingerprint of the latest canonical ledger revisions in affected scopes. */
+  sourceFingerprint?: string | null;
 }
 
 export interface MarketingStreamSnapshot {
@@ -56,6 +64,19 @@ export interface MarketingStreamProjectionResult {
   factsReadBack: number;
 }
 
+export interface MarketingStreamProjectionBlock {
+  orgId: string;
+  profileId: string;
+  scopes: MarketingStreamScope[];
+  firstBlockedAt: string;
+  lastBlockedAt: string;
+  retryCount: number;
+  alertState: 'pending' | 'alerted';
+  lastReason: string;
+  blockToken: string;
+  pendingScopeCount: number;
+}
+
 export interface ReadMarketingStreamFactsInput {
   orgId: string;
   profileId: string;
@@ -70,6 +91,49 @@ export class MarketingStreamPersistenceError extends Error {
     super(message);
     this.name = 'MarketingStreamPersistenceError';
   }
+}
+
+const BLOCKED_MARKETING_STREAM_SCOPE_PAGE = 256;
+
+/** Resolve provider traffic only through an explicit active subscription binding. */
+export async function resolveMarketingStreamSubscriptionBinding(
+  handle: DbHandle,
+  input: {
+    advertiserId: string;
+    marketplaceId: string;
+    datasetId: AmazonMarketingStreamDatasetId;
+  },
+): Promise<MarketingStreamSubscriptionBindingValue> {
+  const rows = await handle.sql<BindingWireRow[]>`
+    select id, org_id, profile_id, subscription_id,
+           provider_dataset_id, advertiser_id, marketplace_id, active
+      from public.marketing_stream_subscription_bindings
+     where active = true
+       and advertiser_id = ${input.advertiserId}
+       and marketplace_id = ${input.marketplaceId}
+       and provider_dataset_id = ${input.datasetId}
+  `;
+  if (rows.length === 0) {
+    throw new MarketingStreamPersistenceError(
+      'provider advertiser, marketplace, and dataset have no active subscription binding',
+    );
+  }
+  if (rows.length !== 1) {
+    throw new MarketingStreamPersistenceError(
+      'provider advertiser, marketplace, and dataset resolve ambiguously',
+    );
+  }
+  const row = rows[0]!;
+  return MarketingStreamSubscriptionBinding.parse({
+    id: row.id,
+    orgId: row.org_id,
+    profileId: row.profile_id,
+    subscriptionId: row.subscription_id,
+    datasetId: row.provider_dataset_id,
+    advertiserId: row.advertiser_id,
+    marketplaceId: row.marketplace_id,
+    active: row.active,
+  });
 }
 
 /** A retryable projection lost a race with a newer ledger event. */
@@ -92,6 +156,23 @@ interface EventWireRow {
   revision: number;
   payload_hash: string;
   raw_payload: Record<string, unknown>;
+  binding_id: string | null;
+  provider_subscription_id: string | null;
+  provider_dataset_id: AmazonMarketingStreamDatasetId | null;
+  provider_event_id: string | null;
+  provider_advertiser_id: string | null;
+  provider_marketplace_id: string | null;
+}
+
+interface BindingWireRow {
+  id: string;
+  org_id: string;
+  profile_id: string;
+  subscription_id: string;
+  provider_dataset_id: AmazonMarketingStreamDatasetId;
+  advertiser_id: string;
+  marketplace_id: string;
+  active: boolean;
 }
 
 interface FactWireRow {
@@ -113,6 +194,33 @@ interface FactWireRow {
   budget_capped: boolean;
   settling_state: HourSettlingState;
   source_events: number | string;
+}
+
+interface ProjectionBlockWireRow {
+  org_id: string;
+  profile_id: string;
+  block_token: string;
+  first_blocked_at: Date | string;
+  last_blocked_at: Date | string;
+  retry_count: number;
+  alert_state: 'pending' | 'alerted';
+  last_reason: string;
+  pending_scope_count: number | string;
+}
+
+export interface MarketingStreamProjectionBlockCompletion {
+  matched: boolean;
+  cleared: boolean;
+  processedScopes: number;
+  remainingScopes: number;
+}
+
+export interface MarketingStreamRecoveryEnqueueResult {
+  action: 'created' | 'revived' | 'already_active' | 'not_blocked';
+  jobId: string | null;
+  blockToken: string | null;
+  pendingScopes: number;
+  dedupeKey: string | null;
 }
 
 /** Append valid shared-contract events without collapsing later revisions. */
@@ -156,6 +264,7 @@ export async function appendMarketingStreamEvents(
       duplicateMessages,
       revisedMessages: 0,
       affectedScopes: [],
+      sourceFingerprint: null,
     };
   }
 
@@ -167,7 +276,9 @@ export async function appendMarketingStreamEvents(
     const existing = await sql<EventWireRow[]>`
       select id, org_id, profile_id, message_id,
              dataset::text as dataset, ad_product::text as ad_product,
-             event_time, received_at, revision, payload_hash, raw_payload
+             event_time, received_at, revision, payload_hash, raw_payload,
+             binding_id, provider_subscription_id, provider_dataset_id, provider_event_id,
+             provider_advertiser_id, provider_marketplace_id
         from public.marketing_stream_events
        where org_id = ${input.orgId}
          and profile_id = ${input.profileId}
@@ -191,13 +302,19 @@ export async function appendMarketingStreamEvents(
       const inserted = await sql<{ id: string }[]>`
         insert into public.marketing_stream_events (
           org_id, profile_id, message_id, dataset, ad_product,
-          event_time, received_at, revision, payload_hash, raw_payload
+          event_time, received_at, revision, payload_hash, raw_payload,
+          binding_id, provider_subscription_id, provider_dataset_id, provider_event_id,
+          provider_advertiser_id, provider_marketplace_id
         ) values (
           ${input.orgId}, ${input.profileId}, ${event.messageId},
           ${event.dataset}::public.marketing_stream_dataset,
           ${event.adProduct}::public.ad_product,
           ${event.eventTime}::timestamptz, ${event.receivedAt}::timestamptz,
-          ${event.revision}, ${event.payloadHash}, ${JSON.stringify(event.rawPayload)}::jsonb
+          ${event.revision}, ${event.payloadHash}, ${JSON.stringify(event.rawPayload)}::jsonb,
+          ${event.provider?.bindingId ?? null}::uuid,
+          ${event.provider?.subscriptionId ?? null},
+          ${event.provider?.datasetId ?? null}, ${event.provider?.eventId ?? null},
+          ${event.provider?.advertiserId ?? null}, ${event.provider?.marketplaceId ?? null}
         )
         on conflict (profile_id, dataset, message_id, revision) do nothing
         returning id
@@ -206,7 +323,9 @@ export async function appendMarketingStreamEvents(
         const [concurrent] = await sql<EventWireRow[]>`
           select id, org_id, profile_id, message_id,
                  dataset::text as dataset, ad_product::text as ad_product,
-                 event_time, received_at, revision, payload_hash, raw_payload
+                 event_time, received_at, revision, payload_hash, raw_payload,
+                 binding_id, provider_subscription_id, provider_dataset_id, provider_event_id,
+                 provider_advertiser_id, provider_marketplace_id
             from public.marketing_stream_events
            where profile_id = ${input.profileId}
              and org_id = ${input.orgId}
@@ -247,12 +366,17 @@ export async function appendMarketingStreamEvents(
       adProduct: row.ad_product,
       utcHour: truncateUtcHour(row.event_time),
     })));
+    const latest = await latestEventsForScopes(sql, input.orgId, input.profileId, affectedScopes);
+    const sourceFingerprint = createHash('sha256')
+      .update(latest.map((event) => event.id).sort().join('\n'))
+      .digest('hex');
     return {
       offeredMessages: input.events.length,
       insertedMessages,
       duplicateMessages,
       revisedMessages,
       affectedScopes,
+      sourceFingerprint,
     };
   });
 }
@@ -269,6 +393,291 @@ export async function snapshotLatestMarketingStreamEvents(
   const scopes = validateScopes(input.scopes);
   const events = await latestEventsForScopes(handle.sql, input.orgId, input.profileId, scopes);
   return snapshot(input.orgId, input.profileId, scopes, events);
+}
+
+/** Resolve a queued replay job back to its complete affected hour scopes. */
+export async function marketingStreamScopesForMessageIds(
+  handle: DbHandle,
+  input: {
+    orgId: string;
+    profileId: string;
+    messageIds: readonly string[];
+  },
+): Promise<{
+  requestedMessages: number;
+  foundMessages: number;
+  scopes: MarketingStreamScope[];
+}> {
+  assertUuid('orgId', input.orgId);
+  assertUuid('profileId', input.profileId);
+  assertUniqueIds('normalize message IDs', input.messageIds);
+  if (input.messageIds.length === 0) {
+    throw new MarketingStreamPersistenceError('normalize job has no message IDs');
+  }
+  const rows = await handle.sql<{
+    message_id: string;
+    ad_product: AdProduct;
+    event_time: Date | string;
+  }[]>`
+    select message_id, ad_product::text as ad_product, event_time
+      from public.marketing_stream_events
+     where org_id = ${input.orgId}
+       and profile_id = ${input.profileId}
+       and message_id = any (${[...input.messageIds]}::text[])
+  `;
+  const foundMessages = new Set(rows.map((row) => row.message_id)).size;
+  if (foundMessages !== input.messageIds.length) {
+    throw new MarketingStreamPersistenceError(
+      `normalize job resolved ${foundMessages} of ${input.messageIds.length} messages`,
+    );
+  }
+  return {
+    requestedMessages: input.messageIds.length,
+    foundMessages,
+    scopes: uniqueScopes(rows.map((row) => ({
+      adProduct: row.ad_product,
+      utcHour: truncateUtcHour(row.event_time),
+    }))),
+  };
+}
+
+/**
+ * Accumulate scopes behind one durable profile-level missing-policy block.
+ * Concurrent message-set jobs converge here instead of producing independent
+ * unbounded retry chains.
+ */
+export async function markMarketingStreamProjectionBlocked(
+  handle: DbHandle,
+  input: {
+    orgId: string;
+    profileId: string;
+    scopes: readonly MarketingStreamScope[];
+    blockedAt: Date;
+    retryAttempt: number;
+    retryLimit: number;
+    reason: string;
+  },
+): Promise<MarketingStreamProjectionBlock> {
+  assertUuid('orgId', input.orgId);
+  assertUuid('profileId', input.profileId);
+  const scopes = validateScopes(input.scopes);
+  if (scopes.length === 0) throw new MarketingStreamPersistenceError('blocked projection has no scopes');
+  if (!Number.isFinite(input.blockedAt.getTime())) {
+    throw new MarketingStreamPersistenceError('blocked projection timestamp is invalid');
+  }
+  if (!Number.isInteger(input.retryAttempt) || input.retryAttempt < 0) {
+    throw new MarketingStreamPersistenceError('blocked projection retry attempt is invalid');
+  }
+  if (!Number.isInteger(input.retryLimit) || input.retryLimit < 1) {
+    throw new MarketingStreamPersistenceError('blocked projection retry limit is invalid');
+  }
+  if (input.reason.trim().length === 0) {
+    throw new MarketingStreamPersistenceError('blocked projection reason is empty');
+  }
+  await handle.sql.begin(async (transaction) => {
+    const sql = transaction as unknown as Sql;
+    await sql`
+      insert into public.marketing_stream_projection_blocks (
+        org_id, profile_id, first_blocked_at, last_blocked_at,
+        retry_count, alert_state, last_reason
+      ) values (
+        ${input.orgId}, ${input.profileId}, ${input.blockedAt.toISOString()}::timestamptz,
+        ${input.blockedAt.toISOString()}::timestamptz, ${input.retryAttempt},
+        ${input.retryAttempt >= input.retryLimit ? 'alerted' : 'pending'}, ${input.reason.trim()}
+      )
+      on conflict (org_id, profile_id) do update
+         set block_token = gen_random_uuid(),
+             last_blocked_at = greatest(
+               public.marketing_stream_projection_blocks.last_blocked_at, excluded.last_blocked_at
+             ),
+             retry_count = greatest(
+               public.marketing_stream_projection_blocks.retry_count, excluded.retry_count
+             ),
+             alert_state = case
+               when public.marketing_stream_projection_blocks.alert_state = 'alerted'
+                 or greatest(public.marketing_stream_projection_blocks.retry_count, excluded.retry_count)
+                    >= ${input.retryLimit}
+               then 'alerted' else 'pending' end,
+             last_reason = excluded.last_reason
+    `;
+    await sql`
+      insert into public.marketing_stream_projection_block_scopes (
+        org_id, profile_id, ad_product, utc_hour
+      )
+      select ${input.orgId}, ${input.profileId}, scope.ad_product::public.ad_product,
+             scope.utc_hour::timestamptz
+        from unnest(
+          ${scopes.map((scope) => scope.adProduct)}::text[],
+          ${scopes.map((scope) => truncateUtcHour(scope.utcHour))}::text[]
+        ) as scope(ad_product, utc_hour)
+      on conflict do nothing
+    `;
+  });
+  const block = await readMarketingStreamProjectionBlock(handle, input);
+  if (!block) throw new MarketingStreamPersistenceError('blocked projection upsert was not readable');
+  return block;
+}
+
+export async function readMarketingStreamProjectionBlock(
+  handle: DbHandle,
+  input: { orgId: string; profileId: string },
+): Promise<MarketingStreamProjectionBlock | null> {
+  assertUuid('orgId', input.orgId);
+  assertUuid('profileId', input.profileId);
+  const [row] = await handle.sql<ProjectionBlockWireRow[]>`
+    select b.org_id, b.profile_id, b.block_token, b.first_blocked_at,
+           b.last_blocked_at, b.retry_count, b.alert_state, b.last_reason,
+           (select count(*) from public.marketing_stream_projection_block_scopes s
+             where s.org_id = b.org_id and s.profile_id = b.profile_id) as pending_scope_count
+      from public.marketing_stream_projection_blocks b
+     where b.org_id = ${input.orgId} and b.profile_id = ${input.profileId}
+  `;
+  if (!row) return null;
+  const scopes = await handle.sql<{ ad_product: AdProduct; utc_hour: Date | string }[]>`
+    select ad_product::text as ad_product, utc_hour
+      from public.marketing_stream_projection_block_scopes
+     where org_id = ${input.orgId} and profile_id = ${input.profileId}
+     order by ad_product, utc_hour
+     limit ${BLOCKED_MARKETING_STREAM_SCOPE_PAGE}
+  `;
+  return rowToProjectionBlock(row, scopes.map((scope) => ({
+    adProduct: scope.ad_product, utcHour: truncateUtcHour(scope.utc_hour),
+  })));
+}
+
+export async function clearMarketingStreamProjectionBlock(
+  handle: DbHandle,
+  input: {
+    orgId: string;
+    profileId: string;
+    expectedBlockToken: string;
+    processedScopes: readonly MarketingStreamScope[];
+  },
+): Promise<MarketingStreamProjectionBlockCompletion> {
+  assertUuid('orgId', input.orgId);
+  assertUuid('profileId', input.profileId);
+  assertUuid('expectedBlockToken', input.expectedBlockToken);
+  const scopes = validateScopes(input.processedScopes);
+  return handle.sql.begin(async (transaction) => {
+    const sql = transaction as unknown as Sql;
+    const token = await sql<{ block_token: string }[]>`
+      select block_token from public.marketing_stream_projection_blocks
+       where org_id = ${input.orgId} and profile_id = ${input.profileId}
+         and block_token = ${input.expectedBlockToken}::uuid
+       for update
+    `;
+    if (token.length === 0) return { matched: false, cleared: false, processedScopes: 0, remainingScopes: 0 };
+    const deleted = scopes.length === 0 ? [] : await sql<{ profile_id: string }[]>`
+      delete from public.marketing_stream_projection_block_scopes target
+       using unnest(
+         ${scopes.map((scope) => scope.adProduct)}::text[],
+         ${scopes.map((scope) => truncateUtcHour(scope.utcHour))}::text[]
+       ) as completed(ad_product, utc_hour)
+       where target.org_id = ${input.orgId} and target.profile_id = ${input.profileId}
+         and target.ad_product = completed.ad_product::public.ad_product
+         and target.utc_hour = completed.utc_hour::timestamptz
+      returning target.profile_id
+    `;
+    const processedScopes = deleted.length;
+    const [{ count = 0 } = {}] = await sql<{ count: number | string }[]>`
+      select count(*) as count from public.marketing_stream_projection_block_scopes
+       where org_id = ${input.orgId} and profile_id = ${input.profileId}
+    `;
+    const remainingScopes = Number(count);
+    if (remainingScopes === 0) {
+      await sql`delete from public.marketing_stream_projection_blocks
+        where org_id = ${input.orgId} and profile_id = ${input.profileId}
+          and block_token = ${input.expectedBlockToken}::uuid`;
+    }
+    return { matched: true, cleared: remainingScopes === 0, processedScopes, remainingScopes };
+  });
+}
+
+/** Atomically enqueue or revive the exact blocked-profile recovery job. */
+export async function enqueueMarketingStreamBlockedProfileRecovery(
+  handle: DbHandle,
+  input: { orgId: string; profileId: string; runAt: Date },
+): Promise<MarketingStreamRecoveryEnqueueResult> {
+  assertUuid('orgId', input.orgId);
+  assertUuid('profileId', input.profileId);
+  if (!Number.isFinite(input.runAt.getTime())) throw new MarketingStreamPersistenceError('recovery run time is invalid');
+  return handle.sql.begin(async (transaction) => {
+    const sql = transaction as unknown as Sql;
+    const [block] = await sql<{ block_token: string; pending_scopes: number | string }[]>`
+      select b.block_token,
+             (select count(*) from public.marketing_stream_projection_block_scopes s
+               where s.org_id = b.org_id and s.profile_id = b.profile_id) as pending_scopes
+        from public.marketing_stream_projection_blocks b
+       where b.org_id = ${input.orgId} and b.profile_id = ${input.profileId}
+       for update
+    `;
+    if (!block) return { action: 'not_blocked', jobId: null, blockToken: null, pendingScopes: 0, dedupeKey: null };
+    const pendingScopes = Number(block.pending_scopes);
+    if (pendingScopes < 1) throw new MarketingStreamPersistenceError('blocked profile has no durable scopes');
+    const dedupeKey = marketingStreamBlockedRecoveryDedupeKey(
+      input.orgId, input.profileId, block.block_token, pendingScopes,
+    );
+    const payload = MarketingStreamNormalizeJob.parse({
+      type: 'marketing_stream.normalize', orgId: input.orgId, profileId: input.profileId,
+      messageIds: [], replayBlockedProfile: true,
+    });
+    const inserted = await sql<{ id: string }[]>`
+      insert into public.sync_jobs (
+        org_id, profile_id, job_type, payload, run_after, dedupe_key
+      ) values (
+        ${input.orgId}, ${input.profileId}, 'marketing_stream.normalize'::public.sync_job_type,
+        ${JSON.stringify(payload)}::jsonb, ${input.runAt.toISOString()}::timestamptz, ${dedupeKey}
+      ) on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+      returning id
+    `;
+    if (inserted[0]) return {
+      action: 'created', jobId: inserted[0].id, blockToken: block.block_token, pendingScopes, dedupeKey,
+    };
+    const [existing] = await sql<{
+      id: string; profile_id: string; job_type: string; payload: MarketingStreamNormalizeJobValue;
+      status: string;
+    }[]>`
+      select id, profile_id, job_type::text as job_type, payload, status::text as status
+        from public.sync_jobs
+       where org_id = ${input.orgId} and dedupe_key = ${dedupeKey}
+       for update
+    `;
+    const parsedExisting = existing ? MarketingStreamNormalizeJob.safeParse(existing.payload) : null;
+    if (!existing || existing.profile_id !== input.profileId
+      || existing.job_type !== 'marketing_stream.normalize'
+      || !parsedExisting?.success
+      || parsedExisting.data.orgId !== input.orgId
+      || parsedExisting.data.profileId !== input.profileId
+      || parsedExisting.data.replayBlockedProfile !== true
+      || parsedExisting.data.messageIds.length !== 0) {
+      throw new MarketingStreamPersistenceError('recovery dedupe key belongs to an incompatible job');
+    }
+    if (existing.status === 'queued' || existing.status === 'running') return {
+      action: 'already_active', jobId: existing.id, blockToken: block.block_token, pendingScopes, dedupeKey,
+    };
+    if (existing.status !== 'dead') {
+      throw new MarketingStreamPersistenceError(`recovery job is ${existing.status} while scopes remain blocked`);
+    }
+    const revived = await sql<{ id: string }[]>`
+      update public.sync_jobs
+         set status = 'queued'::public.sync_job_status, run_after = ${input.runAt.toISOString()}::timestamptz,
+             attempts = 0, claimed_by = null, claimed_at = null, started_at = null,
+             finished_at = null, last_error = null, result = null, updated_at = now()
+       where id = ${existing.id} and status = 'dead'::public.sync_job_status
+      returning id
+    `;
+    if (revived.length !== 1) throw new MarketingStreamPersistenceError('dead recovery job changed during revival');
+    return { action: 'revived', jobId: existing.id, blockToken: block.block_token, pendingScopes, dedupeKey };
+  });
+}
+
+export function marketingStreamBlockedRecoveryDedupeKey(
+  orgId: string,
+  profileId: string,
+  blockToken: string,
+  pendingScopes: number,
+): string {
+  return ['marketing-stream', 'blocked-recovery', orgId, profileId, blockToken, pendingScopes].join(':');
 }
 
 /**
@@ -336,6 +745,10 @@ export async function replaceMarketingStreamHourlyFacts(
 
   return handle.sql.begin(async (transaction) => {
     const sql = transaction as unknown as Sql;
+    // Append takes this same profile lock. Taking it before the sorted scope
+    // locks gives append and projection one compatible order, so a snapshot
+    // can never be promoted while a provider correction is being appended.
+    await sql`select pg_advisory_xact_lock(hashtextextended(${input.profileId}, 0))`;
     for (const scope of scopes) {
       await sql`select pg_advisory_xact_lock(hashtextextended(${scopeLock(input.profileId, scope)}, 0))`;
     }
@@ -544,7 +957,8 @@ function assertSameRevision(
     existing.revision !== offered.revision ||
     existing.adProduct !== offered.adProduct ||
     toIso(existing.eventTime) !== toIso(offered.eventTime) ||
-    existing.payloadHash !== offered.payloadHash
+    existing.payloadHash !== offered.payloadHash ||
+    !sameProviderIdentity(existing.provider, offered.provider)
   ) {
     throw new MarketingStreamPersistenceError(
       `message ${offered.messageId} revision ${offered.revision} changed its immutable identity`,
@@ -552,7 +966,19 @@ function assertSameRevision(
   }
 }
 
+function sameProviderIdentity(
+  left: MarketingStreamLedgerEventValue['provider'],
+  right: MarketingStreamLedgerEventValue['provider'],
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.datasetId === right.datasetId
+    && left.advertiserId === right.advertiserId
+    && left.marketplaceId === right.marketplaceId
+    && left.eventId === right.eventId;
+}
+
 function rowToEvent(row: EventWireRow): StoredMarketingStreamEvent {
+  const provider = providerIdentityFromRow(row);
   return {
     id: row.id,
     orgId: row.org_id,
@@ -565,6 +991,32 @@ function rowToEvent(row: EventWireRow): StoredMarketingStreamEvent {
     revision: Number(row.revision),
     payloadHash: row.payload_hash,
     rawPayload: row.raw_payload,
+    ...(provider === undefined ? {} : { provider }),
+  };
+}
+
+function providerIdentityFromRow(
+  row: EventWireRow,
+): MarketingStreamLedgerEventValue['provider'] {
+  const values = [
+    row.binding_id,
+    row.provider_subscription_id,
+    row.provider_dataset_id,
+    row.provider_event_id,
+    row.provider_advertiser_id,
+    row.provider_marketplace_id,
+  ];
+  if (values.every((value) => value === null)) return undefined;
+  if (values.some((value) => value === null)) {
+    throw new MarketingStreamPersistenceError('database returned an incomplete provider identity');
+  }
+  return {
+    bindingId: row.binding_id!,
+    subscriptionId: row.provider_subscription_id!,
+    datasetId: row.provider_dataset_id!,
+    eventId: row.provider_event_id!,
+    advertiserId: row.provider_advertiser_id!,
+    marketplaceId: row.provider_marketplace_id!,
   };
 }
 
@@ -591,6 +1043,24 @@ function rowToFact(row: FactWireRow): MarketingStreamHourlyFactValue {
   });
 }
 
+function rowToProjectionBlock(
+  row: ProjectionBlockWireRow,
+  scopes: readonly MarketingStreamScope[],
+): MarketingStreamProjectionBlock {
+  return {
+    orgId: row.org_id,
+    profileId: row.profile_id,
+    scopes: uniqueScopes(scopes),
+    firstBlockedAt: toIso(row.first_blocked_at),
+    lastBlockedAt: toIso(row.last_blocked_at),
+    retryCount: Number(row.retry_count),
+    alertState: row.alert_state,
+    lastReason: row.last_reason,
+    blockToken: row.block_token,
+    pendingScopeCount: Number(row.pending_scope_count),
+  };
+}
+
 async function latestEventsForScopes(
   sql: Sql,
   orgId: string,
@@ -615,7 +1085,10 @@ async function latestEventsForScopes(
     select ranked.id, ranked.org_id, ranked.profile_id, ranked.message_id,
            ranked.dataset::text as dataset, ranked.ad_product::text as ad_product,
            ranked.event_time, ranked.received_at, ranked.revision,
-           ranked.payload_hash, ranked.raw_payload
+           ranked.payload_hash, ranked.raw_payload, ranked.binding_id,
+           ranked.provider_subscription_id,
+           ranked.provider_dataset_id, ranked.provider_event_id,
+           ranked.provider_advertiser_id, ranked.provider_marketplace_id
       from ranked
       join requested
         on ranked.ad_product::text = requested.ad_product

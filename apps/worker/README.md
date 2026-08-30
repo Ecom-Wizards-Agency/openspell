@@ -159,23 +159,35 @@ migration or credential provisioning is performed by the worker.
 ### Marketing Stream
 
 When `MARKETING_STREAM_SQS_QUEUE_URL` is set, the same always-on process starts
-an independent 20-second SQS long poll. It accepts the shared
-`MarketingStreamBatchEnvelope` directly or inside an SNS notification, loads
-timezone/currency from the profile and settling/budget-cap policy from tenant
-strategy data, then invokes the existing counted ledger and hourly normalizer.
-No dayparting number is defaulted in source.
+an independent 20-second SQS long poll. It accepts Amazon's documented
+`sp-traffic`, `sp-conversion`, `sb-traffic`, `sb-conversion`, `sd-traffic`,
+`sd-conversion`, and campaign-scoped `budget-usage` records directly or inside
+an SNS notification. The legacy shared `MarketingStreamBatchEnvelope` remains
+accepted during rollout.
 
-The SQS message is deleted only after the envelope count, ledger count,
-normalization count, and canonical read-back count agree with zero refusals.
-Malformed, unconfigured, stale-race, database, and acknowledgement failures are
-left for SQS retry and the queue's DLQ/redrive policy. `/healthz` reports only
-sanitized counters and timestamps.
+Provider `advertiser_id`, `marketplace_id`, and `dataset_id` must resolve to one
+active subscription binding. Runtime routing never guesses from profile aliases
+or campaign ids. The adapter retains the complete provider record, qualifies
+Amazon's `idempotency_id` with its binding and dataset identity, requires an
+explicit timestamp offset, converts timestamps to UTC, and normalizes the
+14-day click-attributed conversion window that is common to SP, SB, and SD.
+View-attributed measures remain raw evidence and are not silently combined.
+Portfolio budget notifications are refused because the current canonical fact
+is campaign-grained. Timezone/currency come from the profile and settling/
+budget-cap policy comes from tenant strategy data. No dayparting number is
+defaulted in source.
 
-The queue producer must map the subscribed Amazon dataset version into
-`wizard-ads.marketing-stream-batch.v1`; the worker deliberately refuses unknown
-provider payloads rather than guessing fields. AWS queue/DLQ provisioning,
-subscription confirmation, hosted migration application, and live count
-crosschecks remain operator-gated prerequisites.
+One poll is grouped by internal profile. The SQS message is deleted only after
+raw ledger counts reconcile and one durable normalization job is created or
+already present. That job replays complete affected hours, validates canonical
+read-back, and schedules settling transitions. Malformed, unbound, stale-race,
+database, and acknowledgement failures are left for SQS retry and its required
+DLQ/redrive policy. `/healthz` reports only sanitized counters and timestamps.
+
+Unknown datasets and malformed provider fields are refused rather than guessed.
+AWS queue/DLQ provisioning, subscription confirmation, hosted migration
+application, and live source/ledger/fact count crosschecks remain
+operator-gated prerequisites.
 
 Region concurrency is capped in code at 2 concurrent report creates per region (NA/EU/FE
 independently), which is the conservative starting point the plan asks for.

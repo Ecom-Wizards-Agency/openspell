@@ -10,6 +10,7 @@
   },
   "scripts": {
     "start": "tsx src/main.ts",
+    "stream:recover": "tsx src/marketing-stream-recovery-cli.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },

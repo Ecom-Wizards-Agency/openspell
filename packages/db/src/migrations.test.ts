@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260829160100_sb_video_observed_ingestion.sql');
+    expect(files.at(-1)).toBe('20260830170000_marketing_stream_correctness.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -174,7 +174,9 @@ describe.skipIf(!available)('migrations', () => {
       'creative_sync_snapshots',
       'sqp_promotion_runs', 'query_vocabulary', 'contextual_negative_proposals',
       'optimization_groups', 'campaign_optimization_assignments',
-      'recommendation_observations', 'marketing_stream_events',
+      'recommendation_observations', 'marketing_stream_subscription_bindings',
+      'marketing_stream_events', 'marketing_stream_projection_blocks',
+      'marketing_stream_projection_block_scopes',
       'marketing_stream_hourly_facts', 'dayparting_schedule_proposals',
     ]) {
       expect(tables, `missing table ${expected}`).toContain(expected);

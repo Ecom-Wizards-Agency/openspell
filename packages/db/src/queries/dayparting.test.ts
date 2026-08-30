@@ -8,12 +8,17 @@ import type { DbHandle } from '../client.js';
 import { createTestDatabase, databaseAvailable } from '../testing/harness.js';
 import type { TestDatabase } from '../testing/harness.js';
 import {
+  clearMarketingStreamProjectionBlock,
+  markMarketingStreamProjectionBlocked,
   StaleMarketingStreamProjection,
   appendMarketingStreamEvents,
   marketingStreamScopeKey,
+  marketingStreamScopesForMessageIds,
   persistDaypartingScheduleProposal,
   readMarketingStreamHourlyFacts,
+  readMarketingStreamProjectionBlock,
   replaceMarketingStreamHourlyFacts,
+  resolveMarketingStreamSubscriptionBinding,
   snapshotLatestMarketingStreamEvents,
 } from './dayparting.js';
 
@@ -112,6 +117,7 @@ describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
       duplicateMessages: 3,
       revisedMessages: 0,
     });
+    expect(redelivery.sourceFingerprint).toBe(appended.sourceFingerprint);
 
     const scope = appended.affectedScopes[0]!;
     const original = await snapshotLatestMarketingStreamEvents(database, { orgId, profileId, scopes: [scope] });
@@ -137,8 +143,9 @@ describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
       payloadHash: 'conversion-revision-two',
       receivedAt: '2026-06-03T00:00:00.000Z',
     });
-    expect(await appendMarketingStreamEvents(database, { orgId, profileId, events: [revisionTwo] }))
-      .toMatchObject({ insertedMessages: 1, revisedMessages: 1, duplicateMessages: 0 });
+    const revisedAppend = await appendMarketingStreamEvents(database, { orgId, profileId, events: [revisionTwo] });
+    expect(revisedAppend).toMatchObject({ insertedMessages: 1, revisedMessages: 1, duplicateMessages: 0 });
+    expect(revisedAppend.sourceFingerprint).not.toBe(appended.sourceFingerprint);
 
     await expect(replaceMarketingStreamHourlyFacts(database, {
       orgId,
@@ -168,6 +175,286 @@ describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
     expect(revisedProjection).toMatchObject({ factsDeleted: 1, factsInserted: 1, factsReadBack: 1 });
     expect(await readMarketingStreamHourlyFacts(database, { orgId, profileId, campaignId: 'campaign-one' }))
       .toEqual([hourlyFact(profileId, { purchases: 3, sales: 30, settlingState: 'revised', sourceEvents: 3 })]);
+  });
+
+  it('resolves an exact active subscription binding and keeps provider identities collision-safe', async () => {
+    const binding = await resolveMarketingStreamSubscriptionBinding(database, {
+      advertiserId: 'dayparting-alpha-stream-advertiser',
+      marketplaceId: 'dayparting-alpha-stream-marketplace',
+      datasetId: 'sp-traffic',
+    });
+    expect(binding).toMatchObject({ orgId, profileId, active: true, datasetId: 'sp-traffic' });
+    await expect(resolveMarketingStreamSubscriptionBinding(database, {
+      advertiserId: 'missing-advertiser',
+      marketplaceId: 'missing-marketplace',
+      datasetId: 'sp-traffic',
+    })).rejects.toThrow(/no active subscription binding/);
+
+    const providerEvent = streamEvent(
+      profileId,
+      'sp-traffic:advertiser-one:marketplace-one:event-shared',
+      'traffic',
+      { impressions: 5, clicks: 1, cost: 1 },
+      {
+        payloadHash: 'provider-hash-one',
+        eventTime: '2026-06-02T12:00:00.000Z',
+        receivedAt: '2026-06-02T12:05:00.000Z',
+        provider: {
+          bindingId: binding.id,
+          subscriptionId: binding.subscriptionId,
+          datasetId: binding.datasetId,
+          advertiserId: binding.advertiserId,
+          marketplaceId: binding.marketplaceId,
+          eventId: 'event-shared',
+        },
+      },
+    );
+    expect(await appendMarketingStreamEvents(database, {
+      orgId, profileId, events: [providerEvent],
+    })).toMatchObject({ insertedMessages: 1, duplicateMessages: 0 });
+    await expect(database.sql`
+      update public.marketing_stream_events
+         set ad_product = 'SB'::public.ad_product
+       where profile_id = ${profileId} and message_id = ${providerEvent.messageId}
+    `).rejects.toThrow(/marketing_stream_events_provider_contract_check/i);
+    expect(await appendMarketingStreamEvents(database, {
+      orgId, profileId, events: [providerEvent],
+    })).toMatchObject({ insertedMessages: 0, duplicateMessages: 1 });
+    await database.sql`update public.marketing_stream_subscription_bindings set active = false where id = ${binding.id}`;
+    const [rotated] = await database.sql<{ id: string }[]>`
+      insert into public.marketing_stream_subscription_bindings (
+        org_id, profile_id, subscription_id, provider_dataset_id, advertiser_id, marketplace_id
+      ) values (
+        ${orgId}, ${profileId}, 'subscription-rotated', ${binding.datasetId},
+        ${binding.advertiserId}, ${binding.marketplaceId}
+      ) returning id
+    `;
+    expect(await appendMarketingStreamEvents(database, {
+      orgId,
+      profileId,
+      events: [{
+        ...providerEvent,
+        provider: {
+          ...providerEvent.provider!,
+          bindingId: rotated!.id,
+          subscriptionId: 'subscription-rotated',
+        },
+      }],
+    })).toMatchObject({ insertedMessages: 0, duplicateMessages: 1 });
+    await expect(appendMarketingStreamEvents(database, {
+      orgId,
+      profileId,
+      events: [{ ...providerEvent, payloadHash: 'provider-hash-changed' }],
+    })).rejects.toThrow(/changed its immutable identity/);
+    await expect(appendMarketingStreamEvents(database, {
+      orgId,
+      profileId,
+      events: [{
+        ...providerEvent,
+        messageId: `${providerEvent.messageId}:mismatch`,
+        payloadHash: 'provider-hash-mismatch',
+        provider: {
+          ...providerEvent.provider!,
+          eventId: 'event-mismatch',
+          advertiserId: 'mismatched-advertiser',
+        },
+      }],
+    })).rejects.toThrow(/marketing_stream_events_binding_fkey/i);
+
+    const [secondBinding] = await database.sql<{ id: string }[]>`
+      insert into public.marketing_stream_subscription_bindings (
+        org_id, profile_id, subscription_id, provider_dataset_id,
+        advertiser_id, marketplace_id
+      ) values (
+        ${orgId}, ${profileId}, 'subscription-conversion', 'sp-conversion',
+        ${binding.advertiserId}, ${binding.marketplaceId}
+      ) returning id
+    `;
+    const conversion = streamEvent(
+      profileId,
+      'sp-conversion:advertiser-one:marketplace-one:event-shared',
+      'conversion',
+      { purchases: 1, sales: 3 },
+      {
+        payloadHash: 'provider-hash-conversion',
+        eventTime: '2026-06-02T12:00:00.000Z',
+        receivedAt: '2026-06-02T12:05:00.000Z',
+        provider: {
+          bindingId: secondBinding?.id ?? '',
+          subscriptionId: 'subscription-conversion',
+          datasetId: 'sp-conversion',
+          advertiserId: binding.advertiserId,
+          marketplaceId: binding.marketplaceId,
+          eventId: 'event-shared',
+        },
+      },
+    );
+    expect(await appendMarketingStreamEvents(database, {
+      orgId, profileId, events: [conversion],
+    })).toMatchObject({ insertedMessages: 1 });
+
+    expect(await marketingStreamScopesForMessageIds(database, {
+      orgId, profileId, messageIds: [providerEvent.messageId, conversion.messageId],
+    })).toMatchObject({
+      requestedMessages: 2,
+      foundMessages: 2,
+      scopes: [{ adProduct: 'SP', utcHour: '2026-06-02T12:00:00.000Z' }],
+    });
+  });
+
+  it('serializes append and projection on the same profile lock', async () => {
+    const message = streamEvent(
+      profileId,
+      'lock-proof',
+      'traffic',
+      { impressions: 10, clicks: 1, cost: 1 },
+      { eventTime: '2026-06-04T10:00:00.000Z', receivedAt: '2026-06-04T10:05:00.000Z' },
+    );
+    const appended = await appendMarketingStreamEvents(database, { orgId, profileId, events: [message] });
+    const snapshot = await snapshotLatestMarketingStreamEvents(database, {
+      orgId, profileId, scopes: appended.affectedScopes,
+    });
+    let unlock: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { unlock = resolve; });
+    let locked: (() => void) | undefined;
+    const acquired = new Promise<void>((resolve) => { locked = resolve; });
+    const blocker = database.sql.begin(async (sql) => {
+      await sql`select pg_advisory_xact_lock(hashtextextended(${profileId}, 0))`;
+      locked?.();
+      await gate;
+    });
+    await acquired;
+    let projected = false;
+    const projection = replaceMarketingStreamHourlyFacts(database, {
+      orgId,
+      profileId,
+      scopes: appended.affectedScopes,
+      expectedSourceEventIds: snapshot.sourceEventIds,
+      facts: [hourlyFact(profileId, {
+        utcHour: '2026-06-04T10:00:00.000Z',
+        localDate: '2026-06-04',
+        localDayOfWeek: 4,
+        impressions: 10,
+        clicks: 1,
+        cost: 1,
+        purchases: 0,
+        sales: 0,
+        budgetUsagePercent: null,
+        budgetCapped: false,
+        sourceEvents: 1,
+      })],
+    }).then((result) => { projected = true; return result; });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(projected).toBe(false);
+    unlock?.();
+    await blocker;
+    await expect(projection).resolves.toMatchObject({ scopesReplaced: 1, factsInserted: 1 });
+  });
+
+  it('consolidates bounded missing-policy state and clears it after recovery', async () => {
+    const existingBlock = await readMarketingStreamProjectionBlock(database, { orgId, profileId });
+    if (existingBlock) await clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedBlockToken: existingBlock.blockToken, processedScopes: existingBlock.scopes,
+    });
+    const firstScope = { adProduct: 'SP' as const, utcHour: firstHour };
+    const secondScope = { adProduct: 'SB' as const, utcHour: secondHour };
+    await expect(markMarketingStreamProjectionBlocked(database, {
+      orgId,
+      profileId,
+      scopes: [firstScope],
+      blockedAt: new Date('2026-06-01T12:00:00.000Z'),
+      retryAttempt: 0,
+      retryLimit: 2,
+      reason: 'synthetic policy absent',
+    })).resolves.toMatchObject({
+      scopes: [firstScope], retryCount: 0, alertState: 'pending',
+    });
+    await expect(markMarketingStreamProjectionBlocked(database, {
+      orgId,
+      profileId,
+      scopes: [secondScope],
+      blockedAt: new Date('2026-06-01T13:00:00.000Z'),
+      retryAttempt: 2,
+      retryLimit: 2,
+      reason: 'synthetic policy still absent',
+    })).resolves.toMatchObject({
+      scopes: [secondScope, firstScope], retryCount: 2, alertState: 'alerted',
+    });
+    await expect(readMarketingStreamProjectionBlock(database, { orgId, profileId }))
+      .resolves.toMatchObject({ retryCount: 2, alertState: 'alerted', lastReason: 'synthetic policy still absent' });
+    const block = await readMarketingStreamProjectionBlock(database, { orgId, profileId });
+    expect(block).not.toBeNull();
+    await expect(clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedBlockToken: block!.blockToken, processedScopes: block!.scopes,
+    })).resolves.toMatchObject({ matched: true, cleared: true, processedScopes: 2, remainingScopes: 0 });
+    await expect(clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedBlockToken: block!.blockToken, processedScopes: block!.scopes,
+    })).resolves.toMatchObject({ matched: false, cleared: false });
+    await expect(readMarketingStreamProjectionBlock(database, { orgId, profileId })).resolves.toBeNull();
+  });
+
+  it('does not let an older successful replay clear a concurrently renewed policy block', async () => {
+    const scope = { adProduct: 'SP' as const, utcHour: firstHour };
+    const first = await markMarketingStreamProjectionBlocked(database, {
+      orgId, profileId, scopes: [scope], blockedAt: new Date('2026-06-02T10:00:00.000Z'),
+      retryAttempt: 0, retryLimit: 2, reason: 'synthetic policy absent',
+    });
+    const newer = await markMarketingStreamProjectionBlocked(database, {
+      orgId, profileId, scopes: [scope], blockedAt: new Date('2026-06-02T11:00:00.000Z'),
+      retryAttempt: 1, retryLimit: 2, reason: 'synthetic concurrent renewal',
+    });
+    expect(newer.blockToken).not.toBe(first.blockToken);
+    await expect(clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedBlockToken: first.blockToken, processedScopes: first.scopes,
+    })).resolves.toMatchObject({ matched: false, cleared: false });
+    await expect(readMarketingStreamProjectionBlock(database, { orgId, profileId }))
+      .resolves.toMatchObject({ blockToken: newer.blockToken, lastReason: 'synthetic concurrent renewal' });
+    await expect(clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedBlockToken: newer.blockToken, processedScopes: newer.scopes,
+    })).resolves.toMatchObject({ matched: true, cleared: true });
+  });
+
+  it('rejects an ABA stale clear after a block is deleted and recreated', async () => {
+    const scope = { adProduct: 'SP' as const, utcHour: firstHour };
+    const first = await markMarketingStreamProjectionBlocked(database, {
+      orgId, profileId, scopes: [scope], blockedAt: new Date('2026-06-03T10:00:00.000Z'),
+      retryAttempt: 0, retryLimit: 2, reason: 'first block',
+    });
+    await expect(clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedBlockToken: first.blockToken, processedScopes: first.scopes,
+    })).resolves.toMatchObject({ matched: true, cleared: true });
+    const recreated = await markMarketingStreamProjectionBlocked(database, {
+      orgId, profileId, scopes: [scope], blockedAt: new Date('2026-06-03T11:00:00.000Z'),
+      retryAttempt: 0, retryLimit: 2, reason: 'recreated block',
+    });
+    expect(recreated.blockToken).not.toBe(first.blockToken);
+    await expect(clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedBlockToken: first.blockToken, processedScopes: first.scopes,
+    })).resolves.toMatchObject({ matched: false, cleared: false });
+    await expect(readMarketingStreamProjectionBlock(database, { orgId, profileId }))
+      .resolves.toMatchObject({ blockToken: recreated.blockToken, pendingScopeCount: 1 });
+  });
+
+  it('pages durable blocked scopes without orphaning the remainder', async () => {
+    await database.sql`delete from public.marketing_stream_projection_blocks
+      where org_id = ${orgId} and profile_id = ${profileId}`;
+    const scopes = Array.from({ length: 300 }, (_, index) => ({
+      adProduct: 'SP' as const,
+      utcHour: new Date(Date.UTC(2026, 0, 1, index)).toISOString(),
+    }));
+    const block = await markMarketingStreamProjectionBlocked(database, {
+      orgId, profileId, scopes, blockedAt: new Date('2026-06-04T10:00:00.000Z'),
+      retryAttempt: 24, retryLimit: 24, reason: 'synthetic large quiet-profile block',
+    });
+    expect(block.scopes).toHaveLength(256);
+    expect(block.pendingScopeCount).toBe(300);
+    const firstPage = await clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedBlockToken: block.blockToken, processedScopes: block.scopes,
+    });
+    expect(firstPage).toEqual({ matched: true, cleared: false, processedScopes: 256, remainingScopes: 44 });
+    const remainder = await readMarketingStreamProjectionBlock(database, { orgId, profileId });
+    expect(remainder).toMatchObject({ blockToken: block.blockToken, pendingScopeCount: 44 });
+    expect(remainder?.scopes).toHaveLength(44);
   });
 
   it('recomputes both old and new scopes when a latest revision moves hours', async () => {

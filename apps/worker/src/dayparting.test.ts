@@ -107,7 +107,7 @@ describe('Marketing Stream normalization', () => {
         messageId: 'revised',
         eventTime: scopes[1]!.utcHour,
         receivedAt: '2026-08-19T23:30:00Z',
-        revision: 2,
+        provider: providerIdentity('late-provider-correction'),
       }),
     ];
     const normalized = normalizeMarketingStreamSnapshot(snapshot(scopes, events), {
@@ -118,6 +118,76 @@ describe('Marketing Stream normalization', () => {
       now: new Date('2026-08-20T00:00:00Z'),
     });
     expect(normalized.facts.map((fact) => fact.settlingState)).toEqual(['settling', 'revised']);
+  });
+
+  it('applies signed provider corrections and validates only the final aggregate', () => {
+    const scope = { adProduct: 'SP' as const, utcHour: '2026-08-01T10:00:00.000Z' };
+    const original = storedEvent(0, {
+      messageId: 'provider-original',
+      provider: providerIdentity('provider-original'),
+      rawPayload: {
+        currencyCode: 'USD',
+        metrics: [{ campaignId: 'campaign-one', impressions: 100, clicks: 10, cost: 5 }],
+      },
+    });
+    const correction = storedEvent(1, {
+      messageId: 'provider-correction',
+      provider: providerIdentity('provider-correction'),
+      receivedAt: '2026-08-02T10:05:00.000Z',
+      rawPayload: {
+        currencyCode: 'USD',
+        metrics: [{ campaignId: 'campaign-one', impressions: -20, clicks: -2, cost: -1 }],
+      },
+    });
+    const policy = {
+      profileTimeZone: 'UTC',
+      currencyCode: 'USD',
+      settlingWindowHours: 1,
+      budgetCappedAtPercent: 90,
+      now: new Date('2026-08-10T00:00:00Z'),
+    };
+
+    expect(normalizeMarketingStreamSnapshot(snapshot([scope], [correction]), policy)).toMatchObject({
+      scopes: [],
+      facts: [],
+      refusals: [{ reason: expect.stringMatching(/negative final aggregate/) }],
+    });
+    expect(normalizeMarketingStreamSnapshot(snapshot([scope], [correction, original]), policy).facts[0])
+      .toMatchObject({ impressions: 80, clicks: 8, cost: 4 });
+  });
+
+  it('uses the latest budget observation even when its value is lower', () => {
+    const scope = { adProduct: 'SB' as const, utcHour: '2026-08-01T10:00:00.000Z' };
+    const events = [
+      storedEvent(0, {
+        adProduct: 'SB',
+        dataset: 'budget_usage',
+        messageId: 'budget-high',
+        eventTime: '2026-08-01T10:20:00.000Z',
+        rawPayload: { metrics: [{
+          campaignId: 'campaign-one', budgetUsagePercent: 95,
+          budgetObservedAt: '2026-08-01T10:20:00.000Z',
+        }] },
+      }),
+      storedEvent(1, {
+        adProduct: 'SB',
+        dataset: 'budget_usage',
+        messageId: 'budget-lower-latest',
+        eventTime: '2026-08-01T10:40:00.000Z',
+        rawPayload: { metrics: [{
+          campaignId: 'campaign-one', budgetUsagePercent: 80,
+          budgetObservedAt: '2026-08-01T10:40:00.000Z',
+        }] },
+      }),
+    ];
+    const normalized = normalizeMarketingStreamSnapshot(snapshot([scope], events), {
+      profileTimeZone: 'UTC', currencyCode: 'USD', settlingWindowHours: 1,
+      budgetCappedAtPercent: 90, now: new Date('2026-08-10T00:00:00Z'),
+    });
+    expect(normalized.facts[0]).toMatchObject({
+      budgetUsagePercent: 80,
+      budgetCapped: false,
+    });
   });
 
   it('refuses an unknown payload without deleting the contaminated scope', () => {
@@ -280,6 +350,17 @@ function storedEvent(
   overrides: Partial<MarketingStreamLedgerEvent> = {},
 ): StoredMarketingStreamEvent {
   return { id: `73737373-7373-4373-8373-${String(index).padStart(12, '0')}`, orgId: ORG, ...ledgerEvent(overrides) };
+}
+
+function providerIdentity(eventId: string): NonNullable<MarketingStreamLedgerEvent['provider']> {
+  return {
+    bindingId: '74747474-7474-4474-8474-747474747474',
+    subscriptionId: 'subscription-synthetic',
+    datasetId: 'sp-traffic',
+    advertiserId: 'advertiser-synthetic',
+    marketplaceId: 'marketplace-synthetic',
+    eventId,
+  };
 }
 
 function hourlyFact(overrides: Partial<MarketingStreamHourlyFact> = {}): MarketingStreamHourlyFact {
