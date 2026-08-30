@@ -2,6 +2,8 @@
 set -euo pipefail
 
 expected_revision="${1:-}"
+claim_set='creative.sync,report.request'
+claim_set+=',report.poll,report.fetch'
 if [[ ! "$expected_revision" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
   echo "usage: $0 <full-git-object-id>" >&2
   exit 2
@@ -26,7 +28,7 @@ verify_artifact() {
   local counts actual_directories actual_files actual_links directories links
   [[ "$(cat "$target/REVISION" 2>/dev/null || true)" == "$expected" ]] || return 1
   [[ "$(cat "$target/public.conf" 2>/dev/null || true)" == \
-    "OPENSPELL_WORKER_REVISION=$expected"$'\n'"WORKER_DEPLOYMENT_ROLE=evo-report-lane"$'\n'"WORKER_JOB_TYPES=creative.sync,report.request,report.poll,report.fetch" ]] \
+    "OPENSPELL_WORKER_REVISION=$expected"$'\n'"WORKER_DEPLOYMENT_ROLE=evo-report-lane"$'\n'"WORKER_JOB_TYPES=$claim_set" ]] \
     || return 1
   (cd "$target" && sha256sum -c ARTIFACT_SHA256 >/dev/null) || return 1
   counts="$(cat "$target/ARTIFACT_COUNTS" 2>/dev/null || true)"

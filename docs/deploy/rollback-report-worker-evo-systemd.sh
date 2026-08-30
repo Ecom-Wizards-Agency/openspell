@@ -3,6 +3,8 @@ set -euo pipefail
 
 from_revision="${1:-}"
 to_revision="${2:-}"
+claim_set='creative.sync,report.request'
+claim_set+=',report.poll,report.fetch'
 for revision in "$from_revision" "$to_revision"; do
   if [[ ! "$revision" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
     echo "usage: $0 <current-full-git-object-id> <retained-full-git-object-id>" >&2
@@ -34,7 +36,7 @@ verify_artifact() {
   local counts actual_directories actual_files actual_links directories links
   [[ "$(sudo cat "$target/REVISION" 2>/dev/null || true)" == "$expected" ]] || return 1
   [[ "$(sudo cat "$target/public.conf" 2>/dev/null || true)" == \
-    "OPENSPELL_WORKER_REVISION=$expected"$'\n'"WORKER_DEPLOYMENT_ROLE=evo-report-lane"$'\n'"WORKER_JOB_TYPES=creative.sync,report.request,report.poll,report.fetch" ]] \
+    "OPENSPELL_WORKER_REVISION=$expected"$'\n'"WORKER_DEPLOYMENT_ROLE=evo-report-lane"$'\n'"WORKER_JOB_TYPES=$claim_set" ]] \
     || return 1
   sudo sh -c 'cd "$1" && sha256sum -c ARTIFACT_SHA256 >/dev/null' sh "$target" \
     || return 1

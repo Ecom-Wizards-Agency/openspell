@@ -3,6 +3,8 @@ set -euo pipefail
 
 expected_revision=
 activate=false
+claim_set='creative.sync,report.request'
+claim_set+=',report.poll,report.fetch'
 while (($# > 0)); do
   case "$1" in
     --revision)
@@ -172,7 +174,7 @@ printf '%s\n' "$expected_revision" >"$release_stage/REVISION"
 cat >"$release_stage/public.conf" <<EOF
 OPENSPELL_WORKER_REVISION=$expected_revision
 WORKER_DEPLOYMENT_ROLE=evo-report-lane
-WORKER_JOB_TYPES=creative.sync,report.request,report.poll,report.fetch
+WORKER_JOB_TYPES=$claim_set
 EOF
 install -d -m 0755 "$release_stage/bin" "$release_stage/systemd"
 install -m 0644 "$script_dir/openspell-report-worker-contract.mjs" \
@@ -249,7 +251,7 @@ verify_artifact() {
   local counts actual_directories actual_files actual_links directory_fixture link_fixture
   [[ "$(cat "$release/REVISION" 2>/dev/null || true)" == "$expected" ]] || return 1
   [[ "$(cat "$release/public.conf" 2>/dev/null || true)" == \
-    "OPENSPELL_WORKER_REVISION=$expected"$'\n'"WORKER_DEPLOYMENT_ROLE=evo-report-lane"$'\n'"WORKER_JOB_TYPES=creative.sync,report.request,report.poll,report.fetch" ]] \
+    "OPENSPELL_WORKER_REVISION=$expected"$'\n'"WORKER_DEPLOYMENT_ROLE=evo-report-lane"$'\n'"WORKER_JOB_TYPES=$claim_set" ]] \
     || return 1
   (cd "$release" && sha256sum -c ARTIFACT_SHA256 >/dev/null) || return 1
   counts="$(cat "$release/ARTIFACT_COUNTS" 2>/dev/null || true)"

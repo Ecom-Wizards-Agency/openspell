@@ -44,7 +44,7 @@ if ! rg -F 'sudo test -L "$credential_path"' "$installer" >/dev/null \
   || ! rg -F 'system Node 22 or newer' "$installer" >/dev/null \
   || ! rg -F 'OPENSPELL_WORKER_REVISION=$expected_revision' "$installer" >/dev/null \
   || ! rg -F 'WORKER_DEPLOYMENT_ROLE=evo-report-lane' "$installer" >/dev/null \
-  || ! rg -F 'WORKER_JOB_TYPES=creative.sync,report.request,report.poll,report.fetch' \
+  || ! rg -F 'WORKER_JOB_TYPES=$claim_set' \
     "$installer" >/dev/null; then
   echo "revision, credential, role, or claim invariant is missing" >&2
   exit 1

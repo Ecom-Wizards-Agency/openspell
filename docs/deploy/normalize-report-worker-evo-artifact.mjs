@@ -24,6 +24,7 @@ if (!rawArtifactRoot) {
 const artifactRoot = resolve(rawArtifactRoot);
 const virtualStore = join(artifactRoot, 'node_modules', '.pnpm');
 const expectedArtifactRootEntries = new Set([
+  '.turbo',
   'Dockerfile',
   'README.md',
   'fly.toml',
