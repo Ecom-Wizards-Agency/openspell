@@ -1,6 +1,7 @@
 /** Cross-route acceptance for the shared reporting window and legacy strategy link. */
 import { expect, test, type Page } from '@playwright/test';
 import { signIn } from './support/auth';
+import { applyRequestedCpuThrottle } from './support/cpu-throttle';
 import { expectDateRangePresets } from './support/date-range';
 import { readState } from './support/fixture';
 
@@ -59,6 +60,15 @@ async function exerciseEveryPreset({
   await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible();
   await expectDateRangePresets(page);
 
+  await page.evaluate(() => {
+    (window as Window & { __openspellRouteAcceptance?: string }).__openspellRouteAcceptance =
+      'same-document';
+  });
+  const documentRequests: string[] = [];
+  page.on('request', (request) => {
+    if (request.resourceType() === 'document') documentRequests.push(request.url());
+  });
+
   const visited: string[] = [];
   for (const preset of expectedPresets(serverDate)) {
     const picker = page.locator('details.wa-date-range');
@@ -83,11 +93,17 @@ async function exerciseEveryPreset({
   }
 
   expect(visited).toEqual(expectedPresets(serverDate).map(({ label }) => label));
+  expect(await page.evaluate(
+    () => (window as Window & { __openspellRouteAcceptance?: string })
+      .__openspellRouteAcceptance,
+  )).toBe('same-document');
+  expect(documentRequests).toEqual([]);
 }
 
 test.describe.configure({ mode: 'serial' });
 
 test.beforeEach(async ({ page }) => {
+  await applyRequestedCpuThrottle(page);
   await signIn(page, 'admin');
 });
 
