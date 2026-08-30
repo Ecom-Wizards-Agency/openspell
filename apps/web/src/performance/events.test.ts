@@ -5,6 +5,7 @@ const REVISION = 'a'.repeat(40);
 
 const validVital = () => ({
   event: 'openspell.web_vital',
+  evidence: 'diagnostic_only',
   pathname: '/grid',
   revision: REVISION,
   metric: 'LCP',
@@ -32,6 +33,13 @@ describe('browser performance event boundary', () => {
     expect(parseBrowserPerformanceEvent({ ...validVital(), user: 'synthetic actor' })).toBeNull();
   });
 
+  it('rejects events that could be mistaken for authoritative evidence', () => {
+    const unclassified: Record<string, unknown> = { ...validVital() };
+    delete unclassified['evidence'];
+    expect(parseBrowserPerformanceEvent(unclassified)).toBeNull();
+    expect(parseBrowserPerformanceEvent({ ...validVital(), evidence: 'acceptance' })).toBeNull();
+  });
+
   it('rejects nonnumeric, nonfinite, negative and unbounded measurements', () => {
     for (const value of ['123', Number.NaN, Number.POSITIVE_INFINITY, -1, 300_001]) {
       expect(parseBrowserPerformanceEvent({ ...validVital(), value })).toBeNull();
@@ -41,6 +49,7 @@ describe('browser performance event boundary', () => {
   it('accepts route-ready marks without accepting unknown navigation types', () => {
     const event = {
       event: 'openspell.route_ready',
+      evidence: 'diagnostic_only',
       pathname: '/dashboard',
       revision: REVISION,
       duration_ms: 88,

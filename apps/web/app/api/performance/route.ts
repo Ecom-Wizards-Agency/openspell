@@ -4,8 +4,14 @@ import { publicRevision } from '../../../src/performance/revision';
 const MAX_EVENT_BYTES = 1_024;
 const NO_STORE = { 'cache-control': 'no-store' } as const;
 
+// This cookie-free endpoint is intentionally non-authoritative. It supports
+// debugging distributions without collecting identity; the fixed evidence
+// classification prevents these events from satisfying a release gate.
+
 export function GET(): Response {
-  return Response.json(publicRevision(), { headers: NO_STORE });
+  return Response.json(publicRevision(), {
+    headers: { ...NO_STORE, 'x-openspell-performance-evidence': 'diagnostic-only' },
+  });
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -35,5 +41,8 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   console.info(JSON.stringify(event));
-  return new Response(null, { status: 204, headers: NO_STORE });
+  return new Response(null, {
+    status: 204,
+    headers: { ...NO_STORE, 'x-openspell-performance-evidence': 'diagnostic-only' },
+  });
 }

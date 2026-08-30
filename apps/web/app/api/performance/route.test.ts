@@ -13,7 +13,11 @@ describe('performance endpoint', () => {
     vi.stubEnv('VERCEL_GIT_COMMIT_SHA', REVISION);
     const response = GET();
     expect(response.headers.get('cache-control')).toBe('no-store');
-    await expect(response.json()).resolves.toEqual({ revision: REVISION });
+    expect(response.headers.get('x-openspell-performance-evidence')).toBe('diagnostic-only');
+    await expect(response.json()).resolves.toEqual({
+      revision: REVISION,
+      rum_evidence: 'diagnostic_only',
+    });
   });
 
   it('logs an exact-revision event and no request metadata', async () => {
@@ -21,6 +25,7 @@ describe('performance endpoint', () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const event = {
       event: 'openspell.route_ready',
+      evidence: 'diagnostic_only',
       pathname: '/grid',
       revision: REVISION,
       duration_ms: 125,
@@ -44,6 +49,7 @@ describe('performance endpoint', () => {
       method: 'POST',
       body: JSON.stringify({
         event: 'openspell.route_ready',
+        evidence: 'diagnostic_only',
         pathname: '/grid',
         revision: 'f'.repeat(40),
         duration_ms: 10,
@@ -64,6 +70,7 @@ describe('performance endpoint', () => {
 function validVital() {
   return {
     event: 'openspell.web_vital',
+    evidence: 'diagnostic_only',
     pathname: '/dashboard',
     revision: REVISION,
     metric: 'LCP',

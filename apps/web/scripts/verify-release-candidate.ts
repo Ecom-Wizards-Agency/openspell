@@ -52,6 +52,7 @@ interface RouteResult {
 interface RevisionResult {
   expected: string;
   deployed: string | null;
+  rumEvidence: 'diagnostic_only';
   passed: boolean;
 }
 
@@ -67,9 +68,9 @@ async function main(): Promise<void> {
     throw new Error('Candidate must be an immutable deployment URL, not the production alias.');
   }
 
-  // Performance evidence is attributable only when the running server proves
-  // the exact candidate revision. Fail before reading browser authentication
-  // or accepting any route duration when the metadata is absent or different.
+  // Diagnostic timings are attributable only when the running server proves
+  // the exact candidate revision. They are not release-acceptance evidence:
+  // the public, cookie-free endpoint deliberately has no actor-integrity claim.
   const revision = await verifyRevision(candidate, expectedRevision);
   if (!revision.passed) {
     console.log(JSON.stringify({ candidate: candidate.origin, passed: false, revision, routes: [] }, null, 2));
@@ -114,6 +115,7 @@ async function verifyRevision(candidate: URL, expected: string): Promise<Revisio
   return {
     expected,
     deployed,
+    rumEvidence: 'diagnostic_only',
     passed: result.exitCode === 0 && result.status === 200 && deployed === expected,
   };
 }

@@ -52,6 +52,7 @@ const MAX_DURATION_MS = 300_000;
 
 export interface RouteReadyEvent {
   event: 'openspell.route_ready';
+  evidence: 'diagnostic_only';
   pathname: PerformancePathname;
   revision: string;
   duration_ms: number;
@@ -60,6 +61,7 @@ export interface RouteReadyEvent {
 
 export interface WebVitalEvent {
   event: 'openspell.web_vital';
+  evidence: 'diagnostic_only';
   pathname: PerformancePathname;
   revision: string;
   metric: WebVitalName;
@@ -72,6 +74,7 @@ export type BrowserPerformanceEvent = RouteReadyEvent | WebVitalEvent;
 
 export function parseBrowserPerformanceEvent(value: unknown): BrowserPerformanceEvent | null {
   if (!isRecord(value) || !hasExactKeysForKnownEvent(value)) return null;
+  if (value['evidence'] !== 'diagnostic_only') return null;
   const pathname = performancePathname(value['pathname']);
   const revision = exactRevision(value['revision']);
   if (pathname === null || revision === null) return null;
@@ -81,6 +84,7 @@ export function parseBrowserPerformanceEvent(value: unknown): BrowserPerformance
     if (duration === null || !includes(ROUTE_NAVIGATIONS, value['navigation_type'])) return null;
     return {
       event: 'openspell.route_ready',
+      evidence: 'diagnostic_only',
       pathname,
       revision,
       duration_ms: duration,
@@ -99,6 +103,7 @@ export function parseBrowserPerformanceEvent(value: unknown): BrowserPerformance
   }
   return {
     event: 'openspell.web_vital',
+    evidence: 'diagnostic_only',
     pathname,
     revision,
     metric: value['metric'],
@@ -127,9 +132,9 @@ function boundedNumber(value: unknown): number | null {
 
 function hasExactKeysForKnownEvent(value: Record<string, unknown>): boolean {
   const expected = value['event'] === 'openspell.route_ready'
-    ? ['duration_ms', 'event', 'navigation_type', 'pathname', 'revision']
+    ? ['duration_ms', 'event', 'evidence', 'navigation_type', 'pathname', 'revision']
     : value['event'] === 'openspell.web_vital'
-      ? ['event', 'metric', 'navigation_type', 'pathname', 'rating', 'revision', 'value']
+      ? ['event', 'evidence', 'metric', 'navigation_type', 'pathname', 'rating', 'revision', 'value']
       : null;
   if (expected === null) return false;
   return Object.keys(value).sort().join('\0') === expected.sort().join('\0');

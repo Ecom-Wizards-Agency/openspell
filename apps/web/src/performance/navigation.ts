@@ -37,6 +37,7 @@ export function routeReadyEvent(pathname: string, revision: string | null): Rout
   if (attributedRevision === null) return null;
   return {
     event: 'openspell.route_ready',
+    evidence: 'diagnostic_only',
     pathname: sanitizedPathname,
     revision: attributedRevision,
     duration_ms: duration,
