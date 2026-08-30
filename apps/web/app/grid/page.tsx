@@ -9,9 +9,10 @@
  * request keeps those rows out of the initial RSC document without introducing
  * server pagination or a second Grid model.
  *
- * The cap is 50k rows. Past it the page says the set is truncated rather than
- * quietly showing a prefix, because a total computed over an unmarked prefix is
- * the kind of wrong number that gets quoted on a client call.
+ * Database and raw-response byte caps bound the result. Past either boundary
+ * the page says the set is truncated rather than quietly showing a prefix,
+ * because a total computed over an unmarked prefix is the kind of wrong number
+ * that gets quoted on a client call.
  *
  * Entry goes through `gate()`, the same guard `/settings` uses: anonymous
  * visitors are sent to `/login`, and both the roster and the rows are scoped by
@@ -33,7 +34,6 @@ import { canonicalProfilePath } from '../../src/data/active-profile';
 import { gateMessage } from '../../src/ui/gate-message';
 import { loadReportLedger } from '../_lib/dashboard-data';
 import { withExistingDatabase } from '../_lib/db';
-import { ROW_CAP } from '../_lib/grid-data';
 import { periodFromParams, precedingPeriod, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
 import { OperatorContext } from '../../src/ui/operator-context';
@@ -146,7 +146,6 @@ export default async function GridPage({ searchParams }: PageProps) {
         profileId={profile.id}
         period={period}
         comparisonPeriod={comparison}
-        rowCap={ROW_CAP}
         freshness={freshness}
         crosscheck={
           <Suspense fallback={<span style={crosscheckPending}>Crosscheck loading…</span>}>

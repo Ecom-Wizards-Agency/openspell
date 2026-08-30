@@ -49,7 +49,6 @@ export interface GridWorkspaceProps {
   profileId: string;
   period: { start: string; end: string };
   comparisonPeriod: { start: string; end: string };
-  rowCap: number;
   freshness: FreshnessAssessment;
   /** Streamed server-owned crosscheck state; it never blocks the data grid. */
   crosscheck?: ReactNode;
@@ -309,13 +308,14 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
       ) : (
         <>
           <p className="wa-sr-only" role="status" data-testid="grid-row-count">
-            Complete result set loaded: {formatInteger(current.payload.rowCount)} rows.
+            {current.payload.truncated ? 'Partial' : 'Complete'} result set loaded:{' '}
+            {formatInteger(current.payload.rowCount)} rows.
           </p>
           {current.payload.truncated ? (
             <p style={{ ...filterErrorStyle, margin: 0 }}>
-              This account has more than {formatInteger(props.rowCap)} rows at this level, so the
-              set below is truncated and its totals cover only what is shown. Narrow the period or
-              entity level for a complete read.
+              This result is too large to load safely. The set below is truncated to{' '}
+              {formatInteger(current.payload.rowCount)} rows, and its totals cover only what is
+              shown. Narrow the period or entity level for a complete read.
             </p>
           ) : null}
           <ReadyGridWorkspace {...props} rows={current.payload.rows} />

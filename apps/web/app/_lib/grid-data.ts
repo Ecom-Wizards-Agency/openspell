@@ -100,7 +100,7 @@ export interface GridPayload {
   rows: GridRow[];
   /** Transport assertion: every consumer must receive exactly this many rows. */
   rowCount: number;
-  /** True when the cap was hit and the set on screen is not the whole account. */
+  /** True when an upstream or transport cap makes the returned set incomplete. */
   truncated: boolean;
 }
 

@@ -9,6 +9,7 @@ import {
   requestActor,
   RequestAuthError,
 } from '../../../../src/server/request-context';
+import { serializeGridPayloadWithinBudget } from './serialize';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -71,6 +72,16 @@ function json(value: unknown, init: { status?: number } = {}): Response {
   });
 }
 
+function gridPayloadResponse(payload: Awaited<ReturnType<typeof loadGridRows>>): Response {
+  const serialized = serializeGridPayloadWithinBudget(payload);
+  return new Response(serialized.body, {
+    headers: {
+      ...PRIVATE_RESPONSE_HEADERS,
+      'Content-Type': 'application/json; charset=utf-8',
+    },
+  });
+}
+
 function gridErrorResponse(error: unknown): Response {
   if (error instanceof RequestAuthError) {
     return json({ error: error.message }, { status: error.status });
@@ -109,7 +120,7 @@ export async function GET(request: Request): Promise<Response> {
       comparison: precedingPeriod(period),
     });
 
-    return json(payload);
+    return gridPayloadResponse(payload);
   } catch (error) {
     return gridErrorResponse(error);
   } finally {

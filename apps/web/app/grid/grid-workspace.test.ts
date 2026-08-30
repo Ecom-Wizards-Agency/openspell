@@ -79,7 +79,6 @@ function props(profileId = '50505050-5050-4050-8050-505050505050') {
     profileId,
     period: { start: '2026-06-30', end: '2026-06-30' },
     comparisonPeriod: { start: '2026-06-29', end: '2026-06-29' },
-    rowCap: 50_000,
     freshness,
     campaignId: null,
   };
@@ -153,6 +152,19 @@ describe('Grid row transport', () => {
     expect(host.querySelector('[data-testid="grid-row-count"]')?.textContent).toContain('2 rows');
     expect(host.textContent).toContain('Export CSV (2 of 2)');
     expect(host.textContent).not.toContain('Loading the complete result set');
+  });
+
+  it('announces and explains a truncated response as partial', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(payload([row(1), row(2)], true))));
+    const { host } = mount();
+    await act(async () => undefined);
+
+    const status = host.querySelector('[data-testid="grid-row-count"]');
+    expect(status?.getAttribute('role')).toBe('status');
+    expect(status?.textContent).toContain('Partial result set loaded: 2 rows');
+    expect(status?.textContent).not.toContain('Complete result set');
+    expect(host.textContent).toContain('This result is too large to load safely');
+    expect(host.textContent).toContain('totals cover only what is shown');
   });
 
   it('offers an explicit retry and never turns a malformed count into an actionable Grid', async () => {

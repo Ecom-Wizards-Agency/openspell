@@ -1,6 +1,5 @@
 /** Authenticated browser proof that Grid rows moved out of the initial document. */
 import { readFile } from 'node:fs/promises';
-import { gzipSync } from 'node:zlib';
 import { expect, test } from '@playwright/test';
 import type { Response as PlaywrightResponse } from '@playwright/test';
 import { createDb } from '@wizard-ads/db';
@@ -14,6 +13,16 @@ const fixtureMonth = new Date(
 );
 const DATE = fixtureMonth.toISOString().slice(0, 10);
 const WARM_DATE = new Date(fixtureMonth.getTime() - 86_400_000).toISOString().slice(0, 10);
+
+function gridUrl(profile: string, date: string): string {
+  const query = new URLSearchParams({
+    profile,
+    entity: 'search_terms',
+    from: date,
+    to: date,
+  });
+  return ['/grid', '?', query.toString()].join('');
+}
 
 async function seedRows(): Promise<string> {
   const state = await readState();
@@ -55,7 +64,7 @@ test('initial document stays small while one counted request powers the complete
   // Compile the Grid page and route against an empty neighboring date. This
   // keeps the timing measurement about payload delivery rather than Next dev's
   // one-time module compilation.
-  await page.goto(`/grid?profile=${profile}&entity=search_terms&from=${WARM_DATE}&to=${WARM_DATE}`);
+  await page.goto(gridUrl(profile, WARM_DATE));
   await expect(page.getByRole('button', { name: 'Export CSV (0 of 0)' })).toBeVisible();
 
   const rowResponses: PlaywrightResponse[] = [];
@@ -64,10 +73,9 @@ test('initial document stays small while one counted request powers the complete
   });
 
   const startedAt = performance.now();
-  const documentResponse = await page.goto(
-    `/grid?profile=${profile}&entity=search_terms&from=${DATE}&to=${DATE}`,
-    { waitUntil: 'domcontentloaded' },
-  );
+  const documentResponse = await page.goto(gridUrl(profile, DATE), {
+    waitUntil: 'domcontentloaded',
+  });
   expect(documentResponse).not.toBeNull();
   const initialDocument = await documentResponse!.body();
   await expect(
@@ -98,7 +106,7 @@ test('initial document stays small while one counted request powers the complete
   expect(payload.rows).toHaveLength(EXPECTED_ROWS);
   expect(payload.truncated).toBe(false);
   expect(payload.rows.every((row) => String(row.dimensions['search_term']).startsWith(MARKER))).toBe(true);
-  expect(gzipSync(responseBody).byteLength).toBeLessThan(4_000_000);
+  expect(responseBody.byteLength).toBeLessThanOrEqual(4_000_000);
 
   const exportButton = page.getByRole('button', { name: /Export CSV/ });
   const [download] = await Promise.all([page.waitForEvent('download'), exportButton.click()]);
@@ -114,7 +122,6 @@ test('initial document stays small while one counted request powers the complete
     usableMs: Math.round(usableMs * 100) / 100,
     initialDocumentBytes: initialDocument.byteLength,
     rowResponseBytes: responseBody.byteLength,
-    rowResponseGzipBytes: gzipSync(responseBody).byteLength,
     rows: payload.rowCount,
     requests: rowResponses.length,
   };

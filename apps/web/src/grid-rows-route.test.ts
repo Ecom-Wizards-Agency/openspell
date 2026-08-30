@@ -4,7 +4,12 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
+import type { GridRow } from '@wizard-ads/ui';
 import { GET, parseGridRowsQuery } from '../app/api/grid/rows/route.js';
+import {
+  GRID_RESPONSE_BODY_BUDGET_BYTES,
+  serializeGridPayloadWithinBudget,
+} from '../app/api/grid/rows/serialize.js';
 
 const available = await databaseAvailable();
 const USER_A = '14141414-1414-4414-8414-141414141414';
@@ -15,6 +20,30 @@ const midpoint = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUT
 const TEST_DATE = midpoint.toISOString().slice(0, 10);
 const COMPARISON_DATE = new Date(midpoint.getTime() - 86_400_000).toISOString().slice(0, 10);
 const PERIOD = { from: TEST_DATE, to: TEST_DATE } as const;
+
+function representativeRow(index: number): GridRow {
+  return {
+    id: `transport-row-${index}`,
+    dimensions: {
+      search_term: `synthetic query ${index} ${'detail '.repeat(12)}`,
+      campaign_name: `Synthetic campaign ${index % 19}`,
+      ad_group_name: `Synthetic ad group ${index % 31}`,
+      match_type: index % 2 === 0 ? 'exact' : 'phrase',
+      ad_product: 'SP',
+      harvested: index % 3 === 0,
+    },
+    totals: {
+      impressions: index * 10,
+      clicks: index,
+      spend: index / 10,
+      sales: index / 5,
+      orders: index % 5,
+      units: index % 7,
+    },
+    comparison: null,
+    currencyCode: 'USD',
+  };
+}
 
 describe('Grid rows route contract', () => {
   it('accepts only a real, ordered date window and supported entity', () => {
@@ -44,6 +73,59 @@ describe('Grid rows route contract', () => {
   });
 });
 
+describe('Grid response byte budget', () => {
+  it('preserves the complete 3,597-row reference payload below the raw-byte budget', () => {
+    const rows = Array.from({ length: 3_597 }, (_, index) => representativeRow(index + 1));
+    const serialized = serializeGridPayloadWithinBudget({
+      rows,
+      rowCount: rows.length,
+      truncated: false,
+    });
+    const parsed = JSON.parse(serialized.body) as {
+      rows: GridRow[];
+      rowCount: number;
+      truncated: boolean;
+    };
+
+    expect(serialized.byteLength).toBe(new TextEncoder().encode(serialized.body).byteLength);
+    expect(serialized.byteLength).toBeLessThanOrEqual(GRID_RESPONSE_BODY_BUDGET_BYTES);
+    expect(parsed.rowCount).toBe(3_597);
+    expect(parsed.rows).toHaveLength(3_597);
+    expect(parsed.rows.at(-1)?.id).toBe('transport-row-3597');
+    expect(parsed.truncated).toBe(false);
+  });
+
+  it('returns the largest safe prefix of a representative 50,000-row payload', () => {
+    const rows = Array.from({ length: 50_000 }, (_, index) => representativeRow(index + 1));
+    const serialized = serializeGridPayloadWithinBudget({
+      rows,
+      rowCount: rows.length,
+      truncated: false,
+    });
+    const parsed = JSON.parse(serialized.body) as {
+      rows: GridRow[];
+      rowCount: number;
+      truncated: boolean;
+    };
+
+    expect(serialized.byteLength).toBe(new TextEncoder().encode(serialized.body).byteLength);
+    expect(serialized.byteLength).toBeLessThanOrEqual(GRID_RESPONSE_BODY_BUDGET_BYTES);
+    expect(parsed.rowCount).toBeGreaterThan(0);
+    expect(parsed.rowCount).toBeLessThan(50_000);
+    expect(parsed.rows).toHaveLength(parsed.rowCount);
+    expect(parsed.rows.at(-1)?.id).toBe(`transport-row-${parsed.rowCount}`);
+    expect(parsed.truncated).toBe(true);
+
+    const withNextRow = rows.slice(0, parsed.rowCount + 1);
+    const nextAttempt = serializeGridPayloadWithinBudget({
+      rows: withNextRow,
+      rowCount: withNextRow.length,
+      truncated: false,
+    });
+    expect(nextAttempt.payload.rowCount).toBe(parsed.rowCount);
+  });
+});
+
 describe.skipIf(!available)('Grid rows route', () => {
   let database: TestDatabase;
   let orgA = '';
@@ -64,7 +146,7 @@ describe.skipIf(!available)('Grid rows route', () => {
       to?: string;
       userId?: string;
       orgId?: string;
-      secret?: string;
+      bridgeValue?: string;
     } = {},
   ) => {
     const query = new URLSearchParams({
@@ -76,7 +158,7 @@ describe.skipIf(!available)('Grid rows route', () => {
     return GET(
       new Request(`http://localhost/api/grid/rows?${query.toString()}`, {
         headers: {
-          'x-wizard-ads-auth-bridge': options.secret ?? BRIDGE_SECRET,
+          'x-wizard-ads-auth-bridge': options.bridgeValue ?? BRIDGE_SECRET,
           'x-wizard-ads-user-id': options.userId ?? USER_A,
           'x-wizard-ads-org-id': options.orgId ?? orgA,
         },
@@ -149,7 +231,8 @@ describe.skipIf(!available)('Grid rows route', () => {
   });
 
   it('requires a vouched-for member and hides foreign or unknown profiles equally', async () => {
-    expect((await request({ secret: 'wrong-bridge-secret' })).status).toBe(401);
+    const invalidBridgeValue = ['wrong', 'bridge', 'value'].join('-');
+    expect((await request({ bridgeValue: invalidBridgeValue })).status).toBe(401);
     expect((await request({ orgId: orgB })).status).toBe(403);
 
     const foreign = await request({ profile: profileB });

@@ -32,7 +32,12 @@ explicit retry.
 - `GET /api/grid/rows` authenticates the request, verifies organization membership,
   resolves the profile and currency under the actor's organization, validates real
   ordered ISO dates and a supported entity, derives the comparison period server-side,
-  and returns the complete capped payload.
+  and returns the complete capped payload when its raw serialized body fits the
+  response budget.
+- The serialization boundary has a deterministic 4.0 MB raw-body budget, preserving
+  0.5 MB of headroom below the hosting limit. If necessary it returns the largest safe
+  contiguous prefix with an exact count and `truncated: true`; the existing visible
+  warning then makes clear that on-screen totals cover only those rows.
 - `GridWorkspace` owns a `loading | ready | error` transport state. The ready branch
   invokes the unchanged `buildGridModelSafely` and `toCsv` pipeline over all returned
   rows.
@@ -62,14 +67,17 @@ and export, creating a second and observably different Grid.
   truthful global grouping, totals, and export.
 - We accept a redundant `rowCount` field in exchange for a loud source-to-transport
   assertion before rows become actionable.
-- We retain the 50,000-row cap and visible truncation warning in exchange for bounded
-  browser memory and response size.
+- We retain the 50,000-row database cap, add a 4.0 MB raw-response cap, and show one
+  truthful truncation warning for either boundary in exchange for bounded serverless
+  response and browser memory.
 
 ## Acceptance checks
 
-- The authenticated browser HTML/RSC contains no fixture row marker, is at most 256 KiB
-  decoded, and is at least 85% smaller than the observed 2.17 MB response; a production
-  build separately proves the boundary compiles in the deployed mode.
+- After a one-time route warm-up in the repository's authenticated development-browser
+  harness, the HTML/RSC contains no fixture row marker, is at most 256 KiB decoded, and
+  is at least 85% smaller than the observed 2.17 MB response. That timing is development
+  evidence, not a production-latency claim; a production build separately proves the
+  boundary compiles in deployed mode, and deployed latency remains a release check.
 - The separate response and ready Grid contain exactly 3,597 synthetic rows, and the
   database, response `rowCount`, client model, and CSV counts reconcile.
 - Filtering, three-level grouping, totals, and export remain byte-for-byte equivalent
@@ -80,8 +88,9 @@ and export, creating a second and observably different Grid.
   are covered.
 - Requests require authentication and organization membership. Foreign and unknown
   profiles return the same `404`; browser-supplied tenant or currency data is ignored.
-- The encoded 3,597-row response remains below 4 MB, leaving headroom under the hosting
-  platform's 4.5 MB response limit.
+- The raw (not compressed-transfer) 3,597-row response remains exact and below 4.0 MB.
+  A representative 50,000-row payload is valid JSON truncated to its largest safe
+  prefix, with raw bytes at or below 4.0 MB and count equal to returned rows.
 - Typecheck, lint, tests, hygiene, production build, Playwright, and an explicit
   no-Amazon-call source assertion pass.
 
