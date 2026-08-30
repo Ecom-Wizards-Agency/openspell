@@ -365,14 +365,14 @@ begin
           p_slug || '-stream-advertiser', p_slug || '-stream-marketplace');
 
   insert into public.marketing_stream_projection_blocks
-    (org_id, profile_id, scope_keys, first_blocked_at, last_blocked_at,
-     retry_count, alert_state, last_reason)
+    (org_id, profile_id, first_blocked_at, last_blocked_at, retry_count, alert_state, last_reason)
   values (
-    v_org, v_profile,
-    array['SP|' || to_char(date_trunc('hour', now()) at time zone 'UTC',
-                           'YYYY-MM-DD"T"HH24:00:00.000"Z"')],
-    now(), now(), 0, 'pending', 'fixture policy pending'
+    v_org, v_profile, now(), now(), 0, 'pending', 'fixture policy pending'
   );
+
+  insert into public.marketing_stream_projection_block_scopes
+    (org_id, profile_id, ad_product, utc_hour)
+  values (v_org, v_profile, 'SP', date_trunc('hour', now()));
 
   insert into public.marketing_stream_hourly_facts
     (org_id, profile_id, ad_product, campaign_id, utc_hour, profile_timezone,

@@ -176,6 +176,7 @@ describe.skipIf(!available)('migrations', () => {
       'optimization_groups', 'campaign_optimization_assignments',
       'recommendation_observations', 'marketing_stream_subscription_bindings',
       'marketing_stream_events', 'marketing_stream_projection_blocks',
+      'marketing_stream_projection_block_scopes',
       'marketing_stream_hourly_facts', 'dayparting_schedule_proposals',
     ]) {
       expect(tables, `missing table ${expected}`).toContain(expected);

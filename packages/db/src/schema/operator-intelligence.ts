@@ -603,7 +603,7 @@ export const marketingStreamProjectionBlocks = pgTable(
   {
     orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
     profileId: uuid('profile_id').notNull(),
-    scopeKeys: text('scope_keys').array().notNull().default([]),
+    blockToken: uuid('block_token').notNull().defaultRandom(),
     firstBlockedAt: ts('first_blocked_at').notNull(),
     lastBlockedAt: ts('last_blocked_at').notNull(),
     retryCount: integer('retry_count').notNull().default(0),
@@ -615,6 +615,27 @@ export const marketingStreamProjectionBlocks = pgTable(
     primaryKey({ columns: [t.orgId, t.profileId] }),
     foreignKey({ columns: [t.orgId, t.profileId], foreignColumns: [adProfiles.orgId, adProfiles.id] })
       .onDelete('cascade'),
+  ],
+);
+
+export const marketingStreamProjectionBlockScopes = pgTable(
+  'marketing_stream_projection_block_scopes',
+  {
+    orgId: uuid('org_id').notNull(),
+    profileId: uuid('profile_id').notNull(),
+    adProduct: adProduct('ad_product').notNull(),
+    utcHour: ts('utc_hour').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.orgId, t.profileId, t.adProduct, t.utcHour] }),
+    foreignKey({
+      columns: [t.orgId, t.profileId],
+      foreignColumns: [marketingStreamProjectionBlocks.orgId, marketingStreamProjectionBlocks.profileId],
+    }).onDelete('cascade'),
+    index('marketing_stream_projection_block_scopes_page_idx')
+      .on(t.orgId, t.profileId, t.adProduct, t.utcHour),
+    check('marketing_stream_projection_block_scopes_hour_check', sql`${t.utcHour} = date_trunc('hour', ${t.utcHour})`),
   ],
 );
 
@@ -670,8 +691,35 @@ export const marketingStreamEvents = pgTable(
       ],
     }).onDelete('restrict'),
     uniqueIndex('marketing_stream_events_provider_identity_key')
-      .on(t.bindingId, t.providerDatasetId, t.providerEventId)
+      .on(t.profileId, t.providerDatasetId, t.providerAdvertiserId, t.providerMarketplaceId, t.providerEventId)
       .where(sql`${t.bindingId} is not null`),
+    check('marketing_stream_events_provider_identity_complete', sql`
+      num_nonnulls(${t.bindingId}, ${t.providerSubscriptionId}, ${t.providerDatasetId},
+        ${t.providerEventId}, ${t.providerAdvertiserId}, ${t.providerMarketplaceId}) = 0 or
+      (num_nonnulls(${t.bindingId}, ${t.providerSubscriptionId}, ${t.providerDatasetId},
+        ${t.providerEventId}, ${t.providerAdvertiserId}, ${t.providerMarketplaceId}) = 6 and
+       nullif(btrim(coalesce(${t.providerSubscriptionId}, '')), '') is not null and
+       nullif(btrim(coalesce(${t.providerDatasetId}, '')), '') is not null and
+       nullif(btrim(coalesce(${t.providerEventId}, '')), '') is not null and
+       nullif(btrim(coalesce(${t.providerAdvertiserId}, '')), '') is not null and
+       nullif(btrim(coalesce(${t.providerMarketplaceId}, '')), '') is not null)
+    `),
+    check('marketing_stream_events_provider_dataset_check', sql`
+      ${t.providerDatasetId} is null or ${t.providerDatasetId} in (
+        'sp-traffic', 'sp-conversion', 'sb-traffic', 'sb-conversion',
+        'sd-traffic', 'sd-conversion', 'budget-usage'
+      )
+    `),
+    check('marketing_stream_events_provider_contract_check', sql`
+      ${t.providerDatasetId} is null or
+      (${t.providerDatasetId} = 'sp-traffic' and ${t.dataset} = 'traffic' and ${t.adProduct} = 'SP') or
+      (${t.providerDatasetId} = 'sp-conversion' and ${t.dataset} = 'conversion' and ${t.adProduct} = 'SP') or
+      (${t.providerDatasetId} = 'sb-traffic' and ${t.dataset} = 'traffic' and ${t.adProduct} = 'SB') or
+      (${t.providerDatasetId} = 'sb-conversion' and ${t.dataset} = 'conversion' and ${t.adProduct} = 'SB') or
+      (${t.providerDatasetId} = 'sd-traffic' and ${t.dataset} = 'traffic' and ${t.adProduct} = 'SD') or
+      (${t.providerDatasetId} = 'sd-conversion' and ${t.dataset} = 'conversion' and ${t.adProduct} = 'SD') or
+      (${t.providerDatasetId} = 'budget-usage' and ${t.dataset} = 'budget_usage')
+    `),
     index('marketing_stream_events_normalize_idx').on(t.profileId, t.eventTime, t.receivedAt),
   ],
 );

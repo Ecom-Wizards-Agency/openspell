@@ -354,7 +354,7 @@ describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
   it('consolidates bounded missing-policy state and clears it after recovery', async () => {
     const existingBlock = await readMarketingStreamProjectionBlock(database, { orgId, profileId });
     if (existingBlock) await clearMarketingStreamProjectionBlock(database, {
-      orgId, profileId, expectedGeneration: existingBlock.generation,
+      orgId, profileId, expectedBlockToken: existingBlock.blockToken, processedScopes: existingBlock.scopes,
     });
     const firstScope = { adProduct: 'SP' as const, utcHour: firstHour };
     const secondScope = { adProduct: 'SB' as const, utcHour: secondHour };
@@ -385,11 +385,11 @@ describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
     const block = await readMarketingStreamProjectionBlock(database, { orgId, profileId });
     expect(block).not.toBeNull();
     await expect(clearMarketingStreamProjectionBlock(database, {
-      orgId, profileId, expectedGeneration: block!.generation,
-    })).resolves.toBe(true);
+      orgId, profileId, expectedBlockToken: block!.blockToken, processedScopes: block!.scopes,
+    })).resolves.toMatchObject({ matched: true, cleared: true, processedScopes: 2, remainingScopes: 0 });
     await expect(clearMarketingStreamProjectionBlock(database, {
-      orgId, profileId, expectedGeneration: block!.generation,
-    })).resolves.toBe(false);
+      orgId, profileId, expectedBlockToken: block!.blockToken, processedScopes: block!.scopes,
+    })).resolves.toMatchObject({ matched: false, cleared: false });
     await expect(readMarketingStreamProjectionBlock(database, { orgId, profileId })).resolves.toBeNull();
   });
 
@@ -403,15 +403,58 @@ describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
       orgId, profileId, scopes: [scope], blockedAt: new Date('2026-06-02T11:00:00.000Z'),
       retryAttempt: 1, retryLimit: 2, reason: 'synthetic concurrent renewal',
     });
-    expect(newer.generation).toBeGreaterThan(first.generation);
+    expect(newer.blockToken).not.toBe(first.blockToken);
     await expect(clearMarketingStreamProjectionBlock(database, {
-      orgId, profileId, expectedGeneration: first.generation,
-    })).resolves.toBe(false);
+      orgId, profileId, expectedBlockToken: first.blockToken, processedScopes: first.scopes,
+    })).resolves.toMatchObject({ matched: false, cleared: false });
     await expect(readMarketingStreamProjectionBlock(database, { orgId, profileId }))
-      .resolves.toMatchObject({ generation: newer.generation, lastReason: 'synthetic concurrent renewal' });
+      .resolves.toMatchObject({ blockToken: newer.blockToken, lastReason: 'synthetic concurrent renewal' });
     await expect(clearMarketingStreamProjectionBlock(database, {
-      orgId, profileId, expectedGeneration: newer.generation,
-    })).resolves.toBe(true);
+      orgId, profileId, expectedBlockToken: newer.blockToken, processedScopes: newer.scopes,
+    })).resolves.toMatchObject({ matched: true, cleared: true });
+  });
+
+  it('rejects an ABA stale clear after a block is deleted and recreated', async () => {
+    const scope = { adProduct: 'SP' as const, utcHour: firstHour };
+    const first = await markMarketingStreamProjectionBlocked(database, {
+      orgId, profileId, scopes: [scope], blockedAt: new Date('2026-06-03T10:00:00.000Z'),
+      retryAttempt: 0, retryLimit: 2, reason: 'first block',
+    });
+    await expect(clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedBlockToken: first.blockToken, processedScopes: first.scopes,
+    })).resolves.toMatchObject({ matched: true, cleared: true });
+    const recreated = await markMarketingStreamProjectionBlocked(database, {
+      orgId, profileId, scopes: [scope], blockedAt: new Date('2026-06-03T11:00:00.000Z'),
+      retryAttempt: 0, retryLimit: 2, reason: 'recreated block',
+    });
+    expect(recreated.blockToken).not.toBe(first.blockToken);
+    await expect(clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedBlockToken: first.blockToken, processedScopes: first.scopes,
+    })).resolves.toMatchObject({ matched: false, cleared: false });
+    await expect(readMarketingStreamProjectionBlock(database, { orgId, profileId }))
+      .resolves.toMatchObject({ blockToken: recreated.blockToken, pendingScopeCount: 1 });
+  });
+
+  it('pages durable blocked scopes without orphaning the remainder', async () => {
+    await database.sql`delete from public.marketing_stream_projection_blocks
+      where org_id = ${orgId} and profile_id = ${profileId}`;
+    const scopes = Array.from({ length: 300 }, (_, index) => ({
+      adProduct: 'SP' as const,
+      utcHour: new Date(Date.UTC(2026, 0, 1, index)).toISOString(),
+    }));
+    const block = await markMarketingStreamProjectionBlocked(database, {
+      orgId, profileId, scopes, blockedAt: new Date('2026-06-04T10:00:00.000Z'),
+      retryAttempt: 24, retryLimit: 24, reason: 'synthetic large quiet-profile block',
+    });
+    expect(block.scopes).toHaveLength(256);
+    expect(block.pendingScopeCount).toBe(300);
+    const firstPage = await clearMarketingStreamProjectionBlock(database, {
+      orgId, profileId, expectedBlockToken: block.blockToken, processedScopes: block.scopes,
+    });
+    expect(firstPage).toEqual({ matched: true, cleared: false, processedScopes: 256, remainingScopes: 44 });
+    const remainder = await readMarketingStreamProjectionBlock(database, { orgId, profileId });
+    expect(remainder).toMatchObject({ blockToken: block.blockToken, pendingScopeCount: 44 });
+    expect(remainder?.scopes).toHaveLength(44);
   });
 
   it('recomputes both old and new scopes when a latest revision moves hours', async () => {

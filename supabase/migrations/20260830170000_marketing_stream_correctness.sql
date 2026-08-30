@@ -121,22 +121,17 @@ create unique index marketing_stream_events_provider_identity_key
 create table public.marketing_stream_projection_blocks (
   org_id uuid not null references public.orgs (id) on delete cascade,
   profile_id uuid not null,
-  scope_keys text[] not null default '{}',
+  block_token uuid not null default gen_random_uuid(),
   first_blocked_at timestamptz not null,
   last_blocked_at timestamptz not null,
   retry_count integer not null default 0,
   alert_state text not null default 'pending',
   last_reason text not null,
-  generation bigint not null default 1,
   updated_at timestamptz not null default now(),
   primary key (org_id, profile_id),
   constraint marketing_stream_projection_blocks_profile_fkey
     foreign key (org_id, profile_id)
     references public.ad_profiles (org_id, id) on delete cascade,
-  constraint marketing_stream_projection_blocks_scopes_nonempty
-    check (cardinality(scope_keys) > 0),
-  constraint marketing_stream_projection_blocks_scopes_bounded
-    check (cardinality(scope_keys) <= 4096),
   constraint marketing_stream_projection_blocks_retry_nonnegative
     check (retry_count >= 0),
   constraint marketing_stream_projection_blocks_alert_state_check
@@ -152,3 +147,24 @@ create trigger marketing_stream_projection_blocks_touch
   for each row execute function app.touch_updated_at();
 
 select app.install_tenant_rls('public.marketing_stream_projection_blocks');
+
+create table public.marketing_stream_projection_block_scopes (
+  org_id uuid not null,
+  profile_id uuid not null,
+  ad_product public.ad_product not null,
+  utc_hour timestamptz not null,
+  created_at timestamptz not null default now(),
+  primary key (org_id, profile_id, ad_product, utc_hour),
+  constraint marketing_stream_projection_block_scopes_block_fkey
+    foreign key (org_id, profile_id)
+    references public.marketing_stream_projection_blocks (org_id, profile_id)
+    on delete cascade,
+  constraint marketing_stream_projection_block_scopes_hour_check
+    check (utc_hour = date_trunc('hour', utc_hour))
+);
+
+create index marketing_stream_projection_block_scopes_page_idx
+  on public.marketing_stream_projection_block_scopes
+    (org_id, profile_id, ad_product, utc_hour);
+
+select app.install_tenant_rls('public.marketing_stream_projection_block_scopes');

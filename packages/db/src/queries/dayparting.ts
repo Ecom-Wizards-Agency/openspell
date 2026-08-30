@@ -71,7 +71,8 @@ export interface MarketingStreamProjectionBlock {
   retryCount: number;
   alertState: 'pending' | 'alerted';
   lastReason: string;
-  generation: number;
+  blockToken: string;
+  pendingScopeCount: number;
 }
 
 export interface ReadMarketingStreamFactsInput {
@@ -90,7 +91,7 @@ export class MarketingStreamPersistenceError extends Error {
   }
 }
 
-const MAX_BLOCKED_MARKETING_STREAM_SCOPES = 4_096;
+const BLOCKED_MARKETING_STREAM_SCOPE_PAGE = 256;
 
 /** Resolve provider traffic only through an explicit active subscription binding. */
 export async function resolveMarketingStreamSubscriptionBinding(
@@ -196,13 +197,20 @@ interface FactWireRow {
 interface ProjectionBlockWireRow {
   org_id: string;
   profile_id: string;
-  scope_keys: string[];
+  block_token: string;
   first_blocked_at: Date | string;
   last_blocked_at: Date | string;
   retry_count: number;
   alert_state: 'pending' | 'alerted';
   last_reason: string;
-  generation: number | string;
+  pending_scope_count: number | string;
+}
+
+export interface MarketingStreamProjectionBlockCompletion {
+  matched: boolean;
+  cleared: boolean;
+  processedScopes: number;
+  remainingScopes: number;
 }
 
 /** Append valid shared-contract events without collapsing later revisions. */
@@ -456,59 +464,48 @@ export async function markMarketingStreamProjectionBlocked(
   if (input.reason.trim().length === 0) {
     throw new MarketingStreamPersistenceError('blocked projection reason is empty');
   }
-  const scopeKeys = scopes.map(marketingStreamScopeKey);
-  if (scopeKeys.length > MAX_BLOCKED_MARKETING_STREAM_SCOPES) {
-    throw new MarketingStreamPersistenceError('blocked projection exceeds the bounded scope limit');
-  }
-  const [row] = await handle.sql<ProjectionBlockWireRow[]>`
-    insert into public.marketing_stream_projection_blocks (
-      org_id, profile_id, scope_keys, first_blocked_at, last_blocked_at,
-      retry_count, alert_state, last_reason, generation
-    ) values (
-      ${input.orgId}, ${input.profileId}, ${scopeKeys}::text[],
-      ${input.blockedAt.toISOString()}::timestamptz,
-      ${input.blockedAt.toISOString()}::timestamptz,
-      ${input.retryAttempt},
-      ${input.retryAttempt >= input.retryLimit ? 'alerted' : 'pending'},
-      ${input.reason.trim()}, 1
-    )
-    on conflict (org_id, profile_id) do update
-       set scope_keys = (
-             select array_agg(distinct scope_key order by scope_key)
-               from unnest(
-                 public.marketing_stream_projection_blocks.scope_keys || excluded.scope_keys
-               ) as scope_key
-           ),
-           last_blocked_at = greatest(
-             public.marketing_stream_projection_blocks.last_blocked_at,
-             excluded.last_blocked_at
-           ),
-           retry_count = greatest(
-             public.marketing_stream_projection_blocks.retry_count,
-             excluded.retry_count
-           ),
-           alert_state = case
-             when public.marketing_stream_projection_blocks.alert_state = 'alerted'
-               or greatest(
-                 public.marketing_stream_projection_blocks.retry_count,
-                 excluded.retry_count
-               ) >= ${input.retryLimit}
-             then 'alerted'
-             else 'pending'
-           end,
-           last_reason = excluded.last_reason,
-           generation = public.marketing_stream_projection_blocks.generation + 1
-     where cardinality((
-             select array_agg(distinct scope_key)
-               from unnest(
-                 public.marketing_stream_projection_blocks.scope_keys || excluded.scope_keys
-               ) as scope_key
-           )) <= ${MAX_BLOCKED_MARKETING_STREAM_SCOPES}
-    returning org_id, profile_id, scope_keys, first_blocked_at,
-              last_blocked_at, retry_count, alert_state, last_reason, generation
-  `;
-  if (!row) throw new MarketingStreamPersistenceError('blocked projection exceeds the bounded scope limit');
-  return rowToProjectionBlock(row);
+  await handle.sql.begin(async (transaction) => {
+    const sql = transaction as unknown as Sql;
+    await sql`
+      insert into public.marketing_stream_projection_blocks (
+        org_id, profile_id, first_blocked_at, last_blocked_at,
+        retry_count, alert_state, last_reason
+      ) values (
+        ${input.orgId}, ${input.profileId}, ${input.blockedAt.toISOString()}::timestamptz,
+        ${input.blockedAt.toISOString()}::timestamptz, ${input.retryAttempt},
+        ${input.retryAttempt >= input.retryLimit ? 'alerted' : 'pending'}, ${input.reason.trim()}
+      )
+      on conflict (org_id, profile_id) do update
+         set block_token = gen_random_uuid(),
+             last_blocked_at = greatest(
+               public.marketing_stream_projection_blocks.last_blocked_at, excluded.last_blocked_at
+             ),
+             retry_count = greatest(
+               public.marketing_stream_projection_blocks.retry_count, excluded.retry_count
+             ),
+             alert_state = case
+               when public.marketing_stream_projection_blocks.alert_state = 'alerted'
+                 or greatest(public.marketing_stream_projection_blocks.retry_count, excluded.retry_count)
+                    >= ${input.retryLimit}
+               then 'alerted' else 'pending' end,
+             last_reason = excluded.last_reason
+    `;
+    await sql`
+      insert into public.marketing_stream_projection_block_scopes (
+        org_id, profile_id, ad_product, utc_hour
+      )
+      select ${input.orgId}, ${input.profileId}, scope.ad_product::public.ad_product,
+             scope.utc_hour::timestamptz
+        from unnest(
+          ${scopes.map((scope) => scope.adProduct)}::text[],
+          ${scopes.map((scope) => truncateUtcHour(scope.utcHour))}::text[]
+        ) as scope(ad_product, utc_hour)
+      on conflict do nothing
+    `;
+  });
+  const block = await readMarketingStreamProjectionBlock(handle, input);
+  if (!block) throw new MarketingStreamPersistenceError('blocked projection upsert was not readable');
+  return block;
 }
 
 export async function readMarketingStreamProjectionBlock(
@@ -518,28 +515,72 @@ export async function readMarketingStreamProjectionBlock(
   assertUuid('orgId', input.orgId);
   assertUuid('profileId', input.profileId);
   const [row] = await handle.sql<ProjectionBlockWireRow[]>`
-    select org_id, profile_id, scope_keys, first_blocked_at,
-           last_blocked_at, retry_count, alert_state, last_reason, generation
-      from public.marketing_stream_projection_blocks
-     where org_id = ${input.orgId} and profile_id = ${input.profileId}
+    select b.org_id, b.profile_id, b.block_token, b.first_blocked_at,
+           b.last_blocked_at, b.retry_count, b.alert_state, b.last_reason,
+           (select count(*) from public.marketing_stream_projection_block_scopes s
+             where s.org_id = b.org_id and s.profile_id = b.profile_id) as pending_scope_count
+      from public.marketing_stream_projection_blocks b
+     where b.org_id = ${input.orgId} and b.profile_id = ${input.profileId}
   `;
-  return row ? rowToProjectionBlock(row) : null;
+  if (!row) return null;
+  const scopes = await handle.sql<{ ad_product: AdProduct; utc_hour: Date | string }[]>`
+    select ad_product::text as ad_product, utc_hour
+      from public.marketing_stream_projection_block_scopes
+     where org_id = ${input.orgId} and profile_id = ${input.profileId}
+     order by ad_product, utc_hour
+     limit ${BLOCKED_MARKETING_STREAM_SCOPE_PAGE}
+  `;
+  return rowToProjectionBlock(row, scopes.map((scope) => ({
+    adProduct: scope.ad_product, utcHour: truncateUtcHour(scope.utc_hour),
+  })));
 }
 
 export async function clearMarketingStreamProjectionBlock(
   handle: DbHandle,
-  input: { orgId: string; profileId: string; expectedGeneration: number },
-): Promise<boolean> {
+  input: {
+    orgId: string;
+    profileId: string;
+    expectedBlockToken: string;
+    processedScopes: readonly MarketingStreamScope[];
+  },
+): Promise<MarketingStreamProjectionBlockCompletion> {
   assertUuid('orgId', input.orgId);
   assertUuid('profileId', input.profileId);
-  const rows = await handle.sql<{ profile_id: string }[]>`
-    delete from public.marketing_stream_projection_blocks
-     where org_id = ${input.orgId} and profile_id = ${input.profileId}
-       and generation = ${input.expectedGeneration}
-    returning profile_id
-  `;
-  if (rows.length > 1) throw new MarketingStreamPersistenceError('cleared more than one projection block');
-  return rows.length === 1;
+  assertUuid('expectedBlockToken', input.expectedBlockToken);
+  const scopes = validateScopes(input.processedScopes);
+  return handle.sql.begin(async (transaction) => {
+    const sql = transaction as unknown as Sql;
+    const token = await sql<{ block_token: string }[]>`
+      select block_token from public.marketing_stream_projection_blocks
+       where org_id = ${input.orgId} and profile_id = ${input.profileId}
+         and block_token = ${input.expectedBlockToken}::uuid
+       for update
+    `;
+    if (token.length === 0) return { matched: false, cleared: false, processedScopes: 0, remainingScopes: 0 };
+    const deleted = scopes.length === 0 ? [] : await sql<{ profile_id: string }[]>`
+      delete from public.marketing_stream_projection_block_scopes target
+       using unnest(
+         ${scopes.map((scope) => scope.adProduct)}::text[],
+         ${scopes.map((scope) => truncateUtcHour(scope.utcHour))}::text[]
+       ) as completed(ad_product, utc_hour)
+       where target.org_id = ${input.orgId} and target.profile_id = ${input.profileId}
+         and target.ad_product = completed.ad_product::public.ad_product
+         and target.utc_hour = completed.utc_hour::timestamptz
+      returning target.profile_id
+    `;
+    const processedScopes = deleted.length;
+    const [{ count = 0 } = {}] = await sql<{ count: number | string }[]>`
+      select count(*) as count from public.marketing_stream_projection_block_scopes
+       where org_id = ${input.orgId} and profile_id = ${input.profileId}
+    `;
+    const remainingScopes = Number(count);
+    if (remainingScopes === 0) {
+      await sql`delete from public.marketing_stream_projection_blocks
+        where org_id = ${input.orgId} and profile_id = ${input.profileId}
+          and block_token = ${input.expectedBlockToken}::uuid`;
+    }
+    return { matched: true, cleared: remainingScopes === 0, processedScopes, remainingScopes };
+  });
 }
 
 /**
@@ -905,29 +946,22 @@ function rowToFact(row: FactWireRow): MarketingStreamHourlyFactValue {
   });
 }
 
-function rowToProjectionBlock(row: ProjectionBlockWireRow): MarketingStreamProjectionBlock {
+function rowToProjectionBlock(
+  row: ProjectionBlockWireRow,
+  scopes: readonly MarketingStreamScope[],
+): MarketingStreamProjectionBlock {
   return {
     orgId: row.org_id,
     profileId: row.profile_id,
-    scopes: uniqueScopes(row.scope_keys.map(marketingStreamScopeFromKey)),
+    scopes: uniqueScopes(scopes),
     firstBlockedAt: toIso(row.first_blocked_at),
     lastBlockedAt: toIso(row.last_blocked_at),
     retryCount: Number(row.retry_count),
     alertState: row.alert_state,
     lastReason: row.last_reason,
-    generation: Number(row.generation),
+    blockToken: row.block_token,
+    pendingScopeCount: Number(row.pending_scope_count),
   };
-}
-
-function marketingStreamScopeFromKey(value: string): MarketingStreamScope {
-  const separator = value.indexOf('|');
-  if (separator < 1) throw new MarketingStreamPersistenceError('stored projection block has an invalid scope');
-  const adProduct = value.slice(0, separator);
-  const utcHour = value.slice(separator + 1);
-  if (!['SP', 'SB', 'SD'].includes(adProduct)) {
-    throw new MarketingStreamPersistenceError('stored projection block has an invalid ad product');
-  }
-  return { adProduct: adProduct as AdProduct, utcHour: truncateUtcHour(utcHour) };
 }
 
 async function latestEventsForScopes(
