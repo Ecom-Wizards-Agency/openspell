@@ -1,11 +1,13 @@
 /** `/login` — password, magic link, or Google; never public signup. */
 import type { ReactNode } from 'react';
+import { authFeatureConfig } from '../../src/auth/config';
 import { currentUser } from '../../src/auth/session';
 import { safeNextPath } from '../../src/auth/next-path';
 import { supabaseConfigured } from '../../src/auth/supabase';
 import { Button, Field, Input } from '../../src/ui/primitives';
 import { banner, heading, muted, page } from '../../src/ui/tokens';
 import { sendMagicLink, signInWithGoogle, signInWithPassword } from './actions';
+import { PasskeySignIn } from './passkey-button';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,7 +21,8 @@ export default async function LoginPage({
   const user = await currentUser();
   // Password sign-in stays parked until the operator opts in: the form only
   // renders once invited-account creation is actually configured.
-  const passwordLoginEnabled = process.env['WIZARD_ADS_PASSWORD_LOGIN'] === '1';
+  const config = authFeatureConfig();
+  const passwordLoginEnabled = config.passwordLogin;
 
   return (
     <main style={{ ...page, maxWidth: '28rem' }}>
@@ -44,6 +47,7 @@ export default async function LoginPage({
 
       {supabaseConfigured() ? (
         <>
+          {config.passkeyPolicy === 'sign-in' ? <PasskeySignIn next={next} /> : null}
           {passwordLoginEnabled ? (
             <>
               <form action={signInWithPassword} style={{ display: 'grid', gap: '0.5rem' }}>
@@ -69,6 +73,9 @@ export default async function LoginPage({
                 <Button type="submit">
                   Sign in with password
                 </Button>
+                {config.passwordRecovery ? (
+                  <a href="/forgot-password">Forgot password?</a>
+                ) : null}
               </form>
 
               <div style={{ borderTop: '1px solid var(--wa-border)', margin: '1.25rem 0' }} />

@@ -11,6 +11,7 @@
  * exactly the URL a phishing link would target.
  */
 import { NextResponse } from 'next/server';
+import { authContinuePath } from '../../../src/auth/continuation';
 import { safeNextPath } from '../../../src/auth/next-path';
 import { supabaseConfigured, supabaseServerClient } from '../../../src/auth/supabase';
 
@@ -35,5 +36,5 @@ export async function GET(request: Request): Promise<Response> {
     return NextResponse.redirect(new URL('/login?error=that+link+is+no+longer+valid', url));
   }
 
-  return NextResponse.redirect(new URL(next, url));
+  return NextResponse.redirect(new URL(authContinuePath(next), url));
 }

@@ -1,9 +1,10 @@
 'use server';
 
 /** Sign-in paths. None of them creates a user. */
-import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { authContinuePath } from '../../src/auth/continuation';
 import { safeNextPath } from '../../src/auth/next-path';
+import { authOrigin } from '../../src/auth/origin';
 import { supabaseConfigured, supabaseServerClient } from '../../src/auth/supabase';
 
 const CREDENTIAL_FIELD = ['pass', 'word'].join('') as 'password';
@@ -22,7 +23,7 @@ export async function signInWithPassword(formData: FormData): Promise<void> {
   });
   // Deliberately identical for an unknown account and a bad password.
   if (error) redirect(loginLocation(next, 'email or password was not accepted'));
-  redirect(next);
+  redirect(authContinuePath(next));
 }
 
 export async function sendMagicLink(formData: FormData): Promise<void> {
@@ -71,17 +72,7 @@ function loginLocation(next: string, error: string | null, sent = false): string
 }
 
 async function callbackUrl(next: string): Promise<string> {
-  const url = new URL('/auth/callback', await origin());
+  const url = new URL('/auth/callback', await authOrigin());
   url.searchParams.set('next', next);
   return url.toString();
-}
-
-/** The app's own origin: configured first, request header only as a fallback. */
-async function origin(): Promise<string> {
-  const configured = process.env['WIZARD_ADS_APP_URL'];
-  if (configured) return configured.replace(/\/$/, '');
-  const list = await headers();
-  const host = list.get('host') ?? 'localhost:3000';
-  const proto = list.get('x-forwarded-proto') ?? 'http';
-  return `${proto}://${host}`;
 }

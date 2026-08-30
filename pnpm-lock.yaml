@@ -83,7 +83,7 @@ importers:
         specifier: ^0.8.0
         version: 0.8.0(@supabase/supabase-js@2.112.3)
       '@supabase/supabase-js':
-        specifier: ^2.60.0
+        specifier: 2.112.3
         version: 2.112.3
       '@wizard-ads/campaigns':
         specifier: workspace:*

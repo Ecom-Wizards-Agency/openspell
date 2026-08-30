@@ -3,6 +3,7 @@
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { supabaseAdminClient, supabaseAdminConfigured } from '../../../src/auth/admin';
+import { authContinuePath } from '../../../src/auth/continuation';
 import { currentUser } from '../../../src/auth/session';
 import { supabaseConfigured, supabaseServerClient } from '../../../src/auth/supabase';
 import { ORG_COOKIE } from '../../../src/cookies';
@@ -42,7 +43,7 @@ export async function acceptAsExistingUser(token: string): Promise<void> {
   }
 
   await selectAcceptedOrg(claimed.orgId);
-  redirect('/dashboard');
+  redirect(authContinuePath('/dashboard'));
 }
 
 export async function acceptAsNewUser(token: string, formData: FormData): Promise<void> {
@@ -119,7 +120,7 @@ export async function acceptAsNewUser(token: string, formData: FormData): Promis
   if (error !== null) redirect('/login?error=sign+in+to+finish&next=%2Fdashboard');
 
   await selectAcceptedOrg(claimed.orgId);
-  redirect('/dashboard');
+  redirect(authContinuePath('/dashboard'));
 }
 
 async function requireOpenInvitation(

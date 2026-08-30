@@ -2,7 +2,7 @@
 
 import { useActionState, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
-import { Banner, Button, Card, Field, Input } from '../../../src/ui/primitives';
+import { Banner, Button, Card, Field, Input, LinkButton } from '../../../src/ui/primitives';
 import { changePassword } from './actions';
 import type { PasswordActionResult } from './actions';
 
@@ -55,13 +55,16 @@ export function PasswordForm(): ReactNode {
       </form>
       {result.status === 'idle' ? null : (
         <Banner
-          tone={result.status === 'ok' ? 'good' : 'bad'}
+          tone={result.status === 'ok' ? 'good' : result.status === 'challenge' ? 'warn' : 'bad'}
           role={result.status === 'ok' ? 'status' : 'alert'}
           data-testid="password-result"
         >
           {result.message}
         </Banner>
       )}
+      {result.status === 'challenge' ? (
+        <LinkButton href={result.href}>Verify authenticator</LinkButton>
+      ) : null}
     </Card>
   );
 }

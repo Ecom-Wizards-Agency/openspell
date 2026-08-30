@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@supabase/ssr": "^0.8.0",
-    "@supabase/supabase-js": "^2.60.0",
+    "@supabase/supabase-js": "2.112.3",
     "@wizard-ads/campaigns": "workspace:*",
     "@wizard-ads/core": "workspace:*",
     "@wizard-ads/crosscheck-cli": "workspace:*",
