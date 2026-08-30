@@ -64,10 +64,12 @@ const metric = (
 export function ngramColumns(): GridColumn[] {
   return [
     dimension('gram', 'Gram', { pinned: true, width: 260 }),
-    dimension('n', 'n', { width: 56, align: 'right' }),
+    dimension('n', 'n', { width: 56, align: 'right', scale: 'integer', filterKind: 'numeric' }),
     dimension('search_terms', 'Search terms', {
       width: 120,
       align: 'right',
+      scale: 'integer',
+      filterKind: 'numeric',
       description: 'Distinct search terms this gram appeared in. Gram totals overlap; this is the honesty column.',
     }),
     metric('impressions', 'Impressions', 'integer', 'Pooled impressions of every term containing the gram.'),

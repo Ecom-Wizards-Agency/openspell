@@ -20,9 +20,8 @@ import { useCallback, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { aggregateNgrams, tokenize } from '@wizard-ads/core';
 import type { SearchTermRow } from '@wizard-ads/core';
-import { DataGrid } from '@wizard-ads/ui';
-import type { GridRow, SortRule } from '@wizard-ads/ui';
-import { buildGridModelSafely } from '@wizard-ads/ui';
+import { DataGrid, GridToolbar, buildGridModelSafely, toCsv } from '@wizard-ads/ui';
+import type { FilterSet, GridColumn, GridRow, SortRule } from '@wizard-ads/ui';
 import { DEFAULT_NGRAM_COLUMNS, GRAM_SIZES, GRAM_SIZE_LABELS, ngramColumns, toGridRows } from '../../src/ngrams/rows';
 import type { GramSize } from '../../src/ngrams/rows';
 import type { ScopeOption } from '../../src/ngrams/data';
@@ -44,6 +43,9 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
   const [size, setSize] = useState<GramSize>(2);
   const [minClicks, setMinClicks] = useState(0);
   const [scopeId, setScopeId] = useState('profile');
+  const [filter, setFilter] = useState<FilterSet>({ groups: [] });
+  const [visible, setVisible] = useState<string[]>([...DEFAULT_NGRAM_COLUMNS]);
+  const [groupBy, setGroupBy] = useState<string[]>([]);
   const [sort, setSort] = useState<SortRule[]>([{ columnId: 'spend', direction: 'desc' }]);
   const [gram, setGram] = useState<string | null>(null);
   const [selectedTerms, setSelectedTerms] = useState<ReadonlySet<string>>(new Set());
@@ -71,18 +73,48 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
   );
 
   const gridRows = useMemo(() => toGridRows(ngrams, props.currencyCode), [ngrams, props.currencyCode]);
+  const available = useMemo(() => ngramColumns(), []);
   const columns = useMemo(() => {
-    const all = ngramColumns();
-    const byId = new Map(all.map((column) => [column.id, column]));
-    return DEFAULT_NGRAM_COLUMNS.map((id) => byId.get(id)).filter(
-      (column): column is NonNullable<typeof column> => column !== undefined,
-    );
+    const byId = new Map(available.map((column) => [column.id, column]));
+    const wanted = groupBy.length === 0
+      ? visible
+      : [...groupBy, ...visible.filter((id) => byId.get(id)?.kind === 'metric')];
+    return [...new Set(wanted)]
+      .map((id) => byId.get(id))
+      .filter((column): column is GridColumn => column !== undefined);
+  }, [available, groupBy, visible]);
+
+  const { model, filterError } = useMemo(
+    () => buildGridModelSafely(gridRows, { filter, sort, groupBy }),
+    [filter, gridRows, groupBy, sort],
+  );
+
+  const exportCsv = useCallback(() => {
+    const result = toCsv(model, {
+      columns,
+      label: 'N-gram explorer',
+      currencyCode: props.currencyCode,
+      period: props.period,
+    });
+    downloadCsv(result.csv, result.filename);
+  }, [columns, model, props.currencyCode, props.period]);
+
+  const clearGramSelection = useCallback(() => {
+    setGram(null);
+    setSelectedTerms(new Set());
+    setMessage(null);
+    setError(null);
   }, []);
 
-  const { model } = useMemo(
-    () => buildGridModelSafely(gridRows, { filter: { groups: [] }, sort, groupBy: [] }),
-    [gridRows, sort],
-  );
+  const updateFilter = useCallback((next: FilterSet) => {
+    setFilter(next);
+    clearGramSelection();
+  }, [clearGramSelection]);
+
+  const updateGrouping = useCallback((next: string[]) => {
+    setGroupBy(next);
+    clearGramSelection();
+  }, [clearGramSelection]);
 
   /** The terms behind the selected gram, in the current scope. */
   const terms = useMemo(() => {
@@ -156,7 +188,7 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
               aria-pressed={size === value}
               onClick={() => {
                 setSize(value);
-                setGram(null);
+                clearGramSelection();
               }}
               style={{ fontWeight: size === value ? 600 : 400 }}
             >
@@ -170,7 +202,7 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
             value={scopeId}
             onChange={(event) => {
               setScopeId(event.target.value);
-              setGram(null);
+              clearGramSelection();
             }}
           >
             <option value="profile">Whole profile</option>
@@ -200,7 +232,10 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
             type="number"
             min={0}
             value={minClicks}
-            onChange={(event) => setMinClicks(Math.max(0, Number(event.target.value) || 0))}
+            onChange={(event) => {
+              setMinClicks(Math.max(0, Number(event.target.value) || 0));
+              clearGramSelection();
+            }}
             style={{ width: '5rem' }}
           />
         </label>
@@ -208,6 +243,33 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
           {ngrams.length} grams over {scopedRows.length} search terms
         </span>
       </fieldset>
+
+      <GridToolbar
+        entity="search_terms"
+        available={available}
+        visible={visible}
+        onVisibleChange={setVisible}
+        filter={filter}
+        onFilterChange={updateFilter}
+        groupBy={groupBy}
+        onGroupByChange={updateGrouping}
+        model={model}
+        optionRows={gridRows}
+        onExport={exportCsv}
+      >
+        <span role="status" aria-live="polite" style={muted} data-testid="filtered-gram-count">
+          {model.matched === model.total
+            ? `${model.total} grams`
+            : `${model.matched} of ${model.total} grams`}
+        </span>
+      </GridToolbar>
+
+      {filterError === null ? null : (
+        <p role="alert" style={warning}>
+          Filter not applied — {filterError}. Every gram is shown until the filter is fixed or
+          removed.
+        </p>
+      )}
 
       <DataGrid
         model={model}
@@ -317,6 +379,16 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
       )}
     </section>
   );
+}
+
+function downloadCsv(csv: string, filename: string): void {
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 const panel: CSSProperties = {

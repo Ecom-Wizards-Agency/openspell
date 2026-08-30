@@ -113,6 +113,6 @@ describe('toCsv', () => {
   it('names the file after the view and the day', () => {
     const model = buildGridModel(syntheticSearchTermRows(1, { seed: 1 }));
     const result = toCsv(model, { columns, label: 'Search terms', currencyCode: 'USD' });
-    expect(result.filename).toMatch(/^wizard-ads-search-terms-\d{4}-\d{2}-\d{2}\.csv$/);
+    expect(result.filename).toMatch(/^openspell-search-terms-\d{4}-\d{2}-\d{2}\.csv$/);
   });
 });

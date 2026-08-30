@@ -67,4 +67,11 @@ describe('ngramColumns', () => {
     expect(ids.some((id) => id.endsWith('_delta_percent'))).toBe(false);
     for (const id of DEFAULT_NGRAM_COLUMNS) expect(ids).toContain(id);
   });
+
+  it('marks count dimensions as numeric filters', () => {
+    const byId = new Map(ngramColumns().map((column) => [column.id, column]));
+    expect(byId.get('n')?.filterKind).toBe('numeric');
+    expect(byId.get('search_terms')?.filterKind).toBe('numeric');
+    expect(byId.get('gram')?.filterKind).toBeUndefined();
+  });
 });

@@ -54,7 +54,7 @@ export interface CsvOptions {
 export function toCsv(model: GridModel, options: CsvOptions): CsvResult {
   const lines: string[] = [];
   const provenance = [
-    `# wizard-ads ${options.label}`,
+    `# OpenSpell ${options.label}`,
     options.period ? `period ${options.period.start}..${options.period.end}` : null,
     options.comparisonPeriod
       ? `comparison ${options.comparisonPeriod.start}..${options.comparisonPeriod.end}`
@@ -90,5 +90,5 @@ export function toCsv(model: GridModel, options: CsvOptions): CsvResult {
 function csvFilename(label: string): string {
   const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   const stamp = new Date().toISOString().slice(0, 10);
-  return `wizard-ads-${slug || 'export'}-${stamp}.csv`;
+  return `openspell-${slug || 'export'}-${stamp}.csv`;
 }
