@@ -11,7 +11,7 @@ accepted by an operator. Full original evidence and source pointers are in
 
 | Surface | Verified state at the snapshot |
 |---|---|
-| Repository | `origin/main` is `f1b9efc` and includes merged PRs #36 and #37. Both passed typecheck, lint, tests, hygiene and Playwright on their exact PR heads before merge. Exact-main Actions jobs now fail before a runner starts because the organization reports failed payments or an insufficient Actions spending limit; this is an infrastructure block, not code execution evidence. The last successful exact-main run remains `6795fee`. |
+| Repository | `origin/main` is `f1b9efc` and includes merged PRs #36 and #37. Both passed typecheck, lint, tests, hygiene and Playwright on their exact PR heads before merge. The organization has consumed all 2,000 included Actions minutes for the current period and has no linked billing method, so new jobs fail before a runner starts. This is an infrastructure block, not code execution evidence. The included allowance reports a reset in two days; the last successful exact-main run remains `6795fee`. |
 | Production web | Healthy and intentionally held at `caff194`. Nine authenticated operator routes returned HTTP 200 with no page or console error after rollback. Main is ahead and is not yet deployed. A fresh authenticated navigation now serves the legacy `wizard-ads` label and `w` placeholder, while `/brand/wizards-ai-icon.svg` returns HTTP 404 even though current main contains the verified official asset. |
 | Deployment environment | Newer candidates consumed corrupted or malformed production runtime-secret metadata after the healthy build. The authoritative 1Password service-account session is unavailable, so values have not been safely restored. No further production promotion is allowed until an immutable candidate passes the release gate. |
 | Hosted database | The production migration ledger is applied exactly through `20260829160100_sb_video_observed_ingestion.sql`. No unmerged write-gateway migration has been applied. |
@@ -335,10 +335,11 @@ implementation brief in `docs/workpackages/`.
       profile-scope refusal were verified from both supported clients on its deployed revision.
 - [ ] Restore the authoritative production runtime values from 1Password, then validate a
       production-target immutable candidate before moving any alias.
-- [ ] Repair the GitHub organization payment or Actions spending-limit state. Current required
-      jobs terminate before any runner or repository step begins, so newer PR heads cannot earn
-      hosted release evidence. A fresh retry across PRs #24, #35 and #38 again produced six
-      zero-step failures with the same billing annotation.
+- [ ] Restore GitHub Actions capacity. The organization has consumed all 2,000 included minutes for
+      the current period and has no linked billing method; its billing page reports a reset in two
+      days. Current required jobs terminate before any runner or repository step begins, so newer
+      PR heads cannot earn hosted release evidence. A fresh retry across PRs #24, #35 and #38 again
+      produced six zero-step failures with the same generic billing annotation.
 - [ ] Deploy a reviewed current-main descendant only after the immutable gate passes, then repeat
       full authenticated route, error, data and timing QA on the production domain.
 - [x] Active-profile canonicalization passed both hosted gates and merged through PR #30.
