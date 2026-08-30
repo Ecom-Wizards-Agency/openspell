@@ -2,23 +2,27 @@
  * Verify an immutable Vercel candidate before its public alias is promoted.
  *
  * Vercel protects immutable deployment URLs, so plain browser navigation lands
- * on Vercel's login screen. This gate uses `vercel curl` for the protection
- * bypass and supplies the already authenticated OpenSpell session through
- * curl's stdin-only config. Cookie names and values never enter arguments,
- * files, logs, or the candidate report, and the persistent Chrome profile is
- * never modified.
+ * on Vercel's login screen. This gate lets the authenticated Vercel CLI resolve
+ * the existing protection context and supplies the already authenticated
+ * OpenSpell session to curl through stdin. Cookie names and values never enter
+ * arguments, files, logs, or the candidate report, and the persistent Chrome
+ * profile is never modified.
  *
  * Every check is a GET request. Keep this list free of endpoints that enqueue
  * jobs or mutate product data. After promotion, run the browser QA sweep too;
  * this preflight proves the protected server artifact before alias movement.
  *
  * Usage:
- *   pnpm --filter @wizard-ads/web verify:release-candidate -- https://candidate.example <full-git-sha>
+ *   bash apps/web/scripts/verify-release-candidate.sh https://candidate.example <full-git-sha>
  */
-import { spawn } from 'node:child_process';
-import { chromium } from '@playwright/test';
 import type { BrowserContext } from '@playwright/test';
 import { ORG_COOKIE, PROFILE_COOKIE } from '../src/cookies';
+import { requestCandidateRoute } from '../src/release/candidate-redirect';
+import {
+  ReleaseTransportError,
+  releaseFailure,
+  requestCandidate,
+} from '../src/release/candidate-transport';
 import { webRevision } from '../src/revision';
 
 const PRODUCTION_ORIGIN = process.env['OPENSPELL_PRODUCTION_ORIGIN']
@@ -27,14 +31,14 @@ const CDP_URL = process.env['OPENSPELL_CDP_URL'] ?? 'http://127.0.0.1:9222';
 const AUTH_COOKIE = /^sb-.*-auth-token(?:\.\d+)?$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CANDIDATE_HOST = /^wizard-[a-z0-9]+-ecom-wizards\.vercel\.app$/;
-const STATUS_MARKER = 'OPENSPELL_STATUS:';
-const FINAL_URL_MARKER = 'OPENSPELL_FINAL_URL:';
 const REJECTED_BODY = /role=["']alert["']|Application error|Internal Server Error|Login – Vercel/i;
 
 const ROUTES = [
   { route: '/', expectedText: 'Dashboard' },
   { route: '/dashboard', expectedText: 'Dashboard' },
-  { route: '/grid', expectedText: 'data-testid="grid-scroller"' },
+  // The complete Grid hydrates after the server document arrives. Its default
+  // entity heading is server-rendered; the scroller test id is not.
+  { route: '/grid', expectedText: 'Search terms' },
   { route: '/optimizer', expectedText: 'Campaign Optimizer' },
   { route: '/optimizer/groups', expectedText: 'Optimization Groups' },
   { route: '/creative', expectedText: 'Creative Performance' },
@@ -60,6 +64,8 @@ interface RouteResult {
   loginPageFound: boolean;
   noProfileFound: boolean;
   gateBlockedFound: boolean;
+  redirectsFollowed: number;
+  redirectRejected: boolean;
   passed: boolean;
 }
 
@@ -72,37 +78,50 @@ interface RevisionResult {
 
 async function main(): Promise<void> {
   const inputs = process.argv.slice(2).filter((argument) => argument !== '--');
+  if (inputs.length !== 2) throw new ReleaseTransportError('arguments_invalid');
   const candidate = candidateOrigin(inputs[0]);
   const expectedRevision = requiredRevision(inputs[1]);
-  const production = new URL(PRODUCTION_ORIGIN);
+  const production = productionOrigin(PRODUCTION_ORIGIN);
+  clearSensitiveEnvironment();
   if (candidate.origin === production.origin) {
-    throw new Error('Candidate must be an immutable deployment URL, not the production alias.');
+    throw new ReleaseTransportError('candidate_invalid');
   }
 
   const revision = await verifyRevision(candidate, expectedRevision);
   if (!revision.passed) {
-    console.log(JSON.stringify({ candidate: candidate.origin, passed: false, revision, routes: [] }, null, 2));
+    console.log(JSON.stringify({ target: 'immutable-candidate', passed: false, revision, routes: [] }, null, 2));
     process.exitCode = 1;
     return;
   }
 
-  const browser = await chromium.connectOverCDP(CDP_URL);
+  const { chromium } = await import('@playwright/test');
+  let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>>;
+  try {
+    browser = await chromium.connectOverCDP(requiredCdpEndpoint(CDP_URL));
+  } catch {
+    throw new ReleaseTransportError('cdp_unavailable');
+  }
   const sourceContext = browser.contexts()[0];
   if (sourceContext === undefined) {
-    throw new Error('No Chrome context is available through CDP.');
+    throw new ReleaseTransportError('session_unavailable');
   }
 
-  const browserCookies = await sourceContext.cookies(production.origin);
+  let browserCookies: Awaited<ReturnType<typeof sourceContext.cookies>>;
+  try {
+    browserCookies = await sourceContext.cookies(production.origin);
+  } catch {
+    throw new ReleaseTransportError('session_unavailable');
+  }
   const sourceCookies = browserCookies.filter((cookie) => AUTH_COOKIE.test(cookie.name));
   if (sourceCookies.length === 0) {
-    throw new Error('The Chrome session has no reusable OpenSpell authentication cookies.');
+    throw new ReleaseTransportError('session_unavailable');
   }
   const profileCookie = browserCookies.find((cookie) => cookie.name === PROFILE_COOKIE);
   const pageProfileId = await selectedProfileId(sourceContext, production);
   const profileId = pageProfileId
     ?? (profileCookie !== undefined && UUID.test(profileCookie.value) ? profileCookie.value : null);
   if (profileId === null || !UUID.test(profileId)) {
-    throw new Error('The Chrome session has no reusable active OpenSpell profile selection.');
+    throw new ReleaseTransportError('profile_unavailable');
   }
   const orgCookie = browserCookies.find(
     (cookie) => cookie.name === ORG_COOKIE && UUID.test(cookie.value),
@@ -117,43 +136,32 @@ async function main(): Promise<void> {
   // would never create.
   const results: RouteResult[] = [];
   for (const check of ROUTES) {
-    results.push(await verifyRoute(candidate, check, cookieHeader, profileId));
+    results.push(await verifyRoute(
+      candidate,
+      check,
+      cookieHeader,
+      profileId,
+    ));
   }
 
   const passed = results.every((result) => result.passed);
-  console.log(JSON.stringify({ candidate: candidate.origin, passed, revision, routes: results }, null, 2));
+  console.log(JSON.stringify({ target: 'immutable-candidate', passed, revision, routes: results }, null, 2));
   if (!passed) process.exitCode = 1;
 }
 
-async function verifyRevision(candidate: URL, expected: string): Promise<RevisionResult> {
-  const args = [
-    'curl',
-    '/api/healthz',
-    '--deployment',
-    candidate.origin,
-    '--',
-    '--config',
-    '-',
-    '--silent',
-    '--show-error',
-    '--location',
-    '--max-redirs',
-    '2',
-    '--write-out',
-    `${STATUS_MARKER}%{http_code}`,
-  ];
-  const result = await spawnWithInput('vercel', args, 'max-time = 30\n');
-  const markerIndex = result.stdout.lastIndexOf(STATUS_MARKER);
-  const responseBody = markerIndex < 0 ? '' : result.stdout.slice(0, markerIndex);
-  const statusMatch = markerIndex < 0
-    ? null
-    : result.stdout.slice(markerIndex).match(new RegExp(`${STATUS_MARKER}(\\d{3})`));
-  const status = statusMatch?.[1] === undefined ? null : Number(statusMatch[1]);
+async function verifyRevision(
+  candidate: URL,
+  expected: string,
+): Promise<RevisionResult> {
+  const response = await requestCandidate({
+    candidate,
+    url: new URL('/api/healthz', candidate),
+  });
 
   let observed = 'unknown';
   let healthy: boolean;
   try {
-    const payload = JSON.parse(responseBody) as Record<string, unknown>;
+    const payload = JSON.parse(response.responseBody) as Record<string, unknown>;
     observed = webRevision({ OPENSPELL_WEB_REVISION: String(payload['revision'] ?? '') });
     healthy = payload['status'] === 'ok' && payload['product'] === 'OpenSpell';
   } catch {
@@ -163,10 +171,9 @@ async function verifyRevision(candidate: URL, expected: string): Promise<Revisio
   return {
     expected,
     observed,
-    status,
+    status: response.status,
     passed:
-      result.exitCode === 0
-      && status === 200
+      response.status === 200
       && healthy
       && observed === expected,
   };
@@ -216,34 +223,18 @@ async function verifyRoute(
   profileId: string,
 ): Promise<RouteResult> {
   const startedAt = performance.now();
-  const args = [
-    'curl',
-    check.route,
-    '--deployment',
-    candidate.origin,
-    '--',
-    '--config',
-    '-',
-    '--silent',
-    '--show-error',
-    '--location',
-    '--max-redirs',
-    '5',
-    '--write-out',
-    `${STATUS_MARKER}%{http_code}\n${FINAL_URL_MARKER}%{url_effective}`,
-  ];
-
-  const result = await spawnWithInput('vercel', args, curlConfig(cookieHeader, profileId));
-  const markerIndex = result.stdout.lastIndexOf(STATUS_MARKER);
-  const responseBody = markerIndex < 0 ? '' : result.stdout.slice(0, markerIndex);
-  const statusMatch = markerIndex < 0
-    ? null
-    : result.stdout.slice(markerIndex).match(new RegExp(`${STATUS_MARKER}(\\d{3})`));
-  const status = statusMatch?.[1] === undefined ? null : Number(statusMatch[1]);
-  const finalUrlMatch = markerIndex < 0
-    ? null
-    : result.stdout.slice(markerIndex).match(new RegExp(`${FINAL_URL_MARKER}([^\\s]+)`));
-  const finalUrl = finalUrlMatch?.[1] === undefined ? null : new URL(finalUrlMatch[1]);
+  const response = await requestCandidateRoute({
+    candidate,
+    route: check.route,
+    expectedProfileId: profileId,
+    request: async (url) => requestCandidate({
+      candidate,
+      url,
+      cookieHeader,
+    }),
+  });
+  const responseBody = response.responseBody;
+  const finalUrl = response.finalUrl;
   const finalPath = finalUrl?.pathname ?? null;
   const expectedTextFound = responseBody.includes(check.expectedText);
   const rejectedBodyFound = REJECTED_BODY.test(responseBody);
@@ -257,10 +248,12 @@ async function verifyRoute(
   const gateBlockedFound = /cannot reach its database|DATABASE_URL is not set|not a member of any organisation/.test(
     responseBody,
   );
-  const expectedFinalPath = check.route === '/' ? '/dashboard' : check.route;
+  const expectedFinalPath = check.route === '/'
+    ? '/dashboard'
+    : new URL(check.route, candidate).pathname;
   return {
     route: check.route,
-    status,
+    status: response.status,
     finalPath,
     finalProfileMatched: finalUrl?.searchParams.get('profile') === profileId,
     checkDurationMs: Math.round(performance.now() - startedAt),
@@ -273,9 +266,12 @@ async function verifyRoute(
     loginPageFound,
     noProfileFound,
     gateBlockedFound,
+    redirectsFollowed: response.redirectsFollowed,
+    redirectRejected: response.redirectRejected,
     passed:
-      result.exitCode === 0
-      && status === 200
+      response.status === 200
+      && !response.redirectRejected
+      && finalUrl?.origin === candidate.origin
       && finalPath === expectedFinalPath
       && finalUrl?.searchParams.get('profile') === profileId
       && htmlDocumentFound
@@ -289,57 +285,27 @@ async function verifyRoute(
   };
 }
 
-function curlConfig(cookieHeader: string, profileId: string): string {
-  // curl config uses double-quoted values. Auth cookie values are URL-safe, but
-  // escaping both special characters keeps this stdin boundary correct.
-  if (/[\r\n]/.test(cookieHeader)) {
-    throw new Error('Authentication cookie shape is invalid.');
-  }
-  const escaped = cookieHeader.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
-  const profileQuery = new URLSearchParams({ profile: profileId }).toString();
-  return `header = "Cookie: ${escaped}"\nurl-query = "${profileQuery}"\nmax-time = 30\n`;
-}
-
-function spawnWithInput(
-  command: string,
-  args: readonly string[],
-  input: string,
-): Promise<{ exitCode: number | null; stdout: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: process.cwd(),
-      env: process.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    // Drain stderr without retaining it. Neither CLI diagnostics nor future
-    // curl changes can accidentally echo a sensitive header into this report.
-    child.stderr.resume();
-    child.on('error', () => reject(new Error('Could not start the Vercel candidate check.')));
-    child.on('close', (exitCode) => resolve({ exitCode, stdout }));
-    child.stdin.end(input);
-  });
-}
-
 function candidateOrigin(input: string | undefined): URL {
-  if (input === undefined) {
-    throw new Error('Pass the immutable candidate deployment URL as the first argument.');
+  if (input === undefined || /[\r\n]/.test(input)) {
+    throw new ReleaseTransportError('candidate_invalid');
   }
-  const candidate = new URL(input);
-  if (candidate.protocol !== 'https:') {
-    throw new Error('Candidate deployment URL must use HTTPS.');
+  let candidate: URL;
+  try {
+    candidate = new URL(input);
+  } catch {
+    throw new ReleaseTransportError('candidate_invalid');
   }
   if (
-    !CANDIDATE_HOST.test(candidate.hostname)
+    candidate.protocol !== 'https:'
+    || !CANDIDATE_HOST.test(candidate.hostname)
     || candidate.username !== ''
     || candidate.password !== ''
     || candidate.port !== ''
+    || candidate.pathname !== '/'
+    || candidate.search !== ''
+    || candidate.hash !== ''
   ) {
-    throw new Error('Candidate must be an immutable deployment owned by the OpenSpell project.');
+    throw new ReleaseTransportError('candidate_invalid');
   }
   return candidate;
 }
@@ -347,14 +313,53 @@ function candidateOrigin(input: string | undefined): URL {
 function requiredRevision(input: string | undefined): string {
   const revision = webRevision({ OPENSPELL_WEB_REVISION: input ?? '' });
   if (revision === 'unknown') {
-    throw new Error('Pass the full 40-character release Git revision as the second argument.');
+    throw new ReleaseTransportError('arguments_invalid');
   }
   return revision;
 }
 
-void main()
-  .then(() => process.exit(process.exitCode ?? 0))
-  .catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : 'Release candidate verification failed.');
-    process.exit(1);
-  });
+function productionOrigin(input: string): URL {
+  try {
+    const url = new URL(input);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username !== '' || url.password !== '') {
+      throw new Error('invalid');
+    }
+    return url;
+  } catch {
+    throw new ReleaseTransportError('arguments_invalid');
+  }
+}
+
+function requiredCdpEndpoint(input: string): string {
+  try {
+    const url = new URL(input);
+    if (!['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)) throw new Error('invalid');
+    return url.href;
+  } catch {
+    throw new ReleaseTransportError('cdp_unavailable');
+  }
+}
+
+function clearSensitiveEnvironment(): void {
+  for (const name of [
+    'DEBUG',
+    'NODE_DEBUG',
+    'NODE_DEBUG_NATIVE',
+    'NODE_OPTIONS',
+    'NODE_V8_COVERAGE',
+    'PWDEBUG',
+    'OPENSPELL_CDP_URL',
+    'VERCEL_AUTOMATION_BYPASS_SECRET',
+  ]) {
+    delete process.env[name];
+  }
+}
+
+export async function runReleaseCandidateCli(): Promise<void> {
+  try {
+    await main();
+  } catch (error) {
+    console.error(releaseFailure(error));
+    process.exitCode = 1;
+  }
+}

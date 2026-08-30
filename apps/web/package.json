@@ -14,7 +14,7 @@
     "test:e2e:grid-performance": "tsx e2e/run.ts grid-performance",
     "test:e2e:auth": "tsx e2e/run.ts auth",
     "test:e2e:route-acceptance": "tsx e2e/run.ts route-acceptance",
-    "verify:release-candidate": "tsx scripts/verify-release-candidate.ts"
+    "verify:release-candidate": "tsx scripts/release-candidate-entry.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.8.0",
