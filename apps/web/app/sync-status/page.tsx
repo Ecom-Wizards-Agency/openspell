@@ -1,5 +1,5 @@
 /**
- * `/sync-status` — what the sync engine did, unedited.
+ * `/sync-status` — what the sync engine did, with operator-safe failure labels.
  *
  * Read-only and deliberately plain (WP-06 owns look and feel). Three tables:
  * freshness per profile, the job queue, the report ledger. The report ledger

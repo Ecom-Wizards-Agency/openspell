@@ -2,11 +2,13 @@
  * Sync status, v0.
  *
  * Operator trust starts here (docs/PLAN.md, v1 module scope item 3), so the
- * page shows the two ledgers unedited: what the queue is doing and what the
- * report requests did. Two things it deliberately does *not* do:
+ * page shows what the queue is doing and what the report requests did. Raw
+ * provider and database failures stay in the worker's operational logs; this
+ * user-facing boundary emits only bounded, actionable summaries. Two things it
+ * deliberately does *not* do:
  *
- *  - It does not summarise a failure into a colour. The error text is the
- *    column, because "amber" has never once told anyone what to fix.
+ *  - It does not summarise a failure into a colour. A safe failure category is
+ *    also shown, because "amber" has never once told anyone what to fix.
  *  - It does not compute freshness from `updated_at`. Freshness is the newest
  *    *fact date* the profile has, which is the number an operator is actually
  *    asking about when they ask whether the data is current.
@@ -14,6 +16,7 @@
  * Styling is WP-06's job. This is a table.
  */
 import type { DbHandle } from '@wizard-ads/db';
+import { operatorFailureLabel } from '../security/operator-failure';
 
 export interface JobRow {
   id: string;
@@ -211,7 +214,7 @@ export async function loadSyncStatus(
       runAfter: row.run_after,
       startedAt: row.started_at,
       finishedAt: row.finished_at,
-      lastError: row.last_error,
+      lastError: operatorFailureLabel(row.last_error),
     })),
     reports: reports.map((row) => ({
       id: row.id,
@@ -231,7 +234,7 @@ export async function loadSyncStatus(
       promotedRows: row.promoted_rows === null ? null : Number(row.promoted_rows),
       unpromotedRows: row.unpromoted_rows === null ? null : Number(row.unpromoted_rows),
       accountingComplete: row.accounting_complete,
-      error: row.error,
+      error: operatorFailureLabel(row.error),
     })),
   };
 }

@@ -9,6 +9,7 @@ import type {
 } from '@wizard-ads/db';
 import { can } from '../../../src/auth/roles';
 import { gate } from '../../../src/auth/guard';
+import { operatorFailureLabel } from '../../../src/security/operator-failure';
 import { Shell } from '../../../src/ui/shell';
 import {
   Badge,
@@ -86,7 +87,8 @@ export default async function IntegrationsPage(): Promise<ReactNode> {
         <h1 style={heading}>Integrations</h1>
         <p style={muted}>
           Add external API credentials once. Values go directly to Supabase Vault and are
-          never displayed again; this page shows only provider, label and connection state.
+          never displayed again; this page shows only provider, label, connection state and
+          operator-safe health summaries.
         </p>
 
         {!mayManage ? (
@@ -164,7 +166,7 @@ function ProviderCard({
                     </Badge>
                   </td>
                   <td>{formatTimestamp(connection.connectedAt)}</td>
-                  <td>{connection.lastError ?? '—'}</td>
+                  <td>{operatorFailureLabel(connection.lastError) ?? '—'}</td>
                   {mayManage ? (
                     <td>
                       <form action={revokeIntegration}>

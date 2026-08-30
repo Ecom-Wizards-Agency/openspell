@@ -6,6 +6,7 @@
  * there a credential" and stops there.
  */
 import type { DbHandle } from '@wizard-ads/db';
+import { operatorFailureLabel } from '../security/operator-failure';
 
 export type ConnectionStatus = 'pending' | 'active' | 'error' | 'revoked';
 
@@ -61,7 +62,7 @@ export async function listConnections(
     hasCredential: row.has_credential,
     connectedAt: row.connected_at,
     lastHealthCheckAt: row.last_health_check_at,
-    lastError: row.last_error,
+    lastError: operatorFailureLabel(row.last_error),
     profileCount: Number(row.profile_count),
   }));
 }
