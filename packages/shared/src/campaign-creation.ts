@@ -224,7 +224,15 @@ const CreateCampaignNode = z.object({
     portfolioId: AmazonId.nullable(),
     settings: CampaignSettings,
   }).strict(),
-}).strict();
+}).strict().superRefine((node, context) => {
+  if (node.payload.settings.product === 'SP' && node.payload.budget.type !== 'daily') {
+    context.addIssue({
+      code: 'custom',
+      path: ['payload', 'budget', 'type'],
+      message: 'Sponsored Products campaign creation requires a daily budget',
+    });
+  }
+});
 
 const CreateAdGroupNode = z.object({
   ...createNodeBase,
@@ -282,6 +290,9 @@ const KeywordTargetPayload = z.object({
   if (value.polarity === 'negative' && value.bid !== null) {
     context.addIssue({ code: 'custom', path: ['bid'], message: 'negative keywords cannot carry a bid' });
   }
+  if (value.polarity === 'positive' && value.scope !== 'ad_group') {
+    context.addIssue({ code: 'custom', path: ['scope'], message: 'positive keywords require an ad-group parent' });
+  }
 });
 
 const ExpressionTargetPayload = z.object({
@@ -305,6 +316,9 @@ const ExpressionTargetPayload = z.object({
   if (value.polarity === 'negative'
     && value.expression.some((expression) => AutomaticExpression.safeParse(expression).success)) {
     context.addIssue({ code: 'custom', path: ['expression'], message: 'automatic targeting clauses cannot be negative' });
+  }
+  if (value.polarity === 'positive' && value.scope !== 'ad_group') {
+    context.addIssue({ code: 'custom', path: ['scope'], message: 'positive targets require an ad-group parent' });
   }
 });
 
@@ -1469,6 +1483,9 @@ export const CampaignCreationExecutionEvidence = z.object({
     if (currentPosition !== undefined) previousResultPosition = currentPosition;
     if (instantMillis(result.startedAt) < instantMillis(evidence.plan.frozenAt)) {
       context.addIssue({ code: 'custom', path: ['providerResults', index, 'startedAt'], message: 'provider work cannot begin before the plan is frozen' });
+    }
+    if (instantMillis(result.startedAt) > instantMillis(evidence.plan.expiresAt)) {
+      context.addIssue({ code: 'custom', path: ['providerResults', index, 'startedAt'], message: 'provider work cannot begin after the plan expires' });
     }
     if (node?.effect === 'read_check' && result.effect === 'read_check'
       && result.outcome === 'passed'
