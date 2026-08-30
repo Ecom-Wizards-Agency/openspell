@@ -187,9 +187,9 @@ function compileCondition(columnId: string, condition: FilterCondition): RowPred
   // A dimension column holding a number (bid, budget) still compares
   // numerically -- but only when the operator is one a number understands.
   const numeric = operator === 'LIKE' || operator === 'NOT_LIKE' ? null : toNumber(condition.values[0]);
-  const exact = operator === '=' || operator === '<>' || operator === 'IN' || operator === 'NOT_IN';
+  const setMembership = operator === 'IN' || operator === 'NOT_IN';
   const needles = condition.values.map((value) =>
-    (exact ? value.trim() : value).toLowerCase(),
+    (setMembership ? value.trim() : value).toLowerCase(),
   );
   const exactNeedles = new Set(needles);
 
@@ -210,9 +210,7 @@ function matchText(
 ): boolean {
   const normalized = actual ?? '';
   const haystack = (
-    operator === '=' || operator === '<>' || operator === 'IN' || operator === 'NOT_IN'
-      ? normalized.trim()
-      : normalized
+    operator === 'IN' || operator === 'NOT_IN' ? normalized.trim() : normalized
   ).toLowerCase();
   switch (operator) {
     case 'LIKE':
