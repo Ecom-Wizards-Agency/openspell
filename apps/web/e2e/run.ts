@@ -1,9 +1,9 @@
 /**
  * The one entry point for this app's browser tests.
  *
- * ## Why there are two suites and not one
+ * ## Why there are three suites and not one
  *
- * `apps/web` carries two end-to-end suites that need mutually exclusive
+ * `apps/web` carries three end-to-end suites that need mutually exclusive
  * servers, so they run one after the other rather than under a single config:
  *
  *  - **tags-goto** (WP-08, and WP-15's feedback surfaces) serves a
@@ -21,9 +21,9 @@
  *    mean disabling that guard, which is the guard's whole point.
  *
  * Merging them would mean weakening one guard or accepting a suite that cannot
- * hydrate. Sequential is the honest answer: two named configs, one runner.
+ * hydrate. Sequential is the honest answer: three named configs, one runner.
  *
- * Each suite owns its own database, and the two never overlap: this file
+ * Each suite owns its own database, and the three never overlap: this file
  * creates and drops the tags-goto database, while the auth suite's
  * `global-setup.ts` creates and drops its own (plus the fake Amazon and the dev
  * server). The admin connection comes from `WIZARD_ADS_TEST_DATABASE_URL` (or
@@ -33,6 +33,12 @@
  *   pnpm --filter @wizard-ads/web test:e2e:tags-goto   # just WP-08
  *   pnpm --filter @wizard-ads/web test:e2e:grid-performance
  *   pnpm --filter @wizard-ads/web test:e2e:auth        # auth/roles without the isolated Grid load
+ *   WIZARD_ADS_E2E_CPU_RATE=10 pnpm --filter @wizard-ads/web test:e2e:auth
+ *
+ * `WIZARD_ADS_E2E_CPU_RATE` accepts whole numbers from 1 through 10. That is
+ * the shared hydration-race contract; stronger stress needs a separate
+ * Playwright configuration so an accidental environment value cannot turn the
+ * standard suite into an unbounded timeout exercise.
  *
  * Anything after the suite name is forwarded to Playwright (`--grep`, `-x`, …).
  */
@@ -45,9 +51,7 @@ import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import { createGotoLink, recordEntityChanges } from '@wizard-ads/db';
 import { ROADMAP_ITEMS, seedRoadmap } from '../../../supabase/seed/seed-roadmap.js';
-
-const SUITES = ['tags-goto', 'grid-performance', 'auth'] as const;
-type Suite = (typeof SUITES)[number];
+import { parseE2EArgs } from '../src/e2e-args.js';
 
 const USER_A = '8a8a8a8a-8a8a-4a8a-8a8a-8a8a8a8a8a8a';
 const USER_B = '8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b';
@@ -441,20 +445,8 @@ async function auth(playwrightArgs: string[]): Promise<number> {
 async function gridPerformance(playwrightArgs: string[]): Promise<number> {
   return await authenticated('playwright.grid-performance.config.ts', playwrightArgs);
 }
-
-function parse(argv: string[]): { suites: Suite[]; playwrightArgs: string[] } {
-  const [first, ...rest] = argv;
-  if (first === undefined || first === 'all' || first.startsWith('-')) {
-    return { suites: [...SUITES], playwrightArgs: first === undefined ? [] : argv };
-  }
-  if (!(SUITES as readonly string[]).includes(first)) {
-    throw new Error(`Unknown suite '${first}'. Expected one of: ${SUITES.join(', ')}, all.`);
-  }
-  return { suites: [first as Suite], playwrightArgs: rest };
-}
-
 async function main(): Promise<number> {
-  const { suites, playwrightArgs } = parse(process.argv.slice(2));
+  const { suites, playwrightArgs } = parseE2EArgs(process.argv.slice(2));
 
   if (!(await databaseAvailable())) {
     throw new Error(

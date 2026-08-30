@@ -28,6 +28,8 @@ export interface GridQuery {
 export interface GridModel {
   /** The rows to render, in display order. */
   rows: GridRow[];
+  /** Source rows after filtering and before grouping; safe for action scope. */
+  matchedRows: GridRow[];
   /**
    * Rows safe to export without double-counting. Equal to `rows` when flat;
    * deepest hierarchy groups only when grouped.
@@ -108,6 +110,7 @@ export function buildGridModel(rows: readonly GridRow[], query: GridQuery = {}):
 
   return {
     rows: sorted,
+    matchedRows: filtered,
     exportRows,
     total: rows.length,
     matched: filtered.length,

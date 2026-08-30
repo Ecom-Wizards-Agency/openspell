@@ -16,7 +16,7 @@
  * regardless of what the page chose to render, so a viewer who reaches this code
  * still meets the same refusal.
  */
-import { createContext, useContext, useMemo, useState, useTransition } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState, useTransition } from 'react';
 import type { ReactNode } from 'react';
 import { Button, Checkbox } from '../../../src/ui/primitives';
 import { useToast } from '../../../src/ui/toast';
@@ -38,6 +38,9 @@ function useRosterSelection(): SelectionValue {
 
 export function RosterSelectionProvider({ children }: { children: ReactNode }): ReactNode {
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => setReady(true), []);
 
   const value = useMemo<SelectionValue>(
     () => ({
@@ -63,7 +66,20 @@ export function RosterSelectionProvider({ children }: { children: ReactNode }): 
     [selected],
   );
 
-  return <SelectionContext.Provider value={value}>{children}</SelectionContext.Provider>;
+  return (
+    <SelectionContext.Provider value={value}>
+      <fieldset
+        disabled={!ready}
+        aria-busy={!ready}
+        data-testid="profile-editor"
+        data-interactive={ready ? 'true' : 'false'}
+        style={{ border: 0, margin: 0, minWidth: 0, padding: 0, width: '100%' }}
+      >
+        <legend className="wa-sr-only">Profile roster selection and management controls</legend>
+        {children}
+      </fieldset>
+    </SelectionContext.Provider>
+  );
 }
 
 export function RowCheckbox({ profileId, label }: { profileId: string; label: string }): ReactNode {

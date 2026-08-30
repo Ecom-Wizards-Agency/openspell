@@ -1,25 +1,86 @@
 /**
  * "Persist and respect roles", checked from the browser.
  *
- * Runs after `oauth.spec.ts` has connected the account, in the same database,
- * so the roster these tests edit is the one the connect flow produced. Serial
- * mode and a single worker make that ordering real rather than hopeful.
+ * This file owns the one additional profile its role and filter assertions
+ * need. It therefore passes alone as well as after `oauth.spec.ts`; file order
+ * is not test setup.
  *
  * Each role is checked twice: what the page offers, and what the server does
  * when the offer is bypassed. For the start route the bypass is a plain GET, so
  * it is asserted directly here; for the two server actions it is asserted in
  * `src/auth/roles.test.ts`, which is where the shared capability table lives.
  */
+import { createDb } from '@wizard-ads/db';
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { signIn } from './support/auth';
+import { applyRequestedCpuThrottle } from './support/cpu-throttle';
+import { readState } from './support/fixture';
 
 test.describe.configure({ mode: 'serial' });
+test.beforeEach(async ({ page }) => applyRequestedCpuThrottle(page));
 
 const INTEGRATION_VALUE = ['synthetic', 'integration', 'e2e', 'value'].join('-');
+const ROLE_PROFILE_ID = ['roles', 'profile', 'fixture'].join('-');
+
+/**
+ * The role suite needs one disabled EU profile: the sync test starts from Off,
+ * and the filter test must have both NA and EU inputs. OAuth happens to create
+ * those rows in the complete run, but an exact-spec invocation must be equally
+ * truthful, so this file creates and removes its own row.
+ */
+test.beforeAll(async () => {
+  const state = await readState();
+  const handle = createDb({ connectionString: state.connectionString, max: 1 });
+  try {
+    const rows = await handle.sql<{ id: string }[]>`
+      insert into public.ad_profiles
+        (org_id, amazon_profile_id, region, country_code, currency_code, timezone,
+         account_name, sync_enabled)
+      values (${state.orgId}, ${ROLE_PROFILE_ID}, 'EU', 'DE', 'EUR', 'UTC',
+              'AAA synthetic storefront 1', false)
+      on conflict (org_id, amazon_profile_id) do update
+        set region = excluded.region,
+            country_code = excluded.country_code,
+            currency_code = excluded.currency_code,
+            timezone = excluded.timezone,
+            account_name = excluded.account_name,
+            sync_enabled = excluded.sync_enabled,
+            target_acos = null,
+            target_total_acos = null,
+            goal_lens = null,
+            monthly_budget = null
+      returning id
+    `;
+    if (rows.length !== 1) throw new Error(`Prepared 1 role profile, wrote ${rows.length}`);
+  } finally {
+    await handle.close();
+  }
+});
+
+test.afterAll(async () => {
+  const state = await readState();
+  const handle = createDb({ connectionString: state.connectionString, max: 1 });
+  try {
+    const rows = await handle.sql<{ id: string }[]>`
+      delete from public.ad_profiles
+       where org_id = ${state.orgId} and amazon_profile_id = ${ROLE_PROFILE_ID}
+      returning id
+    `;
+    if (rows.length !== 1) throw new Error(`Removed 1 role profile, deleted ${rows.length}`);
+  } finally {
+    await handle.close();
+  }
+});
+
+async function openProfiles(page: Page, path = '/settings/profiles'): Promise<void> {
+  await page.goto(path);
+  await expect(page.getByTestId('profile-editor')).toHaveAttribute('data-interactive', 'true');
+}
 
 test('a viewer sees the roster and can change nothing', async ({ page }) => {
   await signIn(page, 'viewer');
-  await page.goto('/settings/profiles');
+  await openProfiles(page);
 
   await expect(page.getByTestId('org-role')).toHaveText('role: viewer');
   await expect(page.getByTestId('read-only-notice')).toBeVisible();
@@ -42,7 +103,7 @@ test('a viewer sees the roster and can change nothing', async ({ page }) => {
 
 test('an analyst edits targets but cannot toggle sync or connect', async ({ page }) => {
   await signIn(page, 'analyst');
-  await page.goto('/settings/profiles');
+  await openProfiles(page);
 
   await expect(page.getByTestId('org-role')).toHaveText('role: analyst');
   await expect(page.getByTestId('save-targets').first()).toBeVisible();
@@ -53,14 +114,19 @@ test('an analyst edits targets but cannot toggle sync or connect', async ({ page
   await row.getByTestId('field-targetTotalAcos').fill('18');
   await row.getByTestId('field-goalLens').selectOption('scale');
   await row.getByTestId('field-monthlyBudget').fill('4200');
+  const targetPost = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/settings/profiles',
+  );
   await row.getByTestId('save-targets').click();
+  const targetResponse = await targetPost;
+  await targetResponse.finished();
   // The action re-renders the page; wait for that before asking for a fresh
   // one, so the assertion is about persistence and not about timing.
   await expect(page.getByTestId('field-targetAcos').first()).toHaveValue('24.5');
 
   // A fresh GET rather than `reload()`: the last navigation was the action's
   // POST, and reloading it re-submits instead of re-reading.
-  await page.goto('/settings/profiles');
+  await openProfiles(page);
   const saved = page.getByTestId('profile-row').first();
   await expect(saved.getByTestId('field-targetAcos')).toHaveValue('24.5');
   await expect(saved.getByTestId('field-targetTotalAcos')).toHaveValue('18');
@@ -73,7 +139,7 @@ test('an analyst edits targets but cannot toggle sync or connect', async ({ page
 
 test('an admin toggles sync and the change survives a reload', async ({ page }) => {
   await signIn(page, 'admin');
-  await page.goto('/settings/profiles?sync=off');
+  await openProfiles(page, '/settings/profiles?sync=off');
 
   // WP-21 made the sync control a Select (On/Off) with a toast on save,
   // replacing the click-toggle button whose label was its own state. The
@@ -89,7 +155,7 @@ test('an admin toggles sync and the change survives a reload', async ({ page }) 
   // transition, and leaving before it resolves would race the revalidation.
   await expect(page.getByTestId('toast')).toContainText('Sync on');
 
-  await page.goto('/settings/profiles?sync=on');
+  await openProfiles(page, '/settings/profiles?sync=on');
   const enabled = page.locator(`[data-profile-id="${profileId}"]`);
   await expect(enabled.getByTestId('toggle-sync')).toHaveValue('1');
 
@@ -98,10 +164,56 @@ test('an admin toggles sync and the change survives a reload', async ({ page }) 
   await expect(page.getByTestId('freshness-row').first()).toContainText('on');
 
   // Put it back, so the ordering of later runs is not affected.
-  await page.goto('/settings/profiles?sync=on');
+  await openProfiles(page, '/settings/profiles?sync=on');
   const back = page.locator(`[data-profile-id="${profileId}"]`).getByTestId('toggle-sync');
   await back.selectOption('Off');
   await expect(page.getByTestId('toast')).toContainText('Sync off');
+});
+
+test('an admin persists a schedule and bulk-syncs the exact selected synthetic row', async ({ page }) => {
+  await signIn(page, 'admin');
+  const syntheticQuery = 'q=AAA+synthetic+storefront+1';
+  await openProfiles(page, `/settings/profiles?${syntheticQuery}`);
+  await expect(page.getByTestId('profile-row')).toHaveCount(1);
+
+  const row = page.getByTestId('profile-row');
+  await row.getByTestId('field-timezone').fill('Europe/Berlin');
+  await row.getByTestId('field-syncHour').fill('7');
+  const schedulePost = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/settings/profiles',
+  );
+  await row.getByTestId('save-schedule').click();
+  const scheduleResponse = await schedulePost;
+  await scheduleResponse.finished();
+
+  await openProfiles(page, `/settings/profiles?${syntheticQuery}`);
+  const persisted = page.getByTestId('profile-row');
+  await expect(persisted.getByTestId('field-timezone')).toHaveValue('Europe/Berlin');
+  await expect(persisted.getByTestId('field-syncHour')).toHaveValue('7');
+  await expect(persisted.getByTestId('timezone-locked')).toHaveText('pinned');
+
+  // Selection begins only after the provider's explicit hydration marker. The
+  // unique filter makes the input count, selected count and changed count all
+  // exactly one, and afterAll deletes this disposable profile.
+  await page.getByTestId('row-select-all').check();
+  await expect(page.getByTestId('bulk-count')).toHaveText('1 selected');
+  await expect(page.getByTestId('bulk-enable')).toBeEnabled();
+  await page.getByTestId('bulk-enable').click();
+  await expect(page.getByTestId('toast')).toContainText('Sync on for 1 profile.');
+  await expect(page.getByTestId('bulk-count')).toHaveText('No profiles selected');
+
+  await openProfiles(page, `/settings/profiles?${syntheticQuery}&sync=on`);
+  await expect(page.getByTestId('profile-row')).toHaveCount(1);
+  await expect(page.getByTestId('toggle-sync')).toHaveValue('1');
+
+  await page.getByTestId('row-select-all').check();
+  await expect(page.getByTestId('bulk-count')).toHaveText('1 selected');
+  await page.getByTestId('bulk-disable').click();
+  await expect(page.getByTestId('toast')).toContainText('Sync off for 1 profile.');
+
+  await openProfiles(page, `/settings/profiles?${syntheticQuery}&sync=off`);
+  await expect(page.getByTestId('profile-row')).toHaveCount(1);
+  await expect(page.getByTestId('toggle-sync')).toHaveValue('0');
 });
 
 test('an admin stores an integration key once and can revoke it', async ({ page }) => {
@@ -137,7 +249,7 @@ test('an admin stores an integration key once and can revoke it', async ({ page 
 
 test('the analyst edit persisted for every role that can read it', async ({ page }) => {
   await signIn(page, 'viewer');
-  await page.goto('/settings/profiles');
+  await openProfiles(page);
   const row = page.getByTestId('profile-row').first();
   await expect(row.getByTestId('field-targetAcos')).toHaveText('24.5');
   await expect(row.getByTestId('field-goalLens')).toHaveText('scale');
@@ -146,20 +258,20 @@ test('the analyst edit persisted for every role that can read it', async ({ page
 test('filters narrow the roster', async ({ page }) => {
   await signIn(page, 'admin');
 
-  await page.goto('/settings/profiles?region=NA');
+  await openProfiles(page, '/settings/profiles?region=NA');
   const na = await page.getByTestId('profile-row').count();
-  await page.goto('/settings/profiles?region=EU');
+  await openProfiles(page, '/settings/profiles?region=EU');
   const eu = await page.getByTestId('profile-row').count();
-  await page.goto('/settings/profiles');
+  await openProfiles(page);
   const all = await page.getByTestId('profile-row').count();
 
   expect(na).toBeGreaterThan(0);
   expect(eu).toBeGreaterThan(0);
   expect(na + eu).toBe(all);
 
-  await page.goto('/settings/profiles?q=storefront+1');
+  await openProfiles(page, '/settings/profiles?q=storefront+1');
   await expect(page.getByTestId('profile-row').first()).toBeVisible();
-  await page.goto('/settings/profiles?q=no+such+profile+anywhere');
+  await openProfiles(page, '/settings/profiles?q=no+such+profile+anywhere');
   await expect(page.getByTestId('roster-empty')).toBeVisible();
 });
 
