@@ -30,7 +30,13 @@ part of this package.
 - The implementation order preserves server-side credential custody, immutable approval, counted
   results, OpenSpell-side deduplication, observation and conflict-safe reversion without assuming an
   Amazon idempotency key.
-- The credential boundary documents both server-side `apps/web` paths: the OAuth callback and the
-  Vercel cron route that invokes the worker Ads integration with LWA and Vault-backed credentials.
-  Neither exposes tokens to browser code, and MCP receives no Amazon credentials.
+- The credential boundary documents the OAuth start route's shared configuration load, the callback
+  code exchange, and the Vercel cron route that invokes the worker Ads integration with LWA and
+  Vault-backed credentials. Browser code receives no secret or token, and MCP receives no Amazon
+  credentials.
+- HTTP client ownership remains in `packages/ads-api`; `apps/worker` owns the database-aware adapter
+  and Amazon job execution even when the Vercel cron invokes them from the web server process.
+- Budget usage records the pinned Postman collection's duplicated SP path under its SB item, keeps
+  the migration guide's `/sb/campaigns/budget/usage` claim distinct, and remains provider-unverified
+  without a live response.
 - Public-repository hygiene passes.

@@ -20,25 +20,30 @@ SP and SB is the Unified API (`/adsApi/v1/{create|query|update|delete}/...`). Op
 SP/SB client at the reviewed revision.
 
 New SP and SB creation work must capability-probe the Unified API per profile and prefer it where
-the profile and resource are supported. Legacy product APIs remain necessary for documented seams
-that Unified does not replace, including reporting, budget usage and several recommendation APIs.
-Sponsored Display remains on its product-specific API. One immutable plan uses one proven dialect
-per resource; it never switches dialect after an ambiguous provider outcome.
+the profile and resource are supported. Unified does not replace the separate Reporting APIs.
+Legacy product APIs remain necessary for product-specific seams such as budget usage and several
+recommendation APIs. Sponsored Display remains on its product-specific API. One immutable plan uses
+one proven dialect per resource; it never switches dialect after an ambiguous provider outcome.
 
 ## Credential boundary
 
-Two server-side paths in `apps/web` handle Amazon credentials at the reviewed revision. The OAuth
-callback loads the LWA client ID and client secret, receives the single-use authorization code,
-exchanges it for access and refresh tokens, uses the access token to discover profiles, and stores
-the refresh token through the Vault-backed database path. Separately, the authenticated Vercel cron
-route imports the worker integration, constructs its Ads API client in the web server runtime, and
-drains post-connect sync and suggested-bid work. That worker integration loads the LWA application
-credentials from server environment variables and each connection's refresh token from Vault.
+The Amazon OAuth flow has two server-side routes in `apps/web`. The start route loads the shared
+OAuth configuration object, including the LWA client secret, although it puts only the client ID,
+scope and redirect URI into the browser-visible authorization URL. The callback loads the same
+configuration, receives the single-use authorization code, exchanges it for access and refresh
+tokens, uses the access token to discover profiles, and stores the refresh token through the
+Vault-backed database path.
 
-The Amazon HTTP client implementation remains in `apps/worker`, but the current Vercel deployment
-invokes it from `apps/web/app/api/cron/sync`. None of these credentials reaches browser code. The
-OAuth callback itself does not import or expose the campaign, reporting or mutation Ads API client.
-MCP receives no Amazon credentials and cannot call Amazon directly.
+A third server-side route, the authenticated Vercel cron route, imports the worker integration,
+constructs its Ads API client in the web server runtime, and drains post-connect sync and
+suggested-bid work. That worker integration loads the LWA application credentials from server
+environment variables and each connection's refresh token from Vault. `packages/ads-api` owns the
+pure Amazon HTTP client. `apps/worker` owns the database-aware adapter and job execution, even when
+the Vercel route invokes them from the web server process.
+
+No secret or token reaches browser code. The OAuth routes do not import or expose the campaign,
+reporting or mutation Ads API client. MCP receives no Amazon credentials and cannot call Amazon
+directly.
 
 ## Current implementation
 
@@ -52,7 +57,7 @@ MCP receives no Amazon credentials and cannot call Amazon directly.
 | SB and Display campaign reports | Reporting v3 | Implemented | Legacy upsert loader, not complete-date replacement | Dashboard and Grid rollups | Available with weaker restatement semantics than SP |
 | SB ad-level video report | Reporting v3 | Contract and parser implemented | Observed ad-to-asset mapping gates implemented | Creative Performance | Authoritative live Asset-ID/version and row-count parity remains open |
 | SP suggested keyword and product-target bids | Product-specific recommendation APIs | Implemented and batch-counted | Bid-corridor evidence implemented | Target context and optimizer inputs | Read-only evidence; a suggestion is never a write instruction |
-| SP/SB/SD campaign budget usage | `/sp/campaigns/budget/usage`, `/sb/campaigns/budget/usage` and `/sd/campaigns/budget/usage` | Current client instead calls `/budgets/usage/campaigns`, contradicting the pinned Amazon collection | Not connected | Not exposed | **Not provider-verified; do not count as usable** |
+| SP/SB/SD campaign budget usage | The pinned guide names `/sp/campaigns/budget/usage`, `/sb/campaigns/budget/usage` and `/sd/campaigns/budget/usage`; the pinned Postman collection mistakenly repeats the SP path for its SB item | Current client instead calls `/budgets/usage/campaigns`, which matches neither the product-specific guide nor the confirmed SP/SD collection paths | Not connected | Not exposed | **Source disagreement and no live response; do not count as usable** |
 | Asset Library search and lookup | `/assets`, `/assets/search` | Narrow, page-scoped `/assets/search` probe | Current-snapshot observed ingestion | Creative Performance source gate | Not a complete catalog, picker or moderation gate |
 | Asset Library upload and registration | `/assets/upload`, pre-signed object upload, then `/assets/register`; registration returns `versionId` | Missing. Existing `/media/upload` is deprecated; `/media/describe` is legacy original-video retrieval. Neither implements Asset Library registration | Missing | Missing | Not usable |
 | Legacy SB media and creative resources | Deprecated `/media/upload`, legacy `/media/describe` original-video retrieval, plus legacy SB v4 creative resources | Implemented client | No guarded worker workflow | Not exposed | Client presence is not current Asset Library support |
@@ -154,11 +159,12 @@ remain visible and fail closed instead of being silently treated as eligible.
 
 ## Operator guardrails
 
-- Browser code and MCP never receive Amazon credentials. Server-side `apps/web` has two documented
-  credential paths: the OAuth callback exchanges the authorization code without importing the Ads
-  API client, while the authenticated Vercel cron route invokes the worker Ads integration and
-  therefore loads LWA and Vault-backed credentials for post-connect sync. Amazon client code remains
-  owned by `apps/worker` even though this deployment runs it inside the web server process.
+- Browser code and MCP never receive Amazon secrets or tokens. The OAuth start route loads the
+  shared server configuration, including the client secret, but sends only public authorization
+  parameters to the browser. The callback performs the code exchange and profile discovery. The
+  authenticated Vercel cron route invokes the worker integration with LWA and Vault-backed
+  credentials for post-connect sync. `packages/ads-api` owns the pure HTTP client; `apps/worker`
+  owns the database-aware adapter and Amazon job execution.
 - Viewing, syncing, analyzing and generating recommendations never mutates Amazon.
 - Every manual write uses an immutable preview, exact profile/entity/value/count, explicit approval,
   environment and profile allowlists, durable audit, resynchronization and conflict reporting.
@@ -181,9 +187,11 @@ Repository evidence is in `packages/ads-api/src/client.ts`, `packages/ads-api/sr
 `packages/ads-api/src/budgets.ts`, `packages/ads-api/src/sb-media.ts`,
 `packages/ads-api/src/sb-ad-assets.ts`, `apps/worker/src/ads-api.ts`,
 `apps/worker/src/report-promotion.ts`, `apps/worker/src/sb-video-ingestion.ts`,
-`apps/worker/src/marketing-stream-sqs.ts`, `apps/web/app/api/amazon/oauth/_lib/lwa.ts`,
-`apps/web/app/api/amazon/oauth/_lib/connect.ts`, `apps/web/app/api/cron/sync/route.ts`, and
-`packages/campaigns/src/`.
+`apps/worker/src/marketing-stream-sqs.ts`, `apps/web/src/env.ts`,
+`apps/web/app/api/amazon/oauth/start/route.ts`,
+`apps/web/app/api/amazon/oauth/callback/route.ts`,
+`apps/web/app/api/amazon/oauth/_lib/lwa.ts`, `apps/web/app/api/amazon/oauth/_lib/connect.ts`,
+`apps/web/app/api/cron/sync/route.ts`, and `packages/campaigns/src/`.
 
 Amazon implementation claims were checked on 2026-08-30 against these primary sources. API sources
 are pinned to Amazon's `ads-advanced-tools-docs` revision
