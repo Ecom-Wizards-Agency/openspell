@@ -11,6 +11,9 @@
  *    bootstraps through an HMR websocket that never completes behind
  *    Playwright's extra request headers, so the page never hydrates and every
  *    interaction test fails for a reason unrelated to the code under test.
+ *  - **grid-performance** serves the same authenticated `next dev` boundary in
+ *    its own process. Its large fixture must not leave retained route/payload
+ *    memory behind while the complete role suite compiles every other route.
  *  - **auth** (WP-04) serves `next dev`. Supabase Auth is a hosted service — a
  *    magic link means an inbox — so the suite signs in through a test-only
  *    seam (`WIZARD_ADS_E2E_AUTH=1`) that *refuses to run under
@@ -26,9 +29,10 @@
  * server). The admin connection comes from `WIZARD_ADS_TEST_DATABASE_URL` (or
  * `DATABASE_URL`), the same variable the Vitest database suites use.
  *
- *   pnpm --filter @wizard-ads/web test:e2e             # both, in order
+ *   pnpm --filter @wizard-ads/web test:e2e             # all three, in order
  *   pnpm --filter @wizard-ads/web test:e2e:tags-goto   # just WP-08
- *   pnpm --filter @wizard-ads/web test:e2e:auth        # just WP-04
+ *   pnpm --filter @wizard-ads/web test:e2e:grid-performance
+ *   pnpm --filter @wizard-ads/web test:e2e:auth        # auth/roles without the isolated Grid load
  *
  * Anything after the suite name is forwarded to Playwright (`--grep`, `-x`, …).
  */
@@ -42,7 +46,7 @@ import type { TestDatabase } from '@wizard-ads/db/testing';
 import { createGotoLink, recordEntityChanges } from '@wizard-ads/db';
 import { ROADMAP_ITEMS, seedRoadmap } from '../../../supabase/seed/seed-roadmap.js';
 
-const SUITES = ['tags-goto', 'auth'] as const;
+const SUITES = ['tags-goto', 'grid-performance', 'auth'] as const;
 type Suite = (typeof SUITES)[number];
 
 const USER_A = '8a8a8a8a-8a8a-4a8a-8a8a-8a8a8a8a8a8a';
@@ -416,15 +420,26 @@ async function tagsGoto(playwrightArgs: string[]): Promise<number> {
  * values that file computes. The header bridge is deliberately *not* armed
  * here: these specs exercise the real session cookie path.
  */
-async function auth(playwrightArgs: string[]): Promise<number> {
+async function authenticated(
+  config: 'playwright.auth.config.ts' | 'playwright.grid-performance.config.ts',
+  playwrightArgs: string[],
+): Promise<number> {
   const env = { ...process.env };
   delete env['WIZARD_ADS_E2E_AUTH_BRIDGE'];
   delete env['WIZARD_ADS_AUTH_BRIDGE_SECRET'];
   return await run(
     'pnpm',
-    ['exec', 'playwright', 'test', '-c', 'playwright.auth.config.ts', ...playwrightArgs],
+    ['exec', 'playwright', 'test', '-c', config, ...playwrightArgs],
     env,
   );
+}
+
+async function auth(playwrightArgs: string[]): Promise<number> {
+  return await authenticated('playwright.auth.config.ts', playwrightArgs);
+}
+
+async function gridPerformance(playwrightArgs: string[]): Promise<number> {
+  return await authenticated('playwright.grid-performance.config.ts', playwrightArgs);
 }
 
 function parse(argv: string[]): { suites: Suite[]; playwrightArgs: string[] } {
@@ -450,7 +465,12 @@ async function main(): Promise<number> {
   let worst = 0;
   for (const suite of suites) {
     console.log(`\n=== e2e suite: ${suite} ===\n`);
-    const code = suite === 'tags-goto' ? await tagsGoto(playwrightArgs) : await auth(playwrightArgs);
+    const code =
+      suite === 'tags-goto'
+        ? await tagsGoto(playwrightArgs)
+        : suite === 'grid-performance'
+          ? await gridPerformance(playwrightArgs)
+          : await auth(playwrightArgs);
     // Every suite runs even when an earlier one fails: a red run should report
     // the whole picture, not just the first thing that broke.
     if (code !== 0) worst = code;

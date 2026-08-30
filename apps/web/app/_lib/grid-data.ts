@@ -98,12 +98,17 @@ export const ROW_CAP = 50_000;
 
 export interface GridPayload {
   rows: GridRow[];
-  /** True when the cap was hit and the set on screen is not the whole account. */
+  /** Transport assertion: every consumer must receive exactly this many rows. */
+  rowCount: number;
+  /** True when an upstream or transport cap makes the returned set incomplete. */
   truncated: boolean;
 }
 
+/** The grid query needs no Drizzle client or connection lifecycle capability. */
+type GridDataHandle = Pick<DbHandle, 'sql'>;
+
 export async function loadGridRows(
-  handle: DbHandle,
+  handle: GridDataHandle,
   level: EntityLevel,
   options: LoadGridOptions,
 ): Promise<GridPayload> {
@@ -123,8 +128,10 @@ export async function loadGridRows(
     `grid.${level}`,
     async () => {
       const loadedRows = await loaders[level]();
+      const rows = loadedRows.slice(0, limit);
       return {
-        rows: loadedRows.slice(0, limit),
+        rows,
+        rowCount: rows.length,
         truncated: loadedRows.length > limit,
       };
     },
@@ -152,7 +159,7 @@ interface CampaignRow extends AggregateRow {
 }
 
 async function loadCampaigns(
-  handle: DbHandle,
+  handle: GridDataHandle,
   options: LoadGridOptions,
   limit: number,
 ): Promise<GridRow[]> {
@@ -226,7 +233,7 @@ interface AdGroupRow extends AggregateRow {
 }
 
 async function loadAdGroups(
-  handle: DbHandle,
+  handle: GridDataHandle,
   options: LoadGridOptions,
   limit: number,
 ): Promise<GridRow[]> {
@@ -289,7 +296,7 @@ interface TargetRow extends AggregateRow {
 }
 
 async function loadTargets(
-  handle: DbHandle,
+  handle: GridDataHandle,
   options: LoadGridOptions,
   limit: number,
 ): Promise<GridRow[]> {
@@ -395,7 +402,7 @@ interface SearchTermRow extends AggregateRow {
 }
 
 async function loadSearchTerms(
-  handle: DbHandle,
+  handle: GridDataHandle,
   options: LoadGridOptions,
   limit: number,
 ): Promise<GridRow[]> {
@@ -477,7 +484,7 @@ const MODIFIER_KEY: Record<string, 'topOfSearch' | 'productPages' | 'restOfSearc
 };
 
 async function loadPlacements(
-  handle: DbHandle,
+  handle: GridDataHandle,
   options: LoadGridOptions,
   limit: number,
 ): Promise<GridRow[]> {
@@ -540,7 +547,7 @@ async function loadPlacements(
  * nothing" from "has no comparison row": zero days means no row, and the caller
  * turns that into a null comparison rather than a zeroed one.
  */
-function windowSums(handle: DbHandle, period: Period, comparison: Period) {
+function windowSums(handle: GridDataHandle, period: Period, comparison: Period) {
   const { sql } = handle;
   return sql`
     sum(impressions) filter (where date between ${period.start} and ${period.end}) as impressions,

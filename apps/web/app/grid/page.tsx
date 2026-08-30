@@ -1,17 +1,18 @@
 /**
  * `/grid` — the entity grid.
  *
- * The server loads the **whole** result set for the selected entity level and
- * period and ships it to the client in one payload. That is not an oversight;
- * it is the product decision the recon argues for at length
+ * The browser loads the **whole** result set for the selected entity level and
+ * period from the authenticated `/api/grid/rows` boundary. Keeping every row
+ * client-side is the product decision the recon argues for at length
  * (`02-data-grid.md` §6): QA-ing an optimization means sorting four thousand
- * rows by spend, filtering to one change reason and scanning. Server-side
- * pagination makes that workflow physically impossible, and every bulksheet-
- * based competitor loses on exactly this.
+ * rows by spend, filtering to one change reason and scanning. The separate
+ * request keeps those rows out of the initial RSC document without introducing
+ * server pagination or a second Grid model.
  *
- * The cap is 50k rows. Past it the page says the set is truncated rather than
- * quietly showing a prefix, because a total computed over an unmarked prefix is
- * the kind of wrong number that gets quoted on a client call.
+ * Database and raw-response byte caps bound the result. Past either boundary
+ * the page says the set is truncated rather than quietly showing a prefix,
+ * because a total computed over an unmarked prefix is the kind of wrong number
+ * that gets quoted on a client call.
  *
  * Entry goes through `gate()`, the same guard `/settings` uses: anonymous
  * visitors are sent to `/login`, and both the roster and the rows are scoped by
@@ -23,7 +24,6 @@ import {
   ENTITY_LABELS,
   ENTITY_LEVELS,
   assessFreshness,
-  formatInteger,
   tokens,
 } from '@wizard-ads/ui';
 import type { EntityLevel } from '@wizard-ads/ui';
@@ -34,7 +34,6 @@ import { canonicalProfilePath } from '../../src/data/active-profile';
 import { gateMessage } from '../../src/ui/gate-message';
 import { loadReportLedger } from '../_lib/dashboard-data';
 import { withExistingDatabase } from '../_lib/db';
-import { ROW_CAP, loadGridRows } from '../_lib/grid-data';
 import { periodFromParams, precedingPeriod, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
 import { OperatorContext } from '../../src/ui/operator-context';
@@ -82,18 +81,9 @@ export default async function GridPage({ searchParams }: PageProps) {
     const canonical = canonicalProfilePath('/grid', { ...params }, profile.id);
     if (canonical !== null) redirect(canonical);
 
-    const [payload, ledger] = await Promise.all([
-      loadGridRows(handle, entity, {
-        orgId,
-        profileId: profile.id,
-        currencyCode: profile.currencyCode,
-        period,
-        comparison,
-      }),
-      loadReportLedger(handle, orgId, profile.id),
-    ]);
+    const ledger = await loadReportLedger(handle, orgId, profile.id);
 
-    return { profiles, profile, payload, ledger };
+    return { profiles, profile, ledger };
   });
 
   if (data === null) {
@@ -118,7 +108,7 @@ export default async function GridPage({ searchParams }: PageProps) {
     );
   }
 
-  const { profile, payload, ledger = [] } = data;
+  const { profile, ledger = [] } = data;
   const freshness = assessFreshness(ledger, { now: new Date() });
 
   return (
@@ -149,17 +139,9 @@ export default async function GridPage({ searchParams }: PageProps) {
         }}
       />
 
-      {payload?.truncated ? (
-        <p style={{ ...muted, color: tokens.color.bad }}>
-          This account has more than {formatInteger(ROW_CAP)} rows at this level, so the set below
-          is truncated and its totals cover only what is shown. Narrow the period or the entity level
-          for a complete read.
-        </p>
-      ) : null}
-
       <GridWorkspace
+        key={`${profile.id}:${entity}:${period.start}:${period.end}:${params.campaign ?? ''}`}
         entity={entity}
-        rows={payload?.rows ?? []}
         currencyCode={profile.currencyCode}
         profileId={profile.id}
         period={period}

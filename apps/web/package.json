@@ -11,6 +11,7 @@
     "test": "vitest run --passWithNoTests",
     "test:e2e": "tsx e2e/run.ts",
     "test:e2e:tags-goto": "tsx e2e/run.ts tags-goto",
+    "test:e2e:grid-performance": "tsx e2e/run.ts grid-performance",
     "test:e2e:auth": "tsx e2e/run.ts auth",
     "verify:release-candidate": "tsx scripts/verify-release-candidate.ts"
   },
