@@ -154,7 +154,7 @@ implementation brief in `docs/workpackages/`.
 
 - On 2026-08-30 the production web health endpoint reported exact revision
   `5e372c82361776070084e0265fea8c504a0d8781`, matching `origin/main`. GitHub Actions run
-  `33298955347` passed typecheck, lint, tests, hygiene, migrations, build and both Playwright jobs
+  `33298955347` passed typecheck, lint, tests, hygiene, migrations, build and the Playwright job
   for that exact revision before Vercel deployment `dpl_GMmrJzpg4B62e5aQsAiMpsC4BDFC` was
   promoted. The previous deployment remains available as a rollback anchor.
 - The authenticated production pass opened Dashboard, Campaign Optimizer, Creative Performance,
@@ -175,10 +175,10 @@ implementation brief in `docs/workpackages/`.
   health endpoint returned HTTP 200 with database ready at application revision `b5c210d`. Codex
   and Claude Code each discovered the same 11 analytical tools, found no write-like tool, completed
   a permitted profile-list read and produced two recent audit records while advancing key
-  last-used state. MCP matches the deployed web revision but intentionally trails current main
-  while WP-85 remains migration/deployment gated. Durable 1Password custody could not be verified
-  from the available CLI session, so secret-manager reconciliation remains open. No mutation tool
-  is exposed.
+  last-used state. At that point MCP matched the deployed web revision and trailed current main
+  while WP-85 remained migration and provider gated. Durable 1Password custody could not be
+  verified from the available CLI session, so secret-manager reconciliation remains open. No
+  mutation tool is exposed.
 - Production was revision-stamped and verified at `bfce504` after the first release merge. The dashboard,
   campaign builder, 3,597-row nested grid, optimizer, recommendations, Time Machine, Sync Status
   and Connect AI routes completed an authenticated click-through without page, console or HTTP
@@ -190,9 +190,10 @@ implementation brief in `docs/workpackages/`.
   Vercel deployment `dpl_7LsXivUy6XMqgYCtwagQZBEqCxrp`; Vercel reports ready and assigns the custom
   production domain. Anonymous `/login` returns HTTP 200 without the feedback control, while an
   anonymous `/dashboard` request redirects to `/login`.
-- Exact-main CI run `33256509372` passed both jobs after WP-85 merged at `fc254bc`. No WP-85
-  migration or deployment followed that merge: production web and MCP intentionally remain at
-  `b5c210d` until the hosted schema and live provider gates are authorized and satisfied.
+- Exact-main CI run `33256509372` passed both jobs after WP-85 merged at `fc254bc`. At that
+  checkpoint no WP-85 migration or deployment had followed: production web and MCP remained at
+  `b5c210d` pending the hosted schema and live provider gates. The later web deployment is recorded
+  above; MCP still remains on that revision.
 - The hosted migration ledger contains the operator-intelligence foundation followed by Time
   Machine v2. Both exact tracked files were hash-checked before application; all new tables retain
   tenant RLS.
@@ -237,8 +238,8 @@ implementation brief in `docs/workpackages/`.
   mappings while keeping `creativeId` nullable. WP-85 adds counted current-snapshot observations,
   mapping-only default behavior and an explicit profile-local same-day gate before ad-level facts.
   It records ambiguous, legacy, unsupported and unmapped states instead of attributing an ad
-  group's facts to one guessed asset. The required migrations, runtime deployment and live count
-  crosscheck have not occurred.
+  group's facts to one guessed asset. The runtime is deployed but remains inactive for this source;
+  the required hosted migrations and live count crosscheck have not occurred.
 - SQP now has strict Sunday-Saturday planning, one-marketplace requests, canonical ASIN batching,
   resumable exact-identity checkpoints, provider report-ID reuse across retry/process restart,
   pending-result deferral without failure-budget consumption, strict document parsing, counted
@@ -348,7 +349,8 @@ implementation brief in `docs/workpackages/`.
       deploying code first is safe.
 - [ ] Apply `20260829160000_sb_video_report_type.sql` and
       `20260829160100_sb_video_observed_ingestion.sql` only after exact hosted authorization, then
-      deploy WP-85 and prove mapping/fact counts with an authorized read-only profile.
+      activate the already-deployed WP-85 path and prove mapping/fact counts with an authorized
+      read-only profile.
 - [ ] Run the authorized, non-persisting SB Video probe and review one read-only SP report per
       supported grain with source, promoted, superseded and canonical counts.
 - [ ] v1 crosscheck exit gate: consecutive verified days, campaign-grain parity, and explained

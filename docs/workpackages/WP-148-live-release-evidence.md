@@ -9,9 +9,10 @@ provider configuration, or Amazon state.
 
 ## Verified release
 
-- `origin/main` and the production web application resolve to the same full Git revision.
-- The exact-main GitHub run passed typecheck, lint, tests, hygiene, migrations, build, and both
-  Playwright jobs before promotion.
+- At release capture, `origin/main` and the production web application resolved to the same full
+  Git revision. This evidence-only package may advance main without requiring a runtime rollout.
+- The exact-main GitHub run passed typecheck, lint, tests, hygiene, migrations, build, and the
+  Playwright job before promotion.
 - Authenticated production checks cover Dashboard, Grid, Campaign Optimizer, Creative Performance,
   Query Intelligence, Dayparting, Time Machine, Connect AI, and the experiment scope selector.
 - Grid nested grouping and filtered selection work on the live account. No experiment was created,
