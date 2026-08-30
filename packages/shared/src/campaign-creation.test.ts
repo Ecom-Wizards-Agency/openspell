@@ -753,6 +753,66 @@ describe('campaign creation plan', () => {
     }
   });
 
+  it('rejects positive manual targets in automatic Sponsored Products campaigns', () => {
+    const plan = spPlan();
+    const automaticNodes = plan.nodes.map((node) => {
+      if (node.kind !== 'campaign.create' || node.payload.settings.product !== 'SP') return node;
+      return CampaignCreationNode.parse({
+        ...node,
+        payload: {
+          ...node.payload,
+          settings: { ...node.payload.settings, targetingType: 'auto' },
+        },
+      });
+    });
+    expect(CampaignCreationPlan.safeParse({ ...plan, nodes: automaticNodes }).success).toBe(false);
+
+    const negativeNodes = automaticNodes.map((node) => node.kind === 'target.create'
+      ? CampaignCreationNode.parse({
+          ...node,
+          payload: {
+            targetType: 'keyword',
+            parent: { source: 'plan_node', kind: 'ad_group', nodeId: AD_GROUP_NODE_ID },
+            scope: 'ad_group',
+            polarity: 'negative',
+            text: 'synthetic negative keyword',
+            matchType: 'negative_exact',
+            bid: null,
+            state: 'paused',
+          },
+        })
+      : node);
+    expect(CampaignCreationPlan.safeParse({ ...plan, nodes: negativeNodes }).success).toBe(true);
+
+    const automaticExpressionNodes = automaticNodes.map((node) => node.kind === 'target.create'
+      ? CampaignCreationNode.parse({
+          ...node,
+          payload: {
+            targetType: 'expression',
+            parent: { source: 'plan_node', kind: 'ad_group', nodeId: AD_GROUP_NODE_ID },
+            scope: 'ad_group',
+            polarity: 'positive',
+            expression: [{ type: 'close_match', value: null }],
+            bid: 1.01,
+            state: 'paused',
+          },
+        })
+      : node);
+    expect(CampaignCreationPlan.safeParse({ ...plan, nodes: automaticExpressionNodes }).success)
+      .toBe(true);
+
+    expect(CampaignCreationPlan.safeParse({
+      ...plan,
+      nodes: automaticNodes.filter((node) => node.kind !== 'target.create'),
+      counts: {
+        ...plan.counts,
+        totalNodes: plan.counts.totalNodes - 1,
+        irreversibleCreates: plan.counts.irreversibleCreates - 1,
+        byKind: { ...plan.counts.byKind, 'target.create': 0 },
+      },
+    }).success).toBe(true);
+  });
+
   it('models current Unified SB manual and automatic collections without invented fields', () => {
     const ref = (kind: 'ad_group' | 'brand' | 'product' | 'asset', suffix: number) => ({
       source: 'plan_node' as const,
@@ -822,6 +882,64 @@ describe('campaign creation plan', () => {
       : node);
     expect(CampaignCreationPlan.safeParse({ ...spotlight, nodes: automaticTargeting }).success)
       .toBe(false);
+  });
+
+  it('allows only one automatic Sponsored Brands collection ad per ad group', () => {
+    const spotlight = sbStoreSpotlightPlan();
+    const automaticNodes = spotlight.nodes.map((node) => {
+      if (node.kind === 'campaign.create' && node.payload.settings.product === 'SB') {
+        return CampaignCreationNode.parse({
+          ...node,
+          payload: {
+            ...node.payload,
+            settings: { ...node.payload.settings, format: 'product_collection_automatic' },
+          },
+        });
+      }
+      if (node.kind === 'ad.create' && node.payload.format === 'sb_store_spotlight') {
+        return CampaignCreationNode.parse({
+          ...node,
+          payload: {
+            format: 'sb_product_collection_automatic',
+            name: 'Synthetic automatic collection ad',
+            adGroup: node.payload.adGroup,
+            brand: node.payload.brand,
+            logoAsset: node.payload.logoAsset,
+            productExclusions: [],
+            state: 'paused',
+          },
+        });
+      }
+      return node;
+    });
+    const automaticPlan = CampaignCreationPlan.parse({
+      ...spotlight,
+      nodes: orderCampaignCreationNodes(automaticNodes),
+    });
+    const automaticAd = automaticPlan.nodes.find((node) => node.kind === 'ad.create');
+    if (automaticAd?.kind !== 'ad.create'
+      || automaticAd.payload.format !== 'sb_product_collection_automatic') {
+      throw new Error('synthetic automatic collection ad missing');
+    }
+    const duplicateAd = CampaignCreationNode.parse({
+      ...automaticAd,
+      nodeId: '00000000-0000-4000-8000-000000000030',
+      fingerprint: sha('d'),
+      payload: { ...automaticAd.payload, name: 'Second synthetic automatic collection ad' },
+    });
+    expect(CampaignCreationPlan.safeParse({
+      ...automaticPlan,
+      nodes: orderCampaignCreationNodes([...automaticPlan.nodes, duplicateAd]),
+      counts: {
+        ...automaticPlan.counts,
+        totalNodes: automaticPlan.counts.totalNodes + 1,
+        irreversibleCreates: automaticPlan.counts.irreversibleCreates + 1,
+        byKind: {
+          ...automaticPlan.counts.byKind,
+          'ad.create': automaticPlan.counts.byKind['ad.create'] + 1,
+        },
+      },
+    }).success).toBe(false);
   });
 
   it('requires planned, preflighted parents and strictly forward-stage dependencies', () => {
@@ -1408,6 +1526,67 @@ describe('campaign creation approval and evidence', () => {
       .toBe(1);
   });
 
+  it('represents staged running work while a created dependency awaits observation', () => {
+    const evidence = completedSpExecutionEvidence();
+    const campaignObservation = evidence.observations.find(
+      (observation) => observation.nodeId === CAMPAIGN_NODE_ID,
+    );
+    if (campaignObservation === undefined) throw new Error('synthetic campaign observation missing');
+    const pendingNodeIds = new Set([AD_GROUP_NODE_ID, AD_NODE_ID, TARGET_NODE_ID]);
+    const staged = {
+      ...evidence,
+      providerResults: evidence.providerResults.filter(
+        (result) => result.nodeId === PRODUCT_NODE_ID || result.nodeId === CAMPAIGN_NODE_ID,
+      ),
+      nonProviderDispositions: evidence.plan.nodes
+        .filter((node) => pendingNodeIds.has(node.nodeId))
+        .map((node) => ({
+          planId: evidence.plan.id,
+          nodeId: node.nodeId,
+          executionId: evidence.executionId,
+          nodeFingerprint: node.fingerprint,
+          outcome: 'pending_dispatch' as const,
+          sanitizedReason: null,
+        })),
+      observations: [{
+        ...campaignObservation,
+        observation: 'pending' as const,
+        deliveryStatus: 'unknown' as const,
+      }],
+      snapshot: {
+        status: 'running' as const,
+        accounting: {
+          operatorApproved: 4,
+          pendingDispatch: 3,
+          attempted: 1,
+          succeeded: 1,
+          failed: 0,
+          ambiguous: 0,
+          refusedAtExecution: 0,
+          blockedByDependency: 0,
+          observed: 0,
+          pendingObservation: 1,
+          observationNotFound: 0,
+          observationConflict: 0,
+          readChecksRequested: 1,
+          readChecksPending: 0,
+          readChecksPassed: 1,
+          readChecksRefused: 0,
+          readChecksFailed: 0,
+        },
+      },
+    };
+    expect(CampaignCreationExecutionEvidence.parse(staged).snapshot.status).toBe('running');
+    expect(CampaignCreationExecutionSnapshot.safeParse({
+      ...staged.snapshot,
+      accounting: {
+        ...staged.snapshot.accounting,
+        pendingDispatch: 0,
+        blockedByDependency: 3,
+      },
+    }).success).toBe(false);
+  });
+
   it('enforces preflight identity, provider-identity uniqueness, and canonical evidence order', () => {
     const evidence = completedSpExecutionEvidence();
     expect(CampaignCreationExecutionEvidence.safeParse({
@@ -1486,6 +1665,21 @@ describe('campaign creation approval and evidence', () => {
         ...observation,
         observedAt: '2026-08-30T02:01:00.000Z',
       })),
+    }).success).toBe(false);
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...evidence,
+      providerResults: evidence.providerResults.map((result) => result.nodeId === TARGET_NODE_ID
+        ? {
+            ...result,
+            startedAt: evidence.plan.expiresAt,
+            completedAt: '2026-08-30T01:01:01.000Z',
+          }
+        : result),
+      observations: evidence.observations.map((observation) => (
+        observation.nodeId === TARGET_NODE_ID
+          ? { ...observation, observedAt: '2026-08-30T01:01:02.000Z' }
+          : observation
+      )),
     }).success).toBe(false);
     expect(CampaignCreationExecutionEvidence.safeParse({
       ...evidence,
