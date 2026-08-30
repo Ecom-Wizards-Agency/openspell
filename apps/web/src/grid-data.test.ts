@@ -123,7 +123,7 @@ suite('grid and roster reads against SQL aggregates', () => {
   });
 
   it('returns one row per target, matching the distinct grain count in SQL', async () => {
-    const { rows, truncated } = await loadGridRows(database, 'targets', {
+    const { rows, rowCount, truncated } = await loadGridRows(database, 'targets', {
       orgId,
       profileId,
       currencyCode: 'USD',
@@ -140,6 +140,7 @@ suite('grid and roster reads against SQL aggregates', () => {
 
     expect(truncated).toBe(false);
     // Rule 4: outputs counted against inputs, as an assertion.
+    expect(rowCount).toBe(rows.length);
     expect(rows.length).toBe(Number((counted as { n: string }).n));
   });
 
@@ -162,8 +163,10 @@ suite('grid and roster reads against SQL aggregates', () => {
     });
 
     expect(exact.rows).toHaveLength(6);
+    expect(exact.rowCount).toBe(exact.rows.length);
     expect(exact.truncated).toBe(false);
     expect(overflow.rows).toHaveLength(5);
+    expect(overflow.rowCount).toBe(overflow.rows.length);
     expect(overflow.truncated).toBe(true);
   });
 
@@ -427,7 +430,7 @@ suite('grid and roster reads against SQL aggregates', () => {
     `;
 
     const startedAt = performance.now();
-    const { rows, truncated } = await loadGridRows(database, 'search_terms', {
+    const { rows, rowCount, truncated } = await loadGridRows(database, 'search_terms', {
       orgId,
       profileId,
       currencyCode: 'USD',
@@ -440,6 +443,7 @@ suite('grid and roster reads against SQL aggregates', () => {
     );
 
     expect(truncated).toBe(false);
+    expect(rowCount).toBe(rows.length);
     expect(fixtureRows).toHaveLength(3597);
     expect(fixtureRows.every((row) => row.dimensions['harvested'] === true)).toBe(true);
     expect(elapsedMs).toBeLessThan(process.env['CI'] === undefined ? 2_000 : 5_000);
@@ -488,6 +492,7 @@ suite('grid and roster reads against SQL aggregates', () => {
         comparison: COMPARISON,
       });
       expect(stolen.rows).toEqual([]);
+      expect(stolen.rowCount).toBe(0);
       // And the level is one that actually has rows to leak, or the assertion
       // above proves nothing.
       if (level !== 'placements') expect(own.rows.length).toBeGreaterThan(0);

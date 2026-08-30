@@ -13,18 +13,20 @@
  * keystroke over the whole set. The 50k perf suite is what says that is
  * affordable; without it this component would be a guess.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { ReactNode } from 'react';
 import {
   DataGrid,
+  BASE_METRICS,
   GridToolbar,
   LocalViewStore,
   STATE_COLUMN,
   buildGridModelSafely,
   columnsFor,
   defaultVisibleColumns,
+  formatInteger,
   newViewId,
   toCsv,
 } from '@wizard-ads/ui';
@@ -38,20 +40,122 @@ import type {
   SortRule,
 } from '@wizard-ads/ui';
 import { FreshnessBanner, tokens } from '@wizard-ads/ui';
+import type { GridPayload } from '../_lib/grid-data';
 import { BidHistoryModal } from '../../src/ui/bid-history-modal';
 
 export interface GridWorkspaceProps {
   entity: EntityLevel;
-  rows: readonly GridRow[];
   currencyCode: string;
   profileId: string;
   period: { start: string; end: string };
   comparisonPeriod: { start: string; end: string };
+  rowCap: number;
   freshness: FreshnessAssessment;
   /** Streamed server-owned crosscheck state; it never blocks the data grid. */
   crosscheck?: ReactNode;
   /** Campaign deep-link applied as a visible grid filter. */
   campaignId: string | null;
+}
+
+interface ReadyGridWorkspaceProps extends GridWorkspaceProps {
+  rows: readonly GridRow[];
+}
+
+type GridLoadState =
+  | { status: 'loading'; scope: string }
+  | { status: 'ready'; scope: string; payload: GridPayload }
+  | { status: 'error'; scope: string };
+
+interface InFlightGridRequest {
+  scope: string;
+  controller: AbortController;
+  promise: Promise<GridPayload>;
+  settled: boolean;
+  abortTimer: ReturnType<typeof setTimeout> | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isTotals(value: unknown): value is GridRow['totals'] {
+  return (
+    isRecord(value) &&
+    BASE_METRICS.every((metric) =>
+      typeof value[metric] === 'number' && Number.isFinite(value[metric]),
+    )
+  );
+}
+
+function isGridRow(value: unknown): value is GridRow {
+  if (!isRecord(value) || typeof value['id'] !== 'string') return false;
+  if (typeof value['currencyCode'] !== 'string' || !isRecord(value['dimensions'])) return false;
+  if (!Object.values(value['dimensions']).every((dimension) =>
+    dimension === null || ['string', 'number', 'boolean'].includes(typeof dimension),
+  )) return false;
+  if (!isTotals(value['totals'])) return false;
+  if (value['comparison'] !== null && !isTotals(value['comparison'])) return false;
+  const tagIds = value['tagIds'];
+  return tagIds === undefined || (Array.isArray(tagIds) && tagIds.every((tag) => typeof tag === 'string'));
+}
+
+/** Refuse partial or malformed transport data before it becomes actionable. */
+export function parseGridRowsPayload(value: unknown): GridPayload {
+  if (!isRecord(value) || !Array.isArray(value['rows'])) {
+    throw new Error('Grid response does not contain rows');
+  }
+  if (typeof value['truncated'] !== 'boolean') {
+    throw new Error('Grid response does not declare truncation');
+  }
+  if (!Number.isInteger(value['rowCount']) || Number(value['rowCount']) < 0) {
+    throw new Error('Grid response does not contain a valid row count');
+  }
+  if (Number(value['rowCount']) !== value['rows'].length) {
+    throw new Error('Grid response row count does not match its rows');
+  }
+  if (!value['rows'].every(isGridRow)) throw new Error('Grid response contains an invalid row');
+  return {
+    rows: value['rows'],
+    rowCount: Number(value['rowCount']),
+    truncated: value['truncated'],
+  };
+}
+
+export function gridRowsRequestUrl(
+  props: Pick<GridWorkspaceProps, 'profileId' | 'entity' | 'period'>,
+): string {
+  const query = new URLSearchParams({
+    profile: props.profileId,
+    entity: props.entity,
+    from: props.period.start,
+    to: props.period.end,
+  });
+  return `/api/grid/rows?${query.toString()}`;
+}
+
+function startGridRequest(scope: string): InFlightGridRequest {
+  const controller = new AbortController();
+  const promise = fetch(scope, {
+    cache: 'no-store',
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+    signal: controller.signal,
+  }).then(async (response) => {
+    if (!response.ok) throw new Error(`Grid request failed with ${response.status}`);
+    return parseGridRowsPayload(await response.json());
+  });
+  const request: InFlightGridRequest = {
+    scope,
+    controller,
+    promise,
+    settled: false,
+    abortTimer: null,
+  };
+  void promise.then(
+    () => { request.settled = true; },
+    () => { request.settled = true; },
+  );
+  return request;
 }
 
 /**
@@ -119,6 +223,109 @@ const SCOPE_PARAM: Partial<Record<EntityLevel, { param: string; key: string }>> 
 };
 
 export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
+  const scope = gridRowsRequestUrl(props);
+  const generation = useRef(0);
+  const activeRequest = useRef<InFlightGridRequest | null>(null);
+  const [retry, setRetry] = useState(0);
+  const [load, setLoad] = useState<GridLoadState>({ status: 'loading', scope });
+
+  useEffect(() => {
+    const requestGeneration = ++generation.current;
+    setLoad({ status: 'loading', scope });
+    let request = activeRequest.current;
+    if (request === null || request.scope !== scope || request.settled) {
+      request = startGridRequest(scope);
+      activeRequest.current = request;
+    } else if (request.abortTimer !== null) {
+      clearTimeout(request.abortTimer);
+      request.abortTimer = null;
+    }
+
+    void request.promise
+      .then((payload) => {
+        if (!request.controller.signal.aborted && generation.current === requestGeneration) {
+          setLoad({ status: 'ready', scope, payload });
+        }
+      })
+      .catch((error: unknown) => {
+        if (request.controller.signal.aborted || generation.current !== requestGeneration) return;
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        setLoad({ status: 'error', scope });
+      });
+
+    return () => {
+      if (request.settled) return;
+      // React development Strict Mode immediately re-runs an effect after its
+      // cleanup. Give that same-scope run one task to reclaim the in-flight
+      // request; a real unmount or scope change leaves the timer in place and
+      // aborts it. This keeps one network request per settled Grid scope.
+      request.abortTimer = setTimeout(() => request.controller.abort(), 0);
+    };
+  }, [retry, scope]);
+
+  // A prop change renders before its effect runs. Treat a state object from the
+  // previous scope as loading immediately so stale tenant or period rows never
+  // flash while React schedules the replacement request.
+  const current: GridLoadState = load.scope === scope ? load : { status: 'loading', scope };
+
+  return (
+    <div className="wa-embed" style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(3) }}>
+      <FreshnessBanner assessment={props.freshness}>
+        {props.crosscheck ?? null}
+      </FreshnessBanner>
+
+      {current.status === 'loading' ? (
+        <section
+          aria-busy="true"
+          aria-live="polite"
+          className="wa-card"
+          data-testid="grid-data-loading"
+          style={loadPanelStyle}
+        >
+          <strong>Loading the complete result set…</strong>
+          <span style={{ color: tokens.color.textMuted }}>
+            Filters, grouping, totals, and export become available together.
+          </span>
+        </section>
+      ) : current.status === 'error' ? (
+        <section role="alert" className="wa-card" data-testid="grid-data-error" style={loadPanelStyle}>
+          <strong>Grid data could not be loaded.</strong>
+          <span style={{ color: tokens.color.textMuted }}>
+            No partial rows are shown. Check the connection and try again.
+          </span>
+          <div>
+            <button
+              type="button"
+              className="wa-btn wa-btn--sm"
+              onClick={() => {
+                setLoad({ status: 'loading', scope });
+                setRetry((currentRetry) => currentRetry + 1);
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        </section>
+      ) : (
+        <>
+          <p className="wa-sr-only" role="status" data-testid="grid-row-count">
+            Complete result set loaded: {formatInteger(current.payload.rowCount)} rows.
+          </p>
+          {current.payload.truncated ? (
+            <p style={{ ...filterErrorStyle, margin: 0 }}>
+              This account has more than {formatInteger(props.rowCap)} rows at this level, so the
+              set below is truncated and its totals cover only what is shown. Narrow the period or
+              entity level for a complete read.
+            </p>
+          ) : null}
+          <ReadyGridWorkspace {...props} rows={current.payload.rows} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const router = useRouter();
   const available = useMemo(() => columnsFor(props.entity), [props.entity]);
   const [view, setView] = useState<SavedView>(() => defaultView(props.entity, props.campaignId));
@@ -249,11 +456,7 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
     // WP-06 ships without an inline palette (inputs, selects, toolbar buttons).
     // The grid's own cells need nothing here: `packages/ui` writes
     // `var(--wa-*, <literal>)` and reads the tokens directly.
-    <div className="wa-embed" style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(3) }}>
-      <FreshnessBanner assessment={props.freshness}>
-        {props.crosscheck ?? null}
-      </FreshnessBanner>
-
+    <div data-testid="grid-data-ready" style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(3) }}>
       <GridToolbar
         entity={props.entity}
         onEntityChange={(entity) => {
@@ -374,6 +577,13 @@ const filterErrorStyle = {
   fontSize: tokens.font.size.sm,
   margin: 0,
   padding: `${tokens.space(2)} ${tokens.space(3)}`,
+};
+
+const loadPanelStyle = {
+  display: 'flex',
+  flexDirection: 'column' as const,
+  gap: tokens.space(2),
+  padding: tokens.space(4),
 };
 
 function downloadCsv(csv: string, filename: string): void {
