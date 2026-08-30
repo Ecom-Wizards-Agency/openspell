@@ -11,10 +11,10 @@ browser sent only one request at a time.
 
 - Keep one lazy database handle per warm web runtime.
 - Limit that handle to one physical connection.
-- Register response-lifecycle cleanup and close the handle after its final active
-  response finishes.
-- Configure a one-second postgres.js idle timeout as a fallback when the runtime
-  cannot register a Next.js response callback.
+- Configure a one-second postgres.js idle timeout so a warm JavaScript client
+  does not retain a session-pool connection between requests.
+- Keep database lifecycle outside Next.js `after()` callbacks. Cancelled and
+  redirected Server Component renders still need their original cookie context.
 
 Request-scoped API clients already close in `finally` blocks and are unchanged.
 Worker pool sizes and cron concurrency are outside this package.
@@ -22,8 +22,6 @@ Worker pool sizes and cron concurrency are outside this package.
 ## Acceptance evidence
 
 - Repeated module loads reuse one handle and one physical-connection allowance.
-- Two overlapping response leases do not close the shared handle until both end.
-- The next request creates a fresh handle after cleanup.
 - The idle-timeout option reaches postgres.js and explicit close reaches
   `sql.end()`.
 - When a local test Postgres is available, the real driver test observes one

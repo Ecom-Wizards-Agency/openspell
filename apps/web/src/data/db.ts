@@ -16,50 +16,28 @@
  */
 import { connectionStringFromEnv, createDb } from '@wizard-ads/db';
 import type { DbHandle } from '@wizard-ads/db';
-import { after } from 'next/server';
 
 interface DatabaseState {
   handle: DbHandle | null;
   attempted: boolean;
-  leases: number;
 }
 
 type DatabaseGlobal = typeof globalThis & {
   __wizardAdsDatabaseState?: DatabaseState;
 };
 
-const freshState = (): DatabaseState => ({ handle: null, attempted: false, leases: 0 });
+const freshState = (): DatabaseState => ({ handle: null, attempted: false });
 const databaseGlobal = globalThis as DatabaseGlobal;
-// Next dev invalidates modules and Vercel bundles routes independently. Reuse a
-// single handle inside each runtime, then release it when the last response
-// using it finishes. A module-local production cache leaves one pool alive per
-// warm route bundle and can exhaust a small Supabase session pool during a
-// serial operator click-through.
+// Next dev invalidates modules and Vercel bundles routes independently. Reuse
+// one client inside each runtime, but allow it only one physical connection and
+// have postgres.js release that connection after a short idle interval. The
+// JavaScript client may remain warm without reserving a session-pool slot.
+//
+// Do not register response-level `after()` cleanup here. `database()` runs while
+// Server Components resolve cookies and org context; moving lifecycle work into
+// Next's after-context can invalidate that request state during a cancelled or
+// redirected render.
 const state = (databaseGlobal.__wizardAdsDatabaseState ??= freshState());
-// An HMR cycle can reuse state created by the preceding module shape.
-state.leases ??= 0;
-
-function leaseForResponse(handle: DbHandle): void {
-  state.leases += 1;
-  try {
-    after(async () => {
-      // A reset may already have replaced this generation of the handle.
-      if (state.handle !== handle) return;
-      state.leases = Math.max(0, state.leases - 1);
-      if (state.leases !== 0) return;
-
-      // Detach before awaiting close so a concurrent request cannot receive a
-      // handle that postgres.js is already ending.
-      state.handle = null;
-      state.attempted = false;
-      await handle.close().catch(() => {});
-    });
-  } catch {
-    // `database()` is also exercised outside a Next request by unit tests and
-    // local scripts. The short postgres.js idle timeout remains the fallback.
-    state.leases = Math.max(0, state.leases - 1);
-  }
-}
 
 /** The handle, or null when `DATABASE_URL` is absent (a page then says so). */
 export function database(): DbHandle | null {
@@ -76,7 +54,6 @@ export function database(): DbHandle | null {
     }
   }
 
-  if (state.handle !== null) leaseForResponse(state.handle);
   return state.handle;
 }
 
@@ -94,6 +71,5 @@ export async function resetDatabase(): Promise<void> {
   const current = state.handle;
   state.handle = null;
   state.attempted = false;
-  state.leases = 0;
   if (current) await current.close();
 }
