@@ -62,7 +62,15 @@ const PROFILE_CANONICAL = new Set([
 ]);
 
 const AUTHENTICATED_REDIRECTS = new Map([
-  ['/strategy', { pathname: '/dashboard', hash: '#operating-status', profile: true }],
+  [
+    '/strategy',
+    {
+      pathname: '/dashboard',
+      hash: '#operating-status',
+      profile: true,
+      artifact: '#operating-status',
+    },
+  ],
 ]);
 
 /** Primary data-backed routes whose artifact, not only URL, must render. */
@@ -166,6 +174,7 @@ test('the same screens open once there is a session', async ({ page }) => {
           && (!expectedRedirect.profile || url.searchParams.has('profile'))
         ),
       );
+      await expect(page.locator(expectedRedirect.artifact)).toBeVisible();
     }
     const expectedHeading = PRODUCT_HEADINGS.get(expectedPath);
     if (expectedHeading !== undefined) {
