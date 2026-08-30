@@ -18,6 +18,7 @@ import {
   completeDailyFacts,
   defaultPresentation,
   MAX_CHART_SERIES,
+  migrateLegacyCockpitPreferences,
   parseCockpitPreferences,
   partitionKpiTiles,
   periodAriaLabel,
@@ -217,7 +218,7 @@ describe('series selection and presentation', () => {
 
   it('restores only valid available metrics from a saved view', () => {
     const saved = JSON.stringify({
-      version: 1,
+      version: 2,
       selected: ['clicks', 'missing', 'roas', 'spend', 'sales', 'orders'],
       granularity: 'W',
       presentations: {
@@ -226,7 +227,7 @@ describe('series selection and presentation', () => {
       },
     });
     expect(parseCockpitPreferences(saved, tiles.map((candidate) => candidate.metric))).toEqual({
-      version: 1,
+      version: 2,
       selected: ['clicks', 'roas', 'spend', 'sales'],
       granularity: 'W',
       presentations: {
@@ -235,6 +236,56 @@ describe('series selection and presentation', () => {
         spend: { mark: 'bar', axis: 'left' },
         sales: { mark: 'line', axis: 'right' },
       },
+    });
+  });
+
+  it('migrates former defaults while preserving real v1 customization', () => {
+    const saved = JSON.stringify({
+      version: 1,
+      selected: ['spend', 'sales', 'clicks'],
+      granularity: 'W',
+      presentations: {
+        spend: { mark: 'bar', axis: 'left' },
+        sales: { mark: 'bar', axis: 'left' },
+        clicks: { mark: 'line', axis: 'left' },
+      },
+    });
+
+    expect(migrateLegacyCockpitPreferences(saved, tiles.map((candidate) => candidate.metric))).toEqual({
+      version: 2,
+      selected: ['spend', 'sales', 'clicks'],
+      granularity: 'W',
+      presentations: {
+        spend: { mark: 'bar', axis: 'left' },
+        sales: { mark: 'line', axis: 'right' },
+        clicks: { mark: 'line', axis: 'left' },
+      },
+    });
+  });
+
+  it('loads a v1 account view once and persists its migrated v2 equivalent', () => {
+    window.localStorage.setItem('openspell:performance-chart:v1:synthetic-profile', JSON.stringify({
+      version: 1,
+      selected: ['spend', 'sales'],
+      granularity: 'W',
+      presentations: {
+        spend: { mark: 'bar', axis: 'left' },
+        sales: { mark: 'bar', axis: 'left' },
+      },
+    }));
+
+    const host = mountCockpit();
+    expect(host.querySelector<HTMLSelectElement>('select[aria-label="Spend display"]')?.value).toBe('bar');
+    expect(host.querySelector<HTMLSelectElement>('select[aria-label="Ad Sales display"]')?.value).toBe('line');
+    expect(host.querySelector<HTMLSelectElement>('select[aria-label="Ad Sales axis"]')?.value).toBe('right');
+    expect(host.querySelector('[role="radio"][aria-label="Weekly"]')?.getAttribute('aria-checked')).toBe('true');
+
+    const migrated = window.localStorage.getItem('openspell:performance-chart:v2:synthetic-profile');
+    expect(migrated).not.toBeNull();
+    expect(JSON.parse(migrated as string)).toMatchObject({
+      version: 2,
+      granularity: 'W',
+      presentations: { sales: { mark: 'line', axis: 'right' } },
     });
   });
 
