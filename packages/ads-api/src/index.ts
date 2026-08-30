@@ -223,9 +223,12 @@ export type {
 
 // Sponsored Brands read-only ad/asset contract probe
 export {
+  CREATIVE_ASSET_SEARCH_MEDIA_TYPE,
   CREATIVE_ASSET_SEARCH_PATH,
   SB_AD_LIST_PATH,
   SB_AD_MEDIA_TYPE,
+  buildCreativeAssetProbeBody,
+  buildSbAdProbeBody,
   parseCreativeAssetProbePage,
   parseCreativeAssetProbeRow,
   parseSbAdProbePage,
@@ -239,9 +242,15 @@ export type {
   SbAdsReportProbeRow,
 } from './sb-ads-report.js';
 export type {
+  CreativeAssetProbeOptions,
   CreativeAssetProbePage,
   CreativeAssetProbeRow,
+  CreativeAssetRange,
+  CreativeAssetRangeFilter,
+  CreativeAssetValueFilter,
   SbAdAssetReference,
+  SbAdNameFilter,
+  SbAdProbeOptions,
   SbAdProbePage,
   SbAdProbeRow,
 } from './sb-ad-assets.js';

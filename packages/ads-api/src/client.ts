@@ -85,12 +85,17 @@ import {
   type ReportMetadata,
 } from './reports.js';
 import {
+  CREATIVE_ASSET_SEARCH_MEDIA_TYPE,
   CREATIVE_ASSET_SEARCH_PATH,
   SB_AD_LIST_PATH,
   SB_AD_MEDIA_TYPE,
+  buildCreativeAssetProbeBody,
+  buildSbAdProbeBody,
   parseCreativeAssetProbePage,
   parseSbAdProbePage,
+  type CreativeAssetProbeOptions,
   type CreativeAssetProbePage,
+  type SbAdProbeOptions,
   type SbAdProbePage,
 } from './sb-ad-assets.js';
 import {
@@ -906,43 +911,175 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
   }
 
   /**
-   * Fetch exactly one Sponsored Brands ads page for a non-persisting contract
-   * probe. Pagination and promotion stay disabled until a live response proves
-   * the provider's current token and identity fields.
+   * Walk the complete Sponsored Brands ad result. Provider rows are preserved,
+   * including duplicate ad ids, so the caller can classify ambiguous identity
+   * without a client-side deduplication hiding evidence.
    */
-  async probeSbAdsPage(profileId: string): Promise<SbAdProbePage> {
-    const result = await httpRequest(this.ctx, {
-      method: 'POST',
-      url: `${hostFor(this.region)}${SB_AD_LIST_PATH}`,
-      path: SB_AD_LIST_PATH,
-      headers: this.headers({
-        profileId,
-        contentType: SB_AD_MEDIA_TYPE,
-        accept: SB_AD_MEDIA_TYPE,
-      }),
-      body: JSON.stringify({ maxResults: SB_LIST_MAX_PAGE_SIZE }),
-      idempotent: true,
-    });
-    return parseSbAdProbePage(this.json(result, `POST ${SB_AD_LIST_PATH}`));
+  async probeSbAdsPage(
+    profileId: string,
+    options: SbAdProbeOptions = {},
+  ): Promise<SbAdProbePage> {
+    const requested = options.maxResults ?? SB_LIST_MAX_PAGE_SIZE;
+    if (!Number.isInteger(requested) || requested < 1) {
+      throw new AdsApiParseError(`${SB_AD_LIST_PATH} maxResults must be a positive integer`);
+    }
+    const maxResults = Math.min(requested, SB_LIST_MAX_PAGE_SIZE);
+    const items: SbAdProbePage['items'] = [];
+    const seenTokens = new Set<string>();
+    let expectedTotal: number | null = null;
+    let nextToken: string | null = null;
+
+    for (;;) {
+      const result = await httpRequest(this.ctx, {
+        method: 'POST',
+        url: `${hostFor(this.region)}${SB_AD_LIST_PATH}`,
+        path: SB_AD_LIST_PATH,
+        headers: this.headers({
+          profileId,
+          contentType: SB_AD_MEDIA_TYPE,
+          accept: SB_AD_MEDIA_TYPE,
+        }),
+        body: JSON.stringify(buildSbAdProbeBody(options, nextToken, maxResults)),
+        // This POST only lists ads, so retrying a throttled/failed request is safe.
+        idempotent: true,
+      });
+      const page = parseSbAdProbePage(this.json(result, `POST ${SB_AD_LIST_PATH}`));
+      if (
+        expectedTotal !== null
+        && page.totalResults !== null
+        && page.totalResults !== expectedTotal
+      ) {
+        throw new AdsApiParseError(`${SB_AD_LIST_PATH} changed totalResults during pagination`);
+      }
+      expectedTotal ??= page.totalResults;
+      items.push(...page.items);
+      if (expectedTotal !== null && items.length > expectedTotal) {
+        throw new AdsApiParseError(`${SB_AD_LIST_PATH} returned more rows than totalResults`);
+      }
+
+      nextToken = page.nextToken;
+      if (nextToken === null) {
+        if (expectedTotal !== null && items.length !== expectedTotal) {
+          throw new AdsApiParseError(`${SB_AD_LIST_PATH} row count does not match totalResults`);
+        }
+        return {
+          items,
+          sourceRows: items.length,
+          totalResults: expectedTotal,
+          nextToken: null,
+        };
+      }
+      if (page.sourceRows === 0) {
+        throw new AdsApiParseError(`${SB_AD_LIST_PATH} pagination stalled on an empty page`);
+      }
+      if (expectedTotal !== null && items.length >= expectedTotal) {
+        throw new AdsApiParseError(`${SB_AD_LIST_PATH} returned a continuation token after totalResults`);
+      }
+      if (seenTokens.has(nextToken)) {
+        throw new AdsApiParseError(`${SB_AD_LIST_PATH} repeated a continuation token`);
+      }
+      seenTokens.add(nextToken);
+    }
   }
 
-  /** One Creative Asset Library page, read-only and deliberately unpaginated. */
-  async probeCreativeAssetsPage(profileId: string): Promise<CreativeAssetProbePage> {
-    const result = await httpRequest(this.ctx, {
-      method: 'POST',
-      url: `${hostFor(this.region)}${CREATIVE_ASSET_SEARCH_PATH}`,
-      path: CREATIVE_ASSET_SEARCH_PATH,
-      headers: this.headers({
-        profileId,
-        contentType: 'application/json',
-        accept: 'application/json',
-      }),
-      body: '{}',
-      idempotent: true,
-    });
-    return parseCreativeAssetProbePage(
-      this.json(result, `POST ${CREATIVE_ASSET_SEARCH_PATH}`),
-    );
+  /**
+   * Walk the complete Creative Asset Library result. Asset ids are the
+   * authoritative identity; duplicates fail the probe instead of being
+   * silently collapsed into one creative.
+   */
+  async probeCreativeAssetsPage(
+    profileId: string,
+    options: CreativeAssetProbeOptions = {},
+  ): Promise<CreativeAssetProbePage> {
+    const pageSize = options.pageSize ?? 500;
+    if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 500) {
+      throw new AdsApiParseError(
+        `${CREATIVE_ASSET_SEARCH_PATH} pageSize must be an integer from 1 through 500`,
+      );
+    }
+    const items: CreativeAssetProbePage['items'] = [];
+    const seenAssetIds = new Set<AmazonId>();
+    const seenTokens = new Set<string>();
+    let expectedTotal: number | null = null;
+    let nextToken: string | null = null;
+    let pageNumber = 0;
+
+    for (;;) {
+      const result = await httpRequest(this.ctx, {
+        method: 'POST',
+        url: `${hostFor(this.region)}${CREATIVE_ASSET_SEARCH_PATH}`,
+        path: CREATIVE_ASSET_SEARCH_PATH,
+        headers: this.headers({
+          profileId,
+          contentType: 'application/json',
+          accept: CREATIVE_ASSET_SEARCH_MEDIA_TYPE,
+        }),
+        body: JSON.stringify(
+          buildCreativeAssetProbeBody(options, nextToken, pageNumber, pageSize),
+        ),
+        // Asset search is read-only despite using POST.
+        idempotent: true,
+      });
+      const page = parseCreativeAssetProbePage(
+        this.json(result, `POST ${CREATIVE_ASSET_SEARCH_PATH}`),
+      );
+      if (
+        expectedTotal !== null
+        && page.totalRecords !== null
+        && page.totalRecords !== expectedTotal
+      ) {
+        throw new AdsApiParseError(
+          `${CREATIVE_ASSET_SEARCH_PATH} changed totalRecords during pagination`,
+        );
+      }
+      expectedTotal ??= page.totalRecords;
+      for (const item of page.items) {
+        if (seenAssetIds.has(item.assetId)) {
+          throw new AdsApiParseError(
+            `${CREATIVE_ASSET_SEARCH_PATH} returned a duplicate authoritative assetId`,
+          );
+        }
+        seenAssetIds.add(item.assetId);
+        items.push(item);
+      }
+      if (expectedTotal !== null && items.length > expectedTotal) {
+        throw new AdsApiParseError(
+          `${CREATIVE_ASSET_SEARCH_PATH} returned more rows than totalRecords`,
+        );
+      }
+
+      nextToken = page.nextToken;
+      if (nextToken === null) {
+        if (expectedTotal !== null && items.length !== expectedTotal) {
+          throw new AdsApiParseError(
+            `${CREATIVE_ASSET_SEARCH_PATH} row count does not match totalRecords`,
+          );
+        }
+        return {
+          items,
+          sourceRows: items.length,
+          totalRecords: expectedTotal,
+          nextToken: null,
+        };
+      }
+      if (page.sourceRows === 0) {
+        throw new AdsApiParseError(
+          `${CREATIVE_ASSET_SEARCH_PATH} pagination stalled on an empty page`,
+        );
+      }
+      if (expectedTotal !== null && items.length >= expectedTotal) {
+        throw new AdsApiParseError(
+          `${CREATIVE_ASSET_SEARCH_PATH} returned a continuation token after totalRecords`,
+        );
+      }
+      if (seenTokens.has(nextToken)) {
+        throw new AdsApiParseError(
+          `${CREATIVE_ASSET_SEARCH_PATH} repeated a continuation token`,
+        );
+      }
+      seenTokens.add(nextToken);
+      pageNumber += 1;
+    }
   }
 
   /**
