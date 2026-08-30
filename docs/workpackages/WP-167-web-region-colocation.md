@@ -51,6 +51,34 @@ or does not improve the database-bound paths, do not promote it. A region change
 is reversible by promoting the last verified deployment; it needs no database
 rollback.
 
+## Hosted A/B evidence
+
+Two staged production deployments used the same production configuration
+without moving the public custom domain. The control was the exact parent
+revision with Vercel's default `iad1` placement. The treatment was the exact
+WP-167 revision with `fra1`. Response headers confirmed both runtime regions.
+
+Both candidates passed the exact-revision gate twice, rendered all eleven
+authenticated routes, returned identical response-byte counts route by route,
+and reconciled the complete Grid result to its declared count with no
+truncation. The real row count remains runtime evidence and is not copied into
+this public brief.
+
+| Boundary | `iad1` control, two runs | `fra1` treatment, two runs |
+|---|---:|---:|
+| Dashboard document | 4.857–5.447 s | 2.766–3.266 s |
+| Grid document | 4.254–5.324 s | 2.815–3.156 s |
+| Complete Grid request wall time | 5.272–5.807 s | 3.295–3.864 s |
+| Grid server total | 1.897–2.472 s | 0.573–0.644 s |
+| Grid actor verification | 0.325–0.495 s | 0.090–0.218 s |
+| Grid role and connection receipt | 0.657–0.675 s | 0.038–0.047 s |
+| Grid row aggregation | 0.750–1.130 s | 0.310–0.377 s |
+
+The treatment improved every compared boundary while preserving the exact
+artifact and result assertions. Colocation is therefore accepted; authentication
+and pooling changes remain separate hypotheses rather than being bundled into
+this package.
+
 ## Verification
 
 Run the focused configuration test, web typecheck, full repository check,
