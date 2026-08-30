@@ -8,7 +8,7 @@ This map separates claims that must not be collapsed into one “supported” la
 4. the complete path has been verified against an authoritative live response.
 
 A client method or passing fixture is not a live product capability. The repository evidence below
-is revision-stamped to `f1b9efc1813247ab72a36dbeca56e1e96bf069d1`, the reviewed `origin/main`
+is revision-stamped to `d7beb710dc4d98996fa8ef65d1a929276ad5e06f`, the reviewed `origin/main`
 base on 2026-08-30. “Implemented” means present at that revision; it does not imply that production
 serves that revision or that Amazon accepted the request.
 
@@ -57,7 +57,7 @@ directly.
 | SB and Display campaign reports | Reporting v3 | Implemented | Legacy upsert loader, not complete-date replacement | Dashboard and Grid rollups | Available with weaker restatement semantics than SP |
 | SB ad-level video report | Reporting v3 | Contract and parser implemented | Observed ad-to-asset mapping gates implemented | Creative Performance | Authoritative live Asset-ID/version and row-count parity remains open |
 | SP suggested keyword and product-target bids | Product-specific recommendation APIs | Implemented and batch-counted | Bid-corridor evidence implemented | Target context and optimizer inputs | Read-only evidence; a suggestion is never a write instruction |
-| SP/SB/SD campaign budget usage | The pinned guide names `/sp/campaigns/budget/usage`, `/sb/campaigns/budget/usage` and `/sd/campaigns/budget/usage`; the pinned Postman collection mistakenly repeats the SP path for its SB item | Current client instead calls `/budgets/usage/campaigns`, which matches neither the product-specific guide nor the confirmed SP/SD collection paths | Not connected | Not exposed | **Source disagreement and no live response; do not count as usable** |
+| SP/SB/SD campaign budget usage | The pinned guide names `/sp/campaigns/budget/usage`, `/sb/campaigns/budget/usage` and `/sd/campaigns/budget/usage`; the pinned Postman collection mistakenly repeats the SP path for its SB item | Implemented with product-specific endpoints, bounded batches, and strict indexed success/error reconciliation | Not connected | Not exposed | Fixture-verified client only; provider availability and batch ceiling have no authoritative live proof |
 | Asset Library search and lookup | `/assets`, `/assets/search` | Narrow, page-scoped `/assets/search` probe | Current-snapshot observed ingestion | Creative Performance source gate | Not a complete catalog, picker or moderation gate |
 | Asset Library upload and registration | `/assets/upload`, pre-signed object upload, then `/assets/register`; registration returns `versionId` | Missing. Existing `/media/upload` is deprecated; `/media/describe` is legacy original-video retrieval. Neither implements Asset Library registration | Missing | Missing | Not usable |
 | Legacy SB media and creative resources | Deprecated `/media/upload`, legacy `/media/describe` original-video retrieval, plus legacy SB v4 creative resources | Implemented client | No guarded worker workflow | Not exposed | Client presence is not current Asset Library support |

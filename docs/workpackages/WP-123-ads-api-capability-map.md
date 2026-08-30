@@ -37,6 +37,6 @@ part of this package.
 - HTTP client ownership remains in `packages/ads-api`; `apps/worker` owns the database-aware adapter
   and Amazon job execution even when the Vercel cron invokes them from the web server process.
 - Budget usage records the pinned Postman collection's duplicated SP path under its SB item, keeps
-  the migration guide's `/sb/campaigns/budget/usage` claim distinct, and remains provider-unverified
-  without a live response.
+  the migration guide's `/sb/campaigns/budget/usage` claim distinct, reflects the corrected
+  product-specific client paths, and remains provider-unverified without a live response.
 - Public-repository hygiene passes.
