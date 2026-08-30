@@ -94,6 +94,28 @@ and export, creating a second and observably different Grid.
 - Typecheck, lint, tests, hygiene, production build, Playwright, and an explicit
   no-Amazon-call source assertion pass.
 
+## Verification evidence
+
+The authenticated browser harness runs the 3,597-row performance proof in a
+dedicated Next development process between the tag/navigation suite and the full
+auth/role suite. This preserves the real session-cookie and data-loading boundary
+while releasing the large fixture and compiled Grid route before unrelated routes
+are exercised.
+
+- Reference development run: 1,530.97 ms to usable, 79,968-byte initial document,
+  1,287,413-byte row response, exactly 3,597 rows, one settled row request, and an
+  exact 3,597-row CSV export.
+- The complete local sequence passed 31 tag/navigation checks, the isolated Grid
+  performance check, and 29 auth/role checks in separate processes without a server
+  restart or out-of-memory failure.
+- The product target remains under 2,000 ms on the reference development machine.
+  Shared CI runners use a separate 4,000 ms regression ceiling because they are not
+  the reference hardware; all count, byte, request, and export assertions are
+  identical in both environments.
+
+Hosted CI and deployed production latency remain release gates for the exact merged
+revision; local evidence is not presented as a live-performance claim.
+
 ## Out of scope
 
 This package performs no migration, production write, Amazon call, server-side Grid

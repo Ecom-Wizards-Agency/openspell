@@ -1,10 +1,10 @@
 /**
  * End-to-end configuration for auth, OAuth and roles (WP-04).
  *
- * There is no default `playwright.config.ts` in this app on purpose: the two
- * browser suites need two incompatible servers, so each has a named config and
- * `e2e/run.ts` is the only supported entry point. See the header of that file
- * for why the split exists.
+ * There is no default `playwright.config.ts` in this app on purpose: the
+ * browser suites have different server or process-isolation needs, so each has
+ * a named config and `e2e/run.ts` is the only supported entry point. See the
+ * header of that file for why the split exists.
  *
  * One worker and no retries: every spec in this suite shares one database and
  * one connected Amazon account, and a parallel run of tests that toggle the
@@ -21,10 +21,14 @@ import { BASE_URL } from './e2e/support/fixture';
 export default defineConfig({
   testDir: './e2e',
   // `guards.spec.ts` rides this config because it needs the same thing the
-  // other two do and one thing only this suite has: a session that can be
+  // other authenticated specs do and one thing only this suite has: a session that can be
   // absent. The WP-08 config arms the header bridge, so every request there is
   // authenticated before it is routed and "anonymous" cannot be expressed.
-  testMatch: /(oauth|roles|guards|members|dashboard|grid(?:-performance)?|profile-context)\.spec\.ts$/,
+  // The 3,597-row Grid performance fixture has its own process/configuration.
+  // Keeping it here makes Next dev retain that route graph and payload while
+  // compiling every guarded route, eventually exhausting the bounded E2E heap
+  // on shared runners for reasons unrelated to the later role assertions.
+  testMatch: /(oauth|roles|guards|members|dashboard|grid|profile-context)\.spec\.ts$/,
   globalSetup: './e2e/global-setup.ts',
   globalTeardown: './e2e/global-teardown.ts',
   outputDir: './node_modules/.cache/playwright/auth',
