@@ -49,7 +49,7 @@ describe.skipIf(!available)('WP-58 creative performance database', () => {
   beforeAll(async () => {
     database = await createTestDatabase('wp58_creative');
     const [org] = await database.sql<{ seed_tenant_fixture: string }[]>`
-      select app.seed_tenant_fixture('creative-alpha', ${OWNER}, 'owner')
+      select app.seed_tenant_fixture('creative-alpha', ${OWNER}, 'owner', '2026-08-29')
     `;
     orgId = org?.seed_tenant_fixture ?? '';
     const [profile] = await database.sql<{ id: string }[]>`
