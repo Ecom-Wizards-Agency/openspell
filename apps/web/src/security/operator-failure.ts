@@ -16,8 +16,8 @@ export function operatorFailureLabel(error: string | null | undefined): string |
   if (/authorization could not be verified/.test(normalized)) {
     return 'The authorization could not be verified. Start the connection again.';
   }
-  if (/different browser session/.test(normalized)) {
-    return 'The authorization was opened in a different browser session. Start again here.';
+  if (/different (?:browser )?session/.test(normalized)) {
+    return 'The authorization was opened in a different session. Start again here.';
   }
   if (/authorization state was altered/.test(normalized)) {
     return 'The altered authorization response was rejected. Nothing was stored.';

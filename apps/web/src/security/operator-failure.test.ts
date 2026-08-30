@@ -38,5 +38,8 @@ describe('operator failure labels', () => {
     expect(operatorFailureLabel('the authorization state was altered and was rejected')).toBe(
       'The altered authorization response was rejected. Nothing was stored.',
     );
+    expect(operatorFailureLabel('this authorization was started by a different session')).toBe(
+      'The authorization was opened in a different session. Start again here.',
+    );
   });
 });
