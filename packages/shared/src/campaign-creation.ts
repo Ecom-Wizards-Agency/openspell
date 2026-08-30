@@ -826,6 +826,7 @@ export const CampaignCreationPlan = z.object({
   }
 
   const requirementOwners = new Map<string, string>();
+  const automaticCollectionAdGroupOwners = new Map<string, string>();
   for (const [index, node] of plan.nodes.entries()) {
     const identity = requirementIdentityKey(node);
     if (identity === undefined) continue;
@@ -1022,6 +1023,17 @@ export const CampaignCreationPlan = z.object({
         }
         case 'sb_product_collection_automatic': {
           requireCampaignBrand(payload.brand);
+          const adGroupKey = referenceKey(payload.adGroup);
+          const existingAdNodeId = automaticCollectionAdGroupOwners.get(adGroupKey);
+          if (existingAdNodeId !== undefined) {
+            context.addIssue({
+              code: 'custom',
+              path: ['nodes', index, 'payload', 'adGroup'],
+              message: `automatic Sponsored Brands collection ad group is already used by node ${existingAdNodeId}`,
+            });
+          } else {
+            automaticCollectionAdGroupOwners.set(adGroupKey, node.nodeId);
+          }
           if (payload.logoAsset !== null) {
             requireCheckedResource(payload.logoAsset, 'asset', 'logo');
           }
@@ -1090,6 +1102,19 @@ export const CampaignCreationPlan = z.object({
           && parentCampaign.payload.settings.targetingType === 'manual'
           && hasAutomaticClause) {
           context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', 'expression'], message: 'manual Sponsored Products campaigns cannot create automatic targeting clauses' });
+        }
+      }
+      if (node.adProduct === 'SP'
+        && parentCampaign?.kind === 'campaign.create'
+        && parentCampaign.payload.settings.product === 'SP'
+        && parentCampaign.payload.settings.targetingType === 'auto'
+        && node.payload.polarity === 'positive') {
+        const automaticOnly = node.payload.targetType === 'expression'
+          && node.payload.expression.every(
+            (expression) => AutomaticExpression.safeParse(expression).success,
+          );
+        if (!automaticOnly) {
+          context.addIssue({ code: 'custom', path: ['nodes', index, 'payload'], message: 'automatic Sponsored Products campaigns cannot create positive manual targets' });
         }
       }
       if (parentCampaign?.kind === 'campaign.create'
@@ -1427,9 +1452,8 @@ export const CampaignCreationExecutionSnapshot = z.object({
     context.addIssue({ code: 'custom', path: ['status'], message: 'blocked execution requires a terminal preflight or dependency block before any create attempt' });
   }
   if (snapshot.status === 'running'
-    && (counts.pendingDispatch + counts.readChecksPending === 0
-      || counts.pendingObservation !== 0)) {
-    context.addIssue({ code: 'custom', path: ['status'], message: 'running execution requires dispatch or preflight work and cannot hide observation-only work' });
+    && counts.pendingDispatch + counts.readChecksPending === 0) {
+    context.addIssue({ code: 'custom', path: ['status'], message: 'running execution requires dispatch or preflight work' });
   }
 });
 export type CampaignCreationExecutionSnapshot = z.infer<
@@ -1484,8 +1508,8 @@ export const CampaignCreationExecutionEvidence = z.object({
     if (instantMillis(result.startedAt) < instantMillis(evidence.plan.frozenAt)) {
       context.addIssue({ code: 'custom', path: ['providerResults', index, 'startedAt'], message: 'provider work cannot begin before the plan is frozen' });
     }
-    if (instantMillis(result.startedAt) > instantMillis(evidence.plan.expiresAt)) {
-      context.addIssue({ code: 'custom', path: ['providerResults', index, 'startedAt'], message: 'provider work cannot begin after the plan expires' });
+    if (instantMillis(result.startedAt) >= instantMillis(evidence.plan.expiresAt)) {
+      context.addIssue({ code: 'custom', path: ['providerResults', index, 'startedAt'], message: 'provider work cannot begin at or after the plan expires' });
     }
     if (node?.effect === 'read_check' && result.effect === 'read_check'
       && result.outcome === 'passed'
