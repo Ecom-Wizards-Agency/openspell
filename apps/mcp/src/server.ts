@@ -43,7 +43,8 @@ import { FILTER_OPERATORS } from './sql.js';
 import type { DateWindow, FactQuerySpec, FilterCondition, SortSpec } from './sql.js';
 import type { McpConfig } from './config.js';
 
-export const SERVER_NAME = 'wizard-ads';
+export const SERVER_NAME = 'openspell';
+export const PRODUCT_NAME = 'OpenSpell';
 export const SERVER_VERSION = '0.1.0';
 
 export interface ServerContext {

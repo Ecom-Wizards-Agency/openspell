@@ -144,6 +144,10 @@ describe.skipIf(!available)('the MCP server', () => {
   it('serves an analytical-read-only production catalog', async () => {
     const client = await connect(server, tokenA);
     try {
+      expect(client.getServerVersion()).toMatchObject({
+        name: 'openspell',
+        version: '0.1.0',
+      });
       const { tools } = await client.listTools();
       const names = tools.map((tool) => tool.name).sort();
       expect(names).toEqual(
@@ -808,7 +812,8 @@ describe.skipIf(!available)('the MCP server', () => {
     expect(health.status).toBe(200);
     expect(await health.json()).toEqual({
       status: 'ready',
-      service: 'wizard-ads',
+      service: 'openspell',
+      product: 'OpenSpell',
       version: '0.1.0',
       revision: 'abcdef123456',
       checks: { database: 'ready' },
@@ -839,7 +844,7 @@ async function connect(server: RunningServer, token: string): Promise<Client> {
   const transport = new StreamableHTTPClientTransport(new URL(server.url), {
     requestInit: { headers: { Authorization: `Bearer ${token}` } },
   });
-  const client = new Client({ name: 'wizard-ads-test-client', version: '0.0.0' });
+  const client = new Client({ name: 'openspell-test-client', version: '0.0.0' });
   await client.connect(transport);
   return client;
 }
@@ -875,7 +880,7 @@ async function status(server: RunningServer, token: string | undefined): Promise
     }),
   });
   if (response.status === 401) {
-    expect(response.headers.get('www-authenticate')).toContain('Bearer');
+    expect(response.headers.get('www-authenticate')).toBe('Bearer realm="openspell"');
   }
   return response.status;
 }

@@ -29,6 +29,9 @@ export default defineConfig({
   // compiling every guarded route, eventually exhausting the bounded E2E heap
   // on shared runners for reasons unrelated to the later role assertions.
   testMatch: /(oauth|roles|guards|members|dashboard|grid|profile-context)\.spec\.ts$/,
+  // The cross-route dashboard acceptance file compiles several large operator
+  // routes and owns a fresh Next process through its dedicated configuration.
+  testIgnore: /route-acceptance\.dashboard\.spec\.ts$/,
   globalSetup: './e2e/global-setup.ts',
   globalTeardown: './e2e/global-teardown.ts',
   outputDir: './node_modules/.cache/playwright/auth',

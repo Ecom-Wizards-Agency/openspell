@@ -18,7 +18,12 @@ import { createDb } from '@wizard-ads/db';
 import type { DbHandle } from '@wizard-ads/db';
 import { AuthError } from './errors.js';
 import { verifyApiKey } from './keys.js';
-import { createMcpServer, SERVER_NAME, SERVER_VERSION } from './server.js';
+import {
+  createMcpServer,
+  PRODUCT_NAME,
+  SERVER_NAME,
+  SERVER_VERSION,
+} from './server.js';
 import type { McpConfig } from './config.js';
 
 export const MCP_PATH = '/mcp';
@@ -100,7 +105,7 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
     } catch (error) {
       const status = error instanceof AuthError ? error.status : 401;
       const reason = error instanceof AuthError ? error.reason : 'unauthorized';
-      res.setHeader('WWW-Authenticate', 'Bearer realm="wizard-ads"');
+      res.setHeader('WWW-Authenticate', 'Bearer realm="openspell"');
       respond(res, status, {
         jsonrpc: '2.0',
         error: { code: -32001, message: reason },
@@ -151,6 +156,7 @@ function healthPayload(config: McpConfig, status: 'ready' | 'not_ready') {
   return {
     status,
     service: SERVER_NAME,
+    product: PRODUCT_NAME,
     version: SERVER_VERSION,
     revision: publicRevision(config.revision),
     checks: { database: status === 'ready' ? 'ready' : 'not_ready' },
