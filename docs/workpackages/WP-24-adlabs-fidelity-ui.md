@@ -1,6 +1,6 @@
 # WP-24 — AdLabs-fidelity UI round 2 (from the operator Cap video)
 
-**Owner:** Opus · **Phase:** v1 polish · **Depends on:** WP-23 (merged) · design-director + dataviz skills
+**Owner:** Opus · **Phase:** v1 polish · **Depends on:** WP-23 (merged) · ecom-wizards-brand visual-quality review + dataviz skills
 
 Source: Cap video `93nt5nwjwcfzx8n`. He likes v1 + dark mode; wants closer AdLabs parity. Every
 item below is a real ask from that recording. Presentation-only where possible; new read-only

@@ -17,7 +17,7 @@ These two are the rare case where losing `disable-model-invocation` is a feature
 problem. `Use when reading or editing any .ts or .tsx file` is exactly when they should fire, so
 auto-invocation is the wanted behavior.
 
-Five further pstack skills are installed globally in `company-ai-skills/skills/` (`architect`,
-`blast-radius`, `reflect`, `why`, `unslop`, plus `show-me-your-work` and
-`principle-encode-lessons-in-structure`). The audit behind the selection is in the personal vault at
+The engineering capability pack is installed globally from `company-ai-skills/skills/`:
+`software-architecture`, `software-change-impact`, `reflect`, `why-rationale-research`,
+`unslop`, `show-me-your-work`, and `company-skill-maintenance`. The audit behind the selection is in the personal vault at
 `Learning/tools/pstack-skill-audit.md`.

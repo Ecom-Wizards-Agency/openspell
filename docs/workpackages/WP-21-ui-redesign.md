@@ -16,7 +16,7 @@ never launches looking like a clone.
 - `tools/recon/00-INDEX.md` then `01-navigation-map.md`, `02-data-grid.md`, `03-dashboards.md`,
   `04-optimizer.md`, `06-tags.md`, `09-settings-and-admin.md` — UI-verified AdLabs layout.
 - `tools/recon/screenshots/` — 13 real screenshots for visual reference.
-- Load the **design-director skill** (Skill tool) before designing, and the **dataviz skill**
+- Load the **ecom-wizards-brand visual-quality review** before designing, and the **dataviz skill**
   before touching any chart/metric-tile styling.
 - Current frame: `apps/web/src/ui/{nav.tsx,tokens.ts,shell.tsx}`, `app/layout.tsx`, and the
   per-route pages under `app/`.
