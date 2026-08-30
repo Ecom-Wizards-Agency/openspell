@@ -517,7 +517,7 @@ export const EXPORT_CAMPAIGNS: unknown[] = [
   { adProduct: 'SPONSORED_DISPLAY' },
 ];
 
-/** `POST /budgets/usage/campaigns`: per-campaign failures arrive inside a 200. */
+/** Product-specific budget-usage endpoints return per-campaign failures inside a 200. */
 export const BUDGET_USAGE_RESPONSE = {
   success: [
     {

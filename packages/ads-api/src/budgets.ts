@@ -1,41 +1,64 @@
 /**
- * Budget usage.
+ * Sponsored-ads campaign budget usage.
  *
- * The second documented gap in `SPAdsApiDataSource`: whether a campaign is
- * budget-capped is not in any report, so the reference left it `None`/`False`
- * and pacing had to guess. It comes from a separate endpoint, and it is the
- * difference between "this campaign is underperforming" and "this campaign
- * stopped serving at 11am".
+ * Amazon exposes one product-specific endpoint for each sponsored-ad product.
+ * The request is a read despite being POST, so the shared HTTP layer may retry
+ * throttles, transport failures, and 5xx responses safely.
  *
- * The budget *amount* is not here — it is an attribute of the campaign and
- * arrives with the entity list. This is the consumed fraction, which only
- * Amazon knows.
- *
- * Amazon answers with a `success`/`error` pair rather than failing the call, so
- * a caller that reads only `success` silently loses campaigns. Both arrays are
- * returned, and the fixture suite asserts their combined length against the
- * number of ids sent.
+ * The response is an indexed `success`/`error` pair. Indexes are reconciled
+ * against the exact request batch here. A malformed, duplicate, missing, or
+ * mismatched row throws instead of silently turning an unknown campaign into
+ * "not budget capped".
  */
+import type { AdProduct } from '@wizard-ads/shared';
+import { AdsApiParseError } from './errors.js';
 import { isRecord, readId, readNumber, readString } from './read.js';
 
-export const BUDGET_USAGE_PATH = '/budgets/usage/campaigns';
-export const BUDGET_USAGE_MEDIA_TYPE = 'application/vnd.budgetusage.v1+json';
+export interface BudgetUsageEndpoint {
+  path: string;
+  accept: string;
+  contentType: string;
+}
 
-/** Amazon rejects oversized batches; the documented cap is 100 campaigns. */
+/** Product-specific paths verified against Amazon's pinned official collection. */
+export const BUDGET_USAGE_ENDPOINTS: Readonly<Record<AdProduct, BudgetUsageEndpoint>> = {
+  SP: {
+    path: '/sp/campaigns/budget/usage',
+    accept: 'application/vnd.spcampaignbudgetusage.v1+json',
+    contentType: 'application/json',
+  },
+  SB: {
+    path: '/sb/campaigns/budget/usage',
+    accept: 'application/json',
+    contentType: 'application/json',
+  },
+  SD: {
+    path: '/sd/campaigns/budget/usage',
+    accept: 'application/json',
+    contentType: 'application/json',
+  },
+};
+
+/**
+ * Conservative local batch size. The pinned collection does not state a
+ * provider maximum, so this must not be presented as Amazon's authoritative
+ * limit until a live capability probe or newer primary specification proves it.
+ */
 export const BUDGET_USAGE_BATCH_SIZE = 100;
 
 export interface BudgetUsage {
   campaignId: string;
   /** The campaign's configured budget, as Amazon reports it back. */
-  budget: number | null;
+  budget: number;
   /** Percentage of the budget consumed, 0-100 as Amazon sends it. */
-  budgetUsagePercent: number | null;
+  budgetUsagePercent: number;
   /** When Amazon last recomputed usage. Can lag the current hour. */
-  usageUpdatedTimestamp: string | null;
+  usageUpdatedTimestamp: string;
 }
 
 export interface BudgetUsageFailure {
-  campaignId: string | null;
+  /** The requested id at Amazon's response index, even when Amazon omits it. */
+  campaignId: string;
   code: string | null;
   details: string | null;
 }
@@ -43,22 +66,22 @@ export interface BudgetUsageFailure {
 export interface BudgetUsageResult {
   usage: BudgetUsage[];
   failures: BudgetUsageFailure[];
-  /** Campaign ids sent. `usage.length + failures.length` should equal it. */
+  /** Campaign ids sent. `usage.length + failures.length` always equals it. */
   requested: number;
 }
 
-export function buildBudgetUsageBody(
-  adProduct: string,
-  campaignIds: readonly string[],
-): Record<string, unknown> {
-  return { adProduct, campaignIds: [...campaignIds] };
+export function buildBudgetUsageBody(campaignIds: readonly string[]): Record<string, unknown> {
+  return { campaignIds: [...campaignIds] };
 }
 
-/** Split a large id list into batches Amazon will accept. */
+/** Split a large id list into bounded batches without losing input order. */
 export function batchCampaignIds(
   campaignIds: readonly string[],
   size = BUDGET_USAGE_BATCH_SIZE,
 ): string[][] {
+  if (!Number.isSafeInteger(size) || size <= 0) {
+    throw new RangeError('budget usage batch size must be a positive integer');
+  }
   const batches: string[][] = [];
   for (let i = 0; i < campaignIds.length; i += size) {
     batches.push([...campaignIds.slice(i, i + size)]);
@@ -66,39 +89,121 @@ export function batchCampaignIds(
   return batches;
 }
 
-export function parseBudgetUsageResponse(body: unknown): {
-  usage: BudgetUsage[];
-  failures: BudgetUsageFailure[];
-} {
-  const usage: BudgetUsage[] = [];
-  const failures: BudgetUsageFailure[] = [];
-  if (!isRecord(body)) return { usage, failures };
+function requiredArray(body: Record<string, unknown>, key: 'success' | 'error'): unknown[] {
+  const value = body[key];
+  if (!Array.isArray(value)) {
+    throw new AdsApiParseError(`budget usage response is missing ${key}[]`);
+  }
+  return value;
+}
 
-  const success = body['success'];
-  if (Array.isArray(success)) {
-    for (const entry of success) {
-      if (!isRecord(entry)) continue;
-      const campaignId = readId(entry, 'campaignId');
-      if (campaignId === null) continue;
-      usage.push({
-        campaignId,
-        budget: readNumber(entry, 'budget'),
-        budgetUsagePercent: readNumber(entry, 'budgetUsagePercent'),
-        usageUpdatedTimestamp: readString(entry, 'usageUpdatedTimestamp'),
-      });
-    }
+function responseIndex(entry: Record<string, unknown>, requested: readonly string[], kind: string): number {
+  const value = entry['index'];
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) >= requested.length) {
+    throw new AdsApiParseError(`budget usage ${kind} row has an invalid index`);
+  }
+  return value as number;
+}
+
+function requiredNumber(entry: Record<string, unknown>, key: string, index: number): number {
+  const value = readNumber(entry, key);
+  if (value === null || !Number.isFinite(value)) {
+    throw new AdsApiParseError(`budget usage success row ${index} is missing ${key}`);
+  }
+  return value;
+}
+
+function requiredString(entry: Record<string, unknown>, key: string, index: number): string {
+  const value = readString(entry, key);
+  if (value === null || value.trim() === '') {
+    throw new AdsApiParseError(`budget usage success row ${index} is missing ${key}`);
+  }
+  return value;
+}
+
+function firstNestedError(entry: Record<string, unknown>): Record<string, unknown> | null {
+  const nested = entry['errors'];
+  if (!Array.isArray(nested)) return null;
+  const first = nested[0];
+  return isRecord(first) ? first : null;
+}
+
+/**
+ * Parse and reconcile one response against the exact ids sent in that batch.
+ * This is an assertion boundary, not a permissive mapper.
+ */
+export function parseBudgetUsageResponse(
+  body: unknown,
+  requestedCampaignIds: readonly string[],
+): { usage: BudgetUsage[]; failures: BudgetUsageFailure[] } {
+  if (!isRecord(body)) {
+    throw new AdsApiParseError('budget usage response is not an object');
   }
 
-  const errors = body['error'] ?? body['errors'];
-  if (Array.isArray(errors)) {
-    for (const entry of errors) {
-      if (!isRecord(entry)) continue;
-      failures.push({
-        campaignId: readId(entry, 'campaignId'),
-        code: readString(entry, 'code'),
-        details: readString(entry, 'details') ?? readString(entry, 'message'),
-      });
+  const success = requiredArray(body, 'success');
+  const errors = requiredArray(body, 'error');
+  const usage: BudgetUsage[] = [];
+  const failures: BudgetUsageFailure[] = [];
+  const seenIndexes = new Set<number>();
+
+  const claimIndex = (entry: Record<string, unknown>, kind: string): number => {
+    const index = responseIndex(entry, requestedCampaignIds, kind);
+    if (seenIndexes.has(index)) {
+      throw new AdsApiParseError(`budget usage response repeats index ${index}`);
     }
+    seenIndexes.add(index);
+    return index;
+  };
+
+  for (const value of success) {
+    if (!isRecord(value)) {
+      throw new AdsApiParseError('budget usage success row is not an object');
+    }
+    const index = claimIndex(value, 'success');
+    const campaignId = readId(value, 'campaignId');
+    const expectedId = requestedCampaignIds[index];
+    if (campaignId === null || expectedId === undefined || campaignId !== expectedId) {
+      throw new AdsApiParseError(`budget usage success row ${index} does not match its requested campaign`);
+    }
+    usage.push({
+      campaignId,
+      budget: requiredNumber(value, 'budget', index),
+      budgetUsagePercent: requiredNumber(value, 'budgetUsagePercent', index),
+      usageUpdatedTimestamp: requiredString(value, 'usageUpdatedTimestamp', index),
+    });
+  }
+
+  for (const value of errors) {
+    if (!isRecord(value)) {
+      throw new AdsApiParseError('budget usage error row is not an object');
+    }
+    const index = claimIndex(value, 'error');
+    const expectedId = requestedCampaignIds[index];
+    if (expectedId === undefined) {
+      throw new AdsApiParseError(`budget usage error row ${index} has no requested campaign`);
+    }
+    const providerId = readId(value, 'campaignId');
+    if (providerId !== null && providerId !== expectedId) {
+      throw new AdsApiParseError(`budget usage error row ${index} does not match its requested campaign`);
+    }
+    const nested = firstNestedError(value);
+    failures.push({
+      campaignId: expectedId,
+      code:
+        readString(value, 'code') ??
+        readString(value, 'errorType') ??
+        (nested === null ? null : readString(nested, 'code')),
+      details:
+        readString(value, 'details') ??
+        readString(value, 'message') ??
+        (nested === null ? null : readString(nested, 'message')),
+    });
+  }
+
+  if (seenIndexes.size !== requestedCampaignIds.length) {
+    throw new AdsApiParseError(
+      `budget usage response accounted for ${seenIndexes.size} of ${requestedCampaignIds.length} requested campaigns`,
+    );
   }
 
   return { usage, failures };

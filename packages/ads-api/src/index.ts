@@ -117,13 +117,12 @@ export type { CreateExportInput, ExportKind, ExportMetadata, ExportStatus } from
 // Budgets
 export {
   BUDGET_USAGE_BATCH_SIZE,
-  BUDGET_USAGE_MEDIA_TYPE,
-  BUDGET_USAGE_PATH,
+  BUDGET_USAGE_ENDPOINTS,
   batchCampaignIds,
   buildBudgetUsageBody,
   parseBudgetUsageResponse,
 } from './budgets.js';
-export type { BudgetUsage, BudgetUsageFailure, BudgetUsageResult } from './budgets.js';
+export type { BudgetUsage, BudgetUsageEndpoint, BudgetUsageFailure, BudgetUsageResult } from './budgets.js';
 
 // Sponsored Products v3 writes
 export {

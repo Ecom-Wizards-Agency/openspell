@@ -28,8 +28,7 @@ import type {
 } from '@wizard-ads/shared';
 import { TokenProvider } from './auth.js';
 import {
-  BUDGET_USAGE_MEDIA_TYPE,
-  BUDGET_USAGE_PATH,
+  BUDGET_USAGE_ENDPOINTS,
   batchCampaignIds,
   buildBudgetUsageBody,
   parseBudgetUsageResponse,
@@ -1141,7 +1140,7 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
   /**
    * How much of each campaign's budget is spent.
    *
-   * Batched at Amazon's documented limit and reassembled, with both halves of
+   * Batched conservatively and reassembled, with both halves of
    * the response kept: Amazon reports per-campaign failures inside a 200, so a
    * caller reading only `success` would lose campaigns and never know.
    */
@@ -1152,22 +1151,23 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
   ): Promise<BudgetUsageResult> {
     const usage: BudgetUsage[] = [];
     const failures: BudgetUsageFailure[] = [];
+    const endpoint = BUDGET_USAGE_ENDPOINTS[adProduct];
 
     for (const batch of batchCampaignIds(campaignIds)) {
       const result = await httpRequest(this.ctx, {
         method: 'POST',
-        url: `${hostFor(this.region)}${BUDGET_USAGE_PATH}`,
-        path: BUDGET_USAGE_PATH,
+        url: `${hostFor(this.region)}${endpoint.path}`,
+        path: endpoint.path,
         headers: this.headers({
           profileId,
-          contentType: BUDGET_USAGE_MEDIA_TYPE,
-          accept: BUDGET_USAGE_MEDIA_TYPE,
+          contentType: endpoint.contentType,
+          accept: endpoint.accept,
         }),
-        body: JSON.stringify(buildBudgetUsageBody(amazonAdProduct(adProduct), batch)),
+        body: JSON.stringify(buildBudgetUsageBody(batch)),
         // A usage read changes nothing, whatever the verb says.
         idempotent: true,
       });
-      const parsed = parseBudgetUsageResponse(this.json(result, `POST ${BUDGET_USAGE_PATH}`));
+      const parsed = parseBudgetUsageResponse(this.json(result, `POST ${endpoint.path}`), batch);
       usage.push(...parsed.usage);
       failures.push(...parsed.failures);
     }
