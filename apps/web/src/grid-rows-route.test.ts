@@ -225,7 +225,7 @@ describe.skipIf(!available)('Grid rows route', () => {
       'total',
     ]);
     expect(serverTiming).toMatch(
-      /^actor;dur=\d+\.\d{2}, role;dur=\d+\.\d{2}, profile;dur=\d+\.\d{2}, rows;dur=\d+\.\d{2}, serialize;dur=\d+\.\d{2}, total;dur=\d+\.\d{2}$/,
+      /^actor;dur=\d+\.\d{2}, role;dur=\d+\.\d{2}, profile;dur=\d+\.\d{2}, rows;dur=\d+\.\d{2}, serialize;dur=\d+\.\d{2}, close;dur=\d+\.\d{2}, total;dur=\d+\.\d{2}$/,
     );
     expect(serverTiming).not.toContain(profileA);
     expect(serverTiming).not.toContain(orgA);
@@ -243,14 +243,20 @@ describe.skipIf(!available)('Grid rows route', () => {
 
   it('requires a vouched-for member and hides foreign or unknown profiles equally', async () => {
     const invalidBridgeValue = ['wrong', 'bridge', 'value'].join('-');
-    expect((await request({ bridgeValue: invalidBridgeValue })).status).toBe(401);
-    expect((await request({ orgId: orgB })).status).toBe(403);
+    const unauthorized = await request({ bridgeValue: invalidBridgeValue });
+    const forbidden = await request({ orgId: orgB });
+    expect(unauthorized.status).toBe(401);
+    expect(forbidden.status).toBe(403);
+    expect(unauthorized.headers.has('server-timing')).toBe(false);
+    expect(forbidden.headers.has('server-timing')).toBe(false);
 
     const foreign = await request({ profile: profileB });
     const unknown = await request({ profile: UNKNOWN_PROFILE });
     expect(foreign.status).toBe(404);
     expect(unknown.status).toBe(404);
     expect(await foreign.json()).toEqual(await unknown.json());
+    expect(foreign.headers.has('server-timing')).toBe(false);
+    expect(unknown.headers.has('server-timing')).toBe(false);
   });
 
   it('rejects unsupported entities and impossible or inverted dates before querying rows', async () => {
@@ -261,6 +267,7 @@ describe.skipIf(!available)('Grid rows route', () => {
       request({ profile: 'not-a-profile' }),
     ]);
     expect(attempts.map((response) => response.status)).toEqual([400, 400, 400, 400]);
+    expect(attempts.every((response) => !response.headers.has('server-timing'))).toBe(true);
   });
 
 });

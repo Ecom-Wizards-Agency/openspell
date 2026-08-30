@@ -13,6 +13,7 @@ serialization before the next performance change is chosen.
 - `profile`: server-owned profile and currency lookup;
 - `rows`: selected entity aggregation and mapping;
 - `serialize`: bounded JSON serialization;
+- `close`: awaited database-client teardown;
 - `total`: complete measured route time.
 
 Only span names and millisecond durations are emitted. The API cannot attach tenant ids, profile

@@ -6,6 +6,7 @@ export const GRID_SERVER_TIMING_SPANS = [
   'profile',
   'rows',
   'serialize',
+  'close',
 ] as const;
 
 export type GridServerTimingSpan = (typeof GRID_SERVER_TIMING_SPANS)[number];
@@ -46,4 +47,15 @@ export class GridServerTiming {
       `total;dur=${totalMs.toFixed(2)}`,
     ].join(', ');
   }
+}
+
+/** Await database teardown before exposing the complete client-visible success timing. */
+export async function finalizeTimedGridResponse(
+  response: Response,
+  timing: GridServerTiming,
+  close: () => Promise<void>,
+): Promise<void> {
+  await close();
+  timing.mark('close');
+  response.headers.set('Server-Timing', timing.header());
 }

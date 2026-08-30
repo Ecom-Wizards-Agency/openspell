@@ -9,7 +9,7 @@ import {
   requestActor,
   RequestAuthError,
 } from '../../../../src/server/request-context';
-import { GridServerTiming } from './server-timing';
+import { finalizeTimedGridResponse, GridServerTiming } from './server-timing';
 import { serializeGridPayloadWithinBudget } from './serialize';
 
 export const runtime = 'nodejs';
@@ -83,7 +83,6 @@ function gridPayloadResponse(
     headers: {
       ...PRIVATE_RESPONSE_HEADERS,
       'Content-Type': 'application/json; charset=utf-8',
-      'Server-Timing': timing.header(),
     },
   });
 }
@@ -101,6 +100,7 @@ function gridErrorResponse(error: unknown): Response {
 export async function GET(request: Request): Promise<Response> {
   const timing = new GridServerTiming();
   let database: ReturnType<typeof openWebDatabase> | null = null;
+  let success: Response | null = null;
   try {
     database = openWebDatabase();
     const actor = await requestActor(request.headers);
@@ -131,10 +131,15 @@ export async function GET(request: Request): Promise<Response> {
     });
     timing.mark('rows');
 
-    return gridPayloadResponse(payload, timing);
+    success = gridPayloadResponse(payload, timing);
+    return success;
   } catch (error) {
     return gridErrorResponse(error);
   } finally {
-    await database?.close();
+    const openedDatabase = database;
+    if (openedDatabase !== null) {
+      if (success === null) await openedDatabase.close();
+      else await finalizeTimedGridResponse(success, timing, () => openedDatabase.close());
+    }
   }
 }
