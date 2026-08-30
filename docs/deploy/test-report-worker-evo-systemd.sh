@@ -78,7 +78,8 @@ if rg -n -- 'openspell-mcp|wizard-ads-mcp|cloudflared|docker' \
   exit 1
 fi
 private_locator_pattern='op:/''/'
-for forbidden_pattern in '/home/' "$private_locator_pattern" 'Environment=.*(DATABASE|SECRET|TOKEN)'; do
+for forbidden_pattern in '/home/' "$private_locator_pattern" 'Environment=HOME=' \
+  'Environment=.*(DATABASE|SECRET|TOKEN)'; do
   if rg -n -- "$forbidden_pattern" \
     "$unit" "$installer" "$rollback" "$launcher" "$contract" "$health" \
     "$verifier" "$normalizer"; then
