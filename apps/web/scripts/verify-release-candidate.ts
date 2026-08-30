@@ -13,10 +13,12 @@
  * this preflight proves the protected server artifact before alias movement.
  *
  * Usage:
- *   pnpm --filter @wizard-ads/web verify:release-candidate -- https://candidate.example
+ *   pnpm --filter @wizard-ads/web verify:release-candidate -- https://candidate.example <full-sha>
  */
 import { spawn } from 'node:child_process';
 import { chromium } from '@playwright/test';
+import { exactRevision } from '../src/performance/events';
+import { parseRevisionMetadata } from '../src/performance/revision';
 
 const PRODUCTION_ORIGIN = process.env['OPENSPELL_PRODUCTION_ORIGIN']
   ?? 'https://ads.ecomwizards.agency';
@@ -47,11 +49,32 @@ interface RouteResult {
   passed: boolean;
 }
 
+interface RevisionResult {
+  expected: string;
+  deployed: string | null;
+  passed: boolean;
+}
+
 async function main(): Promise<void> {
-  const candidate = candidateOrigin(process.argv.slice(2).find((argument) => argument !== '--'));
+  const supplied = process.argv.slice(2).filter((argument) => argument !== '--');
+  if (supplied.length !== 2) {
+    throw new Error('Pass the immutable candidate URL and its expected full Git commit SHA.');
+  }
+  const candidate = candidateOrigin(supplied[0]);
+  const expectedRevision = requiredRevision(supplied[1]);
   const production = new URL(PRODUCTION_ORIGIN);
   if (candidate.origin === production.origin) {
     throw new Error('Candidate must be an immutable deployment URL, not the production alias.');
+  }
+
+  // Performance evidence is attributable only when the running server proves
+  // the exact candidate revision. Fail before reading browser authentication
+  // or accepting any route duration when the metadata is absent or different.
+  const revision = await verifyRevision(candidate, expectedRevision);
+  if (!revision.passed) {
+    console.log(JSON.stringify({ candidate: candidate.origin, passed: false, revision, routes: [] }, null, 2));
+    process.exitCode = 1;
+    return;
   }
 
   const browser = await chromium.connectOverCDP(CDP_URL);
@@ -75,8 +98,24 @@ async function main(): Promise<void> {
   }
 
   const passed = results.every((result) => result.passed);
-  console.log(JSON.stringify({ candidate: candidate.origin, passed, routes: results }, null, 2));
+  console.log(JSON.stringify({ candidate: candidate.origin, passed, revision, routes: results }, null, 2));
   if (!passed) process.exitCode = 1;
+}
+
+async function verifyRevision(candidate: URL, expected: string): Promise<RevisionResult> {
+  const result = await requestCandidate(candidate, '/api/performance');
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(result.responseBody);
+  } catch {
+    // Invalid metadata is a closed failure below.
+  }
+  const deployed = parseRevisionMetadata(parsed)?.revision ?? null;
+  return {
+    expected,
+    deployed,
+    passed: result.exitCode === 0 && result.status === 200 && deployed === expected,
+  };
 }
 
 async function verifyRoute(
@@ -85,9 +124,25 @@ async function verifyRoute(
   cookieHeader: string,
 ): Promise<RouteResult> {
   const startedAt = performance.now();
+  const result = await requestCandidate(candidate, check.route, cookieHeader);
+  const artifactMatched = result.responseBody.includes(check.expectedText)
+    && !REJECTED_BODY.test(result.responseBody);
+  return {
+    route: check.route,
+    status: result.status,
+    checkDurationMs: Math.round(performance.now() - startedAt),
+    passed: result.exitCode === 0 && result.status === 200 && artifactMatched,
+  };
+}
+
+async function requestCandidate(
+  candidate: URL,
+  route: string,
+  cookieHeader?: string,
+): Promise<{ exitCode: number | null; status: number | null; responseBody: string }> {
   const args = [
     'curl',
-    check.route,
+    route,
     '--deployment',
     candidate.origin,
     '--',
@@ -109,16 +164,15 @@ async function verifyRoute(
     ? null
     : result.stdout.slice(markerIndex).match(new RegExp(`${STATUS_MARKER}(\\d{3})`));
   const status = statusMatch?.[1] === undefined ? null : Number(statusMatch[1]);
-  const artifactMatched = responseBody.includes(check.expectedText) && !REJECTED_BODY.test(responseBody);
   return {
-    route: check.route,
+    exitCode: result.exitCode,
     status,
-    checkDurationMs: Math.round(performance.now() - startedAt),
-    passed: result.exitCode === 0 && status === 200 && artifactMatched,
+    responseBody,
   };
 }
 
-function curlConfig(cookieHeader: string): string {
+function curlConfig(cookieHeader?: string): string {
+  if (cookieHeader === undefined) return 'max-time = 30\n';
   // curl config uses double-quoted values. Auth cookie values are URL-safe, but
   // escaping both special characters keeps this stdin boundary correct.
   if (/[\r\n]/.test(cookieHeader)) {
@@ -170,6 +224,12 @@ function candidateOrigin(input: string | undefined): URL {
     throw new Error('Candidate must be an immutable deployment owned by the OpenSpell project.');
   }
   return candidate;
+}
+
+function requiredRevision(input: string | undefined): string {
+  const revision = exactRevision(input);
+  if (revision === null) throw new Error('Expected revision must be a full lowercase Git commit SHA.');
+  return revision;
 }
 
 void main()

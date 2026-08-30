@@ -427,13 +427,14 @@ suite('grid and roster reads against SQL aggregates', () => {
     `;
 
     const startedAt = performance.now();
-    const { rows, truncated } = await loadGridRows(database, 'search_terms', {
+    const payload = await loadGridRows(database, 'search_terms', {
       orgId,
       profileId,
       currencyCode: 'USD',
       period: PERIOD,
       comparison: COMPARISON,
     });
+    const { rows, truncated } = payload;
     const elapsedMs = performance.now() - startedAt;
     const fixtureRows = rows.filter((row) =>
       String(row.dimensions['search_term']).startsWith('performance term '),
@@ -443,6 +444,9 @@ suite('grid and roster reads against SQL aggregates', () => {
     expect(fixtureRows).toHaveLength(3597);
     expect(fixtureRows.every((row) => row.dimensions['harvested'] === true)).toBe(true);
     expect(elapsedMs).toBeLessThan(process.env['CI'] === undefined ? 2_000 : 5_000);
+    expect(new TextEncoder().encode(JSON.stringify(payload)).byteLength).toBeLessThanOrEqual(
+      2 * 1024 * 1024,
+    );
   }, 20_000);
 
   it('renders one profile in one currency, and refuses to aggregate across two', async () => {

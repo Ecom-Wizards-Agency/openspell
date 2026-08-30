@@ -6,6 +6,8 @@ import { AppNav, NavBar } from '../src/ui/nav';
 import { BugWidget } from '../src/ui/bug-widget';
 import { ToastProvider } from '../src/ui/toast';
 import { THEME_SCRIPT } from '../src/ui/theme-script';
+import { PerformanceReporter } from '../src/performance/reporter';
+import { publicRevision } from '../src/performance/revision';
 
 const inter = Inter({
   subsets: ['latin'],
@@ -27,6 +29,7 @@ export const viewport: Viewport = {
 };
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
+  const revision = publicRevision().revision;
   const { currentUser } = await import('../src/auth/session');
   const user = await currentUser();
   let feedbackEnabled = user !== null;
@@ -66,6 +69,9 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>
       <body>
+        <Suspense fallback={null}>
+          <PerformanceReporter revision={revision} />
+        </Suspense>
         <ToastProvider>
           {/*
             The layout reads the session once for the frame. Anonymous screens
