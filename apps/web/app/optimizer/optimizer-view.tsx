@@ -16,7 +16,7 @@ import { Badge } from '../../src/ui/primitives';
 import { BidHistoryModal } from '../../src/ui/bid-history-modal';
 import type { CampaignReviewGroup, SettingsSummary } from '../../src/optimizer/view';
 import type { ReasonCoverage } from '../../src/recommendations/view';
-import type { OptimizationGroup } from '@wizard-ads/shared';
+import type { OptimizationGroupSnapshot } from '@wizard-ads/shared';
 
 function percent(value: number | null): string {
   if (value === null) return '—';
@@ -33,7 +33,7 @@ export function SettingsChip({
   group,
 }: {
   summary: SettingsSummary;
-  group?: OptimizationGroup | null;
+  group?: OptimizationGroupSnapshot | null;
 }): ReactNode {
   if (group) {
     return (

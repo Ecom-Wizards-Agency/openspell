@@ -10,6 +10,7 @@ import { OptimizationGroupsManager } from './groups-manager';
 const workspace: OptimizationWorkspace = {
   groups: [{
     group: {
+      version: 2,
       id: '11111111-1111-4111-8111-111111111111',
       orgId: '22222222-2222-4222-8222-222222222222',
       profileId: '33333333-3333-4333-8333-333333333333',
@@ -23,7 +24,7 @@ const workspace: OptimizationWorkspace = {
       placementIncreaseCap: 0.19,
       placementDecreaseCap: 0.11,
       exclusions: [],
-      cadence: '7 days',
+      reviewSchedule: { version: 2, weekdays: ['monday', 'thursday'] },
       prioritization: 'growth_first',
       enabled: true,
     },
@@ -49,6 +50,8 @@ const workspace: OptimizationWorkspace = {
       groupId: null,
     },
   ],
+  profileTimezone: 'Europe/Berlin',
+  reviewHour: 4,
   assignedCampaigns: 1,
   unassignedCampaigns: 1,
 };
@@ -85,7 +88,10 @@ describe('optimization groups manager', () => {
     expect(markup).toContain('OpenSpell settings only');
     expect(markup).toContain('does not update Amazon');
     expect(markup).toContain('Run group preview');
-    expect(markup).toContain('Review every');
+    expect(markup).toContain('Review schedule');
+    expect(markup).toContain('Europe/Berlin · 04:00 local');
+    expect(markup).toContain('Mon, Thu');
+    expect(markup).toContain('Manual previews remain available on any day');
     expect(markup).toContain('Select all');
     expect(markup).toContain('Select all applies only to campaigns matching the current search filter');
   });
@@ -150,5 +156,32 @@ describe('optimization groups manager', () => {
     });
     campaignChecks = [...host.querySelectorAll<HTMLInputElement>('.wa-campaign-choice input')];
     expect(campaignChecks.map((checkbox) => checkbox.checked)).toEqual([true, false]);
+  });
+
+  it('uses native weekday checkboxes and never permits an empty schedule', () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    mounted.push(root);
+    act(() => {
+      root.render(createElement(OptimizationGroupsManager, {
+        profileId: workspace.groups[0]?.group.profileId ?? '',
+        initial: workspace,
+        canManage: true,
+      }));
+    });
+
+    let weekdayChecks = [...host.querySelectorAll<HTMLInputElement>('.wa-weekday-options input')];
+    expect(weekdayChecks).toHaveLength(7);
+    expect(weekdayChecks.map((checkbox) => checkbox.checked)).toEqual([
+      true, false, false, true, false, false, false,
+    ]);
+
+    act(() => weekdayChecks[3]?.click());
+    weekdayChecks = [...host.querySelectorAll<HTMLInputElement>('.wa-weekday-options input')];
+    expect(weekdayChecks.filter((checkbox) => checkbox.checked)).toHaveLength(1);
+    act(() => weekdayChecks[0]?.click());
+    weekdayChecks = [...host.querySelectorAll<HTMLInputElement>('.wa-weekday-options input')];
+    expect(weekdayChecks[0]?.checked).toBe(true);
   });
 });
