@@ -1,0 +1,56 @@
+[Unit]
+Description=OpenSpell Evo report worker
+Documentation=https://github.com/Ecom-Wizards-Agency/openspell
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=30min
+StartLimitBurst=6
+
+[Service]
+Type=exec
+DynamicUser=yes
+LoadCredentialEncrypted=openspell-report-worker-database-url:/etc/credstore.encrypted/openspell-report-worker-database-url
+LoadCredentialEncrypted=openspell-report-worker-ads-application:/etc/credstore.encrypted/openspell-report-worker-ads-application
+Environment=HOME=/var/lib/openspell-report-worker
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/openspell-report-worker/current/public.conf
+ExecStart=/usr/local/bin/node /opt/openspell-report-worker/current/node_modules/tsx/dist/cli.mjs /opt/openspell-report-worker/current/bin/openspell-report-worker-launch.mjs
+ExecStartPost=/usr/local/bin/node /opt/openspell-report-worker/current/bin/openspell-report-worker-health.mjs http://127.0.0.1:3000/healthz ${OPENSPELL_WORKER_REVISION} 120
+Restart=on-failure
+RestartSec=15s
+RestartSteps=6
+RestartMaxDelaySec=15min
+TimeoutStartSec=90s
+TimeoutStopSec=35s
+KillSignal=SIGTERM
+StateDirectory=openspell-report-worker
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+TasksMax=256
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target
