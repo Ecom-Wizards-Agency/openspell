@@ -112,6 +112,24 @@ describe('text filters', () => {
     ).toBe(false);
   });
 
+  it('keeps surrounding whitespace significant for free-text equality', () => {
+    const padded = row({
+      dimensions: { ...row().dimensions, campaign_name: ' Rank campaign ' },
+    });
+    expect(
+      evaluateFilter(padded, {
+        key: 'CAMPAIGN_NAME',
+        conditions: [{ operator: '=', values: ['Rank campaign'] }],
+      }),
+    ).toBe(false);
+    expect(
+      evaluateFilter(padded, {
+        key: 'CAMPAIGN_NAME',
+        conditions: [{ operator: '=', values: [' Rank campaign '] }],
+      }),
+    ).toBe(true);
+  });
+
   it('compares a numeric dimension numerically', () => {
     expect(evaluateFilter(row(), { key: 'BID', conditions: [{ operator: '>', values: ['0.5'] }] })).toBe(true);
     expect(evaluateFilter(row(), { key: 'BID', conditions: [{ operator: '>', values: ['1.5'] }] })).toBe(false);
