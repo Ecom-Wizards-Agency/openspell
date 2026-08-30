@@ -18,9 +18,10 @@
  *     the rows that need it belong to profiles that are already provisioned.
  *  3. **Provision** defaults for any newly enabled profile, before the enqueue,
  *     so a profile switched on in the UI syncs this tick.
- *  4. **Enqueue** due recommendation runs in TypeScript (their required run id
- *     is minted first), then the remaining SQL schedules; finally **requeue**
- *     jobs a killed tick stranded.
+ *  4. **Enqueue** the explicitly gated daily Creative observations, then due
+ *     recommendation runs in TypeScript (their required ids are minted first)
+ *     and the remaining SQL schedules; finally **requeue** jobs a killed tick
+ *     stranded.
  *  5. **Drain** until the queue is empty or the budget runs out.
  *  6. **Bid series**, if the budget survived the drain: the daily corridor sync
  *     has no queue job of its own (its payload type is a `packages/shared`
@@ -34,6 +35,7 @@ import {
   DEFAULT_VERCEL_CRON_JOB_TYPES,
   vercelCronJobTypesFromEnv,
 } from '@wizard-ads/worker/deployment-role';
+import type { DailyCreativeSyncEnqueueResult } from '@wizard-ads/db';
 
 /** Queue work owned by Vercel cron; integration jobs stay on the always-on host. */
 export const CRON_SYNC_JOB_TYPES = DEFAULT_VERCEL_CRON_JOB_TYPES satisfies readonly JobType[];
@@ -43,6 +45,26 @@ export function cronSyncJobTypesFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): readonly JobType[] {
   return vercelCronJobTypesFromEnv(env['OPENSPELL_EVO_REPORT_LANE_READY']);
+}
+
+/**
+ * Source merge is inert. Only the exact producer value `1`, together with the
+ * already-completed report-lane handoff, permits the cron tick to enqueue a
+ * Creative observation. A malformed or premature opt-in fails before the
+ * database and Amazon client are constructed.
+ */
+export function creativeSyncProducerEnabledFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  const producer = env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
+  if (producer === undefined || producer === '0') return false;
+  if (producer !== '1') {
+    throw new Error('OPENSPELL_CREATIVE_SYNC_PRODUCER_READY must be 0 or 1');
+  }
+  if (env['OPENSPELL_EVO_REPORT_LANE_READY'] !== '1') {
+    throw new Error('Creative sync producer requires the exclusive Evo report lane');
+  }
+  return true;
 }
 
 /**
@@ -70,6 +92,8 @@ export interface SyncTickDeps {
   worker: SyncTickWorker;
   /** Weekly recommendation run/job minting; optional for narrow tests. */
   recommendationSchedules?: () => Promise<number>;
+  /** Database-only daily Creative producer; omitted until the lane is active. */
+  creativeSyncSchedules?: () => Promise<DailyCreativeSyncEnqueueResult>;
   /**
    * The daily bid-corridor sync, given the tick's own deadline so it stops
    * between profiles rather than being cut off mid-request. Optional: absent,
@@ -91,6 +115,14 @@ export interface SyncTickResult {
   repaired: number;
   integrationSchedules: number;
   enqueued: number;
+  creativeSync?: Pick<
+    DailyCreativeSyncEnqueueResult,
+    | 'enabledProfiles'
+    | 'offeredProfiles'
+    | 'deferredPendingProfiles'
+    | 'enqueuedJobs'
+    | 'deduplicatedJobs'
+  >;
   requeued: number;
   drained: number;
   released: number;
@@ -130,6 +162,7 @@ export async function runSyncTick(deps: SyncTickDeps): Promise<SyncTickResult> {
   let repaired = 0;
   let integrationSchedules = 0;
   let enqueued = 0;
+  let creativeSync: SyncTickResult['creativeSync'];
   let requeued = 0;
   let drained = 0;
   let budgetHit = false;
@@ -152,6 +185,17 @@ export async function runSyncTick(deps: SyncTickDeps): Promise<SyncTickResult> {
     }
 
     if (!budgetHit) {
+      if (deps.creativeSyncSchedules) {
+        const result = await deps.creativeSyncSchedules();
+        creativeSync = {
+          enabledProfiles: result.enabledProfiles,
+          offeredProfiles: result.offeredProfiles,
+          deferredPendingProfiles: result.deferredPendingProfiles,
+          enqueuedJobs: result.enqueuedJobs,
+          deduplicatedJobs: result.deduplicatedJobs,
+        };
+        enqueued += result.enqueuedJobs;
+      }
       enqueued += await deps.recommendationSchedules?.() ?? 0;
       const enqueuedRows = await deps.sql<{ enqueued: boolean }[]>`
         select enqueued from public.enqueue_due_schedules()
@@ -191,6 +235,7 @@ export async function runSyncTick(deps: SyncTickDeps): Promise<SyncTickResult> {
       provisioned, repaired, integrationSchedules, enqueued, requeued, drained, released, budgetHit,
       ...(bidSeries ? { bidSeries } : {}),
       ...(bidSeriesError ? { bidSeriesError } : {}),
+      ...(creativeSync ? { creativeSync } : {}),
       ms: now() - startedAt,
     };
   }
@@ -209,6 +254,7 @@ export async function runSyncTick(deps: SyncTickDeps): Promise<SyncTickResult> {
     provisioned, repaired, integrationSchedules, enqueued, requeued, drained, released, budgetHit,
     ...(bidSeries ? { bidSeries } : {}),
     ...(bidSeriesError ? { bidSeriesError } : {}),
+    ...(creativeSync ? { creativeSync } : {}),
     ms: now() - startedAt,
   };
 }

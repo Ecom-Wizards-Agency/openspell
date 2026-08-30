@@ -23,11 +23,13 @@ describe('GET /api/cron/sync', () => {
   const savedSecret = process.env['CRON_SECRET'];
   const savedDbUrl = process.env['DATABASE_URL'];
   const savedReportLane = process.env['OPENSPELL_EVO_REPORT_LANE_READY'];
+  const savedCreativeProducer = process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
 
   beforeEach(() => {
     delete process.env['CRON_SECRET'];
     delete process.env['DATABASE_URL'];
     delete process.env['OPENSPELL_EVO_REPORT_LANE_READY'];
+    delete process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
   });
 
   afterEach(() => {
@@ -37,6 +39,11 @@ describe('GET /api/cron/sync', () => {
     else process.env['DATABASE_URL'] = savedDbUrl;
     if (savedReportLane === undefined) delete process.env['OPENSPELL_EVO_REPORT_LANE_READY'];
     else process.env['OPENSPELL_EVO_REPORT_LANE_READY'] = savedReportLane;
+    if (savedCreativeProducer === undefined) {
+      delete process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
+    } else {
+      process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'] = savedCreativeProducer;
+    }
   });
 
   it('is 401 when no CRON_SECRET is configured, even with a bearer', async () => {
@@ -70,6 +77,17 @@ describe('GET /api/cron/sync', () => {
   it('fails closed before the database or Amazon wiring for a malformed lane handoff', async () => {
     process.env['CRON_SECRET'] = SECRET;
     process.env['OPENSPELL_EVO_REPORT_LANE_READY'] = 'true';
+    const response = await GET(request(`Bearer ${SECRET}`));
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: 'cron queue ownership is not configured safely',
+    });
+  });
+
+  it('fails closed before database or Amazon wiring for premature Creative activation', async () => {
+    process.env['CRON_SECRET'] = SECRET;
+    process.env['OPENSPELL_EVO_REPORT_LANE_READY'] = '0';
+    process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'] = '1';
     const response = await GET(request(`Bearer ${SECRET}`));
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toEqual({

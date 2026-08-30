@@ -1,12 +1,12 @@
 /**
  * `GET /api/cron/sync` — the daily pull, hosted on Vercel Cron.
  *
- * There is no always-on worker process in this deployment: no Fly machine, no
- * laptop left running. Instead Vercel Cron hits this route every five minutes,
- * and one tick does exactly what the old always-on worker's timers did, in one
- * request under a wall-clock budget. The tick itself — the lock, the repair,
- * the provision/enqueue/requeue/drain/bid-series/release sequence and what each
- * step is for — lives in `src/server/sync-tick.ts`; this file is the door.
+ * The Vercel worker is one-shot: Vercel Cron hits this route every five minutes
+ * and one tick runs under a wall-clock budget. After the explicit report-lane
+ * handoff, the separate always-on Evo process owns Creative and report queue
+ * jobs while this route retains entity and recommendation claims. The tick
+ * itself — lock, repair, provision/enqueue/requeue/drain/bid-series/release —
+ * lives in `src/server/sync-tick.ts`; this file is the door.
  *
  * Auth is the shared secret Vercel Cron sends in the `Authorization` header
  * (`Bearer $CRON_SECRET`). Without a configured secret, or with the wrong one,
@@ -19,7 +19,11 @@
  */
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
-import { connectionStringFromEnv, createDb } from '@wizard-ads/db';
+import {
+  connectionStringFromEnv,
+  createDb,
+  enqueueDailyCreativeSyncJobs,
+} from '@wizard-ads/db';
 import {
   PostgresBidSeriesStore,
   PostgresRecommendationRunStore,
@@ -29,7 +33,11 @@ import {
   createRecommendationsRunner,
   runBidSeriesSync,
 } from '@wizard-ads/worker';
-import { cronSyncJobTypesFromEnv, runSyncTick } from '../../../../src/server/sync-tick';
+import {
+  creativeSyncProducerEnabledFromEnv,
+  cronSyncJobTypesFromEnv,
+  runSyncTick,
+} from '../../../../src/server/sync-tick';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -55,8 +63,10 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   let jobTypes;
+  let creativeSyncProducerEnabled;
   try {
     jobTypes = cronSyncJobTypesFromEnv();
+    creativeSyncProducerEnabled = creativeSyncProducerEnabledFromEnv();
   } catch {
     return NextResponse.json(
       { error: 'cron queue ownership is not configured safely' },
@@ -98,6 +108,9 @@ export async function GET(request: Request): Promise<Response> {
       // unaffected.
       ...(process.env['WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS'] === '1'
         ? { recommendationSchedules: () => recommendationRuns.enqueueDueRecommendationRuns() }
+        : {}),
+      ...(creativeSyncProducerEnabled
+        ? { creativeSyncSchedules: () => enqueueDailyCreativeSyncJobs(handle) }
         : {}),
       budgetMs: DRAIN_BUDGET_MS,
       // One client serves both roles: DbAdsApiClient is an AdsApiClient for the
