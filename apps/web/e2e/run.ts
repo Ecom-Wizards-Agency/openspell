@@ -33,7 +33,7 @@
  * server). The admin connection comes from `WIZARD_ADS_TEST_DATABASE_URL` (or
  * `DATABASE_URL`), the same variable the Vitest database suites use.
  *
- *   pnpm --filter @wizard-ads/web test:e2e             # all three, in order
+ *   pnpm --filter @wizard-ads/web test:e2e             # all four, in order
  *   pnpm --filter @wizard-ads/web test:e2e:tags-goto   # just WP-08
  *   pnpm --filter @wizard-ads/web test:e2e:grid-performance
  *   pnpm --filter @wizard-ads/web test:e2e:auth        # auth/roles without the isolated Grid load
