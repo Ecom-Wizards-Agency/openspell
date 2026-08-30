@@ -120,4 +120,23 @@ describe('joinSqpAndPpc', () => {
     const [row] = joinSqpAndPpc([...sqpFacts, duplicate], [ppcFacts[0] as PpcQueryFact]);
     expect(row).toMatchObject({ attribution: 'ambiguous', asin: null, sqp: null });
   });
+
+  it('indexes 5,000 candidate ASINs once instead of rebuilding the sorted set per fact', () => {
+    const manySqpFacts = Array.from({ length: 5_000 }, (_, index) =>
+      sqp(`B${String(index).padStart(9, '0')}`, 'Large Candidate Set'),
+    );
+    const query = ppc('large', 'large candidate set', 1);
+
+    const startedAt = performance.now();
+    const [row] = joinSqpAndPpc(manySqpFacts, [query]);
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(row).toMatchObject({
+      attribution: 'ambiguous',
+      asin: null,
+      sqp: null,
+    });
+    expect(row?.candidateAsins).toHaveLength(manySqpFacts.length);
+    expect(elapsedMs).toBeLessThan(100);
+  });
 });
