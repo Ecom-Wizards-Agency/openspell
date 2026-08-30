@@ -35,12 +35,16 @@ import {
   type StockSignal,
 } from '@wizard-ads/core';
 import {
-  OptimizationGroup,
+  ScheduledOptimizationGroup,
+  OptimizationRunScheduleContext,
+  normalizeOptimizationGroupSnapshot,
+  optimizationWeekdaysFromIso,
   type AdProduct,
   type EntityRef,
   type Recommendation,
   type RecommendationReason,
   type RecommendationsRunJob,
+  type OptimizationGroupSnapshot,
   type TenantStrategy,
 } from '@wizard-ads/shared';
 import {
@@ -151,8 +155,9 @@ export interface RecommendationRunInputs {
 }
 
 export interface RecommendationGroupRun {
-  group: OptimizationGroup;
+  group: OptimizationGroupSnapshot;
   dueAt: string;
+  scheduleContext: ReturnType<typeof OptimizationRunScheduleContext.parse> | null;
 }
 
 export interface GroupRecommendationSafety {
@@ -391,7 +396,7 @@ interface BidProposalInput {
   strategy: TenantStrategy;
   resolvedGoal: string;
   pacing: PacingResult | null;
-  group: OptimizationGroup | null;
+  group: OptimizationGroupSnapshot | null;
 }
 
 function bidProposals(input: BidProposalInput): {
@@ -672,7 +677,7 @@ function toPacingCondition(pacing: PacingResult | null, goal: string): PacingCon
   return null;
 }
 
-function goalForGroupRole(role: OptimizationGroup['role']): string {
+function goalForGroupRole(role: OptimizationGroupSnapshot['role']): string {
   if (role === 'rank') return 'rank-launch';
   if (role === 'shield') return 'defend';
   if (role === 'profit') return 'profit-maintain';
@@ -681,7 +686,7 @@ function goalForGroupRole(role: OptimizationGroup['role']): string {
 
 function applyNonMechanicalBidAdjustment(
   recommendation: Recommendation,
-  group: OptimizationGroup | null,
+  group: OptimizationGroupSnapshot | null,
   mechanicalStep: number | undefined,
   hardFloor: number | null,
   hardCeiling: number | null,
@@ -751,8 +756,9 @@ function numberOrNull(value: string | number | null): number | null {
   return value === null ? null : Number(value);
 }
 
-function optimizationGroupFromWire(row: OptimizationGroupWireRow): OptimizationGroup {
-  return OptimizationGroup.parse({
+function optimizationGroupFromWire(row: OptimizationGroupWireRow): ScheduledOptimizationGroup {
+  return ScheduledOptimizationGroup.parse({
+    version: 2,
     id: row.id,
     orgId: row.org_id,
     profileId: row.profile_id,
@@ -766,7 +772,10 @@ function optimizationGroupFromWire(row: OptimizationGroupWireRow): OptimizationG
     placementIncreaseCap: Number(row.placement_increase_cap),
     placementDecreaseCap: Number(row.placement_decrease_cap),
     exclusions: row.exclusions,
-    cadence: row.cadence,
+    reviewSchedule: {
+      version: 2,
+      weekdays: optimizationWeekdaysFromIso(row.review_weekdays),
+    },
     prioritization: row.prioritization,
     enabled: row.enabled,
   });
@@ -849,7 +858,7 @@ interface OptimizationGroupWireRow {
   org_id: string;
   profile_id: string;
   name: string;
-  role: OptimizationGroup['role'];
+  role: ScheduledOptimizationGroup['role'];
   target_acos: string | number;
   bid_floor: string | number | null;
   bid_ceiling: string | number | null;
@@ -858,10 +867,12 @@ interface OptimizationGroupWireRow {
   placement_increase_cap: string | number;
   placement_decrease_cap: string | number;
   exclusions: string[];
-  cadence: string;
-  prioritization: OptimizationGroup['prioritization'];
+  review_weekdays: number[];
+  prioritization: ScheduledOptimizationGroup['prioritization'];
   enabled: boolean;
   next_run_at: Date | string | null;
+  profile_timezone: string;
+  review_hour: string | number;
 }
 
 /** Postgres implementation: storage representations never leave this class. */
@@ -877,9 +888,10 @@ implements RecommendationRunStore, RecommendationScheduleStore {
         group_id: string | null;
         group_snapshot: unknown;
         due_at: Date | string | null;
+        schedule_context: unknown;
       }[]>`
         select status::text as status, proposals_count,
-               group_id, group_snapshot, due_at
+               group_id, group_snapshot, due_at, schedule_context
           from public.recommendation_runs
          where id = ${scope.runId}
            and org_id = ${scope.orgId}
@@ -893,10 +905,20 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       }
       const groupRun = run.group_id === null
         ? null
-        : {
-            group: OptimizationGroup.parse(run.group_snapshot),
-            dueAt: toTimestamp(run.due_at, 'group run due_at'),
-          };
+        : (() => {
+            const snapshot = normalizeOptimizationGroupSnapshot(run.group_snapshot);
+            const scheduleContext = run.schedule_context === null
+              ? null
+              : OptimizationRunScheduleContext.parse(run.schedule_context);
+            if (snapshot.version === 2 && scheduleContext === null) {
+              throw new Error('weekday recommendation run is missing immutable schedule context');
+            }
+            return {
+              group: snapshot.group,
+              dueAt: toTimestamp(run.due_at, 'group run due_at'),
+              scheduleContext,
+            };
+          })();
       if (groupRun !== null && groupRun.group.id !== run.group_id) {
         throw new Error('recommendation run group snapshot does not match group_id');
       }
@@ -1448,16 +1470,18 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       const groupRows = input.groupId === undefined
         ? []
         : await sql<OptimizationGroupWireRow[]>`
-            select id, org_id, profile_id, name, role::text as role, target_acos,
-                   bid_floor, bid_ceiling, bid_increase_cap, bid_decrease_cap,
-                   placement_increase_cap, placement_decrease_cap, exclusions,
-                   cadence::text as cadence, prioritization::text as prioritization,
-                   enabled, next_run_at
-              from public.optimization_groups
-             where org_id = ${input.orgId}
-               and profile_id = ${input.profileId}
-               and id = ${input.groupId}
-             for update
+            select g.id, g.org_id, g.profile_id, g.name, g.role::text as role, g.target_acos,
+                   g.bid_floor, g.bid_ceiling, g.bid_increase_cap, g.bid_decrease_cap,
+                   g.placement_increase_cap, g.placement_decrease_cap, g.exclusions,
+                   g.review_weekdays, g.prioritization::text as prioritization,
+                   g.enabled, g.next_run_at, p.timezone as profile_timezone,
+                   coalesce(p.preferred_sync_hour, 4) as review_hour
+              from public.optimization_groups g
+              join public.ad_profiles p on p.org_id = g.org_id and p.id = g.profile_id
+             where g.org_id = ${input.orgId}
+               and g.profile_id = ${input.profileId}
+               and g.id = ${input.groupId}
+             for update of g
           `;
       const group = groupRows[0] === undefined ? null : optimizationGroupFromWire(groupRows[0]);
       if (input.groupId !== undefined && group === null) {
@@ -1483,15 +1507,27 @@ implements RecommendationRunStore, RecommendationScheduleStore {
         if (!safety.mayPropose) throw new Error(safety.reason);
       }
       const dueAt = (input.runAt ?? new Date()).toISOString();
+      const scheduleContext = group === null || groupRows[0] === undefined
+        ? null
+        : OptimizationRunScheduleContext.parse({
+            version: 2,
+            trigger: input.source === 'schedule' ? 'scheduled' : 'manual',
+            profileTimezone: groupRows[0].profile_timezone,
+            weekdays: group.reviewSchedule.weekdays,
+            localHour: Number(groupRows[0].review_hour),
+            dueAt,
+            evaluatedAt: new Date().toISOString(),
+          });
       const runs = await sql<{ id: string }[]>`
         insert into public.recommendation_runs
           (org_id, profile_id, status, lookback_days, engine_version,
-           group_id, group_role, group_snapshot, due_at)
+           group_id, group_role, group_snapshot, due_at, schedule_context)
         values (${input.orgId}, ${input.profileId}, 'queued', ${lookbackDays},
                 ${RECOMMENDATIONS_ENGINE_VERSION}, ${group?.id ?? null},
                 ${group?.role ?? null}::public.optimization_group_role,
                 ${group === null ? null : serializeJson(group)}::text::jsonb,
-                ${group === null ? null : dueAt}::timestamptz)
+                ${group === null ? null : dueAt}::timestamptz,
+                ${scheduleContext === null ? null : serializeJson(scheduleContext)}::text::jsonb)
         returning id
       `;
       const runId = runs[0]?.id;
@@ -1528,8 +1564,10 @@ implements RecommendationRunStore, RecommendationScheduleStore {
                g.target_acos, g.bid_floor, g.bid_ceiling,
                g.bid_increase_cap, g.bid_decrease_cap,
                g.placement_increase_cap, g.placement_decrease_cap,
-               g.exclusions, g.cadence::text as cadence,
-               g.prioritization::text as prioritization, g.enabled, g.next_run_at
+               g.exclusions, g.review_weekdays,
+               g.prioritization::text as prioritization, g.enabled, g.next_run_at,
+               p.timezone as profile_timezone,
+               coalesce(p.preferred_sync_hour, 4) as review_hour
           from public.optimization_groups g
           join public.ad_profiles p
             on p.org_id = g.org_id and p.id = g.profile_id
@@ -1554,27 +1592,30 @@ implements RecommendationRunStore, RecommendationScheduleStore {
         const group = optimizationGroupFromWire(row);
         const safety = await readGroupRecommendationSafety(sql, group, group.id);
         if (!safety.mayPropose) {
-          const advanced = await sql<{ id: string }[]>`
-            update public.optimization_groups
-               set next_run_at = ${nowIso}::timestamptz + cadence
-             where org_id = ${group.orgId}
-               and profile_id = ${group.profileId}
-               and id = ${group.id}
-            returning id
-          `;
+          const advanced = await advanceOptimizationSchedule(sql, group, nowIso);
           if (advanced.length !== 1) throw new Error('Advanced 0 of 1 held group schedules');
           heldGroups += 1;
           continue;
         }
         const dueAt = row.next_run_at === null ? nowIso : toTimestamp(row.next_run_at, 'next_run_at');
+        const scheduleContext = OptimizationRunScheduleContext.parse({
+          version: 2,
+          trigger: 'scheduled',
+          profileTimezone: row.profile_timezone,
+          weekdays: group.reviewSchedule.weekdays,
+          localHour: Number(row.review_hour),
+          dueAt,
+          evaluatedAt: nowIso,
+        });
         const runs = await sql<{ id: string }[]>`
           insert into public.recommendation_runs
             (org_id, profile_id, status, lookback_days, engine_version,
-             group_id, group_role, group_snapshot, due_at)
+             group_id, group_role, group_snapshot, due_at, schedule_context)
           values (${group.orgId}, ${group.profileId}, 'queued',
                   ${DEFAULT_RECOMMENDATION_LOOKBACK_DAYS}, ${RECOMMENDATIONS_ENGINE_VERSION},
                   ${group.id}, ${group.role}::public.optimization_group_role,
-                  ${serializeJson(group)}::text::jsonb, ${dueAt}::timestamptz)
+                  ${serializeJson(group)}::text::jsonb, ${dueAt}::timestamptz,
+                  ${serializeJson(scheduleContext)}::text::jsonb)
           returning id
         `;
         const runId = runs[0]?.id;
@@ -1598,14 +1639,7 @@ implements RecommendationRunStore, RecommendationScheduleStore {
           returning id
         `;
         if (jobs.length !== 1) throw new Error('Enqueued 0 of 1 group recommendation jobs');
-        const advanced = await sql<{ id: string }[]>`
-          update public.optimization_groups
-             set next_run_at = ${nowIso}::timestamptz + cadence
-           where org_id = ${group.orgId}
-             and profile_id = ${group.profileId}
-             and id = ${group.id}
-          returning id
-        `;
+        const advanced = await advanceOptimizationSchedule(sql, group, nowIso);
         if (advanced.length !== 1) throw new Error('Advanced 0 of 1 group schedules');
         enqueued += 1;
       }
@@ -1668,6 +1702,29 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       return enqueued;
     });
   }
+}
+
+async function advanceOptimizationSchedule(
+  sql: QuerySql,
+  group: ScheduledOptimizationGroup,
+  after: string,
+): Promise<{ id: string }[]> {
+  return sql<{ id: string }[]>`
+    update public.optimization_groups optimization_group
+       set next_run_at = app.next_optimization_review_at(
+         optimization_group.review_weekdays,
+         profile.timezone,
+         coalesce(profile.preferred_sync_hour, 4)::smallint,
+         ${after}::timestamptz
+       )
+      from public.ad_profiles profile
+     where optimization_group.org_id = ${group.orgId}
+       and optimization_group.profile_id = ${group.profileId}
+       and optimization_group.id = ${group.id}
+       and profile.org_id = optimization_group.org_id
+       and profile.id = optimization_group.profile_id
+    returning optimization_group.id
+  `;
 }
 
 async function readGroupRecommendationSafety(

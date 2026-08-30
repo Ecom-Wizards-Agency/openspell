@@ -302,9 +302,9 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     });
   });
 
-  it('mints one delayed weekly run/job per due optimization group', async () => {
+  it('mints one run/job per due optimization-group weekday schedule', async () => {
     await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
-    // N-gram proposals share recommendation_runs but are not weekly optimizer
+    // N-gram proposals share recommendation_runs but are not scheduled optimizer
     // executions, so a recent one must not suppress this profile's due run.
     await database.sql`
       insert into public.recommendation_runs
@@ -313,6 +313,22 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     `;
     const store = new PostgresRecommendationRunStore(database);
     const now = new Date();
+    await database.sql`
+      update public.optimization_groups group_row
+         set review_weekdays = array[
+               extract(isodow from ${now.toISOString()}::timestamptz at time zone profile.timezone)::smallint
+             ]
+        from public.ad_profiles profile
+       where group_row.org_id = ${orgId}
+         and group_row.profile_id = ${profileId}
+         and profile.org_id = group_row.org_id
+         and profile.id = group_row.profile_id
+    `;
+    await database.sql`
+      update public.optimization_groups
+         set next_run_at = ${now.toISOString()}::timestamptz - interval '1 minute'
+       where org_id = ${orgId} and profile_id = ${profileId}
+    `;
 
     expect(await store.enqueueDueRecommendationRuns(now)).toBe(1);
     expect(await store.enqueueDueRecommendationRuns(now)).toBe(0);
@@ -326,12 +342,18 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       priority: number;
       delay_seconds: number;
       engine_version: string;
+      schedule_trigger: string | null;
+      schedule_timezone: string | null;
+      schedule_due_at: string | null;
     }[]>`
       select r.id as run_id,
              j.payload ->> 'runId' as payload_run_id,
              r.group_id,
              j.payload ->> 'groupId' as payload_group_id,
              r.group_snapshot ->> 'id' as group_snapshot_id,
+             r.schedule_context ->> 'trigger' as schedule_trigger,
+             r.schedule_context ->> 'profileTimezone' as schedule_timezone,
+             r.schedule_context ->> 'dueAt' as schedule_due_at,
              r.engine_version,
              j.priority,
              extract(epoch from (j.run_after - ${now.toISOString()}::timestamptz)) as delay_seconds
@@ -345,6 +367,9 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     expect(job?.group_id).not.toBeNull();
     expect(job?.payload_group_id).toBe(job?.group_id);
     expect(job?.group_snapshot_id).toBe(job?.group_id);
+    expect(job?.schedule_trigger).toBe('scheduled');
+    expect(job?.schedule_timezone).toBe('UTC');
+    expect(job?.schedule_due_at).toBe(new Date(now.getTime() - 60_000).toISOString());
     expect(job?.engine_version).toBe(RECOMMENDATIONS_ENGINE_VERSION);
     expect(job?.priority).toBe(RECOMMENDATION_SCHEDULE_PRIORITY);
     expect(Number(job?.delay_seconds)).toBe(5 * 60 * 60);
@@ -360,12 +385,27 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     `;
     if (!group) throw new Error('seeded optimization group missing');
     const store = new PostgresRecommendationRunStore(database);
+    await database.sql`
+      update public.optimization_groups
+         set review_weekdays = array[
+           case extract(isodow from now())::int when 7 then 1
+                else extract(isodow from now())::int + 1 end
+         ]::smallint[]
+       where id = ${group.id}
+    `;
     const first = await store.enqueueRecommendationRun({
       orgId,
       profileId,
       groupId: group.id,
       source: 'web',
     });
+    const [manualContext] = await database.sql<{ trigger: string; weekdays: unknown }[]>`
+      select schedule_context ->> 'trigger' as trigger,
+             schedule_context -> 'weekdays' as weekdays
+        from public.recommendation_runs where id = ${first.runId}
+    `;
+    expect(manualContext?.trigger).toBe('manual');
+    expect(manualContext?.weekdays).toHaveLength(1);
     await expect(store.enqueueRecommendationRun({
       orgId,
       profileId,

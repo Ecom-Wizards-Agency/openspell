@@ -1051,7 +1051,7 @@ export class ScheduleProvisioner extends PeriodicPass {
       written += await this.store.provisionSchedules(profile.orgId, profile.profileId);
     }
     // Operator rule (2026-08-27): no automation without approval. Scheduled
-    // weekly recommendation runs stay off until explicitly opted in; the
+    // weekday-scheduled recommendation runs stay off until explicitly opted in; the
     // on-demand "Run now" path is unaffected.
     const weeklyRunsApproved = process.env['WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS'] === '1';
     const recommendations = weeklyRunsApproved
@@ -1067,7 +1067,7 @@ export class ScheduleProvisioner extends PeriodicPass {
       this.provisionLogger.info('clamped overlong report lookbacks', { schedules: repaired });
     }
     if (recommendations > 0) {
-      this.provisionLogger.info('enqueued weekly recommendation runs', { jobs: recommendations });
+      this.provisionLogger.info('enqueued scheduled recommendation runs', { jobs: recommendations });
     }
     if (integrations > 0) {
       this.provisionLogger.info('reconciled integration schedules', { schedules: integrations });
