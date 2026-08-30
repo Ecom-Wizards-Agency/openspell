@@ -2,7 +2,9 @@
 import { createHash } from 'node:crypto';
 import {
   clearMarketingStreamProjectionBlock,
+  enqueueMarketingStreamBlockedProfileRecovery,
   markMarketingStreamProjectionBlocked,
+  marketingStreamBlockedRecoveryDedupeKey,
   marketingStreamScopeKey,
   marketingStreamScopesForMessageIds,
   readMarketingStreamProjectionBlock,
@@ -157,7 +159,9 @@ export function createMarketingStreamNormalizeHandler(input: {
           { type: 'marketing_stream.normalize', orgId: payload.orgId, profileId: payload.profileId,
             messageIds: [], replayBlockedProfile: true },
           observedAt,
-          blockedRecoveryDedupeKey(payload, blocked!.blockToken, completion.remainingScopes),
+          marketingStreamBlockedRecoveryDedupeKey(
+            payload.orgId, payload.profileId, blocked!.blockToken, completion.remainingScopes,
+          ),
         )
       : false;
 
@@ -205,29 +209,14 @@ export function createMarketingStreamNormalizeHandler(input: {
 /** Explicit recovery entrypoint for an alerted quiet profile with no new Stream traffic. */
 export async function requeueMarketingStreamBlockedProfile(input: {
   handle: DbHandle;
-  queue: MarketingStreamNormalizeQueue;
   orgId: string;
   profileId: string;
   runAt?: Date;
-  readBlock?: (scope: { orgId: string; profileId: string }) => Promise<MarketingStreamProjectionBlock | null>;
-}): Promise<boolean> {
-  const block = await (input.readBlock ?? ((scope) => readMarketingStreamProjectionBlock(input.handle, scope)))(input);
-  if (!block) return false;
-  const runAt = input.runAt ?? new Date();
-  return input.queue.enqueue(
-    { type: 'marketing_stream.normalize', orgId: input.orgId, profileId: input.profileId,
-      messageIds: [], replayBlockedProfile: true },
-    runAt,
-    blockedRecoveryDedupeKey(input, block.blockToken, block.pendingScopeCount),
-  );
-}
-
-function blockedRecoveryDedupeKey(
-  input: { orgId: string; profileId: string },
-  blockToken: string,
-  remainingScopes: number,
-): string {
-  return ['marketing-stream', 'blocked-recovery', input.orgId, input.profileId, blockToken, remainingScopes].join(':');
+  enqueueRecovery?: typeof enqueueMarketingStreamBlockedProfileRecovery;
+}) {
+  return (input.enqueueRecovery ?? enqueueMarketingStreamBlockedProfileRecovery)(input.handle, {
+    orgId: input.orgId, profileId: input.profileId, runAt: input.runAt ?? new Date(),
+  });
 }
 
 function configurationRetryDedupeKey(

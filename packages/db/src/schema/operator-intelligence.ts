@@ -595,6 +595,13 @@ export const marketingStreamSubscriptionBindings = pgTable(
     uniqueIndex('marketing_stream_bindings_active_profile_dataset_key')
       .on(t.profileId, t.providerDatasetId)
       .where(sql`${t.active}`),
+    check('marketing_stream_bindings_subscription_nonempty', sql`btrim(${t.subscriptionId}) <> ''`),
+    check('marketing_stream_bindings_advertiser_nonempty', sql`btrim(${t.advertiserId}) <> ''`),
+    check('marketing_stream_bindings_marketplace_nonempty', sql`btrim(${t.marketplaceId}) <> ''`),
+    check('marketing_stream_bindings_dataset_check', sql`${t.providerDatasetId} in (
+      'sp-traffic', 'sp-conversion', 'sb-traffic', 'sb-conversion',
+      'sd-traffic', 'sd-conversion', 'budget-usage'
+    )`),
   ],
 );
 
@@ -615,6 +622,10 @@ export const marketingStreamProjectionBlocks = pgTable(
     primaryKey({ columns: [t.orgId, t.profileId] }),
     foreignKey({ columns: [t.orgId, t.profileId], foreignColumns: [adProfiles.orgId, adProfiles.id] })
       .onDelete('cascade'),
+    check('marketing_stream_projection_blocks_retry_nonnegative', sql`${t.retryCount} >= 0`),
+    check('marketing_stream_projection_blocks_alert_state_check', sql`${t.alertState} in ('pending', 'alerted')`),
+    check('marketing_stream_projection_blocks_reason_nonempty', sql`btrim(${t.lastReason}) <> ''`),
+    check('marketing_stream_projection_blocks_time_order', sql`${t.lastBlockedAt} >= ${t.firstBlockedAt}`),
   ],
 );
 

@@ -19,22 +19,17 @@ const HOUR = '2026-08-01T10:00:00.000Z';
 
 describe('Marketing Stream queued normalization', () => {
   it('provides an executable operator recovery for an alerted quiet profile', async () => {
-    const queued: MarketingStreamNormalizeJob[] = [];
     await expect(requeueMarketingStreamBlockedProfile({
       handle: {} as DbHandle,
-      queue: { enqueue: async (payload) => { queued.push(payload); return true; } },
       orgId: ORG,
       profileId: PROFILE,
       runAt: new Date('2026-08-01T12:00:00.000Z'),
-      readBlock: async () => ({
-        orgId: ORG, profileId: PROFILE, scopes: [{ adProduct: 'SP', utcHour: HOUR }],
-        firstBlockedAt: HOUR, lastBlockedAt: HOUR, retryCount: 24, alertState: 'alerted',
-        lastReason: 'policy absent', blockToken: '83838383-8383-4383-8383-838383838383',
-        pendingScopeCount: 1,
+      enqueueRecovery: async (_handle, input) => ({
+        action: 'revived', jobId: '85858585-8585-4585-8585-858585858585',
+        blockToken: '83838383-8383-4383-8383-838383838383', pendingScopes: 1,
+        dedupeKey: `synthetic:${input.profileId}`,
       }),
-    })).resolves.toBe(true);
-    expect(queued).toEqual([{ type: 'marketing_stream.normalize', orgId: ORG, profileId: PROFILE,
-      messageIds: [], replayBlockedProfile: true }]);
+    })).resolves.toMatchObject({ action: 'revived', pendingScopes: 1 });
   });
   it('replays a complete scope, reconciles counts, and schedules its aging transition', async () => {
     const replacements: string[][] = [];

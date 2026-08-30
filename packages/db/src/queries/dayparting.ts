@@ -14,6 +14,7 @@ import {
   DaypartingScheduleProposal,
   MarketingStreamHourlyFact,
   MarketingStreamLedgerEvent,
+  MarketingStreamNormalizeJob,
   MarketingStreamSubscriptionBinding,
   type AmazonMarketingStreamDatasetId,
   type AdProduct,
@@ -21,6 +22,7 @@ import {
   type HourSettlingState,
   type MarketingStreamHourlyFact as MarketingStreamHourlyFactValue,
   type MarketingStreamLedgerEvent as MarketingStreamLedgerEventValue,
+  type MarketingStreamNormalizeJob as MarketingStreamNormalizeJobValue,
   type MarketingStreamSubscriptionBinding as MarketingStreamSubscriptionBindingValue,
 } from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
@@ -211,6 +213,14 @@ export interface MarketingStreamProjectionBlockCompletion {
   cleared: boolean;
   processedScopes: number;
   remainingScopes: number;
+}
+
+export interface MarketingStreamRecoveryEnqueueResult {
+  action: 'created' | 'revived' | 'already_active' | 'not_blocked';
+  jobId: string | null;
+  blockToken: string | null;
+  pendingScopes: number;
+  dedupeKey: string | null;
 }
 
 /** Append valid shared-contract events without collapsing later revisions. */
@@ -581,6 +591,93 @@ export async function clearMarketingStreamProjectionBlock(
     }
     return { matched: true, cleared: remainingScopes === 0, processedScopes, remainingScopes };
   });
+}
+
+/** Atomically enqueue or revive the exact blocked-profile recovery job. */
+export async function enqueueMarketingStreamBlockedProfileRecovery(
+  handle: DbHandle,
+  input: { orgId: string; profileId: string; runAt: Date },
+): Promise<MarketingStreamRecoveryEnqueueResult> {
+  assertUuid('orgId', input.orgId);
+  assertUuid('profileId', input.profileId);
+  if (!Number.isFinite(input.runAt.getTime())) throw new MarketingStreamPersistenceError('recovery run time is invalid');
+  return handle.sql.begin(async (transaction) => {
+    const sql = transaction as unknown as Sql;
+    const [block] = await sql<{ block_token: string; pending_scopes: number | string }[]>`
+      select b.block_token,
+             (select count(*) from public.marketing_stream_projection_block_scopes s
+               where s.org_id = b.org_id and s.profile_id = b.profile_id) as pending_scopes
+        from public.marketing_stream_projection_blocks b
+       where b.org_id = ${input.orgId} and b.profile_id = ${input.profileId}
+       for update
+    `;
+    if (!block) return { action: 'not_blocked', jobId: null, blockToken: null, pendingScopes: 0, dedupeKey: null };
+    const pendingScopes = Number(block.pending_scopes);
+    if (pendingScopes < 1) throw new MarketingStreamPersistenceError('blocked profile has no durable scopes');
+    const dedupeKey = marketingStreamBlockedRecoveryDedupeKey(
+      input.orgId, input.profileId, block.block_token, pendingScopes,
+    );
+    const payload = MarketingStreamNormalizeJob.parse({
+      type: 'marketing_stream.normalize', orgId: input.orgId, profileId: input.profileId,
+      messageIds: [], replayBlockedProfile: true,
+    });
+    const inserted = await sql<{ id: string }[]>`
+      insert into public.sync_jobs (
+        org_id, profile_id, job_type, payload, run_after, dedupe_key
+      ) values (
+        ${input.orgId}, ${input.profileId}, 'marketing_stream.normalize'::public.sync_job_type,
+        ${JSON.stringify(payload)}::jsonb, ${input.runAt.toISOString()}::timestamptz, ${dedupeKey}
+      ) on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+      returning id
+    `;
+    if (inserted[0]) return {
+      action: 'created', jobId: inserted[0].id, blockToken: block.block_token, pendingScopes, dedupeKey,
+    };
+    const [existing] = await sql<{
+      id: string; profile_id: string; job_type: string; payload: MarketingStreamNormalizeJobValue;
+      status: string;
+    }[]>`
+      select id, profile_id, job_type::text as job_type, payload, status::text as status
+        from public.sync_jobs
+       where org_id = ${input.orgId} and dedupe_key = ${dedupeKey}
+       for update
+    `;
+    const parsedExisting = existing ? MarketingStreamNormalizeJob.safeParse(existing.payload) : null;
+    if (!existing || existing.profile_id !== input.profileId
+      || existing.job_type !== 'marketing_stream.normalize'
+      || !parsedExisting?.success
+      || parsedExisting.data.orgId !== input.orgId
+      || parsedExisting.data.profileId !== input.profileId
+      || parsedExisting.data.replayBlockedProfile !== true
+      || parsedExisting.data.messageIds.length !== 0) {
+      throw new MarketingStreamPersistenceError('recovery dedupe key belongs to an incompatible job');
+    }
+    if (existing.status === 'queued' || existing.status === 'running') return {
+      action: 'already_active', jobId: existing.id, blockToken: block.block_token, pendingScopes, dedupeKey,
+    };
+    if (existing.status !== 'dead') {
+      throw new MarketingStreamPersistenceError(`recovery job is ${existing.status} while scopes remain blocked`);
+    }
+    const revived = await sql<{ id: string }[]>`
+      update public.sync_jobs
+         set status = 'queued'::public.sync_job_status, run_after = ${input.runAt.toISOString()}::timestamptz,
+             attempts = 0, claimed_by = null, claimed_at = null, started_at = null,
+             finished_at = null, last_error = null, result = null, updated_at = now()
+       where id = ${existing.id} and status = 'dead'::public.sync_job_status
+      returning id
+    `;
+    if (revived.length !== 1) throw new MarketingStreamPersistenceError('dead recovery job changed during revival');
+    return { action: 'revived', jobId: existing.id, blockToken: block.block_token, pendingScopes, dedupeKey };
+  });
+}
+
+export function marketingStreamBlockedRecoveryDedupeKey(
+  orgId: string,
+  profileId: string,
+  blockToken: string,
+  pendingScopes: number,
+): string {
+  return ['marketing-stream', 'blocked-recovery', orgId, profileId, blockToken, pendingScopes].join(':');
 }
 
 /**

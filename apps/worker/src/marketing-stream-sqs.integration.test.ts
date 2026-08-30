@@ -3,6 +3,7 @@ import {
   databaseAvailable,
   type TestDatabase,
 } from '@wizard-ads/db/testing';
+import { markMarketingStreamProjectionBlocked } from '@wizard-ads/db';
 import type {
   MarketingStreamBatchEnvelope,
   MarketingStreamLedgerEvent,
@@ -18,7 +19,10 @@ import {
   type MarketingStreamQueueMessage,
 } from './marketing-stream-sqs.js';
 import { DbMarketingStreamStore } from './dayparting.js';
-import { createMarketingStreamNormalizeHandler } from './marketing-stream-normalize.js';
+import {
+  createMarketingStreamNormalizeHandler,
+  requeueMarketingStreamBlockedProfile,
+} from './marketing-stream-normalize.js';
 import { PostgresWorkerStore } from './store.js';
 
 const available = await databaseAvailable();
@@ -302,6 +306,106 @@ describe.skipIf(!available)('Marketing Stream SQS against migrated PostgreSQL', 
       normalizeJobsAlreadyPresent: 1,
       failed: 0,
     });
+  });
+
+  it('revives a dead operator recovery job and drains 256 then remaining durable scopes', async () => {
+    await database.sql`delete from public.sync_jobs where profile_id = ${profileId}`;
+    await database.sql`delete from public.marketing_stream_projection_blocks where profile_id = ${profileId}`;
+    await database.sql`delete from public.marketing_stream_hourly_facts where profile_id = ${profileId}`;
+    await database.sql`delete from public.marketing_stream_events where profile_id = ${profileId}`;
+
+    const events = Array.from({ length: 300 }, (_, index): MarketingStreamLedgerEvent => {
+      const eventTime = new Date(Date.UTC(2026, 0, 1, index)).toISOString();
+      return event(profileId, {
+        messageId: `recovery-message-${index}`,
+        eventTime,
+        receivedAt: new Date(new Date(eventTime).getTime() + 60_000).toISOString(),
+        payloadHash: `recovery-hash-${index}`,
+        rawPayload: {
+          currencyCode: 'USD',
+          metrics: [{ campaignId: 'recovery-campaign', impressions: 1, clicks: 0, cost: 0 }],
+        },
+      });
+    });
+    const streamStore = new DbMarketingStreamStore(database);
+    await expect(streamStore.append({ orgId, profileId, events })).resolves.toMatchObject({
+      offeredMessages: 300,
+      insertedMessages: 300,
+      duplicateMessages: 0,
+      revisedMessages: 0,
+    });
+    const scopes = events.map((item) => ({ adProduct: item.adProduct, utcHour: item.eventTime }));
+    const block = await markMarketingStreamProjectionBlocked(database, {
+      orgId,
+      profileId,
+      scopes,
+      blockedAt: new Date('2026-08-30T11:00:00.000Z'),
+      retryAttempt: 24,
+      retryLimit: 24,
+      reason: 'synthetic missing-policy recovery',
+    });
+    expect(block).toMatchObject({ pendingScopeCount: 300, alertState: 'alerted' });
+    expect(block.scopes).toHaveLength(256);
+
+    const created = await requeueMarketingStreamBlockedProfile({
+      handle: database, orgId, profileId, runAt: new Date('2026-08-30T11:01:00.000Z'),
+    });
+    expect(created).toMatchObject({ action: 'created', pendingScopes: 300 });
+    await database.sql`
+      update public.sync_jobs
+         set status = 'dead', attempts = 9, finished_at = now(), last_error = 'synthetic dead recovery'
+       where id = ${created.jobId}
+    `;
+    const revived = await requeueMarketingStreamBlockedProfile({
+      handle: database, orgId, profileId, runAt: new Date('2026-08-30T11:02:00.000Z'),
+    });
+    expect(revived).toMatchObject({
+      action: 'revived', jobId: created.jobId, blockToken: created.blockToken, pendingScopes: 300,
+    });
+    const [revivedJob] = await database.sql<{
+      payload: MarketingStreamNormalizeJob;
+      status: string;
+      attempts: number;
+      last_error: string | null;
+    }[]>`
+      select payload, status::text as status, attempts, last_error
+        from public.sync_jobs where id = ${created.jobId}
+    `;
+    expect(revivedJob).toMatchObject({ status: 'queued', attempts: 0, last_error: null });
+
+    const workerStore = new PostgresWorkerStore(database, { info: () => {} });
+    const handler = createMarketingStreamNormalizeHandler({
+      handle: database,
+      queue: workerStore,
+      now: () => new Date('2026-08-30T11:03:00.000Z'),
+    });
+    await expect(handler(revivedJob!.payload)).resolves.toMatchObject({
+      recoveredBlockedScopes: 256,
+      remainingBlockedScopes: 44,
+      recoveryCreated: true,
+      insertedFacts: 256,
+      readBackFacts: 256,
+    });
+    const [continuation] = await database.sql<{ payload: MarketingStreamNormalizeJob }[]>`
+      select payload from public.sync_jobs
+       where profile_id = ${profileId} and dedupe_key like '%:44'
+    `;
+    if (!continuation) throw new Error('missing recovery continuation');
+    await expect(handler(continuation.payload)).resolves.toMatchObject({
+      recoveredBlockedScopes: 44,
+      remainingBlockedScopes: 0,
+      blockedProjectionCleared: true,
+      recoveryCreated: false,
+      insertedFacts: 44,
+      readBackFacts: 44,
+    });
+    const [counts] = await database.sql<{ facts: number; pending: number; blocks: number }[]>`
+      select
+        (select count(*)::int from public.marketing_stream_hourly_facts where profile_id = ${profileId}) as facts,
+        (select count(*)::int from public.marketing_stream_projection_block_scopes where profile_id = ${profileId}) as pending,
+        (select count(*)::int from public.marketing_stream_projection_blocks where profile_id = ${profileId}) as blocks
+    `;
+    expect(counts).toEqual({ facts: 300, pending: 0, blocks: 0 });
   });
 });
 
