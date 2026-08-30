@@ -66,10 +66,18 @@ test('the fixture experiment lists, and its detail shows the window, comparison 
   await expect(page.getByTestId('entity-change').filter({ hasText: 'kw-1' })).toHaveCount(1);
 });
 
-test('create from a grid selection, run it, end it, and read the comparison', async ({ page }) => {
+test('create from a guided grid selection, run it, end it, and read the comparison', async ({ page }) => {
   // The grid's "Start an experiment" link lands here with the scope pre-filled.
-  await open(page, newExperimentPath({ profile: PROFILE_A, campaigns: 'c-1', targets: 'kw-1' }));
-  await expect(page.getByTestId('scope-campaigns')).toHaveValue('c-1');
+  await open(page, newExperimentPath({
+    profile: PROFILE_A,
+    campaigns: 'c-1,c-missing',
+    targets: 'kw-1',
+    asins: 'B0TEST0001',
+  }));
+  await expect(page.getByTestId('scope-campaigns-option-c-1')).toBeChecked();
+  await expect(page.getByTestId('scope-campaigns-selected-count')).toHaveText('2 selected');
+  await expect(page.getByText('c-missing', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('scope-products-option-B0TEST0001')).toBeChecked();
   await expect(page.getByTestId('scope-targets')).toHaveValue('kw-1');
 
   await page.getByTestId('experiment-name').fill(NAME);
@@ -83,7 +91,7 @@ test('create from a grid selection, run it, end it, and read the comparison', as
   await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
   await expect(page.getByTestId('experiment-name')).toHaveText(NAME);
   await expect(page.getByTestId('experiment-status')).toContainText('Running');
-  await expect(page.getByTestId('scope-links')).toContainText('1 campaign(s)');
+  await expect(page.getByTestId('scope-links')).toContainText('2 campaign(s)');
   await expect(page.getByTestId('comparison')).toBeVisible();
 
   // End it, with a result note.

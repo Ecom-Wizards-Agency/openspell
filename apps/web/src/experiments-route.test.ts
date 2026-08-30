@@ -15,7 +15,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import { POST } from '../app/api/experiments/route.js';
-import { listProfileOptions, listProposedTests } from './experiments/data.js';
+import { GET as SCOPE_OPTIONS } from '../app/api/experiments/scope-options/route.js';
+import {
+  listExperimentScopeOptions,
+  listProfileOptions,
+  listProposedTests,
+} from './experiments/data.js';
 
 const available = await databaseAvailable();
 const OWNER_A = '7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a7a';
@@ -44,6 +49,17 @@ describe.skipIf(!available)('POST /api/experiments', () => {
           'x-wizard-ads-org-id': orgA,
         },
         body: JSON.stringify(body),
+      }),
+    );
+
+  const scopeOptions = (profileId: string): Promise<Response> =>
+    SCOPE_OPTIONS(
+      new Request(`http://localhost/api/experiments/scope-options?profile=${profileId}`, {
+        headers: {
+          'x-wizard-ads-auth-bridge': BRIDGE_SECRET,
+          'x-wizard-ads-user-id': OWNER_A,
+          'x-wizard-ads-org-id': orgA,
+        },
       }),
     );
 
@@ -131,6 +147,50 @@ describe.skipIf(!available)('POST /api/experiments', () => {
     const proposals = await listProposedTests(database, { orgId: orgA, profileId: profileA });
     expect(proposals.map((proposal) => proposal.source)).toContain('conflicts-and-tests.md#T1');
     expect(await listProposedTests(database, { orgId: orgA, profileId: profileB })).toEqual([]);
+  });
+
+  it('loads profile-scoped campaign and advertised-product choices with stable IDs', async () => {
+    await database.sql`
+      update public.campaigns
+         set name = 'Synthetic campaign one'
+       where org_id = ${orgA} and profile_id = ${profileA} and amazon_id = 'c-1'
+    `;
+    await database.sql`
+      update public.product_ads
+         set name = 'Synthetic product one', sku = 'SKU-ONE'
+       where org_id = ${orgA} and profile_id = ${profileA} and amazon_id = 'pa-1'
+    `;
+
+    const options = await listExperimentScopeOptions(database, {
+      orgId: orgA,
+      profileId: profileA,
+    });
+    expect(options.campaigns).toContainEqual({
+      id: 'c-1',
+      name: 'Synthetic campaign one',
+      available: true,
+    });
+    expect(options.products).toContainEqual({
+      asin: 'B0TEST0001',
+      name: 'Synthetic product one',
+      sku: 'SKU-ONE',
+      available: true,
+    });
+
+    const response = await scopeOptions(profileA);
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      campaigns: unknown[];
+      products: unknown[];
+    };
+    expect(payload.campaigns).toHaveLength(options.campaigns.length);
+    expect(payload.products).toHaveLength(options.products.length);
+  });
+
+  it('does not expose scope options from another organisation', async () => {
+    const response = await scopeOptions(profileB);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'Profile not found' });
   });
 
   it('refuses another org\'s profile with a 404, and writes nothing', async () => {
