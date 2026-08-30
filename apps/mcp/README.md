@@ -4,6 +4,11 @@ The production MCP endpoint is a stateless, analytical-read-only view of one
 OpenSpell organization. It accepts Streamable HTTP at `POST /mcp`; `GET
 /healthz` reports database readiness plus a sanitized Git revision.
 
+The MCP protocol server name and health `service` are `openspell`, and health
+also reports `product: "OpenSpell"`. The `@wizard-ads/*` package scope and
+`wizardads://` resource URIs remain compatibility identifiers; changing them
+would break installed clients without adding an operator capability.
+
 ## Usage
 
 Callers authenticate with a revocable, expiring read key. The key can cover all
