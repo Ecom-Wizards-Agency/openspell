@@ -2,9 +2,15 @@ import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import type { CandidateHttpResponse } from './candidate-redirect';
+import { parseGridServerTiming } from './grid-server-timing';
 
 const RESPONSE_MARKER = '\nOPENSPELL_RESPONSE:';
-const CURL_WRITE_OUT = '\\nOPENSPELL_RESPONSE:%{http_code}\\t%{redirect_url}';
+const CURL_WRITE_OUT = [
+  '\\nOPENSPELL_RESPONSE:',
+  '%{http_code}',
+  '\\t%{redirect_url}',
+  '\\t%header{server-timing}',
+].join('');
 const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 const MAX_DIAGNOSTIC_BYTES = 256 * 1024;
 const PROCESS_TIMEOUT_MS = 35_000;
@@ -104,8 +110,8 @@ function parseCurlResponse(stdout: string): CandidateHttpResponse {
   const marker = stdout.lastIndexOf(RESPONSE_MARKER);
   if (marker < 0) throw new ReleaseTransportError('curl_failed');
   const metadata = stdout.slice(marker + RESPONSE_MARKER.length);
-  const match = /^(\d{3})\t([^\r\n]*)$/.exec(metadata);
-  if (match?.[1] === undefined || match[2] === undefined) {
+  const match = /^(\d{3})\t([^\t\r\n]*)\t([^\r\n]*)$/.exec(metadata);
+  if (match?.[1] === undefined || match[2] === undefined || match[3] === undefined) {
     throw new ReleaseTransportError('curl_failed');
   }
   const status = Number(match[1]);
@@ -117,6 +123,7 @@ function parseCurlResponse(stdout: string): CandidateHttpResponse {
     status,
     responseBody: stdout.slice(0, marker),
     rawLocation,
+    serverTiming: parseGridServerTiming(match[3]),
   };
 }
 

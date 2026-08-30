@@ -10,6 +10,7 @@ import {
   releaseFailure,
   requestCandidate,
 } from './candidate-transport';
+import { isCompleteGridRowsEvidence, parseGridServerTiming } from './grid-server-timing';
 
 const CANDIDATE_ORIGIN = new URL('https://wizard-synthetic-ecom-wizards.vercel.app');
 const SYNTHETIC_PROFILE = '11111111-1111-4111-8111-111111111111';
@@ -103,6 +104,7 @@ describe('release candidate Vercel transport', () => {
         status: 200,
         responseBody: '{"status":"ok"}',
         rawLocation: null,
+        serverTiming: null,
       });
     } finally {
       fixture.cleanup();
@@ -124,6 +126,53 @@ describe('release candidate Vercel transport', () => {
   });
 });
 
+describe('release Grid timing sanitizer', () => {
+  it('retains only the exact fixed spans and numeric durations', () => {
+    expect(parseGridServerTiming(
+      'actor;dur=12.35, role;dur=7.66, profile;dur=0.01, rows;dur=104.50, ' +
+      'serialize;dur=5.00, close;dur=0.50, total;dur=130.02',
+    )).toEqual({
+      actor: 12.35,
+      role: 7.66,
+      profile: 0.01,
+      rows: 104.5,
+      serialize: 5,
+      close: 0.5,
+      total: 130.02,
+    });
+  });
+
+  it('rejects missing, reordered, described, or identifier-bearing spans', () => {
+    expect(parseGridServerTiming('actor;dur=1, total;dur=1')).toBeNull();
+    expect(parseGridServerTiming(
+      'role;dur=1, actor;dur=1, profile;dur=1, rows;dur=1, serialize;dur=1, close;dur=1, total;dur=7',
+    )).toBeNull();
+    expect(parseGridServerTiming(
+      'actor;dur=1;desc="tenant", role;dur=1, profile;dur=1, rows;dur=1, ' +
+      'serialize;dur=1, close;dur=1, total;dur=7',
+    )).toBeNull();
+  });
+
+  it('requires exact counts and an explicitly untruncated response', () => {
+    const serverTiming = parseGridServerTiming(
+      'actor;dur=1, role;dur=1, profile;dur=1, rows;dur=1, ' +
+      'serialize;dur=1, close;dur=1, total;dur=7',
+    );
+    const complete = {
+      status: 200,
+      rowCount: 3,
+      returnedRows: 3,
+      truncated: false,
+      serverTiming,
+    };
+
+    expect(isCompleteGridRowsEvidence(complete)).toBe(true);
+    expect(isCompleteGridRowsEvidence({ ...complete, returnedRows: 2 })).toBe(false);
+    expect(isCompleteGridRowsEvidence({ ...complete, truncated: true })).toBe(false);
+    expect(isCompleteGridRowsEvidence({ ...complete, truncated: null })).toBe(false);
+  });
+});
+
 function fakeVercel(mode: 'healthy' | 'oversize'): { root: string; cleanup: () => void } {
   const root = mkdtempSync(join(tmpdir(), 'openspell-release-vercel-'));
   const executable = join(root, 'vercel');
@@ -137,7 +186,7 @@ input="$(sed -n '1,120p')"
 ${mode === 'healthy' ? `if [ "\${VERCEL_TOKEN:-}" != '${SYNTHETIC_VERCEL_TOKEN}' ]; then exit 45; fi
 printf '%s' "$input" | grep -q 'url-query = "+profile=${SYNTHETIC_PROFILE}"' || exit 46
 printf '%s' "$input" | grep -q 'Cookie: ${SYNTHETIC_COOKIE}' || exit 47
-printf '{"status":"ok"}\\nOPENSPELL_RESPONSE:200\\t'` : `head -c 68157441 /dev/zero | tr '\\000' x`}
+printf '{"status":"ok"}\\nOPENSPELL_RESPONSE:200\\t\\t'` : `head -c 68157441 /dev/zero | tr '\\000' x`}
 `);
   chmodSync(executable, 0o755);
   return {

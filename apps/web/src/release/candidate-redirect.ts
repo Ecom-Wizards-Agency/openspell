@@ -1,7 +1,11 @@
+import type { GridServerTimingDurations } from './grid-server-timing';
+
 export interface CandidateHttpResponse {
   status: number | null;
   responseBody: string;
   rawLocation: string | null;
+  /** Closed, identifier-free Grid timing only; every other header is discarded. */
+  serverTiming: GridServerTimingDurations | null;
 }
 
 export interface CandidateRouteResponse extends CandidateHttpResponse {
@@ -145,6 +149,7 @@ function result(
     status: response.status,
     responseBody: response.responseBody,
     rawLocation: null,
+    serverTiming: response.serverTiming,
     finalUrl,
     redirectsFollowed,
     redirectRejected,

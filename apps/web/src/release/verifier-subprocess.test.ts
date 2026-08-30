@@ -58,7 +58,7 @@ if [ -n "\${NODE_OPTIONS+x}" ] || [ -n "\${DEBUG+x}" ] || [ -n "\${DATABASE_URL+
 if [ "\${VERCEL_TOKEN:-}" != '${VERCEL_CONTEXT}' ] || [ "\${VERCEL_TELEMETRY_DISABLED:-}" != '1' ]; then exit 43; fi
 case "$*" in *'${VERCEL_CONTEXT}'*) exit 44;; esac
 input="$(sed -n '1,120p')"
-printf '{"product":"OpenSpell","status":"ok","revision":"${REVISION}"}\\nOPENSPELL_RESPONSE:200\\t'
+printf '{"product":"OpenSpell","status":"ok","revision":"${REVISION}"}\\nOPENSPELL_RESPONSE:200\\t\\t'
 `);
   chmodSync(vercel, 0o755);
   return {

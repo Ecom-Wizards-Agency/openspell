@@ -23,7 +23,12 @@ import {
   releaseFailure,
   requestCandidate,
 } from '../src/release/candidate-transport';
+import {
+  isCompleteGridRowsEvidence,
+  type GridServerTimingDurations,
+} from '../src/release/grid-server-timing';
 import { webRevision } from '../src/revision';
+import { periodFromParams, todayIso } from '../app/_lib/periods';
 
 const PRODUCTION_ORIGIN = process.env['OPENSPELL_PRODUCTION_ORIGIN']
   ?? 'https://ads.ecomwizards.agency';
@@ -73,6 +78,17 @@ interface RevisionResult {
   expected: string;
   observed: string;
   status: number | null;
+  passed: boolean;
+}
+
+interface GridRowsTimingResult {
+  status: number | null;
+  checkDurationMs: number;
+  responseBytes: number;
+  rowCount: number | null;
+  returnedRows: number | null;
+  truncated: boolean | null;
+  serverTiming: GridServerTimingDurations | null;
   passed: boolean;
 }
 
@@ -144,9 +160,62 @@ async function main(): Promise<void> {
     ));
   }
 
-  const passed = results.every((result) => result.passed);
-  console.log(JSON.stringify({ target: 'immutable-candidate', passed, revision, routes: results }, null, 2));
+  const gridRows = await verifyGridRows(candidate, cookieHeader, profileId);
+
+  const passed = results.every((result) => result.passed) && gridRows.passed;
+  console.log(JSON.stringify({
+    target: 'immutable-candidate',
+    passed,
+    revision,
+    routes: results,
+    gridRows,
+  }, null, 2));
   if (!passed) process.exitCode = 1;
+}
+
+async function verifyGridRows(
+  candidate: URL,
+  cookieHeader: string,
+  profileId: string,
+): Promise<GridRowsTimingResult> {
+  const period = periodFromParams({}, todayIso());
+  const url = new URL('/api/grid/rows', candidate);
+  url.searchParams.set('profile', profileId);
+  url.searchParams.set('entity', 'search_terms');
+  url.searchParams.set('from', period.start);
+  url.searchParams.set('to', period.end);
+
+  const startedAt = performance.now();
+  const response = await requestCandidate({ candidate, url, cookieHeader });
+  const checkDurationMs = Math.round(performance.now() - startedAt);
+  let rowCount: number | null = null;
+  let returnedRows: number | null = null;
+  let truncated: boolean | null = null;
+  try {
+    const payload = JSON.parse(response.responseBody) as Record<string, unknown>;
+    rowCount = typeof payload['rowCount'] === 'number' ? payload['rowCount'] : null;
+    returnedRows = Array.isArray(payload['rows']) ? payload['rows'].length : null;
+    truncated = typeof payload['truncated'] === 'boolean' ? payload['truncated'] : null;
+  } catch {
+    // The fixed summary below is intentionally all the verifier retains.
+  }
+
+  return {
+    status: response.status,
+    checkDurationMs,
+    responseBytes: Buffer.byteLength(response.responseBody),
+    rowCount,
+    returnedRows,
+    truncated,
+    serverTiming: response.serverTiming,
+    passed: isCompleteGridRowsEvidence({
+      status: response.status,
+      rowCount,
+      returnedRows,
+      truncated,
+      serverTiming: response.serverTiming,
+    }),
+  };
 }
 
 async function verifyRevision(
