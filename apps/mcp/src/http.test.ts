@@ -24,7 +24,8 @@ describe('MCP health readiness', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       status: 'ready',
-      service: 'wizard-ads',
+      service: 'openspell',
+      product: 'OpenSpell',
       version: '0.1.0',
       revision: 'abcdef123456',
       checks: { database: 'ready' },
@@ -47,7 +48,8 @@ describe('MCP health readiness', () => {
     expect(text).not.toContain(privateDetail);
     expect(JSON.parse(text)).toEqual({
       status: 'not_ready',
-      service: 'wizard-ads',
+      service: 'openspell',
+      product: 'OpenSpell',
       version: '0.1.0',
       revision: 'abcdef123456',
       checks: { database: 'not_ready' },
