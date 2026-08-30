@@ -88,7 +88,12 @@ export async function readDaypartingWorkspace(
     : await handle.sql<RevisionRow[]>`
         select ad_product::text as ad_product,
                date_trunc('hour', event_time) as utc_hour,
-               max(received_at) filter (where revision > 0) as latest_revision_received_at
+               max(received_at) filter (
+                 where dataset <> 'budget_usage'::public.marketing_stream_dataset
+                   and received_at > date_trunc('hour', event_time)
+                     + interval '1 hour'
+                     + (${settlingWindowHours} * interval '1 hour')
+               ) as latest_revision_received_at
           from public.marketing_stream_events
          where org_id = ${input.orgId}
            and profile_id = ${input.profileId}
@@ -134,7 +139,8 @@ export function deriveCurrentSettlingState(input: {
 }): HourSettlingState {
   const windowMs = input.settlingWindowHours * 3_600_000;
   const hourMs = new Date(input.utcHour).getTime();
-  if (!Number.isFinite(hourMs) || input.now.getTime() - hourMs < windowMs) return 'settling';
+  const baseDueMs = hourMs + 3_600_000 + windowMs;
+  if (!Number.isFinite(hourMs) || input.now.getTime() < baseDueMs) return 'settling';
   if (input.latestRevisionReceivedAt !== null) {
     const revisionMs = new Date(input.latestRevisionReceivedAt).getTime();
     if (!Number.isFinite(revisionMs) || input.now.getTime() - revisionMs < windowMs) return 'revised';

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type {
   MarketingStreamBatchEnvelope,
@@ -10,7 +11,6 @@ import {
   marketingStreamProviderEnvelope,
   parseMarketingStreamProviderRecord,
   parseMarketingStreamSqsBody,
-  resolveMarketingStreamProfileScope,
   type MarketingStreamQueueClient,
   type MarketingStreamQueueMessage,
 } from './marketing-stream-sqs.js';
@@ -19,6 +19,23 @@ const ORG = '74747474-7474-4474-8474-747474747474';
 const PROFILE = '75757575-7575-4575-8575-757575757575';
 const QUEUE_URL = 'https://sqs.example.invalid/synthetic';
 const US_MARKETPLACE = 'ATVPDKIKX0DER';
+
+function binding() {
+  return {
+    id: '78787878-7878-4878-8878-787878787878',
+    orgId: ORG,
+    profileId: PROFILE,
+    subscriptionId: 'subscription-one',
+    datasetId: 'sp-traffic' as const,
+    advertiserId: 'provider-advertiser-one',
+    marketplaceId: US_MARKETPLACE,
+    active: true,
+  };
+}
+
+function providerMessageId(): string {
+  return ['sp-traffic', 'provider-advertiser-one', US_MARKETPLACE, 'provider-event-one'].join(':');
+}
 
 describe('Marketing Stream SQS envelope', () => {
   it('accepts raw delivery and the standard SNS notification wrapper', () => {
@@ -65,17 +82,23 @@ describe('Marketing Stream SQS envelope', () => {
     if (parsed.kind !== 'provider') throw new Error('expected provider record');
     const envelope = marketingStreamProviderEnvelope(
       parsed.record,
-      { orgId: ORG, profileId: PROFILE },
+      binding(),
       new Date('2026-08-01T17:05:00.000Z'),
     );
     expect(envelope.events).toHaveLength(1);
     expect(envelope.events[0]).toMatchObject({
       profileId: PROFILE,
-      messageId: 'provider-event-one',
+      messageId: providerMessageId(),
       dataset: 'traffic',
       adProduct: 'SP',
       eventTime: '2026-08-01T17:00:00.000Z',
       revision: 0,
+      provider: {
+        bindingId: '78787878-7878-4878-8878-787878787878',
+        subscriptionId: 'subscription-one',
+        datasetId: 'sp-traffic',
+        eventId: 'provider-event-one',
+      },
       rawPayload: {
         providerRecord: provider,
         currencyCode: 'USD',
@@ -83,6 +106,25 @@ describe('Marketing Stream SQS envelope', () => {
       },
     });
     expect(envelope.events[0]?.payloadHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('requires offset-bearing provider timestamps and accepts signed corrections', () => {
+    expect(parseMarketingStreamProviderRecord({
+      ...trafficRecord(),
+      time_window_start: '2026-08-01T10:00:00+02:30',
+      impressions: -5,
+      clicks: -1,
+      cost: -0.5,
+    })).toMatchObject({
+      eventTime: '2026-08-01T07:30:00.000Z',
+      normalizedMetric: { impressions: -5, clicks: -1, cost: -0.5 },
+    });
+    expect(parseMarketingStreamProviderRecord({
+      ...trafficRecord(), time_window_start: '2026-08-01T10:00:00Z',
+    }).eventTime).toBe('2026-08-01T10:00:00.000Z');
+    expect(() => parseMarketingStreamProviderRecord({
+      ...trafficRecord(), time_window_start: '2026-08-01T10:00:00',
+    })).toThrow(/explicit UTC or numeric offset/);
   });
 
   it('uses comparable 14-day click attribution for SP, SB, and SD conversion records', () => {
@@ -111,20 +153,160 @@ describe('Marketing Stream SQS envelope', () => {
     })).toThrow(/not supported/);
   });
 
-  it('resolves provider identity by advertiser and marketplace without guessing an org', () => {
-    expect(resolveMarketingStreamProfileScope([
-      { orgId: ORG, profileId: PROFILE, countryCode: 'US' },
-      { orgId: '76767676-7676-4676-8676-767676767676', profileId: '77777777-7777-4777-8777-777777777777', countryCode: 'DE' },
-    ], US_MARKETPLACE)).toEqual({ orgId: ORG, profileId: PROFILE });
-    expect(() => resolveMarketingStreamProfileScope([], US_MARKETPLACE)).toThrow(/not bound/);
-    expect(() => resolveMarketingStreamProfileScope([
-      { orgId: ORG, profileId: PROFILE, countryCode: 'US' },
-      { orgId: '76767676-7676-4676-8676-767676767676', profileId: '77777777-7777-4777-8777-777777777777', countryCode: 'US' },
-    ], US_MARKETPLACE)).toThrow(/more than one/);
-  });
 });
 
 describe('Marketing Stream SQS acknowledgement', () => {
+  it('groups one poll by profile, extends visibility, and schedules one replay', async () => {
+    const first = delivery(batchEnvelope([ledgerEvent({ messageId: 'group-one' })]));
+    const second = {
+      ...delivery(batchEnvelope([ledgerEvent({ messageId: 'group-two' })])),
+      messageId: 'sqs-two',
+      receiptHandle: 'receipt-two',
+    };
+    const appended: string[][] = [];
+    const scheduled: string[][] = [];
+    const extended: string[] = [];
+    const deleted: string[] = [];
+    const base = unusedStore();
+    const consumer = new MarketingStreamSqsConsumer({
+      queueUrl: QUEUE_URL,
+      queue: {
+        receive: async () => [first, second],
+        delete: async (_url, receipt) => { deleted.push(receipt); },
+        configuration: async () => ({
+          visibilityTimeoutSeconds: 60,
+          maxReceiveCount: 3,
+          deadLetterQueueConfigured: true,
+        }),
+        extendVisibility: async (_url, receipt) => { extended.push(receipt); },
+        destroy: () => {},
+      },
+      store: {
+        ...base,
+        append: async ({ events }) => {
+          appended.push(events.map((event) => event.messageId));
+          return {
+            offeredMessages: events.length,
+            insertedMessages: events.length,
+            duplicateMessages: 0,
+            revisedMessages: 0,
+            affectedScopes: [{ adProduct: 'SP', utcHour: '2026-08-01T10:00:00.000Z' }],
+          };
+        },
+      },
+      contexts: { load: async () => { throw new Error('inline processor must not run'); } },
+      scheduler: {
+        enqueue: async ({ messageIds }) => { scheduled.push([...messageIds]); return true; },
+      },
+      logger: silentLogger(),
+    });
+
+    expect(await consumer.pollOnce()).toBe(2);
+    expect(appended).toEqual([['group-one', 'group-two']]);
+    expect(scheduled).toEqual([['group-one', 'group-two']]);
+    expect(extended).toEqual(['receipt-one', 'receipt-two']);
+    expect(deleted).toEqual(['receipt-one', 'receipt-two']);
+    expect(consumer.status()).toMatchObject({
+      acknowledged: 2,
+      failed: 0,
+      rawRowsInserted: 2,
+      rawRowsDuplicated: 0,
+      normalizeJobsOffered: 1,
+      normalizeJobsCreated: 1,
+      normalizeJobsAlreadyPresent: 0,
+    });
+  });
+
+  it('keeps profile-group failures isolated within the same poll', async () => {
+    const otherProfile = '79797979-7979-4979-8979-797979797979';
+    const good = delivery(batchEnvelope([ledgerEvent({ messageId: 'isolated-good' })]));
+    const badEnvelope = {
+      ...batchEnvelope([ledgerEvent({ profileId: otherProfile, messageId: 'isolated-bad' })]),
+      profileId: otherProfile,
+    };
+    const bad = {
+      ...delivery(badEnvelope), messageId: 'sqs-bad', receiptHandle: 'receipt-bad',
+    };
+    const deleted: string[] = [];
+    const base = unusedStore();
+    const consumer = new MarketingStreamSqsConsumer({
+      queueUrl: QUEUE_URL,
+      queue: {
+        receive: async () => [good, bad],
+        delete: async (_url, receipt) => { deleted.push(receipt); },
+        destroy: () => {},
+      },
+      store: {
+        ...base,
+        append: async (input) => {
+          if (input.profileId === otherProfile) throw new Error('synthetic profile failure');
+          return {
+            offeredMessages: input.events.length,
+            insertedMessages: input.events.length,
+            duplicateMessages: 0,
+            revisedMessages: 0,
+            affectedScopes: [{ adProduct: 'SP', utcHour: '2026-08-01T10:00:00.000Z' }],
+          };
+        },
+      },
+      contexts: { load: async () => policy() },
+      scheduler: { enqueue: async () => true },
+      logger: silentLogger(),
+    });
+
+    await consumer.pollOnce();
+    expect(deleted).toEqual(['receipt-one']);
+    expect(consumer.status()).toMatchObject({ acknowledged: 1, failed: 1 });
+  });
+
+  it('is idempotent across a crash-after-commit redelivery', async () => {
+    let appendPass = 0;
+    let schedulePass = 0;
+    let deletePass = 0;
+    const message = delivery(batchEnvelope([ledgerEvent({ messageId: 'crash-safe' })]));
+    const base = unusedStore();
+    const consumer = new MarketingStreamSqsConsumer({
+      queueUrl: QUEUE_URL,
+      queue: {
+        receive: async () => [message],
+        delete: async () => {
+          deletePass += 1;
+          if (deletePass === 1) throw new Error('synthetic crash boundary');
+        },
+        destroy: () => {},
+      },
+      store: {
+        ...base,
+        append: async ({ events }) => {
+          appendPass += 1;
+          return {
+            offeredMessages: events.length,
+            insertedMessages: appendPass === 1 ? 1 : 0,
+            duplicateMessages: appendPass === 1 ? 0 : 1,
+            revisedMessages: 0,
+            affectedScopes: [{ adProduct: 'SP', utcHour: '2026-08-01T10:00:00.000Z' }],
+          };
+        },
+      },
+      contexts: { load: async () => policy() },
+      scheduler: {
+        enqueue: async () => { schedulePass += 1; return schedulePass === 1; },
+      },
+      logger: silentLogger(),
+    });
+
+    await consumer.pollOnce();
+    await consumer.pollOnce();
+    expect(consumer.status()).toMatchObject({
+      acknowledged: 1,
+      failed: 1,
+      rawRowsInserted: 1,
+      rawRowsDuplicated: 1,
+      normalizeJobsCreated: 1,
+      normalizeJobsAlreadyPresent: 1,
+    });
+  });
+
   it('resolves and counts one provider-native record before acknowledgement', async () => {
     const steps: string[] = [];
     const message: MarketingStreamQueueMessage = {
@@ -143,8 +325,9 @@ describe('Marketing Stream SQS acknowledgement', () => {
           expect(identity).toEqual({
             advertiserId: 'provider-advertiser-one',
             marketplaceId: US_MARKETPLACE,
+            datasetId: 'sp-traffic',
           });
-          return { orgId: ORG, profileId: PROFILE };
+          return binding();
         },
       },
       contexts: { load: async () => { steps.push('context'); return policy(); } },
@@ -153,7 +336,7 @@ describe('Marketing Stream SQS acknowledgement', () => {
         expect(input.events).toHaveLength(1);
         expect(input.events[0]).toMatchObject({
           profileId: PROFILE,
-          messageId: 'provider-event-one',
+          messageId: providerMessageId(),
           dataset: 'traffic',
           adProduct: 'SP',
         });
@@ -379,6 +562,55 @@ describe('Marketing Stream SQS acknowledgement', () => {
     expect(delays).toEqual([1_000]);
     expect(consumer.status()).toMatchObject({ providerFailures: 1, lastErrorKind: 'Error' });
     expect(JSON.stringify(errors)).not.toMatch(/private queue detail|sqs\.example/i);
+  });
+
+  it('fails closed on a queue without a DLQ and counts poison redrive eligibility', async () => {
+    const badConfiguration = new MarketingStreamSqsConsumer({
+      queueUrl: QUEUE_URL,
+      queue: {
+        receive: async () => [],
+        delete: async () => {},
+        configuration: async () => ({
+          visibilityTimeoutSeconds: 60,
+          maxReceiveCount: 3,
+          deadLetterQueueConfigured: false,
+        }),
+        destroy: () => {},
+      },
+      store: unusedStore(),
+      contexts: { load: async () => policy() },
+      logger: silentLogger(),
+    });
+    await expect(badConfiguration.pollOnce()).rejects.toThrow(/dead-letter queue/);
+
+    const poison = new MarketingStreamSqsConsumer({
+      queueUrl: QUEUE_URL,
+      queue: {
+        receive: async () => [{
+          messageId: 'poison', receiptHandle: 'poison-receipt', body: '{', approximateReceiveCount: 3,
+        }],
+        delete: async () => {},
+        configuration: async () => ({
+          visibilityTimeoutSeconds: 60,
+          maxReceiveCount: 3,
+          deadLetterQueueConfigured: true,
+        }),
+        destroy: () => {},
+      },
+      store: unusedStore(),
+      contexts: { load: async () => policy() },
+      logger: silentLogger(),
+    });
+    await poison.pollOnce();
+    expect(poison.status()).toMatchObject({ failed: 1, redriveEligible: 1, acknowledged: 0 });
+  });
+
+  it('contains no Amazon Ads write client or mutation call in the Stream runtime', () => {
+    const sources = ['marketing-stream-sqs.ts', 'marketing-stream-normalize.ts', 'dayparting.ts']
+      .map((file) => readFileSync(new URL(file, import.meta.url), 'utf8'))
+      .join('\n');
+    expect(sources).not.toMatch(/from ['"]@wizard-ads\/ads-api/);
+    expect(sources).not.toMatch(/\.(createCampaigns|updateCampaigns|updateTargets|updatePlacements)\s*\(/);
   });
 });
 

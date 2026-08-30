@@ -165,11 +165,11 @@ an independent 20-second SQS long poll. It accepts Amazon's documented
 an SNS notification. The legacy shared `MarketingStreamBatchEnvelope` remains
 accepted during rollout.
 
-Provider `advertiser_id` and `marketplace_id` must resolve to exactly one enabled
-Ads profile. The resolver checks the Amazon profile/account identity and the
-public marketplace mapping; it never guesses tenant scope from a campaign id.
-The adapter retains the complete provider record, de-duplicates on Amazon's
-`idempotency_id`, converts profile-local timestamps to UTC, and normalizes the
+Provider `advertiser_id`, `marketplace_id`, and `dataset_id` must resolve to one
+active subscription binding. Runtime routing never guesses from profile aliases
+or campaign ids. The adapter retains the complete provider record, qualifies
+Amazon's `idempotency_id` with its binding and dataset identity, requires an
+explicit timestamp offset, converts timestamps to UTC, and normalizes the
 14-day click-attributed conversion window that is common to SP, SB, and SD.
 View-attributed measures remain raw evidence and are not silently combined.
 Portfolio budget notifications are refused because the current canonical fact
@@ -177,11 +177,12 @@ is campaign-grained. Timezone/currency come from the profile and settling/
 budget-cap policy comes from tenant strategy data. No dayparting number is
 defaulted in source.
 
-The SQS message is deleted only after the envelope count, ledger count,
-normalization count, and canonical read-back count agree with zero refusals.
-Malformed, unconfigured, stale-race, database, and acknowledgement failures are
-left for SQS retry and the queue's DLQ/redrive policy. `/healthz` reports only
-sanitized counters and timestamps.
+One poll is grouped by internal profile. The SQS message is deleted only after
+raw ledger counts reconcile and one durable normalization job is created or
+already present. That job replays complete affected hours, validates canonical
+read-back, and schedules settling transitions. Malformed, unbound, stale-race,
+database, and acknowledgement failures are left for SQS retry and its required
+DLQ/redrive policy. `/healthz` reports only sanitized counters and timestamps.
 
 Unknown datasets and malformed provider fields are refused rather than guessed.
 AWS queue/DLQ provisioning, subscription confirmation, hosted migration

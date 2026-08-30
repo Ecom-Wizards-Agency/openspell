@@ -7,6 +7,7 @@ import { closeServer, startHealthServer } from './health.js';
 import { PostgresBidSeriesStore } from './bid-series.js';
 import { createKeepaSyncHandler } from './keepa.js';
 import { createMarketingStreamSqsConsumer } from './marketing-stream-sqs.js';
+import { createMarketingStreamNormalizeHandler } from './marketing-stream-normalize.js';
 import { createSpApiSqpRequestHandler } from './spapi-sqp.js';
 import { PostgresWeeklySqpScheduler } from './sqp-scheduler.js';
 import {
@@ -41,7 +42,18 @@ const config = configFromEnv();
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
 const store = new PostgresWorkerStore(handle);
 const marketingStream = config.marketingStreamQueueUrl
-  ? createMarketingStreamSqsConsumer({ handle, queueUrl: config.marketingStreamQueueUrl })
+  ? createMarketingStreamSqsConsumer({
+      handle,
+      queueUrl: config.marketingStreamQueueUrl,
+      scheduler: {
+        enqueue: ({ orgId, profileId, messageIds, runAt, dedupeKey }) => store.enqueue({
+          type: 'marketing_stream.normalize',
+          orgId,
+          profileId,
+          messageIds: [...messageIds],
+        }, runAt, dedupeKey),
+      },
+    })
   : undefined;
 // Integration-only deployments do not read ADS_* at boot. Amazon wiring exists
 // only when this runtime's claim policy includes an Amazon job type (or all).
@@ -81,6 +93,7 @@ const worker = new SyncWorker({
     rankSync: createDataDiveRankSyncHandler({ handle }),
     keepaSync: createKeepaSyncHandler(handle),
     ...(sqpRequest === undefined ? {} : { sqpRequest }),
+    marketingStreamNormalize: createMarketingStreamNormalizeHandler({ handle, queue: store }),
   },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,

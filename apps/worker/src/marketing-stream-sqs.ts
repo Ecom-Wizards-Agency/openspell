@@ -12,18 +12,25 @@
  */
 import { createHash } from 'node:crypto';
 import {
+  ChangeMessageVisibilityCommand,
   DeleteMessageCommand,
+  GetQueueAttributesCommand,
   ReceiveMessageCommand,
   SQSClient,
   type Message,
 } from '@aws-sdk/client-sqs';
-import type { DbHandle } from '@wizard-ads/db';
 import {
+  resolveMarketingStreamSubscriptionBinding,
+  type DbHandle,
+} from '@wizard-ads/db';
+import {
+  type AmazonMarketingStreamDatasetId,
   MarketingStreamBatchEnvelope,
   MarketingStreamLedgerEvent,
   type MarketingStreamBatchEnvelope as MarketingStreamBatchEnvelopeValue,
   type MarketingStreamLedgerEvent as MarketingStreamLedgerEventValue,
   type MarketingStreamNormalizationCounts,
+  type MarketingStreamSubscriptionBinding,
 } from '@wizard-ads/shared';
 import { resolveStrategy } from '@wizard-ads/strategy';
 import {
@@ -33,7 +40,6 @@ import {
   type MarketingStreamNormalizationPolicy,
   type MarketingStreamStore,
 } from './dayparting.js';
-import { marketplaceIdForCountry } from './marketplaces.js';
 
 const RECEIVE_BATCH_SIZE = 10;
 const LONG_POLL_SECONDS = 20;
@@ -51,7 +57,15 @@ export interface MarketingStreamQueueMessage {
 export interface MarketingStreamQueueClient {
   receive(queueUrl: string, signal: AbortSignal): Promise<MarketingStreamQueueMessage[]>;
   delete(queueUrl: string, receiptHandle: string): Promise<void>;
+  configuration?(queueUrl: string): Promise<MarketingStreamQueueConfiguration>;
+  extendVisibility?(queueUrl: string, receiptHandle: string, seconds: number): Promise<void>;
   destroy(): void;
+}
+
+export interface MarketingStreamQueueConfiguration {
+  visibilityTimeoutSeconds: number;
+  maxReceiveCount: number;
+  deadLetterQueueConfigured: boolean;
 }
 
 export class AwsMarketingStreamQueueClient implements MarketingStreamQueueClient {
@@ -71,6 +85,30 @@ export class AwsMarketingStreamQueueClient implements MarketingStreamQueueClient
     await this.client.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: receiptHandle }));
   }
 
+  async configuration(queueUrl: string): Promise<MarketingStreamQueueConfiguration> {
+    const response = await this.client.send(new GetQueueAttributesCommand({
+      QueueUrl: queueUrl,
+      AttributeNames: ['VisibilityTimeout', 'RedrivePolicy'],
+    }));
+    const visibilityTimeoutSeconds = Number(response.Attributes?.VisibilityTimeout);
+    const redrivePolicy = parseRedrivePolicy(response.Attributes?.RedrivePolicy);
+    const configuration = {
+      visibilityTimeoutSeconds,
+      maxReceiveCount: redrivePolicy.maxReceiveCount,
+      deadLetterQueueConfigured: redrivePolicy.deadLetterTargetArn.length > 0,
+    };
+    assertQueueConfiguration(configuration);
+    return configuration;
+  }
+
+  async extendVisibility(queueUrl: string, receiptHandle: string, seconds: number): Promise<void> {
+    await this.client.send(new ChangeMessageVisibilityCommand({
+      QueueUrl: queueUrl,
+      ReceiptHandle: receiptHandle,
+      VisibilityTimeout: seconds,
+    }));
+  }
+
   destroy(): void {
     this.client.destroy();
   }
@@ -87,65 +125,26 @@ export interface MarketingStreamRuntimeContextLoader {
   load(input: { orgId: string; profileId: string }): Promise<MarketingStreamRuntimeContext>;
 }
 
-export interface MarketingStreamProfileScope {
-  orgId: string;
-  profileId: string;
-}
+export type MarketingStreamProfileScope = MarketingStreamSubscriptionBinding;
 
 export interface MarketingStreamProfileScopeResolver {
-  resolve(input: { advertiserId: string; marketplaceId: string }): Promise<MarketingStreamProfileScope>;
-}
-
-interface MarketingStreamProfileCandidate extends MarketingStreamProfileScope {
-  countryCode: string;
+  resolve(input: {
+    advertiserId: string;
+    marketplaceId: string;
+    datasetId: AmazonMarketingStreamDatasetId;
+  }): Promise<MarketingStreamProfileScope>;
 }
 
 export class DbMarketingStreamProfileScopeResolver implements MarketingStreamProfileScopeResolver {
   constructor(private readonly handle: DbHandle) {}
 
-  async resolve(input: { advertiserId: string; marketplaceId: string }): Promise<MarketingStreamProfileScope> {
-    const candidates = await this.handle.sql<{
-      id: string;
-      org_id: string;
-      country_code: string;
-    }[]>`
-      select id, org_id, country_code
-        from public.ad_profiles
-       where sync_enabled = true
-         and (
-           amazon_profile_id = ${input.advertiserId}
-           or amazon_account_id = ${input.advertiserId}
-         )
-    `;
-    return resolveMarketingStreamProfileScope(
-      candidates.map((candidate) => ({
-        orgId: candidate.org_id,
-        profileId: candidate.id,
-        countryCode: candidate.country_code,
-      })),
-      input.marketplaceId,
-    );
+  async resolve(input: {
+    advertiserId: string;
+    marketplaceId: string;
+    datasetId: AmazonMarketingStreamDatasetId;
+  }): Promise<MarketingStreamProfileScope> {
+    return resolveMarketingStreamSubscriptionBinding(this.handle, input);
   }
-}
-
-export function resolveMarketingStreamProfileScope(
-  candidates: readonly MarketingStreamProfileCandidate[],
-  marketplaceId: string,
-): MarketingStreamProfileScope {
-  const matches = candidates.filter(
-    (candidate) => marketplaceIdForCountry(candidate.countryCode) === marketplaceId,
-  );
-  if (matches.length === 0) {
-    throw new MarketingStreamConfigurationError(
-      'provider advertiser and marketplace are not bound to an enabled profile',
-    );
-  }
-  if (matches.length !== 1) {
-    throw new MarketingStreamConfigurationError(
-      'provider advertiser and marketplace resolve to more than one enabled profile',
-    );
-  }
-  return { orgId: matches[0]!.orgId, profileId: matches[0]!.profileId };
 }
 
 /**
@@ -220,6 +219,12 @@ export interface MarketingStreamConsumerStatus {
   acknowledged: number;
   failed: number;
   providerFailures: number;
+  redriveEligible: number;
+  rawRowsInserted: number;
+  rawRowsDuplicated: number;
+  normalizeJobsOffered: number;
+  normalizeJobsCreated: number;
+  normalizeJobsAlreadyPresent: number;
   lastSuccessAt: string | null;
   lastErrorAt: string | null;
   lastErrorKind: string | null;
@@ -235,6 +240,16 @@ export type MarketingStreamProcessor = (
   },
 ) => Promise<MarketingStreamBatchResult>;
 
+export interface MarketingStreamNormalizeScheduler {
+  enqueue(input: {
+    orgId: string;
+    profileId: string;
+    messageIds: readonly string[];
+    runAt: Date;
+    dedupeKey: string;
+  }): Promise<boolean>;
+}
+
 export interface MarketingStreamSqsConsumerOptions {
   queueUrl: string;
   queue?: MarketingStreamQueueClient;
@@ -243,6 +258,8 @@ export interface MarketingStreamSqsConsumerOptions {
   /** Required only when consuming Amazon's provider-native record. */
   profiles?: MarketingStreamProfileScopeResolver;
   process?: MarketingStreamProcessor;
+  /** Production schedules durable replay; the inline processor remains a narrow test seam. */
+  scheduler?: MarketingStreamNormalizeScheduler;
   now?: () => Date;
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   logger?: MarketingStreamConsumerLogger;
@@ -260,6 +277,7 @@ export class MarketingStreamSqsConsumer {
   private readonly contexts: MarketingStreamRuntimeContextLoader;
   private readonly profiles: MarketingStreamProfileScopeResolver | undefined;
   private readonly process: MarketingStreamProcessor;
+  private readonly scheduler: MarketingStreamNormalizeScheduler | undefined;
   private readonly now: () => Date;
   private readonly sleep: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   private readonly logger: MarketingStreamConsumerLogger;
@@ -268,6 +286,12 @@ export class MarketingStreamSqsConsumer {
     acknowledged: 0,
     failed: 0,
     providerFailures: 0,
+    redriveEligible: 0,
+    rawRowsInserted: 0,
+    rawRowsDuplicated: 0,
+    normalizeJobsOffered: 0,
+    normalizeJobsCreated: 0,
+    normalizeJobsAlreadyPresent: 0,
   };
   private controller: AbortController | null = null;
   private loop: Promise<void> | null = null;
@@ -276,6 +300,7 @@ export class MarketingStreamSqsConsumer {
   private lastSuccessAt: string | null = null;
   private lastErrorAt: string | null = null;
   private lastErrorKind: string | null = null;
+  private queueConfiguration: MarketingStreamQueueConfiguration | null = null;
 
   constructor(options: MarketingStreamSqsConsumerOptions) {
     if (options.queueUrl.trim().length === 0) {
@@ -287,6 +312,7 @@ export class MarketingStreamSqsConsumer {
     this.contexts = options.contexts;
     this.profiles = options.profiles;
     this.process = options.process ?? processMarketingStreamBatch;
+    this.scheduler = options.scheduler;
     this.now = options.now ?? (() => new Date());
     this.sleep = options.sleep ?? abortableDelay;
     this.logger = options.logger ?? consoleLogger;
@@ -324,9 +350,35 @@ export class MarketingStreamSqsConsumer {
 
   /** One long poll, exposed for deterministic runtime tests. */
   async pollOnce(signal: AbortSignal = new AbortController().signal): Promise<number> {
+    await this.ensureQueueConfiguration();
+    if (signal.aborted) throw abortError();
     const messages = await this.queue.receive(this.queueUrl, signal);
     this.counters.received += messages.length;
-    for (const message of messages) await this.processDelivery(message);
+    const groups = new Map<string, PreparedMarketingStreamDelivery[]>();
+    for (const message of messages) {
+      try {
+        if (!message.body) throw new MarketingStreamDeliveryError('SQS delivery has no body');
+        if (!message.receiptHandle) throw new MarketingStreamDeliveryError('SQS delivery has no receipt handle');
+        if (this.queue.extendVisibility && this.queueConfiguration) {
+          await this.queue.extendVisibility(
+            this.queueUrl,
+            message.receiptHandle,
+            this.queueConfiguration.visibilityTimeoutSeconds,
+          );
+        }
+        const payload = parseMarketingStreamSqsBody(message.body);
+        const envelope = payload.kind === 'envelope'
+          ? payload.envelope
+          : await this.providerEnvelope(payload.record);
+        const key = `${envelope.orgId}|${envelope.profileId}`;
+        const group = groups.get(key) ?? [];
+        group.push({ message, envelope });
+        groups.set(key, group);
+      } catch (error) {
+        this.recordDeliveryFailure(message, error);
+      }
+    }
+    for (const group of groups.values()) await this.processGroup(group);
     return messages.length;
   }
 
@@ -353,80 +405,122 @@ export class MarketingStreamSqsConsumer {
     }
   }
 
-  private async processDelivery(message: MarketingStreamQueueMessage): Promise<void> {
-    this.inFlight += 1;
+  private async processGroup(group: readonly PreparedMarketingStreamDelivery[]): Promise<void> {
+    const first = group[0];
+    if (!first) return;
+    this.inFlight += group.length;
     try {
-      if (!message.body) throw new MarketingStreamDeliveryError('SQS delivery has no body');
-      if (!message.receiptHandle) throw new MarketingStreamDeliveryError('SQS delivery has no receipt handle');
-      const payload = parseMarketingStreamSqsBody(message.body);
-      const envelope = payload.kind === 'envelope'
-        ? payload.envelope
-        : await this.providerEnvelope(payload.record);
-      let context: MarketingStreamRuntimeContext;
-      try {
-        context = await this.contexts.load({
+      const envelope = mergeDeliveryGroup(group);
+      const receivedEvents = envelope.events.length;
+      let insertedEvents = 0;
+      let duplicateEvents = 0;
+      if (this.scheduler) {
+        const append = await this.store.append({
           orgId: envelope.orgId,
           profileId: envelope.profileId,
+          events: envelope.events,
         });
-      } catch (error) {
-        if (error instanceof MarketingStreamConfigurationError) {
-          // Optional modelling policy must not become a raw-data-loss gate.
-          // The scoped FK/tenant checks in the ledger append still reject an
-          // unknown profile. A later SQS redelivery is idempotent and can
-          // project these events once policy exists.
-          const append = await this.store.append({
+        if (
+          append.offeredMessages !== receivedEvents
+          || append.insertedMessages + append.duplicateMessages !== receivedEvents
+        ) {
+          throw new MarketingStreamDeliveryError('grouped raw-ledger counts do not reconcile');
+        }
+        insertedEvents = append.insertedMessages;
+        duplicateEvents = append.duplicateMessages;
+        this.counters.rawRowsInserted += insertedEvents;
+        this.counters.rawRowsDuplicated += duplicateEvents;
+        const messageIds = [...new Set(envelope.events.map((event) => event.messageId))].sort();
+        this.counters.normalizeJobsOffered += 1;
+        const created = await this.scheduler.enqueue({
+          orgId: envelope.orgId,
+          profileId: envelope.profileId,
+          messageIds,
+          runAt: this.now(),
+          dedupeKey: normalizeDedupeKey(envelope.orgId, envelope.profileId, messageIds),
+        });
+        if (created) this.counters.normalizeJobsCreated += 1;
+        else this.counters.normalizeJobsAlreadyPresent += 1;
+      } else {
+        let context: MarketingStreamRuntimeContext;
+        try {
+          context = await this.contexts.load({
             orgId: envelope.orgId,
             profileId: envelope.profileId,
-            events: envelope.events,
           });
-          if (
-            append.offeredMessages !== envelope.events.length ||
-            append.insertedMessages + append.duplicateMessages !== envelope.events.length
-          ) {
-            throw new MarketingStreamDeliveryError('deferred raw-ledger counts do not reconcile');
+        } catch (error) {
+          if (error instanceof MarketingStreamConfigurationError) {
+            const append = await this.store.append({
+              orgId: envelope.orgId,
+              profileId: envelope.profileId,
+              events: envelope.events,
+            });
+            if (
+              append.offeredMessages !== receivedEvents
+              || append.insertedMessages + append.duplicateMessages !== receivedEvents
+            ) {
+              throw new MarketingStreamDeliveryError('deferred raw-ledger counts do not reconcile');
+            }
           }
-          this.logger.info('Marketing Stream evidence retained; projection deferred', {
-            messageId: message.messageId,
-            receivedEvents: envelope.events.length,
-            insertedEvents: append.insertedMessages,
-            duplicateEvents: append.duplicateMessages,
-          });
+          throw error;
         }
-        throw error;
+        const result = await this.process(this.store, {
+          orgId: envelope.orgId,
+          profileId: envelope.profileId,
+          events: envelope.events,
+          policy: { ...context, now: this.now() },
+        });
+        assertCompletedEnvelope(envelope, result);
+        insertedEvents = result.append.insertedMessages;
+        duplicateEvents = result.append.duplicateMessages;
+        this.counters.rawRowsInserted += insertedEvents;
+        this.counters.rawRowsDuplicated += duplicateEvents;
       }
-      const result = await this.process(this.store, {
-        orgId: envelope.orgId,
-        profileId: envelope.profileId,
-        events: envelope.events,
-        policy: { ...context, now: this.now() },
-      });
-      assertCompletedEnvelope(envelope, result);
 
-      // Receipt deletion is deliberately last. A crash after persistence and
-      // before this call redelivers an idempotent batch; a crash before
-      // persistence never acknowledges data it did not durably count.
+      for (const delivery of group) await this.acknowledge(delivery.message);
+      this.logger.info('Marketing Stream profile group retained and queued', {
+        deliveries: group.length,
+        receivedEvents,
+        insertedEvents,
+        duplicateEvents,
+      });
+    } catch (error) {
+      for (const delivery of group) this.recordDeliveryFailure(delivery.message, error);
+    } finally {
+      this.inFlight -= group.length;
+    }
+  }
+
+  private async acknowledge(message: MarketingStreamQueueMessage): Promise<void> {
+    if (!message.receiptHandle) throw new MarketingStreamDeliveryError('SQS delivery has no receipt handle');
+    try {
       await this.queue.delete(this.queueUrl, message.receiptHandle);
       this.counters.acknowledged += 1;
       this.lastSuccessAt = this.now().toISOString();
-      this.logger.info('Marketing Stream SQS delivery acknowledged', {
-        messageId: message.messageId,
-        receiveCount: message.approximateReceiveCount,
-        receivedEvents: result.counts.receivedMessages,
-        duplicateEvents: result.counts.duplicateMessages,
-        revisedEvents: result.counts.revisedMessages,
-        normalizedRows: result.counts.normalizedRows,
-      });
     } catch (error) {
-      this.counters.failed += 1;
-      this.recordError(error);
-      this.logger.error('Marketing Stream SQS delivery left for redrive', {
-        messageId: message.messageId,
-        receiveCount: message.approximateReceiveCount,
-        errorKind: errorKind(error),
-      });
-    } finally {
-      this.inFlight -= 1;
+      this.recordDeliveryFailure(message, error);
     }
+  }
+
+  private recordDeliveryFailure(message: MarketingStreamQueueMessage, error: unknown): void {
+    this.counters.failed += 1;
+    if (
+      this.queueConfiguration
+      && message.approximateReceiveCount !== null
+      && message.approximateReceiveCount >= this.queueConfiguration.maxReceiveCount
+    ) this.counters.redriveEligible += 1;
+    this.recordError(error);
+    this.logger.error('Marketing Stream SQS delivery left for queue-managed redrive', {
+      messageId: message.messageId,
+      receiveCount: message.approximateReceiveCount,
+      errorKind: errorKind(error),
+    });
+  }
+
+  private async ensureQueueConfiguration(): Promise<void> {
+    if (this.queueConfiguration !== null || !this.queue.configuration) return;
+    this.queueConfiguration = await this.queue.configuration(this.queueUrl);
+    assertQueueConfiguration(this.queueConfiguration);
   }
 
   private recordError(error: unknown): void {
@@ -443,6 +537,7 @@ export class MarketingStreamSqsConsumer {
     const scope = await this.profiles.resolve({
       advertiserId: record.advertiserId,
       marketplaceId: record.marketplaceId,
+      datasetId: record.datasetId,
     });
     return marketingStreamProviderEnvelope(record, scope, this.now());
   }
@@ -452,6 +547,7 @@ export function createMarketingStreamSqsConsumer(input: {
   handle: DbHandle;
   queueUrl: string;
   queue?: MarketingStreamQueueClient;
+  scheduler?: MarketingStreamNormalizeScheduler;
   logger?: MarketingStreamConsumerLogger;
 }): MarketingStreamSqsConsumer {
   return new MarketingStreamSqsConsumer({
@@ -460,18 +556,12 @@ export function createMarketingStreamSqsConsumer(input: {
     store: new DbMarketingStreamStore(input.handle),
     contexts: new DbMarketingStreamRuntimeContextLoader(input.handle),
     profiles: new DbMarketingStreamProfileScopeResolver(input.handle),
+    scheduler: input.scheduler,
     logger: input.logger,
   });
 }
 
-type SupportedProviderDatasetId =
-  | 'sp-traffic'
-  | 'sp-conversion'
-  | 'sb-traffic'
-  | 'sb-conversion'
-  | 'sd-traffic'
-  | 'sd-conversion'
-  | 'budget-usage';
+type SupportedProviderDatasetId = AmazonMarketingStreamDatasetId;
 
 export interface ParsedMarketingStreamProviderRecord {
   advertiserId: string;
@@ -489,6 +579,11 @@ export interface ParsedMarketingStreamProviderRecord {
 export type ParsedMarketingStreamSqsBody =
   | { kind: 'envelope'; envelope: MarketingStreamBatchEnvelopeValue }
   | { kind: 'provider'; record: ParsedMarketingStreamProviderRecord };
+
+interface PreparedMarketingStreamDelivery {
+  message: MarketingStreamQueueMessage;
+  envelope: MarketingStreamBatchEnvelopeValue;
+}
 
 /** Accept direct SQS delivery or the normal SNS notification wrapper. */
 export function parseMarketingStreamSqsBody(body: string): ParsedMarketingStreamSqsBody {
@@ -553,13 +648,14 @@ export function marketingStreamProviderEnvelope(
     throw new MarketingStreamDeliveryError('provider receive time is invalid');
   }
   const rawPayload: Record<string, unknown> = {
+    source: 'amazon_marketing_stream',
     providerRecord: record.rawProviderRecord,
     metrics: [record.normalizedMetric],
   };
   if (record.currencyCode !== null) rawPayload['currencyCode'] = record.currencyCode;
   const event = MarketingStreamLedgerEvent.parse({
     profileId: scope.profileId,
-    messageId: record.idempotencyId,
+    messageId: providerMessageId(record),
     dataset: record.dataset,
     adProduct: record.adProduct,
     eventTime: record.eventTime,
@@ -569,6 +665,14 @@ export function marketingStreamProviderEnvelope(
     revision: 0,
     payloadHash: createHash('sha256').update(stableJson(record.rawProviderRecord)).digest('hex'),
     rawPayload,
+    provider: {
+      bindingId: scope.id,
+      subscriptionId: scope.subscriptionId,
+      datasetId: record.datasetId,
+      advertiserId: record.advertiserId,
+      marketplaceId: record.marketplaceId,
+      eventId: record.idempotencyId,
+    },
   });
   return MarketingStreamBatchEnvelope.parse({
     schema: 'wizard-ads.marketing-stream-batch.v1',
@@ -592,15 +696,19 @@ function providerMetric(
         value['budget_usage_percentage'],
         'budget_usage_percentage',
       ),
+      budgetObservedAt: providerInstant(
+        value['usage_updated_timestamp'],
+        'usage_updated_timestamp',
+      ),
     };
   }
   const campaignId = providerString(value['campaign_id'], 'campaign_id');
   if (datasetId.endsWith('-traffic')) {
     return {
       campaignId,
-      impressions: providerNumber(value['impressions'], 'impressions', true),
-      clicks: providerNumber(value['clicks'], 'clicks', true),
-      cost: providerNumber(value['cost'], 'cost'),
+      impressions: providerNumber(value['impressions'], 'impressions', true, true),
+      clicks: providerNumber(value['clicks'], 'clicks', true, true),
+      cost: providerNumber(value['cost'], 'cost', false, true),
     };
   }
   // Fourteen-day click attribution is the one conversion window shared by
@@ -608,8 +716,8 @@ function providerMetric(
   // in the raw record and is not silently mixed into this comparable measure.
   return {
     campaignId,
-    purchases: providerNumber(value['attributed_conversions_14d'], 'attributed_conversions_14d', true),
-    sales: providerNumber(value['attributed_sales_14d'], 'attributed_sales_14d'),
+    purchases: providerNumber(value['attributed_conversions_14d'], 'attributed_conversions_14d', true, true),
+    sales: providerNumber(value['attributed_sales_14d'], 'attributed_sales_14d', false, true),
   };
 }
 
@@ -661,6 +769,11 @@ function providerCurrency(value: unknown): string {
 
 function providerInstant(value: unknown, field: string): string {
   const parsed = providerString(value, field);
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(parsed)) {
+    throw new MarketingStreamDeliveryError(
+      `provider ${field} must include an explicit UTC or numeric offset`,
+    );
+  }
   const date = new Date(parsed);
   if (!Number.isFinite(date.getTime())) {
     throw new MarketingStreamDeliveryError(`provider ${field} is not an ISO timestamp`);
@@ -668,18 +781,56 @@ function providerInstant(value: unknown, field: string): string {
   return date.toISOString();
 }
 
-function providerNumber(value: unknown, field: string, integer = false): number {
+function providerNumber(
+  value: unknown,
+  field: string,
+  integer = false,
+  signed = false,
+): number {
   if (
     typeof value !== 'number'
     || !Number.isFinite(value)
-    || value < 0
+    || (!signed && value < 0)
     || (integer && (!Number.isSafeInteger(value)))
   ) {
     throw new MarketingStreamDeliveryError(
-      `provider ${field} must be a non-negative${integer ? ' safe integer' : ' number'}`,
+      `provider ${field} must be a ${signed ? 'signed ' : 'non-negative'}${integer ? 'safe integer' : 'number'}`,
     );
   }
   return value;
+}
+
+function providerMessageId(record: ParsedMarketingStreamProviderRecord): string {
+  return [
+    record.datasetId,
+    record.advertiserId,
+    record.marketplaceId,
+    record.idempotencyId,
+  ].join(':');
+}
+
+function mergeDeliveryGroup(
+  group: readonly PreparedMarketingStreamDelivery[],
+): MarketingStreamBatchEnvelopeValue {
+  const first = group[0];
+  if (!first) throw new MarketingStreamDeliveryError('cannot merge an empty delivery group');
+  return MarketingStreamBatchEnvelope.parse({
+    schema: 'wizard-ads.marketing-stream-batch.v1',
+    orgId: first.envelope.orgId,
+    profileId: first.envelope.profileId,
+    events: group.flatMap((delivery) => delivery.envelope.events),
+  });
+}
+
+function normalizeDedupeKey(
+  orgId: string,
+  profileId: string,
+  messageIds: readonly string[],
+): string {
+  const fingerprint = createHash('sha256')
+    .update(JSON.stringify({ orgId, profileId, messageIds: [...messageIds].sort() }))
+    .digest('hex');
+  return `marketing-stream:normalize:${fingerprint}`;
 }
 
 function stableJson(value: unknown): string {
@@ -735,6 +886,44 @@ function toQueueMessage(message: Message): MarketingStreamQueueMessage {
   };
 }
 
+function parseRedrivePolicy(value: string | undefined): {
+  maxReceiveCount: number;
+  deadLetterTargetArn: string;
+} {
+  if (!value) return { maxReceiveCount: Number.NaN, deadLetterTargetArn: '' };
+  try {
+    const decoded = JSON.parse(value) as unknown;
+    if (!isRecord(decoded)) throw new Error('not an object');
+    return {
+      maxReceiveCount: Number(decoded['maxReceiveCount']),
+      deadLetterTargetArn: typeof decoded['deadLetterTargetArn'] === 'string'
+        ? decoded['deadLetterTargetArn']
+        : '',
+    };
+  } catch {
+    throw new MarketingStreamConfigurationError('SQS redrive policy is invalid');
+  }
+}
+
+function assertQueueConfiguration(configuration: MarketingStreamQueueConfiguration): void {
+  if (
+    !Number.isInteger(configuration.visibilityTimeoutSeconds)
+    || configuration.visibilityTimeoutSeconds < 30
+  ) {
+    throw new MarketingStreamConfigurationError(
+      'Marketing Stream SQS visibility timeout must be at least 30 seconds',
+    );
+  }
+  if (!Number.isInteger(configuration.maxReceiveCount) || configuration.maxReceiveCount < 2) {
+    throw new MarketingStreamConfigurationError(
+      'Marketing Stream SQS redrive maxReceiveCount must be at least two',
+    );
+  }
+  if (!configuration.deadLetterQueueConfigured) {
+    throw new MarketingStreamConfigurationError('Marketing Stream SQS must have a dead-letter queue');
+  }
+}
+
 function parseJson(value: string): unknown {
   try {
     return JSON.parse(value) as unknown;
@@ -755,6 +944,7 @@ function errorKind(error: unknown): string {
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
+
 
 function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {

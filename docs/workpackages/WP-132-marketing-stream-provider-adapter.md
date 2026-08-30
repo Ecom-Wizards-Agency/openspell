@@ -28,10 +28,9 @@ does not invent a revision number or replace another provider record.
 
 ## Identity and normalization rules
 
-- `advertiser_id` must match the Amazon profile id or account id of an enabled
-  profile.
-- `marketplace_id` must match that profile's country. Zero or multiple matches
-  fail closed; campaign ids never determine tenant scope.
+- `advertiser_id`, `marketplace_id`, and `dataset_id` must match one active,
+  explicitly provisioned subscription binding. Profile/account aliases are not
+  used for runtime routing; campaign ids never determine tenant scope.
 - Provider timestamps, including an explicit profile-local offset, are stored
   as UTC instants while the original value remains in the raw record.
 - Traffic uses impressions, clicks, and cost.
@@ -41,14 +40,14 @@ does not invent a revision number or replace another provider record.
 - Budget usage accepts `CAMPAIGN` only and remains a point-in-time percentage.
   Portfolio notifications are explicitly unsupported by the campaign-grained
   hourly fact.
-- Every acknowledged SQS delivery still reconciles source events, durable
-  ledger rows, normalized rows, fact writes, and canonical read-back.
+- Corrections and replay semantics are completed by
+  [WP-147](./WP-147-marketing-stream-correctness.md).
 
 ## Verification and remaining live gates
 
 Unit coverage includes direct and SNS-wrapped provider records, all three ad
-products, budget scope, unsupported datasets, timezone offsets, stable payload
-hashing, exact profile/marketplace resolution, count reconciliation, retry, and
+products, budget scope, unsupported datasets, strict timezone offsets, stable
+payload hashing, binding resolution, count reconciliation, retry, and
 acknowledgement order.
 
 The live path remains gated on an AWS queue/DLQ in the required realm, Amazon
