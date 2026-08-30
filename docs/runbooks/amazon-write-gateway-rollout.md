@@ -39,4 +39,3 @@ record: cross-tenant or disconnected profile/connection rows that would violate 
 new composite foreign keys; historical apply artifacts needing canonical hash/order
 regeneration; and the chosen retention/offboarding procedure for immutable write
 evidence. Do not repair any of those rows implicitly inside the migration.
-
