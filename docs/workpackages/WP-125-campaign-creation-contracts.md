@@ -27,6 +27,12 @@ Amazon call belongs to this package.
 - Campaign, ad-group, ad, target, and creative creates are paused and declare no rollback.
 - SP, SB formats, SB Video, and Sponsored Display use semantic payloads; Amazon wire envelopes stay
   private to future adapters.
+- Unified SB Collections follow Amazon's current contract: shared brand identity, optional logo and
+  Amazon-generated title/landing for automatic collections, 3–10 products plus Store/ASIN-list
+  landing for manual collections, and a conservative maximum of 100 automatic exclusions while
+  Amazon's guide and OpenAPI disagree on the published ceiling.
+- Unified Store Spotlight uses exactly three unique Store-page/product cards. Card images come from
+  the checked Store page; they are not represented as independently selected Asset IDs.
 - Node order, references, dependencies, product/dialect scope, Store pages, asset purposes,
   targeting constraints, dates, and exact counts are validated before freeze.
 - Canonical serializers expose stable SHA-256 preimages without adding a crypto/runtime dependency
@@ -45,16 +51,18 @@ Amazon call belongs to this package.
 - Every product-facing schema uses synthetic fixtures only.
 - At least one complete SP graph and one SB Store Spotlight graph round-trip.
 - Invalid counts, dependency order, cycles, missing dependencies, scope drift, enabled resources,
-  keyword polarity, Store pages, and asset purposes are refused.
+  keyword polarity, Collection semantics, Store pages/products, and asset purposes are refused.
 - Canonical node and plan preimages change when bound semantics or approval-envelope fields change.
 - Successful provider and observation evidence requires an Amazon resource identity.
-- Operator, provider, observation, and read-check counts reconcile exactly.
+- The current execution evidence bundle rejects missing/duplicate node results, duplicate provider
+  positions, fingerprint drift, missing observations, and snapshot/accounting drift.
+- Operator, provider, `not_found`, observation, and read-check counts reconcile exactly.
 - Current workers reject the reserved future creation jobs.
 - Typecheck, lint, tests, hygiene, skill-lint, and diff checks pass.
 
 ## Deferred by design
 
-The provider dialect decision, current Asset Library client, eligibility/brand/Store reads, create
-adapters, persistence, executor, guided UI, production migration, and live one-resource checks are
-separate serialized packages. Creation cannot be presented as live until those paths and their
-counts are verified end to end.
+Per-profile dialect capability probing, the current Asset Library client,
+eligibility/brand/Store reads, create adapters, persistence, executor, guided UI, production
+migration, and live one-resource checks are separate serialized packages. Creation cannot be
+presented as live until those paths and their counts are verified end to end.
