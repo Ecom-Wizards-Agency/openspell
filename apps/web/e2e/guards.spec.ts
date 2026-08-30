@@ -62,7 +62,7 @@ const PROFILE_CANONICAL = new Set([
 ]);
 
 const AUTHENTICATED_REDIRECTS = new Map([
-  ['/strategy', { pathname: '/dashboard', hash: '#operating-status' }],
+  ['/strategy', { pathname: '/dashboard', hash: '#operating-status', profile: true }],
 ]);
 
 /** Primary data-backed routes whose artifact, not only URL, must render. */
@@ -160,7 +160,11 @@ test('the same screens open once there is a session', async ({ page }) => {
       );
     } else if (expectedRedirect !== undefined) {
       await page.waitForURL(
-        (url) => url.pathname === expectedRedirect.pathname && url.hash === expectedRedirect.hash,
+        (url) => (
+          url.pathname === expectedRedirect.pathname
+          && url.hash === expectedRedirect.hash
+          && (!expectedRedirect.profile || url.searchParams.has('profile'))
+        ),
       );
     }
     const expectedHeading = PRODUCT_HEADINGS.get(expectedPath);
