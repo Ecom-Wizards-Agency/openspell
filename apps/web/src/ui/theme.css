@@ -2350,6 +2350,18 @@ button {
 .wa-optimizer-campaigns__tablewrap th { position: sticky; top: 0; z-index: 2; }
 .wa-optimizer-campaigns__tablewrap th:first-child,
 .wa-optimizer-campaigns__tablewrap td:first-child { min-width: 22rem; text-align: left; }
+.wa-optimizer-campaigns__pagination {
+  align-items: center;
+  background: var(--wa-surface);
+  border-top: 1px solid var(--wa-border);
+  color: var(--wa-text-muted);
+  display: flex;
+  font-size: var(--wa-fs-xs);
+  justify-content: space-between;
+  padding: 0.625rem 0.75rem;
+  position: sticky;
+  bottom: 0;
+}
 .wa-optimizer-campaigns__name {
   color: var(--wa-text);
   display: block;

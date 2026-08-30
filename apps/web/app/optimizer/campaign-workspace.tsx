@@ -1,9 +1,11 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { OptimizerCampaignRow } from '../../src/optimizer/campaigns';
 import { filterOptimizerCampaignRows } from '../../src/optimizer/campaigns';
+
+const CAMPAIGNS_PER_PAGE = 25;
 
 function gridHref(
   profileId: string,
@@ -36,10 +38,17 @@ export function CampaignWorkspace({
   const [query, setQuery] = useState('');
   const [group, setGroup] = useState('all');
   const [state, setState] = useState('all');
+  const [requestedPage, setRequestedPage] = useState(0);
+  const context = `${profileId}:${period.start}:${period.end}`;
+  const previousContext = useRef(context);
   const filtered = useMemo(
     () => filterOptimizerCampaignRows(rows, { query, group, state }),
     [group, query, rows, state],
   );
+  const pageCount = Math.max(1, Math.ceil(filtered.length / CAMPAIGNS_PER_PAGE));
+  const page = Math.min(requestedPage, pageCount - 1);
+  const pageStart = page * CAMPAIGNS_PER_PAGE;
+  const visibleRows = filtered.slice(pageStart, pageStart + CAMPAIGNS_PER_PAGE);
   const groups = useMemo(
     () => [...new Map(rows.flatMap((row) => row.groupId === null || row.groupName === null
       ? []
@@ -49,6 +58,15 @@ export function CampaignWorkspace({
   const states = useMemo(() => [...new Set(rows.map((row) => row.state))].sort(), [rows]);
   const assigned = rows.filter((row) => row.groupId !== null).length;
   const withProposals = rows.filter((row) => row.proposals > 0).length;
+
+  useEffect(() => {
+    if (previousContext.current !== context) {
+      previousContext.current = context;
+      setRequestedPage(0);
+      return;
+    }
+    if (requestedPage >= pageCount) setRequestedPage(pageCount - 1);
+  }, [context, pageCount, requestedPage]);
 
   return (
     <section className="wa-card wa-optimizer-campaigns" aria-labelledby="optimizer-campaigns-title">
@@ -75,7 +93,7 @@ export function CampaignWorkspace({
           <input
             aria-label="Find campaign"
             className="wa-input wa-input--sm"
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => { setQuery(event.target.value); setRequestedPage(0); }}
             placeholder="Name or campaign ID"
             type="search"
             value={query}
@@ -83,7 +101,7 @@ export function CampaignWorkspace({
         </label>
         <label className="wa-field">
           <span className="wa-label">Optimization group</span>
-          <select className="wa-select wa-select--sm" onChange={(event) => setGroup(event.target.value)} value={group}>
+          <select className="wa-select wa-select--sm" onChange={(event) => { setGroup(event.target.value); setRequestedPage(0); }} value={group}>
             <option value="all">All groups</option>
             <option value="unassigned">Unassigned</option>
             {groups.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
@@ -91,16 +109,20 @@ export function CampaignWorkspace({
         </label>
         <label className="wa-field">
           <span className="wa-label">Campaign state</span>
-          <select className="wa-select wa-select--sm" onChange={(event) => setState(event.target.value)} value={state}>
+          <select className="wa-select wa-select--sm" onChange={(event) => { setState(event.target.value); setRequestedPage(0); }} value={state}>
             <option value="all">All states</option>
             {states.map((value) => <option key={value} value={value}>{titleCase(value)}</option>)}
           </select>
         </label>
-        <span className="wa-optimizer-campaigns__shown">{filtered.length} shown</span>
+        <span className="wa-optimizer-campaigns__shown" aria-live="polite">
+          {filtered.length === 0
+            ? '0 campaigns'
+            : `${pageStart + 1}–${pageStart + visibleRows.length} of ${filtered.length}`}
+        </span>
         {query === '' && group === 'all' && state === 'all' ? null : (
           <button
             className="wa-btn wa-btn--ghost wa-btn--sm"
-            onClick={() => { setQuery(''); setGroup('all'); setState('all'); }}
+            onClick={() => { setQuery(''); setGroup('all'); setState('all'); setRequestedPage(0); }}
             type="button"
           >
             Clear filters
@@ -118,7 +140,7 @@ export function CampaignWorkspace({
       {filtered.length === 0 ? (
         <div className="wa-optimizer-campaigns__empty">
           <strong>No campaigns match these filters.</strong>
-          <button className="wa-btn wa-btn--ghost wa-btn--sm" onClick={() => { setQuery(''); setGroup('all'); setState('all'); }} type="button">
+          <button className="wa-btn wa-btn--ghost wa-btn--sm" onClick={() => { setQuery(''); setGroup('all'); setState('all'); setRequestedPage(0); }} type="button">
             Clear filters
           </button>
         </div>
@@ -141,7 +163,7 @@ export function CampaignWorkspace({
               </tr>
             </thead>
             <tbody>
-              {filtered.map((row) => (
+              {visibleRows.map((row) => (
                 <tr key={row.campaignId}>
                   <td>
                     <a
@@ -186,6 +208,29 @@ export function CampaignWorkspace({
               ))}
             </tbody>
           </table>
+          {pageCount > 1 ? (
+            <nav className="wa-optimizer-campaigns__pagination" aria-label="Campaign pages">
+              <span>Page {page + 1} of {pageCount}</span>
+              <div className="wa-row">
+                <button
+                  className="wa-btn wa-btn--ghost wa-btn--sm"
+                  disabled={page === 0}
+                  onClick={() => setRequestedPage(Math.max(0, page - 1))}
+                  type="button"
+                >
+                  ← Previous
+                </button>
+                <button
+                  className="wa-btn wa-btn--ghost wa-btn--sm"
+                  disabled={page >= pageCount - 1}
+                  onClick={() => setRequestedPage(Math.min(pageCount - 1, page + 1))}
+                  type="button"
+                >
+                  Next →
+                </button>
+              </div>
+            </nav>
+          ) : null}
         </div>
       )}
     </section>
