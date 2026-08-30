@@ -18,7 +18,8 @@ export default async function StrategyRedirect({ searchParams }: PageProps): Pro
     const profiles = await listProfiles(entry.handle, entry.context.active?.orgId ?? '');
     const active = selectProfile(profiles, requested);
     if (active !== null) {
-      redirect(`/dashboard?profile=${encodeURIComponent(active.id)}#operating-status`);
+      const destination = '/dashboard?' + new URLSearchParams({ profile: active.id }).toString();
+      redirect(destination + '#operating-status');
     }
   }
   redirect(`/dashboard${profile === undefined ? '' : `?profile=${encodeURIComponent(profile)}`}#operating-status`);
