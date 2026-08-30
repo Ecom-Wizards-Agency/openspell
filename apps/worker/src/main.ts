@@ -41,7 +41,7 @@ const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
 const config = configFromEnv();
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
 const store = new PostgresWorkerStore(handle);
-const marketingStream = config.marketingStreamQueueUrl
+const marketingStream = config.startsBackgroundPasses && config.marketingStreamQueueUrl
   ? createMarketingStreamSqsConsumer({
       handle,
       queueUrl: config.marketingStreamQueueUrl,
@@ -100,37 +100,49 @@ const worker = new SyncWorker({
   pollIntervalMs: config.pollIntervalMs,
 });
 marketingStream?.start();
-const health = await startHealthServer(worker, config.port, { marketingStream });
-const authHealth = adsApi
+const health = await startHealthServer(worker, config.port, {
+  marketingStream,
+  queueOwnership: {
+    role: config.deploymentRole,
+    jobTypes: config.jobTypes ?? 'all',
+  },
+});
+const authHealth = config.startsBackgroundPasses && adsApi
   ? new AuthHealthMonitor(worker, config.authHealthcheckIntervalMs)
   : undefined;
-const reaper = new StaleClaimReaper(store, config.staleClaimAfter);
-const provisioner = new ScheduleProvisioner(
-  store,
-  undefined,
-  undefined,
-  recommendationRuns,
-  sqpSchedules,
-);
-const bidSeries = adsApi
+const reaper = config.startsBackgroundPasses
+  ? new StaleClaimReaper(store, config.staleClaimAfter)
+  : undefined;
+const provisioner = config.startsBackgroundPasses
+  ? new ScheduleProvisioner(
+      store,
+      undefined,
+      undefined,
+      recommendationRuns,
+      sqpSchedules,
+    )
+  : undefined;
+const bidSeries = config.startsBackgroundPasses && adsApi
   ? new BidSeriesSyncPass({ store: new PostgresBidSeriesStore(handle), client: adsApi })
   : undefined;
-const recommendationObserver = new RecommendationObservationPass(handle, console);
+const recommendationObserver = config.startsBackgroundPasses
+  ? new RecommendationObservationPass(handle, console)
+  : undefined;
 authHealth?.start();
-reaper.start();
-provisioner.start();
+reaper?.start();
+provisioner?.start();
 bidSeries?.start();
-recommendationObserver.start();
+recommendationObserver?.start();
 
 let shuttingDown = false;
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   authHealth?.stop();
-  reaper.stop();
-  provisioner.stop();
+  reaper?.stop();
+  provisioner?.stop();
   bidSeries?.stop();
-  recommendationObserver.stop();
+  recommendationObserver?.stop();
   await marketingStream?.stop();
   await worker.shutdown();
   await closeServer(health);

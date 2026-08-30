@@ -122,7 +122,8 @@ all. `variant` joins the key; existing rows default to `default` and keep the un
 | `LWA_CLIENT_SECRET` | — | The LWA application's client secret. Required. Secret. |
 | `AMAZON_ADS_USER_AGENT` | unset | Sent on every Amazon request. Amazon asks integrators to identify. |
 | `WORKER_ID` | `worker-<pid>` | Identifies the claimer in `sync_jobs.claimed_by`. |
-| `WORKER_JOB_TYPES` | all | Comma-separated queue allowlist. Unknown or empty values fail startup. |
+| `WORKER_JOB_TYPES` | all | Comma-separated queue allowlist. Unknown or empty values fail startup. `evo-report-lane` requires exactly `creative.sync,report.request,report.poll,report.fetch`. |
+| `WORKER_DEPLOYMENT_ROLE` | `general` | `general` or `evo-report-lane`. The report lane is queue-only and refuses missing, partial, or foreign `WORKER_JOB_TYPES`. |
 | `PORT` | `3000` | `/healthz`. |
 | `WORKER_POLL_INTERVAL_MS` | `1000` | Idle sleep between empty claims. |
 | `WORKER_CLAIM_BATCH_SIZE` | `10` | Jobs per `claim_sync_jobs` call. |

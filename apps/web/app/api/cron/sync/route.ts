@@ -29,7 +29,7 @@ import {
   createRecommendationsRunner,
   runBidSeriesSync,
 } from '@wizard-ads/worker';
-import { CRON_SYNC_JOB_TYPES, runSyncTick } from '../../../../src/server/sync-tick';
+import { cronSyncJobTypesFromEnv, runSyncTick } from '../../../../src/server/sync-tick';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -54,6 +54,16 @@ export async function GET(request: Request): Promise<Response> {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
+  let jobTypes;
+  try {
+    jobTypes = cronSyncJobTypesFromEnv();
+  } catch {
+    return NextResponse.json(
+      { error: 'cron queue ownership is not configured safely' },
+      { status: 503 },
+    );
+  }
+
   let connectionString: string;
   try {
     connectionString = connectionStringFromEnv();
@@ -74,7 +84,7 @@ export async function GET(request: Request): Promise<Response> {
     workerId: `vercel-cron-${randomUUID()}`,
     store,
     adsApi,
-    jobTypes: CRON_SYNC_JOB_TYPES,
+    jobTypes,
     recommendationsRun: createRecommendationsRunner(recommendationRuns),
   });
 

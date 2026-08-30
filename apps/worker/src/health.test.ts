@@ -35,4 +35,25 @@ describe('worker health readiness', () => {
       expect((await fetch(`http://127.0.0.1:${port}/healthz`)).status).toBe(expected);
     }
   });
+
+  it('reports only the sanitized role and queue allowlist for deployment ownership', async () => {
+    const worker = { status: () => ({ workerId: 'synthetic', stopping: false, running: 0 }) } as SyncWorker;
+    const server = await startHealthServer(worker, 0, {
+      queueOwnership: {
+        role: 'evo-report-lane',
+        jobTypes: ['creative.sync', 'report.request', 'report.poll', 'report.fetch'],
+      },
+    });
+    servers.push(server);
+    const { port } = server.address() as AddressInfo;
+    const response = await fetch(`http://127.0.0.1:${port}/healthz`);
+    await expect(response.json()).resolves.toMatchObject({
+      components: {
+        queueOwnership: {
+          role: 'evo-report-lane',
+          jobTypes: ['creative.sync', 'report.request', 'report.poll', 'report.fetch'],
+        },
+      },
+    });
+  });
 });

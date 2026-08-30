@@ -1,5 +1,6 @@
 export * from './ads-api.js';
 export * from './bid-series.js';
+export * from './deployment-role.js';
 export * from './config.js';
 export * from './crosscheck.js';
 export * from './creative-performance.js';

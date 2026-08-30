@@ -22,10 +22,12 @@ function request(authorization?: string): Request {
 describe('GET /api/cron/sync', () => {
   const savedSecret = process.env['CRON_SECRET'];
   const savedDbUrl = process.env['DATABASE_URL'];
+  const savedReportLane = process.env['OPENSPELL_EVO_REPORT_LANE_READY'];
 
   beforeEach(() => {
     delete process.env['CRON_SECRET'];
     delete process.env['DATABASE_URL'];
+    delete process.env['OPENSPELL_EVO_REPORT_LANE_READY'];
   });
 
   afterEach(() => {
@@ -33,6 +35,8 @@ describe('GET /api/cron/sync', () => {
     else process.env['CRON_SECRET'] = savedSecret;
     if (savedDbUrl === undefined) delete process.env['DATABASE_URL'];
     else process.env['DATABASE_URL'] = savedDbUrl;
+    if (savedReportLane === undefined) delete process.env['OPENSPELL_EVO_REPORT_LANE_READY'];
+    else process.env['OPENSPELL_EVO_REPORT_LANE_READY'] = savedReportLane;
   });
 
   it('is 401 when no CRON_SECRET is configured, even with a bearer', async () => {
@@ -61,5 +65,15 @@ describe('GET /api/cron/sync', () => {
     expect(response.status).toBe(500);
     const body = (await response.json()) as { error?: string };
     expect(body.error).toMatch(/DATABASE_URL/);
+  });
+
+  it('fails closed before the database or Amazon wiring for a malformed lane handoff', async () => {
+    process.env['CRON_SECRET'] = SECRET;
+    process.env['OPENSPELL_EVO_REPORT_LANE_READY'] = 'true';
+    const response = await GET(request(`Bearer ${SECRET}`));
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: 'cron queue ownership is not configured safely',
+    });
   });
 });

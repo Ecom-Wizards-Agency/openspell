@@ -14,7 +14,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
-import { CRON_SYNC_JOB_TYPES, runSyncTick, SYNC_TICK_LOCK_KEY } from './server/sync-tick';
+import {
+  CRON_SYNC_JOB_TYPES,
+  cronSyncJobTypesFromEnv,
+  runSyncTick,
+  SYNC_TICK_LOCK_KEY,
+} from './server/sync-tick';
 import type { SyncTickStore, SyncTickWorker } from './server/sync-tick';
 
 const available = await databaseAvailable();
@@ -28,6 +33,18 @@ describe('cron claim filter', () => {
       'report.fetch',
       'recommendations.run',
     ]);
+  });
+
+  it('transfers only report ownership after an explicit deployment handoff', () => {
+    expect(cronSyncJobTypesFromEnv({ OPENSPELL_EVO_REPORT_LANE_READY: '1' })).toEqual([
+      'entity.sync',
+      'recommendations.run',
+    ]);
+  });
+
+  it('fails closed for a malformed deployment handoff', () => {
+    expect(() => cronSyncJobTypesFromEnv({ OPENSPELL_EVO_REPORT_LANE_READY: 'true' }))
+      .toThrow(/OPENSPELL_EVO_REPORT_LANE_READY/);
   });
 });
 
