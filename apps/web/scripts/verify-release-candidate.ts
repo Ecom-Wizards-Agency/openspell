@@ -13,12 +13,13 @@
  * this preflight proves the protected server artifact before alias movement.
  *
  * Usage:
- *   pnpm --filter @wizard-ads/web verify:release-candidate -- https://candidate.example
+ *   pnpm --filter @wizard-ads/web verify:release-candidate -- https://candidate.example <full-git-sha>
  */
 import { spawn } from 'node:child_process';
 import { chromium } from '@playwright/test';
 import type { BrowserContext } from '@playwright/test';
-import { PROFILE_COOKIE } from '../src/cookies';
+import { ORG_COOKIE, PROFILE_COOKIE } from '../src/cookies';
+import { webRevision } from '../src/revision';
 
 const PRODUCTION_ORIGIN = process.env['OPENSPELL_PRODUCTION_ORIGIN']
   ?? 'https://ads.ecomwizards.agency';
@@ -58,14 +59,31 @@ interface RouteResult {
   rejectedBodyFound: boolean;
   loginPageFound: boolean;
   noProfileFound: boolean;
+  gateBlockedFound: boolean;
+  passed: boolean;
+}
+
+interface RevisionResult {
+  expected: string;
+  observed: string;
+  status: number | null;
   passed: boolean;
 }
 
 async function main(): Promise<void> {
-  const candidate = candidateOrigin(process.argv.slice(2).find((argument) => argument !== '--'));
+  const inputs = process.argv.slice(2).filter((argument) => argument !== '--');
+  const candidate = candidateOrigin(inputs[0]);
+  const expectedRevision = requiredRevision(inputs[1]);
   const production = new URL(PRODUCTION_ORIGIN);
   if (candidate.origin === production.origin) {
     throw new Error('Candidate must be an immutable deployment URL, not the production alias.');
+  }
+
+  const revision = await verifyRevision(candidate, expectedRevision);
+  if (!revision.passed) {
+    console.log(JSON.stringify({ candidate: candidate.origin, passed: false, revision, routes: [] }, null, 2));
+    process.exitCode = 1;
+    return;
   }
 
   const browser = await chromium.connectOverCDP(CDP_URL);
@@ -80,11 +98,17 @@ async function main(): Promise<void> {
     throw new Error('The Chrome session has no reusable OpenSpell authentication cookies.');
   }
   const profileCookie = browserCookies.find((cookie) => cookie.name === PROFILE_COOKIE);
-  const profileId = profileCookie?.value ?? await selectedProfileId(sourceContext, production);
+  const pageProfileId = await selectedProfileId(sourceContext, production);
+  const profileId = pageProfileId
+    ?? (profileCookie !== undefined && UUID.test(profileCookie.value) ? profileCookie.value : null);
   if (profileId === null || !UUID.test(profileId)) {
     throw new Error('The Chrome session has no reusable active OpenSpell profile selection.');
   }
-  const cookieHeader = sourceCookies
+  const orgCookie = browserCookies.find(
+    (cookie) => cookie.name === ORG_COOKIE && UUID.test(cookie.value),
+  );
+  const forwardedCookies = orgCookie === undefined ? sourceCookies : [...sourceCookies, orgCookie];
+  const cookieHeader = forwardedCookies
     .map((cookie) => `${cookie.name}=${cookie.value}`)
     .join('; ');
 
@@ -97,8 +121,55 @@ async function main(): Promise<void> {
   }
 
   const passed = results.every((result) => result.passed);
-  console.log(JSON.stringify({ candidate: candidate.origin, passed, routes: results }, null, 2));
+  console.log(JSON.stringify({ candidate: candidate.origin, passed, revision, routes: results }, null, 2));
   if (!passed) process.exitCode = 1;
+}
+
+async function verifyRevision(candidate: URL, expected: string): Promise<RevisionResult> {
+  const args = [
+    'curl',
+    '/api/healthz',
+    '--deployment',
+    candidate.origin,
+    '--',
+    '--config',
+    '-',
+    '--silent',
+    '--show-error',
+    '--location',
+    '--max-redirs',
+    '2',
+    '--write-out',
+    `${STATUS_MARKER}%{http_code}`,
+  ];
+  const result = await spawnWithInput('vercel', args, 'max-time = 30\n');
+  const markerIndex = result.stdout.lastIndexOf(STATUS_MARKER);
+  const responseBody = markerIndex < 0 ? '' : result.stdout.slice(0, markerIndex);
+  const statusMatch = markerIndex < 0
+    ? null
+    : result.stdout.slice(markerIndex).match(new RegExp(`${STATUS_MARKER}(\\d{3})`));
+  const status = statusMatch?.[1] === undefined ? null : Number(statusMatch[1]);
+
+  let observed = 'unknown';
+  let healthy: boolean;
+  try {
+    const payload = JSON.parse(responseBody) as Record<string, unknown>;
+    observed = webRevision({ OPENSPELL_WEB_REVISION: String(payload['revision'] ?? '') });
+    healthy = payload['status'] === 'ok' && payload['product'] === 'OpenSpell';
+  } catch {
+    healthy = false;
+  }
+
+  return {
+    expected,
+    observed,
+    status,
+    passed:
+      result.exitCode === 0
+      && status === 200
+      && healthy
+      && observed === expected,
+  };
 }
 
 async function selectedProfileId(
@@ -111,23 +182,24 @@ async function selectedProfileId(
       const values: Array<string | null> = [
         new URL(window.location.href).searchParams.get('profile'),
       ];
-      const remembered = document.cookie
-        .split(';')
-        .map((part) => part.trim())
-        .find((part) => part.startsWith(`${cookieName}=`));
-      if (remembered !== undefined) values.push(decodeURIComponent(remembered.split('=').slice(1).join('=')));
       for (const element of document.querySelectorAll<HTMLElement>(
-        '[data-profile-id], input[name="profile"], input[name="profileId"], select[name*="profile" i]',
+        'input[name="profile"], select[name*="profile" i]',
       )) {
         values.push(
-          element.dataset['profileId']
-          ?? (element instanceof HTMLInputElement || element instanceof HTMLSelectElement
+          element instanceof HTMLInputElement || element instanceof HTMLSelectElement
             ? element.value
-            : null),
+            : null,
         );
       }
       for (const anchor of document.querySelectorAll<HTMLAnchorElement>('a[href*="profile="]')) {
         values.push(new URL(anchor.href, window.location.href).searchParams.get('profile'));
+      }
+      const remembered = document.cookie
+        .split(';')
+        .map((part) => part.trim())
+        .find((part) => part.startsWith(`${cookieName}=`));
+      if (remembered !== undefined) {
+        values.push(decodeURIComponent(remembered.split('=').slice(1).join('=')));
       }
       return values;
     }, PROFILE_COOKIE);
@@ -175,8 +247,16 @@ async function verifyRoute(
   const finalPath = finalUrl?.pathname ?? null;
   const expectedTextFound = responseBody.includes(check.expectedText);
   const rejectedBodyFound = REJECTED_BODY.test(responseBody);
-  const loginPageFound = responseBody.includes('Email me a sign-in link');
-  const noProfileFound = responseBody.includes('Choose an advertising profile');
+  const htmlDocumentFound = /<!DOCTYPE html>/i.test(responseBody);
+  const appShellFound = responseBody.includes('data-testid="app-nav"');
+  const nextRedirectFound = responseBody.includes('NEXT_REDIRECT');
+  const loginPageFound = /Email me a sign-in link|Sign in with your work address/.test(responseBody);
+  const noProfileFound = /Choose an advertising profile|No advertising profiles yet|No profiles yet/.test(
+    responseBody,
+  );
+  const gateBlockedFound = /cannot reach its database|DATABASE_URL is not set|not a member of any organisation/.test(
+    responseBody,
+  );
   const expectedFinalPath = check.route === '/' ? '/dashboard' : check.route;
   return {
     route: check.route,
@@ -185,21 +265,27 @@ async function verifyRoute(
     finalProfileMatched: finalUrl?.searchParams.get('profile') === profileId,
     checkDurationMs: Math.round(performance.now() - startedAt),
     responseBytes: Buffer.byteLength(responseBody),
-    htmlDocumentFound: /<!DOCTYPE html>/i.test(responseBody),
-    appShellFound: responseBody.includes('data-testid="app-nav"'),
-    nextRedirectFound: responseBody.includes('NEXT_REDIRECT'),
+    htmlDocumentFound,
+    appShellFound,
+    nextRedirectFound,
     expectedTextFound,
     rejectedBodyFound,
     loginPageFound,
     noProfileFound,
+    gateBlockedFound,
     passed:
       result.exitCode === 0
       && status === 200
       && finalPath === expectedFinalPath
       && finalUrl?.searchParams.get('profile') === profileId
-      && !responseBody.includes('NEXT_REDIRECT')
+      && htmlDocumentFound
+      && appShellFound
+      && !nextRedirectFound
       && expectedTextFound
-      && !rejectedBodyFound,
+      && !rejectedBodyFound
+      && !loginPageFound
+      && !noProfileFound
+      && !gateBlockedFound,
   };
 }
 
@@ -256,6 +342,14 @@ function candidateOrigin(input: string | undefined): URL {
     throw new Error('Candidate must be an immutable deployment owned by the OpenSpell project.');
   }
   return candidate;
+}
+
+function requiredRevision(input: string | undefined): string {
+  const revision = webRevision({ OPENSPELL_WEB_REVISION: input ?? '' });
+  if (revision === 'unknown') {
+    throw new Error('Pass the full 40-character release Git revision as the second argument.');
+  }
+  return revision;
 }
 
 void main()
