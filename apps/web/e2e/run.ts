@@ -1,9 +1,9 @@
 /**
  * The one entry point for this app's browser tests.
  *
- * ## Why there are four suites and not one
+ * ## Why there are five suites and not one
  *
- * `apps/web` carries four end-to-end suites that need mutually exclusive
+ * `apps/web` carries five end-to-end suites that need mutually exclusive
  * servers, so they run one after the other rather than under a single config:
  *
  *  - **tags-goto** (WP-08, and WP-15's feedback surfaces) serves a
@@ -23,20 +23,25 @@
  *    seam (`WIZARD_ADS_E2E_AUTH=1`) that *refuses to run under
  *    `NODE_ENV=production` by design*. Running it against `next start` would
  *    mean disabling that guard, which is the guard's whole point.
+ *  - **auth-roles** uses that same guarded session seam in a fresh process for
+ *    the settings-heavy role matrix. Keeping it after every operator route in
+ *    `auth` retained enough development route graphs to exhaust a bounded CI
+ *    heap after the assertions themselves had passed.
  *
  * Merging them would mean weakening one guard or accepting a suite that cannot
- * hydrate. Sequential is the honest answer: four named configs, one runner.
+ * hydrate. Sequential is the honest answer: five named configs, one runner.
  *
- * Each suite owns its own database, and the four never overlap: this file
+ * Each suite owns its own database, and the five never overlap: this file
  * creates and drops the tags-goto database, while each authenticated suite's
  * `global-setup.ts` creates and drops its own (plus the fake Amazon and the dev
  * server). The admin connection comes from `WIZARD_ADS_TEST_DATABASE_URL` (or
  * `DATABASE_URL`), the same variable the Vitest database suites use.
  *
- *   pnpm --filter @wizard-ads/web test:e2e             # all four, in order
+ *   pnpm --filter @wizard-ads/web test:e2e             # all five, in order
  *   pnpm --filter @wizard-ads/web test:e2e:tags-goto   # just WP-08
  *   pnpm --filter @wizard-ads/web test:e2e:grid-performance
- *   pnpm --filter @wizard-ads/web test:e2e:auth        # auth/roles without the isolated Grid load
+ *   pnpm --filter @wizard-ads/web test:e2e:auth        # auth/operator routes without roles or the isolated Grid load
+ *   pnpm --filter @wizard-ads/web test:e2e:auth-roles  # settings role matrix in a fresh process
  *   pnpm --filter @wizard-ads/web test:e2e:route-acceptance
  *   WIZARD_ADS_E2E_CPU_RATE=10 pnpm --filter @wizard-ads/web test:e2e:auth
  *
@@ -432,6 +437,7 @@ async function tagsGoto(playwrightArgs: string[]): Promise<number> {
 async function authenticated(
   config:
     | 'playwright.auth.config.ts'
+    | 'playwright.auth-roles.config.ts'
     | 'playwright.grid-performance.config.ts'
     | 'playwright.route-acceptance.config.ts',
   playwrightArgs: string[],
@@ -448,6 +454,10 @@ async function authenticated(
 
 async function auth(playwrightArgs: string[]): Promise<number> {
   return await authenticated('playwright.auth.config.ts', playwrightArgs);
+}
+
+async function authRoles(playwrightArgs: string[]): Promise<number> {
+  return await authenticated('playwright.auth-roles.config.ts', playwrightArgs);
 }
 
 async function gridPerformance(playwrightArgs: string[]): Promise<number> {
@@ -476,6 +486,8 @@ async function main(): Promise<number> {
           ? await gridPerformance(playwrightArgs)
           : suite === 'auth'
             ? await auth(playwrightArgs)
+            : suite === 'auth-roles'
+              ? await authRoles(playwrightArgs)
             : await routeAcceptance(playwrightArgs);
     // Every suite runs even when an earlier one fails: a red run should report
     // the whole picture, not just the first thing that broke.
