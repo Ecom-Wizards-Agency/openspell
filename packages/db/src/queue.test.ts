@@ -192,28 +192,25 @@ describe.skipIf(!available)('sync job queue', () => {
     expect(completed.status).toBe('succeeded');
   });
 
-  it('allows only a pre-migration null-token claim through the rolling compatibility signature', async () => {
-    await queueJobs(2, 'rolling-finish');
-    await database.sql`update public.sync_jobs set priority = 60000
-      where dedupe_key like 'rolling-finish:%'`;
-    const claimed = await claimSyncJobs(database, 'old-worker', 2);
-    expect(claimed).toHaveLength(2);
-    const legacy = claimed[0];
-    const fenced = claimed[1];
-    if (!legacy || !fenced) return;
-    await database.sql`update public.sync_jobs set claim_token = null where id = ${legacy.id}`;
-    const [completed] = await database.sql<{ status: string }[]>`
-      select status from public.finish_sync_job(
-        ${legacy.id}, 'succeeded'::public.sync_job_status, null, null::jsonb, null::interval
-      )
+  it('removes the unfenced completion protocol after the required stop-and-drain migration', async () => {
+    const [signatures] = await database.sql<{ legacy: boolean; fenced: boolean }[]>`
+      select
+        to_regprocedure('public.finish_sync_job(uuid,public.sync_job_status,text,jsonb,interval)') is not null as legacy,
+        to_regprocedure('public.finish_sync_job(uuid,uuid,public.sync_job_status,text,jsonb,interval)') is not null as fenced
     `;
-    expect(completed?.status).toBe('succeeded');
+    expect(signatures).toEqual({ legacy: false, fenced: true });
+  });
+
+  it('proves the protocol migration drain gate rejects an active claimer', async () => {
+    await queueJobs(1, 'protocol-drain');
+    await database.sql`update public.sync_jobs set priority = 70000
+      where dedupe_key = 'protocol-drain:1'`;
+    const [job] = await claimSyncJobs(database, 'worker-before-protocol-migration', 1);
+    if (!job) throw new Error('expected protocol-drain job');
     await expect(database.sql`
-      select public.finish_sync_job(
-        ${fenced.id}, 'succeeded'::public.sync_job_status, null, null::jsonb, null::interval
-      )
-    `).rejects.toThrow(/legacy completion cannot own tokenized job/i);
-    await finishSyncJob(database, fenced.id, 'succeeded', { claimToken: fenced.claimToken });
+      select app.assert_sync_queue_drained_for_protocol_migration()
+    `).rejects.toThrow(/fully drained/i);
+    await finishSyncJob(database, job.id, 'succeeded', { claimToken: job.claimToken });
   });
 
   describe('scheduler', () => {

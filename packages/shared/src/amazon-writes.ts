@@ -454,6 +454,8 @@ export const ReapproveAmazonWriteInverseExecution = z.object({
   profileId: Uuid,
   executionId: Uuid,
   expiresAt: z.iso.datetime(),
+  expectedPreviewSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  expectedCount: z.number().int().positive().max(100),
   authorizationId: Uuid,
   authorizationSha256: z.string().regex(/^[a-f0-9]{64}$/),
   authorizationSnapshot: BoundedAmazonWriteAuthorization,

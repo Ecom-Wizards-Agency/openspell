@@ -1,7 +1,26 @@
 -- OpenSpell WP-96: guarded Sponsored Products mutation execution ledger.
 --
--- Additive only. This migration does not enable a deployment gate, approve a
--- batch, enqueue a write, or call Amazon.
+-- This is a coordinated worker protocol migration, not a zero-downtime
+-- additive rollout. Stop old claimers and drain every running job first; the
+-- checked procedure lives in docs/runbooks/amazon-write-gateway-rollout.md.
+create or replace function app.assert_sync_queue_drained_for_protocol_migration()
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog, public, pg_temp
+as $$
+begin
+  perform app.assert_service_role('assert_sync_queue_drained_for_protocol_migration');
+  if exists (select 1 from public.sync_jobs where status = 'running') then
+    raise exception 'amazon write gateway migration requires a fully drained sync queue';
+  end if;
+end;
+$$;
+select app.assert_sync_queue_drained_for_protocol_migration();
+revoke execute on function app.assert_sync_queue_drained_for_protocol_migration()
+  from public, anon, authenticated;
+grant execute on function app.assert_sync_queue_drained_for_protocol_migration()
+  to service_role;
 
 alter type public.sync_job_type add value if not exists 'amazon.apply';
 alter type public.sync_job_type add value if not exists 'amazon.observe';
@@ -70,6 +89,9 @@ begin
 end;
 $$;
 
+drop function public.finish_sync_job(
+  uuid, public.sync_job_status, text, jsonb, interval
+);
 create function public.finish_sync_job(
   p_job_id uuid,
   p_claim_token uuid,
@@ -125,55 +147,6 @@ begin
 end;
 $$;
 
--- Rolling compatibility for a job claimed before claim-token fencing was
--- installed. It can finish only a legacy running row whose token is NULL;
--- every claim made by the new function has a token and is rejected here.
-create or replace function public.finish_sync_job(
-  p_job_id uuid,
-  p_status public.sync_job_status,
-  p_error text default null,
-  p_result jsonb default null,
-  p_retry_in interval default null
-)
-returns public.sync_jobs
-language plpgsql
-security definer
-set search_path = pg_catalog, public, pg_temp
-as $$
-declare
-  v_job public.sync_jobs;
-begin
-  perform app.assert_service_role('finish_sync_job');
-  select * into v_job from public.sync_jobs where id = p_job_id for update;
-  if not found then
-    raise exception 'no such job %', p_job_id using errcode = '22023';
-  end if;
-  if v_job.status <> 'running' or v_job.claim_token is not null then
-    raise exception 'legacy completion cannot own tokenized job %', p_job_id
-      using errcode = '40001';
-  end if;
-  if p_status = 'failed' and v_job.attempts >= v_job.max_attempts then
-    update public.sync_jobs set status = 'dead', last_error = p_error,
-      result = coalesce(p_result, result), finished_at = now(), updated_at = now()
-      where id = p_job_id and status = 'running' and claim_token is null returning * into v_job;
-  elsif p_status = 'failed' then
-    update public.sync_jobs set status = 'queued', last_error = p_error,
-      result = coalesce(p_result, result), claimed_by = null, claimed_at = null,
-      run_after = now() + coalesce(p_retry_in, interval '1 minute'),
-      finished_at = null, updated_at = now()
-      where id = p_job_id and status = 'running' and claim_token is null returning * into v_job;
-  else
-    update public.sync_jobs set status = p_status, last_error = p_error,
-      result = coalesce(p_result, result), finished_at = now(), updated_at = now()
-      where id = p_job_id and status = 'running' and claim_token is null returning * into v_job;
-  end if;
-  if not found then
-    raise exception 'legacy claim ownership changed for job %', p_job_id using errcode = '40001';
-  end if;
-  return v_job;
-end;
-$$;
-
 create or replace function public.requeue_stale_sync_jobs(
   p_older_than interval default interval '30 minutes'
 )
@@ -207,12 +180,6 @@ revoke execute on function public.finish_sync_job(
 ) from public, anon, authenticated;
 grant execute on function public.finish_sync_job(
   uuid, uuid, public.sync_job_status, text, jsonb, interval
-) to service_role;
-revoke execute on function public.finish_sync_job(
-  uuid, public.sync_job_status, text, jsonb, interval
-) from public, anon, authenticated;
-grant execute on function public.finish_sync_job(
-  uuid, public.sync_job_status, text, jsonb, interval
 ) to service_role;
 
 -- The export artifact is order-sensitive. UUID order is not insertion order,
@@ -367,6 +334,16 @@ create table public.amazon_write_reapprovals (
 select app.install_tenant_rls('public.amazon_write_reapprovals');
 revoke insert, update, delete, truncate on public.amazon_write_reapprovals
   from anon, authenticated;
+alter table public.amazon_write_reapprovals
+  add constraint amazon_write_reapprovals_execution_tenant_fkey
+    foreign key (org_id, profile_id, execution_id)
+    references public.amazon_write_executions (org_id, profile_id, id) on delete restrict,
+  add constraint amazon_write_reapprovals_prior_approval_tenant_fkey
+    foreign key (org_id, profile_id, prior_approval_id)
+    references public.amazon_write_approvals (org_id, profile_id, id) on delete restrict,
+  add constraint amazon_write_reapprovals_replacement_approval_tenant_fkey
+    foreign key (org_id, profile_id, replacement_approval_id)
+    references public.amazon_write_approvals (org_id, profile_id, id) on delete restrict;
 
 alter table public.amazon_write_approvals
   add constraint amazon_write_approvals_profile_fkey foreign key (org_id, profile_id)

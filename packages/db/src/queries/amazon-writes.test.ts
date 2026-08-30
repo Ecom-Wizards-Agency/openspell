@@ -1439,25 +1439,124 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
       observations: [{ writeRowId: forwardRow.writeRowId, state: 'observed', currentValue: 0.91 }],
     });
     if (!observed.inverseExecutionId) throw new Error('expected materialized exact inverse');
+    const [inverseArtifact] = await database.sql<{ artifact_sha256: string; reversible_rows: number }[]>`
+      select batch.artifact_sha256, batch.reversible_rows from public.apply_batches batch
+        join public.amazon_write_executions execution on execution.apply_batch_id = batch.id
+       where execution.id = ${observed.inverseExecutionId}
+    `;
+    if (!inverseArtifact?.artifact_sha256) throw new Error('expected inverse artifact');
+    await database.sql`alter table public.amazon_write_approvals disable trigger amazon_write_approvals_immutable`;
+    await database.sql`update public.amazon_write_approvals approval
+      set expires_at = greatest(approval.approved_at + interval '1 millisecond', now() - interval '1 millisecond')
+      from public.amazon_write_executions execution where execution.approval_id = approval.id
+        and execution.id = ${observed.inverseExecutionId}`;
+    await database.sql`alter table public.amazon_write_approvals enable trigger amazon_write_approvals_immutable`;
+
+    const authorizationB = randomUUID();
+    const expiresB = new Date(Date.now() + 86_400_000).toISOString();
+    const boundedB = BoundedAmazonWriteAuthorization.parse({
+      ...authorizationSnapshot(authorizationB), authorization_id: authorizationB, expires_at: expiresB,
+      constraints: { ...authorizationSnapshot(authorizationB).constraints, max_total_executions: 2 },
+    });
+    const shaB = sha(serializeBoundedAmazonWriteAuthorization(boundedB));
+    const ceremonyB = {
+      orgId, profileId, executionId: observed.inverseExecutionId, expiresAt: expiresB,
+      expectedPreviewSha256: inverseArtifact.artifact_sha256,
+      expectedCount: inverseArtifact.reversible_rows,
+      authorizationId: authorizationB, authorizationSha256: shaB,
+      authorizationSnapshot: boundedB,
+    };
+    await expect(asUser(database, USER_ID, (sql) => reapproveAmazonWriteInverseExecution(
+      database, { sql }, { ...ceremonyB, expectedCount: ceremonyB.expectedCount + 1 },
+    ))).rejects.toThrow(/row count/i);
+    await expect(asUser(database, USER_ID, (sql) => reapproveAmazonWriteInverseExecution(
+      database, { sql }, { ...ceremonyB, expectedPreviewSha256: sha('wrong inverse preview') },
+    ))).rejects.toThrow(/fingerprint|artifact/i);
+    const approvedB = await asUser(database, USER_ID, (sql) =>
+      reapproveAmazonWriteInverseExecution(database, { sql }, ceremonyB));
+    const replayB = await asUser(database, USER_ID, (sql) =>
+      reapproveAmazonWriteInverseExecution(database, { sql }, ceremonyB));
+    expect(replayB).toEqual({ ...approvedB, replayed: true });
+    const differentExpires = new Date(Date.now() + 90_000_000).toISOString();
+    const differentB = BoundedAmazonWriteAuthorization.parse({ ...boundedB, expires_at: differentExpires });
+    await expect(asUser(database, USER_ID, (sql) => reapproveAmazonWriteInverseExecution(
+      database, { sql }, { ...ceremonyB, expiresAt: differentExpires,
+        authorizationSha256: sha(serializeBoundedAmazonWriteAuthorization(differentB)),
+        authorizationSnapshot: differentB },
+    ))).rejects.toThrow(/still active/i);
+
     const later = await createBatch([
       { entityType: 'target', entityId: 'tg-1', field: 'bid', oldValue: 0.6, newValue: 0.61 },
     ]);
     await expect(asUser(database, USER_ID, (sql) => approveAmazonWriteExecution(database, { sql }, {
       orgId, profileId, applyBatchId: later.batchId, approvalMode: 'bounded_live_test',
-      expiresAt: EXPIRES_AT, previewSha256: later.artifact, expectedCount: 1,
-      authorizationId, authorizationSha256: authSha, authorizationSnapshot: bounded,
+      expiresAt: expiresB, previewSha256: later.artifact, expectedCount: 1,
+      authorizationId: authorizationB, authorizationSha256: shaB, authorizationSnapshot: boundedB,
       inversePreapproved: true,
     }))).rejects.toThrow(/no capacity/i);
+
+    await database.sql`alter table public.amazon_write_approvals disable trigger amazon_write_approvals_immutable`;
+    await database.sql`update public.amazon_write_approvals set expires_at = now() - interval '1 millisecond'
+      where id = ${approvedB.approvalId}`;
+    await database.sql`alter table public.amazon_write_approvals enable trigger amazon_write_approvals_immutable`;
+    const authorizationC = randomUUID();
+    const expiresC = new Date(Date.now() + 172_800_000).toISOString();
+    const boundedC = BoundedAmazonWriteAuthorization.parse({
+      ...authorizationSnapshot(authorizationC), authorization_id: authorizationC, expires_at: expiresC,
+      constraints: { ...authorizationSnapshot(authorizationC).constraints, max_total_executions: 2 },
+    });
+    const ceremonyC = { ...ceremonyB, expiresAt: expiresC, authorizationId: authorizationC,
+      authorizationSha256: sha(serializeBoundedAmazonWriteAuthorization(boundedC)),
+      authorizationSnapshot: boundedC };
+    const successors = await Promise.all([
+      asUser(database, USER_ID, (sql) => reapproveAmazonWriteInverseExecution(database, { sql }, ceremonyC)),
+      asUser(database, USER_ID, (sql) => reapproveAmazonWriteInverseExecution(database, { sql }, ceremonyC)),
+    ]);
+    expect(new Set(successors.map((result) => result.approvalId)).size).toBe(1);
+    expect(successors.filter((result) => result.replayed)).toHaveLength(1);
+    const [replacementState] = await database.sql<{ links: number; queued: number }[]>`
+      select
+        (select count(*)::int from public.amazon_write_reapprovals
+          where execution_id = ${observed.inverseExecutionId}) as links,
+        (select count(*)::int from public.sync_jobs where job_type = 'amazon.apply'
+          and status = 'queued' and payload->>'executionId' = ${observed.inverseExecutionId}) as queued
+    `;
+    expect(replacementState).toEqual({ links: 2, queued: 1 });
+    const inverseToken = randomUUID();
     const inverse = await prepareAmazonWriteExecution(database, {
       orgId, profileId, executionId: observed.inverseExecutionId, now: new Date(), maxConcurrentMutations: 1,
-      authorizationId, authorizationSha256: authSha, maxRowsPerExecution: 1, maxTotalExecutions: 2,
-      amazonProfileId, connectionId, region: profileRegion, dispatchLeaseToken: randomUUID(),
+      authorizationId: authorizationC, authorizationSha256: ceremonyC.authorizationSha256,
+      maxRowsPerExecution: 1, maxTotalExecutions: 2,
+      amazonProfileId, connectionId, region: profileRegion, dispatchLeaseToken: inverseToken,
       dispatchLeaseExpiresAt: new Date(Date.now() + 300_000),
     });
     expect(inverse.rows).toHaveLength(1);
     expect(inverse.direction).toBe('inverse');
-    await refuseAmazonWriteExecution(database, {
-      orgId, profileId, executionId: observed.inverseExecutionId, reason: 'synthetic cleanup',
+    const inverseRow = inverse.rows[0];
+    if (!inverseRow) throw new Error('expected runnable reapproved inverse');
+    await dispatch(
+      observed.inverseExecutionId, [inverseRow.writeRowId], inverseToken,
+      authorizationC, ceremonyC.authorizationSha256,
+    );
+    await database.sql`alter table public.amazon_write_approvals disable trigger amazon_write_approvals_immutable`;
+    await database.sql`update public.amazon_write_approvals set expires_at = now() - interval '1 millisecond'
+      where id = ${successors[0]!.approvalId}`;
+    await database.sql`alter table public.amazon_write_approvals enable trigger amazon_write_approvals_immutable`;
+    const authorizationD = randomUUID();
+    const expiresD = new Date(Date.now() + 259_200_000).toISOString();
+    const boundedD = BoundedAmazonWriteAuthorization.parse({
+      ...authorizationSnapshot(authorizationD), authorization_id: authorizationD, expires_at: expiresD,
+    });
+    await expect(asUser(database, USER_ID, (sql) => reapproveAmazonWriteInverseExecution(
+      database, { sql }, { ...ceremonyC, expiresAt: expiresD, authorizationId: authorizationD,
+        authorizationSha256: sha(serializeBoundedAmazonWriteAuthorization(boundedD)),
+        authorizationSnapshot: boundedD },
+    ))).rejects.toThrow(/not eligible/i);
+    await recordOutcomes({
+      orgId, profileId, executionId: observed.inverseExecutionId, attemptedAt: new Date(),
+      outcomes: [{ writeRowId: inverseRow.writeRowId, attemptNumber: inverseRow.attemptNumber,
+        requestFingerprint: sha('synthetic inverse cleanup'),
+        evidence: { outcome: 'failed', providerEntityId: 'kw-1', code: 'SYNTHETIC', message: 'cleanup' } }],
     });
   });
 
@@ -2550,32 +2649,8 @@ describe.skipIf(!available)('guarded Amazon write persistence', () => {
 
     const inverseExecutionId = observed.inverseExecutionId;
     if (inverseExecutionId === null) throw new Error('expected reserved inverse execution');
-    const reauthorizationId = randomUUID();
-    const reauthorization = BoundedAmazonWriteAuthorization.parse({
-      ...authorizationSnapshot(reauthorizationId),
-      authorization_id: reauthorizationId,
-      expires_at: EXPIRES_AT,
-    });
-    const reauthorizationSha = sha(serializeBoundedAmazonWriteAuthorization(reauthorization));
-    const reapproved = await asUser(database, USER_ID, (sql) =>
-      reapproveAmazonWriteInverseExecution(database, { sql }, {
-        orgId, profileId, executionId: inverseExecutionId, expiresAt: EXPIRES_AT,
-        authorizationId: reauthorizationId, authorizationSha256: reauthorizationSha,
-        authorizationSnapshot: reauthorization,
-      }));
-    expect(reapproved).toMatchObject({ executionId: inverseExecutionId, replayed: false });
-    const inversePrepared = await prepareAmazonWriteExecution(database, {
-      orgId, profileId, executionId: inverseExecutionId, now: new Date(),
-      maxConcurrentMutations: 1, authorizationId: reauthorizationId,
-      authorizationSha256: reauthorizationSha, maxRowsPerExecution: 100,
-      maxTotalExecutions: 100, amazonProfileId, connectionId, region: profileRegion,
-      dispatchLeaseToken: DISPATCH_TOKEN,
-      dispatchLeaseExpiresAt: new Date(Date.now() + 300_000),
-    });
-    await dispatch(
-      inverseExecutionId, inversePrepared.rows.map((row) => row.writeRowId),
-      DISPATCH_TOKEN, reauthorizationId, reauthorizationSha,
-    );
+    const inversePrepared = await prepare(inverseExecutionId);
+    await dispatch(inverseExecutionId, inversePrepared.rows.map((row) => row.writeRowId));
     await recordOutcomes({
       orgId, profileId, executionId: inverseExecutionId,
       attemptedAt: new Date(),
