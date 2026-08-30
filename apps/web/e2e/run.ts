@@ -33,7 +33,9 @@
  * Anything after the suite name is forwarded to Playwright (`--grep`, `-x`, …).
  */
 import { spawn } from 'node:child_process';
+import { readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
@@ -51,6 +53,29 @@ const BRIDGE_SECRET = ['synthetic', 'e2e', 'auth', 'bridge', 'value'].join('-');
 const SIGNING_SECRET = ['synthetic', 'e2e', 'goto', 'signing', 'material', 'value'].join('-');
 
 const APP_DIRECTORY = fileURLToPath(new URL('..', import.meta.url));
+
+/**
+ * A request-scoped compatibility route must not silently become a static page.
+ * That failure is production-build-only: Next can bake the build process's
+ * anonymous redirect into HTML while the same route works correctly in dev.
+ */
+async function assertRequestTimeRoute(route: string, htmlArtifact: string): Promise<void> {
+  const manifestPath = join(APP_DIRECTORY, '.next', 'prerender-manifest.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+    routes?: Record<string, unknown>;
+  };
+  if (manifest.routes?.[route] !== undefined) {
+    throw new Error(`${route} was prerendered; it must resolve authentication at request time`);
+  }
+
+  try {
+    await stat(join(APP_DIRECTORY, '.next', 'server', 'app', htmlArtifact));
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return;
+    throw error;
+  }
+  throw new Error(`${route} produced a static HTML artifact; request-time authentication is bypassed`);
+}
 
 /** An unused loopback port, so a parallel run cannot collide with this one. */
 async function freePort(): Promise<number> {
@@ -334,6 +359,7 @@ async function tagsGoto(playwrightArgs: string[]): Promise<number> {
     // Playwright serves a production build; see the note at the top of the file.
     const buildCode = await run('pnpm', ['exec', 'next', 'build', '--webpack'], process.env);
     if (buildCode !== 0) return buildCode;
+    await assertRequestTimeRoute('/strategy', 'strategy.html');
 
     return await run(
       'pnpm',
