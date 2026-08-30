@@ -35,6 +35,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+const TIMELINE_PAGE_SIZE = 50;
 
 function one(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -62,6 +63,21 @@ const ENTITY_LABEL: Record<string, string> = {
 
 function isDate(value: string | undefined): value is string {
   return value !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function timelineCursor(query: Record<string, string | string[] | undefined>): {
+  observedAt: string;
+  id: string;
+} | null {
+  const observedAt = one(query['before_at']);
+  const id = one(query['before_id']);
+  if (observedAt === undefined || id === undefined) return null;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(observedAt)) return null;
+  if (observedAt.startsWith('0000-')) return null;
+  if (!/^(?:change|apply):(?:\d+|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.test(id)) return null;
+  const parsed = new Date(observedAt);
+  const canonical = observedAt.includes('.') ? observedAt : observedAt.replace('Z', '.000Z');
+  return Number.isNaN(parsed.getTime()) || parsed.toISOString() !== canonical ? null : { observedAt, id };
 }
 
 function formatValue(value: TimelineEntry['oldValue']): string {
@@ -137,12 +153,15 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
     const field = rawField && facets.fields.includes(rawField) ? rawField : null;
     const rawSource = one(query['source']);
     const source: ChangeSource | null = rawSource === 'sync' || rawSource === 'apply' ? rawSource : null;
-    const from = isDate(one(query['from'])) ? one(query['from']) : null;
-    const toParam = isDate(one(query['to'])) ? one(query['to']) : null;
+    const requestedFrom = one(query['from']);
+    const requestedTo = one(query['to']);
+    const from = isDate(requestedFrom) ? requestedFrom : null;
+    const toParam = isDate(requestedTo) ? requestedTo : null;
+    const cursor = timelineCursor(query);
     // The `to` bound is a whole day: extend an end date to the end of that day.
     const toBound = toParam === null ? null : `${toParam}T23:59:59.999Z`;
 
-    const entries = await listTimeline(database, {
+    const timelineWindow = await listTimeline(database, {
       orgId: actor.orgId,
       profileId: profile.id,
       entityTypes: entityType ? [entityType] : null,
@@ -150,14 +169,20 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
       source,
       from: from ?? null,
       to: toBound,
+      limit: TIMELINE_PAGE_SIZE + 1,
+      before: cursor,
     });
+    const hasOlder = timelineWindow.length > TIMELINE_PAGE_SIZE;
+    const entries = timelineWindow.slice(0, TIMELINE_PAGE_SIZE);
     const reversionBatches = await listReversionBatches(database, {
       orgId: actor.orgId,
       profileId: profile.id,
     });
     const requestedBatch = one(query['batch']);
     const selectedBatch =
-      reversionBatches.find((batch) => batch.batchId === requestedBatch) ?? reversionBatches[0] ?? null;
+      requestedBatch === undefined
+        ? null
+        : reversionBatches.find((batch) => batch.batchId === requestedBatch) ?? null;
     const reversionPreview =
       selectedBatch === null
         ? null
@@ -173,6 +198,20 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
       const params = new URLSearchParams({ profile: profile.id, ...extra });
       return `/time-machine?${params.toString()}`;
     };
+    const pageHref = (before: TimelineEntry | null): string => {
+      const params = new URLSearchParams({ profile: profile.id });
+      if (entityType !== null) params.set('type', entityType);
+      if (field !== null) params.set('field', field);
+      if (source !== null) params.set('source', source);
+      if (from !== null) params.set('from', from);
+      if (toParam !== null) params.set('to', toParam);
+      if (selectedBatch !== null) params.set('batch', selectedBatch.batchId);
+      if (before !== null) {
+        params.set('before_at', before.observedAt.toISOString());
+        params.set('before_id', before.id);
+      }
+      return `/time-machine?${params.toString()}`;
+    };
 
     return (
       <main style={main} data-interactive="true">
@@ -180,7 +219,7 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
           <h1 style={heading}>Time Machine</h1>
           <p style={muted}>
             {profile.label}{' · '}{profile.countryCode}{' · '}exported batches, synchronized evidence, and
-            external account changes. OpenSpell does not write to Amazon in the current release.
+            external account changes. Reviewing this history does not change Amazon.
           </p>
           {profiles.length > 1 ? (
             <nav style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }} aria-label="Profiles">
@@ -231,6 +270,12 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
         {reversionPreview === null ? null : (
           <ReversionPanel preview={reversionPreview} canExport={can(role, 'exportBatches')} />
         )}
+
+        {reversionBatches.length > 0 && selectedBatch === null ? (
+          <p className="wa-page-sub" data-testid="time-machine-batch-prompt">
+            Select a batch to inspect synchronized evidence and preview an exact reversion.
+          </p>
+        ) : null}
 
         {hasAnyHistory ? (
           <form method="get" style={filters} aria-label="Filter changes" data-testid="timeline-filters">
@@ -286,9 +331,21 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
           </form>
         ) : null}
 
+        {cursor !== null ? (
+          <nav style={pagination} aria-label="Change history position" data-testid="timeline-pagination">
+            <a href={pageHref(null)} style={pill} data-testid="timeline-newer">
+              ← Newest changes
+            </a>
+          </nav>
+        ) : null}
+
         {!hasAnyHistory ? (
           <p style={empty} data-testid="timeline-empty" role="status">
             No changes recorded yet — they appear as sync detects them or you apply them.
+          </p>
+        ) : entries.length === 0 && cursor !== null ? (
+          <p style={empty} data-testid="timeline-empty-cursor" role="status">
+            No older changes remain. Return to the newest changes to continue reviewing history.
           </p>
         ) : entries.length === 0 ? (
           <p style={empty} data-testid="timeline-empty-filtered" role="status">
@@ -357,6 +414,14 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
                 </ul>
               </section>
             ))}
+            {hasOlder ? (
+              <nav style={pagination} aria-label="Change history pages" data-testid="timeline-pagination">
+                <span />
+                <a href={pageHref(entries.at(-1) ?? null)} style={pill} data-testid="timeline-older">
+                  Older changes →
+                </a>
+              </nav>
+            ) : null}
           </div>
         )}
       </main>
@@ -383,6 +448,12 @@ const main: CSSProperties = {
   margin: '0 auto',
   maxWidth: '72rem',
   padding: '2rem 1.5rem',
+};
+
+const pagination: CSSProperties = {
+  alignItems: 'center',
+  display: 'flex',
+  justifyContent: 'space-between',
 };
 
 const heading: CSSProperties = { fontSize: '1.5rem', margin: 0 };

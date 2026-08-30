@@ -125,6 +125,46 @@ describe.skipIf(!available)('WP-30 Time Machine queries', () => {
     expect(past).toHaveLength(0);
   });
 
+  it('returns stable non-overlapping windows when a newer change arrives between reads', async () => {
+    const complete = await listTimeline(database, {
+      orgId: orgA,
+      profileId: profileA,
+      limit: 3,
+    });
+    const first = await listTimeline(database, {
+      orgId: orgA,
+      profileId: profileA,
+      limit: 1,
+    });
+    expect(first).toHaveLength(1);
+    const cursor = first[0];
+    if (cursor === undefined) throw new Error('timeline cursor fixture is missing');
+
+    const [inserted] = await database.sql<{ id: string }[]>`
+      insert into public.entity_changes
+        (org_id, profile_id, entity_type, amazon_id, entity_name, field,
+         old_value, new_value, source, observed_at)
+      values (${orgA}, ${profileA}, 'campaign', 'c-newer', 'Newer marker', 'budget',
+              '15'::jsonb, '16'::jsonb, 'sync', now() + interval '1 day')
+      returning id
+    `;
+
+    try {
+      const second = await listTimeline(database, {
+        orgId: orgA,
+        profileId: profileA,
+        limit: 1,
+        before: { observedAt: cursor.observedAt.toISOString(), id: cursor.id },
+      });
+
+      expect(second).toHaveLength(1);
+      expect(first[0]?.id).not.toBe(second[0]?.id);
+      expect([first[0]?.id, second[0]?.id]).toEqual(complete.slice(0, 2).map((entry) => entry.id));
+    } finally {
+      await database.sql`delete from public.entity_changes where id = ${inserted?.id ?? ''}`;
+    }
+  });
+
   it('never crosses organisations', async () => {
     // Org B asking for org A's profile: the org predicate wins, not the profile.
     const foreign = await listTimeline(database, { orgId: orgB, profileId: profileA });

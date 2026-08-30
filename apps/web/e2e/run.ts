@@ -220,6 +220,20 @@ async function seedTimeMachine(
   `;
   if (rows.length !== 1) throw new Error(`Seeded 1 Time Machine change, wrote ${rows.length}`);
 
+  const historyRows = await database.sql<{ id: string }[]>`
+    insert into public.entity_changes
+      (org_id, profile_id, entity_type, amazon_id, entity_name, field,
+       old_value, new_value, source, observed_at)
+    select ${orgId}, ${profileId}, 'keyword', 'history-' || series::text,
+           'Synthetic history ' || series::text, 'bid', '0.8'::jsonb, '0.81'::jsonb,
+           'sync', now() - (series::text || ' hours')::interval
+      from generate_series(1, 55) as series
+    returning id
+  `;
+  if (historyRows.length !== 55) {
+    throw new Error(`Seeded 55 Time Machine history rows, wrote ${historyRows.length}`);
+  }
+
   const keywordRows = await database.sql<{ amazon_id: string }[]>`
     insert into public.keywords
       (org_id, profile_id, amazon_id, ad_product, name, state, campaign_id,

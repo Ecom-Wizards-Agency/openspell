@@ -84,6 +84,8 @@ export interface TimelineFilter {
   from?: string | null;
   to?: string | null;
   limit?: number;
+  /** Return entries strictly older than this stable `(observed_at, id)` key. */
+  before?: { observedAt: string; id: string } | null;
 }
 
 interface TimelineRow {
@@ -149,9 +151,11 @@ export async function listTimeline(
   const from = filter.from ?? null;
   const to = filter.to ?? null;
   const limit = Math.min(Math.max(filter.limit ?? 500, 1), 2000);
+  const beforeObservedAt = filter.before?.observedAt ?? null;
+  const beforeId = filter.before?.id ?? null;
 
   const rows = await handle.sql<TimelineRow[]>`
-    (
+    with timeline as (
       select
         'change:' || ec.id::text                      as id,
         ec.source::text                               as source,
@@ -179,9 +183,7 @@ export async function listTimeline(
         and (${source}::text is null or ec.source::text = ${source}::text)
         and (${from}::timestamptz is null or ec.observed_at >= ${from}::timestamptz)
         and (${to}::timestamptz is null or ec.observed_at <= ${to}::timestamptz)
-    )
-    union all
-    (
+      union all
       select
         'apply:' || ar.id::text                       as id,
         'apply'                                       as source,
@@ -213,6 +215,10 @@ export async function listTimeline(
         and (${to}::timestamptz is null
              or coalesce(ab.applied_at, ab.exported_at, ab.created_at) <= ${to}::timestamptz)
     )
+    select *
+      from timeline
+     where (${beforeObservedAt}::timestamptz is null
+            or (observed_at, id) < (${beforeObservedAt}::timestamptz, ${beforeId}::text))
     order by observed_at desc, id desc
     limit ${limit}
   `;
