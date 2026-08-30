@@ -42,6 +42,18 @@ const nextConfig: NextConfig = {
     '@wizard-ads/ui',
   ],
   typedRoutes: true,
+  // `/` is an entry alias, not an authenticated product surface. Resolve it
+  // before the React layout so the request does not validate the session and
+  // render the application frame only to discard both in a redirect. Next
+  // carries the original query string forward, so an explicit `profile`
+  // remains available to the dashboard's existing org-scoped canonicalizer.
+  redirects: async () => [
+    {
+      source: '/',
+      destination: '/dashboard',
+      permanent: false,
+    },
+  ],
   // The authenticated Playwright suite intentionally compiles every guarded
   // route in one synthetic dev process. A Next development-memory restart
   // would discard its in-process OAuth fixture, so the E2E process keeps the

@@ -11,7 +11,12 @@ const PROFILE = '10000000-0000-4000-8000-000000000001';
 const OTHER_PROFILE = '20000000-0000-4000-8000-000000000002';
 
 function response(status: number, rawLocation: string | null = null): CandidateHttpResponse {
-  return { status, responseBody: '<!DOCTYPE html><main>Dashboard</main>', rawLocation };
+  return {
+    status,
+    responseBody: '<!DOCTYPE html><main>Dashboard</main>',
+    rawLocation,
+    serverTiming: null,
+  };
 }
 
 describe('release candidate redirects', () => {
