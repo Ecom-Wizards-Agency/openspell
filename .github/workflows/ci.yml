@@ -57,9 +57,12 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
 
       - name: Test
-        # DB-heavy package suites are serialized: the worker schedule
-        # integration test is known to flake under parallel database load.
-        run: pnpm exec turbo run test --concurrency=1
+        # Turbo serializes package tasks; arguments after `--` are forwarded to
+        # each Vitest task so test files cannot contend for the one Postgres service.
+        # UI keeps its own dedicated, single-worker performance-test invocation.
+        run: |
+          pnpm exec turbo run test --filter=!@wizard-ads/ui --concurrency=1 -- --maxWorkers=1
+          pnpm --filter @wizard-ads/ui run test
         env:
           DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
           WIZARD_ADS_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
