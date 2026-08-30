@@ -11,6 +11,7 @@ import type { TestDatabase } from '../testing/harness.js';
 import {
   CreativePersistenceError,
   persistCreativePerformanceBatch,
+  readLatestCreativeSyncSnapshot,
   readCreativePerformance,
   type CreativeMappingWrite,
   type CreativePerformanceWriteBatch,
@@ -174,6 +175,26 @@ describe.skipIf(!available)('WP-58 creative performance database', () => {
          and placement is null
     `;
     expect(canonical[0]).toEqual({ amazon_asset_id: 'asset-observed-two', rows: 1 });
+  });
+
+  it('reads the latest counted snapshot in the exact tenant and profile scope', async () => {
+    const snapshotId = '6f6f6f6f-6f6f-4f6f-8f6f-6f6f6f6f6f6f';
+    const batch = mappingOnlyObservedBatch(orgId, profileId, snapshotId, 'asset-latest');
+    batch.snapshot = { ...batch.snapshot!, observedAt: '2099-08-30T01:00:00Z' };
+    await persistCreativePerformanceBatch(database, batch);
+
+    const latest = await readLatestCreativeSyncSnapshot(database, { orgId, profileId });
+    expect(latest).toMatchObject({
+      id: snapshotId,
+      profileId,
+      status: 'mapping_only',
+      sourceAssets: 1,
+      parsedAssets: 1,
+      sourceAds: 1,
+      parsedAds: 1,
+      mapped: 1,
+      mappedFactRows: 0,
+    });
   });
 
   it('does not let an overlapping observation move a report-pending mapping', async () => {

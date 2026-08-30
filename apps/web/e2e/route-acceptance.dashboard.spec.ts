@@ -19,9 +19,9 @@ function addUtcDays(value: string, days: number): string {
   return isoDate(new Date(new Date(`${value}T00:00:00.000Z`).getTime() + days * 86_400_000));
 }
 
-function expectedPresets(serverDate: string): ExpectedPreset[] {
+function expectedPresets(serverDate: string, includeToday = false): ExpectedPreset[] {
   const today = isoDate(new Date(serverDate));
-  const end = addUtcDays(today, -1);
+  const end = includeToday ? today : addUtcDays(today, -1);
   const monthStart = `${end.slice(0, 8)}01`;
   const previousMonthEnd = addUtcDays(monthStart, -1);
   const previousMonthStart = `${previousMonthEnd.slice(0, 8)}01`;
@@ -47,11 +47,13 @@ async function exerciseEveryPreset({
   path,
   heading,
   profileId,
+  includeToday = false,
 }: {
   page: Page;
   path: '/optimizer' | '/creative';
   heading: 'Campaign Optimizer' | 'Creative Performance';
   profileId: string;
+  includeToday?: boolean;
 }): Promise<void> {
   const response = await page.goto(`${path}?profile=${profileId}`);
   const serverDate = response?.headers()['date'];
@@ -70,7 +72,7 @@ async function exerciseEveryPreset({
   });
 
   const visited: string[] = [];
-  for (const preset of expectedPresets(serverDate)) {
+  for (const preset of expectedPresets(serverDate, includeToday)) {
     const picker = page.locator('details.wa-date-range');
     await picker.locator('summary').click();
     await picker.getByRole('link', { name: preset.label, exact: true }).click();
@@ -92,7 +94,7 @@ async function exerciseEveryPreset({
     visited.push(preset.label);
   }
 
-  expect(visited).toEqual(expectedPresets(serverDate).map(({ label }) => label));
+  expect(visited).toEqual(expectedPresets(serverDate, includeToday).map(({ label }) => label));
   expect(await page.evaluate(
     () => (window as Window & { __openspellRouteAcceptance?: string })
       .__openspellRouteAcceptance,
@@ -124,6 +126,7 @@ test('creative exposes all date presets and preserves canonical account scope', 
     path: '/creative',
     heading: 'Creative Performance',
     profileId: fixtureProfileId,
+    includeToday: true,
   });
 });
 

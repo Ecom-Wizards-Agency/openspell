@@ -1,4 +1,4 @@
-import { addDays, defaultPeriod, type Period } from '../../app/_lib/periods';
+import { addDays, type Period } from '../../app/_lib/periods';
 
 export type DateRangePresetId =
   | 'last_7'
@@ -15,26 +15,40 @@ export interface DateRangePreset {
   period: Period;
 }
 
-/** Presets end on the last complete profile day; today is never implied complete. */
-export function dateRangePresets(today: string): DateRangePreset[] {
-  const lastCompleteDay = addDays(today, -1);
-  const monthStart = `${lastCompleteDay.slice(0, 8)}01`;
+/** Presets end on the last complete day unless the surface observes current-day evidence. */
+export function dateRangePresets(today: string, includeToday = false): DateRangePreset[] {
+  const rangeEnd = includeToday ? today : addDays(today, -1);
+  const monthStart = `${rangeEnd.slice(0, 8)}01`;
   const previousMonthEnd = addDays(monthStart, -1);
   const previousMonthStart = `${previousMonthEnd.slice(0, 8)}01`;
+  const rolling = (days: number): Period => ({
+    start: addDays(rangeEnd, -(days - 1)),
+    end: rangeEnd,
+  });
 
   return [
-    { id: 'last_7', label: 'Last 7 days', period: defaultPeriod(today, 7) },
-    { id: 'last_14', label: 'Last 14 days', period: defaultPeriod(today, 14) },
-    { id: 'last_30', label: 'Last 30 days', period: defaultPeriod(today, 30) },
-    { id: 'last_60', label: 'Last 60 days', period: defaultPeriod(today, 60) },
-    { id: 'last_90', label: 'Last 90 days', period: defaultPeriod(today, 90) },
-    { id: 'month_to_date', label: 'Month to date', period: { start: monthStart, end: lastCompleteDay } },
+    { id: 'last_7', label: 'Last 7 days', period: rolling(7) },
+    { id: 'last_14', label: 'Last 14 days', period: rolling(14) },
+    { id: 'last_30', label: 'Last 30 days', period: rolling(30) },
+    { id: 'last_60', label: 'Last 60 days', period: rolling(60) },
+    { id: 'last_90', label: 'Last 90 days', period: rolling(90) },
+    { id: 'month_to_date', label: 'Month to date', period: { start: monthStart, end: rangeEnd } },
     { id: 'previous_month', label: 'Previous month', period: { start: previousMonthStart, end: previousMonthEnd } },
   ];
 }
 
-export function selectedDateRangeLabel(period: Period, today: string): string {
-  const preset = dateRangePresets(today).find(
+export function selectedDateRangeLabel(
+  period: Period,
+  today: string,
+  includeToday = false,
+  selectedPresetId?: string,
+): string {
+  const presets = dateRangePresets(today, includeToday);
+  const matches = (candidate: DateRangePreset): boolean =>
+    candidate.period.start === period.start && candidate.period.end === period.end;
+  const preset = presets.find(
+    (candidate) => candidate.id === selectedPresetId && matches(candidate),
+  ) ?? presets.find(
     (candidate) => candidate.period.start === period.start && candidate.period.end === period.end,
   );
   return preset?.label ?? `${shortDate(period.start)} – ${shortDate(period.end)}`;

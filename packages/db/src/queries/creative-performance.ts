@@ -529,43 +529,69 @@ export interface CreativeSyncSnapshotEvidence {
   >;
 }
 
+interface CreativeSnapshotRow {
+  id: string;
+  profile_id: string;
+  start_date: string;
+  end_date: string;
+  observed_at: Date | string;
+  mapping_provenance: CreativeMappingProvenance;
+  historical_validity: 'unproven_current_snapshot';
+  status: CreativeSyncSnapshot['status'];
+  pagination_complete: boolean;
+  fact_promotion_allowed: boolean;
+  source_assets: string | number;
+  parsed_assets: string | number;
+  source_ads: string | number;
+  parsed_ads: string | number;
+  mapped: string | number;
+  legacy: string | number;
+  unsupported: string | number;
+  ambiguous: string | number;
+  unmapped: string | number;
+  report_source_rows: string | number | null;
+  report_parsed_rows: string | number | null;
+  report_refused_rows: string | number | null;
+  mapped_fact_rows: string | number;
+  unpromoted_report_rows: string | number;
+}
+
+interface CreativeSnapshotEvidenceRow extends CreativeSnapshotRow {
+  assets_upserted: string | number;
+  mappings_upserted: string | number;
+  facts_upserted: string | number;
+  assets_read_back: string | number;
+  mappings_read_back: string | number;
+  facts_read_back: string | number;
+}
+
+/** Latest counted observation for one tenant/profile, without reading mapping rows. */
+export async function readLatestCreativeSyncSnapshot(
+  handle: Pick<DbHandle, 'sql'>,
+  scope: { orgId: string; profileId: string },
+): Promise<CreativeSyncSnapshot | null> {
+  const rows = await handle.sql<CreativeSnapshotRow[]>`
+    select id, profile_id, start_date::text, end_date::text, observed_at,
+           mapping_provenance, historical_validity, status, pagination_complete,
+           fact_promotion_allowed, source_assets, parsed_assets, source_ads, parsed_ads,
+           mapped, legacy, unsupported, ambiguous, unmapped,
+           report_source_rows, report_parsed_rows, report_refused_rows,
+           mapped_fact_rows, unpromoted_report_rows
+      from public.creative_sync_snapshots
+     where org_id = ${scope.orgId}
+       and profile_id = ${scope.profileId}
+     order by observed_at desc, updated_at desc, id desc
+     limit 1
+  `;
+  return rows[0] === undefined ? null : parseCreativeSnapshot(rows[0]);
+}
+
 /** Read only mappings still attached to this exact observation snapshot. */
 export async function readCreativeSyncSnapshotEvidence(
   handle: Pick<DbHandle, 'sql'>,
   scope: { orgId: string; profileId: string; snapshotId: string },
 ): Promise<CreativeSyncSnapshotEvidence> {
-  const snapshots = await handle.sql<{
-    id: string;
-    profile_id: string;
-    start_date: string;
-    end_date: string;
-    observed_at: Date | string;
-    mapping_provenance: CreativeMappingProvenance;
-    historical_validity: 'unproven_current_snapshot';
-    status: CreativeSyncSnapshot['status'];
-    pagination_complete: boolean;
-    fact_promotion_allowed: boolean;
-    source_assets: string | number;
-    parsed_assets: string | number;
-    source_ads: string | number;
-    parsed_ads: string | number;
-    mapped: string | number;
-    legacy: string | number;
-    unsupported: string | number;
-    ambiguous: string | number;
-    unmapped: string | number;
-    report_source_rows: string | number | null;
-    report_parsed_rows: string | number | null;
-    report_refused_rows: string | number | null;
-    mapped_fact_rows: string | number;
-    unpromoted_report_rows: string | number;
-    assets_upserted: string | number;
-    mappings_upserted: string | number;
-    facts_upserted: string | number;
-    assets_read_back: string | number;
-    mappings_read_back: string | number;
-    facts_read_back: string | number;
-  }[]>`
+  const snapshots = await handle.sql<CreativeSnapshotEvidenceRow[]>`
     select id, profile_id, start_date::text, end_date::text, observed_at,
            mapping_provenance, historical_validity, status, pagination_complete,
            fact_promotion_allowed, source_assets, parsed_assets, source_ads, parsed_ads,
@@ -583,32 +609,7 @@ export async function readCreativeSyncSnapshotEvidence(
   if (row === undefined) {
     throw new CreativePersistenceError(`creative snapshot ${scope.snapshotId} does not exist in scope`);
   }
-  const snapshot = CreativeSyncSnapshot.parse({
-    id: row.id,
-    profileId: row.profile_id,
-    startDate: row.start_date,
-    endDate: row.end_date,
-    observedAt: new Date(row.observed_at).toISOString(),
-    mappingProvenance: row.mapping_provenance,
-    historicalValidity: row.historical_validity,
-    status: row.status,
-    paginationComplete: row.pagination_complete,
-    factPromotionAllowed: row.fact_promotion_allowed,
-    sourceAssets: number(row.source_assets),
-    parsedAssets: number(row.parsed_assets),
-    sourceAds: number(row.source_ads),
-    parsedAds: number(row.parsed_ads),
-    mapped: number(row.mapped),
-    legacy: number(row.legacy),
-    unsupported: number(row.unsupported),
-    ambiguous: number(row.ambiguous),
-    unmapped: number(row.unmapped),
-    reportSourceRows: nullableNumber(row.report_source_rows),
-    reportParsedRows: nullableNumber(row.report_parsed_rows),
-    reportRefusedRows: nullableNumber(row.report_refused_rows),
-    mappedFactRows: number(row.mapped_fact_rows),
-    unpromotedReportRows: number(row.unpromoted_report_rows),
-  });
+  const snapshot = parseCreativeSnapshot(row);
   const rows = await handle.sql<{
     source_mapping_key: string;
     ad_product: 'SB';
@@ -664,6 +665,35 @@ export async function readCreativeSyncSnapshotEvidence(
       factsReadBack: number(row.facts_read_back),
     },
   };
+}
+
+function parseCreativeSnapshot(row: CreativeSnapshotRow): CreativeSyncSnapshot {
+  return CreativeSyncSnapshot.parse({
+    id: row.id,
+    profileId: row.profile_id,
+    startDate: row.start_date,
+    endDate: row.end_date,
+    observedAt: new Date(row.observed_at).toISOString(),
+    mappingProvenance: row.mapping_provenance,
+    historicalValidity: row.historical_validity,
+    status: row.status,
+    paginationComplete: row.pagination_complete,
+    factPromotionAllowed: row.fact_promotion_allowed,
+    sourceAssets: number(row.source_assets),
+    parsedAssets: number(row.parsed_assets),
+    sourceAds: number(row.source_ads),
+    parsedAds: number(row.parsed_ads),
+    mapped: number(row.mapped),
+    legacy: number(row.legacy),
+    unsupported: number(row.unsupported),
+    ambiguous: number(row.ambiguous),
+    unmapped: number(row.unmapped),
+    reportSourceRows: nullableNumber(row.report_source_rows),
+    reportParsedRows: nullableNumber(row.report_parsed_rows),
+    reportRefusedRows: nullableNumber(row.report_refused_rows),
+    mappedFactRows: number(row.mapped_fact_rows),
+    unpromotedReportRows: number(row.unpromoted_report_rows),
+  });
 }
 
 export interface CreativePerformanceDrilldown {

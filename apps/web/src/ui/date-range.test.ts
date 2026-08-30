@@ -25,6 +25,30 @@ describe('date range presets', () => {
       .toBe('Jul 2, 2026 – Aug 11, 2026');
   });
 
+  it('includes the profile current day only when the surface asks for it', () => {
+    const presets = dateRangePresets('2026-08-29', true);
+    expect(presets.find((preset) => preset.id === 'last_14')?.period).toEqual({
+      start: '2026-08-16',
+      end: '2026-08-29',
+    });
+    expect(presets.find((preset) => preset.id === 'month_to_date')?.period).toEqual({
+      start: '2026-08-01',
+      end: '2026-08-29',
+    });
+    expect(selectedDateRangeLabel(
+      { start: '2026-08-16', end: '2026-08-29' },
+      '2026-08-29',
+      true,
+    )).toBe('Last 14 days');
+  });
+
+  it('retains the chosen label when two presets resolve to the same dates', () => {
+    const period = { start: '2026-08-01', end: '2026-08-30' };
+    expect(selectedDateRangeLabel(period, '2026-08-30', true)).toBe('Last 30 days');
+    expect(selectedDateRangeLabel(period, '2026-08-30', true, 'month_to_date'))
+      .toBe('Month to date');
+  });
+
   it('preserves route scope while replacing only from and to', () => {
     const scope = {
       profile: 'profile-synthetic',

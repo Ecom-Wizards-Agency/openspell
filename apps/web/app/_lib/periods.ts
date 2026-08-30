@@ -40,6 +40,11 @@ export function defaultPeriod(today: string, windowDays = DEFAULT_WINDOW_DAYS): 
   return { start: addDays(end, -(windowDays - 1)), end };
 }
 
+/** A rolling window that deliberately includes the profile's current day. */
+export function periodThroughToday(today: string, windowDays = DEFAULT_WINDOW_DAYS): Period {
+  return { start: addDays(today, -(windowDays - 1)), end: today };
+}
+
 /** The same number of days, immediately before. */
 export function precedingPeriod(period: Period): Period {
   const length = daysBetween(period.start, period.end);
@@ -93,6 +98,39 @@ export function periodFromParams(
   return { start: from, end: to };
 }
 
+/**
+ * Read a period for evidence that is observed on the profile's current day.
+ *
+ * Creative mappings are a current Amazon snapshot, so excluding today can
+ * hide the only defensible mapping/fact pair immediately after a sync. Other
+ * analytical routes keep using `periodFromParams` and complete days only.
+ */
+export function periodFromParamsThroughToday(
+  params: { from?: string; to?: string },
+  today: string,
+  windowDays = DEFAULT_WINDOW_DAYS,
+): Period {
+  const { from, to } = params;
+  if (from === undefined || to === undefined) return periodThroughToday(today, windowDays);
+  if (!ISO_DATE.test(from) || !ISO_DATE.test(to) || from > to) {
+    return periodThroughToday(today, windowDays);
+  }
+  return { start: from, end: to };
+}
+
 export function todayIso(now: Date = new Date()): string {
   return now.toISOString().slice(0, 10);
+}
+
+/** Return the calendar day at `now` in an IANA timezone as YYYY-MM-DD. */
+export function todayIsoInTimeZone(timezone: string, now: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    day: '2-digit',
+    month: '2-digit',
+    timeZone: timezone,
+    year: 'numeric',
+  }).formatToParts(now);
+  const part = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((candidate) => candidate.type === type)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
 }
