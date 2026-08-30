@@ -44,10 +44,11 @@ cannot silently mutate the campaign graph.
 Add one cross-package contract in `packages/shared`; dependent packages import it rather than
 creating local equivalents. A `CampaignCreationPlan` contains:
 
-- schema version, plan ID, profile ID, ad product, API dialect, generated/frozen/expiry times;
+- schema version, plan ID, organization ID, profile ID, marketplace ID, ad product, API dialect,
+  and generated/frozen/expiry times;
 - an ordered set of typed dependency nodes;
 - exact read-check and irreversible-create counts, reconciled by node kind;
-- a canonical SHA-256 fingerprint covering the semantic graph;
+- a canonical SHA-256 fingerprint covering the complete approval envelope and semantic graph;
 - an explicit acknowledgement that creates have no rollback and that pause/archive is a separate
   reviewed action.
 
@@ -68,20 +69,46 @@ Plan validation must prove:
 - plan and node fingerprints recompute from canonical data;
 - deterministic topological order is stable across replays.
 
+The plan hash binds the schema version, plan ID, organization, profile, marketplace, ad product,
+API dialect, generated/frozen/expiry times, deterministic ordered node fingerprints, exact counts,
+and the no-rollback acknowledgement. Every node hash binds its node ID, product, dialect, sorted
+dependencies, effect, rollback declaration, and schema-parsed semantic payload. Canonical
+serialization uses fixed object-key order and JSON's normalized finite-number representation;
+unordered identity sets are deduplicated and lexically sorted, while arrays whose order is
+operator-visible or provider-semantic, such as Store cards, retain their declared order. An
+approval binds the plan ID, exact plan hash, organization, profile, product, dialect, schema,
+expiry, counts, and no-rollback acknowledgement. Changing any one requires a new freeze and
+approval.
+
 ## Execution evidence
 
 Provider results live outside the immutable plan. Each result records the plan/node/attempt,
 provider call identity, node fingerprint, request position where supported, outcome, provider
 entity ID, sanitized response evidence, and timing.
 
-Counts remain distinct and reconciled:
+Operator approval, provider execution, observation, moderation, and delivery are separate
+dimensions. `operatorApproved` only means the operator approved the exact frozen create count; it
+never describes Amazon creative moderation.
 
-`planned -> approved -> attempted -> succeeded | failed | ambiguous`
+During execution the create counts obey:
 
-Refused nodes and observed provider resources are counted separately. HTTP request counts never
-stand in for resource counts. A batch is complete only when every accepted create is observed in a
-fresh entity sync. Sponsored Brands may additionally be accepted but pending moderation; that is
-not reported as approved or delivering.
+- `operatorApproved = pendingDispatch + attempted + refusedAtExecution + blockedByDependency`;
+- `attempted = succeeded + failed + ambiguous`;
+- `succeeded + ambiguous = observed + pendingObservation + observationConflict` once provider
+  result classification is complete.
+
+Read-check nodes have their own requested/passed/refused/failed counts and never inflate the
+irreversible-create count. HTTP request counts also never stand in for resource counts. A failed or
+ambiguous parent moves every unattempted descendant into `blockedByDependency`; it does not leave
+those nodes silently pending.
+
+Batch states distinguish in-progress work from terminal `succeeded`, `partial_failed`,
+`ambiguous`, `refused`, and `blocked` outcomes. A batch is successful only when every provider
+success is observed in a fresh entity sync and no failed, ambiguous, refused, blocked, pending, or
+observation-conflict node remains. Creative moderation is separately `not_applicable`, `pending`,
+`approved`, or `rejected`, and delivery is separately `unknown`, `not_delivering`, or `delivering`.
+Sponsored Brands can therefore be created and observed while still pending moderation, without
+being presented as moderation-approved or delivering.
 
 ## Product execution order
 
@@ -181,4 +208,3 @@ serialized. No package creates a shadow type to get ahead of the contract.
 - [Unified Sponsored Brands specification](https://github.com/amzn/ads-advanced-tools-docs/blob/main/unified-campaign-management-migration-skills/api-specs/unified-api-sb.json)
 - [Sponsored Brands Collections contract notes](https://github.com/amzn/ads-advanced-tools-docs/blob/main/unified-campaign-management-migration-skills/skills/amazon-ads-sb-collections/SKILL.md)
 - [Sponsored Brands video specifications](https://advertising.amazon.com/resources/ad-specs/sponsored-brands-video)
-
