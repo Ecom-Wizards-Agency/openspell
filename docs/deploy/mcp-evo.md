@@ -1,110 +1,185 @@
-# MCP on Evo X1 through Cloudflare Tunnel
+# OpenSpell MCP on Evo X1
 
-This is the operator runbook for the read-only MCP service at
-`https://mcp.ecomwizards.agency/mcp`. It runs the Node 22 application and
-`cloudflared` as restartable containers on Evo X1. It does not use Fly.io,
-Cloudflare Workers compute, or an inbound host port.
+OpenSpell MCP runs as one host-local Node service behind one Cloudflare Tunnel
+connector. Both processes are locked systemd services. The MCP service listens
+only on `127.0.0.1:8787`; Evo X1 exposes no inbound port.
 
-This package prepares deployment but does not authorize one. The operator must
-approve the exact release commit and target host before these steps run.
+This replaces the former Compose deployment. Docker environment metadata is not
+an acceptable secret boundary for the database credential, and persistent
+environment files are not used.
 
-## Runtime inputs
+## Runtime contract
 
-Keep all runtime values outside the checkout. The compose template references
-them; it does not contain them.
+An external, attended secret workflow must stage two TPM-encrypted systemd
+credentials under these runtime IDs:
 
-- `WIZARD_ADS_MCP_ENV_FILE`: path to a mode-`0600` environment file created by
-  the host's secret manager. It supplies `WIZARD_ADS_MCP_DATABASE_URL` and any
-  non-secret pool/timeout/row-limit overrides.
-- `WIZARD_ADS_MCP_CLOUDFLARED_TOKEN_FILE`: path to a mode-`0600` file containing
-  only the remotely managed tunnel token.
-- `WIZARD_ADS_CLOUDFLARED_UID`: numeric host UID that owns the tunnel-token file.
-- `WIZARD_ADS_CLOUDFLARED_GID`: numeric host GID that owns the tunnel-token file.
-- `WIZARD_ADS_MCP_REVISION`: the full approved Git object id.
-- `WIZARD_ADS_CLOUDFLARED_IMAGE`: optional approved image tag or digest. When it
-  is omitted, Compose uses Cloudflare's `latest` image; pin a reviewed digest for
-  a controlled production rollout.
+- `openspell-mcp-database-url`
+- `openspell-cloudflare-tunnel-token`
 
-Never place either protected file in the repository, paste their contents into a
-shell command, or print them in a deployment log. The tunnel token is sufficient
-to run a connector and must be rotated if exposed.
+The repository defines the runtime IDs only. It contains no secret value,
+1Password item locator, tenant roster, or credential-generation command.
+Each `LoadCredentialEncrypted=` directive pins the corresponding path under
+`/etc/credstore.encrypted`; no inherited or alternate-store credential can win
+lookup precedence. Service startup fails when a credential is missing, empty,
+moved to the wrong machine, or encrypted under the wrong logical name.
 
-Keep the tunnel-token file at mode `0600`. Compose bind-mounts a file-backed
-secret without changing its host ownership, so the `cloudflared` container runs
-as the explicitly supplied owner UID and GID. Set both values from the account
-that owns the protected file; do not assume that the image's default user has the
-same numeric identity. Before deployment, verify metadata without reading the
-file contents:
+There is no shared MCP bearer token in the server service. Client API keys stay
+client-scoped, are verified through their database hashes, and enter Codex or
+Claude only through the `WIZARD_ADS_MCP_TOKEN` environment reference described
+below.
 
-```bash
-test "$(stat -c '%a' "$WIZARD_ADS_MCP_CLOUDFLARED_TOKEN_FILE")" = "600"
-test "$(stat -c '%u' "$WIZARD_ADS_MCP_CLOUDFLARED_TOKEN_FILE")" = "$WIZARD_ADS_CLOUDFLARED_UID"
-test "$(stat -c '%g' "$WIZARD_ADS_MCP_CLOUDFLARED_TOKEN_FILE")" = "$WIZARD_ADS_CLOUDFLARED_GID"
-```
+The MCP launcher reads the database credential from the service-private
+`CREDENTIALS_DIRECTORY`, validates its URL scheme without logging it, and passes
+it directly to the Node process. `cloudflared` reads its token through
+`--token-file` from its own service-private credential directory. Neither value
+is written to a release, environment file, command argument, container, or log.
 
-## Cloudflare preparation
-
-Create one remotely managed tunnel in Cloudflare Zero Trust. Configure its
-published application route as:
+The remotely managed tunnel route is:
 
 ```text
 Hostname: mcp.ecomwizards.agency
-Service:  http://mcp:8787
+Service:  http://127.0.0.1:8787
 ```
 
-The hostname must forward `/mcp` and `/healthz` unchanged. Evo X1 needs outbound
-connectivity to Cloudflare; it needs no inbound firewall opening. Cloudflare's
-current documentation recommends remotely managed tunnels, and `token-file`
-requires `cloudflared` 2025.4.0 or newer:
+The hostname forwards `/healthz` and `/mcp` unchanged. The machine needs
+outbound network access only.
 
-- https://developers.cloudflare.com/tunnel/advanced/tunnel-tokens/
-- https://developers.cloudflare.com/tunnel/advanced/run-parameters/
+## Prerequisites
 
-## Build and start
+Before staging a release:
 
-From the clean checkout at the approved revision, set the six non-secret
-deployment references above in the operator environment. Validate the rendered
-configuration before creating containers:
+1. Approve one full Git object ID from `origin/main`.
+2. Use a clean checkout at that exact revision.
+3. Install Node 22 or newer at `/usr/local/bin/node`, the repository-declared pnpm
+   version, systemd, `rsync`, and a reviewed `cloudflared` release at
+   `/usr/local/bin/cloudflared`. `--token-file` requires cloudflared 2025.4.0 or
+   later.
+4. Complete the external credential staging above. The installer checks only
+   encrypted-file metadata and never decrypts or prints either credential.
+5. Confirm the remotely managed tunnel targets the host-local endpoint.
+6. From the Cloudflare control plane, create a short-lived, mode-`0600`,
+   gitignored `_local/mcp-route-exclusivity.json` record confirming that the
+   hostname has one route, zero unmanaged connectors, and that legacy connector
+   credentials have been revoked. The record is an attended assertion, not a
+   secret, and expires within one hour.
+
+The installer verifies `cloudflared` against an independently approved SHA-256
+digest, copies that exact binary into the release, packages MCP with injected
+workspace dependencies, normalizes checkout-dependent package metadata, rejects
+links back to the checkout, and publishes a reconciled release atomically under
+its exact Git object ID.
+
+## Test and stage
+
+Run from the clean checkout. `APPROVED_REVISION` is public release metadata, not
+a secret.
 
 ```bash
-bash docs/deploy/check-mcp-evo-compose.sh
-docker compose -f docs/deploy/mcp-evo.compose.yaml config --quiet
-docker compose -f docs/deploy/mcp-evo.compose.yaml build --pull mcp
-docker compose -f docs/deploy/mcp-evo.compose.yaml up -d
-docker compose -f docs/deploy/mcp-evo.compose.yaml ps
+git fetch origin --prune
+APPROVED_REVISION="$(git rev-parse HEAD)"
+CLOUDFLARED_SHA256="replace-with-approved-lowercase-sha256"
+test "$APPROVED_REVISION" = "$(git rev-parse origin/main)"
+test -z "$(git status --porcelain --untracked-files=normal)"
+bash docs/deploy/test-mcp-evo-systemd.sh
+bash docs/deploy/install-mcp-evo-systemd.sh \
+  --revision "$APPROVED_REVISION" \
+  --cloudflared-sha256 "$CLOUDFLARED_SHA256"
 ```
 
-Do not use `docker compose config` without `--quiet` in captured logs: expanded
-environment-file values may be rendered by some Compose versions.
+Staging installs the release, versioned launchers, and versioned unit files.
+It does not modify `/etc/systemd/system`, switch `current`, enable a unit, or
+restart a process.
 
-The MCP container becomes healthy only when its database probe succeeds.
-`cloudflared` waits for that state, then connects using the read-only secret
-mount at `/run/secrets/tunnel-token`. Its runtime UID and GID match the protected
-file owner, so mode `0600` remains sufficient. Both services use
-`restart: unless-stopped`.
+## First cutover from a legacy runtime
 
-## Validate the deployment
+Resolve and record every legacy service, container, connector, and route by
+exact ID before stopping it. Do not use a broad container name or filesystem
+glob. Revoke the legacy connector credential so a stopped artifact cannot
+resume and split traffic. Keep other stopped artifacts until the new public and
+client checks pass so rollback remains recoverable.
 
-Health is public and contains controlled metadata only:
+The activation mode refuses to continue while the known legacy Compose project
+or legacy MCP system service is still running. It also requires the short-lived
+control-plane record because local process checks cannot prove that another
+remote connector is absent. Use this exact shape, with current ISO timestamps
+and the approved revision; do not add connector IDs, tokens, or account data:
+
+```json
+{
+  "approvedRevision": "<approved full Git object ID>",
+  "expiresAt": "<no more than one hour after verifiedAt>",
+  "hostname": "mcp.ecomwizards.agency",
+  "legacyConnectorCredentialsRevoked": true,
+  "origin": "http://127.0.0.1:8787",
+  "routeCount": 1,
+  "schemaVersion": 1,
+  "unmanagedConnectorCount": 0,
+  "verifiedAt": "<current ISO timestamp>"
+}
+```
+
+After those exact processes are stopped and the record is mode `0600`, activate
+the staged release:
 
 ```bash
-curl --fail --silent --show-error https://mcp.ecomwizards.agency/healthz
+bash docs/deploy/install-mcp-evo-systemd.sh \
+  --revision "$APPROVED_REVISION" \
+  --cloudflared-sha256 "$CLOUDFLARED_SHA256" \
+  --activate \
+  --route-exclusivity-record _local/mcp-route-exclusivity.json
 ```
 
-Confirm the response says `ready`, identifies `wizard-ads`, and carries the exact
-approved revision. A database failure must return HTTP 503 with `not_ready` and
-no connection detail.
+Activation verifies and installs the unit definitions retained with the release,
+atomically switches the `current` symlink, explicitly restarts the MCP service,
+waits for exact local health, restarts the tunnel, and then verifies exact
+public health. If the new services fail, it stops them and restores both the
+previous OpenSpell release link and its retained unit definitions when one
+exists. During the first cutover, restart only a separately reviewed legacy
+fallback; never reuse a revoked tunnel credential.
 
-Issue a read-only, expiring, profile-allowlisted key through the existing trusted
-operator workflow. Store it in the client environment as
-`WIZARD_ADS_MCP_TOKEN`; never put its value in a command, repository file, or
-client setup snippet.
+The tunnel is ordered after the MCP startup health gate but is not stopped by a
+later MCP crash. It remains connected while systemd restarts MCP, so the
+host-local origin can recover without a separate tunnel start operation.
 
-### Codex
+Only after all validation below succeeds should the operator disable or remove
+the stopped legacy definitions and delete any legacy plaintext credential copy.
+Rotate a credential if its provenance cannot be proven.
 
-Codex supports a bearer-token environment-variable reference for Streamable
-HTTP MCP servers. With `WIZARD_ADS_MCP_TOKEN` already supplied by the operator's
-secret/session manager:
+## Validate the live artifact
+
+```bash
+bash docs/deploy/verify-mcp-evo-systemd.sh "$APPROVED_REVISION"
+```
+
+The verifier requires both services to be active, proves that the MCP listener
+is exclusively host-local, and checks local and public health for all four exact
+fields:
+
+```json
+{
+  "status": "ready",
+  "service": "openspell",
+  "product": "OpenSpell",
+  "revision": "<approved full Git object ID>"
+}
+```
+
+A database failure must remain HTTP 503 with `status: "not_ready"` and no
+connection detail.
+
+Health is necessary but not sufficient. With an expiring, profile-allowlisted
+client token supplied as `WIZARD_ADS_MCP_TOKEN`, verify from both Codex and
+Claude Code:
+
+1. discovery contains exactly the eleven analytical tools in
+   `apps/mcp/README.md` and no Amazon-write or self-approval tool;
+2. `list_profiles` returns only allowlisted profiles;
+3. one real analytical read matches a trusted SQL count;
+4. a disallowed profile has the same not-found shape as an unknown profile;
+5. `mcp.api_keys.last_used_at` advances and the audit log records the tool and
+   resource actions without a token value.
+
+Codex stores the environment-variable name, not the token:
 
 ```bash
 codex mcp add openspell \
@@ -113,14 +188,7 @@ codex mcp add openspell \
 codex mcp get openspell
 ```
 
-This stores the environment variable name, not its value. The official OpenAI
-MCP configuration reference documents `bearer_token_env_var`:
-https://developers.openai.com/codex/mcp
-
-### Claude Code
-
-Claude Code expands environment variables in HTTP headers. Add this entry to a
-private or approved project MCP configuration; it contains only a reference:
+Claude Code uses the same private environment reference:
 
 ```json
 {
@@ -136,33 +204,40 @@ private or approved project MCP configuration; it contains only a reference:
 }
 ```
 
-Use `claude mcp get openspell` and `/mcp` to confirm the connection. Claude
-Code's official MCP documentation describes environment expansion in `headers`:
-https://code.claude.com/docs/en/mcp
+## Update and rollback
 
-For each client, verify in this order:
+Stage and activate updates exactly as above. Releases are immutable and retained
+by Git object ID. Never overwrite an existing release directory with different
+content.
 
-1. Discovery contains exactly the eleven analytical tools documented in
-   `apps/mcp/README.md`; it contains no Amazon-write stub, deep-link mutation, or
-   feedback mutation.
-2. `list_profiles` returns only profiles on the key allowlist.
-3. One real analytical read returns the expected count against a trusted SQL
-   crosscheck.
-4. A profile outside the allowlist returns the same not-found shape as an
-   unknown profile.
-5. `mcp.api_keys.last_used_at` advances and `public.audit_log` contains the tool
-   and resource-read actions for that key, with no token value.
+To roll back, resolve the exact retained revision, verify its `REVISION` marker,
+then run the guarded rollback with the currently expected revision and the
+retained destination:
 
-## Update, rollback, and token rotation
+```bash
+bash docs/deploy/rollback-mcp-evo-systemd.sh \
+  "$APPROVED_REVISION" \
+  "$PRIOR_REVISION"
+```
 
-For an update, check out the approved commit, update
-`WIZARD_ADS_MCP_REVISION`, rebuild `mcp`, and run `up -d`. Re-run every validation
-above; do not infer readiness from container state alone.
+The script refuses stale current state, invalid release or unit markers, or an
+unapproved connector binary. It switches the release and its retained unit set,
+restarts both services, and verifies the exact public revision. If verification
+fails, it restores the original release and original unit set before restarting.
+Stop and investigate if any marker, health revision, or public revision differs.
 
-For rollback, check out the prior approved commit and rebuild. This service has
-no migration step, so rollback must not modify production data.
+This service has no migration step. An MCP rollback must not modify application
+data.
 
-Rotate the Cloudflare tunnel token in Zero Trust, replace the protected token
-file through the host secret manager, and recreate only `cloudflared`. Rotate an
-MCP API key by issuing a replacement, testing it, then revoking the prior key.
-Neither token is recoverable from this repository.
+## Credential rotation
+
+The attended secret workflow replaces the relevant TPM-encrypted credential
+atomically. Restart only the consumer of the rotated credential:
+
+- database credential: MCP, then tunnel after exact MCP health;
+- tunnel credential: tunnel only;
+- MCP API key: issue and test a replacement, then revoke the prior key in the
+  trusted operator workflow.
+
+Never recover a value from process state, Docker metadata, a legacy file, or a
+captured command. Return to the authoritative secret workflow instead.
