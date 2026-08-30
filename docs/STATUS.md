@@ -2,7 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated`.
 
-Reconciled 2026-08-29 against `origin/main` at `7fbdb23`. Here, **merged** means the implementation is
+Reconciled 2026-08-30 against `origin/main` at `5e372c8`. Here, **merged** means the implementation is
 reachable from the recorded main revision. It does not by itself mean live-data verified,
 deployed, or accepted by an operator. Full original evidence and source pointers are in
 `docs/workpackages/WP-52-reconciliation.md`; the post-release capability design is in
@@ -110,8 +110,35 @@ implementation brief in `docs/workpackages/`.
 | 82 | Quiet public application shell | merged and deployed | anonymous routes use the compact public frame and server-gate feedback controls; authenticated operator navigation is unchanged |
 | 83 | SB Video contract probe | merged; live gated | non-persisting readers and count-only reconciliation prove documented shapes; no authorized live probe has run |
 | 84 | Transactional SP report promotion | merged; live gated | complete-date replacement is wired for four SP report grains; live worker count review remains open |
-| 85 | Observed SB Video ingestion | merged; migration and deployment gated | current-snapshot ad/version-to-Asset-ID mapping and same-day fact gates are code-complete; hosted application and live parity remain open |
-| 93 | Guarded Amazon write gateway policy | review | manual API writes and active-cadence automation are authorized as a product direction; no runtime write path is live yet |
+| 85 | Observed SB Video ingestion | merged; hosted data gate open | current-snapshot ad/version-to-Asset-ID mapping and same-day fact gates are in the deployed code; hosted migration and live parity remain open |
+| 86 | Contextual-negative review/export | review | open PR; analytics repair and ad-group proposal review remain separate from Amazon actions |
+| 89 | Data context and filtered selection | merged and deployed | compact freshness context plus working filtered select/deselect behavior |
+| 90 | Weekday preview schedule | review | open PR; profile-local weekdays schedule recommendation previews only |
+| 91 | Live route performance | in-progress | Grid and Time Machine remain above the live targets recorded below |
+| 93 | Guarded Amazon write policy | merged; runtime gated | manually approved writes are authorized only through immutable worker plans, allowlists, audit and resync; no general live mutation path exists |
+| 96 | Guarded Sponsored Products write gateway | review | open PR; migration, deployment and one-entity live proof remain gated |
+| 110 | Focused operator navigation | merged and deployed | task-oriented groups and quiet utility footer |
+| 112 | Release-artifact checks | review | open PR; exact distinctive runtime artifacts still need reconciliation |
+| 113 | OpenSpell MCP connection name | merged and deployed in web | setup snippets use `openspell`; stable environment-variable and package identifiers remain unchanged |
+| 114 | Date-range browser gate | merged | Dashboard and Grid presets are covered in the authenticated suite |
+| 116 | Hydration-safe E2E interactions | review | open PR awaiting exact-head reconciliation |
+| 117 | Shared route acceptance | review | open PR awaiting exact-head reconciliation |
+| 119 | Query Intelligence performance | merged | the synthetic 5,000-fact join improved from about 409 ms to 14 ms with semantic parity |
+| 123 | Advertising API capability map | review | open PR; provider support must remain distinct from implemented and live-verified support |
+| 124 | Multi-product campaign creation architecture | merged | guarded SP, SB, SB Video and SD resource graphs are designed; no creation runtime was added |
+| 125 | Campaign creation contracts | review | open PR stacked behind the guarded write gateway |
+| 131 | Product budget-usage reads | merged | strict SP/SB/SD endpoint and indexed-response validation; worker integration remains deferred |
+| 134 | Serverless database lifecycle | merged and deployed | bounded web connection reuse passed the production route sweep |
+| 138 | Chart preference migration | merged and deployed | prior default presentations advance once without discarding genuine operator choices |
+| 139 | Same-document navigation | merged and deployed | routine operator transitions preserve the application document |
+| 140 | Time Machine windowing | merged and deployed | stable keyset history windows bound initial rendering; live latency remains open |
+| 141 | Optimizer campaign windowing | merged and deployed | campaigns are visible in bounded pages; server query/payload work remains separate |
+| 142 | Grid data boundary | merged and deployed | authenticated, tenant-scoped, bounded row endpoint with exact counts and race protection |
+| 143 | Experiment scope UX | merged and deployed | campaign-name selection, profile isolation, optional scope and filtered select-all are live |
+| 144 | Public-runner CI reliability | merged | database test concurrency is bounded without weakening the gate |
+| 145 | OpenSpell repository policy | merged | public-repository and 1Password boundaries align with the current product name |
+| 147 | Marketing Stream correctness recovery | in-progress | signed revisions, settling, budget corrections, locking and subscription identity are under fresh-tree review |
+| 148 | Live release evidence | in-progress | current revision, CI, deployment, authenticated QA and open gaps reconciled without runtime changes |
 
 ## Milestone gates
 
@@ -124,6 +151,22 @@ implementation brief in `docs/workpackages/`.
   automation, while individual manually approved batches use the stricter WP-93 action gates.
 
 ## Dated live and deployed evidence
+
+- On 2026-08-30 the production web health endpoint reported exact revision
+  `5e372c82361776070084e0265fea8c504a0d8781`, matching `origin/main`. GitHub Actions run
+  `33298955347` passed typecheck, lint, tests, hygiene, migrations, build and both Playwright jobs
+  for that exact revision before Vercel deployment `dpl_GMmrJzpg4B62e5aQsAiMpsC4BDFC` was
+  promoted. The previous deployment remains available as a rollback anchor.
+- The authenticated production pass opened Dashboard, Campaign Optimizer, Creative Performance,
+  Query Intelligence, Dayparting, Time Machine and Connect AI without an application error. The
+  experiment form loaded both approved test profiles; campaign-name selection and filtered
+  select-all selected all 99 matching campaigns and clear restored zero without creating an
+  experiment. Grid returned 3,616 exact real rows, kept one request and preserved nested grouping,
+  reorder and removal behavior. No export or Amazon write was invoked and post-release logs showed
+  no HTTP 5xx response.
+- The public MCP health endpoint remains ready with database access at revision `b5c210d`. This is
+  now explicit deployment drift from the web revision, so the earlier two-client MCP proof remains
+  historical rather than proof for the current web release.
 
 - The pre-release full-route production QA is `docs/design/QA-2026-08-27.md`. Its second round
   records the brand system, settling presentation, comparison-flow repairs, target bid columns,
@@ -237,10 +280,11 @@ implementation brief in `docs/workpackages/`.
   The negatives mirror still retains its cross-scope key-collision risk.
 - Unknown match-type spellings remain target rows with a null match type.
 - Report ingest does not create missing historical partitions before a backfill write.
-- Loading speed is an open priority acceptance gap. Grid and Time Machine first became usable in
-  4.27 seconds and 5.36 seconds respectively, missing the under-two-second target. Grid filter and
-  grouping must also demonstrate p95 response below 150 ms on the reference development machine;
-  synthetic fixture success does not close either live performance gate.
+- Loading speed is an open priority acceptance gap. On the current live revision Grid first became
+  usable in 6.79 seconds cold and 6.10 seconds warm; Time Machine loaded in 4.21 seconds. Grid's
+  isolated 3,597-row reference run completed in 1.53 seconds and the shared hosted runner in 2.83
+  seconds, but neither substitutes for production. A live three-level grouping interaction measured
+  about 155 ms including browser automation overhead, so the p95 below-150-ms gate is not closed.
 - Hosted SQP configuration and the SB Video provider adapter remain open. The new product surfaces are complete for
   stored evidence, but cannot establish live Amazon parity until those adapters produce counted,
   authoritative rows. WP-83 proves the documented `adId`, nested creative, Asset-ID and `sbAds`
@@ -277,14 +321,18 @@ implementation brief in `docs/workpackages/`.
 - [x] Public MCP restored after tunnel-credential rotation; both clients repeated tool discovery,
       one real read, audit-log and last-used checks with no write-like tool exposed at `b5c210d`.
 - [x] Exact-main CI run `33256509372` passed both jobs at repository revision `fc254bc`.
-- [ ] Keep the explicit deployment drift: production web and MCP remain at `b5c210d` until WP-85's
-      migrations and live provider gates are authorized. Durable 1Password reconciliation remains
-      open.
+- [x] Exact-main CI run `33298955347` passed both jobs at `5e372c8`; the production web health
+      endpoint reports that exact revision after authenticated candidate QA and promotion.
+- [ ] Keep the explicit deployment drift: production web is at `5e372c8` while MCP remains at
+      `b5c210d`. WP-85 hosted data gates and durable 1Password reconciliation remain open.
 - [x] Hosted ledger verified for the two newly authorized additive migrations.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [x] Full authenticated Wizard Ads route/state click-through at `bfce504`.
 - [x] Authenticated click-through at `b5c210d`: 21 of 21 production routes returned HTTP 200 with
       no application error; live first-load performance gaps remain recorded separately.
+- [x] Authenticated click-through at `5e372c8`: core operator and intelligence routes opened
+      without an application error, Grid returned exact counted rows, experiment filtered
+      select-all worked across profile changes, and no post-release 5xx or Amazon write occurred.
 - [x] Local Playwright release suites: 27 production-build workflows and 27 authenticated-dev
       workflows passed, including dashboard, nested grid, campaign export, recommendations,
       experiments, Time Machine, tenancy, OAuth safety and every guarded route.
