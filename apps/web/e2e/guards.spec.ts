@@ -69,6 +69,7 @@ const AUTHENTICATED_REDIRECTS = new Map([
       hash: '#operating-status',
       profile: true,
       artifact: '#operating-status',
+      finalHeading: 'Top campaigns by spend',
     },
   ],
 ]);
@@ -175,6 +176,10 @@ test('the same screens open once there is a session', async ({ page }) => {
         ),
       );
       await expect(page.locator(expectedRedirect.artifact)).toBeVisible();
+      await expect(page.getByRole('heading', {
+        name: expectedRedirect.finalHeading,
+        exact: true,
+      })).toBeVisible();
     }
     const expectedHeading = PRODUCT_HEADINGS.get(expectedPath);
     if (expectedHeading !== undefined) {
