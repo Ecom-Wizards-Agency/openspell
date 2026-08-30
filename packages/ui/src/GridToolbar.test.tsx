@@ -38,6 +38,7 @@ function renderToolbar(
       groupBy={options.groupBy ?? []}
       onGroupByChange={options.onGroupByChange ?? (() => {})}
       model={model}
+      optionRows={model.rows}
       {...(onExport === undefined ? {} : { onExport })}
     />,
   );
@@ -89,6 +90,86 @@ describe('GridToolbar filter draft', () => {
     // control that is displaying `LIKE`.
     fireEvent.change(column, { target: { value: 'SEARCH_TERM' } });
     expect(operator.value).toBe('LIKE');
+  });
+
+  it('offers exact multi-select operators for categorical columns only', () => {
+    renderToolbar();
+    const column = screen.getByLabelText('Filter column');
+    const operator = screen.getByLabelText('Filter operator') as HTMLSelectElement;
+
+    fireEvent.change(column, { target: { value: 'MATCH_TYPE' } });
+    expect([...operator.options].map((option) => option.value)).toEqual(['IN', 'NOT_IN']);
+    expect(screen.getByLabelText('Filter values')).toBeTruthy();
+    expect(screen.queryByLabelText('Filter value')).toBeNull();
+
+    fireEvent.change(column, { target: { value: 'SPEND' } });
+    expect([...operator.options].map((option) => option.value)).not.toContain('IN');
+    expect(screen.getByLabelText('Filter value')).toBeTruthy();
+  });
+
+  it('searches, selects all matching values, clears, and emits an exact multi-value filter', () => {
+    const onFilterChange = renderToolbar();
+    fireEvent.change(screen.getByLabelText('Filter column'), { target: { value: 'MATCH_TYPE' } });
+    fireEvent.click(screen.getByLabelText('Filter values'));
+
+    fireEvent.change(screen.getByLabelText('Search filter values'), { target: { value: 'a' } });
+    fireEvent.click(screen.getByRole('button', { name: /Select all/ }));
+    expect(screen.getByLabelText('Filter values').textContent).toContain('3 selected');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    expect(screen.getByLabelText('Filter values').textContent).toContain('Choose match');
+
+    fireEvent.click(screen.getByLabelText('exact'));
+    fireEvent.click(screen.getByLabelText('phrase'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    const emitted = onFilterChange.mock.calls[0]?.[0] as FilterSet;
+    expect(emitted.groups[0]?.filters[0]).toEqual({
+      key: 'MATCH_TYPE',
+      conditions: [{ operator: 'IN', values: ['exact', 'phrase'] }],
+    });
+    expect(buildGridModel(model.rows, { filter: emitted }).matched).toBeGreaterThan(0);
+  });
+
+  it('moves focus into the value picker and returns it to the trigger on Escape', () => {
+    renderToolbar();
+    fireEvent.change(screen.getByLabelText('Filter column'), { target: { value: 'MATCH_TYPE' } });
+    const trigger = screen.getByLabelText('Filter values');
+    fireEvent.click(trigger);
+
+    const search = screen.getByLabelText('Search filter values');
+    expect(document.activeElement).toBe(search);
+    fireEvent.keyDown(search, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Match values' })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('keeps options that another active filter hid from the model', () => {
+    const allRows = model.rows;
+    const filteredModel = buildGridModel(allRows, {
+      filter: {
+        groups: [{ filters: [{ key: 'MATCH_TYPE', conditions: [{ operator: 'IN', values: ['exact'] }] }] }],
+      },
+    });
+    render(
+      <GridToolbar
+        entity="search_terms"
+        available={available}
+        visible={defaultVisibleColumns('search_terms')}
+        onVisibleChange={() => {}}
+        filter={{ groups: [] }}
+        onFilterChange={() => {}}
+        groupBy={[]}
+        onGroupByChange={() => {}}
+        model={filteredModel}
+        optionRows={allRows}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText('Filter column'), { target: { value: 'MATCH_TYPE' } });
+    fireEvent.click(screen.getByLabelText('Filter values'));
+    expect(screen.getByLabelText('exact')).toBeTruthy();
+    expect(screen.getByLabelText('phrase')).toBeTruthy();
+    expect(screen.getByLabelText('broad')).toBeTruthy();
   });
 
   it('emits a filter the evaluator accepts, after that switch', () => {
@@ -172,6 +253,7 @@ describe('GridToolbar filter draft', () => {
         groupBy={groupedModel.groupBy}
         onGroupByChange={() => {}}
         model={groupedModel}
+        optionRows={groupedModel.rows}
         onExport={() => {}}
       />,
     );

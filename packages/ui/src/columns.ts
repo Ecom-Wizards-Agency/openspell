@@ -52,6 +52,7 @@ export const ENTITY_LABELS: Record<EntityLevel, string> = {
 };
 
 export type ColumnKind = 'dimension' | 'metric';
+export type FilterKind = 'numeric' | 'text' | 'categorical';
 
 export interface GridColumn {
   id: string;
@@ -67,6 +68,18 @@ export interface GridColumn {
   description?: string;
   /** The rare cell whose visual hierarchy carries more than its sort value. */
   cell?: 'suggested_bid';
+  /**
+   * How an operator filters this field. Omitted values resolve to numeric for
+   * metrics/money/percent/integer columns and free text otherwise.
+   */
+  filterKind?: FilterKind;
+}
+
+/** One authoritative filter-control decision for every Grid consumer. */
+export function filterKindForColumn(column: GridColumn): FilterKind {
+  if (column.filterKind !== undefined) return column.filterKind;
+  if (column.kind === 'metric' || column.scale !== 'text') return 'numeric';
+  return 'text';
 }
 
 const dimension = (
@@ -130,17 +143,18 @@ export function allMetricColumns(): GridColumn[] {
 const DIMENSIONS: Record<EntityLevel, GridColumn[]> = {
   campaigns: [
     dimension('campaign_name', 'Campaign', { width: 320, pinned: true }),
-    dimension('campaign_state', 'State', { width: 96 }),
-    dimension('ad_product', 'Ad type', { width: 88 }),
-    dimension('targeting_type', 'Targeting', { width: 104 }),
-    dimension('bidding_strategy', 'Bid strategy', { width: 150 }),
+    dimension('campaign_state', 'State', { width: 96, filterKind: 'categorical' }),
+    dimension('ad_product', 'Ad type', { width: 88, filterKind: 'categorical' }),
+    dimension('targeting_type', 'Targeting', { width: 104, filterKind: 'categorical' }),
+    dimension('bidding_strategy', 'Bid strategy', { width: 150, filterKind: 'categorical' }),
     dimension('budget_amount', 'Budget', { scale: 'money', align: 'right', width: 104 }),
-    dimension('budget_type', 'Budget type', { width: 104 }),
-    dimension('portfolio_name', 'Portfolio', { width: 180 }),
+    dimension('budget_type', 'Budget type', { width: 104, filterKind: 'categorical' }),
+    dimension('portfolio_name', 'Portfolio', { width: 180, filterKind: 'categorical' }),
     dimension('start_date', 'Start', { width: 104 }),
     dimension('end_date', 'End', { width: 104 }),
     dimension('is_ended', 'Ended', {
       width: 80,
+      filterKind: 'categorical',
       description:
         'End date strictly before today in the profile timezone. An ended campaign cannot take ' +
         'budget or bid updates even while its state reads Enabled.',
@@ -149,22 +163,24 @@ const DIMENSIONS: Record<EntityLevel, GridColumn[]> = {
   ],
   ad_groups: [
     dimension('ad_group_name', 'Ad group', { width: 280, pinned: true }),
-    dimension('ad_group_state', 'State', { width: 96 }),
-    dimension('campaign_name', 'Campaign', { width: 280 }),
+    dimension('ad_group_state', 'State', { width: 96, filterKind: 'categorical' }),
+    dimension('campaign_name', 'Campaign', { width: 280, filterKind: 'categorical' }),
     dimension('default_bid', 'Default bid', { scale: 'money', align: 'right', width: 104 }),
-    dimension('ad_product', 'Ad type', { width: 88 }),
+    dimension('ad_product', 'Ad type', { width: 88, filterKind: 'categorical' }),
     dimension('ad_group_id', 'Ad group ID', { width: 160 }),
     dimension('campaign_id', 'Campaign ID', { width: 160 }),
   ],
   targets: [
     dimension('targeting', 'Target', { width: 280, pinned: true }),
-    dimension('target_state', 'State', { width: 96 }),
+    dimension('target_state', 'State', { width: 96, filterKind: 'categorical' }),
     dimension('target_kind', 'Kind', {
       width: 96,
+      filterKind: 'categorical',
       description: 'Keyword or product target. One name, on every entity level.',
     }),
     dimension('match_type', 'Match', {
       width: 96,
+      filterKind: 'categorical',
       description:
         'Singular everywhere. AdLabs spells this `match_types` on targets and `match_type` on ' +
         'negatives; one concept gets one name here.',
@@ -179,6 +195,7 @@ const DIMENSIONS: Record<EntityLevel, GridColumn[]> = {
     }),
     dimension('bid_corridor_position', 'Corridor position', {
       width: 128,
+      filterKind: 'categorical',
       description: 'Whether the current bid sits below, within, or above Amazon’s latest suggested-bid corridor.',
     }),
     dimension('max_potential_cpc', 'Max potential CPC', {
@@ -195,36 +212,38 @@ const DIMENSIONS: Record<EntityLevel, GridColumn[]> = {
     }),
     dimension('rpc_category', 'RPC category', {
       width: 120,
+      filterKind: 'categorical',
       description: 'Campaign-name classification. A filter, not an optimizer run.',
     }),
-    dimension('ad_group_name', 'Ad group', { width: 220 }),
-    dimension('campaign_name', 'Campaign', { width: 280 }),
-    dimension('ad_product', 'Ad type', { width: 88 }),
+    dimension('ad_group_name', 'Ad group', { width: 220, filterKind: 'categorical' }),
+    dimension('campaign_name', 'Campaign', { width: 280, filterKind: 'categorical' }),
+    dimension('ad_product', 'Ad type', { width: 88, filterKind: 'categorical' }),
     dimension('target_id', 'Target ID', { width: 160 }),
   ],
   search_terms: [
     dimension('search_term', 'Search term', { width: 320, pinned: true }),
     dimension('targeting', 'Matched target', { width: 240 }),
-    dimension('match_type', 'Match', { width: 96 }),
-    dimension('ad_group_name', 'Ad group', { width: 220 }),
-    dimension('campaign_name', 'Campaign', { width: 280 }),
+    dimension('match_type', 'Match', { width: 96, filterKind: 'categorical' }),
+    dimension('ad_group_name', 'Ad group', { width: 220, filterKind: 'categorical' }),
+    dimension('campaign_name', 'Campaign', { width: 280, filterKind: 'categorical' }),
     dimension('harvested', 'Harvested', {
       width: 104,
+      filterKind: 'categorical',
       description:
         'Whether this term already exists as a target somewhere in the profile. Without it an ' +
         'operator re-harvests the same winners every week.',
     }),
-    dimension('ad_product', 'Ad type', { width: 88 }),
+    dimension('ad_product', 'Ad type', { width: 88, filterKind: 'categorical' }),
   ],
   placements: [
-    dimension('placement', 'Placement', { width: 200, pinned: true }),
-    dimension('campaign_name', 'Campaign', { width: 320 }),
+    dimension('placement', 'Placement', { width: 200, pinned: true, filterKind: 'categorical' }),
+    dimension('campaign_name', 'Campaign', { width: 320, filterKind: 'categorical' }),
     dimension('placement_modifier', 'Current modifier', {
       scale: 'percent',
       align: 'right',
       width: 140,
     }),
-    dimension('ad_product', 'Ad type', { width: 88 }),
+    dimension('ad_product', 'Ad type', { width: 88, filterKind: 'categorical' }),
     dimension('campaign_id', 'Campaign ID', { width: 160 }),
   ],
 };

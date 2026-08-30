@@ -63,6 +63,26 @@ describe.each([
     expect(loaded?.groupBy).toEqual(['campaign_name', 'ad_group_name', 'match_type']);
   });
 
+  it('round-trips every selected value in a categorical multi-select filter', async () => {
+    const store = build();
+    const saved = view({
+      filter: {
+        groups: [{
+          filters: [{
+            key: 'CAMPAIGN_STATE',
+            conditions: [{ operator: 'IN', values: ['enabled', 'paused'] }],
+          }],
+        }],
+      },
+    });
+    await store.save(saved);
+    const [loaded] = await store.list('campaigns');
+    expect(loaded?.filter.groups[0]?.filters[0]?.conditions[0]?.values).toEqual([
+      'enabled',
+      'paused',
+    ]);
+  });
+
   it('carries no profile id, so one view applies to any profile', async () => {
     const store = build();
     await store.save(view());

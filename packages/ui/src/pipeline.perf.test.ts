@@ -19,6 +19,7 @@
 import { describe, expect, it } from 'vitest';
 import { syntheticSearchTermRows } from './fixtures.js';
 import { filterSetOf } from './filter.js';
+import { buildCategoricalOptions } from './filter-options.js';
 import { buildGridModel } from './pipeline.js';
 
 const ROWS = 50_000;
@@ -89,6 +90,28 @@ describe('3,597-row operator reference fixture', () => {
     expect(best).toBeLessThan(150);
     expect(p95).toBeLessThan(150);
   });
+
+  it('keeps option extraction plus multi-select filtering and grouping under 150ms p95', () => {
+    let optionCount = 0;
+    let matched = 0;
+    const samples = timeSamples(20, () => {
+      const options = buildCategoricalOptions(rows, 'campaign_name');
+      optionCount = options.length;
+      matched = buildGridModel(rows, {
+        filter: filterSetOf({
+          key: 'CAMPAIGN_NAME',
+          conditions: [{ operator: 'IN', values: options.slice(0, 6).map((option) => option.value) }],
+        }),
+        groupBy: ['campaign_name', 'ad_group_name', 'match_type'],
+        sort: [{ columnId: 'spend', direction: 'desc' }],
+      }).matched;
+    });
+    const ordered = [...samples].sort((left, right) => left - right);
+    const p95 = ordered[Math.ceil(ordered.length * 0.95) - 1] ?? Number.POSITIVE_INFINITY;
+    expect(optionCount).toBe(12);
+    expect(matched).toBeGreaterThan(0);
+    expect(p95).toBeLessThan(150);
+  });
 });
 
 describe('50k-row search-term set', () => {
@@ -114,6 +137,25 @@ describe('50k-row search-term set', () => {
     expect(matched).toBeGreaterThan(0);
     expect(matched).toBeLessThan(ROWS);
     expect(best).toBeLessThan(FRAME_MS);
+  });
+
+  it('extracts a high-cardinality option set and applies a large exact selection', () => {
+    const highCardinality = rows.map((row, index) => ({
+      ...row,
+      dimensions: { ...row.dimensions, campaign_name: `Campaign ${index}` },
+    }));
+    let options = buildCategoricalOptions(highCardinality, 'campaign_name');
+    const best = timeBest(5, () => {
+      options = buildCategoricalOptions(highCardinality, 'campaign_name');
+      buildGridModel(highCardinality, {
+        filter: filterSetOf({
+          key: 'CAMPAIGN_NAME',
+          conditions: [{ operator: 'IN', values: options.slice(0, 500).map((option) => option.value) }],
+        }),
+      });
+    });
+    expect(options).toHaveLength(ROWS);
+    expect(best).toBeLessThan(process.env['CI'] === undefined ? 125 : 300);
   });
 
   it('sorts by a derived metric in well under a tenth of a second', () => {

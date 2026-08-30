@@ -122,3 +122,40 @@ test('grid adds, reorders, and removes truthful nested grouping levels', async (
   await page.getByRole('button', { name: 'Remove grouping level Ad type' }).click();
   await expect(levels.getByRole('listitem')).toHaveCount(2);
 });
+
+test('grid selects every categorical value, filters exact rows, and restores the saved selection', async ({ page }) => {
+  await signIn(page, 'admin');
+  await page.goto('/grid?entity=campaigns');
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+
+  const column = page.getByLabel('Filter column');
+  const operator = page.getByLabel('Filter operator');
+  await column.selectOption('AD_PRODUCT');
+  await expect(operator.locator('option')).toHaveText(['is one of', 'is not one of']);
+
+  const valuesButton = page.getByRole('button', { name: 'Filter values', exact: true });
+  await valuesButton.click();
+  await page.getByRole('button', { name: 'Select all', exact: true }).click();
+  await expect(valuesButton).toContainText('1 selected');
+  await page.getByRole('button', { name: 'Add', exact: true }).click();
+
+  const adTypeChip = page.getByRole('button', { name: 'Remove filter AD_PRODUCT' }).locator('..');
+  await expect(adTypeChip).toContainText('Ad type is one of SP');
+  await expect(page.getByRole('button', { name: 'Export CSV (1 of 1)' })).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await expect(page.getByRole('button', { name: 'Remove filter AD_PRODUCT' }).locator('..')).toContainText(
+    'Ad type is one of SP',
+  );
+
+  await column.selectOption('BUDGET_AMOUNT');
+  expect(await operator.locator('option').allTextContents()).not.toContain('is one of');
+  await column.selectOption('CAMPAIGN_ID');
+  await expect(operator.locator('option')).toHaveText([
+    'contains',
+    'does not contain',
+    'equals',
+    'does not equal',
+  ]);
+});
