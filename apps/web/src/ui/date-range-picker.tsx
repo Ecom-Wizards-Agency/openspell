@@ -1,4 +1,9 @@
+'use client';
+
+import { useRef } from 'react';
 import type { ReactNode } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { Period } from '../../app/_lib/periods';
 import { dateRangeHref, dateRangePresets, selectedDateRangeLabel } from './date-range';
 
@@ -13,6 +18,8 @@ export function DateRangePicker({
   today: string;
   preserved?: Readonly<Record<string, string | undefined>>;
 }): ReactNode {
+  const router = useRouter();
+  const root = useRef<HTMLDetailsElement | null>(null);
   const presets = dateRangePresets(today);
   const lastCompleteDay = presets[0]?.period.end ?? today;
   const selectedLabel = selectedDateRangeLabel(period, today);
@@ -21,7 +28,7 @@ export function DateRangePicker({
   ) as Array<[string, string]>;
 
   return (
-    <details className="wa-date-range">
+    <details className="wa-date-range" ref={root}>
       <summary className="wa-date-range__trigger" aria-label={`Date range: ${selectedLabel}`}>
         <svg aria-hidden="true" viewBox="0 0 20 20" width="16" height="16">
           <path d="M5 2.5v3m10-3v3M3.5 8h13M5 4h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
@@ -41,18 +48,34 @@ export function DateRangePicker({
           {presets.map((preset) => {
             const active = preset.label === selectedLabel;
             return (
-              <a
+              <Link
                 aria-current={active ? 'date' : undefined}
                 href={dateRangeHref(path, preset.period, preserved)}
+                prefetch={false}
+                onClick={() => root.current?.removeAttribute('open')}
                 key={preset.id}
               >
                 <span>{preset.label}</span>
                 {active ? <span aria-hidden="true">✓</span> : null}
-              </a>
+              </Link>
             );
           })}
         </nav>
-        <form action={path} method="get" className="wa-date-range__custom">
+        <form
+          action={path}
+          method="get"
+          className="wa-date-range__custom"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const data = new FormData(event.currentTarget);
+            const parameters = new URLSearchParams();
+            for (const [name, value] of data.entries()) {
+              if (typeof value === 'string') parameters.append(name, value);
+            }
+            root.current?.removeAttribute('open');
+            router.push(`${path}?${parameters.toString()}`);
+          }}
+        >
           {hidden.map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />)}
           <strong>Custom range</strong>
           <div className="wa-date-range__fields">

@@ -20,6 +20,8 @@
  * cookie only when the URL has no profile parameter. The server validates the
  * remembered id against the active organisation's roster before using it.
  */
+import Link from 'next/link';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { PROFILE_COOKIE } from '../cookies';
@@ -60,6 +62,9 @@ export function filterNavProfiles(
 }
 
 export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] }): ReactNode {
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const [selected, setSelected] = useState(
     () => resolveActiveProfile(profiles, undefined)?.id ?? '',
   );
@@ -70,9 +75,9 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
   const searchRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    const requested = new URL(window.location.href).searchParams.get('profile') ?? undefined;
+    const requested = searchParams.get('profile') ?? undefined;
     setSelected(resolveActiveProfile(profiles, requested)?.id ?? '');
-  }, [profiles]);
+  }, [profiles, searchParams]);
 
   // Close on an outside click or Escape — a popover that only closes by
   // re-clicking the trigger is a popover an operator fights.
@@ -102,10 +107,12 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
   if (profiles.length === 0) return null;
 
   const go = (profileId: string): void => {
-    const url = new URL(window.location.href);
-    url.searchParams.set('profile', profileId);
+    const next = new URLSearchParams(searchParams.toString());
+    next.set('profile', profileId);
     document.cookie = `${PROFILE_COOKIE}=${encodeURIComponent(profileId)}; path=/; max-age=31536000; SameSite=Lax`;
-    window.location.href = `${url.pathname}${url.search}`;
+    setSelected(profileId);
+    setOpen(false);
+    router.push(`${pathname}?${next.toString()}`);
   };
 
   const active = profiles.find((profile) => profile.id === selected) ?? null;
@@ -177,12 +184,13 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
           </ul>
           {/* Leaves the popover for another screen; it should not also leave
               the profile behind. */}
-          <a
+          <Link
             href={`/settings/profiles?profile=${encodeURIComponent(selected)}`}
+            prefetch={false}
             className="wa-profile-manage"
           >
             Manage Profiles
-          </a>
+          </Link>
         </div>
       ) : null}
     </div>

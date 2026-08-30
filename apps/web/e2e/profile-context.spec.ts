@@ -67,3 +67,49 @@ test('an inaccessible profile id is replaced by the org-scoped active profile', 
   expect(activeAccount).not.toBe('');
   await expect(page.locator('#wa-main')).toContainText(activeAccount);
 });
+
+test('sidebar, date, entity, back and forward stay in one document and retain the profile', async ({ page }) => {
+  test.setTimeout(120_000);
+  await signIn(page, 'admin');
+  const { fixtureProfileId } = await readState();
+  await page.goto(`/dashboard?profile=${fixtureProfileId}`);
+  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+
+  await page.evaluate(() => {
+    (window as Window & { __openspellDocumentMarker?: string }).__openspellDocumentMarker = 'same-document';
+  });
+  const documentRequests: string[] = [];
+  page.on('request', (request) => {
+    if (request.resourceType() === 'document') documentRequests.push(request.url());
+  });
+
+  const picker = page.locator('details.wa-date-range');
+  await picker.locator('summary').click();
+  await picker.getByRole('link', { name: 'Previous month', exact: true }).click();
+  await expect(page).toHaveURL(/\/dashboard\?.*profile=/);
+  await expect(picker).not.toHaveAttribute('open', '');
+  expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
+
+  await page.locator('details.wa-navgroup').filter({ hasText: 'Analyze' }).locator('summary').click();
+  await page.getByRole('link', { name: 'Data Grid', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Search terms', exact: true })).toBeVisible();
+  expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
+
+  await page.getByRole('tab', { name: 'Campaigns', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Campaigns', exact: true })).toBeVisible();
+  expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
+
+  await page.goBack();
+  await expect(page.getByRole('heading', { name: 'Search terms', exact: true })).toBeVisible();
+  expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
+  await page.goBack();
+  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
+  await page.goForward();
+  await expect(page.getByRole('heading', { name: 'Search terms', exact: true })).toBeVisible();
+
+  expect(await page.evaluate(
+    () => (window as Window & { __openspellDocumentMarker?: string }).__openspellDocumentMarker,
+  )).toBe('same-document');
+  expect(documentRequests).toEqual([]);
+});

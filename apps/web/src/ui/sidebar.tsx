@@ -19,15 +19,16 @@
  * are hidden with CSS, so the same server markup carries both states and the
  * unit test sees every label.
  *
- * A client component for three reasons: marking the current page (Next gives a
- * server component no pathname), remembering the collapse/open state in
- * `localStorage`, and carrying the active `?profile=` across a navigation. All
- * three read `window` after mount rather than during render, so the server
- * markup and the first client render agree and nothing here can cause a
- * hydration mismatch.
+ * A client component for three reasons: marking the current page, remembering
+ * the collapse/open state in `localStorage`, and carrying the active
+ * `?profile=` across App Router navigation. Next's pathname/search hooks keep
+ * the chrome current through push, back and forward transitions.
  */
+import Link from 'next/link';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import { shouldPrefetchRoute } from '../performance/routes';
 import { NAV_GROUPS } from './nav-links';
 import type { NavLink } from './nav-links';
 import { NavIcon } from './nav-icons';
@@ -45,14 +46,12 @@ const UTILITY_LINKS = NAV_GROUPS.filter(
 const DEFAULT_CLOSED = WORKFLOW_GROUPS.map((group) => group.id);
 
 export function SidebarNav(): ReactNode {
-  const [pathname, setPathname] = useState<string | null>(null);
-  const [profile, setProfile] = useState<string | null>(null);
+  const pathname = usePathname();
+  const profile = useSearchParams().get('profile');
   const [closed, setClosed] = useState<readonly string[]>(DEFAULT_CLOSED);
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
-    setPathname(window.location.pathname);
-    setProfile(new URLSearchParams(window.location.search).get('profile'));
     try {
       const stored = window.localStorage.getItem(CLOSED_KEY);
       if (stored !== null) setClosed(JSON.parse(stored) as string[]);
@@ -169,8 +168,9 @@ function NavLinkRow({
   const current = pathname !== null && isCurrent(link.href, pathname);
   return (
     <li>
-      <a
+      <Link
         href={withProfile(link.href, profile)}
+        prefetch={shouldPrefetchRoute(link.href) ? null : false}
         className="wa-navlink"
         title={link.label}
         {...(current ? { 'aria-current': 'page' as const } : {})}
@@ -180,7 +180,7 @@ function NavLinkRow({
         </span>
         <span className="wa-navlink-label">{link.label}</span>
         {link.tag === undefined ? null : <span className="wa-navlink-tag">{link.tag}</span>}
-      </a>
+      </Link>
     </li>
   );
 }
@@ -196,9 +196,8 @@ function applyCollapsed(value: boolean, set: (value: boolean) => void): void {
  * Carry the chosen advertising profile through the navigation.
  *
  * Tenancy in this product is a parameter on the route, not a path prefix (see
- * `topbar-controls.tsx`), and these are plain anchors doing full-page
- * navigations — so a bare `href` is an instruction to forget which profile the
- * operator is looking at. Every link therefore re-states it. The `href` the
+ * `topbar-controls.tsx`), so a bare `href` is an instruction to forget which
+ * profile the operator is looking at. Every link therefore re-states it. The `href` the
  * active-link check compares is still the bare one: the profile decides what a
  * screen shows, never which screen you are on.
  *
