@@ -61,6 +61,10 @@ const PROFILE_CANONICAL = new Set([
   '/creative',
 ]);
 
+const AUTHENTICATED_REDIRECTS = new Map([
+  ['/strategy', { pathname: '/dashboard', hash: '#operating-status' }],
+]);
+
 /** Primary data-backed routes whose artifact, not only URL, must render. */
 const PRODUCT_HEADINGS = new Map<string, string>([
   ['/optimizer', 'Campaign Optimizer'],
@@ -143,14 +147,20 @@ test('the same screens open once there is a session', async ({ page }) => {
   const landed: string[] = [];
   for (const route of GUARDED) {
     const expectedPath = new URL(route, 'https://example.test').pathname;
+    const expectedRedirect = AUTHENTICATED_REDIRECTS.get(expectedPath);
     await page.goto(route).catch((error: unknown) => {
-      if (!PROFILE_CANONICAL.has(expectedPath) || !String(error).includes('is interrupted by')) {
+      const expectedFollowUp = PROFILE_CANONICAL.has(expectedPath) || expectedRedirect !== undefined;
+      if (!expectedFollowUp || !String(error).includes('is interrupted by')) {
         throw error;
       }
     });
     if (PROFILE_CANONICAL.has(expectedPath)) {
       await page.waitForURL(
         (url) => url.pathname === expectedPath && url.searchParams.has('profile'),
+      );
+    } else if (expectedRedirect !== undefined) {
+      await page.waitForURL(
+        (url) => url.pathname === expectedRedirect.pathname && url.hash === expectedRedirect.hash,
       );
     }
     const expectedHeading = PRODUCT_HEADINGS.get(expectedPath);
@@ -160,8 +170,11 @@ test('the same screens open once there is a session', async ({ page }) => {
     landed.push(new URL(page.url()).pathname);
   }
 
-  // `/settings` alone redirects (to connections); everything else stays put.
-  expect(landed.filter((path) => path === '/login')).toEqual([]);
+  // Strategy Overview now lives inside Dashboard. Assert that one intentional
+  // redirect exactly; every other route must stay on its requested pathname.
+  expect(landed).toEqual(GUARDED.map((route) => (
+    AUTHENTICATED_REDIRECTS.get(route)?.pathname ?? route
+  )));
   await expect(page.getByTestId('app-nav')).toBeVisible();
 });
 
