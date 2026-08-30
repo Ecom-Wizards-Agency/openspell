@@ -13,8 +13,50 @@ export const OptimizationPrioritization = z.enum([
 ]);
 export type OptimizationPrioritization = z.infer<typeof OptimizationPrioritization>;
 
+export const OptimizationWeekday = z.enum([
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+]);
+export type OptimizationWeekday = z.infer<typeof OptimizationWeekday>;
+
+export const OPTIMIZATION_WEEKDAYS = OptimizationWeekday.options;
+
+export const OPTIMIZATION_WEEKDAY_ISO: Readonly<Record<OptimizationWeekday, number>> = {
+  monday: 1,
+  tuesday: 2,
+  wednesday: 3,
+  thursday: 4,
+  friday: 5,
+  saturday: 6,
+  sunday: 7,
+};
+
+/** Canonical Monday-to-Sunday order makes schedule equality deterministic. */
+export const OptimizationWeekdays = z.array(OptimizationWeekday).min(1).max(7).superRefine(
+  (weekdays, context) => {
+    const canonical = OPTIMIZATION_WEEKDAYS.filter((weekday) => weekdays.includes(weekday));
+    if (canonical.length !== weekdays.length || canonical.some((weekday, index) => weekday !== weekdays[index])) {
+      context.addIssue({
+        code: 'custom',
+        message: 'weekdays must be unique and ordered Monday through Sunday',
+      });
+    }
+  },
+);
+
+export const OptimizationReviewSchedule = z.object({
+  version: z.literal(2),
+  weekdays: OptimizationWeekdays,
+});
+export type OptimizationReviewSchedule = z.infer<typeof OptimizationReviewSchedule>;
+
 /** Values are tenant data. This contract intentionally supplies no numeric defaults. */
-export const OptimizationGroup = z.object({
+export const OptimizationGroupPolicy = z.object({
   id: Uuid,
   orgId: Uuid,
   profileId: Uuid,
@@ -28,11 +70,59 @@ export const OptimizationGroup = z.object({
   placementIncreaseCap: z.number().nonnegative(),
   placementDecreaseCap: z.number().nonnegative(),
   exclusions: z.array(z.string().min(1)),
-  cadence: z.string().min(1),
   prioritization: OptimizationPrioritization,
   enabled: z.boolean(),
 });
+export type OptimizationGroupPolicy = z.infer<typeof OptimizationGroupPolicy>;
+
+/** Historical and public v1 contract retained unchanged for additive compatibility. */
+export const OptimizationGroup = OptimizationGroupPolicy.extend({
+  cadence: z.string().min(1),
+});
 export type OptimizationGroup = z.infer<typeof OptimizationGroup>;
+
+/** Current mutable group contract. Interval cadence remains storage-only for rollback. */
+export const ScheduledOptimizationGroup = OptimizationGroupPolicy.extend({
+  version: z.literal(2),
+  reviewSchedule: OptimizationReviewSchedule,
+});
+export type ScheduledOptimizationGroup = z.infer<typeof ScheduledOptimizationGroup>;
+
+/** Historical snapshots written before weekday schedules existed remain decodable. */
+export const LegacyOptimizationGroupSnapshot = OptimizationGroup;
+export type LegacyOptimizationGroupSnapshot = z.infer<typeof LegacyOptimizationGroupSnapshot>;
+
+export const OptimizationGroupSnapshot = z.union([
+  ScheduledOptimizationGroup,
+  LegacyOptimizationGroupSnapshot,
+]);
+export type OptimizationGroupSnapshot = z.infer<typeof OptimizationGroupSnapshot>;
+
+export const OptimizationGroupSnapshotEnvelope = z.discriminatedUnion('version', [
+  z.object({ version: z.literal(1), group: LegacyOptimizationGroupSnapshot }),
+  z.object({ version: z.literal(2), group: ScheduledOptimizationGroup }),
+]);
+export type OptimizationGroupSnapshotEnvelope = z.infer<
+  typeof OptimizationGroupSnapshotEnvelope
+>;
+
+/** One versioned decoder for database history; callers never guess from fields. */
+export function normalizeOptimizationGroupSnapshot(input: unknown): OptimizationGroupSnapshotEnvelope {
+  const current = ScheduledOptimizationGroup.safeParse(input);
+  if (current.success) return { version: 2, group: current.data };
+  return { version: 1, group: LegacyOptimizationGroupSnapshot.parse(input) };
+}
+
+export function optimizationWeekdaysFromIso(values: readonly number[]): OptimizationWeekday[] {
+  const byIso = new Map(
+    Object.entries(OPTIMIZATION_WEEKDAY_ISO).map(([weekday, iso]) => [iso, weekday as OptimizationWeekday]),
+  );
+  return OptimizationWeekdays.parse(values.map((value) => byIso.get(value)));
+}
+
+export function optimizationWeekdaysToIso(values: readonly OptimizationWeekday[]): number[] {
+  return OptimizationWeekdays.parse(values).map((weekday) => OPTIMIZATION_WEEKDAY_ISO[weekday]);
+}
 
 export const CampaignOptimizationAssignment = z.object({
   profileId: Uuid,
@@ -43,16 +133,40 @@ export const CampaignOptimizationAssignment = z.object({
 });
 export type CampaignOptimizationAssignment = z.infer<typeof CampaignOptimizationAssignment>;
 
-export const OptimizationRunContext = z.object({
+export const OptimizationRunScheduleContext = z.object({
+  version: z.literal(2),
+  trigger: z.enum(['manual', 'scheduled']),
+  profileTimezone: z.string().min(1),
+  weekdays: OptimizationWeekdays,
+  localHour: z.number().int().min(0).max(23),
+  dueAt: z.iso.datetime(),
+  evaluatedAt: z.iso.datetime(),
+});
+export type OptimizationRunScheduleContext = z.infer<typeof OptimizationRunScheduleContext>;
+
+const OptimizationRunContextBase = z.object({
   runId: Uuid,
   profileId: Uuid,
   groupId: Uuid,
   groupRole: OptimizationGroupRole,
-  groupSnapshot: OptimizationGroup,
   dueAt: z.iso.datetime(),
   windowStart: IsoDate,
   windowEnd: IsoDate,
 });
+
+export const LegacyOptimizationRunContext = OptimizationRunContextBase.extend({
+  groupSnapshot: LegacyOptimizationGroupSnapshot,
+});
+
+export const ScheduledOptimizationRunContext = OptimizationRunContextBase.extend({
+  groupSnapshot: ScheduledOptimizationGroup,
+  scheduleContext: OptimizationRunScheduleContext,
+});
+
+export const OptimizationRunContext = z.union([
+  ScheduledOptimizationRunContext,
+  LegacyOptimizationRunContext,
+]);
 export type OptimizationRunContext = z.infer<typeof OptimizationRunContext>;
 
 export const RecommendationEvidenceState = z.enum([

@@ -52,6 +52,49 @@ describe.skipIf(!available)('migrations', () => {
     ]);
   });
 
+  it('installs canonical weekday scheduling and immutable run context', async () => {
+    const columns = await database.sql<{
+      table_name: string;
+      column_name: string;
+      is_nullable: string;
+    }[]>`
+      select table_name, column_name, is_nullable
+        from information_schema.columns
+       where table_schema = 'public'
+         and (
+           (table_name = 'optimization_groups' and column_name = 'review_weekdays')
+           or (table_name = 'recommendation_runs' and column_name = 'schedule_context')
+         )
+       order by table_name, column_name
+    `;
+    expect(columns).toEqual([
+      { table_name: 'optimization_groups', column_name: 'review_weekdays', is_nullable: 'NO' },
+      { table_name: 'recommendation_runs', column_name: 'schedule_context', is_nullable: 'YES' },
+    ]);
+
+    const [functionRow] = await database.sql<{ volatility: string }[]>`
+      select provolatile as volatility
+        from pg_catalog.pg_proc
+       where pronamespace = 'app'::regnamespace
+         and proname = 'next_optimization_review_at'
+    `;
+    expect(functionRow?.volatility).toBe('i');
+
+    const triggers = await database.sql<{ tgname: string }[]>`
+      select tgname from pg_catalog.pg_trigger
+       where not tgisinternal
+         and tgname in (
+           'optimization_groups_schedule',
+           'ad_profiles_refresh_optimization_schedules'
+         )
+       order by tgname
+    `;
+    expect(triggers.map((row) => row.tgname)).toEqual([
+      'ad_profiles_refresh_optimization_schedules',
+      'optimization_groups_schedule',
+    ]);
+  });
+
   it('adds the integration job labels without weakening the report schedule constraint', async () => {
     const labels = await database.sql<{ enumlabel: string }[]>`
       select e.enumlabel

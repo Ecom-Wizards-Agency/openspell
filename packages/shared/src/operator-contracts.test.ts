@@ -15,8 +15,12 @@ import {
   MarketingStreamHourlyFact,
   MarketingStreamLedgerEvent,
   MarketingStreamNormalizeJob,
-  OptimizationGroup,
+  ScheduledOptimizationGroup,
+  OptimizationWeekdays,
   OptimizationRunContext,
+  normalizeOptimizationGroupSnapshot,
+  optimizationWeekdaysFromIso,
+  optimizationWeekdaysToIso,
   QueryCategory,
   QueryVocabularyEntry,
   RecommendationObservation,
@@ -214,7 +218,8 @@ describe('query intelligence', () => {
 });
 
 describe('optimization observations and reversion', () => {
-  const group = OptimizationGroup.parse({
+  const group = ScheduledOptimizationGroup.parse({
+    version: 2,
     id: GROUP_ID,
     orgId: ORG_ID,
     profileId: PROFILE_ID,
@@ -228,9 +233,29 @@ describe('optimization observations and reversion', () => {
     placementIncreaseCap: 1,
     placementDecreaseCap: 1,
     exclusions: [],
-    cadence: 'synthetic cadence',
+    reviewSchedule: { version: 2, weekdays: ['monday', 'thursday'] },
     prioritization: 'balanced',
     enabled: true,
+  });
+
+  it('keeps weekday schedules canonical and decodes legacy snapshots explicitly', () => {
+    expect(optimizationWeekdaysFromIso([1, 4, 7])).toEqual([
+      'monday',
+      'thursday',
+      'sunday',
+    ]);
+    expect(optimizationWeekdaysToIso(['monday', 'thursday', 'sunday'])).toEqual([1, 4, 7]);
+    expect(OptimizationWeekdays.safeParse(['thursday', 'monday']).success).toBe(false);
+    expect(OptimizationWeekdays.safeParse(['monday', 'monday']).success).toBe(false);
+
+    const legacy = normalizeOptimizationGroupSnapshot({
+      ...group,
+      version: undefined,
+      reviewSchedule: undefined,
+      cadence: '7 days',
+    });
+    expect(legacy.version).toBe(1);
+    expect(normalizeOptimizationGroupSnapshot(group).version).toBe(2);
   });
 
   it('carries group context through the recommendation run', () => {
@@ -241,6 +266,15 @@ describe('optimization observations and reversion', () => {
       groupRole: 'rank',
       groupSnapshot: group,
       dueAt: '2026-08-28T00:00:00Z',
+      scheduleContext: {
+        version: 2,
+        trigger: 'scheduled',
+        profileTimezone: 'Europe/Berlin',
+        weekdays: ['monday', 'thursday'],
+        localHour: 4,
+        dueAt: '2026-08-28T00:00:00Z',
+        evaluatedAt: '2026-08-28T00:00:01Z',
+      },
       windowStart: '2026-08-01',
       windowEnd: '2026-08-27',
     });
