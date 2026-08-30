@@ -9,10 +9,16 @@
  */
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { NAV_LINKS, NavBar } from './nav.js';
 import { userInitials } from './topbar-controls.js';
 import { profileAwareHomeHref } from './profile-aware-brand.js';
+
+vi.mock('next/navigation', () => ({
+  usePathname: () => '/',
+  useRouter: () => ({ push: () => undefined }),
+  useSearchParams: () => new URLSearchParams(),
+}));
 
 const render = (user: { id: string; email: string | null } | null): string =>
   renderToStaticMarkup(createElement(NavBar, { user }));

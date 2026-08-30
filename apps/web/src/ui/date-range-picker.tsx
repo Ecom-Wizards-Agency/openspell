@@ -1,5 +1,9 @@
+'use client';
+
 import type { ReactNode } from 'react';
+import Link from 'next/link';
 import type { Period } from '../../app/_lib/periods';
+import { beginRouteNavigation } from '../performance/navigation';
 import { dateRangeHref, dateRangePresets, selectedDateRangeLabel } from './date-range';
 
 export function DateRangePicker({
@@ -41,14 +45,16 @@ export function DateRangePicker({
           {presets.map((preset) => {
             const active = preset.label === selectedLabel;
             return (
-              <a
+              <Link
                 aria-current={active ? 'date' : undefined}
                 href={dateRangeHref(path, preset.period, preserved)}
+                prefetch={false}
+                onNavigate={() => beginRouteNavigation()}
                 key={preset.id}
               >
                 <span>{preset.label}</span>
                 {active ? <span aria-hidden="true">✓</span> : null}
-              </a>
+              </Link>
             );
           })}
         </nav>

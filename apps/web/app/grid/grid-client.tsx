@@ -14,6 +14,8 @@
  * affordable; without it this component would be a guess.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { ReactNode } from 'react';
 import {
   DataGrid,
@@ -37,6 +39,7 @@ import type {
 } from '@wizard-ads/ui';
 import { FreshnessBanner, tokens } from '@wizard-ads/ui';
 import { BidHistoryModal } from '../../src/ui/bid-history-modal';
+import { beginRouteNavigation } from '../../src/performance/navigation';
 
 export interface GridWorkspaceProps {
   entity: EntityLevel;
@@ -117,6 +120,7 @@ const SCOPE_PARAM: Partial<Record<EntityLevel, { param: string; key: string }>> 
 };
 
 export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
+  const router = useRouter();
   const available = useMemo(() => columnsFor(props.entity), [props.entity]);
   const [view, setView] = useState<SavedView>(() => defaultView(props.entity, props.campaignId));
   const [saved, setSaved] = useState<readonly SavedView[]>([]);
@@ -254,7 +258,14 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
       <GridToolbar
         entity={props.entity}
         onEntityChange={(entity) => {
-          window.location.href = `/grid?profile=${props.profileId}&entity=${entity}&from=${props.period.start}&to=${props.period.end}`;
+          const params = new URLSearchParams({
+            profile: props.profileId,
+            entity,
+            from: props.period.start,
+            to: props.period.end,
+          });
+          beginRouteNavigation();
+          router.push(`/grid?${params.toString()}`);
         }}
         available={available}
         visible={view.columns}
@@ -272,13 +283,15 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
 
       {experimentHref === null ? null : (
         <div className="wa-row" style={{ justifyContent: 'flex-end' }}>
-          <a
+          <Link
             href={experimentHref}
+            prefetch={false}
+            onNavigate={() => beginRouteNavigation()}
             data-testid="grid-start-experiment"
             className="wa-btn wa-btn--sm"
           >
             Start an experiment from this view →
-          </a>
+          </Link>
         </div>
       )}
 
