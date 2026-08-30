@@ -9,6 +9,7 @@ import {
   requestActor,
   RequestAuthError,
 } from '../../../../src/server/request-context';
+import { finalizeTimedGridResponse, GridServerTiming } from './server-timing';
 import { serializeGridPayloadWithinBudget } from './serialize';
 
 export const runtime = 'nodejs';
@@ -72,8 +73,12 @@ function json(value: unknown, init: { status?: number } = {}): Response {
   });
 }
 
-function gridPayloadResponse(payload: Awaited<ReturnType<typeof loadGridRows>>): Response {
+function gridPayloadResponse(
+  payload: Awaited<ReturnType<typeof loadGridRows>>,
+  timing: GridServerTiming,
+): Response {
   const serialized = serializeGridPayloadWithinBudget(payload);
+  timing.mark('serialize');
   return new Response(serialized.body, {
     headers: {
       ...PRIVATE_RESPONSE_HEADERS,
@@ -93,11 +98,15 @@ function gridErrorResponse(error: unknown): Response {
 }
 
 export async function GET(request: Request): Promise<Response> {
+  const timing = new GridServerTiming();
   let database: ReturnType<typeof openWebDatabase> | null = null;
+  let success: Response | null = null;
   try {
     database = openWebDatabase();
     const actor = await requestActor(request.headers);
+    timing.mark('actor');
     await requireOrgRole(database, actor);
+    timing.mark('role');
     const { profileId, entity, period } = parseGridRowsQuery(request.url);
 
     // The browser supplies only the profile identity. Currency and tenancy are
@@ -110,6 +119,7 @@ export async function GET(request: Request): Promise<Response> {
          and id = ${profileId}
        limit 1
     `;
+    timing.mark('profile');
     if (profile === undefined) return json({ error: 'Not found' }, { status: 404 });
 
     const payload = await loadGridRows(database, entity, {
@@ -119,11 +129,17 @@ export async function GET(request: Request): Promise<Response> {
       period,
       comparison: precedingPeriod(period),
     });
+    timing.mark('rows');
 
-    return gridPayloadResponse(payload);
+    success = gridPayloadResponse(payload, timing);
+    return success;
   } catch (error) {
     return gridErrorResponse(error);
   } finally {
-    await database?.close();
+    const openedDatabase = database;
+    if (openedDatabase !== null) {
+      if (success === null) await openedDatabase.close();
+      else await finalizeTimedGridResponse(success, timing, () => openedDatabase.close());
+    }
   }
 }

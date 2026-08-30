@@ -10,6 +10,7 @@ import {
   GRID_RESPONSE_BODY_BUDGET_BYTES,
   serializeGridPayloadWithinBudget,
 } from '../app/api/grid/rows/serialize.js';
+import { GRID_SERVER_TIMING_SPANS } from '../app/api/grid/rows/server-timing.js';
 
 const available = await databaseAvailable();
 const USER_A = '14141414-1414-4414-8414-141414141414';
@@ -218,6 +219,16 @@ describe.skipIf(!available)('Grid rows route', () => {
     expect(response.headers.get('cache-control')).toContain('no-store');
     expect(response.headers.get('vary')).toBe('Cookie');
     expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+    const serverTiming = response.headers.get('server-timing') ?? '';
+    expect(serverTiming.split(', ').map((span) => span.split(';')[0])).toEqual([
+      ...GRID_SERVER_TIMING_SPANS,
+      'total',
+    ]);
+    expect(serverTiming).toMatch(
+      /^actor;dur=\d+\.\d{2}, role;dur=\d+\.\d{2}, profile;dur=\d+\.\d{2}, rows;dur=\d+\.\d{2}, serialize;dur=\d+\.\d{2}, close;dur=\d+\.\d{2}, total;dur=\d+\.\d{2}$/,
+    );
+    expect(serverTiming).not.toContain(profileA);
+    expect(serverTiming).not.toContain(orgA);
 
     const payload = (await response.json()) as {
       rows: Array<{ currencyCode: string; comparison: { spend: number } | null }>;
@@ -232,14 +243,20 @@ describe.skipIf(!available)('Grid rows route', () => {
 
   it('requires a vouched-for member and hides foreign or unknown profiles equally', async () => {
     const invalidBridgeValue = ['wrong', 'bridge', 'value'].join('-');
-    expect((await request({ bridgeValue: invalidBridgeValue })).status).toBe(401);
-    expect((await request({ orgId: orgB })).status).toBe(403);
+    const unauthorized = await request({ bridgeValue: invalidBridgeValue });
+    const forbidden = await request({ orgId: orgB });
+    expect(unauthorized.status).toBe(401);
+    expect(forbidden.status).toBe(403);
+    expect(unauthorized.headers.has('server-timing')).toBe(false);
+    expect(forbidden.headers.has('server-timing')).toBe(false);
 
     const foreign = await request({ profile: profileB });
     const unknown = await request({ profile: UNKNOWN_PROFILE });
     expect(foreign.status).toBe(404);
     expect(unknown.status).toBe(404);
     expect(await foreign.json()).toEqual(await unknown.json());
+    expect(foreign.headers.has('server-timing')).toBe(false);
+    expect(unknown.headers.has('server-timing')).toBe(false);
   });
 
   it('rejects unsupported entities and impossible or inverted dates before querying rows', async () => {
@@ -250,6 +267,7 @@ describe.skipIf(!available)('Grid rows route', () => {
       request({ profile: 'not-a-profile' }),
     ]);
     expect(attempts.map((response) => response.status)).toEqual([400, 400, 400, 400]);
+    expect(attempts.every((response) => !response.headers.has('server-timing'))).toBe(true);
   });
 
 });
