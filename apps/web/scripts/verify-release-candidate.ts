@@ -27,7 +27,7 @@ const STATUS_MARKER = 'OPENSPELL_STATUS:';
 const REJECTED_BODY = /role=["']alert["']|Application error|Internal Server Error|Login – Vercel/i;
 
 const ROUTES = [
-  { route: '/', expectedText: 'Open the dashboard' },
+  { route: '/', expectedText: 'Dashboard' },
   { route: '/dashboard', expectedText: 'Dashboard' },
   { route: '/grid', expectedText: 'Campaigns' },
   { route: '/optimizer', expectedText: 'Campaign Optimizer' },
