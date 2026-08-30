@@ -1,16 +1,16 @@
 /**
  * Always-on Amazon Marketing Stream SQS ingress.
  *
- * The queue carries `MarketingStreamBatchEnvelope`, either directly (raw SQS
- * delivery) or inside the standard SNS `Notification.Message` string. The
- * subscription/fanout boundary maps provider records into that shared
- * contract; this process validates tenant scope, loads the profile's timezone
- * and currency plus tenant-owned settling policy, then appends and normalizes
- * the complete envelope before deleting the SQS delivery.
+ * The queue accepts Amazon's documented sponsored-ads records directly, or a
+ * legacy `MarketingStreamBatchEnvelope`. Both may arrive inside the standard
+ * SNS `Notification.Message` string. Provider identity is resolved against an
+ * enabled Ads profile before the record becomes an internal ledger event; no
+ * campaign id is ever used to infer tenant scope.
  *
  * This module has no Amazon Ads write client. SQS DeleteMessage is an
  * acknowledgement of durable ingestion, not an advertising mutation.
  */
+import { createHash } from 'node:crypto';
 import {
   DeleteMessageCommand,
   ReceiveMessageCommand,
@@ -20,7 +20,9 @@ import {
 import type { DbHandle } from '@wizard-ads/db';
 import {
   MarketingStreamBatchEnvelope,
+  MarketingStreamLedgerEvent,
   type MarketingStreamBatchEnvelope as MarketingStreamBatchEnvelopeValue,
+  type MarketingStreamLedgerEvent as MarketingStreamLedgerEventValue,
   type MarketingStreamNormalizationCounts,
 } from '@wizard-ads/shared';
 import { resolveStrategy } from '@wizard-ads/strategy';
@@ -31,6 +33,7 @@ import {
   type MarketingStreamNormalizationPolicy,
   type MarketingStreamStore,
 } from './dayparting.js';
+import { marketplaceIdForCountry } from './marketplaces.js';
 
 const RECEIVE_BATCH_SIZE = 10;
 const LONG_POLL_SECONDS = 20;
@@ -82,6 +85,67 @@ export interface MarketingStreamRuntimeContext {
 
 export interface MarketingStreamRuntimeContextLoader {
   load(input: { orgId: string; profileId: string }): Promise<MarketingStreamRuntimeContext>;
+}
+
+export interface MarketingStreamProfileScope {
+  orgId: string;
+  profileId: string;
+}
+
+export interface MarketingStreamProfileScopeResolver {
+  resolve(input: { advertiserId: string; marketplaceId: string }): Promise<MarketingStreamProfileScope>;
+}
+
+interface MarketingStreamProfileCandidate extends MarketingStreamProfileScope {
+  countryCode: string;
+}
+
+export class DbMarketingStreamProfileScopeResolver implements MarketingStreamProfileScopeResolver {
+  constructor(private readonly handle: DbHandle) {}
+
+  async resolve(input: { advertiserId: string; marketplaceId: string }): Promise<MarketingStreamProfileScope> {
+    const candidates = await this.handle.sql<{
+      id: string;
+      org_id: string;
+      country_code: string;
+    }[]>`
+      select id, org_id, country_code
+        from public.ad_profiles
+       where sync_enabled = true
+         and (
+           amazon_profile_id = ${input.advertiserId}
+           or amazon_account_id = ${input.advertiserId}
+         )
+    `;
+    return resolveMarketingStreamProfileScope(
+      candidates.map((candidate) => ({
+        orgId: candidate.org_id,
+        profileId: candidate.id,
+        countryCode: candidate.country_code,
+      })),
+      input.marketplaceId,
+    );
+  }
+}
+
+export function resolveMarketingStreamProfileScope(
+  candidates: readonly MarketingStreamProfileCandidate[],
+  marketplaceId: string,
+): MarketingStreamProfileScope {
+  const matches = candidates.filter(
+    (candidate) => marketplaceIdForCountry(candidate.countryCode) === marketplaceId,
+  );
+  if (matches.length === 0) {
+    throw new MarketingStreamConfigurationError(
+      'provider advertiser and marketplace are not bound to an enabled profile',
+    );
+  }
+  if (matches.length !== 1) {
+    throw new MarketingStreamConfigurationError(
+      'provider advertiser and marketplace resolve to more than one enabled profile',
+    );
+  }
+  return { orgId: matches[0]!.orgId, profileId: matches[0]!.profileId };
 }
 
 /**
@@ -176,6 +240,8 @@ export interface MarketingStreamSqsConsumerOptions {
   queue?: MarketingStreamQueueClient;
   store: MarketingStreamStore;
   contexts: MarketingStreamRuntimeContextLoader;
+  /** Required only when consuming Amazon's provider-native record. */
+  profiles?: MarketingStreamProfileScopeResolver;
   process?: MarketingStreamProcessor;
   now?: () => Date;
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
@@ -192,6 +258,7 @@ export class MarketingStreamSqsConsumer {
   private readonly queue: MarketingStreamQueueClient;
   private readonly store: MarketingStreamStore;
   private readonly contexts: MarketingStreamRuntimeContextLoader;
+  private readonly profiles: MarketingStreamProfileScopeResolver | undefined;
   private readonly process: MarketingStreamProcessor;
   private readonly now: () => Date;
   private readonly sleep: (milliseconds: number, signal: AbortSignal) => Promise<void>;
@@ -218,6 +285,7 @@ export class MarketingStreamSqsConsumer {
     this.queue = options.queue ?? new AwsMarketingStreamQueueClient();
     this.store = options.store;
     this.contexts = options.contexts;
+    this.profiles = options.profiles;
     this.process = options.process ?? processMarketingStreamBatch;
     this.now = options.now ?? (() => new Date());
     this.sleep = options.sleep ?? abortableDelay;
@@ -290,7 +358,10 @@ export class MarketingStreamSqsConsumer {
     try {
       if (!message.body) throw new MarketingStreamDeliveryError('SQS delivery has no body');
       if (!message.receiptHandle) throw new MarketingStreamDeliveryError('SQS delivery has no receipt handle');
-      const envelope = parseMarketingStreamSqsBody(message.body);
+      const payload = parseMarketingStreamSqsBody(message.body);
+      const envelope = payload.kind === 'envelope'
+        ? payload.envelope
+        : await this.providerEnvelope(payload.record);
       let context: MarketingStreamRuntimeContext;
       try {
         context = await this.contexts.load({
@@ -362,6 +433,19 @@ export class MarketingStreamSqsConsumer {
     this.lastErrorAt = this.now().toISOString();
     this.lastErrorKind = errorKind(error);
   }
+
+  private async providerEnvelope(
+    record: ParsedMarketingStreamProviderRecord,
+  ): Promise<MarketingStreamBatchEnvelopeValue> {
+    if (!this.profiles) {
+      throw new MarketingStreamConfigurationError('provider profile resolver is not configured');
+    }
+    const scope = await this.profiles.resolve({
+      advertiserId: record.advertiserId,
+      marketplaceId: record.marketplaceId,
+    });
+    return marketingStreamProviderEnvelope(record, scope, this.now());
+  }
 }
 
 export function createMarketingStreamSqsConsumer(input: {
@@ -375,12 +459,39 @@ export function createMarketingStreamSqsConsumer(input: {
     queue: input.queue,
     store: new DbMarketingStreamStore(input.handle),
     contexts: new DbMarketingStreamRuntimeContextLoader(input.handle),
+    profiles: new DbMarketingStreamProfileScopeResolver(input.handle),
     logger: input.logger,
   });
 }
 
-/** Accept raw SQS delivery or the normal SNS notification wrapper. */
-export function parseMarketingStreamSqsBody(body: string): MarketingStreamBatchEnvelopeValue {
+type SupportedProviderDatasetId =
+  | 'sp-traffic'
+  | 'sp-conversion'
+  | 'sb-traffic'
+  | 'sb-conversion'
+  | 'sd-traffic'
+  | 'sd-conversion'
+  | 'budget-usage';
+
+export interface ParsedMarketingStreamProviderRecord {
+  advertiserId: string;
+  marketplaceId: string;
+  idempotencyId: string;
+  datasetId: SupportedProviderDatasetId;
+  dataset: MarketingStreamLedgerEventValue['dataset'];
+  adProduct: MarketingStreamLedgerEventValue['adProduct'];
+  eventTime: string;
+  rawProviderRecord: Record<string, unknown>;
+  normalizedMetric: Record<string, unknown>;
+  currencyCode: string | null;
+}
+
+export type ParsedMarketingStreamSqsBody =
+  | { kind: 'envelope'; envelope: MarketingStreamBatchEnvelopeValue }
+  | { kind: 'provider'; record: ParsedMarketingStreamProviderRecord };
+
+/** Accept direct SQS delivery or the normal SNS notification wrapper. */
+export function parseMarketingStreamSqsBody(body: string): ParsedMarketingStreamSqsBody {
   let decoded = parseJson(body);
   if (isRecord(decoded) && decoded['Type'] === 'Notification') {
     const message = decoded['Message'];
@@ -392,8 +503,194 @@ export function parseMarketingStreamSqsBody(body: string): MarketingStreamBatchE
     throw new MarketingStreamDeliveryError('subscription confirmation needs the provisioning workflow');
   }
   const parsed = MarketingStreamBatchEnvelope.safeParse(decoded);
-  if (!parsed.success) throw new MarketingStreamDeliveryError('SQS body is not a Marketing Stream batch envelope');
-  return parsed.data;
+  if (parsed.success) return { kind: 'envelope', envelope: parsed.data };
+  if (isRecord(decoded) && decoded['schema'] === 'wizard-ads.marketing-stream-batch.v1') {
+    throw new MarketingStreamDeliveryError('SQS body is not a Marketing Stream batch envelope');
+  }
+  return { kind: 'provider', record: parseMarketingStreamProviderRecord(decoded) };
+}
+
+/** Pure provider-record adapter. The original record is retained byte-for-field in `rawProviderRecord`. */
+export function parseMarketingStreamProviderRecord(value: unknown): ParsedMarketingStreamProviderRecord {
+  if (!isRecord(value)) throw new MarketingStreamDeliveryError('provider record is not an object');
+  const datasetId = providerDatasetId(value['dataset_id']);
+  const advertiserId = providerString(value['advertiser_id'], 'advertiser_id');
+  const marketplaceId = providerString(value['marketplace_id'], 'marketplace_id');
+  const idempotencyId = providerString(value['idempotency_id'], 'idempotency_id');
+  const dataset = datasetId === 'budget-usage'
+    ? 'budget_usage'
+    : datasetId.endsWith('-traffic') ? 'traffic' : 'conversion';
+  const adProduct = datasetId === 'budget-usage'
+    ? providerBudgetAdProduct(value['advertising_product_type'])
+    : providerAdProduct(datasetId);
+  const eventTime = providerInstant(
+    datasetId === 'budget-usage' ? value['usage_updated_timestamp'] : value['time_window_start'],
+    datasetId === 'budget-usage' ? 'usage_updated_timestamp' : 'time_window_start',
+  );
+  const currencyCode = datasetId === 'budget-usage'
+    ? null
+    : providerCurrency(value['currency']);
+  return {
+    advertiserId,
+    marketplaceId,
+    idempotencyId,
+    datasetId,
+    dataset,
+    adProduct,
+    eventTime,
+    rawProviderRecord: { ...value },
+    normalizedMetric: providerMetric(value, datasetId),
+    currencyCode,
+  };
+}
+
+export function marketingStreamProviderEnvelope(
+  record: ParsedMarketingStreamProviderRecord,
+  scope: MarketingStreamProfileScope,
+  receivedAt: Date,
+): MarketingStreamBatchEnvelopeValue {
+  if (!Number.isFinite(receivedAt.getTime())) {
+    throw new MarketingStreamDeliveryError('provider receive time is invalid');
+  }
+  const rawPayload: Record<string, unknown> = {
+    providerRecord: record.rawProviderRecord,
+    metrics: [record.normalizedMetric],
+  };
+  if (record.currencyCode !== null) rawPayload['currencyCode'] = record.currencyCode;
+  const event = MarketingStreamLedgerEvent.parse({
+    profileId: scope.profileId,
+    messageId: record.idempotencyId,
+    dataset: record.dataset,
+    adProduct: record.adProduct,
+    eventTime: record.eventTime,
+    receivedAt: receivedAt.toISOString(),
+    // Sponsored-ads performance restatements are incremental records with new
+    // idempotency ids. Do not invent a replacement version that Amazon did not send.
+    revision: 0,
+    payloadHash: createHash('sha256').update(stableJson(record.rawProviderRecord)).digest('hex'),
+    rawPayload,
+  });
+  return MarketingStreamBatchEnvelope.parse({
+    schema: 'wizard-ads.marketing-stream-batch.v1',
+    orgId: scope.orgId,
+    profileId: scope.profileId,
+    events: [event],
+  });
+}
+
+function providerMetric(
+  value: Record<string, unknown>,
+  datasetId: SupportedProviderDatasetId,
+): Record<string, unknown> {
+  if (datasetId === 'budget-usage') {
+    if (value['budget_scope_type'] !== 'CAMPAIGN') {
+      throw new MarketingStreamDeliveryError('budget-usage record is not campaign scoped');
+    }
+    return {
+      campaignId: providerString(value['budget_scope_id'], 'budget_scope_id'),
+      budgetUsagePercent: providerNumber(
+        value['budget_usage_percentage'],
+        'budget_usage_percentage',
+      ),
+    };
+  }
+  const campaignId = providerString(value['campaign_id'], 'campaign_id');
+  if (datasetId.endsWith('-traffic')) {
+    return {
+      campaignId,
+      impressions: providerNumber(value['impressions'], 'impressions', true),
+      clicks: providerNumber(value['clicks'], 'clicks', true),
+      cost: providerNumber(value['cost'], 'cost'),
+    };
+  }
+  // Fourteen-day click attribution is the one conversion window shared by
+  // current SP, SB and SD sponsored-ads Stream schemas. View attribution stays
+  // in the raw record and is not silently mixed into this comparable measure.
+  return {
+    campaignId,
+    purchases: providerNumber(value['attributed_conversions_14d'], 'attributed_conversions_14d', true),
+    sales: providerNumber(value['attributed_sales_14d'], 'attributed_sales_14d'),
+  };
+}
+
+function providerDatasetId(value: unknown): SupportedProviderDatasetId {
+  const parsed = providerString(value, 'dataset_id');
+  switch (parsed) {
+    case 'sp-traffic':
+    case 'sp-conversion':
+    case 'sb-traffic':
+    case 'sb-conversion':
+    case 'sd-traffic':
+    case 'sd-conversion':
+    case 'budget-usage':
+      return parsed;
+    default:
+      throw new MarketingStreamDeliveryError('provider dataset is not supported by dayparting');
+  }
+}
+
+function providerAdProduct(datasetId: SupportedProviderDatasetId): 'SP' | 'SB' | 'SD' {
+  if (datasetId.startsWith('sp-')) return 'SP';
+  if (datasetId.startsWith('sb-')) return 'SB';
+  if (datasetId.startsWith('sd-')) return 'SD';
+  throw new MarketingStreamDeliveryError('budget-usage record has no advertising product');
+}
+
+function providerBudgetAdProduct(value: unknown): 'SP' | 'SB' | 'SD' {
+  const parsed = providerString(value, 'advertising_product_type').toLowerCase();
+  if (parsed === 'sp') return 'SP';
+  if (parsed === 'sb') return 'SB';
+  if (parsed === 'sd') return 'SD';
+  throw new MarketingStreamDeliveryError('budget-usage advertising product is unsupported');
+}
+
+function providerString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new MarketingStreamDeliveryError(`provider ${field} is required`);
+  }
+  return value.trim();
+}
+
+function providerCurrency(value: unknown): string {
+  const parsed = providerString(value, 'currency');
+  if (!/^[A-Z]{3}$/.test(parsed)) {
+    throw new MarketingStreamDeliveryError('provider currency is not ISO 4217');
+  }
+  return parsed;
+}
+
+function providerInstant(value: unknown, field: string): string {
+  const parsed = providerString(value, field);
+  const date = new Date(parsed);
+  if (!Number.isFinite(date.getTime())) {
+    throw new MarketingStreamDeliveryError(`provider ${field} is not an ISO timestamp`);
+  }
+  return date.toISOString();
+}
+
+function providerNumber(value: unknown, field: string, integer = false): number {
+  if (
+    typeof value !== 'number'
+    || !Number.isFinite(value)
+    || value < 0
+    || (integer && (!Number.isSafeInteger(value)))
+  ) {
+    throw new MarketingStreamDeliveryError(
+      `provider ${field} must be a non-negative${integer ? ' safe integer' : ' number'}`,
+    );
+  }
+  return value;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) throw new MarketingStreamDeliveryError('provider record is not JSON serializable');
+  return encoded;
 }
 
 function assertCompletedEnvelope(

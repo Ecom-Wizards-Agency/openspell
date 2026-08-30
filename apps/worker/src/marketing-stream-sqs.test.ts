@@ -7,7 +7,10 @@ import type { MarketingStreamStore } from './dayparting.js';
 import {
   MarketingStreamConfigurationError,
   MarketingStreamSqsConsumer,
+  marketingStreamProviderEnvelope,
+  parseMarketingStreamProviderRecord,
   parseMarketingStreamSqsBody,
+  resolveMarketingStreamProfileScope,
   type MarketingStreamQueueClient,
   type MarketingStreamQueueMessage,
 } from './marketing-stream-sqs.js';
@@ -15,15 +18,19 @@ import {
 const ORG = '74747474-7474-4474-8474-747474747474';
 const PROFILE = '75757575-7575-4575-8575-757575757575';
 const QUEUE_URL = 'https://sqs.example.invalid/synthetic';
+const US_MARKETPLACE = 'ATVPDKIKX0DER';
 
 describe('Marketing Stream SQS envelope', () => {
   it('accepts raw delivery and the standard SNS notification wrapper', () => {
     const envelope = batchEnvelope();
-    expect(parseMarketingStreamSqsBody(JSON.stringify(envelope))).toEqual(envelope);
+    expect(parseMarketingStreamSqsBody(JSON.stringify(envelope))).toEqual({
+      kind: 'envelope',
+      envelope,
+    });
     expect(parseMarketingStreamSqsBody(JSON.stringify({
       Type: 'Notification',
       Message: JSON.stringify(envelope),
-    }))).toEqual(envelope);
+    }))).toEqual({ kind: 'envelope', envelope });
   });
 
   it('rejects subscription confirmation and mixed-profile deliveries', () => {
@@ -36,9 +43,131 @@ describe('Marketing Stream SQS envelope', () => {
       events: [{ ...ledgerEvent(), profileId: ORG }],
     }))).toThrow(/batch envelope/);
   });
+
+  it('maps a provider-native SNS traffic record without losing the source fields', () => {
+    const provider = trafficRecord();
+    const parsed = parseMarketingStreamSqsBody(JSON.stringify({
+      Type: 'Notification',
+      Message: JSON.stringify(provider),
+    }));
+    expect(parsed).toMatchObject({
+      kind: 'provider',
+      record: {
+        idempotencyId: 'provider-event-one',
+        dataset: 'traffic',
+        adProduct: 'SP',
+        eventTime: '2026-08-01T17:00:00.000Z',
+        normalizedMetric: {
+          campaignId: 'campaign-one', impressions: 12, clicks: 3, cost: 4.25,
+        },
+      },
+    });
+    if (parsed.kind !== 'provider') throw new Error('expected provider record');
+    const envelope = marketingStreamProviderEnvelope(
+      parsed.record,
+      { orgId: ORG, profileId: PROFILE },
+      new Date('2026-08-01T17:05:00.000Z'),
+    );
+    expect(envelope.events).toHaveLength(1);
+    expect(envelope.events[0]).toMatchObject({
+      profileId: PROFILE,
+      messageId: 'provider-event-one',
+      dataset: 'traffic',
+      adProduct: 'SP',
+      eventTime: '2026-08-01T17:00:00.000Z',
+      revision: 0,
+      rawPayload: {
+        providerRecord: provider,
+        currencyCode: 'USD',
+        metrics: [{ campaignId: 'campaign-one', impressions: 12, clicks: 3, cost: 4.25 }],
+      },
+    });
+    expect(envelope.events[0]?.payloadHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('uses comparable 14-day click attribution for SP, SB, and SD conversion records', () => {
+    for (const product of ['sp', 'sb', 'sd'] as const) {
+      expect(parseMarketingStreamProviderRecord(conversionRecord(product))).toMatchObject({
+        datasetId: `${product}-conversion`,
+        dataset: 'conversion',
+        adProduct: product.toUpperCase(),
+        normalizedMetric: { campaignId: 'campaign-one', purchases: 2, sales: 18.75 },
+      });
+    }
+  });
+
+  it('maps campaign budget usage and refuses portfolio or unsupported records', () => {
+    expect(parseMarketingStreamProviderRecord(budgetRecord())).toMatchObject({
+      dataset: 'budget_usage',
+      adProduct: 'SB',
+      eventTime: '2026-08-01T17:21:00.000Z',
+      normalizedMetric: { campaignId: 'campaign-one', budgetUsagePercent: 85 },
+    });
+    expect(() => parseMarketingStreamProviderRecord({
+      ...budgetRecord(), budget_scope_type: 'PORTFOLIO',
+    })).toThrow(/not campaign scoped/);
+    expect(() => parseMarketingStreamProviderRecord({
+      ...trafficRecord(), dataset_id: 'sb-rich-media',
+    })).toThrow(/not supported/);
+  });
+
+  it('resolves provider identity by advertiser and marketplace without guessing an org', () => {
+    expect(resolveMarketingStreamProfileScope([
+      { orgId: ORG, profileId: PROFILE, countryCode: 'US' },
+      { orgId: '76767676-7676-4676-8676-767676767676', profileId: '77777777-7777-4777-8777-777777777777', countryCode: 'DE' },
+    ], US_MARKETPLACE)).toEqual({ orgId: ORG, profileId: PROFILE });
+    expect(() => resolveMarketingStreamProfileScope([], US_MARKETPLACE)).toThrow(/not bound/);
+    expect(() => resolveMarketingStreamProfileScope([
+      { orgId: ORG, profileId: PROFILE, countryCode: 'US' },
+      { orgId: '76767676-7676-4676-8676-767676767676', profileId: '77777777-7777-4777-8777-777777777777', countryCode: 'US' },
+    ], US_MARKETPLACE)).toThrow(/more than one/);
+  });
 });
 
 describe('Marketing Stream SQS acknowledgement', () => {
+  it('resolves and counts one provider-native record before acknowledgement', async () => {
+    const steps: string[] = [];
+    const message: MarketingStreamQueueMessage = {
+      messageId: 'sqs-provider-one',
+      receiptHandle: 'receipt-provider-one',
+      body: JSON.stringify({ Type: 'Notification', Message: JSON.stringify(trafficRecord()) }),
+      approximateReceiveCount: 1,
+    };
+    const consumer = new MarketingStreamSqsConsumer({
+      queueUrl: QUEUE_URL,
+      queue: queueClient([message], steps),
+      store: unusedStore(),
+      profiles: {
+        resolve: async (identity) => {
+          steps.push('profile');
+          expect(identity).toEqual({
+            advertiserId: 'provider-advertiser-one',
+            marketplaceId: US_MARKETPLACE,
+          });
+          return { orgId: ORG, profileId: PROFILE };
+        },
+      },
+      contexts: { load: async () => { steps.push('context'); return policy(); } },
+      process: async (_store, input) => {
+        steps.push('process');
+        expect(input.events).toHaveLength(1);
+        expect(input.events[0]).toMatchObject({
+          profileId: PROFILE,
+          messageId: 'provider-event-one',
+          dataset: 'traffic',
+          adProduct: 'SP',
+        });
+        return result(1);
+      },
+      now: () => new Date('2026-08-01T17:05:00.000Z'),
+      logger: silentLogger(),
+    });
+
+    expect(await consumer.pollOnce()).toBe(1);
+    expect(steps).toEqual(['receive', 'profile', 'context', 'process', 'delete']);
+    expect(consumer.status()).toMatchObject({ acknowledged: 1, failed: 0 });
+  });
+
   it('deletes only after all SP, SB and SD dataset events are counted and normalized', async () => {
     const steps: string[] = [];
     const envelope = batchEnvelope(allDatasetEvents());
@@ -289,6 +418,60 @@ function ledgerEvent(overrides: Partial<MarketingStreamLedgerEvent> = {}): Marke
     payloadHash: 'synthetic-hash',
     rawPayload: { metrics: [{ campaignId: 'campaign-one' }] },
     ...overrides,
+  };
+}
+
+function trafficRecord(): Record<string, unknown> {
+  return {
+    idempotency_id: 'provider-event-one',
+    dataset_id: 'sp-traffic',
+    marketplace_id: US_MARKETPLACE,
+    currency: 'USD',
+    advertiser_id: 'provider-advertiser-one',
+    campaign_id: 'campaign-one',
+    ad_group_id: 'ad-group-one',
+    ad_id: 'ad-one',
+    keyword_id: 'keyword-one',
+    keyword_text: 'synthetic query',
+    match_type: 'EXACT',
+    placement: 'Top of Search on-Amazon',
+    time_window_start: '2026-08-01T10:00:00-07:00',
+    clicks: 3,
+    impressions: 12,
+    cost: 4.25,
+  };
+}
+
+function conversionRecord(product: 'sp' | 'sb' | 'sd'): Record<string, unknown> {
+  return {
+    idempotency_id: `${product}-conversion-one`,
+    dataset_id: `${product}-conversion`,
+    marketplace_id: US_MARKETPLACE,
+    currency: 'USD',
+    advertiser_id: 'provider-advertiser-one',
+    campaign_id: 'campaign-one',
+    ad_group_id: 'ad-group-one',
+    ad_id: 'ad-one',
+    time_window_start: '2026-08-01T10:00:00-07:00',
+    attributed_conversions_14d: 2,
+    attributed_sales_14d: 18.75,
+    view_attributed_conversions_14d: 5,
+    view_attributed_sales_14d: 47.5,
+  };
+}
+
+function budgetRecord(): Record<string, unknown> {
+  return {
+    idempotency_id: 'budget-event-one',
+    dataset_id: 'budget-usage',
+    marketplace_id: US_MARKETPLACE,
+    advertiser_id: 'provider-advertiser-one',
+    budget_scope_id: 'campaign-one',
+    budget_scope_type: 'CAMPAIGN',
+    advertising_product_type: 'sb',
+    budget: 100,
+    budget_usage_percentage: 85,
+    usage_updated_timestamp: '2026-08-01T10:21:00-07:00',
   };
 }
 
