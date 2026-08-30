@@ -10,6 +10,7 @@ import {
   DirectionalAdjustmentProvenance,
   FeatureJobPayload,
   JobPayload,
+  MarketingStreamSubscriptionBinding,
   MarketingStreamBatchEnvelope,
   MarketingStreamHourlyFact,
   MarketingStreamLedgerEvent,
@@ -445,6 +446,28 @@ describe('Marketing Stream and dayparting', () => {
       rawPayload: { synthetic: true },
     });
     expect(event.messageId).toBe('message-1');
+
+    const binding = MarketingStreamSubscriptionBinding.parse({
+      id: GROUP_ID,
+      orgId: ORG_ID,
+      profileId: PROFILE_ID,
+      subscriptionId: 'subscription-synthetic',
+      datasetId: 'sb-conversion',
+      advertiserId: 'advertiser-synthetic',
+      marketplaceId: 'marketplace-synthetic',
+      active: true,
+    });
+    expect(MarketingStreamLedgerEvent.parse({
+      ...event,
+      provider: {
+        bindingId: binding.id,
+        subscriptionId: binding.subscriptionId,
+        datasetId: binding.datasetId,
+        advertiserId: binding.advertiserId,
+        marketplaceId: binding.marketplaceId,
+        eventId: 'provider-event-synthetic',
+      },
+    }).provider?.eventId).toBe('provider-event-synthetic');
 
     const fact = MarketingStreamHourlyFact.parse({
       profileId: PROFILE_ID,

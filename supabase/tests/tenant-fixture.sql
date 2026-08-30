@@ -31,6 +31,7 @@ declare
   v_experiment uuid;
   v_asset uuid;
   v_spapi uuid;
+  v_stream_binding uuid;
   v_report uuid;
   v_recommendation uuid;
   v_group uuid;
@@ -346,11 +347,22 @@ begin
   values (v_org, v_profile, v_recommendation, v_group, 0.7,
           p_date - 7, p_date, 'insufficient', 'hold', 'fixture');
 
+  insert into public.marketing_stream_subscription_bindings
+    (org_id, profile_id, subscription_id, provider_dataset_id,
+     advertiser_id, marketplace_id)
+  values (v_org, v_profile, p_slug || '-stream-subscription', 'sp-traffic',
+          p_slug || '-stream-advertiser', p_slug || '-stream-marketplace')
+  returning id into v_stream_binding;
+
   insert into public.marketing_stream_events
     (org_id, profile_id, message_id, dataset, ad_product, event_time,
-     received_at, revision, payload_hash, raw_payload)
+     received_at, revision, payload_hash, raw_payload, binding_id,
+     provider_subscription_id, provider_dataset_id, provider_event_id, provider_advertiser_id,
+     provider_marketplace_id)
   values (v_org, v_profile, p_slug || '-stream-1', 'traffic', 'SP',
-          date_trunc('hour', now()), now(), 0, p_slug || '-payload-1', '{}'::jsonb);
+          date_trunc('hour', now()), now(), 0, p_slug || '-payload-1', '{}'::jsonb,
+          v_stream_binding, p_slug || '-stream-subscription', 'sp-traffic', p_slug || '-stream-event',
+          p_slug || '-stream-advertiser', p_slug || '-stream-marketplace');
 
   insert into public.marketing_stream_hourly_facts
     (org_id, profile_id, ad_product, campaign_id, utc_hour, profile_timezone,

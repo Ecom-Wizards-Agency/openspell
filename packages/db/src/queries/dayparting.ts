@@ -13,11 +13,14 @@ import {
   DaypartingScheduleProposal,
   MarketingStreamHourlyFact,
   MarketingStreamLedgerEvent,
+  MarketingStreamSubscriptionBinding,
+  type AmazonMarketingStreamDatasetId,
   type AdProduct,
   type DaypartingScheduleProposal as DaypartingScheduleProposalValue,
   type HourSettlingState,
   type MarketingStreamHourlyFact as MarketingStreamHourlyFactValue,
   type MarketingStreamLedgerEvent as MarketingStreamLedgerEventValue,
+  type MarketingStreamSubscriptionBinding as MarketingStreamSubscriptionBindingValue,
 } from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
 
@@ -72,6 +75,47 @@ export class MarketingStreamPersistenceError extends Error {
   }
 }
 
+/** Resolve provider traffic only through an explicit active subscription binding. */
+export async function resolveMarketingStreamSubscriptionBinding(
+  handle: DbHandle,
+  input: {
+    advertiserId: string;
+    marketplaceId: string;
+    datasetId: AmazonMarketingStreamDatasetId;
+  },
+): Promise<MarketingStreamSubscriptionBindingValue> {
+  const rows = await handle.sql<BindingWireRow[]>`
+    select id, org_id, profile_id, subscription_id,
+           provider_dataset_id, advertiser_id, marketplace_id, active
+      from public.marketing_stream_subscription_bindings
+     where active = true
+       and advertiser_id = ${input.advertiserId}
+       and marketplace_id = ${input.marketplaceId}
+       and provider_dataset_id = ${input.datasetId}
+  `;
+  if (rows.length === 0) {
+    throw new MarketingStreamPersistenceError(
+      'provider advertiser, marketplace, and dataset have no active subscription binding',
+    );
+  }
+  if (rows.length !== 1) {
+    throw new MarketingStreamPersistenceError(
+      'provider advertiser, marketplace, and dataset resolve ambiguously',
+    );
+  }
+  const row = rows[0]!;
+  return MarketingStreamSubscriptionBinding.parse({
+    id: row.id,
+    orgId: row.org_id,
+    profileId: row.profile_id,
+    subscriptionId: row.subscription_id,
+    datasetId: row.provider_dataset_id,
+    advertiserId: row.advertiser_id,
+    marketplaceId: row.marketplace_id,
+    active: row.active,
+  });
+}
+
 /** A retryable projection lost a race with a newer ledger event. */
 export class StaleMarketingStreamProjection extends MarketingStreamPersistenceError {
   constructor(readonly scope: MarketingStreamScope) {
@@ -92,6 +136,23 @@ interface EventWireRow {
   revision: number;
   payload_hash: string;
   raw_payload: Record<string, unknown>;
+  binding_id: string | null;
+  provider_subscription_id: string | null;
+  provider_dataset_id: AmazonMarketingStreamDatasetId | null;
+  provider_event_id: string | null;
+  provider_advertiser_id: string | null;
+  provider_marketplace_id: string | null;
+}
+
+interface BindingWireRow {
+  id: string;
+  org_id: string;
+  profile_id: string;
+  subscription_id: string;
+  provider_dataset_id: AmazonMarketingStreamDatasetId;
+  advertiser_id: string;
+  marketplace_id: string;
+  active: boolean;
 }
 
 interface FactWireRow {
@@ -167,7 +228,9 @@ export async function appendMarketingStreamEvents(
     const existing = await sql<EventWireRow[]>`
       select id, org_id, profile_id, message_id,
              dataset::text as dataset, ad_product::text as ad_product,
-             event_time, received_at, revision, payload_hash, raw_payload
+             event_time, received_at, revision, payload_hash, raw_payload,
+             binding_id, provider_subscription_id, provider_dataset_id, provider_event_id,
+             provider_advertiser_id, provider_marketplace_id
         from public.marketing_stream_events
        where org_id = ${input.orgId}
          and profile_id = ${input.profileId}
@@ -191,13 +254,19 @@ export async function appendMarketingStreamEvents(
       const inserted = await sql<{ id: string }[]>`
         insert into public.marketing_stream_events (
           org_id, profile_id, message_id, dataset, ad_product,
-          event_time, received_at, revision, payload_hash, raw_payload
+          event_time, received_at, revision, payload_hash, raw_payload,
+          binding_id, provider_subscription_id, provider_dataset_id, provider_event_id,
+          provider_advertiser_id, provider_marketplace_id
         ) values (
           ${input.orgId}, ${input.profileId}, ${event.messageId},
           ${event.dataset}::public.marketing_stream_dataset,
           ${event.adProduct}::public.ad_product,
           ${event.eventTime}::timestamptz, ${event.receivedAt}::timestamptz,
-          ${event.revision}, ${event.payloadHash}, ${JSON.stringify(event.rawPayload)}::jsonb
+          ${event.revision}, ${event.payloadHash}, ${JSON.stringify(event.rawPayload)}::jsonb,
+          ${event.provider?.bindingId ?? null}::uuid,
+          ${event.provider?.subscriptionId ?? null},
+          ${event.provider?.datasetId ?? null}, ${event.provider?.eventId ?? null},
+          ${event.provider?.advertiserId ?? null}, ${event.provider?.marketplaceId ?? null}
         )
         on conflict (profile_id, dataset, message_id, revision) do nothing
         returning id
@@ -206,7 +275,9 @@ export async function appendMarketingStreamEvents(
         const [concurrent] = await sql<EventWireRow[]>`
           select id, org_id, profile_id, message_id,
                  dataset::text as dataset, ad_product::text as ad_product,
-                 event_time, received_at, revision, payload_hash, raw_payload
+                 event_time, received_at, revision, payload_hash, raw_payload,
+                 binding_id, provider_subscription_id, provider_dataset_id, provider_event_id,
+                 provider_advertiser_id, provider_marketplace_id
             from public.marketing_stream_events
            where profile_id = ${input.profileId}
              and org_id = ${input.orgId}
@@ -269,6 +340,52 @@ export async function snapshotLatestMarketingStreamEvents(
   const scopes = validateScopes(input.scopes);
   const events = await latestEventsForScopes(handle.sql, input.orgId, input.profileId, scopes);
   return snapshot(input.orgId, input.profileId, scopes, events);
+}
+
+/** Resolve a queued replay job back to its complete affected hour scopes. */
+export async function marketingStreamScopesForMessageIds(
+  handle: DbHandle,
+  input: {
+    orgId: string;
+    profileId: string;
+    messageIds: readonly string[];
+  },
+): Promise<{
+  requestedMessages: number;
+  foundMessages: number;
+  scopes: MarketingStreamScope[];
+}> {
+  assertUuid('orgId', input.orgId);
+  assertUuid('profileId', input.profileId);
+  assertUniqueIds('normalize message IDs', input.messageIds);
+  if (input.messageIds.length === 0) {
+    throw new MarketingStreamPersistenceError('normalize job has no message IDs');
+  }
+  const rows = await handle.sql<{
+    message_id: string;
+    ad_product: AdProduct;
+    event_time: Date | string;
+  }[]>`
+    select message_id, ad_product::text as ad_product, event_time
+      from public.marketing_stream_events
+     where org_id = ${input.orgId}
+       and profile_id = ${input.profileId}
+       and message_id = any (${[...input.messageIds]}::text[])
+  `;
+  const foundMessages = new Set(rows.map((row) => row.message_id)).size;
+  if (foundMessages !== input.messageIds.length) {
+    throw new MarketingStreamPersistenceError(
+      `normalize job resolved ${foundMessages} of ${input.messageIds.length} messages`,
+    );
+  }
+  return {
+    requestedMessages: input.messageIds.length,
+    foundMessages,
+    scopes: uniqueScopes(rows.map((row) => ({
+      adProduct: row.ad_product,
+      utcHour: truncateUtcHour(row.event_time),
+    }))),
+  };
 }
 
 /**
@@ -336,6 +453,10 @@ export async function replaceMarketingStreamHourlyFacts(
 
   return handle.sql.begin(async (transaction) => {
     const sql = transaction as unknown as Sql;
+    // Append takes this same profile lock. Taking it before the sorted scope
+    // locks gives append and projection one compatible order, so a snapshot
+    // can never be promoted while a provider correction is being appended.
+    await sql`select pg_advisory_xact_lock(hashtextextended(${input.profileId}, 0))`;
     for (const scope of scopes) {
       await sql`select pg_advisory_xact_lock(hashtextextended(${scopeLock(input.profileId, scope)}, 0))`;
     }
@@ -544,7 +665,8 @@ function assertSameRevision(
     existing.revision !== offered.revision ||
     existing.adProduct !== offered.adProduct ||
     toIso(existing.eventTime) !== toIso(offered.eventTime) ||
-    existing.payloadHash !== offered.payloadHash
+    existing.payloadHash !== offered.payloadHash ||
+    !sameProviderIdentity(existing.provider, offered.provider)
   ) {
     throw new MarketingStreamPersistenceError(
       `message ${offered.messageId} revision ${offered.revision} changed its immutable identity`,
@@ -552,7 +674,21 @@ function assertSameRevision(
   }
 }
 
+function sameProviderIdentity(
+  left: MarketingStreamLedgerEventValue['provider'],
+  right: MarketingStreamLedgerEventValue['provider'],
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.bindingId === right.bindingId
+    && left.subscriptionId === right.subscriptionId
+    && left.datasetId === right.datasetId
+    && left.advertiserId === right.advertiserId
+    && left.marketplaceId === right.marketplaceId
+    && left.eventId === right.eventId;
+}
+
 function rowToEvent(row: EventWireRow): StoredMarketingStreamEvent {
+  const provider = providerIdentityFromRow(row);
   return {
     id: row.id,
     orgId: row.org_id,
@@ -565,6 +701,32 @@ function rowToEvent(row: EventWireRow): StoredMarketingStreamEvent {
     revision: Number(row.revision),
     payloadHash: row.payload_hash,
     rawPayload: row.raw_payload,
+    ...(provider === undefined ? {} : { provider }),
+  };
+}
+
+function providerIdentityFromRow(
+  row: EventWireRow,
+): MarketingStreamLedgerEventValue['provider'] {
+  const values = [
+    row.binding_id,
+    row.provider_subscription_id,
+    row.provider_dataset_id,
+    row.provider_event_id,
+    row.provider_advertiser_id,
+    row.provider_marketplace_id,
+  ];
+  if (values.every((value) => value === null)) return undefined;
+  if (values.some((value) => value === null)) {
+    throw new MarketingStreamPersistenceError('database returned an incomplete provider identity');
+  }
+  return {
+    bindingId: row.binding_id!,
+    subscriptionId: row.provider_subscription_id!,
+    datasetId: row.provider_dataset_id!,
+    eventId: row.provider_event_id!,
+    advertiserId: row.provider_advertiser_id!,
+    marketplaceId: row.provider_marketplace_id!,
   };
 }
 
@@ -615,7 +777,10 @@ async function latestEventsForScopes(
     select ranked.id, ranked.org_id, ranked.profile_id, ranked.message_id,
            ranked.dataset::text as dataset, ranked.ad_product::text as ad_product,
            ranked.event_time, ranked.received_at, ranked.revision,
-           ranked.payload_hash, ranked.raw_payload
+           ranked.payload_hash, ranked.raw_payload, ranked.binding_id,
+           ranked.provider_subscription_id,
+           ranked.provider_dataset_id, ranked.provider_event_id,
+           ranked.provider_advertiser_id, ranked.provider_marketplace_id
       from ranked
       join requested
         on ranked.ad_product::text = requested.ad_product

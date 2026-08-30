@@ -11,9 +11,11 @@ import {
   StaleMarketingStreamProjection,
   appendMarketingStreamEvents,
   marketingStreamScopeKey,
+  marketingStreamScopesForMessageIds,
   persistDaypartingScheduleProposal,
   readMarketingStreamHourlyFacts,
   replaceMarketingStreamHourlyFacts,
+  resolveMarketingStreamSubscriptionBinding,
   snapshotLatestMarketingStreamEvents,
 } from './dayparting.js';
 
@@ -168,6 +170,154 @@ describe.skipIf(!available)('WP-62 Marketing Stream persistence', () => {
     expect(revisedProjection).toMatchObject({ factsDeleted: 1, factsInserted: 1, factsReadBack: 1 });
     expect(await readMarketingStreamHourlyFacts(database, { orgId, profileId, campaignId: 'campaign-one' }))
       .toEqual([hourlyFact(profileId, { purchases: 3, sales: 30, settlingState: 'revised', sourceEvents: 3 })]);
+  });
+
+  it('resolves an exact active subscription binding and keeps provider identities collision-safe', async () => {
+    const binding = await resolveMarketingStreamSubscriptionBinding(database, {
+      advertiserId: 'dayparting-alpha-stream-advertiser',
+      marketplaceId: 'dayparting-alpha-stream-marketplace',
+      datasetId: 'sp-traffic',
+    });
+    expect(binding).toMatchObject({ orgId, profileId, active: true, datasetId: 'sp-traffic' });
+    await expect(resolveMarketingStreamSubscriptionBinding(database, {
+      advertiserId: 'missing-advertiser',
+      marketplaceId: 'missing-marketplace',
+      datasetId: 'sp-traffic',
+    })).rejects.toThrow(/no active subscription binding/);
+
+    const providerEvent = streamEvent(
+      profileId,
+      'sp-traffic:advertiser-one:marketplace-one:event-shared',
+      'traffic',
+      { impressions: 5, clicks: 1, cost: 1 },
+      {
+        payloadHash: 'provider-hash-one',
+        eventTime: '2026-06-02T12:00:00.000Z',
+        receivedAt: '2026-06-02T12:05:00.000Z',
+        provider: {
+          bindingId: binding.id,
+          subscriptionId: binding.subscriptionId,
+          datasetId: binding.datasetId,
+          advertiserId: binding.advertiserId,
+          marketplaceId: binding.marketplaceId,
+          eventId: 'event-shared',
+        },
+      },
+    );
+    expect(await appendMarketingStreamEvents(database, {
+      orgId, profileId, events: [providerEvent],
+    })).toMatchObject({ insertedMessages: 1, duplicateMessages: 0 });
+    expect(await appendMarketingStreamEvents(database, {
+      orgId, profileId, events: [providerEvent],
+    })).toMatchObject({ insertedMessages: 0, duplicateMessages: 1 });
+    await expect(appendMarketingStreamEvents(database, {
+      orgId,
+      profileId,
+      events: [{ ...providerEvent, payloadHash: 'provider-hash-changed' }],
+    })).rejects.toThrow(/changed its immutable identity/);
+    await expect(appendMarketingStreamEvents(database, {
+      orgId,
+      profileId,
+      events: [{
+        ...providerEvent,
+        messageId: `${providerEvent.messageId}:mismatch`,
+        payloadHash: 'provider-hash-mismatch',
+        provider: {
+          ...providerEvent.provider!,
+          eventId: 'event-mismatch',
+          advertiserId: 'mismatched-advertiser',
+        },
+      }],
+    })).rejects.toThrow(/marketing_stream_events_binding_fkey/i);
+
+    const [secondBinding] = await database.sql<{ id: string }[]>`
+      insert into public.marketing_stream_subscription_bindings (
+        org_id, profile_id, subscription_id, provider_dataset_id,
+        advertiser_id, marketplace_id
+      ) values (
+        ${orgId}, ${profileId}, 'subscription-conversion', 'sp-conversion',
+        ${binding.advertiserId}, ${binding.marketplaceId}
+      ) returning id
+    `;
+    const conversion = streamEvent(
+      profileId,
+      'sp-conversion:advertiser-one:marketplace-one:event-shared',
+      'conversion',
+      { purchases: 1, sales: 3 },
+      {
+        payloadHash: 'provider-hash-conversion',
+        eventTime: '2026-06-02T12:00:00.000Z',
+        receivedAt: '2026-06-02T12:05:00.000Z',
+        provider: {
+          bindingId: secondBinding?.id ?? '',
+          subscriptionId: 'subscription-conversion',
+          datasetId: 'sp-conversion',
+          advertiserId: binding.advertiserId,
+          marketplaceId: binding.marketplaceId,
+          eventId: 'event-shared',
+        },
+      },
+    );
+    expect(await appendMarketingStreamEvents(database, {
+      orgId, profileId, events: [conversion],
+    })).toMatchObject({ insertedMessages: 1 });
+
+    expect(await marketingStreamScopesForMessageIds(database, {
+      orgId, profileId, messageIds: [providerEvent.messageId, conversion.messageId],
+    })).toMatchObject({
+      requestedMessages: 2,
+      foundMessages: 2,
+      scopes: [{ adProduct: 'SP', utcHour: '2026-06-02T12:00:00.000Z' }],
+    });
+  });
+
+  it('serializes append and projection on the same profile lock', async () => {
+    const message = streamEvent(
+      profileId,
+      'lock-proof',
+      'traffic',
+      { impressions: 10, clicks: 1, cost: 1 },
+      { eventTime: '2026-06-04T10:00:00.000Z', receivedAt: '2026-06-04T10:05:00.000Z' },
+    );
+    const appended = await appendMarketingStreamEvents(database, { orgId, profileId, events: [message] });
+    const snapshot = await snapshotLatestMarketingStreamEvents(database, {
+      orgId, profileId, scopes: appended.affectedScopes,
+    });
+    let unlock: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { unlock = resolve; });
+    let locked: (() => void) | undefined;
+    const acquired = new Promise<void>((resolve) => { locked = resolve; });
+    const blocker = database.sql.begin(async (sql) => {
+      await sql`select pg_advisory_xact_lock(hashtextextended(${profileId}, 0))`;
+      locked?.();
+      await gate;
+    });
+    await acquired;
+    let projected = false;
+    const projection = replaceMarketingStreamHourlyFacts(database, {
+      orgId,
+      profileId,
+      scopes: appended.affectedScopes,
+      expectedSourceEventIds: snapshot.sourceEventIds,
+      facts: [hourlyFact(profileId, {
+        utcHour: '2026-06-04T10:00:00.000Z',
+        localDate: '2026-06-04',
+        localDayOfWeek: 4,
+        impressions: 10,
+        clicks: 1,
+        cost: 1,
+        purchases: 0,
+        sales: 0,
+        budgetUsagePercent: null,
+        budgetCapped: false,
+        sourceEvents: 1,
+      })],
+    }).then((result) => { projected = true; return result; });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(projected).toBe(false);
+    unlock?.();
+    await blocker;
+    await expect(projection).resolves.toMatchObject({ scopesReplaced: 1, factsInserted: 1 });
   });
 
   it('recomputes both old and new scopes when a latest revision moves hours', async () => {

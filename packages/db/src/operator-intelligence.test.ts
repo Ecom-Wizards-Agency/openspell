@@ -315,10 +315,36 @@ describe.skipIf(!available)('WP-56 operator-intelligence foundations', () => {
       values (${orgB}, ${profileB}, 'syntheticReport', 'daily', 'amazon_reporting_v3')
     `;
 
+    await expect(database.sql`
+      update public.marketing_stream_subscription_bindings as foreign_binding
+         set advertiser_id = own_binding.advertiser_id,
+             marketplace_id = own_binding.marketplace_id
+        from public.marketing_stream_subscription_bindings as own_binding
+       where foreign_binding.org_id = ${orgB}
+         and own_binding.org_id = ${orgA}
+         and foreign_binding.provider_dataset_id = own_binding.provider_dataset_id
+    `).rejects.toThrow(/marketing_stream_bindings_active_provider_identity_key/i);
+
     await asUser(database, OWNER_A, async (sql) => {
       const rows = await sql<{ org_id: string }[]>`select org_id from public.report_coverage`;
       expect(rows.length).toBeGreaterThan(0);
       expect(rows.every((row) => row.org_id === orgA)).toBe(true);
+
+      const streamBindings = await sql<{ org_id: string }[]>`
+        select org_id from public.marketing_stream_subscription_bindings
+      `;
+      expect(streamBindings).toHaveLength(1);
+      expect(streamBindings[0]?.org_id).toBe(orgA);
+
+      await expect(sql`
+        insert into public.marketing_stream_subscription_bindings (
+          org_id, profile_id, subscription_id, provider_dataset_id,
+          advertiser_id, marketplace_id
+        ) values (
+          ${orgA}, ${profileA}, 'user-stream-subscription', 'sb-traffic',
+          'user-stream-advertiser', 'user-stream-marketplace'
+        )
+      `).rejects.toThrow(/permission denied|row-level security/i);
 
       await expect(sql`
         insert into public.report_coverage

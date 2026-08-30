@@ -24,6 +24,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import type {
+  AmazonMarketingStreamDatasetId,
   CreativeMappingProvenance,
   CreativeSyncSnapshotStatus,
   DaypartingScheduleBlock,
@@ -560,6 +561,43 @@ export const recommendationObservations = pgTable(
   ],
 );
 
+export const marketingStreamSubscriptionBindings = pgTable(
+  'marketing_stream_subscription_bindings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull(),
+    subscriptionId: text('subscription_id').notNull(),
+    providerDatasetId: text('provider_dataset_id').$type<AmazonMarketingStreamDatasetId>().notNull(),
+    advertiserId: text('advertiser_id').notNull(),
+    marketplaceId: text('marketplace_id').notNull(),
+    active: boolean('active').notNull().default(true),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.orgId, t.profileId], foreignColumns: [adProfiles.orgId, adProfiles.id] })
+      .onDelete('cascade'),
+    unique('marketing_stream_bindings_tenant_identity_key').on(t.orgId, t.profileId, t.id),
+    unique('marketing_stream_bindings_full_identity_key').on(
+      t.orgId,
+      t.profileId,
+      t.id,
+      t.subscriptionId,
+      t.providerDatasetId,
+      t.advertiserId,
+      t.marketplaceId,
+    ),
+    unique('marketing_stream_bindings_subscription_key').on(t.subscriptionId),
+    uniqueIndex('marketing_stream_bindings_active_provider_identity_key')
+      .on(t.advertiserId, t.marketplaceId, t.providerDatasetId)
+      .where(sql`${t.active}`),
+    uniqueIndex('marketing_stream_bindings_active_profile_dataset_key')
+      .on(t.profileId, t.providerDatasetId)
+      .where(sql`${t.active}`),
+  ],
+);
+
 export const marketingStreamEvents = pgTable(
   'marketing_stream_events',
   {
@@ -574,6 +612,12 @@ export const marketingStreamEvents = pgTable(
     revision: integer('revision').notNull(),
     payloadHash: text('payload_hash').notNull(),
     rawPayload: jsonb('raw_payload').$type<Record<string, unknown>>().notNull(),
+    bindingId: uuid('binding_id'),
+    providerSubscriptionId: text('provider_subscription_id'),
+    providerDatasetId: text('provider_dataset_id').$type<AmazonMarketingStreamDatasetId>(),
+    providerEventId: text('provider_event_id'),
+    providerAdvertiserId: text('provider_advertiser_id'),
+    providerMarketplaceId: text('provider_marketplace_id'),
     createdAt: ts('created_at').notNull().defaultNow(),
   },
   (t) => [
@@ -585,6 +629,29 @@ export const marketingStreamEvents = pgTable(
       t.messageId,
       t.revision,
     ),
+    foreignKey({
+      columns: [
+        t.orgId,
+        t.profileId,
+        t.bindingId,
+        t.providerSubscriptionId,
+        t.providerDatasetId,
+        t.providerAdvertiserId,
+        t.providerMarketplaceId,
+      ],
+      foreignColumns: [
+        marketingStreamSubscriptionBindings.orgId,
+        marketingStreamSubscriptionBindings.profileId,
+        marketingStreamSubscriptionBindings.id,
+        marketingStreamSubscriptionBindings.subscriptionId,
+        marketingStreamSubscriptionBindings.providerDatasetId,
+        marketingStreamSubscriptionBindings.advertiserId,
+        marketingStreamSubscriptionBindings.marketplaceId,
+      ],
+    }).onDelete('restrict'),
+    uniqueIndex('marketing_stream_events_provider_identity_key')
+      .on(t.bindingId, t.providerDatasetId, t.providerEventId)
+      .where(sql`${t.bindingId} is not null`),
     index('marketing_stream_events_normalize_idx').on(t.profileId, t.eventTime, t.receivedAt),
   ],
 );
@@ -659,3 +726,5 @@ export type OptimizationGroupRow = typeof optimizationGroups.$inferSelect;
 export type NewOptimizationGroup = typeof optimizationGroups.$inferInsert &
   Pick<OptimizationGroup, 'role' | 'prioritization'>;
 export type MarketingStreamEventRow = typeof marketingStreamEvents.$inferSelect;
+export type MarketingStreamSubscriptionBindingRow =
+  typeof marketingStreamSubscriptionBindings.$inferSelect;

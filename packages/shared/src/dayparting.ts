@@ -12,6 +12,53 @@ export const MarketingStreamDataset = z.enum([
 ]);
 export type MarketingStreamDataset = z.infer<typeof MarketingStreamDataset>;
 
+/** Dataset identifiers carried by Amazon Marketing Stream provider records. */
+export const AmazonMarketingStreamDatasetId = z.enum([
+  'sp-traffic',
+  'sp-conversion',
+  'sb-traffic',
+  'sb-conversion',
+  'sd-traffic',
+  'sd-conversion',
+  'budget-usage',
+]);
+export type AmazonMarketingStreamDatasetId = z.infer<
+  typeof AmazonMarketingStreamDatasetId
+>;
+
+/**
+ * Immutable provider identity retained beside the raw ledger event.
+ *
+ * `bindingId` is the tenant-routing decision made before ingestion. Keeping it
+ * on the event makes later replay independent of profile aliases or renamed
+ * Amazon accounts.
+ */
+export const MarketingStreamProviderIdentity = z.object({
+  bindingId: Uuid,
+  subscriptionId: z.string().min(1),
+  datasetId: AmazonMarketingStreamDatasetId,
+  advertiserId: AmazonId,
+  marketplaceId: AmazonId,
+  eventId: z.string().min(1),
+});
+export type MarketingStreamProviderIdentity = z.infer<
+  typeof MarketingStreamProviderIdentity
+>;
+
+export const MarketingStreamSubscriptionBinding = z.object({
+  id: Uuid,
+  orgId: Uuid,
+  profileId: Uuid,
+  subscriptionId: z.string().min(1),
+  datasetId: AmazonMarketingStreamDatasetId,
+  advertiserId: AmazonId,
+  marketplaceId: AmazonId,
+  active: z.boolean(),
+});
+export type MarketingStreamSubscriptionBinding = z.infer<
+  typeof MarketingStreamSubscriptionBinding
+>;
+
 export const MarketingStreamLedgerEvent = z.object({
   profileId: Uuid,
   messageId: z.string().min(1),
@@ -22,6 +69,7 @@ export const MarketingStreamLedgerEvent = z.object({
   revision: z.number().int().nonnegative(),
   payloadHash: z.string().min(1),
   rawPayload: z.record(z.string(), z.unknown()),
+  provider: MarketingStreamProviderIdentity.optional(),
 });
 export type MarketingStreamLedgerEvent = z.infer<typeof MarketingStreamLedgerEvent>;
 
