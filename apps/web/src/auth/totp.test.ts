@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   enroll: vi.fn(),
   challengeAndVerify: vi.fn(),
   refreshSession: vi.fn(),
+  signOut: vi.fn(),
 }));
 
 vi.mock('./config', () => ({
@@ -29,6 +30,7 @@ vi.mock('./supabase', () => ({
         challengeAndVerify: mocks.challengeAndVerify,
       },
       refreshSession: mocks.refreshSession,
+      signOut: mocks.signOut,
     },
   }),
 }));
@@ -44,6 +46,8 @@ describe('TOTP operations', () => {
     });
     mocks.unenroll.mockResolvedValue({ data: {}, error: null });
     mocks.challengeAndVerify.mockResolvedValue({ data: {}, error: null });
+    mocks.refreshSession.mockResolvedValue({ data: { session: {} }, error: null });
+    mocks.signOut.mockResolvedValue({ error: null });
   });
 
   it('cleans up every stale enrollment before creating exactly one replacement', async () => {
@@ -98,5 +102,42 @@ describe('TOTP operations', () => {
     });
     expect(mocks.listFactors).not.toHaveBeenCalled();
     expect(mocks.unenroll).not.toHaveBeenCalled();
+  });
+
+  it('reports a removed factor but refuses to continue on a stale session', async () => {
+    mocks.listFactors.mockResolvedValue({
+      data: {
+        all: [{ id: FACTOR_ID, factor_type: 'totp', status: 'verified' }],
+        totp: [{ id: FACTOR_ID, factor_type: 'totp', status: 'verified' }],
+      },
+      error: null,
+    });
+    mocks.refreshSession.mockResolvedValue({
+      data: { session: null, user: null },
+      error: null,
+    });
+
+    await expect(removeTotpFactor(FACTOR_ID)).resolves.toEqual({
+      status: 'error',
+      message: 'Authenticator removed. Sign in again before continuing.',
+    });
+    expect(mocks.signOut).toHaveBeenCalledWith({ scope: 'local' });
+  });
+
+  it('also clears the local session when the refresh provider returns an error', async () => {
+    mocks.listFactors.mockResolvedValue({
+      data: {
+        all: [{ id: FACTOR_ID, factor_type: 'totp', status: 'verified' }],
+        totp: [{ id: FACTOR_ID, factor_type: 'totp', status: 'verified' }],
+      },
+      error: null,
+    });
+    mocks.refreshSession.mockResolvedValue({
+      data: { session: null, user: null },
+      error: new Error('refresh failed'),
+    });
+
+    await expect(removeTotpFactor(FACTOR_ID)).resolves.toMatchObject({ status: 'error' });
+    expect(mocks.signOut).toHaveBeenCalledWith({ scope: 'local' });
   });
 });

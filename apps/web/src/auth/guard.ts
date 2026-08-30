@@ -18,11 +18,11 @@ import { isDatabaseUnreachable } from '../db-unreachable';
 import { database, requireDatabase } from '../data/db';
 import { resolveOrgContext } from '../data/orgs';
 import type { Membership, OrgContext } from '../data/orgs';
-import { decideAssurance, requiredAssurance } from './assurance';
-import type { SessionSecurity } from './assurance';
-import { authFeatureConfig } from './config';
-import { assuranceDestination } from './continuation';
-import { currentSessionSecurity, currentUser } from './session';
+import {
+  authorizeOperatorRole,
+  currentOperatorIdentity,
+} from './security-authorization';
+import { currentUser } from './session';
 
 export type Gate =
   | { state: 'ok'; handle: DbHandle; context: OrgContext }
@@ -39,19 +39,10 @@ export async function gateAccountSecurity(): Promise<Gate> {
 }
 
 async function resolvePageGate(enforceAssurance: boolean): Promise<Gate> {
-  const config = authFeatureConfig();
-  const enforcementEnabled =
-    enforceAssurance &&
-    (config.totpPolicy === 'enforce-when-enrolled' ||
-      config.totpPolicy === 'require-for-privileged');
-  const security = enforcementEnabled ? await currentSessionSecurity() : null;
-  const user = security === null
-    ? await currentUser()
-    : security.state === 'authenticated'
-      ? security.user
-      : null;
+  const identity = enforceAssurance ? await currentOperatorIdentity() : null;
+  const user = identity === null ? await currentUser() : identity.user;
   if (!user) {
-    if (security?.state === 'unavailable') {
+    if (identity?.security?.state === 'unavailable') {
       redirect('/login?error=account+security+could+not+be+verified');
     }
     redirect('/login');
@@ -69,17 +60,12 @@ async function resolvePageGate(enforceAssurance: boolean): Promise<Gate> {
   }
   if (!context.active) return { state: 'no-org', context };
 
-  if (security !== null) {
-    const decision = decideAssurance({
-      session: security,
-      requirement: requiredAssurance({
-        config,
-        surface: 'operator',
-        role: context.active.role,
-      }),
-      returnTo: '/dashboard',
-    });
-    if (decision.kind !== 'allow') redirect(assuranceDestination(decision));
+  if (identity !== null) {
+    const authorization = authorizeOperatorRole(identity, context.active.role, '/dashboard');
+    if (authorization.status === 'challenge') redirect(authorization.href);
+    if (authorization.status === 'error') {
+      redirect('/login?error=account+security+could+not+be+verified');
+    }
   }
   return { state: 'ok', handle, context };
 }
@@ -89,22 +75,15 @@ async function resolvePageGate(enforceAssurance: boolean): Promise<Gate> {
  * message on: anything short of a usable context throws.
  */
 export async function gateAction(): Promise<{ handle: DbHandle; active: Membership }> {
-  const config = authFeatureConfig();
-  const enforcementEnabled =
-    config.totpPolicy === 'enforce-when-enrolled' ||
-    config.totpPolicy === 'require-for-privileged';
-  const security = enforcementEnabled ? await currentSessionSecurity() : null;
-  const user = security === null
-    ? await currentUser()
-    : security.state === 'authenticated'
-      ? security.user
-      : null;
+  const identity = await currentOperatorIdentity();
+  const user = identity.user;
   if (!user) throw new Error('not signed in');
   const handle = requireDatabase();
   const context = await resolveOrgContext(handle, user);
   const active = context.active;
   if (!active) throw new Error('you belong to no organisation');
-  if (security !== null) requireAllowedAction(security, config, active);
+  const authorization = authorizeOperatorRole(identity, active.role, '/dashboard');
+  if (authorization.status !== 'ok') throw new Error('additional authentication required');
   return { handle, active };
 }
 
@@ -120,17 +99,4 @@ export async function gateAccountSecurityAction(): Promise<{
   const active = context.active;
   if (!active) throw new Error('you belong to no organisation');
   return { handle, active };
-}
-
-function requireAllowedAction(
-  security: SessionSecurity,
-  config: ReturnType<typeof authFeatureConfig>,
-  active: Membership,
-): void {
-  const decision = decideAssurance({
-    session: security,
-    requirement: requiredAssurance({ config, surface: 'operator', role: active.role }),
-    returnTo: '/dashboard',
-  });
-  if (decision.kind !== 'allow') throw new Error('additional authentication required');
 }

@@ -6,6 +6,7 @@ describe('auth rollout config', () => {
     expect(authFeatureConfig({})).toEqual({
       passwordLogin: false,
       passwordRecovery: false,
+      googleLogin: false,
       totpPolicy: 'off',
       passkeyPolicy: 'off',
     });
@@ -16,12 +17,14 @@ describe('auth rollout config', () => {
       authFeatureConfig({
         WIZARD_ADS_PASSWORD_LOGIN: '1',
         WIZARD_ADS_PASSWORD_RECOVERY: '1',
+        WIZARD_ADS_GOOGLE_LOGIN: '1',
         WIZARD_ADS_TOTP_POLICY: 'require-for-privileged',
         WIZARD_ADS_PASSKEYS: 'sign-in',
       }),
     ).toEqual({
       passwordLogin: true,
       passwordRecovery: true,
+      googleLogin: true,
       totpPolicy: 'require-for-privileged',
       passkeyPolicy: 'sign-in',
     });
@@ -29,6 +32,7 @@ describe('auth rollout config', () => {
 
   it.each([
     ['WIZARD_ADS_PASSWORD_RECOVERY', 'yes'],
+    ['WIZARD_ADS_GOOGLE_LOGIN', 'yes'],
     ['WIZARD_ADS_TOTP_POLICY', 'required'],
     ['WIZARD_ADS_PASSKEYS', 'enabled'],
   ])('rejects invalid %s instead of weakening it', (name, value) => {

@@ -45,8 +45,32 @@ describe('browser passkey adapter', () => {
     });
     await expect(adapter.rename('key-1', 'Work laptop')).resolves.toMatchObject({ status: 'ok' });
     await expect(adapter.remove('key-1')).resolves.toMatchObject({ status: 'ok' });
+    expect(list).toHaveBeenCalledTimes(3);
     expect(update).toHaveBeenCalledWith({ passkeyId: 'key-1', friendlyName: 'Work laptop' });
     expect(remove).toHaveBeenCalledWith({ passkeyId: 'key-1' });
+  });
+
+  it('re-lists ownership and refuses stale identifiers before provider mutation', async () => {
+    const update = vi.fn();
+    const remove = vi.fn();
+    const adapter = createPasskeyAdapter(client({
+      passkey: {
+        list: vi.fn().mockResolvedValue({ data: [], error: null }),
+        update,
+        delete: remove,
+      },
+    }));
+
+    await expect(adapter.rename('missing', 'Work laptop')).resolves.toEqual({
+      status: 'error',
+      message: 'That passkey is no longer available.',
+    });
+    await expect(adapter.remove('missing')).resolves.toEqual({
+      status: 'error',
+      message: 'That passkey is no longer available.',
+    });
+    expect(update).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
   });
 
   it('keeps provider details behind a fallback-safe error', async () => {

@@ -14,6 +14,7 @@ export type PasskeyPolicy = (typeof PASSKEY_POLICIES)[number];
 export interface AuthFeatureConfig {
   passwordLogin: boolean;
   passwordRecovery: boolean;
+  googleLogin: boolean;
   totpPolicy: TotpPolicy;
   passkeyPolicy: PasskeyPolicy;
 }
@@ -25,6 +26,7 @@ export function authFeatureConfig(
   return {
     passwordLogin: binaryFlag(env, 'WIZARD_ADS_PASSWORD_LOGIN'),
     passwordRecovery: binaryFlag(env, 'WIZARD_ADS_PASSWORD_RECOVERY'),
+    googleLogin: binaryFlag(env, 'WIZARD_ADS_GOOGLE_LOGIN'),
     totpPolicy: enumFlag(env, 'WIZARD_ADS_TOTP_POLICY', TOTP_POLICIES, 'off'),
     passkeyPolicy: enumFlag(env, 'WIZARD_ADS_PASSKEYS', PASSKEY_POLICIES, 'off'),
   };

@@ -3,7 +3,7 @@ import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { QueryCategory } from '@wizard-ads/shared';
 import {
-  isUnauthenticated,
+  authenticationDestination,
   openWebDatabase,
   requestActor,
   requireOrgMembership,
@@ -182,7 +182,8 @@ export default async function QueryIntelligencePage({
       </main>
     );
   } catch (error) {
-    if (isUnauthenticated(error)) redirect('/login');
+    const authDestination = authenticationDestination(error);
+    if (authDestination !== null) redirect(authDestination);
     const message = error instanceof Error ? error.message : 'Query Intelligence is unavailable';
     return (
       <main className="wa-stack">

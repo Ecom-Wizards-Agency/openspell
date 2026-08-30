@@ -11,7 +11,7 @@
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { listExperiments } from '@wizard-ads/db';
-import { isUnauthenticated, openWebDatabase, requestActor } from '../../src/server/request-context';
+import { authenticationDestination, openWebDatabase, requestActor } from '../../src/server/request-context';
 import { requireOrgRole } from '../../src/server/org-role';
 import { can } from '../../src/auth/roles';
 import { listProfileOptions, listProposedTests, selectProfileId } from '../../src/experiments/data';
@@ -53,7 +53,8 @@ export default async function ExperimentsPage({ searchParams }: { searchParams: 
       />
     );
   } catch (error) {
-    if (isUnauthenticated(error)) redirect('/login');
+    const authDestination = authenticationDestination(error);
+    if (authDestination !== null) redirect(authDestination);
     const message = error instanceof Error ? error.message : 'Experiments are unavailable';
     return (
       <main style={page}>

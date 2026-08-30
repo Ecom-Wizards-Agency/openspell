@@ -23,7 +23,7 @@ import {
   listRecommendations,
 } from '@wizard-ads/db';
 import {
-  isUnauthenticated,
+  authenticationDestination,
   openWebDatabase,
   requestActor,
   requireOrgMembership,
@@ -206,7 +206,8 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
     // Nobody is signed in. A page is not an API: the answer to "who are you" is
     // the login screen, not a 200 that says "Authentication required" and
     // leaves the visitor to find `/login` themselves.
-    if (isUnauthenticated(error)) redirect('/login');
+    const authDestination = authenticationDestination(error);
+    if (authDestination !== null) redirect(authDestination);
     const message = error instanceof Error ? error.message : 'Recommendations are unavailable';
     return (
       <main style={main}>

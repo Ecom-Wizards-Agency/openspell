@@ -204,6 +204,46 @@ describe('Grid rows route runtime', () => {
     expect(response.headers.get('server-timing')).toContain('close;dur=');
   });
 
+  it('closes exactly once and returns a structured continuation when assurance refuses', async () => {
+    const { handle, close } = database();
+    const loadRows = vi.fn();
+    const location = '/auth/mfa/challenge?next=%2Fgrid';
+    const get = createGridRowsGet({
+      authorizeRequest: createGridRequestAuthorizer({
+        identify: async () => ({
+          userId: USER_A,
+          organization: { mode: 'preferred' as const, orgId: null },
+        }),
+        openDatabase: () => handle,
+        resolveReceipt: async () => ({
+          orgId: '45454545-4545-4545-8545-454545454545',
+          role: 'viewer',
+          profileId: UNKNOWN_PROFILE,
+          currencyCode: 'GBP',
+        }),
+        enforceAssurance: async () => {
+          throw new RequestAuthError(
+            'Additional authentication required',
+            403,
+            'additional_authentication_required',
+            location,
+          );
+        },
+      }),
+      loadRows,
+    });
+
+    const response = await get(request());
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Additional authentication required',
+      code: 'additional_authentication_required',
+      location,
+    });
+    expect(loadRows).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps identity, membership, input, and profile refusal in that order', async () => {
     const invalidQuery = 'profile=not-a-profile&entity=accounts&from=nope&to=nope';
 

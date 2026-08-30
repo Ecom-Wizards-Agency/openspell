@@ -10,7 +10,7 @@ import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import type { FeedbackType } from '@wizard-ads/db';
 import {
-  isUnauthenticated,
+  authenticationDestination,
   openWebDatabase,
   requestActor,
 } from '../../../src/server/request-context';
@@ -47,7 +47,8 @@ export default async function NewFeedbackPage({ searchParams }: { searchParams: 
   } catch (error) {
     // A page, not an API: an anonymous reporter gets the login screen rather
     // than an instruction to sign in with nowhere to do it.
-    if (isUnauthenticated(error)) redirect('/login');
+    const authDestination = authenticationDestination(error);
+    if (authDestination !== null) redirect(authDestination);
     const message = error instanceof Error ? error.message : 'Feedback is unavailable';
     return (
       <main style={page}>

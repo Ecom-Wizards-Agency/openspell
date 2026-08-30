@@ -13,5 +13,10 @@ describe('auth origin', () => {
       'without a path',
     );
     expect(() => authOrigin({ NODE_ENV: 'production' })).toThrow('required');
+    expect(() =>
+      authOrigin({ NODE_ENV: 'production', WIZARD_ADS_APP_URL: 'http://app.example.test' }),
+    ).toThrow('https');
+    expect(authOrigin({ NODE_ENV: 'development', WIZARD_ADS_APP_URL: 'http://localhost:3000' }))
+      .toBe('http://localhost:3000');
   });
 });

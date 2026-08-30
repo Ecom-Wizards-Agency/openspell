@@ -8,6 +8,7 @@ const user = { id: 'user-1', email: null };
 const config = (totpPolicy: TotpPolicy): AuthFeatureConfig => ({
   passwordLogin: false,
   passwordRecovery: false,
+  googleLogin: false,
   passkeyPolicy: 'off',
   totpPolicy,
 });

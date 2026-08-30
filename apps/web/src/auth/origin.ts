@@ -17,5 +17,8 @@ export function authOrigin(
   ) {
     throw new Error('WIZARD_ADS_APP_URL must be an http(s) origin without a path');
   }
+  if (env['NODE_ENV'] === 'production' && url.protocol !== 'https:') {
+    throw new Error('WIZARD_ADS_APP_URL must use https in production');
+  }
   return url.origin;
 }

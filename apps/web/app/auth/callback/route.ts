@@ -13,6 +13,7 @@
 import { NextResponse } from 'next/server';
 import { authContinuePath } from '../../../src/auth/continuation';
 import { safeNextPath } from '../../../src/auth/next-path';
+import { authOrigin } from '../../../src/auth/origin';
 import { supabaseConfigured, supabaseServerClient } from '../../../src/auth/supabase';
 
 export const runtime = 'nodejs';
@@ -20,21 +21,22 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
+  const origin = authOrigin();
   const code = url.searchParams.get('code');
   const next = safeNextPath(url.searchParams.get('next'), '/settings/connections');
 
   if (!supabaseConfigured()) {
-    return NextResponse.redirect(new URL('/login?error=Supabase+Auth+is+not+configured', url));
+    return NextResponse.redirect(new URL('/login?error=Supabase+Auth+is+not+configured', origin));
   }
   if (!code) {
-    return NextResponse.redirect(new URL('/login?error=that+link+is+no+longer+valid', url));
+    return NextResponse.redirect(new URL('/login?error=that+link+is+no+longer+valid', origin));
   }
 
   const supabase = await supabaseServerClient();
   const { error } = await supabase.auth.exchangeCodeForSession(code);
   if (error) {
-    return NextResponse.redirect(new URL('/login?error=that+link+is+no+longer+valid', url));
+    return NextResponse.redirect(new URL('/login?error=that+link+is+no+longer+valid', origin));
   }
 
-  return NextResponse.redirect(new URL(authContinuePath(next), url));
+  return NextResponse.redirect(new URL(authContinuePath(next), origin));
 }

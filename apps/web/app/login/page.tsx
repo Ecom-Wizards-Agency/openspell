@@ -90,10 +90,12 @@ export default async function LoginPage({
             <Button type="submit">Email me a sign-in link</Button>
           </form>
 
-          <form action={signInWithGoogle} style={{ marginTop: '1rem' }}>
-            <input type="hidden" name="next" value={next} />
-            <Button type="submit">Continue with Google</Button>
-          </form>
+          {config.googleLogin ? (
+            <form action={signInWithGoogle} style={{ marginTop: '1rem' }}>
+              <input type="hidden" name="next" value={next} />
+              <Button type="submit">Continue with Google</Button>
+            </form>
+          ) : null}
         </>
       ) : (
         <p style={banner('warn')}>

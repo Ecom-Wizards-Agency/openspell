@@ -2,6 +2,7 @@
 
 /** Sign-in paths. None of them creates a user. */
 import { redirect } from 'next/navigation';
+import { authFeatureConfig } from '../../src/auth/config';
 import { authContinuePath } from '../../src/auth/continuation';
 import { safeNextPath } from '../../src/auth/next-path';
 import { authOrigin } from '../../src/auth/origin';
@@ -13,6 +14,9 @@ export async function signInWithPassword(formData: FormData): Promise<void> {
   const email = String(formData.get('email') ?? '').trim();
   const passphrase = String(formData.get(CREDENTIAL_FIELD) ?? '');
   const next = formNext(formData);
+  if (!authFeatureConfig().passwordLogin) {
+    redirect(loginLocation(next, 'password sign-in is not enabled'));
+  }
   if (!email || !passphrase) redirect(loginLocation(next, 'enter your email and password'));
   if (!supabaseConfigured()) redirect(loginLocation(next, 'Supabase Auth is not configured'));
 
@@ -32,22 +36,26 @@ export async function sendMagicLink(formData: FormData): Promise<void> {
   if (!email) redirect(loginLocation(next, 'enter an email address'));
   if (!supabaseConfigured()) redirect(loginLocation(next, 'Supabase Auth is not configured'));
 
-  const supabase = await supabaseServerClient();
-  const { error } = await supabase.auth.signInWithOtp({
-    email,
-    options: {
-      shouldCreateUser: false,
-      emailRedirectTo: await callbackUrl(next),
-    },
-  });
-
-  // A refusal is never echoed verbatim: the form is not an account oracle.
-  if (error) redirect(loginLocation(next, 'that link could not be sent'));
+  try {
+    const supabase = await supabaseServerClient();
+    await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        shouldCreateUser: false,
+        emailRedirectTo: await callbackUrl(next),
+      },
+    });
+  } catch {
+    // Provider outcomes are deliberately collapsed into the same receipt.
+  }
   redirect(loginLocation(next, null, true));
 }
 
 export async function signInWithGoogle(formData: FormData): Promise<void> {
   const next = formNext(formData);
+  if (!authFeatureConfig().googleLogin) {
+    redirect(loginLocation(next, 'Google sign-in is not enabled'));
+  }
   if (!supabaseConfigured()) redirect(loginLocation(next, 'Supabase Auth is not configured'));
 
   const supabase = await supabaseServerClient();

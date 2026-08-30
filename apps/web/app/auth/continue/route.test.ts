@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   config: vi.fn(),
@@ -17,6 +17,7 @@ import { GET } from './route';
 const baseConfig = {
   passwordLogin: false,
   passwordRecovery: false,
+  googleLogin: false,
   passkeyPolicy: 'off' as const,
   totpPolicy: 'off' as const,
 };
@@ -24,8 +25,11 @@ const baseConfig = {
 describe('/auth/continue', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv('WIZARD_ADS_APP_URL', 'https://app.example.test');
     mocks.config.mockReturnValue(baseConfig);
   });
+
+  afterEach(() => vi.unstubAllEnvs());
 
   it('preserves the pre-rollout path when assurance enforcement is off', async () => {
     mocks.currentUser.mockResolvedValue({ id: 'user-1', email: null });

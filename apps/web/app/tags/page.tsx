@@ -1,7 +1,7 @@
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import {
-  isUnauthenticated,
+  authenticationDestination,
   openWebDatabase,
   requestActor,
   requireOrgMembership,
@@ -49,7 +49,8 @@ export default async function TagsPage({ searchParams }: { searchParams: SearchP
     );
   } catch (error) {
     // A page, not an API: an anonymous visitor gets the login screen.
-    if (isUnauthenticated(error)) redirect('/login');
+    const authDestination = authenticationDestination(error);
+    if (authDestination !== null) redirect(authDestination);
     const message = error instanceof Error ? error.message : 'Tags are unavailable';
     return (
       <main style={{ maxWidth: 760, margin: '48px auto', fontFamily: 'var(--wa-font)' }}>

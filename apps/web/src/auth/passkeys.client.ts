@@ -75,6 +75,13 @@ export function createPasskeyAdapter(client: SupabaseClient): BrowserPasskeys {
         return { status: 'error', message: 'Use a passkey name between 1 and 120 characters.' };
       }
       try {
+        const ownership = await listedPasskey(client, passkeyId);
+        if (ownership === 'unavailable') {
+          return providerError('Passkeys could not be reconciled before the change.');
+        }
+        if (ownership === 'missing') {
+          return { status: 'error', message: 'That passkey is no longer available.' };
+        }
         const { data, error } = await client.auth.passkey.update({
           passkeyId,
           friendlyName: name,
@@ -90,6 +97,13 @@ export function createPasskeyAdapter(client: SupabaseClient): BrowserPasskeys {
     async remove(passkeyId) {
       if (!passkeyId) return { status: 'error', message: 'That passkey is not valid.' };
       try {
+        const ownership = await listedPasskey(client, passkeyId);
+        if (ownership === 'unavailable') {
+          return providerError('Passkeys could not be reconciled before the change.');
+        }
+        if (ownership === 'missing') {
+          return { status: 'error', message: 'That passkey is no longer available.' };
+        }
         const { error } = await client.auth.passkey.delete({ passkeyId });
         return error
           ? providerError('The passkey could not be removed.')
@@ -99,6 +113,15 @@ export function createPasskeyAdapter(client: SupabaseClient): BrowserPasskeys {
       }
     },
   };
+}
+
+async function listedPasskey(
+  client: SupabaseClient,
+  passkeyId: string,
+): Promise<'owned' | 'missing' | 'unavailable'> {
+  const { data, error } = await client.auth.passkey.list();
+  if (error || !data) return 'unavailable';
+  return data.some((item) => item.id === passkeyId) ? 'owned' : 'missing';
 }
 
 export function browserPasskeys(): BrowserPasskeys | null {

@@ -180,7 +180,16 @@ export async function removeTotpFactor(factorId: string): Promise<TotpOperationR
   }
   const { error } = await supabase.auth.mfa.unenroll({ factorId: factor.id });
   if (error) return { status: 'error', message: 'The authenticator could not be removed.' };
-  await supabase.auth.refreshSession();
+  const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession();
+  if (refreshError || !refreshed.session) {
+    // Clear the cookie-backed local session so a stale AAL2 token cannot keep
+    // authorizing requests after its factor has disappeared.
+    await supabase.auth.signOut({ scope: 'local' });
+    return {
+      status: 'error',
+      message: 'Authenticator removed. Sign in again before continuing.',
+    };
+  }
   return { status: 'ok', message: 'Authenticator removed.' };
 }
 

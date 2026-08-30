@@ -48,7 +48,8 @@ Provider error details never cross these boundaries.
   challenge, cleanup, removal, and reauthorization.
 - `src/auth/passkeys.client.ts`: the only experimental SDK/WebAuthn boundary;
   it is imported only by client components.
-- `src/auth/guard.ts`: existing organisation gate plus assurance enforcement;
+- `src/auth/guard.ts`, `src/server/request-context.ts`, Grid, and Amazon OAuth:
+  one role-aware assurance decision across every protected boundary;
   account-security has a narrow loop-breaking entry point.
 
 ## State transitions
@@ -71,7 +72,8 @@ passkey absent -> registered -> renamed or removed (experimental, gated)
 - Invitation acceptance remains the only account-creation path.
 - Magic-link sign-in keeps `shouldCreateUser: false` and remains visible even
   when passkey sign-in is enabled.
-- Recovery, TOTP, assurance enforcement, and passkeys all default off.
+- Password login, Google, recovery, TOTP enforcement, and passkeys all default
+  off. Magic link remains the available invite-only fallback.
 - No migration, seed, Amazon request, production configuration, secret, client
   roster, or real account fixture belongs to this package.
 - Provider errors are mapped to closed user-facing results. Password recovery
@@ -79,9 +81,11 @@ passkey absent -> registered -> renamed or removed (experimental, gated)
 
 ## Configuration
 
-The web process reads three server-owned rollout controls:
+The web process reads five server-owned rollout controls:
 
+- `WIZARD_ADS_PASSWORD_LOGIN=0|1`
 - `WIZARD_ADS_PASSWORD_RECOVERY=0|1`
+- `WIZARD_ADS_GOOGLE_LOGIN=0|1`
 - `WIZARD_ADS_TOTP_POLICY` accepts `off`, `enrollment-only`,
   `enforce-when-enrolled`, or `require-for-privileged`.
 - `WIZARD_ADS_PASSKEYS` accepts `off`, `manage-only`, `enroll`, or `sign-in`.
@@ -92,6 +96,17 @@ instead of silently selecting a weaker policy.
 Passkeys also require Supabase project configuration for the stable production
 relying-party id and allowed HTTPS origins. That operator action is not made by
 application code.
+
+Google must remain off until the hosted provider has public signup disabled,
+the canonical Site URL configured, and invitation acceptance plus Google login
+have been live-tested together. Repository-local provider configuration is not
+evidence of the hosted setting.
+
+Passkeys must remain off in production until enrollment, sign-in, list, rename,
+removal, account recovery, and fallback login pass against the hosted provider.
+The server action is a UX preflight for step-up; the browser performs the actual
+experimental provider mutation, so application code cannot claim a server-bound
+mutation authorization that the provider API does not expose.
 
 ## Observability
 
@@ -116,12 +131,15 @@ outcomes remain the available signals until an approved sink exists.
 - No factor or passkey is accepted by caller-supplied id alone; the provider's
   current-user list is reconciled first.
 - The browser passkey mutation authorization is intentionally narrow and does
-  not pretend to be a server-side WebAuthn ceremony.
+  not pretend to be a server-bound WebAuthn mutation. Production remains off
+  until provider behavior is verified live.
 
 ## Acceptance checks
 
 - Config and assurance decision tables cover every state, including unknown
   assurance and provider failure.
+- Protected Server Components, route actors, Grid, and Amazon OAuth all apply
+  the same role-aware assurance policy and expose a structured continuation.
 - Password, magic-link, Google, invited-user, and passkey first factors converge
   on the same continuation route.
 - Recovery request responses do not disclose provider acceptance or account
@@ -135,7 +153,7 @@ outcomes remain the available signals until an approved sink exists.
 - Focused tests, web typecheck, repository tests, lint, and hygiene pass.
 - A source assertion proves `auth.admin.createUser` remains confined to
   invitation acceptance and magic-link sign-in still sets
-  `shouldCreateUser: false`.
+  `shouldCreateUser: false`; local Supabase configuration keeps signup disabled.
 
 ## Rollback
 

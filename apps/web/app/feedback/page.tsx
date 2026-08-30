@@ -2,7 +2,7 @@
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { getFeedbackItem } from '@wizard-ads/db';
-import { isUnauthenticated, openWebDatabase, requestActor } from '../../src/server/request-context';
+import { authenticationDestination, openWebDatabase, requestActor } from '../../src/server/request-context';
 import { requireOrgRole } from '../../src/server/org-role';
 import { LegacyFeedbackRedirect } from './legacy-redirect';
 
@@ -39,7 +39,8 @@ export default async function FeedbackPage({ searchParams }: { searchParams: Sea
     if (item?.type === 'feature') destination = `/roadmap#roadmap-${item.id}`;
     if (item?.type === 'bug') destination = `/bugs#bug-${item.id}`;
   } catch (error) {
-    if (isUnauthenticated(error)) redirect('/login');
+    const authDestination = authenticationDestination(error);
+    if (authDestination !== null) redirect(authDestination);
   } finally {
     await database.close();
   }
