@@ -18,11 +18,16 @@ import {
   createGridRequestAuthorizer,
   resolveGridReadReceipt,
 } from './grid/request-context.js';
+import { listMemberships } from './data/orgs.js';
 
 const available = await databaseAvailable();
 const USER_A = '14141414-1414-4414-8414-141414141414';
 const USER_B = '24242424-2424-4424-8424-242424242424';
+const USER_DUPLICATE_NAMES = '30303030-3030-4030-8030-303030303030';
 const UNKNOWN_PROFILE = '34343434-3434-4434-8434-343434343434';
+const LOWER_DUPLICATE_ORG = '10101010-1010-4010-8010-101010101010';
+const HIGHER_DUPLICATE_ORG = '90909090-9090-4090-8090-909090909090';
+const LOWER_DUPLICATE_PROFILE = '12121212-1212-4212-8212-121212121212';
 const BRIDGE_SECRET = 'synthetic-grid-rows-route-bridge';
 const midpoint = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() + 1, 15));
 const TEST_DATE = midpoint.toISOString().slice(0, 10);
@@ -507,6 +512,61 @@ describe.skipIf(!available)('Grid rows route', () => {
           profileA,
         ),
       ).rejects.toMatchObject({ status: 403 });
+    } finally {
+      await requestDatabase.close();
+    }
+  });
+
+  it('uses the same UUID tie-break as the page when organization names are duplicated', async () => {
+    // Insert the higher UUID first so physical/insertion order cannot make this
+    // test pass accidentally. Organization display names are intentionally not
+    // unique, while slugs remain unique as the production schema requires.
+    await database.sql`
+      insert into auth.users (id) values (${USER_DUPLICATE_NAMES})
+    `;
+    await database.sql`
+      insert into public.orgs (id, slug, name)
+      values
+        (${HIGHER_DUPLICATE_ORG}, 'duplicate-name-higher', 'Duplicate display'),
+        (${LOWER_DUPLICATE_ORG}, 'duplicate-name-lower', 'Duplicate display')
+    `;
+    await database.sql`
+      insert into public.org_members (org_id, user_id, role)
+      values
+        (${HIGHER_DUPLICATE_ORG}, ${USER_DUPLICATE_NAMES}, 'viewer'),
+        (${LOWER_DUPLICATE_ORG}, ${USER_DUPLICATE_NAMES}, 'analyst')
+    `;
+    await database.sql`
+      insert into public.ad_profiles
+        (id, org_id, amazon_profile_id, region, country_code, currency_code, timezone)
+      values
+        (${LOWER_DUPLICATE_PROFILE}, ${LOWER_DUPLICATE_ORG}, 'duplicate-name-profile',
+         'NA', 'US', 'USD', 'UTC')
+    `;
+
+    const pageMemberships = await listMemberships(database, USER_DUPLICATE_NAMES);
+    expect(pageMemberships.map((membership) => membership.orgId)).toEqual([
+      LOWER_DUPLICATE_ORG,
+      HIGHER_DUPLICATE_ORG,
+    ]);
+
+    const requestDatabase = createRequestDatabase(database.connectionString);
+    try {
+      const gridReceipt = await resolveGridReadReceipt(
+        requestDatabase,
+        {
+          userId: USER_DUPLICATE_NAMES,
+          organization: { mode: 'preferred', orgId: null },
+        },
+        LOWER_DUPLICATE_PROFILE,
+      );
+      expect(gridReceipt.orgId).toBe(pageMemberships[0]?.orgId);
+      expect(gridReceipt).toMatchObject({
+        orgId: LOWER_DUPLICATE_ORG,
+        role: 'analyst',
+        profileId: LOWER_DUPLICATE_PROFILE,
+        currencyCode: 'USD',
+      });
     } finally {
       await requestDatabase.close();
     }
