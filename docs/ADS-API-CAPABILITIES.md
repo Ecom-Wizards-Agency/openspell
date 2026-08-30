@@ -27,13 +27,18 @@ per resource; it never switches dialect after an ambiguous provider outcome.
 
 ## Credential boundary
 
-The server-side Amazon OAuth callback in `apps/web` is a narrow exception to the normal worker-only
-credential boundary. It loads the LWA client ID and client secret, receives the single-use
-authorization code, exchanges it for access and refresh tokens, uses the access token to discover
-profiles, and stores the refresh token through the Vault-backed database path. Those credentials
-never reach browser code. The callback does not import or expose the campaign, reporting or mutation
-Ads API client; after connection, Amazon API work remains in the worker. MCP receives no Amazon
-credentials and cannot call Amazon directly.
+Two server-side paths in `apps/web` handle Amazon credentials at the reviewed revision. The OAuth
+callback loads the LWA client ID and client secret, receives the single-use authorization code,
+exchanges it for access and refresh tokens, uses the access token to discover profiles, and stores
+the refresh token through the Vault-backed database path. Separately, the authenticated Vercel cron
+route imports the worker integration, constructs its Ads API client in the web server runtime, and
+drains post-connect sync and suggested-bid work. That worker integration loads the LWA application
+credentials from server environment variables and each connection's refresh token from Vault.
+
+The Amazon HTTP client implementation remains in `apps/worker`, but the current Vercel deployment
+invokes it from `apps/web/app/api/cron/sync`. None of these credentials reaches browser code. The
+OAuth callback itself does not import or expose the campaign, reporting or mutation Ads API client.
+MCP receives no Amazon credentials and cannot call Amazon directly.
 
 ## Current implementation
 
@@ -49,8 +54,8 @@ credentials and cannot call Amazon directly.
 | SP suggested keyword and product-target bids | Product-specific recommendation APIs | Implemented and batch-counted | Bid-corridor evidence implemented | Target context and optimizer inputs | Read-only evidence; a suggestion is never a write instruction |
 | SP/SB/SD campaign budget usage | `/sp/campaigns/budget/usage`, `/sb/campaigns/budget/usage` and `/sd/campaigns/budget/usage` | Current client instead calls `/budgets/usage/campaigns`, contradicting the pinned Amazon collection | Not connected | Not exposed | **Not provider-verified; do not count as usable** |
 | Asset Library search and lookup | `/assets`, `/assets/search` | Narrow, page-scoped `/assets/search` probe | Current-snapshot observed ingestion | Creative Performance source gate | Not a complete catalog, picker or moderation gate |
-| Asset Library upload and registration | `/assets/upload`, pre-signed object upload, then `/assets/register`; registration returns `versionId` | Missing. The existing `/media/upload` and `/media/describe` client is deprecated platform surface | Missing | Missing | Not usable |
-| Legacy SB media and creative resources | Deprecated `/media/*` plus legacy SB v4 creative resources | Implemented client | No guarded worker workflow | Not exposed | Client presence is not current Asset Library support |
+| Asset Library upload and registration | `/assets/upload`, pre-signed object upload, then `/assets/register`; registration returns `versionId` | Missing. Existing `/media/upload` is deprecated; `/media/describe` is legacy original-video retrieval. Neither implements Asset Library registration | Missing | Missing | Not usable |
+| Legacy SB media and creative resources | Deprecated `/media/upload`, legacy `/media/describe` original-video retrieval, plus legacy SB v4 creative resources | Implemented client | No guarded worker workflow | Not exposed | Client presence is not current Asset Library support |
 | SP structure creation and update | Unified SP is the migration target; legacy SP seams still exist | Legacy client implemented for campaigns, ad groups, keywords, targets, negatives and product ads | No merged creation executor | Campaign Builder exports a plan | Client-only; no direct creation workflow is live |
 | SP keyword bid, target bid and campaign placement updates | Unified and product-specific SP surfaces, depending on the resource | Legacy client implemented | Guarded runtime remains in open PR #24 | No merged approval/apply UI | Not live; no production migration or Amazon mutation has run |
 | SB campaign/ad-group/target/ad creation | Unified SB | No complete Unified client or compiler | Missing | Missing | Planned |
@@ -133,9 +138,9 @@ remain visible and fail closed instead of being silently treated as eligible.
    resource before compiling a plan.
 2. Finish and prove the one-row SP scalar mutation gateway, including inverse reservation,
    observation, conflict handling and an exact reversion.
-3. Replace the deprecated media seam with the current Asset Library upload/register flow and build
-   a complete read-only catalog with counted pagination, version, eligibility, moderation,
-   freshness and preview URLs.
+3. Replace the deprecated upload and legacy media-retrieval seams with the current Asset Library
+   upload/register flow and build a complete read-only catalog with counted pagination, version,
+   eligibility, moderation, freshness and preview URLs.
 4. Add authoritative shared creation-plan contracts. A plan is an immutable dependency graph, not a
    loose JSON payload.
 5. Add pure SP, SB/SB Video and Display compilers with exact node and refusal counts. Do not combine
@@ -149,10 +154,11 @@ remain visible and fail closed instead of being silently treated as eligible.
 
 ## Operator guardrails
 
-- Browser code and MCP never receive Amazon credentials. The server-side web OAuth callback is the
-  documented exception: it loads the LWA client secret and exchanges the authorization code, but
-  it does not import campaign/report/mutation Ads API clients. Post-connect Amazon calls remain
-  worker-only.
+- Browser code and MCP never receive Amazon credentials. Server-side `apps/web` has two documented
+  credential paths: the OAuth callback exchanges the authorization code without importing the Ads
+  API client, while the authenticated Vercel cron route invokes the worker Ads integration and
+  therefore loads LWA and Vault-backed credentials for post-connect sync. Amazon client code remains
+  owned by `apps/worker` even though this deployment runs it inside the web server process.
 - Viewing, syncing, analyzing and generating recommendations never mutates Amazon.
 - Every manual write uses an immutable preview, exact profile/entity/value/count, explicit approval,
   environment and profile allowlists, durable audit, resynchronization and conflict reporting.
@@ -176,7 +182,8 @@ Repository evidence is in `packages/ads-api/src/client.ts`, `packages/ads-api/sr
 `packages/ads-api/src/sb-ad-assets.ts`, `apps/worker/src/ads-api.ts`,
 `apps/worker/src/report-promotion.ts`, `apps/worker/src/sb-video-ingestion.ts`,
 `apps/worker/src/marketing-stream-sqs.ts`, `apps/web/app/api/amazon/oauth/_lib/lwa.ts`,
-`apps/web/app/api/amazon/oauth/_lib/connect.ts`, and `packages/campaigns/src/`.
+`apps/web/app/api/amazon/oauth/_lib/connect.ts`, `apps/web/app/api/cron/sync/route.ts`, and
+`packages/campaigns/src/`.
 
 Amazon implementation claims were checked on 2026-08-30 against these primary sources. API sources
 are pinned to Amazon's `ads-advanced-tools-docs` revision
@@ -187,7 +194,7 @@ are pinned to Amazon's `ads-advanced-tools-docs` revision
 - [Unified Sponsored Brands OpenAPI](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/api-specs/unified-api-sb.json)
 - [Sponsored Brands formats and migration guide](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/unified-campaign-management-migration-skills/skills/amazon-ads-sb-collections/SKILL.md)
 - [Amazon Ads API Postman collection](https://github.com/amzn/ads-advanced-tools-docs/blob/5c1c432c3dbe676a571780aa0c4d0217659a5f3a/postman/Amazon_Ads_API.postman_collection.json)
-- [Media Library upload deprecation](https://github.com/amzn/ads-advanced-tools-docs/discussions/139)
+- [Media Library upload deprecation and original-video describe retrieval](https://github.com/amzn/ads-advanced-tools-docs/discussions/139)
 - [Unified Reporting general availability and lifecycle](https://advertising.amazon.com/resources/whats-new/streamline-campaign-analysis-with-unified-reporting)
 - [Unified Reporting hourly and historical windows](https://advertising.amazon.com/resources/whats-new/unboxed-2025-campaign-analysis-with-unified-reporting)
 - [Marketing Stream SQS/Firehose architecture and datasets](https://github.com/amzn/amazon-marketing-stream-examples/blob/349918ef35aa0f60ef7e74641d17228a61f6df18/README.md)
