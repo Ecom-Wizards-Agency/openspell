@@ -15,6 +15,9 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: 'OpenSpell',
   description: 'Amazon Advertising operator workspace',
+  icons: {
+    icon: '/brand/wizards-ai-icon.svg',
+  },
 };
 
 export const viewport: Viewport = {

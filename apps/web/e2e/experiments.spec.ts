@@ -80,6 +80,11 @@ test('create from a guided grid selection, run it, end it, and read the comparis
   await expect(page.getByTestId('scope-products-option-B0TEST0001')).toBeChecked();
   await expect(page.getByTestId('scope-targets')).toHaveValue('kw-1');
 
+  await expect(page.locator('link[rel~="icon"]')).toHaveAttribute(
+    'href',
+    /\/brand\/wizards-ai-icon\.svg/,
+  );
+
   await page.getByTestId('experiment-name').fill(NAME);
   await page.getByTestId('experiment-metric').selectOption('acos');
   // Start it running now (the checkbox defaults on; assert it, then submit).
