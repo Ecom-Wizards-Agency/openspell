@@ -50,6 +50,18 @@ interface GridSubjectRuntime {
 }
 
 async function verifiedSessionSubject(): Promise<string | null> {
+  // The authenticated browser suite uses the same guarded test-only cookie
+  // seam as every Server Component. Keep that seam explicit here: calling
+  // Supabase directly would make the page authenticate while this client-side
+  // rows request returns 401, leaving the Grid permanently in its loading
+  // state. `e2eAuthEnabled` refuses production, so this path cannot weaken a
+  // deployed instance.
+  const { currentUser, e2eAuthEnabled } = await import('../auth/session');
+  if (e2eAuthEnabled()) {
+    const user = await currentUser();
+    return user !== null && UUID.test(user.id) ? user.id : null;
+  }
+
   const { supabaseConfigured, supabaseServerClient } = await import('../auth/supabase');
   if (!supabaseConfigured()) return null;
 
