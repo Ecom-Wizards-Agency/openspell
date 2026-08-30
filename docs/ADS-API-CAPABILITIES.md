@@ -25,6 +25,16 @@ that Unified does not replace, including reporting, budget usage and several rec
 Sponsored Display remains on its product-specific API. One immutable plan uses one proven dialect
 per resource; it never switches dialect after an ambiguous provider outcome.
 
+## Credential boundary
+
+The server-side Amazon OAuth callback in `apps/web` is a narrow exception to the normal worker-only
+credential boundary. It loads the LWA client ID and client secret, receives the single-use
+authorization code, exchanges it for access and refresh tokens, uses the access token to discover
+profiles, and stores the refresh token through the Vault-backed database path. Those credentials
+never reach browser code. The callback does not import or expose the campaign, reporting or mutation
+Ads API client; after connection, Amazon API work remains in the worker. MCP receives no Amazon
+credentials and cannot call Amazon directly.
+
 ## Current implementation
 
 | Capability | Amazon platform surface | API client in reviewed main | Worker/data path | Operator surface | Live evidence |
@@ -39,14 +49,14 @@ per resource; it never switches dialect after an ambiguous provider outcome.
 | SP suggested keyword and product-target bids | Product-specific recommendation APIs | Implemented and batch-counted | Bid-corridor evidence implemented | Target context and optimizer inputs | Read-only evidence; a suggestion is never a write instruction |
 | SP/SB/SD campaign budget usage | `/sp/campaigns/budget/usage`, `/sb/campaigns/budget/usage` and `/sd/campaigns/budget/usage` | Current client instead calls `/budgets/usage/campaigns`, contradicting the pinned Amazon collection | Not connected | Not exposed | **Not provider-verified; do not count as usable** |
 | Asset Library search and lookup | `/assets`, `/assets/search` | Narrow, page-scoped `/assets/search` probe | Current-snapshot observed ingestion | Creative Performance source gate | Not a complete catalog, picker or moderation gate |
-| Asset Library upload and registration | `/assets/upload`, pre-signed object upload, then `/assets/register` | Missing. The existing `/media/upload` and `/media/describe` client is deprecated platform surface | Missing | Missing | Not usable |
+| Asset Library upload and registration | `/assets/upload`, pre-signed object upload, then `/assets/register`; registration returns `versionId` | Missing. The existing `/media/upload` and `/media/describe` client is deprecated platform surface | Missing | Missing | Not usable |
 | Legacy SB media and creative resources | Deprecated `/media/*` plus legacy SB v4 creative resources | Implemented client | No guarded worker workflow | Not exposed | Client presence is not current Asset Library support |
 | SP structure creation and update | Unified SP is the migration target; legacy SP seams still exist | Legacy client implemented for campaigns, ad groups, keywords, targets, negatives and product ads | No merged creation executor | Campaign Builder exports a plan | Client-only; no direct creation workflow is live |
 | SP keyword bid, target bid and campaign placement updates | Unified and product-specific SP surfaces, depending on the resource | Legacy client implemented | Guarded runtime remains in open PR #24 | No merged approval/apply UI | Not live; no production migration or Amazon mutation has run |
 | SB campaign/ad-group/target/ad creation | Unified SB | No complete Unified client or compiler | Missing | Missing | Planned |
-| SB Video creation from an Asset Library reference | Unified SB ad creative plus Asset Library | No complete current client graph | Missing | Missing | Planned |
+| SB Video creation from an Asset Library reference | Unified SB ad creative uses `assetId` plus `assetVersion` from the registered asset version | No complete current client graph | Missing | Missing | Planned |
 | Display campaign/ad-group/target/ad creation | Product-specific SD API | Missing | Missing | Missing | Planned |
-| Marketing Stream ingestion | Amazon subscriptions deliver SP/SB/SD datasets to AWS SQS or Firehose | No subscription/provisioning client | SQS ledger and normalizer accept an OpenSpell envelope; raw Amazon translation and subscription confirmation are missing | Dayparting reads normalized facts | Provider-to-ledger path not live-verified |
+| Marketing Stream ingestion | Amazon subscriptions deliver SP/SB/SD datasets to AWS SQS or Firehose; SQS subscriptions require confirmation, Firehose subscriptions do not | No subscription/provisioning client | SQS ledger and normalizer accept an OpenSpell envelope; raw Amazon translation and SQS subscription confirmation are missing | Dayparting reads normalized facts | Provider-to-ledger path not live-verified |
 | Automatic scheduled mutation | OpenSpell policy allows an explicitly enabled, bounded cadence | Not applicable | No live executor | Weekday review scheduling remains preview-only | Not live |
 | MCP Amazon mutation | OpenSpell product boundary, not an Amazon API limitation | MCP has no Amazon client | No Amazon mutation path | Advertising-data tools are read-only; audit and key-usage bookkeeping remain internal | Correctly unavailable |
 
@@ -64,8 +74,9 @@ SP-API approval is not a prerequisite for this Advertising API program:
 - provide Time Machine observation and conflict-safe inverse writes for reversible scalar changes.
 
 Marketing Stream also does not require SP-API, but it is not “Advertising API alone”: it requires
-AWS SQS or Firehose infrastructure, dataset subscriptions, subscription confirmation, and exact
-raw-provider-to-ledger translators.
+AWS SQS or Firehose infrastructure, dataset subscriptions and exact raw-provider-to-ledger
+translators. The SQS destination additionally requires subscription confirmation; Firehose does
+not.
 
 SP-API is still required for Brand Analytics Search Query Performance and other retail/brand data
 that does not come from the Advertising API. OpenSpell must not approximate those sources from PPC
@@ -109,10 +120,12 @@ an ad will serve. The builder must preserve these distinct provider states:
 - SB creative `moderationStatus`; and
 - ad delivery status and delivery reasons after creation.
 
-Amazon Asset ID is the authoritative root creative identity for aggregation. An exact creative
-input and mapping retains the Asset ID plus the version field returned by that surface (`version`
-or `versionId`). Names and headlines are display metadata only. Missing, rejected, unsupported and
-pending states remain visible and fail closed instead of being silently treated as eligible.
+Amazon Asset ID is the authoritative root creative identity for aggregation. The Asset Library
+search/detail response identifies a stored version as `version`, while registration returns that
+version as `versionId`; a Unified SB creative input supplies the corresponding value as
+`assetVersion`. OpenSpell must map those fields explicitly and retain the exact version lineage.
+Names and headlines are display metadata only. Missing, rejected, unsupported and pending states
+remain visible and fail closed instead of being silently treated as eligible.
 
 ## Safe implementation order
 
@@ -136,7 +149,10 @@ pending states remain visible and fail closed instead of being silently treated 
 
 ## Operator guardrails
 
-- Web and MCP never receive Amazon credentials or import the Ads API client.
+- Browser code and MCP never receive Amazon credentials. The server-side web OAuth callback is the
+  documented exception: it loads the LWA client secret and exchanges the authorization code, but
+  it does not import campaign/report/mutation Ads API clients. Post-connect Amazon calls remain
+  worker-only.
 - Viewing, syncing, analyzing and generating recommendations never mutates Amazon.
 - Every manual write uses an immutable preview, exact profile/entity/value/count, explicit approval,
   environment and profile allowlists, durable audit, resynchronization and conflict reporting.
@@ -147,7 +163,9 @@ pending states remain visible and fail closed instead of being silently treated 
   failed, refused and resynchronized counts must agree before completion is claimed.
 - Time Machine may automatically execute only an exact pre-approved inverse inside a bounded live
   test. Normal reversions are new guarded writes.
-- Amazon Asset ID is the aggregation identity; exact references and mappings retain asset version.
+- Amazon Asset ID is the aggregation identity; exact mappings preserve Asset Library `version`,
+  registration `versionId` and Unified creative input `assetVersion` without conflating their JSON
+  field names.
 - Unsupported formats and partial mappings remain visible instead of being silently combined.
 
 ## Primary source anchors
@@ -157,7 +175,8 @@ Repository evidence is in `packages/ads-api/src/client.ts`, `packages/ads-api/sr
 `packages/ads-api/src/budgets.ts`, `packages/ads-api/src/sb-media.ts`,
 `packages/ads-api/src/sb-ad-assets.ts`, `apps/worker/src/ads-api.ts`,
 `apps/worker/src/report-promotion.ts`, `apps/worker/src/sb-video-ingestion.ts`,
-`apps/worker/src/marketing-stream-sqs.ts`, and `packages/campaigns/src/`.
+`apps/worker/src/marketing-stream-sqs.ts`, `apps/web/app/api/amazon/oauth/_lib/lwa.ts`,
+`apps/web/app/api/amazon/oauth/_lib/connect.ts`, and `packages/campaigns/src/`.
 
 Amazon implementation claims were checked on 2026-08-30 against these primary sources. API sources
 are pinned to Amazon's `ads-advanced-tools-docs` revision
