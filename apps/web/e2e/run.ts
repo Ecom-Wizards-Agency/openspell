@@ -31,16 +31,16 @@
  * Merging them would mean weakening one guard or accepting a suite that cannot
  * hydrate. Sequential is the honest answer: five named configs, one runner.
  *
- * Each suite owns its own database, and the four never overlap: this file
+ * Each suite owns its own database, and the five never overlap: this file
  * creates and drops the tags-goto database, while each authenticated suite's
  * `global-setup.ts` creates and drops its own (plus the fake Amazon and the dev
  * server). The admin connection comes from `WIZARD_ADS_TEST_DATABASE_URL` (or
  * `DATABASE_URL`), the same variable the Vitest database suites use.
  *
- *   pnpm --filter @wizard-ads/web test:e2e             # all four, in order
+ *   pnpm --filter @wizard-ads/web test:e2e             # all five, in order
  *   pnpm --filter @wizard-ads/web test:e2e:tags-goto   # just WP-08
  *   pnpm --filter @wizard-ads/web test:e2e:grid-performance
- *   pnpm --filter @wizard-ads/web test:e2e:auth        # auth/roles without the isolated Grid load
+ *   pnpm --filter @wizard-ads/web test:e2e:auth        # auth/operator routes without roles or the isolated Grid load
  *   pnpm --filter @wizard-ads/web test:e2e:auth-roles  # settings role matrix in a fresh process
  *   pnpm --filter @wizard-ads/web test:e2e:route-acceptance
  *   WIZARD_ADS_E2E_CPU_RATE=10 pnpm --filter @wizard-ads/web test:e2e:auth
