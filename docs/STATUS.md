@@ -126,7 +126,7 @@ implementation brief in `docs/workpackages/`.
 | 84 | Transactional SP report promotion | merged; live gated | complete-date replacement is wired for four SP report grains; live worker count review remains open |
 | 85 | Observed SB Video ingestion | merged and hosted; live parity gated | current-snapshot ad/version-to-Asset-ID mapping and same-day fact gates are deployed; authoritative provider counts and live mapping parity remain open |
 | 89 | Operator workspace refinement | merged and deployed | compact freshness, active-account context, date presets, filter-aware selection, grouped flags, campaign-first optimizer, target corridor context and chart persistence |
-| 90 | Optimization weekday schedule | planned | brief exists; numeric cadence has not yet been replaced by a weekday/time-zone operator control |
+| 90 | Optimization weekday schedule | open; review pending | PR #40 replaces interval-only cadence with profile-local weekday/time controls, preserves legacy fields during the additive transition, and keeps scheduled runs preview-only. Its full local check, build, database, worker, web and focused browser suites pass; independent exact-head review and real hosted CI remain open. |
 | 91 | Live performance acceptance | in progress | web critical paths have two merged optimization waves, but the live under-two-second and interaction p95 gates remain open |
 | 93 | Guarded Amazon write-gateway policy | merged | operator-approved worker-only writes are authorized by policy; no runtime write path from this package is live |
 | 94 | Operator authorization policy | merged | package boundaries and bounded live-test authorization were updated without tracking profiles or credentials |
@@ -148,6 +148,7 @@ implementation brief in `docs/workpackages/`.
 | 114 | Date-range browser gate | merged; not deployed | Dashboard and Grid exercise all seven preset ranges through authenticated Playwright |
 | 116 | Hydration/readiness reliability | open; code-approved | PR #38 now fails closed until exact saved-state restoration, fails open from malformed cache/store errors, and covers schedule plus exact select-all/bulk persistence. Two independent reviews found no remaining P0/P1; merge is held because required hosted jobs cannot start under the Actions billing block. |
 | 117 | Operator route acceptance closure | open; code-approved | PR #39 adds test-only browser coverage for all fourteen Optimizer/Creative preset interactions with exact periods and canonical profile scope, plus the Strategy-to-Dashboard viewport destination. Independent review found no P0/P1; merge is held because hosted jobs cannot start under the Actions billing block. |
+| 118 | Exact-revision web performance | in progress | A current-main source audit found that internal sidebar, profile and Grid-entity navigation still trigger full-document loads. It also proved that the 3,597-row loader fixture excludes authentication, RSC transfer, hydration and saved-layout readiness. An isolated package is adding sanitized exact-revision timings and safe App Router navigation before any new production-speed claim. |
 
 ## Milestone gates
 
@@ -301,6 +302,11 @@ implementation brief in `docs/workpackages/`.
   must also demonstrate p95 response below 150 ms
   on the reference development machine; synthetic fixture success does not close either live
   performance gate.
+- A fresh current-main audit identified the highest-confidence warm-navigation defect: several
+  internal controls use plain anchors or `window.location.href`, repeating the full document,
+  authenticated layout and hydration path. It also measured the synthetic 3,597-row Grid shape at
+  roughly 1.64 MB before compression. WP-118 therefore measures exact-revision route readiness and
+  replaces those reloads before SQL or pool changes are justified from stale-deployment timings.
 - Hosted SQP configuration and the SB Video provider adapter remain open. The new product surfaces are complete for
   stored evidence, but cannot establish live Amazon parity until those adapters produce counted,
   authoritative rows. WP-83 proves the documented `adId`, nested creative, Asset-ID and `sbAds`
