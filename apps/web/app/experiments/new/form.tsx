@@ -1,7 +1,7 @@
 'use client';
 
 /** Guided experiment setup with optional, profile-scoped entity selectors. */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type {
   ExperimentScopeOptions,
@@ -268,26 +268,36 @@ export function NewExperimentForm({
   const [manualCampaign, setManualCampaign] = useState('');
   const [manualAsin, setManualAsin] = useState('');
   const [scopeOptions, setScopeOptions] = useState(initialScopeOptions);
+  const [scopeOptionsProfileId, setScopeOptionsProfileId] = useState<string | null>(
+    initialProfileId || null,
+  );
+  const [scopeOptionsStatus, setScopeOptionsStatus] = useState<'ready' | 'loading' | 'error'>(
+    'ready',
+  );
   const [scopeOptionsMessage, setScopeOptionsMessage] = useState('');
+  const [scopeReloadKey, setScopeReloadKey] = useState(0);
   const [startNow, setStartNow] = useState(true);
   const [message, setMessage] = useState('');
   const [pending, setPending] = useState(false);
   const [ready, setReady] = useState(false);
+  const scopeRequestId = useRef(0);
 
   useEffect(() => setReady(true), []);
 
   useEffect(() => {
-    if (profileId === initialProfileId) {
-      setScopeOptions(initialScopeOptions);
+    if (profileId === '') {
+      setScopeOptions({ campaigns: [], products: [] });
+      setScopeOptionsProfileId(null);
+      setScopeOptionsStatus('ready');
       setScopeOptionsMessage('');
       return;
     }
-    if (profileId === '') {
-      setScopeOptions({ campaigns: [], products: [] });
-      return;
-    }
+    if (scopeOptionsProfileId === profileId && scopeOptionsStatus === 'ready') return;
+    if (scopeOptionsStatus === 'error') return;
 
     const controller = new AbortController();
+    const requestId = scopeRequestId.current;
+    setScopeOptionsStatus('loading');
     setScopeOptionsMessage('Loading synced scope options…');
     void fetch(`/api/experiments/scope-options?profile=${encodeURIComponent(profileId)}`, {
       signal: controller.signal,
@@ -299,18 +309,51 @@ export function NewExperimentForm({
         if (!response.ok || payload === null) {
           throw new Error(payload?.error ?? 'Could not load synced scope options');
         }
+        if (controller.signal.aborted || requestId !== scopeRequestId.current) return;
         setScopeOptions({ campaigns: payload.campaigns, products: payload.products });
+        setScopeOptionsProfileId(profileId);
+        setScopeOptionsStatus('ready');
         setScopeOptionsMessage('');
       })
       .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || requestId !== scopeRequestId.current) return;
         setScopeOptions({ campaigns: [], products: [] });
+        setScopeOptionsProfileId(null);
+        setScopeOptionsStatus('error');
         setScopeOptionsMessage(
           error instanceof Error ? error.message : 'Could not load synced scope options',
         );
       });
     return () => controller.abort();
-  }, [initialProfileId, initialScopeOptions, profileId]);
+  }, [profileId, scopeOptionsProfileId, scopeOptionsStatus, scopeReloadKey]);
+
+  const changeProfile = (nextProfileId: string) => {
+    if (nextProfileId === profileId) return;
+    // Profile-bound scope and its labels move as one state transition. This
+    // prevents a new profile heading from ever painting above old selections.
+    scopeRequestId.current += 1;
+    setProfileId(nextProfileId);
+    setCampaignIds([]);
+    setAsins([]);
+    setAdGroups('');
+    setTargets('');
+    setTerms('');
+    setManualCampaign('');
+    setManualAsin('');
+    setScopeOptions({ campaigns: [], products: [] });
+    setScopeOptionsProfileId(null);
+    setScopeOptionsStatus(nextProfileId === '' ? 'ready' : 'loading');
+    setScopeOptionsMessage(nextProfileId === '' ? '' : 'Loading synced scope options…');
+  };
+
+  const retryScopeOptions = () => {
+    scopeRequestId.current += 1;
+    setScopeOptions({ campaigns: [], products: [] });
+    setScopeOptionsProfileId(null);
+    setScopeOptionsStatus('loading');
+    setScopeOptionsMessage('Loading synced scope options…');
+    setScopeReloadKey((key) => key + 1);
+  };
 
   const addManual = (
     value: string,
@@ -326,6 +369,7 @@ export function NewExperimentForm({
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
+    if (scopeOptionsStatus !== 'ready' || scopeOptionsProfileId !== profileId) return;
     setPending(true);
     setMessage('Creating experiment…');
     void (async () => {
@@ -411,7 +455,7 @@ export function NewExperimentForm({
                 required
                 value={profileId}
                 data-testid="experiment-profile"
-                onChange={(event) => setProfileId(event.target.value)}
+                onChange={(event) => changeProfile(event.target.value)}
               >
                 {profiles.map((profile) => (
                   <option key={profile.id} value={profile.id}>
@@ -471,14 +515,25 @@ export function NewExperimentForm({
           className="wa-experiment-create__scope-card"
         >
           {scopeOptionsMessage === '' ? null : (
-            <Banner
-              tone={scopeOptionsMessage.startsWith('Loading') ? 'info' : 'bad'}
-              role={scopeOptionsMessage.startsWith('Loading') ? 'status' : 'alert'}
-            >
-              {scopeOptionsMessage}
-            </Banner>
+            <div className="wa-experiment-create__scope-status">
+              <Banner
+                tone={scopeOptionsStatus === 'loading' ? 'info' : 'bad'}
+                role={scopeOptionsStatus === 'loading' ? 'status' : 'alert'}
+              >
+                {scopeOptionsMessage}
+              </Banner>
+              {scopeOptionsStatus === 'error' ? (
+                <Button size="sm" onClick={retryScopeOptions}>
+                  Retry loading
+                </Button>
+              ) : null}
+            </div>
           )}
-          <div className="wa-experiment-create__scope-grid" data-testid="experiment-scope">
+          <div
+            className="wa-experiment-create__scope-grid"
+            data-testid="experiment-scope"
+            aria-busy={scopeOptionsStatus === 'loading'}
+          >
             <SearchableScopeSelector
               key={`campaigns-${profileId}`}
               id="scope-campaigns"
@@ -582,7 +637,12 @@ export function NewExperimentForm({
           <Button
             type="submit"
             variant="primary"
-            disabled={pending || profileId === ''}
+            disabled={
+              pending ||
+              profileId === '' ||
+              scopeOptionsStatus !== 'ready' ||
+              scopeOptionsProfileId !== profileId
+            }
             data-testid="experiment-submit"
           >
             {pending ? 'Creating…' : startNow ? 'Create and start' : 'Save as planned'}

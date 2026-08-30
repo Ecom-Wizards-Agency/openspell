@@ -3994,6 +3994,17 @@ button {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.wa-experiment-create__scope-status {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.wa-experiment-create__scope-status > .wa-banner {
+  flex: 1 1 auto;
+  margin: 0;
+}
+
 .wa-scope-selector {
   border: 1px solid var(--wa-border);
   border-radius: var(--wa-radius);
