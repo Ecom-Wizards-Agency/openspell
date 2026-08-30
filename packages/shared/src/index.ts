@@ -20,3 +20,4 @@ export * from './optimization.js';
 export * from './reporting.js';
 export * from './dayparting.js';
 export * from './amazon-writes.js';
+export * from './campaign-creation.js';
