@@ -275,6 +275,12 @@ numbered briefs in `docs/workpackages/`; status and release gates remain in `doc
   hydration and render paths. The known 3,597-row grid must become usable in under two seconds;
   p95 filter/group interactions must remain below 150 ms. Time Machine and other slow operator
   routes receive the same evidence-first breakdown rather than a generic loading-state patch.
+- **WP-124 — Multi-product campaign creation architecture:** freeze SP, SB, SB Video, and
+  Sponsored Display creation as immutable dependency graphs. Replace the unverified legacy media
+  seam with the current Asset Library lifecycle, execute only through the guarded worker, and keep
+  creation separate from inverse-capable scalar mutations. Implementation is serialized across
+  shared contracts, provider reads/adapters, persistence, pure projection, worker, web, and live
+  evidence.
 
 ## Verification strategy
 
