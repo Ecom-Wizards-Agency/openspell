@@ -28,23 +28,32 @@ type DatabaseGlobal = typeof globalThis & {
 
 const freshState = (): DatabaseState => ({ handle: null, attempted: false });
 const databaseGlobal = globalThis as DatabaseGlobal;
-// Next dev invalidates module instances while compiling routes. A module-local
-// cache leaves every invalidated postgres.js pool alive until process exit,
-// which eventually exhausts Postgres during a full operator click-through.
-// Production modules are stable and keep the narrower module-owned lifecycle.
-const state = process.env['NODE_ENV'] === 'production'
-  ? freshState()
-  : (databaseGlobal.__wizardAdsDatabaseState ??= freshState());
+// Next dev invalidates modules and Vercel bundles routes independently. Reuse
+// one client inside each runtime, but allow it only one physical connection and
+// have postgres.js release that connection after a short idle interval. The
+// JavaScript client may remain warm without reserving a session-pool slot.
+//
+// Do not register response-level `after()` cleanup here. `database()` runs while
+// Server Components resolve cookies and org context; moving lifecycle work into
+// Next's after-context can invalidate that request state during a cancelled or
+// redirected render.
+const state = (databaseGlobal.__wizardAdsDatabaseState ??= freshState());
 
 /** The handle, or null when `DATABASE_URL` is absent (a page then says so). */
 export function database(): DbHandle | null {
-  if (state.attempted) return state.handle;
-  state.attempted = true;
-  try {
-    state.handle = createDb({ connectionString: connectionStringFromEnv(), max: 3 });
-  } catch {
-    state.handle = null;
+  if (!state.attempted) {
+    state.attempted = true;
+    try {
+      state.handle = createDb({
+        connectionString: connectionStringFromEnv(),
+        max: 1,
+        idleTimeoutSeconds: 1,
+      });
+    } catch {
+      state.handle = null;
+    }
   }
+
   return state.handle;
 }
 

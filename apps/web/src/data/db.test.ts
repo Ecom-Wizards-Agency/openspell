@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { DbHandle } from '@wizard-ads/db';
 
 const mocks = vi.hoisted(() => ({
   close: vi.fn(async () => {}),
@@ -19,7 +20,7 @@ async function reloadDatabaseModule() {
   return import('./db');
 }
 
-describe('development database pool cache', () => {
+describe('web database lifecycle', () => {
   afterEach(async () => {
     const module = await import('./db');
     await module.resetDatabase();
@@ -28,20 +29,26 @@ describe('development database pool cache', () => {
     mocks.close.mockReset();
   });
 
-  it('reuses one handle across module invalidation and closes it once', async () => {
-    const handle = { close: mocks.close };
+  it('bounds a warm route runtime to one idle-releasing connection across module loads', async () => {
+    const handle = { close: mocks.close } as unknown as DbHandle;
     mocks.createDb.mockReturnValue(handle);
 
     const firstModule = await reloadDatabaseModule();
-    const first = firstModule.database();
-    const secondModule = await reloadDatabaseModule();
-    const second = secondModule.database();
+    const handles = [firstModule.database()];
+    for (let index = 0; index < 30; index += 1) {
+      handles.push((await reloadDatabaseModule()).database());
+    }
 
-    expect(first).toBe(handle);
-    expect(second).toBe(handle);
+    expect(handles).toHaveLength(31);
+    expect(handles.every((candidate) => candidate === handle)).toBe(true);
     expect(mocks.createDb).toHaveBeenCalledTimes(1);
+    expect(mocks.createDb).toHaveBeenCalledWith({
+      connectionString: 'postgresql://example.test/wizard_ads',
+      idleTimeoutSeconds: 1,
+      max: 1,
+    });
 
-    await secondModule.resetDatabase();
+    await firstModule.resetDatabase();
     expect(mocks.close).toHaveBeenCalledTimes(1);
   });
 
