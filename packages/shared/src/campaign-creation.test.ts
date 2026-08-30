@@ -681,6 +681,76 @@ describe('campaign creation plan', () => {
       ...target,
       payload: { ...target.payload, polarity: 'negative', matchType: 'exact', bid: null },
     }).success).toBe(false);
+
+    const positiveCampaignKeyword = {
+      ...target,
+      dependsOn: [CAMPAIGN_NODE_ID],
+      payload: {
+        ...target.payload,
+        parent: { source: 'plan_node', kind: 'campaign', nodeId: CAMPAIGN_NODE_ID },
+        scope: 'campaign',
+      },
+    } as const;
+    expect(CampaignCreationNode.safeParse(positiveCampaignKeyword).success).toBe(false);
+
+    expect(CampaignCreationNode.safeParse({
+      ...positiveCampaignKeyword,
+      payload: {
+        ...positiveCampaignKeyword.payload,
+        polarity: 'negative',
+        matchType: 'negative_exact',
+        bid: null,
+      },
+    }).success).toBe(true);
+
+    expect(CampaignCreationNode.safeParse({
+      ...positiveCampaignKeyword,
+      payload: {
+        targetType: 'expression',
+        parent: { source: 'plan_node', kind: 'campaign', nodeId: CAMPAIGN_NODE_ID },
+        scope: 'campaign',
+        polarity: 'positive',
+        expression: [{ type: 'asin_same_as', value: 'B000000009' }],
+        bid: 1.01,
+        state: 'paused',
+      },
+    }).success).toBe(false);
+    expect(CampaignCreationNode.safeParse({
+      ...positiveCampaignKeyword,
+      payload: {
+        targetType: 'expression',
+        parent: { source: 'plan_node', kind: 'campaign', nodeId: CAMPAIGN_NODE_ID },
+        scope: 'campaign',
+        polarity: 'negative',
+        expression: [{ type: 'asin_same_as', value: 'B000000009' }],
+        bid: null,
+        state: 'paused',
+      },
+    }).success).toBe(true);
+  });
+
+  it('requires daily Sponsored Products budgets in legacy and unified dialects', () => {
+    const campaign = spNodes()[1];
+    if (campaign?.kind !== 'campaign.create') throw new Error('synthetic campaign missing');
+
+    for (const apiDialect of ['sp_legacy_v3', 'unified_ads_v1'] as const) {
+      expect(CampaignCreationNode.safeParse({
+        ...campaign,
+        apiDialect,
+        payload: {
+          ...campaign.payload,
+          budget: { ...campaign.payload.budget, type: 'lifetime' },
+        },
+      }).success).toBe(false);
+      expect(CampaignCreationNode.safeParse({
+        ...campaign,
+        apiDialect,
+        payload: {
+          ...campaign.payload,
+          budget: { ...campaign.payload.budget, type: 'daily' },
+        },
+      }).success).toBe(true);
+    }
   });
 
   it('models current Unified SB manual and automatic collections without invented fields', () => {
@@ -1404,6 +1474,19 @@ describe('campaign creation approval and evidence', () => {
       (result) => result.nodeId === CAMPAIGN_NODE_ID,
     );
     if (campaignResult === undefined) throw new Error('synthetic campaign result missing');
+    const afterExpiryResults = evidence.providerResults.map((result, index) => ({
+      ...result,
+      startedAt: `2026-08-30T02:00:${String(index * 2).padStart(2, '0')}.000Z`,
+      completedAt: `2026-08-30T02:00:${String(index * 2 + 1).padStart(2, '0')}.000Z`,
+    }));
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...evidence,
+      providerResults: afterExpiryResults,
+      observations: evidence.observations.map((observation) => ({
+        ...observation,
+        observedAt: '2026-08-30T02:01:00.000Z',
+      })),
+    }).success).toBe(false);
     expect(CampaignCreationExecutionEvidence.safeParse({
       ...evidence,
       providerResults: evidence.providerResults.map((result) => result.nodeId === AD_GROUP_NODE_ID
