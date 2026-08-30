@@ -45,7 +45,7 @@ export interface SeriesPresentation {
 }
 
 export interface CockpitPreferences {
-  version: 1;
+  version: 2;
   selected: string[];
   granularity: Granularity;
   presentations: Record<string, SeriesPresentation>;
@@ -85,9 +85,11 @@ const GRANULARITY_LABELS: Record<Granularity, string> = {
 };
 
 export const MAX_CHART_SERIES = 4;
-const PREFERENCE_VERSION = 1;
-const PREFERENCE_PREFIX = 'openspell:performance-chart:v1';
+const PREFERENCE_VERSION = 2;
+const PREFERENCE_PREFIX = 'openspell:performance-chart:v2';
+const LEGACY_PREFERENCE_PREFIX = 'openspell:performance-chart:v1';
 const BAR_METRICS = new Set(['spend', 'orders', 'impressions', 'clicks']);
+const LEGACY_BAR_METRICS = new Set(['spend', 'sales', 'orders', 'impressions', 'clicks']);
 const RIGHT_AXIS_METRICS = new Set([
   'sales',
   'orders',
@@ -182,6 +184,13 @@ export function defaultPresentation(metric: string): SeriesPresentation {
   };
 }
 
+function legacyDefaultPresentation(metric: string): SeriesPresentation {
+  return {
+    mark: LEGACY_BAR_METRICS.has(metric) ? 'bar' : 'line',
+    axis: metric === 'sales' ? 'left' : defaultPresentation(metric).axis,
+  };
+}
+
 function isPresentation(value: unknown): value is SeriesPresentation {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Partial<SeriesPresentation>;
@@ -219,13 +228,79 @@ export function parseCockpitPreferences(
   }
 }
 
+/**
+ * Upgrade the first chart-preference format without throwing away the account's
+ * metric selection, aggregation, or genuine custom display choices. The v1
+ * writer persisted every default as if the operator selected it, so values
+ * equal to that former default are the only ones advanced to today's semantic
+ * preset. A presentation that differed from the former default remains an
+ * operator choice and is preserved.
+ */
+export function migrateLegacyCockpitPreferences(
+  serialized: string | null,
+  availableMetrics: readonly string[],
+): CockpitPreferences | null {
+  if (serialized === null) return null;
+  try {
+    const parsed = JSON.parse(serialized) as {
+      version?: unknown;
+      selected?: unknown;
+      granularity?: unknown;
+      presentations?: unknown;
+    };
+    if (parsed.version !== 1 || !Array.isArray(parsed.selected)) return null;
+    if (parsed.granularity !== 'D' && parsed.granularity !== 'W' && parsed.granularity !== 'M') return null;
+
+    const available = new Set(availableMetrics);
+    const selected = [...new Set(parsed.selected)]
+      .filter((metric): metric is string => typeof metric === 'string' && available.has(metric))
+      .slice(0, MAX_CHART_SERIES);
+    if (selected.length === 0) return null;
+
+    const supplied = parsed.presentations;
+    const presentations = Object.fromEntries(selected.map((metric) => {
+      const candidate = typeof supplied === 'object' && supplied !== null
+        ? (supplied as Record<string, unknown>)[metric]
+        : undefined;
+      if (!isPresentation(candidate)) return [metric, defaultPresentation(metric)];
+      const formerDefault = legacyDefaultPresentation(metric);
+      const wasFormerDefault = candidate.mark === formerDefault.mark && candidate.axis === formerDefault.axis;
+      return [metric, wasFormerDefault ? defaultPresentation(metric) : candidate];
+    }));
+
+    return {
+      version: PREFERENCE_VERSION,
+      selected,
+      granularity: parsed.granularity,
+      presentations,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function preferenceStorageKey(preferenceKey: string): string {
   return `${PREFERENCE_PREFIX}:${preferenceKey}`;
 }
 
-function readPreferences(preferenceKey: string): string | null {
+function legacyPreferenceStorageKey(preferenceKey: string): string {
+  return `${LEGACY_PREFERENCE_PREFIX}:${preferenceKey}`;
+}
+
+function readPreferences(
+  preferenceKey: string,
+  availableMetrics: readonly string[],
+): CockpitPreferences | null {
   try {
-    return window.localStorage?.getItem(preferenceStorageKey(preferenceKey)) ?? null;
+    const current = parseCockpitPreferences(
+      window.localStorage?.getItem(preferenceStorageKey(preferenceKey)) ?? null,
+      availableMetrics,
+    );
+    if (current !== null) return current;
+    return migrateLegacyCockpitPreferences(
+      window.localStorage?.getItem(legacyPreferenceStorageKey(preferenceKey)) ?? null,
+      availableMetrics,
+    );
   } catch {
     return null;
   }
@@ -418,10 +493,7 @@ export function Cockpit({
   const availableMetrics = useMemo(() => tiles.map((tile) => tile.metric), [tiles]);
 
   useEffect(() => {
-    const restored = parseCockpitPreferences(
-      readPreferences(preferenceKey),
-      availableMetrics,
-    );
+    const restored = readPreferences(preferenceKey, availableMetrics);
     if (restored === null) {
       setSelected(initialSelection);
       setGranularity('D');

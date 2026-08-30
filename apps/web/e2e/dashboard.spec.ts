@@ -1,4 +1,4 @@
-/** Four-series operator chart controls through a production build and migrated fixture. */
+/** Four-series operator chart controls through an authenticated browser fixture. */
 import { expect, test } from '@playwright/test';
 import { signIn } from './support/auth';
 import { expectDateRangePresets } from './support/date-range';
@@ -10,6 +10,11 @@ test('dashboard keeps four KPIs primary and configures four independent chart se
   await page.goto(`/dashboard?profile=${fixtureProfileId}`);
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
   await expectDateRangePresets(page);
+
+  await expect(page.getByLabel('Spend display')).toHaveValue('bar');
+  await expect(page.getByLabel('Spend axis')).toHaveValue('left');
+  await expect(page.getByLabel('Ad Sales display')).toHaveValue('line');
+  await expect(page.getByLabel('Ad Sales axis')).toHaveValue('right');
 
   const primary = page.getByRole('listbox', { name: /Primary metrics/ });
   await expect(primary.getByRole('option')).toHaveCount(4);
@@ -24,6 +29,16 @@ test('dashboard keeps four KPIs primary and configures four independent chart se
   await expect(page.locator('[data-series-mark="line"][aria-label="Spend line"]')).toBeAttached();
   await expect(page.getByRole('radio', { name: 'Daily' })).toHaveAttribute('aria-checked', 'true');
   await page.getByRole('radio', { name: 'Weekly' }).click();
+  await expect(page.getByRole('radio', { name: 'Weekly' })).toHaveAttribute('aria-checked', 'true');
+
+  await page.reload();
+  await expect(page.getByLabel('Spend display')).toHaveValue('line');
+  await expect(page.getByLabel('Spend axis')).toHaveValue('right');
+  await expect(page.getByRole('radio', { name: 'Weekly' })).toHaveAttribute('aria-checked', 'true');
+
+  await page.goto(`/optimizer?profile=${fixtureProfileId}`);
+  await expect(page.getByLabel('Spend display')).toHaveValue('line');
+  await expect(page.getByLabel('Spend axis')).toHaveValue('right');
   await expect(page.getByRole('radio', { name: 'Weekly' })).toHaveAttribute('aria-checked', 'true');
 
   const period = page.locator('.wa-cockpit__period-hit').first();
