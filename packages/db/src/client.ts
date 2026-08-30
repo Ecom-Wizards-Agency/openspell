@@ -32,6 +32,14 @@ export interface CreateDbOptions {
   connectionString: string;
   /** Pool size. The worker wants a few; a serverless request handler wants one. */
   max?: number;
+  /**
+   * Seconds before postgres.js closes an idle physical connection.
+   *
+   * A short value is important for serverless route bundles: the JavaScript
+   * client can remain warm after a response, but it must not reserve a scarce
+   * session-pool connection for the lifetime of that bundle.
+   */
+  idleTimeoutSeconds?: number;
   /** Seconds. Postgres kills the query, so a runaway report load cannot wedge a connection. */
   statementTimeoutSeconds?: number;
   onnotice?: (notice: unknown) => void;
@@ -40,6 +48,7 @@ export interface CreateDbOptions {
 export function createDb(options: CreateDbOptions): DbHandle {
   const sql = postgres(options.connectionString, {
     max: options.max ?? 5,
+    idle_timeout: options.idleTimeoutSeconds,
     prepare: false,
     onnotice: options.onnotice ?? (() => {}),
     connection:

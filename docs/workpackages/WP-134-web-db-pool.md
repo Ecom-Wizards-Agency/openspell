@@ -1,0 +1,36 @@
+# WP-134 — Web database session lifecycle
+
+## Problem
+
+Vercel packages dynamic routes independently. A warm route bundle retained a
+three-connection postgres.js pool after its response, so a serial QA sweep across
+enough routes could exhaust a small session-mode Supabase pool even though the
+browser sent only one request at a time.
+
+## Scope
+
+- Keep one lazy database handle per warm web runtime.
+- Limit that handle to one physical connection.
+- Register response-lifecycle cleanup and close the handle after its final active
+  response finishes.
+- Configure a one-second postgres.js idle timeout as a fallback when the runtime
+  cannot register a Next.js response callback.
+
+Request-scoped API clients already close in `finally` blocks and are unchanged.
+Worker pool sizes and cron concurrency are outside this package.
+
+## Acceptance evidence
+
+- Repeated module loads reuse one handle and one physical-connection allowance.
+- Two overlapping response leases do not close the shared handle until both end.
+- The next request creates a fresh handle after cleanup.
+- The idle-timeout option reaches postgres.js and explicit close reaches
+  `sql.end()`.
+- When a local test Postgres is available, the real driver test observes one
+  session after a query and zero after the configured idle interval.
+- Typecheck, lint, tests, hygiene, and the production web build pass.
+
+The release candidate must still pass the authenticated serial multi-route sweep
+before production promotion. Code-level lifecycle evidence is necessary, but it
+does not prove the behavior of a deployed serverless runtime or its configured
+database pool.
