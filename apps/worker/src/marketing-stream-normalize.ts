@@ -16,6 +16,7 @@ import {
 } from './dayparting.js';
 import {
   DbMarketingStreamRuntimeContextLoader,
+  MarketingStreamConfigurationError,
   type MarketingStreamRuntimeContextLoader,
 } from './marketing-stream-sqs.js';
 
@@ -42,7 +43,27 @@ export function createMarketingStreamNormalizeHandler(input: {
 
   return async (payload) => {
     const resolved = await resolveScopes(input.handle, payload);
-    const policy: MarketingStreamNormalizationPolicy = { ...(await contexts.load(payload)), now: now() };
+    const observedAt = now();
+    let context: Awaited<ReturnType<MarketingStreamRuntimeContextLoader['load']>>;
+    try {
+      context = await contexts.load(payload);
+    } catch (error) {
+      if (!(error instanceof MarketingStreamConfigurationError)) throw error;
+      const retryAt = new Date(observedAt.getTime() + 3_600_000);
+      const retryCreated = await input.queue.enqueue(
+        payload,
+        retryAt,
+        configurationRetryDedupeKey(payload, retryAt),
+      );
+      return {
+        requestedMessages: resolved.requestedMessages,
+        foundMessages: resolved.foundMessages,
+        requestedScopes: resolved.scopes.length,
+        projectionDeferred: true,
+        retryCreated,
+      };
+    }
+    const policy: MarketingStreamNormalizationPolicy = { ...context, now: observedAt };
     const snapshot = await store.snapshot({
       orgId: payload.orgId,
       profileId: payload.profileId,
@@ -94,6 +115,16 @@ export function createMarketingStreamNormalizeHandler(input: {
       transitionCreated,
     };
   };
+}
+
+function configurationRetryDedupeKey(
+  payload: MarketingStreamNormalizeJob,
+  retryAt: Date,
+): string {
+  const messages = createHash('sha256')
+    .update(JSON.stringify([...payload.messageIds].sort()))
+    .digest('hex');
+  return `marketing-stream:configuration:${payload.profileId}:${retryAt.toISOString().slice(0, 13)}:${messages}`;
 }
 
 function transitionDedupeKey(

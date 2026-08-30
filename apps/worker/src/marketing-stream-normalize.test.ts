@@ -3,6 +3,7 @@ import type { DbHandle, MarketingStreamSnapshot } from '@wizard-ads/db';
 import type { MarketingStreamNormalizeJob } from '@wizard-ads/shared';
 import type { MarketingStreamStore } from './dayparting.js';
 import { createMarketingStreamNormalizeHandler } from './marketing-stream-normalize.js';
+import { MarketingStreamConfigurationError } from './marketing-stream-sqs.js';
 
 const ORG = '81818181-8181-4181-8181-818181818181';
 const PROFILE = '82828282-8282-4282-8282-828282828282';
@@ -79,6 +80,32 @@ describe('Marketing Stream queued normalization', () => {
 
     await expect(handler(job())).rejects.toThrow(/replay refused/);
     expect(replacements).toEqual([]);
+  });
+
+  it('retains a durable retry when tenant policy is not configured yet', async () => {
+    const scheduled: Date[] = [];
+    const handler = createMarketingStreamNormalizeHandler({
+      handle: {} as DbHandle,
+      queue: {
+        enqueue: async (_payload, runAt) => { scheduled.push(runAt); return true; },
+      },
+      now: () => new Date('2026-08-01T10:30:00.000Z'),
+      contexts: {
+        load: async () => { throw new MarketingStreamConfigurationError('policy absent'); },
+      },
+      resolveScopes: async () => ({
+        requestedMessages: 1,
+        foundMessages: 1,
+        scopes: [{ adProduct: 'SP', utcHour: HOUR }],
+      }),
+      store: store(snapshot(), []),
+    });
+
+    await expect(handler(job())).resolves.toMatchObject({
+      projectionDeferred: true,
+      retryCreated: true,
+    });
+    expect(scheduled.map((value) => value.toISOString())).toEqual(['2026-08-01T11:30:00.000Z']);
   });
 });
 
