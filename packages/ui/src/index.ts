@@ -23,6 +23,7 @@ export const PACKAGE_NAME = '@wizard-ads/ui' as const;
 export * from './metrics.js';
 export * from './rows.js';
 export * from './filter.js';
+export * from './filter-options.js';
 export * from './sort.js';
 export * from './aggregate.js';
 export * from './columns.js';

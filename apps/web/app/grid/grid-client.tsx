@@ -532,6 +532,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
             groupBy={model.groupBy}
             onGroupByChange={(groupBy) => update({ groupBy })}
             model={model}
+            optionRows={props.rows}
             onExport={handleExport}
             views={saved}
             onApplyView={(applied) => setView(withValidGrouping(applied, available))}

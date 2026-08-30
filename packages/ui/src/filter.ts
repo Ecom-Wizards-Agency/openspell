@@ -188,17 +188,23 @@ function compileCondition(columnId: string, condition: FilterCondition): RowPred
   // numerically -- but only when the operator is one a number understands.
   const numeric = operator === 'LIKE' || operator === 'NOT_LIKE' ? null : toNumber(condition.values[0]);
   const needles = condition.values.map((value) => value.toLowerCase());
+  const exactNeedles = new Set(needles);
 
   return (row) => {
     const actual = read(row);
     if (numeric !== null && typeof actual === 'number') return compare(actual, operator, numeric);
     const text = actual === null || actual === undefined ? null : String(actual);
-    return matchText(text, operator, needles);
+    return matchText(text, operator, needles, exactNeedles);
   };
 }
 
 /** Needles arrive pre-lowercased from the compiler. */
-function matchText(actual: string | null, operator: FilterOperator, needles: readonly string[]): boolean {
+function matchText(
+  actual: string | null,
+  operator: FilterOperator,
+  needles: readonly string[],
+  exactNeedles: ReadonlySet<string>,
+): boolean {
   const haystack = (actual ?? '').toLowerCase();
   switch (operator) {
     case 'LIKE':
@@ -207,10 +213,10 @@ function matchText(actual: string | null, operator: FilterOperator, needles: rea
       return !needles.some((needle) => haystack.includes(needle));
     case '=':
     case 'IN':
-      return needles.includes(haystack);
+      return exactNeedles.has(haystack);
     case '<>':
     case 'NOT_IN':
-      return !needles.includes(haystack);
+      return !exactNeedles.has(haystack);
     default:
       throw new FilterError(`operator ${operator} is not valid on a text column`);
   }

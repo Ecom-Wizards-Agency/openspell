@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { columnsFor, defaultVisibleColumns } from './columns.js';
+import { columnsFor, defaultVisibleColumns, filterKindForColumn } from './columns.js';
 
 describe('target bid-fidelity columns', () => {
   it('offers the latest bid corridor, position and RPC classification', () => {
@@ -25,5 +25,24 @@ describe('target bid-fidelity columns', () => {
         'rpc_category',
       ]),
     );
+  });
+});
+
+describe('filter control metadata', () => {
+  it('keeps identifiers and free-form terms textual, enumerations categorical and metrics numeric', () => {
+    const searchTerms = columnsFor('search_terms');
+    expect(filterKindForColumn(searchTerms.find((column) => column.id === 'search_term')!)).toBe('text');
+    expect(filterKindForColumn(searchTerms.find((column) => column.id === 'match_type')!)).toBe('categorical');
+    expect(filterKindForColumn(searchTerms.find((column) => column.id === 'campaign_name')!)).toBe('categorical');
+    expect(filterKindForColumn(searchTerms.find((column) => column.id === 'spend')!)).toBe('numeric');
+  });
+
+  it('marks every entity state/ad-type enumeration as categorical', () => {
+    for (const level of ['campaigns', 'ad_groups', 'targets', 'search_terms', 'placements'] as const) {
+      for (const column of columnsFor(level).filter((candidate) =>
+        candidate.id.endsWith('_state') || candidate.id === 'ad_product')) {
+        expect(filterKindForColumn(column), `${level}.${column.id}`).toBe('categorical');
+      }
+    }
   });
 });

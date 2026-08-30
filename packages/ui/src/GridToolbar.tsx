@@ -18,13 +18,20 @@
 import { useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { EntityLevel, GridColumn } from './columns.js';
-import { ENTITY_LABELS, ENTITY_LEVELS } from './columns.js';
+import { ENTITY_LABELS, ENTITY_LEVELS, filterKindForColumn } from './columns.js';
 import type { Filter, FilterOperator, FilterSet } from './filter.js';
 import { columnIdToFilterKey, filterKeyToColumnId } from './filter.js';
+import {
+  buildCategoricalOptions,
+  searchFilterOptions,
+  selectAllFilterOptions,
+  toggleFilterOption,
+} from './filter-options.js';
 import { formatInteger } from './format.js';
 import { metricSpec } from './metrics.js';
 import type { GridModel } from './pipeline.js';
 import { parseFieldId } from './rows.js';
+import type { GridRow } from './rows.js';
 import type { SavedView } from './views.js';
 import { tokens } from './theme.js';
 
@@ -41,6 +48,8 @@ export interface GridToolbarProps {
   groupBy: readonly string[];
   onGroupByChange: (columnIds: string[]) => void;
   model: GridModel;
+  /** Complete authorized rows, before filters, used only to derive categorical choices. */
+  optionRows?: readonly GridRow[];
   onExport?: () => void;
   views?: readonly SavedView[];
   onApplyView?: (view: SavedView) => void;
@@ -50,7 +59,8 @@ export interface GridToolbarProps {
 }
 
 const NUMERIC_OPERATORS: readonly FilterOperator[] = ['>', '>=', '<', '<=', '=', '<>'];
-const TEXT_OPERATORS: readonly FilterOperator[] = ['LIKE', 'NOT_LIKE', '=', '<>', 'IN', 'NOT_IN'];
+const TEXT_OPERATORS: readonly FilterOperator[] = ['LIKE', 'NOT_LIKE', '=', '<>'];
+const CATEGORICAL_OPERATORS: readonly FilterOperator[] = ['IN', 'NOT_IN'];
 const OPERATOR_LABELS: Record<FilterOperator, string> = {
   LIKE: 'contains',
   NOT_LIKE: 'does not contain',
@@ -77,9 +87,12 @@ const OPERATOR_LABELS: Record<FilterOperator, string> = {
  * while showing `LIKE`. Found by driving the real UI; it threw a `FilterError`
  * from inside render and blanked the page.
  */
-function operatorsFor(filterKey: string): readonly FilterOperator[] {
-  if (filterKey === '') return TEXT_OPERATORS;
-  return parseFieldId(filterKeyToColumnId(filterKey)) !== null ? NUMERIC_OPERATORS : TEXT_OPERATORS;
+function operatorsFor(column: GridColumn | undefined): readonly FilterOperator[] {
+  if (column === undefined) return TEXT_OPERATORS;
+  const kind = filterKindForColumn(column);
+  if (kind === 'numeric') return NUMERIC_OPERATORS;
+  if (kind === 'categorical') return CATEGORICAL_OPERATORS;
+  return TEXT_OPERATORS;
 }
 
 export function GridToolbar(props: GridToolbarProps): ReactNode {
@@ -87,6 +100,9 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
   const [draftKey, setDraftKey] = useState('');
   const [draftOperator, setDraftOperator] = useState<FilterOperator>('LIKE');
   const [draftValue, setDraftValue] = useState('');
+  const [draftValues, setDraftValues] = useState<string[]>([]);
+  const [valuePickerOpen, setValuePickerOpen] = useState(false);
+  const [optionSearch, setOptionSearch] = useState('');
 
   const filters = props.filter.groups[0]?.filters ?? [];
   const dimensions = useMemo(
@@ -102,25 +118,47 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
     props.onFilterChange(next.length === 0 ? { groups: [] } : { groups: [{ filters: next }] });
   };
 
-  const addFilter = (): void => {
-    if (draftKey === '' || draftValue.trim() === '') return;
-    setFilters([
-      ...filters,
-      { key: draftKey, conditions: [{ operator: draftOperator, values: [draftValue.trim()] }] },
-    ]);
-    setDraftValue('');
-  };
-
-  const operators = operatorsFor(draftKey);
   const draftColumn = props.available.find(
     (column) => columnIdToFilterKey(column.id) === draftKey,
   );
+  const draftKind = draftColumn === undefined ? 'text' : filterKindForColumn(draftColumn);
+  const categoricalOptions = useMemo(
+    () =>
+      draftKind === 'categorical' && draftColumn !== undefined
+        ? buildCategoricalOptions(props.optionRows ?? [], draftColumn.id)
+        : [],
+    [draftColumn, draftKind, props.optionRows],
+  );
+  const matchingOptions = useMemo(
+    () => searchFilterOptions(categoricalOptions, optionSearch),
+    [categoricalOptions, optionSearch],
+  );
+
+  const addFilter = (): void => {
+    const values = draftKind === 'categorical' ? draftValues : [draftValue.trim()].filter(Boolean);
+    if (draftKey === '' || values.length === 0) return;
+    setFilters([
+      ...filters,
+      { key: draftKey, conditions: [{ operator: draftOperator, values }] },
+    ]);
+    setDraftValue('');
+    setDraftValues([]);
+    setOptionSearch('');
+    setValuePickerOpen(false);
+  };
+
+  const operators = operatorsFor(draftColumn);
 
   /** Selecting a column re-derives the operator set and snaps the draft into it. */
   const chooseKey = (key: string): void => {
     setDraftKey(key);
-    const next = operatorsFor(key);
+    const column = props.available.find((candidate) => columnIdToFilterKey(candidate.id) === key);
+    const next = operatorsFor(column);
     if (!next.includes(draftOperator)) setDraftOperator(next[0] as FilterOperator);
+    setDraftValue('');
+    setDraftValues([]);
+    setOptionSearch('');
+    setValuePickerOpen(false);
   };
 
   return (
@@ -151,17 +189,96 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
             </option>
           ))}
         </select>
-        <input
-          aria-label="Filter value"
-          value={draftValue}
-          placeholder={draftColumn === undefined ? 'Choose a field' : draftColumn.header}
-          onChange={(event) => setDraftValue(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') addFilter();
-          }}
-          style={{ ...control, width: '9rem' }}
-        />
-        <button type="button" onClick={addFilter} style={button}>
+        {draftKind === 'categorical' ? (
+          <div style={valuePickerWrap}>
+            <button
+              type="button"
+              aria-label="Filter values"
+              aria-expanded={valuePickerOpen}
+              onClick={() => setValuePickerOpen((open) => !open)}
+              style={{ ...control, ...valueTrigger }}
+            >
+              {draftValues.length === 0
+                ? `Choose ${draftColumn?.header.toLowerCase() ?? 'values'}…`
+                : `${draftValues.length} selected`}
+              <span aria-hidden>▾</span>
+            </button>
+            {valuePickerOpen ? (
+              <div role="dialog" aria-label={`${draftColumn?.header ?? 'Filter'} values`} style={valuePicker}>
+                <input
+                  aria-label="Search filter values"
+                  value={optionSearch}
+                  onChange={(event) => setOptionSearch(event.target.value)}
+                  placeholder="Search values"
+                  style={{ ...control, width: '100%', boxSizing: 'border-box' }}
+                />
+                <div style={valuePickerActions}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setDraftValues((selected) => selectAllFilterOptions(selected, matchingOptions))
+                    }
+                    disabled={matchingOptions.length === 0}
+                    style={linkButton}
+                  >
+                    Select all{optionSearch.trim() === '' ? '' : ` (${matchingOptions.length})`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDraftValues([])}
+                    disabled={draftValues.length === 0}
+                    style={linkButton}
+                  >
+                    Clear
+                  </button>
+                  <span style={optionCount}>{draftValues.length} selected</span>
+                </div>
+                <div style={optionList}>
+                  {matchingOptions.slice(0, MAX_RENDERED_OPTIONS).map((option) => (
+                    <label key={option.value.toLowerCase()} style={optionItem}>
+                      <input
+                        type="checkbox"
+                        checked={draftValues.some(
+                          (selected) => selected.toLowerCase() === option.value.toLowerCase(),
+                        )}
+                        onChange={() =>
+                          setDraftValues((selected) => toggleFilterOption(selected, option.value))
+                        }
+                      />
+                      <span>{option.label}</span>
+                    </label>
+                  ))}
+                  {matchingOptions.length === 0 ? (
+                    <p style={optionEmpty}>No values match this search.</p>
+                  ) : null}
+                </div>
+                {matchingOptions.length > MAX_RENDERED_OPTIONS ? (
+                  <p style={optionHint}>
+                    Showing the first {MAX_RENDERED_OPTIONS}. Search to narrow the list; Select all
+                    still selects all {matchingOptions.length} matches.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <input
+            aria-label="Filter value"
+            value={draftValue}
+            placeholder={draftColumn === undefined ? 'Choose a field' : draftColumn.header}
+            onChange={(event) => setDraftValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') addFilter();
+            }}
+            style={{ ...control, width: '9rem' }}
+          />
+        )}
+        <button
+          type="button"
+          onClick={addFilter}
+          disabled={draftKey === '' || (draftKind === 'categorical' ? draftValues.length === 0 : draftValue.trim() === '')}
+          style={button}
+        >
           Add
         </button>
 
@@ -412,9 +529,12 @@ export function describeFilter(filter: Filter, columns: readonly GridColumn[] = 
   const spec = ref === null ? undefined : metricSpec(ref.metric);
   const unit = spec?.scale === 'percent' || ref?.part === 'delta_percent' ? '%' : '';
   const joiner = ` ${(filter.logical_operator ?? 'AND').toLowerCase()} `;
-  const parts = filter.conditions.map(
-    (condition) => `${OPERATOR_LABELS[condition.operator ?? '=']} ${condition.values.join(', ')}${unit}`,
-  );
+  const parts = filter.conditions.map((condition) => {
+    const shown = condition.values.slice(0, 3).join(', ');
+    const remaining = Math.max(0, condition.values.length - 3);
+    const summary = `${shown}${remaining === 0 ? '' : ` +${remaining} more`}`;
+    return `${OPERATOR_LABELS[condition.operator ?? '=']} ${summary}${unit}`;
+  });
   return `${column?.header ?? filter.key} ${parts.join(joiner)}`;
 }
 
@@ -449,6 +569,76 @@ const control: CSSProperties = {
 };
 
 const button: CSSProperties = { ...control, background: 'transparent', cursor: 'pointer' };
+
+const MAX_RENDERED_OPTIONS = 200;
+
+const valuePickerWrap: CSSProperties = {
+  position: 'relative',
+};
+
+const valueTrigger: CSSProperties = {
+  alignItems: 'center',
+  cursor: 'pointer',
+  display: 'inline-flex',
+  gap: tokens.space(2),
+  justifyContent: 'space-between',
+  minWidth: '11rem',
+};
+
+const valuePicker: CSSProperties = {
+  background: tokens.color.surface,
+  border: `1px solid ${tokens.color.borderStrong}`,
+  borderRadius: tokens.radius.md,
+  boxShadow: '0 16px 40px rgb(17 21 28 / 16%)',
+  display: 'grid',
+  gap: tokens.space(2),
+  left: 0,
+  minWidth: '18rem',
+  padding: tokens.space(2),
+  position: 'absolute',
+  top: `calc(100% + ${tokens.space(1)})`,
+  zIndex: 20,
+};
+
+const valuePickerActions: CSSProperties = {
+  alignItems: 'center',
+  display: 'flex',
+  gap: tokens.space(2),
+};
+
+const optionCount: CSSProperties = {
+  color: tokens.color.textMuted,
+  fontSize: tokens.font.size.xs,
+  marginLeft: 'auto',
+};
+
+const optionList: CSSProperties = {
+  display: 'grid',
+  gap: tokens.space(0.5),
+  maxHeight: '15rem',
+  overflowY: 'auto',
+};
+
+const optionItem: CSSProperties = {
+  alignItems: 'center',
+  borderRadius: tokens.radius.sm,
+  cursor: 'pointer',
+  display: 'flex',
+  gap: tokens.space(2),
+  minHeight: '2rem',
+  padding: `0 ${tokens.space(1)}`,
+};
+
+const optionEmpty: CSSProperties = {
+  color: tokens.color.textMuted,
+  margin: tokens.space(2),
+};
+
+const optionHint: CSSProperties = {
+  color: tokens.color.textMuted,
+  fontSize: tokens.font.size.xs,
+  margin: 0,
+};
 
 const primaryButton: CSSProperties = {
   ...button,
