@@ -37,6 +37,7 @@ doctrine document; it is seeded into the database and never committed.
 |---|---|
 | Architecture and phase plan | `docs/PLAN.md` |
 | Program status | `docs/STATUS.md` |
+| Advertising API capability map | `docs/ADS-API-CAPABILITIES.md` |
 | Work package briefs | `docs/workpackages/` |
 | Rules for agents and humans | `AGENTS.md` |
 | The cross-package contracts | `packages/shared` |
