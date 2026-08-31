@@ -37,12 +37,14 @@ historical changelog.
 
 At the time of this handover branch:
 
-- `origin/main`: `31bed326ff50adce2f2016cb086d752d62be4841`.
+- `origin/main`: `e55ff36f2bf0e485c4d53dcfc610d233845cd1c7`.
 - WP-175 is merged at that revision. It preserves exact date-preset identity and gives the
   account-context browser workflow a fresh Next process. Exact-main run `33350779724` passed both
   jobs at its revision.
-- WP-172 is also merged. Exact-main run `33351492101` for the combined WP-172/WP-175 revision was
-  still running when this snapshot was refreshed.
+- WP-172 is also merged. Exact-main run `33351492101` passed both jobs for the combined
+  WP-172/WP-175 revision.
+- WP-173 is merged after its final rebased run `33351512195` passed both jobs. Exact-main run
+  `33352156827` also passed both jobs for the combined WP-172/WP-173/WP-175 revision.
 - Tracked production web evidence still identifies
   `5e372c82361776070084e0265fea8c504a0d8781`.
 - Tracked MCP evidence still identifies
@@ -78,6 +80,8 @@ Recent verified source work includes:
   currently tracked MCP runtime;
 - a hardened, staged Evo report-worker cutover package with loopback health, bounded readiness,
   one deployment lock, exact verification, and fail-closed recovery. It has not been activated;
+- strict provider-native Unified Reporting create/retrieve methods with exact indexed accounting,
+  ambiguity-safe create behavior, idempotent retrieval, and no download or promotion claim;
 - default-off password recovery, TOTP, passkey, and provider-login security paths. Provider rollout
   remains separately gated.
 
@@ -89,33 +93,17 @@ Reconcile heads and checks again before acting.
 
 ### PR #81 — WP-171 weekday schedules
 
-- Head at handover preparation: `fda57dfa5c1151b86b0bc7e5abb23223e492f98b`.
+- Head at handover preparation: `2dccb6109332cd598747a45bf2e918d5f52853e6`.
 - Replaces ambiguous cadence intervals with profile-local weekday, local-time, and timezone
   controls for optimization groups.
-- Local `pnpm check` passed after rebasing onto WP-175. Exact-head run `33350920421` passed both
-  jobs. The earlier Playwright failure combined a
+- Local `pnpm check` passed after the final rebase onto merged WP-172/WP-173/WP-175. Final
+  exact-head run `33352215777` passed both jobs. The earlier Playwright failure combined a
   four-gigabyte Next development-server heap exhaustion and the now-fixed shared date-preset bug.
 - The latest head isolates the optimization-group workflow in a fresh authenticated Next process.
-- Rebase it onto the final post-WP-173 main and require fresh checks before any later merge.
 - Do not merge before the exact-head jobs pass and the hosted schema includes
   `20260830180000_optimization_weekday_schedules.sql`. The new web code reads the new columns
   unconditionally.
 - PR #40 and its remote branch were closed/deleted because this package supersedes them.
-
-### PR #82 — WP-173 Unified Reporting client
-
-- Head at handover preparation: `5afbad3aa25cdd1a54ec9d36ac7d68be2a5b7cdd`.
-- Adds provider-native, account-scoped create and retrieve methods to `AdsApiClient` while leaving
-  Reporting v3 untouched.
-- One ordered outcome is required for every submitted item. Missing, repeated, invalid, or
-  mismatched indices fail closed.
-- Create ambiguity is never replayed blindly; retrieve remains an idempotent analytical read.
-  Provider bodies and raw provider messages are not retained.
-- Non-null completed-part shapes, downloads, hourly periods, worker scheduling, persistence,
-  promotion, live probes, and provider parity are intentionally absent.
-- Package typecheck, 260 Ads API tests, focused lint, and `pnpm check` passed locally. Run
-  `33350806171` passed both jobs on the WP-175 base. The final rebased run `33351512195`, now also
-  containing merged WP-172, was still running when this snapshot was refreshed.
 
 ### Older open work that needs an explicit decision
 
@@ -235,23 +223,20 @@ export batch exists. No live Amazon mutation is permitted under the current `AGE
 
 ## Recommended continuation order
 
-1. Finish exact-main CI for merged WP-172 and the final exact-head CI for PR #82. Diagnose
-   artifacts, not check labels.
-2. Merge #82 only when green, then require a new exact-main run.
-3. Rebase #81 onto that final main and require fresh checks, but keep it open until its hosted
-   migration gate is also closed.
-4. Update this file from the resulting `origin/main`; remove completed PR entries.
-5. Apply only the exact authorized hosted migrations through the documented operator procedure and
+1. Finish exact-main CI for the current merged source. Diagnose artifacts, not check labels.
+2. Keep CI-green PR #81 open until its hosted migration gate is closed.
+3. Update this file if either revision moves; remove completed PR entries.
+4. Apply only the exact authorized hosted migrations through the documented operator procedure and
    record sanitized count/RLS evidence.
-6. Deploy a revision-stamped web candidate from clean main, complete authenticated QA, and promote
+5. Deploy a revision-stamped web candidate from clean main, complete authenticated QA, and promote
    only after the candidate revision and route artifacts match.
-7. Stage the merged Evo report worker from that exact clean main revision. Transfer Vercel report claims
-   first, prove the legacy unit retired, then perform the attended activation and exact health/queue
-   checks. Never allow overlapping consumers.
-8. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
-9. Add the Unified Reporting worker dual-run without changing promotion authority.
-10. Implement the sidebar and Creative-copy fixes, then repeat deployed OpenSpell and competitor QA.
-11. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again.
+6. Stage the merged Evo report worker from that exact clean main revision. Transfer Vercel report
+   claims first, prove the legacy unit retired, then perform the attended activation and exact
+   health/queue checks. Never allow overlapping consumers.
+7. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
+8. Add the Unified Reporting worker dual-run without changing promotion authority.
+9. Implement the sidebar and Creative-copy fixes, then repeat deployed OpenSpell and competitor QA.
+10. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again.
 
 If an external gate blocks one lane, continue with the next independent source-only package. Do
 not reinterpret waiting as authorization to mutate production.
