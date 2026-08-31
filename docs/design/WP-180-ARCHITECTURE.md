@@ -142,6 +142,11 @@ bindings before I/O. This is the minimum unavoidable seam, per interface-depth.
   packages/ads-api/src/http.ts
     one-attempt transport primitive with deadline, cancellation, response bound,
     and redirect refusal; existing retrying httpRequest keeps its old behavior
+            |
+            v
+  packages/ads-api/src/auth.ts + headers.ts + context.ts
+    propagate the attempt-scoped signal through cold and forced LWA resolution;
+    unsignaled legacy callers retain the shared in-flight token refresh
 ```
 
 The codec owns provider knowledge even though compilation, observation parsing, and response

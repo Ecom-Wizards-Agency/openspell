@@ -360,6 +360,46 @@ describe('SP write adapter', () => {
     expect(JSON.stringify(result)).not.toContain(marker);
   });
 
+  it('bounds forced token refresh after an observation 401 with the next attempt deadline', async () => {
+    const requestedUrls: string[] = [];
+    const capture: { signal?: AbortSignal } = {};
+    let tokenRequests = 0;
+    const fetch: FetchLike = async (input, init = {}) => {
+      requestedUrls.push(input);
+      if (input === 'https://api.amazon.com/auth/o2/token') {
+        tokenRequests += 1;
+        if (tokenRequests === 1) {
+          return new Response(JSON.stringify({
+            access_token: ['synthetic', 'cached', 'token'].join('-'),
+            expires_in: 3_600,
+            token_type: 'bearer',
+          }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        if (init.signal !== undefined && init.signal !== null) capture.signal = init.signal;
+        return new Promise<Response>((_resolve, reject) => {
+          capture.signal?.addEventListener('abort', () => reject(capture.signal?.reason), { once: true });
+        });
+      }
+      if (input.endsWith('/sp/keywords/list')) {
+        return new Response(JSON.stringify({ message: 'expired' }), { status: 401 });
+      }
+      throw new Error('no later provider request is allowed');
+    };
+    const adapter = adapterWith(fetch);
+    const plan = keywordPlan();
+    const call = adapter.preparePlan(plan)[0]!;
+
+    await expect(adapter.observeCurrent({ plan, call }, { timeoutMs: 20 }))
+      .rejects.toThrow('SP write adapter refused: observation_failed');
+
+    expect(capture.signal?.aborted).toBe(true);
+    expect(requestedUrls).toEqual([
+      'https://api.amazon.com/auth/o2/token',
+      'https://advertising-api.amazon.com/sp/keywords/list',
+      'https://api.amazon.com/auth/o2/token',
+    ]);
+  });
+
   it('turns malformed provider content into closed evidence without leaking it', async () => {
     const marker = ['synthetic', 'private', 'marker'].join('-');
     const provider = fakeFetch([{ status: 207, body: {

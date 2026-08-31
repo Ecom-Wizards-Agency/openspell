@@ -546,7 +546,10 @@ describe('strict indexed 207 parsing', () => {
         success: [{ index: 1, keywordId: 'keyword-502' }],
         error: [{
           index: 0,
-          errors: [{ errorType: 'RANGE_ERROR', errorValue: ' synthetic\nreason ' }],
+          errors: [{
+            errorType: 'RANGE_ERROR',
+            errorValue: { rangeError: { message: 'synthetic reason', reason: 'TOO_LOW' } },
+          }],
         }],
       },
     }, call);
@@ -555,7 +558,7 @@ describe('strict indexed 207 parsing', () => {
     expect(result.positions.map((position) => position.outcome)).toEqual([
       'authoritative_rejected', 'accepted',
     ]);
-    expect(result.positions[0]).toMatchObject({ code: 'RANGE_ERROR', message: 'synthetic reason' });
+    expect(result.positions[0]).toMatchObject({ code: 'RANGE_ERROR', message: null });
     expect(result.positions[1]).toMatchObject({ providerEntityId: 'keyword-502' });
   });
 
@@ -585,23 +588,60 @@ describe('strict indexed 207 parsing', () => {
     });
   });
 
-  it('sanitizes and bounds provider-controlled scalar diagnostics', () => {
+  it('retains only a static allowlisted code from a valid error selector', () => {
+    const call = prepareSpWriteCalls(
+      planFor([moneyAction('sp.v3.keywords.update', '1', '1.1')]), sha256,
+    )[0]!;
+    const marker = ['synthetic', 'private', 'diagnostic'].join('-');
+    const result = parseSpWrite207({ keywords: { error: [{
+      index: 0,
+      errors: [{
+        errorType: 'RANGE_ERROR',
+        errorValue: { rangeError: { message: marker, reason: 'TOO_LOW' } },
+      }],
+    }] } }, call);
+    expect(result.kind).toBe('positions');
+    if (result.kind !== 'positions') return;
+    expect(result.positions[0]).toMatchObject({ code: 'RANGE_ERROR', message: null });
+    expect(JSON.stringify(result)).not.toContain(marker);
+  });
+
+  it.each([
+    { keywords: { success: [{ index: 0, keywordId: 'keyword-100', keyword: 'not-an-object' }] } },
+    { keywords: { error: [{
+      index: 0, errors: [{ errorType: 'RANGE_ERROR', errorValue: null }],
+    }] } },
+    { keywords: { error: [{
+      index: 0, errors: [{ errorType: 'RANGE_ERROR', errorValue: {} }],
+    }] } },
+  ])('makes malformed terminal members whole-call ambiguous without retaining them', (response) => {
+    const call = prepareSpWriteCalls(
+      planFor([moneyAction('sp.v3.keywords.update', '1', '1.1')]), sha256,
+    )[0]!;
+    const result = parseSpWrite207(response, call);
+    expect(result).toEqual({
+      kind: 'ambiguous', code: 'MALFORMED_INDEXED_RESPONSE', message: null,
+    });
+    expect(JSON.stringify(result)).not.toContain('synthetic-private-marker');
+  });
+
+  it('never retains an arbitrary schema-valid provider errorType', () => {
+    const marker = `${['refresh', 'token'].join('_')}=${['synthetic', 'private', 'marker'].join('-')}`;
     const call = prepareSpWriteCalls(
       planFor([moneyAction('sp.v3.keywords.update', '1', '1.1')]), sha256,
     )[0]!;
     const result = parseSpWrite207({ keywords: { error: [{
       index: 0,
       errors: [{
-        errorType: `BAD\u0000${'X'.repeat(300)}`,
-        errorValue: `Bearer synthetic-token-value ${'Y'.repeat(700)}`,
+        errorType: marker,
+        errorValue: { rangeError: { message: 'private', reason: 'TOO_LOW' } },
       }],
     }] } }, call);
+
     expect(result.kind).toBe('positions');
     if (result.kind !== 'positions') return;
-    expect(result.positions[0]?.code?.length).toBeLessThanOrEqual(160);
-    expect(result.positions[0]?.message?.length).toBeLessThanOrEqual(512);
-    expect(JSON.stringify(result)).not.toContain('synthetic-token-value');
-    expect(JSON.stringify(result)).not.toContain('Bearer');
+    expect(result.positions[0]).toMatchObject({ code: 'RANGE_ERROR', message: null });
+    expect(JSON.stringify(result)).not.toContain(marker);
   });
 
   it('does not retain provider-controlled malformed-response explanations', () => {

@@ -385,15 +385,38 @@ export async function httpRequestOnce(ctx: Pick<HttpContext, 'fetch'>, spec: Htt
 export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Promise<HttpResult> {
   const expected = spec.expectedStatuses ?? [];
   let tokenRefreshed = false;
+  let forceTokenRefresh = false;
   let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= ctx.retry.maxAttempts; attempt += 1) {
     const isLast = attempt === ctx.retry.maxAttempts;
     let result: HttpResult;
+    const forceForAttempt = forceTokenRefresh;
+    let forcedHeaderCompleted = !forceForAttempt;
 
     try {
-      result = await httpRequestOnce(ctx, spec);
+      result = await httpRequestOnce(ctx, {
+        ...spec,
+        headers: async (_force, signal) => {
+          if (forceForAttempt) {
+            await spec.headers(true, signal);
+            forcedHeaderCompleted = true;
+          }
+          return spec.headers(false, signal);
+        },
+      });
+      forceTokenRefresh = false;
     } catch (attemptError) {
+      if (forceForAttempt && !forcedHeaderCompleted
+        && attemptError instanceof HttpAttemptError && attemptError.phase === 'headers') {
+        // Preserve the legacy rule: a failed explicit 401 recovery is not
+        // classified as a retryable provider transport error.
+        throw attemptError.originalCause;
+      }
+      if (forcedHeaderCompleted
+        || !(attemptError instanceof HttpAttemptError) || attemptError.phase !== 'headers') {
+        forceTokenRefresh = false;
+      }
       if (spec.signal?.aborted === true) throw abortReason(spec.signal);
       if (attemptError instanceof HttpAttemptError && attemptError.phase === 'body') {
         throw attemptError.originalCause;
@@ -451,7 +474,9 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
     // revoked refresh token is how an LWA app gets rate limited.
     if (isAuthError(status) && !tokenRefreshed && !isLast) {
       tokenRefreshed = true;
-      await spec.headers(true, spec.signal);
+      // Resolve the replacement token inside the next attempt so that the
+      // same composed attempt deadline covers both LWA and provider I/O.
+      forceTokenRefresh = true;
       emit(ctx, spec, 'token-expired', attempt, status, 0, null);
       continue;
     }

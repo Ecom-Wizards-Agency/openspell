@@ -17,6 +17,7 @@ Architecture: `docs/design/WP-180-ARCHITECTURE.md`.
 - `packages/ads-api/src/sp-write-codec.ts`
 - `packages/ads-api/src/sp-write-codec.test.ts`
 - narrow changes to `packages/ads-api/src/http.ts` and `http.test.ts`
+- narrow cancellation propagation in `packages/ads-api/src/auth.ts`, `context.ts`, and `headers.ts`
 - `packages/ads-api/package.json`
 - this brief and the WP-180 architecture document
 

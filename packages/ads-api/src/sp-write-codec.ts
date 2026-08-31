@@ -12,8 +12,6 @@ import {
 } from '@wizard-ads/shared/sp-writes';
 
 const MAX_CALL_SIZE = 100;
-const MAX_DIAGNOSTIC_CODE = 160;
-const MAX_DIAGNOSTIC_MESSAGE = 512;
 const ACTION_REQUEST_DOMAIN = 'openspell.sp-write-action-request.v1';
 
 type MoneyRule = Readonly<{
@@ -75,32 +73,160 @@ type RouteSpec = Readonly<{
   requestKey: string;
   responseKey: string;
   idKey: string;
-  entityKey: string;
   listPath: string;
   listResponseKey: string;
   idFilterKey: string;
+  errorSelectorKeys: readonly string[];
 }>;
+
+type ErrorDetailPolicy = Readonly<{
+  allowedKeys: readonly string[];
+  requiredKeys: readonly string[];
+  reasons: readonly string[];
+}>;
+
+const BASIC_ERROR_KEYS = ['cause', 'message', 'reason'] as const;
+const MARKET_ERROR_KEYS = ['cause', 'marketplace', 'message', 'reason'] as const;
+
+function errorPolicy(
+  reasons: readonly string[],
+  allowedKeys: readonly string[] = BASIC_ERROR_KEYS,
+  requiredKeys: readonly string[] = ['message', 'reason'],
+): ErrorDetailPolicy {
+  return Object.freeze({ reasons, allowedKeys, requiredKeys });
+}
+
+/** Pinned OpenAPI mutation-error selector members and their reason enums. */
+const ERROR_DETAIL_POLICIES: Readonly<Record<string, ErrorDetailPolicy>> = Object.freeze({
+  adEligibilityError: errorPolicy(['AD_INELIGIBLE'], MARKET_ERROR_KEYS),
+  applicableMarketplacesError: errorPolicy(['APPLICABLE_MARKETPLACES_MISMATCH_ERROR']),
+  asinOwnershipError: errorPolicy(['ASIN_NOT_OWNED_BY_AUTHOR']),
+  biddingError: errorPolicy([
+    'BID_AUDIENCES_MORE_THAN_ALLOWED', 'BID_GT_BUDGET', 'BID_INVALID_AUDIENCE_ID',
+    'BID_INVALID_AUDIENCE_SEGMENT_TYPE', 'BID_INVALID_PLACEMENT',
+    'BID_INVALID_SHOPPER_COHORT_TYPE', 'BID_MISSING_AUDIENCES',
+    'BID_OUT_OF_MARKET_PLACE_RANGE', 'BID_SHOPPER_COHORTS_MORE_THAN_ALLOWED',
+  ], ['cause', 'lowerLimit', 'marketplace', 'message', 'reason', 'upperLimit']),
+  billingError: errorPolicy([
+    'ADVERTISER_BILLING_SETUP_INCOMPLETE', 'ADVERTISER_SUSPENDED',
+    'BILLING_ACCOUNT_NOT_FOUND', 'EXPIRED_PAYMENT_METHOD', 'PAYMENT_PROFILE_NOT_FOUND',
+    'VETTING_FAILURE',
+  ]),
+  budgetError: errorPolicy([
+    'BUDGETING_POLICY_INVALID', 'BUDGET_CURRENCY_DOES_NOT_MATCH_MARKETPLACE_SETTINGS',
+    'BUDGET_LT_DEFAULT_BIDS', 'BUDGET_LT_KEYWORD_BIDS', 'BUDGET_LT_PREDEFINED_TARGET_BIDS',
+    'BUDGET_OUT_OF_MARKET_PLACE_RANGE', 'BUDGET_TOO_HIGH', 'BUDGET_TOO_LOW',
+    'MISSING_BUDGETING_POLICY', 'MISSING_IN_BUDGET_FLAG',
+  ], ['cause', 'lowerLimit', 'message', 'reason', 'upperLimit']),
+  currencyError: errorPolicy([
+    'CANNOT_UPDATE_CURRENCY', 'CURRENCY_NOT_MATCHING_PREFERRED_CURRENCY',
+    'CURRENCY_NOT_SUPPORTED', 'PREFERRED_CURRENCY_NOT_SET',
+  ]),
+  dateError: errorPolicy([
+    'END_DATE_EARLIER_THAN_TODAY', 'END_DATE_LATER_THAN_MAXIMUM', 'INVALID_DATE',
+    'START_DATE_AFTER_END_DATE', 'START_DATE_EARLIER_THAN_TODAY',
+    'START_DATE_LATER_THAN_MAXIMUM', 'UPDATING_ENDED_CAMPAIGN_WITHOUT_EXTENSION',
+    'UPDATING_READ_ONLY_END_DATE', 'UPDATING_READ_ONLY_START_DATE',
+  ]),
+  duplicateValueError: errorPolicy([
+    'DUPLICATE_VALUE', 'MARKETPLACE_ATTRIBUTES_REPEATED', 'NAME_NOT_UNIQUE',
+  ], MARKET_ERROR_KEYS),
+  entityNotFoundError: errorPolicy(
+    ['ENTITY_NOT_FOUND'],
+    ['cause', 'entityId', 'entityType', 'message', 'reason'],
+    ['entityId', 'entityType', 'message', 'reason'],
+  ),
+  entityQuotaError: errorPolicy(
+    ['NON_ARCHIVED_QUOTA_EXCEEDED', 'QUOTA_EXCEEDED'],
+    ['cause', 'entityType', 'message', 'quota', 'quotaScope', 'reason'],
+    ['entityType', 'message', 'reason'],
+  ),
+  entityStateError: errorPolicy([
+    'ARCHIVED_ENTITY_CANNOT_BE_MODIFIED', 'AUTO_TARGETING_CLAUSE_CANNOT_BE_ARCHIVED_MANUALLY',
+    'INVALID_STATE_TRANSITION', 'INVALID_TARGET_STATE', 'MARKETPLACE_STATE_CANNOT_BE_ARCHIVED',
+    'PARENT_ARCHIVED_FORBIDS_UPDATES', 'PARENT_ENTITY_FORBIDS_CREATION',
+    'PARENT_STATUS_FORBIDS_UPDATES_AND_CREATES',
+  ], ['cause', 'entityType', 'marketplace', 'message', 'reason'], ['entityType', 'message', 'reason']),
+  expressionTypeError: errorPolicy(['UNSUPPORTED_EXPRESSION_TYPE']),
+  internalServerError: errorPolicy(['INTERNAL_ERROR']),
+  localeError: errorPolicy(['INVALID_LOCALE']),
+  malformedValueError: errorPolicy(
+    ['BLANK', 'FORBIDDEN_CHARS', 'LEADING_OR_TRAILING_WHITESPACE', 'PATTERN_NOT_MATCHED',
+      'TOO_LONG', 'TOO_SHORT'],
+    ['cause', 'fragment', 'marketplace', 'message', 'reason'],
+  ),
+  missingValueError: errorPolicy(['MISSING_VALUE'], MARKET_ERROR_KEYS),
+  otherError: errorPolicy(['OTHER_ERROR'], MARKET_ERROR_KEYS),
+  parentEntityError: errorPolicy([
+    'PARENT_ENTITY_ARCHIVED', 'PARENT_ENTITY_DOES_NOT_TARGET_THESE_MARKETPLACES',
+    'PARENT_ENTITY_NOT_FOUND',
+  ]),
+  productIdentifierError: errorPolicy(['INVALID_ASIN', 'INVALID_SKU'], MARKET_ERROR_KEYS),
+  rangeError: errorPolicy(
+    ['INVALID_ENUM_VALUE', 'NOT_IN_LIST', 'TOO_HIGH', 'TOO_LOW'],
+    ['allowed', 'cause', 'lowerLimit', 'marketplace', 'message', 'reason', 'upperLimit'],
+  ),
+  targetingClauseSetupError: errorPolicy([
+    'AUTO_TARGETING_CLAUSE_CANNOT_BE_CREATED_MANUALLY', 'TARGETING_EXPRESSION_INVALID_VALUE',
+    'TARGETING_TYPE_NOT_ALLOWED_FOR_AUTO_TARGETING_CAMPAIGN', 'TYPE_CONFLICT_IN_AD_GROUP',
+  ], MARKET_ERROR_KEYS),
+  throttledError: errorPolicy(['THROTTLED']),
+  unsupportedOperationError: errorPolicy(['UNSUPPORTED_OPERATION']),
+});
+
+const ERROR_SELECTOR_KEYS: Readonly<Record<SpWriteRouteKey, readonly string[]>> = Object.freeze({
+  'sp.v3.campaigns.update': [
+    'biddingError', 'billingError', 'budgetError', 'currencyError', 'dateError',
+    'duplicateValueError', 'entityNotFoundError', 'entityQuotaError', 'entityStateError',
+    'internalServerError', 'malformedValueError', 'missingValueError', 'otherError',
+    'parentEntityError', 'rangeError', 'throttledError',
+  ],
+  'sp.v3.ad_groups.update': [
+    'applicableMarketplacesError', 'biddingError', 'billingError', 'duplicateValueError',
+    'entityNotFoundError', 'entityQuotaError', 'entityStateError', 'internalServerError',
+    'malformedValueError', 'missingValueError', 'otherError', 'parentEntityError',
+    'rangeError', 'throttledError',
+  ],
+  'sp.v3.keywords.update': [
+    'biddingError', 'billingError', 'duplicateValueError', 'entityNotFoundError',
+    'entityQuotaError', 'entityStateError', 'internalServerError', 'localeError',
+    'malformedValueError', 'missingValueError', 'otherError', 'parentEntityError',
+    'rangeError', 'targetingClauseSetupError', 'throttledError',
+  ],
+  'sp.v3.targets.update': [
+    'biddingError', 'billingError', 'duplicateValueError', 'entityNotFoundError',
+    'entityQuotaError', 'entityStateError', 'expressionTypeError', 'internalServerError',
+    'malformedValueError', 'missingValueError', 'otherError', 'parentEntityError',
+    'rangeError', 'targetingClauseSetupError', 'throttledError',
+  ],
+  'sp.v3.product_ads.update': [
+    'adEligibilityError', 'asinOwnershipError', 'billingError', 'duplicateValueError',
+    'entityNotFoundError', 'entityQuotaError', 'entityStateError', 'internalServerError',
+    'malformedValueError', 'missingValueError', 'otherError', 'parentEntityError',
+    'productIdentifierError', 'rangeError', 'throttledError', 'unsupportedOperationError',
+  ],
+});
 
 const ROUTES: Readonly<Record<SpWriteRouteKey, RouteSpec>> = Object.freeze({
   'sp.v3.campaigns.update': route(
     '/sp/campaigns', 'application/vnd.spCampaign.v3+json', 'campaigns',
-    'campaignId', 'campaign', 'campaignIdFilter',
+    'campaignId', 'campaignIdFilter', ERROR_SELECTOR_KEYS['sp.v3.campaigns.update'],
   ),
   'sp.v3.ad_groups.update': route(
     '/sp/adGroups', 'application/vnd.spAdGroup.v3+json', 'adGroups',
-    'adGroupId', 'adGroup', 'adGroupIdFilter',
+    'adGroupId', 'adGroupIdFilter', ERROR_SELECTOR_KEYS['sp.v3.ad_groups.update'],
   ),
   'sp.v3.keywords.update': route(
     '/sp/keywords', 'application/vnd.spKeyword.v3+json', 'keywords',
-    'keywordId', 'keyword', 'keywordIdFilter',
+    'keywordId', 'keywordIdFilter', ERROR_SELECTOR_KEYS['sp.v3.keywords.update'],
   ),
   'sp.v3.targets.update': route(
     '/sp/targets', 'application/vnd.spTargetingClause.v3+json', 'targetingClauses',
-    'targetId', 'targetingClause', 'targetIdFilter',
+    'targetId', 'targetIdFilter', ERROR_SELECTOR_KEYS['sp.v3.targets.update'],
   ),
   'sp.v3.product_ads.update': route(
     '/sp/productAds', 'application/vnd.spProductAd.v3+json', 'productAds',
-    'adId', 'productAd', 'adIdFilter',
+    'adId', 'adIdFilter', ERROR_SELECTOR_KEYS['sp.v3.product_ads.update'],
   ),
 });
 
@@ -109,8 +235,8 @@ function route(
   mediaType: string,
   requestKey: string,
   idKey: string,
-  entityKey: string,
   idFilterKey: string,
+  errorSelectorKeys: readonly string[],
 ): RouteSpec {
   return Object.freeze({
     path,
@@ -118,10 +244,10 @@ function route(
     requestKey,
     responseKey: requestKey,
     idKey,
-    entityKey,
     listPath: `${path}/list`,
     listResponseKey: requestKey,
     idFilterKey,
+    errorSelectorKeys,
   });
 }
 
@@ -136,7 +262,7 @@ export type SpWriteCompiledCall = Readonly<{
     requestKey: string;
     responseKey: string;
     idKey: string;
-    entityKey: string;
+    errorSelectorKeys: readonly string[];
     body: string;
   }>;
   observation: Readonly<{
@@ -246,7 +372,7 @@ function compileCall(
       requestKey: spec.requestKey,
       responseKey: spec.responseKey,
       idKey: spec.idKey,
-      entityKey: spec.entityKey,
+      errorSelectorKeys: spec.errorSelectorKeys,
       body: JSON.stringify({ [spec.requestKey]: rows }),
     }),
     observation: Object.freeze({
@@ -610,7 +736,9 @@ export function parseSpWrite207(
       const success = requiredRecord(rawSuccess, 'SP write 207 success row');
       assertOnlyKeys(
         success,
-        ['index', call.mutation.idKey, call.mutation.entityKey],
+        // The OpenAPI makes a full entity optional. Version 1 rejects it even
+        // when object-shaped rather than trusting a partial entity codec.
+        ['index', call.mutation.idKey],
         'SP write 207 success row',
       );
       const index = responseIndex(success['index'], call.positions.length);
@@ -643,18 +771,15 @@ export function parseSpWrite207(
       const errorRows = requiredArray(failure, 'errors', 'SP write 207 error details');
       if (errorRows.length < 1) throw new Error('SP write 207 error row has no details');
       let code: string | null = null;
-      let message: string | null = null;
       errorRows.forEach((rawDetail, detailIndex) => {
         const detail = requiredRecord(rawDetail, `SP write 207 error detail ${detailIndex}`);
         assertOnlyKeys(detail, ['errorType', 'errorValue'], `SP write 207 error detail ${detailIndex}`);
-        if (!Object.hasOwn(detail, 'errorValue')) {
-          throw new Error('SP write 207 error detail has no errorValue');
-        }
-        const errorType = requiredString(detail['errorType'], 'SP write 207 error type');
-        if (code === null) code = sanitizeDiagnostic(errorType, MAX_DIAGNOSTIC_CODE);
-        if (message === null && typeof detail['errorValue'] === 'string') {
-          message = sanitizeDiagnostic(detail['errorValue'], MAX_DIAGNOSTIC_MESSAGE);
-        }
+        requiredString(detail['errorType'], 'SP write 207 error type');
+        const staticCode = validateErrorSelector(
+          detail['errorValue'],
+          call.mutation.errorSelectorKeys,
+        );
+        if (code === null) code = staticCode;
       });
       const intended = call.positions[index]!;
       positions.set(index, {
@@ -665,7 +790,7 @@ export function parseSpWrite207(
         outcome: 'authoritative_rejected',
         providerEntityId: null,
         code,
-        message,
+        message: null,
       });
     }
 
@@ -804,6 +929,79 @@ function responseIndex(raw: unknown, submitted: number): number {
   return raw as number;
 }
 
+const ERROR_MARKETPLACES: readonly string[] = [
+  'AE', 'AU', 'BR', 'CA', 'DE', 'EG', 'ES', 'FR', 'IN', 'IT', 'JP', 'MX',
+  'NL', 'PL', 'SA', 'SE', 'SG', 'TR', 'UK', 'US',
+] as const;
+const ERROR_ENTITY_TYPES: readonly string[] = [
+  'AD_GROUP', 'CAMPAIGN', 'CAMPAIGN_NEGATIVE_KEYWORD',
+  'CAMPAIGN_NEGATIVE_TARGETING_CLAUSE', 'KEYWORD', 'NEGATIVE_KEYWORD',
+  'NEGATIVE_TARGETING_CLAUSE', 'PRODUCT_AD', 'TARGETING_CLAUSE',
+] as const;
+
+function validateErrorSelector(
+  raw: unknown,
+  allowedSelectorKeys: readonly string[],
+): string {
+  const selector = requiredRecord(raw, 'SP write 207 error selector');
+  const selectorKeys = Object.keys(selector);
+  if (selectorKeys.length !== 1) {
+    throw new Error('SP write 207 error selector must contain exactly one member');
+  }
+  const selectorKey = selectorKeys[0]!;
+  if (!allowedSelectorKeys.includes(selectorKey)) {
+    throw new Error('SP write 207 error selector is not valid for this route');
+  }
+  const policy = ERROR_DETAIL_POLICIES[selectorKey];
+  if (policy === undefined) throw new Error('SP write 207 error selector has no pinned policy');
+  const staticCode = selectorKey.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase();
+
+  const detail = requiredRecord(selector[selectorKey], 'SP write 207 selected error');
+  assertOnlyKeys(detail, policy.allowedKeys, 'SP write 207 selected error');
+  for (const requiredKey of policy.requiredKeys) {
+    if (!Object.hasOwn(detail, requiredKey)) {
+      throw new Error('SP write 207 selected error omits a required member');
+    }
+  }
+  for (const [key, value] of Object.entries(detail)) {
+    if (key === 'cause') {
+      const cause = requiredRecord(value, 'SP write 207 error cause');
+      assertOnlyKeys(cause, ['location', 'trigger'], 'SP write 207 error cause');
+      requiredString(cause['location'], 'SP write 207 error cause location');
+      if (cause['trigger'] !== undefined) {
+        requiredString(cause['trigger'], 'SP write 207 error cause trigger');
+      }
+    } else if (key === 'allowed') {
+      const allowed = requiredArray(detail, key, 'SP write 207 error allowed values');
+      allowed.forEach((candidate) => requiredString(candidate, 'SP write 207 allowed value'));
+    } else {
+      requiredString(value, `SP write 207 error ${key}`);
+    }
+  }
+
+  const reason = requiredString(detail['reason'], 'SP write 207 error reason');
+  if (!policy.reasons.includes(reason)) throw new Error('SP write 207 error reason is unknown');
+  const marketplace = detail['marketplace'];
+  if (marketplace !== undefined) {
+    const value = requiredString(marketplace, 'SP write 207 error marketplace');
+    if (!ERROR_MARKETPLACES.includes(value)) {
+      throw new Error('SP write 207 error marketplace is unknown');
+    }
+  }
+  const entityType = detail['entityType'];
+  if (entityType !== undefined) {
+    const value = requiredString(entityType, 'SP write 207 error entity type');
+    if (!ERROR_ENTITY_TYPES.includes(value)) {
+      throw new Error('SP write 207 error entity type is unknown');
+    }
+  }
+  const quotaScope = detail['quotaScope'];
+  if (quotaScope !== undefined && quotaScope !== 'ACCOUNT' && quotaScope !== 'PARENT_ENTITY') {
+    throw new Error('SP write 207 error quota scope is unknown');
+  }
+  return staticCode;
+}
+
 function requiredPercentage(raw: unknown, label: string): number {
   if (!Number.isInteger(raw) || (raw as number) < 0 || (raw as number) > 900) {
     throw new Error(`${label} must be an integer from 0 through 900`);
@@ -856,18 +1054,4 @@ function assertOnlyKeys(
 
 function assertOneOf(value: string, allowed: readonly string[], label: string): void {
   if (!allowed.includes(value)) throw new Error(`SP ${label} has an unsupported value`);
-}
-
-function sanitizeDiagnostic(value: string, maximum: number): string | null {
-  const withoutControls = [...value].map((character) => {
-    const codePoint = character.codePointAt(0)!;
-    return codePoint <= 31 || codePoint === 127 ? ' ' : character;
-  }).join('');
-  const compact = withoutControls
-    .replace(/\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi, '[redacted]')
-    .replace(/\b(?:Atza|amzn1)[A-Za-z0-9._~+/=-]{8,}/gi, '[redacted]')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, maximum);
-  return compact.length === 0 ? null : compact;
 }
