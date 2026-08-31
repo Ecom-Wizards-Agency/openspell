@@ -37,12 +37,12 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- `origin/main` is `4a0d91c0495ae62096360c0b3b9e94fb151d4183`. PR #88 exact-head run
-  `33390222064` and exact-main run `33391341005` both passed the typecheck/lint/test/hygiene and
+- `origin/main` is `3d30f52908f86f994c2ce22163b81addeb727a8e`. PR #89 exact-head run
+  `33401540530` and exact-main run `33402961215` both passed the typecheck/lint/test/hygiene and
   production-build Playwright jobs.
 - Production web health and the READY Vercel deployment behind the public alias agree on
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, seven commits behind current main.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 147 commits behind
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 13 commits behind current main.
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 153 commits behind
   current main, and still returns the legacy `wizard-ads` service shape.
 - The new Evo report-worker unit is not installed and its loopback health is unavailable. The
   legacy integration worker is active with zero recorded restarts, but exposes no revision stamp.
@@ -51,8 +51,9 @@ At the time this handover was reconciled:
 - Current source, deployed web, deployed MCP, and the active worker are not one proven release. Do
   not describe post-deployment main features as live until a revision-stamped candidate is promoted
   and checked.
-- `docs/STATUS.md` was reconciled against the older web revision and is stale for WP-149 onward.
-  Use Git, CI, code, the migration ledger, and live health as evidence; then update status prose.
+- `docs/STATUS.md` now records WP-179 and WP-180, but the implementation-wave table remains
+  incomplete between WP-149 and WP-178. Use Git, CI, code, the migration ledger, and live health as
+  evidence; then update status prose.
 
 Re-run:
 
@@ -86,6 +87,10 @@ Recent verified source work includes:
 - inert, guarded Sponsored Products update-plan contracts under the explicit
   `@wizard-ads/shared/sp-writes` subpath, with exact fingerprints, bounded provider accounting,
   complete placement-state evidence, and no job, migration, provider call, or worker activation;
+- an inert Sponsored Products provider adapter under the explicit
+  `@wizard-ads/ads-api/sp-write-adapter` subpath, with complete observation, marketplace decimal
+  policy, one-attempt mutation transport, strict indexed-result closure, cancellation-safe
+  credentials, and no worker consumer or live provider activation;
 - default-off password recovery, TOTP, passkey, and provider-login security paths. Provider rollout
   remains separately gated.
 
@@ -111,14 +116,15 @@ Reconcile heads and checks again before acting.
 
 ### Older open work that needs an explicit decision
 
-- PR #17: contextual-negative review/export; 146 commits behind and conflicting. Preserve its useful
+- PR #17: contextual-negative review/export; 152 commits behind and conflicting. Preserve its useful
   brief and rescue the distinct negative workflow promptly, or close it as superseded.
-- PR #24: guarded Sponsored Products write gateway; 104 commits behind and conflicting. WP-179
-  supersedes its shared-contract portion. Preserve only its still-distinct adapter, persistence,
-  and worker ideas through current, separately reviewed slices, then close the old PR.
-- PR #35: release-artifact checks; conflicting and partly superseded by the merged release
-  transport. Port only the still-distinct SVG, Grid context/date, brand, and recommendation artifact
-  assertions into the current verifier, then close it.
+- PR #24: guarded Sponsored Products write gateway; 110 commits behind and conflicting. WP-179 and
+  WP-180 supersede its shared-contract and provider-adapter portions. Preserve only its
+  still-distinct persistence and worker ideas through current, separately reviewed slices, then
+  close the old PR.
+- PR #35: release-artifact checks; 110 commits behind, conflicting and partly superseded by the
+  merged release transport. Port only the still-distinct SVG, Grid context/date, brand, and
+  recommendation artifact assertions into the current verifier, then close it.
 Do not keep stale pull requests merely as storage. Preserve useful design in a current brief,
 replace or rebase live work, and close branches that are proven superseded.
 
@@ -247,9 +253,10 @@ an exact current-task authorization.
 7. Add the Unified Reporting worker dual-run without changing promotion authority.
 8. After PR #81 clears its overlapping web files, implement the sidebar-scroll regression package.
 9. Continue the useful old-PR slices in dependency order: WP-179's inert Sponsored Products
-   contract is merged; next implement the pure provider adapter, then persistence and worker slices
-   behind separate gates. Close PR #24 after its distinct work is preserved. Follow with contextual
-   negatives and distinctive release-artifact assertions.
+   contract and WP-180's inert provider adapter are merged; next reconcile the hosted ledger and
+   obtain exact migration authorization before the persistence slice, then implement the worker
+   slice behind a separate gate. Close PR #24 after its distinct work is preserved. Follow with
+   contextual negatives and distinctive release-artifact assertions.
 10. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again.
 
 If an external gate blocks one lane, continue with the next independent source-only package. Do

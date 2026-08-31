@@ -2,7 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated`.
 
-Source and deployment headers reconciled 2026-08-31 against `origin/main` at `4a0d91c`. The
+Source and deployment headers reconciled 2026-08-31 against `origin/main` at `3d30f52`. The
 implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
 the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
 the implementation is reachable from the recorded main revision. It does not by itself mean
@@ -119,7 +119,7 @@ implementation brief in `docs/workpackages/`.
 | 90 | Weekday preview schedule | review | open PR; profile-local weekdays schedule recommendation previews only |
 | 91 | Live route performance | in-progress | Grid and Time Machine remain above the live targets recorded below |
 | 93 | Guarded Amazon write policy | merged; runtime gated | manually approved writes are authorized only through immutable worker plans, allowlists, audit and resync; no general live mutation path exists |
-| 96 | Guarded Sponsored Products write gateway | review; contract superseded | WP-179 replaces the stale PR's shared-contract portion; adapter, persistence and worker slices remain unmerged and all runtime gates remain closed |
+| 96 | Guarded Sponsored Products write gateway | review; contract and adapter superseded | WP-179 and WP-180 replace the stale PR's shared-contract and provider-adapter portions; persistence and worker slices remain unmerged and all runtime gates remain closed |
 | 110 | Focused operator navigation | merged and deployed | task-oriented groups and quiet utility footer |
 | 112 | Release-artifact checks | review | open PR; exact distinctive runtime artifacts still need reconciliation |
 | 113 | OpenSpell MCP connection name | merged and deployed in web | setup snippets use `openspell`; stable environment-variable and package identifiers remain unchanged |
@@ -143,6 +143,7 @@ implementation brief in `docs/workpackages/`.
 | 147 | Marketing Stream correctness recovery | in-progress | signed revisions, settling, budget corrections, locking and subscription identity are under fresh-tree review |
 | 148 | Live release evidence | in-progress | current revision, CI, deployment, authenticated QA and open gaps reconciled without runtime changes |
 | 179 | Guarded SP write contracts | merged; runtime gated | inert update-plan, approval, fingerprint and bounded provider-result contracts merged in `4a0d91c` under `@wizard-ads/shared/sp-writes`; no job, migration, provider call, worker executor or deployment was activated |
+| 180 | Guarded SP provider adapter | merged; runtime gated | complete observation, marketplace decimal conversion and one-attempt mutation semantics merged in `3d30f52` under `@wizard-ads/ads-api/sp-write-adapter`; no worker consumer, migration, deployment, provider grant or live mutation was activated |
 
 ## Milestone gates
 
@@ -156,6 +157,11 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-08-31 PR #89 exact-head run `33401540530` and exact-main run `33402961215` passed both
+  jobs before and after the inert Sponsored Products provider adapter merged at `3d30f52`.
+  Production web remains at `44da7ac`, 13 commits behind; production MCP remains at `b5c210d`, 153
+  commits behind; the worker revision is still unproven. No migration, deployment, provider grant
+  or Amazon write was activated.
 - On 2026-08-31 PR #88 exact-head run `33390222064` and exact-main run `33391341005` passed both
   jobs before and after the guarded Sponsored Products contracts merged at `4a0d91c`. Production
   web remains at `44da7ac`, seven commits behind; production MCP remains at `b5c210d`, 147 commits

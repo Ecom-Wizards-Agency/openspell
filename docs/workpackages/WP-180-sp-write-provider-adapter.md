@@ -116,16 +116,16 @@ must not contain a profile roster, client data, credentials, or tenant doctrine 
 
 ## Acceptance
 
-- [ ] Architecture is committed before implementation.
-- [ ] The explicit subpath compiles and the root barrel remains unchanged.
-- [ ] Every preparation and observation refusal proves zero mutation calls.
-- [ ] Every execution outcome proves at most one mutation fetch and exact position closure.
-- [ ] Marketplace money and complete placement behavior are executable, not prose-only.
-- [ ] High correctness review reports no unresolved blocker/high finding.
-- [ ] Extra-High adversarial safety review reports no unresolved blocker/high finding.
-- [ ] Package tests, full repository checks, build, Playwright, and hygiene pass.
-- [ ] PR exact-head CI passes both jobs before merge.
-- [ ] Handover/status update only after merge and continues with the persistence slice.
+- [x] Architecture is committed before implementation.
+- [x] The explicit subpath compiles and the root barrel remains unchanged.
+- [x] Every preparation and observation refusal proves zero mutation calls.
+- [x] Every execution outcome proves at most one mutation fetch and exact position closure.
+- [x] Marketplace money and complete placement behavior are executable, not prose-only.
+- [x] High correctness review reports no unresolved blocker/high finding.
+- [x] Extra-High adversarial safety review reports no unresolved blocker/high finding.
+- [x] Package tests, full repository checks, build, Playwright, and hygiene pass.
+- [x] PR exact-head CI passes both jobs before merge.
+- [x] Handover/status update only after merge and continues with the persistence slice.
 
 ## Deliberately deferred
 
