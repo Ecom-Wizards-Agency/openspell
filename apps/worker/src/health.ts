@@ -25,6 +25,7 @@ export function startHealthServer(
   worker: SyncWorker,
   port: number,
   components: WorkerHealthComponents,
+  host = '0.0.0.0',
 ): Promise<Server> {
   const server = createServer((request, response) => {
     if (request.method !== 'GET' || request.url !== '/healthz') {
@@ -60,7 +61,7 @@ export function startHealthServer(
   });
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '0.0.0.0', () => resolve(server));
+    server.listen(port, host, () => resolve(server));
   });
 }
 

@@ -78,4 +78,15 @@ describe('worker health readiness', () => {
     expect(payload.deployment.revision).toBe('unknown');
     expect(JSON.stringify(payload)).not.toContain('private-host-detail');
   });
+
+  it('can bind the health endpoint to loopback only', async () => {
+    const worker = {
+      status: () => ({ workerId: 'synthetic', stopping: false, running: 0 }),
+    } as SyncWorker;
+    const server = await startHealthServer(worker, 0, { deployment }, '127.0.0.1');
+    servers.push(server);
+    const address = server.address() as AddressInfo;
+    expect(address.address).toBe('127.0.0.1');
+    expect((await fetch(`http://127.0.0.1:${address.port}/healthz`)).status).toBe(200);
+  });
 });
