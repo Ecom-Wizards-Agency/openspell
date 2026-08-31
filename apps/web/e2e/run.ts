@@ -1,9 +1,9 @@
 /**
  * The one entry point for this app's browser tests.
  *
- * ## Why there are eight suites and not one
+ * ## Why there are nine suites and not one
  *
- * `apps/web` carries eight end-to-end suites that need mutually exclusive
+ * `apps/web` carries nine end-to-end suites that need mutually exclusive
  * servers, so they run one after the other rather than under a single config:
  *
  *  - **tags-goto** (WP-08, and WP-15's feedback surfaces) serves a
@@ -14,6 +14,9 @@
  *  - **grid-performance** serves the same authenticated `next dev` boundary in
  *    its own process. Its large fixture must not leave retained route/payload
  *    memory behind while the complete role suite compiles every other route.
+ *  - **optimization-groups** gives WP-171's strategy editor a fresh process.
+ *    Adding that route graph to the already broad auth suite crossed the
+ *    shared runner's four-gigabyte heap even though its own assertions passed.
  *  - **profile-context** compiles every account-scoped operator route while
  *    proving navigation identity. It owns a fresh process so those route
  *    graphs cannot exhaust the broad auth process after unrelated workflows.
@@ -38,17 +41,18 @@
  *    heap after the assertions themselves had passed.
  *
  * Merging them would mean weakening one guard or accepting a suite that cannot
- * hydrate. Sequential is the honest answer: eight named configs, one runner.
+ * hydrate. Sequential is the honest answer: nine named configs, one runner.
  *
- * Each suite owns its own database, and the eight never overlap: this file
+ * Each suite owns its own database, and the nine never overlap: this file
  * creates and drops the tags-goto database, while each authenticated suite's
  * `global-setup.ts` creates and drops its own (plus the fake Amazon and the dev
  * server). The admin connection comes from `WIZARD_ADS_TEST_DATABASE_URL` (or
  * `DATABASE_URL`), the same variable the Vitest database suites use.
  *
- *   pnpm --filter @wizard-ads/web test:e2e             # all eight, in order
+ *   pnpm --filter @wizard-ads/web test:e2e             # all nine, in order
  *   pnpm --filter @wizard-ads/web test:e2e:tags-goto   # just WP-08
  *   pnpm --filter @wizard-ads/web test:e2e:grid-performance
+ *   pnpm --filter @wizard-ads/web test:e2e:optimization-groups
  *   pnpm --filter @wizard-ads/web test:e2e:profile-context
  *   pnpm --filter @wizard-ads/web test:e2e:auth        # auth/operator routes without members, OAuth, roles, or the isolated Grid load
  *   pnpm --filter @wizard-ads/web test:e2e:auth-members # member and invitation flows in a fresh process
@@ -453,6 +457,7 @@ async function authenticated(
     | 'playwright.auth-oauth.config.ts'
     | 'playwright.auth-roles.config.ts'
     | 'playwright.grid-performance.config.ts'
+    | 'playwright.optimization-groups.config.ts'
     | 'playwright.profile-context.config.ts'
     | 'playwright.route-acceptance.config.ts',
   playwrightArgs: string[],
@@ -487,6 +492,10 @@ async function gridPerformance(playwrightArgs: string[]): Promise<number> {
   return await authenticated('playwright.grid-performance.config.ts', playwrightArgs);
 }
 
+async function optimizationGroups(playwrightArgs: string[]): Promise<number> {
+  return await authenticated('playwright.optimization-groups.config.ts', playwrightArgs);
+}
+
 async function profileContext(playwrightArgs: string[]): Promise<number> {
   return await authenticated('playwright.profile-context.config.ts', playwrightArgs);
 }
@@ -511,17 +520,19 @@ async function main(): Promise<number> {
         ? await tagsGoto(playwrightArgs)
         : suite === 'grid-performance'
           ? await gridPerformance(playwrightArgs)
-          : suite === 'profile-context'
-            ? await profileContext(playwrightArgs)
-            : suite === 'auth'
-              ? await auth(playwrightArgs)
-              : suite === 'auth-members'
-                ? await authMembers(playwrightArgs)
-              : suite === 'auth-oauth'
-                ? await authOauth(playwrightArgs)
-              : suite === 'auth-roles'
-                ? await authRoles(playwrightArgs)
-                : await routeAcceptance(playwrightArgs);
+          : suite === 'optimization-groups'
+            ? await optimizationGroups(playwrightArgs)
+            : suite === 'profile-context'
+              ? await profileContext(playwrightArgs)
+              : suite === 'auth'
+                ? await auth(playwrightArgs)
+                : suite === 'auth-members'
+                  ? await authMembers(playwrightArgs)
+                  : suite === 'auth-oauth'
+                    ? await authOauth(playwrightArgs)
+                    : suite === 'auth-roles'
+                      ? await authRoles(playwrightArgs)
+                      : await routeAcceptance(playwrightArgs);
     // Every suite runs even when an earlier one fails: a red run should report
     // the whole picture, not just the first thing that broke.
     if (code !== 0) worst = code;

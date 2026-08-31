@@ -114,6 +114,9 @@ and a JSON-only group schedule, which would weaken constraints and indexing.
   next-occurrence advancement, manual weekday bypass and disabled-group exclusion.
 - Web tests cover native weekday controls, non-empty selection, timezone/hour/next-due copy and
   viewer restrictions.
+- The optimization-group browser workflow owns a fresh authenticated Next process. Adding its
+  route graph to the already broad auth suite exhausted the shared runner's four-gigabyte heap;
+  the isolated suite keeps that infrastructure failure separate from product assertions.
 - Full typecheck, lint, tests, hygiene and web build must pass before merge.
 
 ## Production gate

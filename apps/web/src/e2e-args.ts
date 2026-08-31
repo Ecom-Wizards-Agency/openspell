@@ -2,6 +2,7 @@
 export const E2E_SUITES = [
   'tags-goto',
   'grid-performance',
+  'optimization-groups',
   'profile-context',
   'auth',
   'auth-members',

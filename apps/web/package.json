@@ -12,6 +12,7 @@
     "test:e2e": "tsx e2e/run.ts",
     "test:e2e:tags-goto": "tsx e2e/run.ts tags-goto",
     "test:e2e:grid-performance": "tsx e2e/run.ts grid-performance",
+    "test:e2e:optimization-groups": "tsx e2e/run.ts optimization-groups",
     "test:e2e:profile-context": "tsx e2e/run.ts profile-context",
     "test:e2e:auth": "tsx e2e/run.ts auth",
     "test:e2e:auth-members": "tsx e2e/run.ts auth-members",
