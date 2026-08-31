@@ -56,9 +56,22 @@ const approved = verifySpWriteApprovalArtifacts(
 );
 ```
 
-The database issues the immutable receipt from authenticated facts. A manual receipt authorizes one
-plan. A bounded live-test receipt may also bind one separately frozen exact inverse plan. A boolean
-"rollback allowed" flag is not sufficient.
+The database issues the immutable receipt from authenticated facts, then the boundary verifies that
+the receipt still binds the same request, plan, authorization, and inverse artifacts. A manual
+receipt authorizes one plan. A bounded live-test receipt may also bind one separately frozen exact
+inverse plan. A boolean "rollback allowed" flag is not sufficient:
+
+```ts
+const receiptArtifacts = verifySpWriteAuthorizationReceiptArtifacts(
+  verifiedPlan,
+  exactInversePlanOrNull,
+  request,
+  boundedAuthorizationOrNull,
+  databaseIssuedReceipt,
+  databaseNow,
+  sha256Hasher,
+);
+```
 
 The future worker verifies the joined artifacts, reads the exact current provider state, and asks
 the write ledger to reserve one call:
@@ -69,6 +82,7 @@ const candidate = verifySpWriteDispatchArtifacts(
   receipt,
   job,
   currentEvidence,
+  sourceExecutionEvidenceOrNull,
   providerObservation,
   proposedIntent,
   databaseNow,
@@ -234,14 +248,17 @@ persistence and execution exist. Their payloads are fenced pointers, not grants 
 ### Intent, results, observations, and accounting
 
 One write-ahead call intent binds the plan, receipt, execution generation, route key, DB-issued
-lease identity, fresh provider-observation fingerprint, whole-request digest, and the complete
-zero-based request positions with action and per-position request fingerprints. One call contains
-one route and at most 100 provider rows.
+lease identity, provider-observation fingerprint, whole-request digest, and the complete zero-based
+request positions with action and per-position request fingerprints. The direct provider observation
+expires no more than two minutes after it was taken. One call contains one route and at most 100
+provider rows.
 
 Every result accounts for every intended position as `accepted`, `authoritative_rejected`, or
 `ambiguous`. Missing or duplicated indexes, malformed 207 bodies, transport loss, unclassified 5xx,
-and crashes after intent become ambiguity. Once an intent exists, the current contract never
-automatically sends that action again. A later write requires a new reviewed plan unless a future
+and crashes after intent become ambiguity. An observation can close a row only after a durable
+provider result marks the attempt complete, and observation remains allowed after mutation authority
+expires. Once an intent exists, the current contract never automatically sends that action again. A
+later write requires a new reviewed plan unless a future
 provider contract proves non-application with stronger evidence.
 
 Post-write observations bind the exact intent, request and action fingerprints, source sync job,

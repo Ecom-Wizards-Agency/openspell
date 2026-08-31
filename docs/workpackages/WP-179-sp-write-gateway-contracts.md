@@ -50,15 +50,18 @@ and other irreversible or immutable provider operations are excluded.
 6. An inverse is a separately frozen plan that exactly swaps one observed source execution. Manual
    rollback needs fresh approval. Only a bounded live test may bind one exact inverse in advance.
 7. Approval request JSON cannot supply actor, approval time, execution generation, gate evidence,
-   or lease. The DB-issued receipt binds those facts and exact counts.
+   or lease. The DB-issued receipt binds those facts and exact counts, and a compound verifier joins
+   it back to the exact approval, authorization, and inverse artifacts.
 8. The gitignored bounded authorization shape names exact scopes, entities, change keys, maxima,
    expiry, one active mutation, one test cycle, and mandatory observation-before-inverse.
 9. A write-ahead intent binds a fresh direct provider observation, one route, exact zero-based
    positions, request fingerprints, execution generation, and lease identity before provider I/O.
+   The observation's validity window is capped at two minutes.
 10. An intent without a result is ambiguous. No action is automatically sent again after intent
     under version 1.
 11. Results account for every intended position. Provider acceptance remains distinct from fresh
-    synchronized observation.
+    synchronized observation. Observation requires a durable terminal result, follows its completion
+    time, and remains recordable after write authority expires.
 12. Accounting and execution status derive from exact evidence. No caller may select success.
 13. Future `sp_write.dispatch` and `sp_write.observe` schemas remain absent from current `JobPayload`.
 14. Pure artifact verification is not live authority. The later persistence slice must use one
