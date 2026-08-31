@@ -1,9 +1,9 @@
 /**
  * The one entry point for this app's browser tests.
  *
- * ## Why there are five suites and not one
+ * ## Why there are six suites and not one
  *
- * `apps/web` carries five end-to-end suites that need mutually exclusive
+ * `apps/web` carries six end-to-end suites that need mutually exclusive
  * servers, so they run one after the other rather than under a single config:
  *
  *  - **tags-goto** (WP-08, and WP-15's feedback surfaces) serves a
@@ -14,6 +14,9 @@
  *  - **grid-performance** serves the same authenticated `next dev` boundary in
  *    its own process. Its large fixture must not leave retained route/payload
  *    memory behind while the complete role suite compiles every other route.
+ *  - **profile-context** compiles every account-scoped operator route while
+ *    proving navigation identity. It owns a fresh process so those route
+ *    graphs cannot exhaust the broad auth process after unrelated workflows.
  *  - **route-acceptance** uses the authenticated boundary in a fresh process.
  *    It compiles the optimizer, creative, strategy, and dashboard routes; doing
  *    that after the complete auth sweep leaves enough development route graphs
@@ -29,17 +32,18 @@
  *    heap after the assertions themselves had passed.
  *
  * Merging them would mean weakening one guard or accepting a suite that cannot
- * hydrate. Sequential is the honest answer: five named configs, one runner.
+ * hydrate. Sequential is the honest answer: six named configs, one runner.
  *
- * Each suite owns its own database, and the five never overlap: this file
+ * Each suite owns its own database, and the six never overlap: this file
  * creates and drops the tags-goto database, while each authenticated suite's
  * `global-setup.ts` creates and drops its own (plus the fake Amazon and the dev
  * server). The admin connection comes from `WIZARD_ADS_TEST_DATABASE_URL` (or
  * `DATABASE_URL`), the same variable the Vitest database suites use.
  *
- *   pnpm --filter @wizard-ads/web test:e2e             # all five, in order
+ *   pnpm --filter @wizard-ads/web test:e2e             # all six, in order
  *   pnpm --filter @wizard-ads/web test:e2e:tags-goto   # just WP-08
  *   pnpm --filter @wizard-ads/web test:e2e:grid-performance
+ *   pnpm --filter @wizard-ads/web test:e2e:profile-context
  *   pnpm --filter @wizard-ads/web test:e2e:auth        # auth/operator routes without roles or the isolated Grid load
  *   pnpm --filter @wizard-ads/web test:e2e:auth-roles  # settings role matrix in a fresh process
  *   pnpm --filter @wizard-ads/web test:e2e:route-acceptance
@@ -439,6 +443,7 @@ async function authenticated(
     | 'playwright.auth.config.ts'
     | 'playwright.auth-roles.config.ts'
     | 'playwright.grid-performance.config.ts'
+    | 'playwright.profile-context.config.ts'
     | 'playwright.route-acceptance.config.ts',
   playwrightArgs: string[],
 ): Promise<number> {
@@ -464,6 +469,10 @@ async function gridPerformance(playwrightArgs: string[]): Promise<number> {
   return await authenticated('playwright.grid-performance.config.ts', playwrightArgs);
 }
 
+async function profileContext(playwrightArgs: string[]): Promise<number> {
+  return await authenticated('playwright.profile-context.config.ts', playwrightArgs);
+}
+
 async function routeAcceptance(playwrightArgs: string[]): Promise<number> {
   return await authenticated('playwright.route-acceptance.config.ts', playwrightArgs);
 }
@@ -484,11 +493,13 @@ async function main(): Promise<number> {
         ? await tagsGoto(playwrightArgs)
         : suite === 'grid-performance'
           ? await gridPerformance(playwrightArgs)
-          : suite === 'auth'
-            ? await auth(playwrightArgs)
-            : suite === 'auth-roles'
-              ? await authRoles(playwrightArgs)
-            : await routeAcceptance(playwrightArgs);
+          : suite === 'profile-context'
+            ? await profileContext(playwrightArgs)
+            : suite === 'auth'
+              ? await auth(playwrightArgs)
+              : suite === 'auth-roles'
+                ? await authRoles(playwrightArgs)
+                : await routeAcceptance(playwrightArgs);
     // Every suite runs even when an earlier one fails: a red run should report
     // the whole picture, not just the first thing that broke.
     if (code !== 0) worst = code;

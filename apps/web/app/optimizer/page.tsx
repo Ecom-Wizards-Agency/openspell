@@ -47,7 +47,13 @@ import { runOptimizerNow } from './actions';
 export const dynamic = 'force-dynamic';
 
 interface PageProps {
-  searchParams: Promise<{ profile?: string; from?: string; to?: string; run?: string }>;
+  searchParams: Promise<{
+    profile?: string;
+    from?: string;
+    to?: string;
+    run?: string;
+    preset?: string;
+  }>;
 }
 
 export default async function OptimizerPage({ searchParams }: PageProps): Promise<ReactNode> {
@@ -194,7 +200,12 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
           path="/optimizer"
           period={period}
           today={today}
-          preserved={{ profile: profile.id, ...(run === null ? {} : { run: run.id }) }}
+          selectedPresetId={params.preset}
+          preserved={{
+            profile: profile.id,
+            ...(run === null ? {} : { run: run.id }),
+            preset: params.preset,
+          }}
         />
 
         <FreshnessBar assessment={freshness} />
