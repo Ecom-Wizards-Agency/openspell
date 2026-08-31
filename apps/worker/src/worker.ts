@@ -51,6 +51,7 @@ import {
   type SqpQueuedJobContext,
 } from './sqp.js';
 import type { WeeklySqpScheduleProducer } from './sqp-scheduler.js';
+import type { UnifiedDualRun } from './unified-reporting.js';
 
 const MINUTE_MS = 60_000;
 const FOUR_HOURS_MS = 4 * 60 * MINUTE_MS;
@@ -114,6 +115,8 @@ export interface SyncWorkerOptions {
   recommendationsRun?: RecommendationsRun;
   /** Read-only current-snapshot SB Video ingestion and sbAds promotion. */
   sbVideo?: SbVideoIngestionRuntime;
+  /** Default-off Unified Reporting metadata sidecar. Never promotes facts. */
+  unifiedReporting?: UnifiedDualRun;
   buckets?: RegionTokenBuckets;
   claimBatchSize?: number;
   maxConcurrentJobs?: number;
@@ -131,6 +134,7 @@ export class SyncWorker {
   private readonly crosscheckIngest: CrosscheckIngest | undefined;
   private readonly recommendationsRun: RecommendationsRun | undefined;
   private readonly sbVideo: SbVideoIngestionRuntime | undefined;
+  private readonly unifiedReporting: UnifiedDualRun | undefined;
   private readonly buckets: RegionTokenBuckets;
   private readonly claimBatchSize: number;
   private readonly maxConcurrentJobs: number;
@@ -149,6 +153,7 @@ export class SyncWorker {
     this.crosscheckIngest = options.crosscheckIngest;
     this.recommendationsRun = options.recommendationsRun;
     this.sbVideo = options.sbVideo;
+    this.unifiedReporting = options.unifiedReporting;
     this.buckets = options.buckets ?? defaultRegionTokenBuckets;
     this.claimBatchSize = options.claimBatchSize ?? 10;
     this.maxConcurrentJobs = options.maxConcurrentJobs ?? 10;
@@ -316,6 +321,10 @@ export class SyncWorker {
       payload.orgId !== job.orgId ||
       payload.profileId !== job.profileId
     ) return;
+    if (payload.type === 'report.unified.advance') {
+      await this.unifiedReporting?.failTerminal(payload, error);
+      return;
+    }
     const reportRequestId = payload.type === 'report.request'
       ? job.id
       : payload.type === 'report.poll' || payload.type === 'report.fetch'
@@ -346,6 +355,16 @@ export class SyncWorker {
         return this.pollReport(profile, payload);
       case 'report.fetch':
         return this.fetchReport(profile, payload);
+      case 'report.unified.advance':
+        if (!this.unifiedReporting) {
+          throw new PermanentJobError('Unified Reporting sidecar is not configured on this worker');
+        }
+        return this.unifiedReporting.advance({
+          jobId: job.id,
+          attempts: job.attempts,
+          profile,
+          payload,
+        });
       case 'recommendations.run':
         if (!this.recommendationsRun) {
           throw new PermanentJobError('recommendations runner is not configured on this worker');
@@ -543,7 +562,24 @@ export class SyncWorker {
       reportRequestId: ledger.id, amazonReportId, attempt: 0,
     };
     const enqueued = await this.store.enqueue(pollPayload, addMinutes(this.now(), 5), `report.poll:${ledger.id}:0`);
-    return { reportRequestId: ledger.id, amazonReportId, pollEnqueued: enqueued };
+    let unified: Awaited<ReturnType<UnifiedDualRun['admit']>> = { kind: 'disabled' };
+    if (this.unifiedReporting) {
+      try {
+        unified = await this.unifiedReporting.admit({
+          v3ReportRequestId: ledger.id,
+          profile,
+          reportType: payload.reportType,
+          startDate: payload.startDate,
+          endDate: payload.endDate,
+        });
+      } catch {
+        unified = { kind: 'local_failed' };
+        this.logger.error('Unified Reporting sidecar admission failed', {
+          reportRequestId: ledger.id,
+        });
+      }
+    }
+    return { reportRequestId: ledger.id, amazonReportId, pollEnqueued: enqueued, unified };
   }
 
   private async pollReport(

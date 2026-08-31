@@ -1,9 +1,14 @@
 import {
   AdsApiClient as UnderlyingAdsApiClient,
   AdsApiHttpError,
+  AdsApiParseError,
   AdsApiTimeoutError,
   AdsThrottleError,
   DuplicateReportError,
+  type UnifiedReportBatchResult,
+  type UnifiedReportDefinition,
+  type UnifiedReportMetadata as ProviderUnifiedReportMetadata,
+  type UnifiedReportOutcome,
   type CreativeAssetProbePage,
   type ReportMetadata,
   type SbAdProbePage,
@@ -78,6 +83,44 @@ export interface AdsApiClient {
   downloadReport(url: string): Promise<AsyncIterable<Uint8Array>>;
   listProfiles(region: Region): Promise<readonly string[]>;
 }
+
+/**
+ * The worker's deliberately separate Unified Reporting capability.
+ *
+ * Unified requests are advertiser-account scoped and have non-idempotent
+ * create semantics, so folding them into the established Reporting v3
+ * interface would make existing v3 callers and test doubles learn rules that
+ * do not apply to them.
+ */
+export interface UnifiedReportingClient {
+  createUnifiedReport(input: CreateUnifiedReportInput): Promise<UnifiedReportCreateResult>;
+  retrieveUnifiedReport(input: RetrieveUnifiedReportInput): Promise<UnifiedReportRetrieveResult>;
+}
+
+export interface CreateUnifiedReportInput {
+  profile: AdsProfileContext;
+  advertiserAccountId: string;
+  definition: UnifiedReportDefinition;
+}
+
+export interface RetrieveUnifiedReportInput {
+  profile: AdsProfileContext;
+  reportId: string;
+}
+
+/**
+ * Metadata which may safely cross into the worker domain. Provider failure
+ * text is intentionally excluded: it can echo account or query inputs.
+ */
+export type UnifiedReportMetadata = Omit<ProviderUnifiedReportMetadata, 'failureReason'>;
+
+export type UnifiedReportCreateResult =
+  | { kind: 'created'; metadata: UnifiedReportMetadata }
+  | { kind: 'refused'; codes: readonly (string | null)[] };
+
+export type UnifiedReportRetrieveResult =
+  | { kind: 'observed'; metadata: UnifiedReportMetadata }
+  | { kind: 'refused'; codes: readonly (string | null)[] };
 
 /** One target's Amazon suggested-bid corridor for the day (WP-27 read). */
 export interface SuggestedBidRead {
@@ -162,6 +205,8 @@ export type UnderlyingClient = Pick<
   | 'getProfiles'
   | 'createReport'
   | 'getReport'
+  | 'createUnifiedReports'
+  | 'retrieveUnifiedReports'
   // INTEGRATE (WP-28): the two WP-27 suggested-bid reads the bid-series sync
   // drives. Added to the Pick so a unit test can mock only these without HTTP.
   | 'getSpKeywordBidRecommendations'
@@ -210,7 +255,7 @@ const KNOWN_REPORT_STATUSES = new Set<AdsReportStatus['status']>([
  * so the fetch re-polls, and everything else is left as-is for the generic
  * attempt counter to age out into the dead-letter.
  */
-export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideoContractProbeClient {
+export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, SuggestedBidClient, SbVideoContractProbeClient {
   private readonly clients = new Map<string, UnderlyingClient>();
   private readonly fetch: FetchLike;
 
@@ -297,6 +342,36 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
     const client = await this.clientForProfile(profile);
     const meta = await this.guard(profile.region, () => client.getReport(profile.amazonProfileId, reportId));
     return this.toReportStatus(meta);
+  }
+
+  /**
+   * Submit exactly one Unified definition for one explicitly bound advertiser
+   * account. Do not pass this through `guard`: WP-173's ambiguous-create error
+   * must reach the coordinator unchanged and must never become retryable here.
+   */
+  async createUnifiedReport(input: CreateUnifiedReportInput): Promise<UnifiedReportCreateResult> {
+    const client = await this.clientForProfile(input.profile);
+    const outcome = singleUnifiedOutcome(await client.createUnifiedReports({
+      advertiserAccountIds: [input.advertiserAccountId],
+      reports: [input.definition],
+    }));
+    if (outcome.kind === 'error') {
+      return { kind: 'refused', codes: outcome.errors.map((error) => error.code) };
+    }
+    return { kind: 'created', metadata: workerUnifiedMetadata(outcome.report) };
+  }
+
+  /**
+   * Retrieve exactly one known Unified report. WP-173 owns transport retries
+   * for this idempotent read; this adapter adds no retry policy of its own.
+   */
+  async retrieveUnifiedReport(input: RetrieveUnifiedReportInput): Promise<UnifiedReportRetrieveResult> {
+    const client = await this.clientForProfile(input.profile);
+    const outcome = singleUnifiedOutcome(await client.retrieveUnifiedReports([input.reportId]));
+    if (outcome.kind === 'error') {
+      return { kind: 'refused', codes: outcome.errors.map((error) => error.code) };
+    }
+    return { kind: 'observed', metadata: workerUnifiedMetadata(outcome.report) };
   }
 
   async downloadReport(url: string): Promise<AsyncIterable<Uint8Array>> {
@@ -466,6 +541,33 @@ export class DbAdsApiClient implements AdsApiClient, SuggestedBidClient, SbVideo
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * WP-181 deliberately sends one batch item. Treat any response that violates
+ * the client boundary's exact accounting as a local contract failure rather
+ * than choosing an arbitrary outcome to persist.
+ */
+function singleUnifiedOutcome<TSubmitted>(
+  result: UnifiedReportBatchResult<TSubmitted>,
+): UnifiedReportOutcome<TSubmitted> {
+  const [outcome] = result.outcomes;
+  if (
+    result.submittedCount !== 1
+    || result.outcomes.length !== 1
+    || outcome === undefined
+    || outcome.index !== 0
+  ) {
+    throw new AdsApiParseError(
+      'Unified report response did not account for exactly one submitted item',
+    );
+  }
+  return outcome;
+}
+
+function workerUnifiedMetadata(metadata: ProviderUnifiedReportMetadata): UnifiedReportMetadata {
+  const { failureReason: _failureReason, ...safeMetadata } = metadata;
+  return safeMetadata;
 }
 
 async function* emptyStream(): AsyncGenerator<Uint8Array> {

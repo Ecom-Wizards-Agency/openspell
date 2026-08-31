@@ -8,8 +8,12 @@ import {
   AdsApiHttpError,
   AdsThrottleError,
   DuplicateReportError,
+  UnifiedReportCreateAmbiguousError,
   type MirrorRow,
   type ReportMetadata,
+  type UnifiedReportBatchResult,
+  type UnifiedReportDefinition,
+  type UnifiedReportMetadata,
 } from '@wizard-ads/ads-api';
 import type { CampaignRow, KeywordRow, Region } from '@wizard-ads/shared';
 import { describe, expect, it, vi } from 'vitest';
@@ -35,6 +39,12 @@ const profile: AdsProfileContext = {
 
 const CONNECTION_ID = '99999999-9999-4999-8999-999999999999';
 
+const unifiedDefinition: UnifiedReportDefinition = {
+  format: 'CSV',
+  periods: [{ startDate: '2026-08-01', endDate: '2026-08-07' }],
+  fields: ['advertiserAccount.id', 'campaign.id', 'metric.impressions'],
+};
+
 function emptyList() {
   return { items: [], pages: 1, truncated: false, nextToken: null, raw: [], skipped: [] };
 }
@@ -57,6 +67,8 @@ function underlying(overrides: Partial<UnderlyingClient> = {}): UnderlyingClient
     getProfiles: async () => [],
     createReport: async () => reportMeta('PENDING'),
     getReport: async () => reportMeta('PENDING'),
+    createUnifiedReports: async () => unifiedCreatedBatch('unified-created'),
+    retrieveUnifiedReports: async () => unifiedObservedBatch('unified-observed'),
     getSpKeywordBidRecommendations: async () => emptyRecommendations(),
     getSpTargetBidRecommendations: async () => emptyRecommendations(),
   };
@@ -79,6 +91,46 @@ function reportMeta(status: string, extra: Partial<ReportMetadata> = {}): Report
     createdAt: null,
     updatedAt: null,
     ...extra,
+  };
+}
+
+function unifiedMetadata(reportId: string, extra: Partial<UnifiedReportMetadata> = {}): UnifiedReportMetadata {
+  return {
+    reportId,
+    status: 'PENDING',
+    format: 'CSV',
+    periods: [{ startDate: '2026-08-01', endDate: '2026-08-07' }],
+    fields: ['advertiserAccount.id', 'campaign.id', 'metric.impressions'],
+    filter: null,
+    linkedAdvertiserAccountIds: ['synthetic-advertiser-account'],
+    createdAt: '2026-08-08T00:00:00Z',
+    updatedAt: '2026-08-08T00:00:01Z',
+    completedAt: null,
+    currencyOfView: null,
+    locale: null,
+    timeZoneMode: null,
+    failureCode: null,
+    failureReason: null,
+    completedParts: { kind: 'not-returned' },
+    ...extra,
+  };
+}
+
+function unifiedCreatedBatch(reportId: string): UnifiedReportBatchResult<UnifiedReportDefinition> {
+  return {
+    submittedCount: 1,
+    outcomes: [{
+      kind: 'success', index: 0, submitted: unifiedDefinition, report: unifiedMetadata(reportId),
+    }],
+  };
+}
+
+function unifiedObservedBatch(reportId: string): UnifiedReportBatchResult<string> {
+  return {
+    submittedCount: 1,
+    outcomes: [{
+      kind: 'success', index: 0, submitted: reportId, report: unifiedMetadata(reportId),
+    }],
   };
 }
 
@@ -275,6 +327,110 @@ describe('DbAdsApiClient.createReport', () => {
     });
     const { adapter } = makeAdapter(client);
     await expect(adapter.createReport(input)).rejects.not.toBeInstanceOf(AdsApiRetryableError);
+  });
+});
+
+describe('DbAdsApiClient Unified Reporting capability', () => {
+  const createInput = {
+    profile,
+    advertiserAccountId: 'synthetic-advertiser-account',
+    definition: unifiedDefinition,
+  };
+
+  it('creates exactly one Unified item through the profile connection and returns metadata', async () => {
+    const createUnifiedReports = vi.fn(async () => unifiedCreatedBatch('unified-created-42'));
+    const { adapter, createClient } = makeAdapter(underlying({ createUnifiedReports }));
+
+    await expect(adapter.createUnifiedReport(createInput)).resolves.toMatchObject({
+      kind: 'created', metadata: { reportId: 'unified-created-42', status: 'PENDING' },
+    });
+    expect(createClient).toHaveBeenCalledWith({
+      connectionId: CONNECTION_ID,
+      region: profile.region,
+      refreshToken: 'refresh-token',
+    });
+    expect(createUnifiedReports).toHaveBeenCalledTimes(1);
+    expect(createUnifiedReports).toHaveBeenCalledWith({
+      advertiserAccountIds: [createInput.advertiserAccountId],
+      reports: [unifiedDefinition],
+    });
+  });
+
+  it('returns only refusal codes for an indexed create refusal', async () => {
+    const providerMessage = 'provider message which must not reach the worker';
+    const client = underlying({
+      createUnifiedReports: async () => ({
+        submittedCount: 1,
+        outcomes: [{
+          kind: 'error', index: 0, submitted: unifiedDefinition,
+          errors: [{ code: 'QUERY_INVALID', message: providerMessage }],
+        }],
+      }),
+    });
+    const { adapter } = makeAdapter(client);
+
+    const result = await adapter.createUnifiedReport(createInput);
+
+    expect(result).toEqual({ kind: 'refused', codes: ['QUERY_INVALID'] });
+    expect(JSON.stringify(result)).not.toContain(providerMessage);
+  });
+
+  it('rejects a malformed one-item create response instead of choosing an outcome', async () => {
+    const client = underlying({
+      createUnifiedReports: async () => ({
+        submittedCount: 2,
+        outcomes: [{
+          kind: 'success', index: 0, submitted: unifiedDefinition, report: unifiedMetadata('unified-extra'),
+        }],
+      }),
+    });
+    const { adapter } = makeAdapter(client);
+
+    await expect(adapter.createUnifiedReport(createInput))
+      .rejects.toThrow(/exactly one submitted item/);
+  });
+
+  it('preserves an ambiguous create unchanged and does not retry it', async () => {
+    const ambiguous = new UnifiedReportCreateAmbiguousError(1, 'transport', null);
+    const createUnifiedReports = vi.fn(async () => { throw ambiguous; });
+    const { adapter } = makeAdapter(underlying({ createUnifiedReports }));
+
+    await expect(adapter.createUnifiedReport(createInput)).rejects.toBe(ambiguous);
+    expect(createUnifiedReports).toHaveBeenCalledTimes(1);
+  });
+
+  it('retrieves one report and excludes metadata failure text', async () => {
+    const rawFailureReason = 'provider failure text which must not reach the worker';
+    const retrieveUnifiedReports = vi.fn(async (): Promise<UnifiedReportBatchResult<string>> => ({
+      submittedCount: 1,
+      outcomes: [{
+        kind: 'success', index: 0, submitted: 'unified-observed-42',
+        report: unifiedMetadata('unified-observed-42', { failureReason: rawFailureReason }),
+      }],
+    }));
+    const { adapter } = makeAdapter(underlying({ retrieveUnifiedReports }));
+
+    const result = await adapter.retrieveUnifiedReport({ profile, reportId: 'unified-observed-42' });
+
+    expect(result).toMatchObject({ kind: 'observed', metadata: { reportId: 'unified-observed-42' } });
+    expect(JSON.stringify(result)).not.toContain(rawFailureReason);
+    expect(retrieveUnifiedReports).toHaveBeenCalledWith(['unified-observed-42']);
+  });
+
+  it('returns only refusal codes for an indexed retrieve refusal', async () => {
+    const client = underlying({
+      retrieveUnifiedReports: async () => ({
+        submittedCount: 1,
+        outcomes: [{
+          kind: 'error', index: 0, submitted: 'unified-refused',
+          errors: [{ code: null, message: 'provider message must not reach the worker' }],
+        }],
+      }),
+    });
+    const { adapter } = makeAdapter(client);
+
+    await expect(adapter.retrieveUnifiedReport({ profile, reportId: 'unified-refused' }))
+      .resolves.toEqual({ kind: 'refused', codes: [null] });
   });
 });
 

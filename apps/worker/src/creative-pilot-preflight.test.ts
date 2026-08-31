@@ -8,6 +8,7 @@ import { parseCreativePilotPreflightArgs } from './creative-pilot-preflight-cli.
 
 const REVISION = 'abcdef1234567';
 const CLAIMS = ['creative.sync', 'report.request', 'report.poll', 'report.fetch'] as const;
+const UNIFIED_CLAIMS = [...CLAIMS, 'report.unified.advance'] as const;
 
 describe('Creative pilot worker health', () => {
   it('accepts only sanitized exact deployment metadata', () => {
@@ -65,6 +66,20 @@ describe('Creative pilot readiness', () => {
       amazonWriteCalls: 0,
       migrationsApplied: 0,
     });
+  });
+
+  it('accepts the source-defined expanded report lane without weakening exact matching', () => {
+    const result = evaluateCreativePilotPreflight(databaseEvidence(), {
+      status: 'ok',
+      worker: { stopping: false, running: 0 },
+      deployment: {
+        revision: REVISION,
+        role: 'evo-report-lane',
+        jobTypes: UNIFIED_CLAIMS,
+      },
+    }, REVISION);
+    expect(result.ready).toBe(true);
+    expect(result.worker.claimSetMatches).toBe(true);
   });
 
   it.each([

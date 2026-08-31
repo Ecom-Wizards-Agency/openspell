@@ -3,9 +3,13 @@ import {
   CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV,
   DEFAULT_VERCEL_CRON_JOB_TYPES,
   EVO_REPORT_LANE_JOB_TYPES,
+  MAX_UNIFIED_REPORTING_PROFILE_IDS,
+  UNIFIED_EVO_REPORT_LANE_JOB_TYPES,
+  UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV,
   REDUCED_VERCEL_CRON_JOB_TYPES,
   parseCreativeSyncProfileAllowlist,
   resolveCreativeSyncPilotPolicy,
+  resolveUnifiedReportingDualRunPolicy,
   resolveWorkerDeploymentPolicy,
   vercelCronJobTypesFromEnv,
 } from './deployment-role.js';
@@ -120,6 +124,81 @@ describe('bounded Creative producer cohort', () => {
       expect(message).toContain(CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV);
       expect(message).not.toContain(malformed);
       expect(message).not.toContain(PROFILE_ONE);
+    }
+  });
+});
+
+describe('bounded Unified Reporting dual run', () => {
+  const expanded = resolveWorkerDeploymentPolicy(
+    'evo-report-lane',
+    UNIFIED_EVO_REPORT_LANE_JOB_TYPES,
+    true,
+  );
+
+  it('keeps absent and zero gates inert without inspecting deployment values', () => {
+    expect(resolveUnifiedReportingDualRunPolicy({}, {
+      role: 'general', jobTypes: undefined, startsBackgroundPasses: true,
+    })).toEqual({ enabled: false, profileIds: [] });
+    expect(resolveUnifiedReportingDualRunPolicy({
+      OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY: '0',
+      [UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV]: 'not-a-uuid',
+    }, {
+      role: 'general', jobTypes: undefined, startsBackgroundPasses: true,
+    })).toEqual({ enabled: false, profileIds: [] });
+  });
+
+  it('requires the exclusive handoff, expanded claim set, and canonical cohort', () => {
+    expect(resolveUnifiedReportingDualRunPolicy({
+      OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY: '1',
+      OPENSPELL_EVO_REPORT_LANE_READY: '1',
+      [UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV]: ` ${PROFILE_ONE.toUpperCase()},${PROFILE_TWO} `,
+    }, expanded)).toEqual({ enabled: true, profileIds: [PROFILE_ONE, PROFILE_TWO] });
+
+    expect(() => resolveUnifiedReportingDualRunPolicy({
+      OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY: '1',
+      OPENSPELL_EVO_REPORT_LANE_READY: '0',
+      [UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV]: PROFILE_ONE,
+    }, expanded)).toThrow(/exclusive Evo report lane/);
+
+    expect(() => resolveUnifiedReportingDualRunPolicy({
+      OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY: '1',
+      OPENSPELL_EVO_REPORT_LANE_READY: '1',
+      [UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV]: PROFILE_ONE,
+    }, {
+      role: 'evo-report-lane', jobTypes: EVO_REPORT_LANE_JOB_TYPES, startsBackgroundPasses: false,
+    })).toThrow(/expanded Evo claim set/);
+  });
+
+  it('accepts the expanded claim set only when the feature gate selects it', () => {
+    expect(expanded.jobTypes).toBe(UNIFIED_EVO_REPORT_LANE_JOB_TYPES);
+    expect(() => resolveWorkerDeploymentPolicy(
+      'evo-report-lane', UNIFIED_EVO_REPORT_LANE_JOB_TYPES,
+    )).toThrow(/4-type Evo report lane/);
+    expect(() => resolveWorkerDeploymentPolicy(
+      'evo-report-lane', EVO_REPORT_LANE_JOB_TYPES, true,
+    )).toThrow(/5-type Evo report lane/);
+  });
+
+  it('caps the enabled Unified cohort without echoing roster values', () => {
+    const oversized = Array.from(
+      { length: MAX_UNIFIED_REPORTING_PROFILE_IDS + 1 },
+      (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+    ).join(',');
+    expect(() => resolveUnifiedReportingDualRunPolicy({
+      OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY: '1',
+      OPENSPELL_EVO_REPORT_LANE_READY: '1',
+      [UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV]: oversized,
+    }, expanded)).toThrow(`at most ${MAX_UNIFIED_REPORTING_PROFILE_IDS}`);
+    try {
+      resolveUnifiedReportingDualRunPolicy({
+        OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY: '1',
+        OPENSPELL_EVO_REPORT_LANE_READY: '1',
+        [UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV]: oversized,
+      }, expanded);
+    } catch (error) {
+      expect(error instanceof Error ? error.message : String(error)).not.toContain(
+        '00000000-0000-4000-8000-000000000011',
+      );
     }
   });
 });

@@ -39,6 +39,7 @@ describe('worker deployment role', () => {
       revision: 'unknown',
       jobTypes: undefined,
       startsBackgroundPasses: true,
+      unifiedReporting: { enabled: false, profileIds: [] },
     });
   });
 
@@ -54,6 +55,27 @@ describe('worker deployment role', () => {
       revision: 'abcdef1234567',
       jobTypes: ['creative.sync', 'report.request', 'report.poll', 'report.fetch'],
       startsBackgroundPasses: false,
+      unifiedReporting: { enabled: false, profileIds: [] },
+    });
+  });
+
+  it('requires the expanded report lane before enabling Unified Reporting', () => {
+    const profileId = '11111111-2222-4333-8444-555555555555';
+    expect(configFromEnv({
+      ...base,
+      WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
+      WORKER_JOB_TYPES:
+        'report.unified.advance,report.fetch,creative.sync,report.request,report.poll',
+      OPENSPELL_EVO_REPORT_LANE_READY: '1',
+      OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY: '1',
+      OPENSPELL_UNIFIED_REPORTING_PROFILE_ALLOWLIST: profileId,
+    })).toMatchObject({
+      deploymentRole: 'evo-report-lane',
+      jobTypes: [
+        'creative.sync', 'report.request', 'report.poll', 'report.fetch',
+        'report.unified.advance',
+      ],
+      unifiedReporting: { enabled: true, profileIds: [profileId] },
     });
   });
 

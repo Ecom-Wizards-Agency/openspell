@@ -24,6 +24,8 @@ export * from './sqp-scheduler.js';
 export * from './history-planning.js';
 export * from './report-promotion.js';
 export * from './store.js';
+export * from './unified-reporting.js';
+export * from './unified-reporting-store.js';
 export * from './worker.js';
 
 export const PACKAGE_NAME = '@wizard-ads/worker' as const;

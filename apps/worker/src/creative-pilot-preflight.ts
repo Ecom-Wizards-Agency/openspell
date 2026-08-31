@@ -4,6 +4,7 @@ import type { JobType } from '@wizard-ads/shared';
 import { JobType as JobTypeSchema } from '@wizard-ads/shared';
 import {
   EVO_REPORT_LANE_JOB_TYPES,
+  UNIFIED_EVO_REPORT_LANE_JOB_TYPES,
   type WorkerDeploymentRole,
 } from './deployment-role.js';
 
@@ -59,7 +60,9 @@ export function evaluateCreativePilotPreflight(
 ): CreativePilotPreflightResult {
   const revisionMatches = health.deployment.revision === expectedRevision;
   const roleMatches = health.deployment.role === 'evo-report-lane';
-  const claimSetMatches = sameClaimSet(health.deployment.jobTypes, EVO_REPORT_LANE_JOB_TYPES);
+  const claimSetMatches =
+    sameClaimSet(health.deployment.jobTypes, EVO_REPORT_LANE_JOB_TYPES) ||
+    sameClaimSet(health.deployment.jobTypes, UNIFIED_EVO_REPORT_LANE_JOB_TYPES);
   const healthy = health.status === 'ok' && !health.worker.stopping;
   const workerPassed = healthy && revisionMatches && roleMatches && claimSetMatches;
   const cohortPassed =

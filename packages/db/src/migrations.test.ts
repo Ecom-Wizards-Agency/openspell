@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260830170000_marketing_stream_correctness.sql');
+    expect(files.at(-1)).toBe('20260831100000_unified_reporting_dual_run.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -42,12 +42,13 @@ describe.skipIf(!available)('migrations', () => {
        where t.typname = 'sync_job_type'
        order by e.enumsortorder
     `;
-    expect(labels.slice(-5).map((row) => row.enumlabel)).toEqual([
+    expect(labels.slice(-6).map((row) => row.enumlabel)).toEqual([
       'creative.sync',
       'sqp.request',
       'history.bootstrap',
       'report.promote',
       'marketing_stream.normalize',
+      'report.unified.advance',
     ]);
   });
 
@@ -85,6 +86,225 @@ describe.skipIf(!available)('migrations', () => {
        order by e.enumsortorder
     `;
     expect(labels.map((row) => row.enumlabel).at(-1)).toBe('sbAds');
+  });
+
+  it('keeps Unified sidecar lifecycle and one-input accounting closed', async () => {
+    const [fixture] = await database.sql<{ seed_tenant_fixture: string }[]>`
+      select app.seed_tenant_fixture(
+        'unified-migration',
+        '81818181-8181-4818-8818-818181818181'::uuid,
+        'owner'
+      )
+    `;
+    const enums = await database.sql<{ typname: string; enumlabel: string }[]>`
+      select t.typname, e.enumlabel
+        from pg_catalog.pg_enum e
+        join pg_catalog.pg_type t on t.oid = e.enumtypid
+       where t.typname in (
+         'unified_report_run_state', 'unified_report_operation_kind',
+         'unified_report_operation_state', 'unified_report_operation_disposition'
+       )
+       order by t.typname, e.enumsortorder
+    `;
+    const byType = new Map<string, string[]>();
+    for (const row of enums) byType.set(row.typname, [...(byType.get(row.typname) ?? []), row.enumlabel]);
+    expect(byType.get('unified_report_operation_kind')).toEqual(['create', 'retrieve']);
+    expect(byType.get('unified_report_operation_state')).toEqual(['ready', 'dispatching', 'settled']);
+    expect(byType.get('unified_report_operation_disposition')).toEqual([
+      'provider_success', 'provider_refused', 'create_ambiguous', 'transport_failure',
+      'invalid_response', 'local_refusal', 'interrupted_dispatch',
+    ]);
+    expect(byType.get('unified_report_run_state')).toContain('create_ambiguous');
+    expect(byType.get('unified_report_run_state')).toContain('provider_status_observed');
+
+    const constraints = await database.sql<{ conname: string }[]>`
+      select conname from pg_catalog.pg_constraint
+       where conrelid in (
+         'public.unified_report_runs'::regclass,
+         'public.unified_report_operations'::regclass
+       )
+    `;
+    const names = new Set(constraints.map((row) => row.conname));
+    expect([...names]).toEqual(expect.arrayContaining([
+      'unified_report_runs_counts_reconciled',
+      'unified_report_runs_provider_id_state',
+      'unified_report_runs_provider_identity_complete',
+      'unified_report_operations_input_exactly_one',
+      'unified_report_operations_state_accounting',
+      'unified_report_operations_dispatch_fence',
+      'unified_report_operations_disposition_kind',
+    ]));
+
+    const [operation] = await database.sql<{ id: string }[]>`
+      select o.id
+        from public.unified_report_operations o
+        join public.unified_report_runs r on r.id = o.run_id
+       where r.org_id = ${fixture?.seed_tenant_fixture ?? null}::uuid
+       limit 1
+    `;
+    expect(operation?.id).toBeDefined();
+    await expect(database.sql`
+      update public.unified_report_operations
+         set provider_success_count = 0
+       where id = ${operation?.id ?? null}::uuid
+    `).rejects.toThrow(/unified_report_operations_state_accounting/i);
+  });
+
+  it('lets the parent v3 ledger delete its sidecar without deleting the queue ledger', async () => {
+    const [fixture] = await database.sql<{ seed_tenant_fixture: string }[]>`
+      select app.seed_tenant_fixture(
+        'unified-v3-lifecycle',
+        '82828282-8282-4828-8828-828282828282'::uuid,
+        'owner'
+      )
+    `;
+    const orgId = fixture?.seed_tenant_fixture ?? null;
+    const [before] = await database.sql<{
+      request_count: string;
+      run_count: string;
+      operation_count: string;
+      unified_job_count: string;
+    }[]>`
+      select
+        (select count(*) from public.report_requests where org_id = ${orgId}::uuid)::text
+          as request_count,
+        (select count(*) from public.unified_report_runs where org_id = ${orgId}::uuid)::text
+          as run_count,
+        (select count(*) from public.unified_report_operations where org_id = ${orgId}::uuid)::text
+          as operation_count,
+        (select count(*) from public.sync_jobs
+          where org_id = ${orgId}::uuid and job_type = 'report.unified.advance')::text
+          as unified_job_count
+    `;
+    expect(before).toEqual({
+      request_count: '1',
+      run_count: '1',
+      operation_count: '1',
+      unified_job_count: '1',
+    });
+
+    await database.sql`delete from public.report_requests where org_id = ${orgId}::uuid`;
+
+    const [after] = await database.sql<{
+      request_count: string;
+      run_count: string;
+      operation_count: string;
+      unified_job_count: string;
+    }[]>`
+      select
+        (select count(*) from public.report_requests where org_id = ${orgId}::uuid)::text
+          as request_count,
+        (select count(*) from public.unified_report_runs where org_id = ${orgId}::uuid)::text
+          as run_count,
+        (select count(*) from public.unified_report_operations where org_id = ${orgId}::uuid)::text
+          as operation_count,
+        (select count(*) from public.sync_jobs
+          where org_id = ${orgId}::uuid and job_type = 'report.unified.advance')::text
+          as unified_job_count
+    `;
+    expect(after).toEqual({
+      request_count: '0',
+      run_count: '0',
+      operation_count: '0',
+      unified_job_count: '1',
+    });
+  });
+
+  it('enforces Unified parent scope without indexing the populated v3 and queue ledgers', async () => {
+    const indexes = await database.sql<{ indexname: string }[]>`
+      select indexname
+        from pg_catalog.pg_indexes
+       where schemaname = 'public'
+         and indexname in (
+           'sync_jobs_org_profile_id_key',
+           'report_requests_org_profile_id_key'
+         )
+    `;
+    expect(indexes).toEqual([]);
+
+    const triggers = await database.sql<{ tgname: string }[]>`
+      select tgname
+        from pg_catalog.pg_trigger
+       where not tgisinternal
+         and tgname in (
+           'unified_report_runs_v3_scope',
+           'unified_report_operations_job_scope',
+           'report_requests_unified_scope_guard',
+           'sync_jobs_unified_scope_guard'
+         )
+       order by tgname
+    `;
+    expect(triggers.map((row) => row.tgname)).toEqual([
+      'report_requests_unified_scope_guard',
+      'sync_jobs_unified_scope_guard',
+      'unified_report_operations_job_scope',
+      'unified_report_runs_v3_scope',
+    ]);
+
+    const [left] = await database.sql<{ seed_tenant_fixture: string }[]>`
+      select app.seed_tenant_fixture(
+        'unified-scope-left',
+        '83838383-8383-4838-8838-838383838383'::uuid,
+        'owner'
+      )
+    `;
+    const [right] = await database.sql<{ seed_tenant_fixture: string }[]>`
+      select app.seed_tenant_fixture(
+        'unified-scope-right',
+        '84848484-8484-4848-8848-848484848484'::uuid,
+        'owner'
+      )
+    `;
+    const leftOrg = left?.seed_tenant_fixture ?? null;
+    const rightOrg = right?.seed_tenant_fixture ?? null;
+    const [leftRows] = await database.sql<{
+      run_id: string;
+      operation_id: string;
+      request_id: string;
+      job_id: string;
+    }[]>`
+      select r.id as run_id, o.id as operation_id,
+             r.v3_report_request_id as request_id, o.dispatch_job_id as job_id
+        from public.unified_report_runs r
+        join public.unified_report_operations o on o.run_id = r.id
+       where r.org_id = ${leftOrg}::uuid
+    `;
+    const [rightRows] = await database.sql<{
+      request_id: string;
+      job_id: string;
+      profile_id: string;
+    }[]>`
+      select r.id as request_id, r.profile_id,
+             (select o.dispatch_job_id from public.unified_report_operations o
+               where o.org_id = r.org_id
+               order by o.id limit 1) as job_id
+        from public.report_requests r
+       where r.org_id = ${rightOrg}::uuid
+       limit 1
+    `;
+
+    await expect(database.sql`
+      update public.unified_report_runs
+         set v3_report_request_id = ${rightRows?.request_id ?? null}::uuid
+       where id = ${leftRows?.run_id ?? null}::uuid
+    `).rejects.toThrow(/tenant-scoped v3 request/i);
+    await expect(database.sql`
+      update public.unified_report_operations
+         set dispatch_job_id = ${rightRows?.job_id ?? null}::uuid
+       where id = ${leftRows?.operation_id ?? null}::uuid
+    `).rejects.toThrow(/tenant-scoped queue job/i);
+    await expect(database.sql`
+      update public.report_requests
+         set org_id = ${rightOrg}::uuid,
+             profile_id = ${rightRows?.profile_id ?? null}::uuid
+       where id = ${leftRows?.request_id ?? null}::uuid
+    `).rejects.toThrow(/v3 request tenant scope is immutable/i);
+    await expect(database.sql`
+      update public.sync_jobs
+         set org_id = ${rightOrg}::uuid,
+             profile_id = ${rightRows?.profile_id ?? null}::uuid
+       where id = ${leftRows?.job_id ?? null}::uuid
+    `).rejects.toThrow(/queue job tenant scope is immutable/i);
   });
 
   it('keeps one report-pending creative observation and complete report counts', async () => {
@@ -155,6 +375,7 @@ describe.skipIf(!available)('migrations', () => {
       'product_economics',
       // sync
       'sync_schedules', 'sync_jobs', 'report_requests',
+      'unified_reporting_bindings', 'unified_report_runs', 'unified_report_operations',
       // analysis
       'recommendation_runs', 'recommendations', 'insights', 'crosscheck_results',
       // writes

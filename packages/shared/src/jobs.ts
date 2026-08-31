@@ -26,6 +26,7 @@ export const JobType = z.enum([
   'history.bootstrap',
   'report.promote',
   'marketing_stream.normalize',
+  'report.unified.advance',
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -36,6 +37,7 @@ export const FeatureJobType = z.enum([
   'history.bootstrap',
   'report.promote',
   'marketing_stream.normalize',
+  'report.unified.advance',
 ]);
 export type FeatureJobType = z.infer<typeof FeatureJobType>;
 
@@ -235,6 +237,14 @@ export const MarketingStreamNormalizeJob = z.object({
   }
 });
 
+/** One durable Unified Reporting sidecar operation; provider input stays off the queue. */
+export const UnifiedReportAdvanceJob = z.object({
+  ...jobBase,
+  type: z.literal(FeatureJobType.enum['report.unified.advance']),
+  runId: Uuid,
+  operationId: Uuid,
+});
+
 export const JobPayload = z.discriminatedUnion('type', [
   EntitySyncJob,
   ReportRequestJob,
@@ -251,6 +261,7 @@ export const JobPayload = z.discriminatedUnion('type', [
   HistoryBootstrapJob,
   ReportPromoteJob,
   MarketingStreamNormalizeJob,
+  UnifiedReportAdvanceJob,
 ]);
 export type JobPayload = z.infer<typeof JobPayload>;
 
@@ -260,6 +271,7 @@ export const FeatureJobPayload = z.discriminatedUnion('type', [
   HistoryBootstrapJob,
   ReportPromoteJob,
   MarketingStreamNormalizeJob,
+  UnifiedReportAdvanceJob,
 ]);
 export type FeatureJobPayload = z.infer<typeof FeatureJobPayload>;
 
@@ -278,3 +290,4 @@ export type SqpRequestJob = z.infer<typeof SqpRequestJob>;
 export type HistoryBootstrapJob = z.infer<typeof HistoryBootstrapJob>;
 export type ReportPromoteJob = z.infer<typeof ReportPromoteJob>;
 export type MarketingStreamNormalizeJob = z.infer<typeof MarketingStreamNormalizeJob>;
+export type UnifiedReportAdvanceJob = z.infer<typeof UnifiedReportAdvanceJob>;

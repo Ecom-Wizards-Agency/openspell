@@ -40,6 +40,7 @@ import type {
   CreateReportInput,
   EntityListFailure,
   EntityListing,
+  UnifiedReportingClient,
 } from './ads-api.js';
 import { PostgresBidSeriesStore } from './bid-series.js';
 import { createCrosscheckIngest } from './crosscheck.js';
@@ -57,6 +58,8 @@ import {
 } from './recommendations-run.js';
 import { DEFAULT_REPORT_TYPES, defaultSchedules } from './schedules.js';
 import { PostgresWorkerStore } from './store.js';
+import { WorkerUnifiedDualRun } from './unified-reporting.js';
+import { PostgresUnifiedDualRunStore } from './unified-reporting-store.js';
 import { ScheduleProvisioner, StaleClaimReaper, SyncWorker, type WorkerLogger } from './worker.js';
 
 const available = await databaseAvailable();
@@ -141,6 +144,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
   }, 60_000);
 
   beforeEach(async () => {
+    await database.sql`delete from public.unified_report_runs where org_id = ${orgId}`;
     await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
     await database.sql`delete from public.report_requests where org_id = ${orgId}`;
     await database.sql`delete from public.fact_profile_daily where profile_id = ${profileId}`;
@@ -646,6 +650,77 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     `;
     expect({ count: Number(restated?.n), cost: Number(restated?.cost) }).toEqual({ count: 1, cost: 30 });
   }, 60_000);
+
+  it('keeps v3 successful when Unified admission contends with a binding update', async () => {
+    await database.sql`
+      update public.unified_reporting_bindings
+         set enabled = true
+       where org_id = ${orgId} and profile_id = ${profileId}
+    `;
+    let releaseBinding!: () => void;
+    let markBindingLocked!: () => void;
+    const bindingLocked = new Promise<void>((resolve) => { markBindingLocked = resolve; });
+    const bindingRelease = new Promise<void>((resolve) => { releaseBinding = resolve; });
+    const locking = database.sql.begin(async (sql) => {
+      await sql`
+        update public.unified_reporting_bindings
+           set enabled = false
+         where org_id = ${orgId} and profile_id = ${profileId}
+      `;
+      markBindingLocked();
+      await bindingRelease;
+    });
+    await bindingLocked;
+
+    const provider: UnifiedReportingClient = {
+      createUnifiedReport: async () => { throw new Error('admission must not call provider'); },
+      retrieveUnifiedReport: async () => { throw new Error('admission must not call provider'); },
+    };
+    const worker = new SyncWorker({
+      workerId: 'unified-admission-contention',
+      store: new PostgresWorkerStore(database),
+      adsApi: new FakeAdsApi(),
+      unifiedReporting: new WorkerUnifiedDualRun({
+        policy: { enabled: true, profileIds: [profileId] },
+        store: new PostgresUnifiedDualRunStore(database),
+        provider,
+      }),
+      buckets: new RegionTokenBuckets(2),
+      logger: quietLogger,
+    });
+    try {
+      await queueReport(database, orgId, profileId, today, 'unified-admission-contention');
+      expect(await worker.drainOnce(1)).toBe(1);
+
+      const [evidence] = await database.sql<{
+        request_status: string;
+        result: { unified?: { kind?: string } };
+        amazon_report_id: string;
+        poll_jobs: string;
+        unified_runs: string;
+      }[]>`
+        select j.status as request_status, j.result, r.amazon_report_id,
+               (select count(*) from public.sync_jobs p
+                 where p.job_type = 'report.poll'
+                   and p.payload ->> 'reportRequestId' = r.id::text)::text as poll_jobs,
+               (select count(*) from public.unified_report_runs u
+                 where u.v3_report_request_id = r.id)::text as unified_runs
+          from public.sync_jobs j
+          join public.report_requests r on r.id = j.id
+         where j.dedupe_key = 'unified-admission-contention'
+      `;
+      expect(evidence).toMatchObject({
+        request_status: 'succeeded',
+        result: { unified: { kind: 'local_failed' } },
+        amazon_report_id: expect.any(String),
+        poll_jobs: '1',
+        unified_runs: '0',
+      });
+    } finally {
+      releaseBinding();
+      await locking;
+    }
+  }, 30_000);
 
   it('fails closed when promotion write counts differ from the staged date', async () => {
     const api = new FakeAdsApi();

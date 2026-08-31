@@ -32,6 +32,11 @@ import {
   RecommendationEvidenceState,
   Region,
   ReportDataSource,
+  UnifiedReportDefinitionVersion,
+  UnifiedReportOperationDisposition,
+  UnifiedReportOperationKind,
+  UnifiedReportOperationState,
+  UnifiedReportRunState,
   WorkerReportType,
 } from '@wizard-ads/shared';
 
@@ -93,6 +98,26 @@ export const reportStatus = pgEnum('report_status', [
   'expired',
   'cancelled',
 ]);
+export const unifiedReportDefinitionVersion = pgEnum(
+  'unified_report_definition_version',
+  tuple(UnifiedReportDefinitionVersion.options),
+);
+export const unifiedReportRunState = pgEnum(
+  'unified_report_run_state',
+  tuple(UnifiedReportRunState.options),
+);
+export const unifiedReportOperationKind = pgEnum(
+  'unified_report_operation_kind',
+  tuple(UnifiedReportOperationKind.options),
+);
+export const unifiedReportOperationState = pgEnum(
+  'unified_report_operation_state',
+  tuple(UnifiedReportOperationState.options),
+);
+export const unifiedReportOperationDisposition = pgEnum(
+  'unified_report_operation_disposition',
+  tuple(UnifiedReportOperationDisposition.options),
+);
 
 export const recommendationReason = pgEnum('recommendation_reason', [
   'high_acos',
