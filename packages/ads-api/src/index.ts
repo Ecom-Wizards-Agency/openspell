@@ -85,6 +85,19 @@ export {
   reportRangeDays,
 } from './reports.js';
 export type { AmazonAdProduct, CreateReportInput, ReportMetadata, ReportSpec, ReportStatus } from './reports.js';
+// Unified Reporting. Protocol codecs remain package-internal.
+export type {
+  CreateUnifiedReportsInput,
+  UnifiedReportBatchResult,
+  UnifiedReportDatePeriod,
+  UnifiedReportDefinition,
+  UnifiedReportFilter,
+  UnifiedReportFormat,
+  UnifiedReportJsonValue,
+  UnifiedReportMetadata,
+  UnifiedReportOutcome,
+  UnifiedReportProviderError,
+} from './unified-reporting.js';
 export {
   mapPlacement,
   parseSbCampaignReport,
@@ -286,6 +299,7 @@ export {
   AdsAuthError,
   AdsThrottleError,
   DuplicateReportError,
+  UnifiedReportCreateAmbiguousError,
   DuplicateWriteError,
   ExportFailedError,
   ReportFailedError,

@@ -40,6 +40,8 @@ describe('@wizard-ads/ads-api', () => {
       'createReport',
       'getReport',
       'downloadReport',
+      'createUnifiedReports',
+      'retrieveUnifiedReports',
       'createExport',
       'getExport',
       'downloadExport',
@@ -117,6 +119,7 @@ describe('@wizard-ads/ads-api', () => {
   it('exports the error types a caller has to branch on', () => {
     expect(new api.AdsThrottleError('x', 429, '', 1, null)).toBeInstanceOf(api.AdsApiError);
     expect(new api.DuplicateReportError('x', 425, '', 1, null)).toBeInstanceOf(api.AdsApiHttpError);
+    expect(new api.UnifiedReportCreateAmbiguousError(1, 'transport', 0)).toBeInstanceOf(api.AdsApiError);
     expect(new api.DuplicateWriteError('x', 425, '', 1, 'create', '/sp/campaigns')).toBeInstanceOf(
       api.AdsApiHttpError,
     );

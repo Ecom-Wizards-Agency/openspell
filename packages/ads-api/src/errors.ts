@@ -91,6 +91,26 @@ export class DuplicateReportError extends AdsApiHttpError {
   }
 }
 
+/**
+ * A Unified report create may have reached Amazon, so replay is unsafe.
+ *
+ * The original transport body/cause is deliberately not retained: a provider
+ * response can echo query fields or account identifiers into an error that a
+ * worker later logs. The phase, status and input count are enough to quarantine
+ * and reconcile the batch without leaking its contents.
+ */
+export class UnifiedReportCreateAmbiguousError extends AdsApiError {
+  override readonly name = 'UnifiedReportCreateAmbiguousError';
+
+  constructor(
+    readonly submitted: number,
+    readonly phase: 'transport' | 'server-response' | 'response-decoding',
+    readonly status: number | null,
+  ) {
+    super(`Unified report create outcome is ambiguous after ${phase}`);
+  }
+}
+
 /** HTTP 425 for a write request Amazon identifies as a duplicate. */
 export class DuplicateWriteError extends AdsApiHttpError {
   override readonly name = 'DuplicateWriteError';
