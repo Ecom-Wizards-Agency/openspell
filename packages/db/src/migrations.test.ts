@@ -275,9 +275,9 @@ describe.skipIf(!available)('migrations', () => {
       profile_id: string;
     }[]>`
       select r.id as request_id, r.profile_id,
-             (select j.id from public.sync_jobs j
-               where j.org_id = r.org_id and j.job_type = 'entity.sync'
-               order by j.id limit 1) as job_id
+             (select o.dispatch_job_id from public.unified_report_operations o
+               where o.org_id = r.org_id
+               order by o.id limit 1) as job_id
         from public.report_requests r
        where r.org_id = ${rightOrg}::uuid
        limit 1

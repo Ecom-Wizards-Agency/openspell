@@ -153,9 +153,6 @@ begin
   -- Sync
   insert into public.sync_schedules (org_id, profile_id, job_type, cadence, lookback_days)
   values (v_org, v_profile, 'entity.sync', interval '1 day', null);
-  insert into public.sync_jobs (org_id, profile_id, job_type, payload)
-  values (v_org, v_profile, 'entity.sync',
-          jsonb_build_object('type', 'entity.sync', 'orgId', v_org, 'profileId', v_profile, 'full', false));
   insert into public.report_requests
     (org_id, profile_id, report_type, start_date, end_date, status, rows_parsed, rows_loaded)
   values (v_org, v_profile, 'spCampaigns', p_date - 1, p_date, 'completed', 10, 10)
