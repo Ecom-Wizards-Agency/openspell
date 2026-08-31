@@ -1861,11 +1861,17 @@ export const CampaignCreationExecutionEvidence = z.object({
         : { state: 'terminal_unsatisfied' };
     }
     if (result?.effect === 'irreversible_create') {
+      const observation = observationsByNode.get(dependencyId);
       if (result.outcome === 'succeeded') {
-        return { state: 'satisfied', completedAt: result.completedAt };
+        if (observation?.observation === 'observed') {
+          return { state: 'satisfied', completedAt: observation.observedAt };
+        }
+        if (observation?.observation === 'conflict') {
+          return { state: 'terminal_unsatisfied' };
+        }
+        return { state: 'pending' };
       }
       if (result.outcome === 'authoritative_rejected') return { state: 'terminal_unsatisfied' };
-      const observation = observationsByNode.get(dependencyId);
       if (observation?.observation === 'conflict') {
         return { state: 'terminal_unsatisfied' };
       }
@@ -2191,6 +2197,9 @@ export function verifyCampaignCreationProviderCallArtifacts(
   const resultsByNode = new Map(currentEvidence.providerResults.map((result) => (
     [result.nodeId, result] as const
   )));
+  const observationsByNode = new Map(currentEvidence.observations.map((observation) => (
+    [observation.nodeId, observation] as const
+  )));
   const dispositionsByNode = new Map(currentEvidence.nonProviderDispositions.map(
     (disposition) => [disposition.nodeId, disposition] as const,
   ));
@@ -2217,12 +2226,16 @@ export function verifyCampaignCreationProviderCallArtifacts(
       const dependencyResult = resultsByNode.get(dependencyId);
       const passedRead = dependencyResult?.effect === 'read_check'
         && dependencyResult.outcome === 'passed';
+      const dependencyObservation = observationsByNode.get(dependencyId);
       const confirmedCreate = dependencyResult?.effect === 'irreversible_create'
-        && dependencyResult.outcome === 'succeeded';
+        && dependencyResult.outcome === 'succeeded'
+        && dependencyObservation?.observation === 'observed';
       if (!passedRead && !confirmedCreate) {
         throw new Error('provider call intent has a dependency that is not satisfied');
       }
-      const dependencyCompletedAt = dependencyResult.completedAt;
+      const dependencyCompletedAt = confirmedCreate
+        ? dependencyObservation.observedAt
+        : dependencyResult.completedAt;
       if (dependencyCompletedAt === undefined
         || instantMillis(intent.recordedAt) < instantMillis(dependencyCompletedAt)) {
         throw new Error('provider call intent predates a dependency completion');

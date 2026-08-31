@@ -114,7 +114,10 @@ or open call. Every observation binds the exact authorization, generation, attem
 whole-request digest, and per-node request digest. Only a successful provider result supplies an
 identity that an `observed` record may exactly reproduce. An intent-only `not_found`, `pending`, or
 `conflict` record never supplies a parent identity: the node stays quarantined and descendants do
-not run. A later source-pinned unique-lookup capability requires a new reviewed contract version.
+not run. A successful provider response alone also does not unlock descendants: the current
+source-synchronized observation for that parent must be exactly `observed`; missing, `pending`,
+`not_found`, and `conflict` observations keep the dependency gated. A later source-pinned
+unique-lookup capability requires a new reviewed contract version.
 
 Requirement nodes are read checks. Create nodes are irreversible effects. Every create node says
 `rollback: "none"`; the plan-level acknowledgement names a separately reviewed pause/archive as
@@ -188,8 +191,9 @@ observation or a derived pending-first-observation state, and preserves unresolv
 ambiguous attempted positions. Provider intents,
 results, dispositions, and observations use canonical plan order. Preflight outcomes must reproduce
 the planned provider identity and exact Asset version; created provider identities are unique per
-resource kind. An intent may be recorded only after every dependency succeeds, and its record,
-result, and observation times cannot predate the corresponding dependency/intent/result completion.
+resource kind. An intent may be recorded only after every read dependency passes and every create
+dependency is exactly observed in synchronized state. Its record, result, and observation times
+cannot predate the corresponding dependency/intent/result or observation completion.
 Its accounting is recomputed from exact evidence, and status is then derived by one deterministic
 precedence function: queued, in-flight, and unresolved observation states remain nonterminal, while
 a terminal observation conflict outranks mixed provider failure. Callers cannot select a more

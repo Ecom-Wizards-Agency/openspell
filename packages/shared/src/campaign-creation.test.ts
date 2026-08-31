@@ -556,15 +556,17 @@ function completedSpExecutionEvidence(plan: CampaignCreationPlanType = spPlan())
       recordedAt: `2026-08-30T00:02:${String(index * 2 - 1).padStart(2, '0')}.500Z`,
     }));
   const observations = plan.nodes
-    .filter((node) => node.effect === 'irreversible_create')
-    .map((node) => ({
+    .map((node, index) => ({ node, index }))
+    .filter(({ node }) => node.effect === 'irreversible_create')
+    .map(({ node, index }) => ({
       providerResult: providerResults.find((result) => result.nodeId === node.nodeId),
       providerIntent: providerCallIntents.find((intent) => (
         intent.positions.some((position) => position.nodeId === node.nodeId)
       )),
+      index,
       node,
     }))
-    .map(({ node, providerIntent, providerResult }) => ({
+    .map(({ node, index, providerIntent, providerResult }) => ({
       planId: plan.id,
       nodeId: node.nodeId,
       executionId: EXECUTION_ID,
@@ -580,7 +582,7 @@ function completedSpExecutionEvidence(plan: CampaignCreationPlanType = spPlan())
       observation: 'observed',
       amazonModerationStatus: 'not_applicable',
       deliveryStatus: 'not_delivering',
-      observedAt: '2026-08-30T00:03:00.000Z',
+      observedAt: `2026-08-30T00:02:${String(index * 2 + 1).padStart(2, '0')}.250Z`,
       sourceSyncJobId: GENERATION_ID,
     }));
   return {
@@ -1655,6 +1657,80 @@ describe('campaign creation approval and evidence', () => {
     )).toThrow(/outside the authority window/);
     const adGroupNode = plan.nodes.find((candidate) => candidate.nodeId === AD_GROUP_NODE_ID);
     if (adGroupNode === undefined) throw new Error('synthetic ad-group node missing');
+    const pendingCampaignObservation = completed.observations.find(
+      (observation) => observation.nodeId === CAMPAIGN_NODE_ID,
+    );
+    if (pendingCampaignObservation === undefined) {
+      throw new Error('synthetic campaign observation missing');
+    }
+    const pendingNodeIds = new Set([AD_GROUP_NODE_ID, AD_NODE_ID, TARGET_NODE_ID]);
+    const successfulCampaignAwaitingObservation = {
+      ...completed,
+      providerCallIntents: completed.providerCallIntents.filter((providerIntent) => (
+        providerIntent.positions.some((position) => position.nodeId === CAMPAIGN_NODE_ID)
+      )),
+      providerResults: completed.providerResults.filter((result) => (
+        result.nodeId === PRODUCT_NODE_ID || result.nodeId === CAMPAIGN_NODE_ID
+      )),
+      nonProviderDispositions: plan.nodes
+        .filter((candidate) => pendingNodeIds.has(candidate.nodeId))
+        .map((candidate) => ({
+          planId: plan.id,
+          nodeId: candidate.nodeId,
+          executionId: EXECUTION_ID,
+          nodeFingerprint: candidate.fingerprint,
+          outcome: 'pending_dispatch' as const,
+          sanitizedReason: null,
+        })),
+      observations: [{
+        ...pendingCampaignObservation,
+        observation: 'pending' as const,
+        deliveryStatus: 'unknown' as const,
+      }],
+      snapshot: {
+        status: 'running' as const,
+        accounting: {
+          operatorApproved: 4,
+          pendingDispatch: 3,
+          attempted: 1,
+          succeeded: 1,
+          failed: 0,
+          ambiguous: 0,
+          refusedAtExecution: 0,
+          blockedByDependency: 0,
+          observed: 0,
+          pendingObservation: 1,
+          observationNotFound: 0,
+          observationConflict: 0,
+          readChecksRequested: 1,
+          readChecksPending: 0,
+          readChecksPassed: 1,
+          readChecksRefused: 0,
+          readChecksFailed: 0,
+        },
+      },
+    };
+    expect(CampaignCreationExecutionEvidence.parse(
+      successfulCampaignAwaitingObservation,
+    ).snapshot.status).toBe('running');
+    expect(() => verifyCampaignCreationProviderCallArtifacts(
+      plan,
+      authorization,
+      job,
+      successfulCampaignAwaitingObservation,
+      {
+        ...intent,
+        positions: [{
+          requestIndex: 0,
+          nodeId: adGroupNode.nodeId,
+          nodeFingerprint: adGroupNode.fingerprint,
+          requestDigest: sha('7'),
+        }],
+        recordedAt: '2026-08-30T00:02:03.500Z',
+      },
+      '2026-08-30T00:03:00.000Z',
+      sha256,
+    )).toThrow(/dependency that is not satisfied/);
     expect(() => verifyCampaignCreationProviderCallArtifacts(
       plan,
       authorization,
@@ -1968,7 +2044,7 @@ describe('campaign creation approval and evidence', () => {
 
     const notFound = {
       ...evidence,
-      observations: evidence.observations.map((observation, index) => index === 0
+      observations: evidence.observations.map((observation) => observation.nodeId === TARGET_NODE_ID
         ? {
             ...observation,
             providerEntityId: null,
@@ -1989,6 +2065,20 @@ describe('campaign creation approval and evidence', () => {
       .toBe(1);
     expect(CampaignCreationExecutionEvidence.parse(notFound).snapshot.status)
       .toBe('awaiting_observation');
+
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...notFound,
+      observations: evidence.observations.map((observation) => (
+        observation.nodeId === CAMPAIGN_NODE_ID
+          ? {
+              ...observation,
+              providerEntityId: null,
+              observation: 'not_found',
+              deliveryStatus: 'unknown',
+            }
+          : observation
+      )),
+    }).success).toBe(false);
   });
 
   it('requires write-ahead intent and keeps an unresolved create quarantined', () => {

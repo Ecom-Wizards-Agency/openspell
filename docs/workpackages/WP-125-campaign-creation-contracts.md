@@ -49,7 +49,9 @@ Amazon call belongs to this package.
 - Provider result, fresh resource observation, Amazon creative moderation, and delivery are
   separate evidence dimensions. Every observation binds the exact authorization, generation,
   attempt, provider call, and whole/per-node request digests. Only the identity from a conclusive
-  successful result may be marked observed; intent-only reconciliation cannot unlock descendants.
+  successful result may be marked observed. A successful response does not unlock descendants
+  until the current source-synchronized observation is exactly `observed`; intent-only, missing,
+  `pending`, `not_found`, and `conflict` evidence cannot unlock them.
 - Every irreversible provider call has a complete, zero-based write-ahead intent committed before
   network I/O. Each create node can appear in only one intent; a result without that exact intent is
   refused, whole-request and per-node request digests must match, and an intent without a conclusive
@@ -96,6 +98,9 @@ Amazon call belongs to this package.
 - A recorded intent without a conclusive result is quarantined as ambiguous; `not_found` remains
   awaiting observation and cannot become a retryable failure. The immediate crash-after-intent and
   response-before-first-observation windows are valid pending-observation states.
+- A create dependency unlocks a descendant only after its successful result identity is reproduced
+  by the current exact `observed` record; a successful response with any other observation state is
+  still gated.
 - Operator, provider, `not_found`, observation, and read-check counts reconcile exactly.
 - Current workers reject the reserved future creation jobs.
 - Typecheck, lint, tests, hygiene, skill-lint, and diff checks pass.
