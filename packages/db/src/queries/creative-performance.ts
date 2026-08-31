@@ -565,6 +565,52 @@ interface CreativeSnapshotEvidenceRow extends CreativeSnapshotRow {
   facts_read_back: string | number;
 }
 
+export type CreativeSyncJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead';
+
+export interface CreativeSyncJobState {
+  id: string;
+  status: CreativeSyncJobStatus;
+  createdAt: string;
+}
+
+const CREATIVE_SYNC_JOB_STATUSES: readonly CreativeSyncJobStatus[] = [
+  'queued',
+  'running',
+  'succeeded',
+  'failed',
+  'dead',
+];
+
+/** Latest Creative queue evidence for one exact tenant/profile. */
+export async function readLatestCreativeSyncJobState(
+  handle: Pick<DbHandle, 'sql'>,
+  scope: { orgId: string; profileId: string },
+): Promise<CreativeSyncJobState | null> {
+  const rows = await handle.sql<{
+    id: string;
+    status: string;
+    created_at: Date | string;
+  }[]>`
+    select id, status::text as status, created_at
+      from public.sync_jobs
+     where org_id = ${scope.orgId}
+       and profile_id = ${scope.profileId}
+       and job_type::text = 'creative.sync'
+     order by created_at desc, id desc
+     limit 1
+  `;
+  const row = rows[0];
+  if (row === undefined) return null;
+  if (!CREATIVE_SYNC_JOB_STATUSES.includes(row.status as CreativeSyncJobStatus)) {
+    throw new CreativePersistenceError('creative sync job returned an unsupported status');
+  }
+  return {
+    id: row.id,
+    status: row.status as CreativeSyncJobStatus,
+    createdAt: new Date(row.created_at).toISOString(),
+  };
+}
+
 /** Latest counted observation for one tenant/profile, without reading mapping rows. */
 export async function readLatestCreativeSyncSnapshot(
   handle: Pick<DbHandle, 'sql'>,

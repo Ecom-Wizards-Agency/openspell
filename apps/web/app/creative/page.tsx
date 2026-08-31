@@ -1,9 +1,15 @@
 import { Suspense } from 'react';
 import { redirect } from 'next/navigation';
-import { readCreativePerformance, readLatestCreativeSyncSnapshot } from '@wizard-ads/db';
+import {
+  readCreativePerformance,
+  readLatestCreativeSyncJobState,
+  readLatestCreativeSyncSnapshot,
+} from '@wizard-ads/db';
 import { gate } from '../../src/auth/guard';
 import { creativeLifecycle } from '../../src/creative/lifecycle';
+import type { CreativeLifecycleEvidence } from '../../src/creative/lifecycle';
 import { canonicalProfilePath } from '../../src/data/active-profile';
+import { creativeSyncPilotFromEnv } from '../../src/server/sync-tick';
 import { gateMessage } from '../../src/ui/gate-message';
 import { Badge, EmptyState, PageHeader } from '../../src/ui/primitives';
 import { OperatorContext } from '../../src/ui/operator-context';
@@ -83,6 +89,18 @@ export default async function CreativePerformancePage({ searchParams }: PageProp
     to: period.end,
   });
   const snapshot = readLatestCreativeSyncSnapshot(entry.handle, { orgId, profileId: profile.id });
+  const latestJob = readLatestCreativeSyncJobState(entry.handle, { orgId, profileId: profile.id });
+  const pilot = creativeSyncPilotFromEnv();
+  const producerEligible = profile.syncEnabled
+    && pilot.enabled
+    && pilot.profileIds.includes(profile.id.toLowerCase());
+  const lifecycleEvidence = Promise.all([snapshot, latestJob]).then(
+    ([resolvedSnapshot, resolvedJob]): CreativeLifecycleEvidence => ({
+      producerEligible,
+      latestJob: resolvedJob,
+      snapshot: resolvedSnapshot,
+    }),
+  );
 
   return (
     <main style={{ ...page, maxWidth: '96rem' }}>
@@ -112,7 +130,7 @@ export default async function CreativePerformancePage({ searchParams }: PageProp
 
       <Suspense fallback={<CreativeLifecycleLoading />}>
         <CreativeLifecycleStatus
-          snapshot={snapshot}
+          evidence={lifecycleEvidence}
           timezone={profile.timezone}
           profileId={profile.id}
         />
@@ -121,7 +139,7 @@ export default async function CreativePerformancePage({ searchParams }: PageProp
       <Suspense fallback={<CreativeResultsLoading />}>
         <CreativeResults
           rows={rows}
-          snapshot={snapshot}
+          evidence={lifecycleEvidence}
           currencyCode={profile.currencyCode}
           profileId={profile.id}
         />
@@ -131,18 +149,17 @@ export default async function CreativePerformancePage({ searchParams }: PageProp
 }
 
 type CreativeRows = Awaited<ReturnType<typeof readCreativePerformance>>;
-type CreativeSnapshot = Awaited<ReturnType<typeof readLatestCreativeSyncSnapshot>>;
 
 async function CreativeLifecycleStatus({
-  snapshot,
+  evidence,
   timezone,
   profileId,
 }: {
-  snapshot: Promise<CreativeSnapshot>;
+  evidence: Promise<CreativeLifecycleEvidence>;
   timezone: string;
   profileId: string;
 }) {
-  const lifecycle = creativeLifecycle(await snapshot);
+  const lifecycle = creativeLifecycle(await evidence);
   return (
     <section
       aria-label="Creative synchronization evidence"
@@ -184,17 +201,17 @@ async function CreativeLifecycleStatus({
 
 async function CreativeResults({
   rows,
-  snapshot,
+  evidence,
   currencyCode,
   profileId,
 }: {
   rows: Promise<CreativeRows>;
-  snapshot: Promise<CreativeSnapshot>;
+  evidence: Promise<CreativeLifecycleEvidence>;
   currencyCode: string;
   profileId: string;
 }) {
-  const [resolved, latest] = await Promise.all([rows, snapshot]);
-  const lifecycle = creativeLifecycle(latest);
+  const [resolved, lifecycleInput] = await Promise.all([rows, evidence]);
+  const lifecycle = creativeLifecycle(lifecycleInput);
   const hasPerformanceOutsideWindow = lifecycle.state === 'performance_ready';
   return resolved.length === 0 ? (
     <div className={styles.emptyWrap}>

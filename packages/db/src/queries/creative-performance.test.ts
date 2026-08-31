@@ -11,6 +11,7 @@ import type { TestDatabase } from '../testing/harness.js';
 import {
   CreativePersistenceError,
   persistCreativePerformanceBatch,
+  readLatestCreativeSyncJobState,
   readLatestCreativeSyncSnapshot,
   readCreativePerformance,
   type CreativeMappingWrite,
@@ -19,6 +20,7 @@ import {
 
 const available = await databaseAvailable();
 const OWNER = '60606060-6060-4060-8060-606060606060';
+const OTHER_OWNER = '70707070-7070-4070-8070-707070707070';
 
 describe('creative persistence validation without a database', () => {
   const unusable = {
@@ -46,6 +48,8 @@ describe.skipIf(!available)('WP-58 creative performance database', () => {
   let database: TestDatabase;
   let orgId: string;
   let profileId: string;
+  let otherOrgId: string;
+  let otherProfileId: string;
 
   beforeAll(async () => {
     database = await createTestDatabase('wp58_creative');
@@ -57,6 +61,14 @@ describe.skipIf(!available)('WP-58 creative performance database', () => {
       select id from public.ad_profiles where org_id = ${orgId} limit 1
     `;
     profileId = profile?.id ?? '';
+    const [otherOrg] = await database.sql<{ seed_tenant_fixture: string }[]>`
+      select app.seed_tenant_fixture('creative-bravo', ${OTHER_OWNER}, 'owner', '2026-08-29')
+    `;
+    otherOrgId = otherOrg?.seed_tenant_fixture ?? '';
+    const [otherProfile] = await database.sql<{ id: string }[]>`
+      select id from public.ad_profiles where org_id = ${otherOrgId} limit 1
+    `;
+    otherProfileId = otherProfile?.id ?? '';
   }, 60_000);
 
   afterAll(async () => {
@@ -195,6 +207,37 @@ describe.skipIf(!available)('WP-58 creative performance database', () => {
       mapped: 1,
       mappedFactRows: 0,
     });
+  });
+
+  it('reads only the latest Creative job in the exact tenant and profile scope', async () => {
+    const olderId = '71717171-7171-4171-8171-717171717171';
+    const newerId = '72727272-7272-4272-8272-727272727272';
+    const otherId = '73737373-7373-4373-8373-737373737373';
+    await database.sql`
+      insert into public.sync_jobs
+        (id, org_id, profile_id, job_type, payload, status, created_at)
+      values
+        (${olderId}, ${orgId}, ${profileId}, 'creative.sync'::public.sync_job_type,
+         '{}'::jsonb, 'succeeded'::public.sync_job_status, '2026-08-29T01:00:00Z'),
+        (${newerId}, ${orgId}, ${profileId}, 'creative.sync'::public.sync_job_type,
+         '{}'::jsonb, 'running'::public.sync_job_status, '2026-08-30T01:00:00Z'),
+        (${otherId}, ${otherOrgId}, ${otherProfileId}, 'creative.sync'::public.sync_job_type,
+         '{}'::jsonb, 'queued'::public.sync_job_status, '2026-08-31T01:00:00Z')
+    `;
+
+    await expect(readLatestCreativeSyncJobState(database, { orgId, profileId })).resolves.toEqual({
+      id: newerId,
+      status: 'running',
+      createdAt: '2026-08-30T01:00:00.000Z',
+    });
+    await expect(readLatestCreativeSyncJobState(database, {
+      orgId,
+      profileId: otherProfileId,
+    })).resolves.toBeNull();
+    await expect(readLatestCreativeSyncJobState(database, {
+      orgId: otherOrgId,
+      profileId: otherProfileId,
+    })).resolves.toMatchObject({ id: otherId, status: 'queued' });
   });
 
   it('does not let an overlapping observation move a report-pending mapping', async () => {
