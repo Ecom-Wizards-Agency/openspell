@@ -22,9 +22,12 @@
   padding: 0.875rem 1rem;
 }
 
+.lifecycle[data-state='queued'],
+.lifecycle[data-state='mapping_pending'],
 .lifecycle[data-state='mapping_ready'],
 .lifecycle[data-state='report_pending'],
-.lifecycle[data-state='completed_empty'] {
+.lifecycle[data-state='completed_empty'],
+.lifecycle[data-state='unsupported'] {
   border-left-color: var(--wa-warn-border);
 }
 
@@ -74,9 +77,12 @@
   width: 0.45rem;
 }
 
+.lifecycle[data-state='queued'] .lifecycleDot,
+.lifecycle[data-state='mapping_pending'] .lifecycleDot,
 .lifecycle[data-state='mapping_ready'] .lifecycleDot,
 .lifecycle[data-state='report_pending'] .lifecycleDot,
-.lifecycle[data-state='completed_empty'] .lifecycleDot {
+.lifecycle[data-state='completed_empty'] .lifecycleDot,
+.lifecycle[data-state='unsupported'] .lifecycleDot {
   background: var(--wa-warn-text);
 }
 
