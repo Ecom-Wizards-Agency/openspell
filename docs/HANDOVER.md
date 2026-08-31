@@ -35,9 +35,11 @@ historical changelog.
 
 ## Verified repository and deployment snapshot
 
-At the time of this handover branch:
+At the time this handover was finalized:
 
-- `origin/main`: `e55ff36f2bf0e485c4d53dcfc610d233845cd1c7`.
+- Product-source baseline before this documentation-only handover:
+  `e55ff36f2bf0e485c4d53dcfc610d233845cd1c7`. If the only newer main commit is this handover,
+  the product tree is unchanged.
 - WP-175 is merged at that revision. It preserves exact date-preset identity and gives the
   account-context browser workflow a fresh Next process. Exact-main run `33350779724` passed both
   jobs at its revision.
