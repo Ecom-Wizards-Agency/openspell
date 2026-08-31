@@ -37,8 +37,12 @@ historical changelog.
 
 At the time of this handover branch:
 
-- `origin/main`: `44da7ac32e5a0503993e567c41aaccffd5c39b06`.
-- Exact-main GitHub Actions run `33321661476` passed the core and Playwright jobs for that revision.
+- `origin/main`: `31bed326ff50adce2f2016cb086d752d62be4841`.
+- WP-175 is merged at that revision. It preserves exact date-preset identity and gives the
+  account-context browser workflow a fresh Next process. Exact-main run `33350779724` passed both
+  jobs at its revision.
+- WP-172 is also merged. Exact-main run `33351492101` for the combined WP-172/WP-175 revision was
+  still running when this snapshot was refreshed.
 - Tracked production web evidence still identifies
   `5e372c82361776070084e0265fea8c504a0d8781`.
 - Tracked MCP evidence still identifies
@@ -72,6 +76,8 @@ Recent verified source work includes:
   gates are satisfied;
 - a locked OpenSpell MCP systemd package, but no evidence that this newer source replaced the
   currently tracked MCP runtime;
+- a hardened, staged Evo report-worker cutover package with loopback health, bounded readiness,
+  one deployment lock, exact verification, and fail-closed recovery. It has not been activated;
 - default-off password recovery, TOTP, passkey, and provider-login security paths. Provider rollout
   remains separately gated.
 
@@ -83,13 +89,14 @@ Reconcile heads and checks again before acting.
 
 ### PR #81 — WP-171 weekday schedules
 
-- Head at handover preparation: `1a27dd6882558be7ac40df5393b2288b8820fef3`.
+- Head at handover preparation: `fda57dfa5c1151b86b0bc7e5abb23223e492f98b`.
 - Replaces ambiguous cadence intervals with profile-local weekday, local-time, and timezone
   controls for optimization groups.
-- Local `pnpm check` passed. The core hosted job passed. The earlier Playwright failure was a
-  four-gigabyte Next development-server heap exhaustion after the assertions had passed.
-- The latest head isolates the optimization-group workflow in a fresh authenticated Next process;
-  its exact-head Playwright result was still pending when this file was drafted.
+- Local `pnpm check` passed after rebasing onto WP-175. Exact-head run `33350920421` passed both
+  jobs. The earlier Playwright failure combined a
+  four-gigabyte Next development-server heap exhaustion and the now-fixed shared date-preset bug.
+- The latest head isolates the optimization-group workflow in a fresh authenticated Next process.
+- Rebase it onto the final post-WP-173 main and require fresh checks before any later merge.
 - Do not merge before the exact-head jobs pass and the hosted schema includes
   `20260830180000_optimization_weekday_schedules.sql`. The new web code reads the new columns
   unconditionally.
@@ -97,7 +104,7 @@ Reconcile heads and checks again before acting.
 
 ### PR #82 — WP-173 Unified Reporting client
 
-- Head at handover preparation: `d6778c8085a3f1d4c0125df64f5bf23cab5facbf`.
+- Head at handover preparation: `5afbad3aa25cdd1a54ec9d36ac7d68be2a5b7cdd`.
 - Adds provider-native, account-scoped create and retrieve methods to `AdsApiClient` while leaving
   Reporting v3 untouched.
 - One ordered outcome is required for every submitted item. Missing, repeated, invalid, or
@@ -106,22 +113,9 @@ Reconcile heads and checks again before acting.
   Provider bodies and raw provider messages are not retained.
 - Non-null completed-part shapes, downloads, hourly periods, worker scheduling, persistence,
   promotion, live probes, and provider parity are intentionally absent.
-- Package typecheck, 260 Ads API tests, focused lint, and `pnpm check` passed locally. Hosted jobs
-  were pending when this file was drafted.
-
-### PR #83 — WP-172 Evo report worker cutover
-
-- Head at handover preparation: `c86ea06de0898e8c1fce84f0c394e0d0da265a36`.
-- Separates immutable staging from attended activation.
-- Activation requires prior Vercel report-claim relinquishment, a retired legacy worker, encrypted
-  credential metadata, a full retained artifact, and a bounded read-only database/queue readiness
-  check before worker import.
-- The Evo health listener is loopback-only. Stage, activate, verify, and rollback share one
-  root-owned lock. Recovery is reported only after the prior artifact, current link, retained and
-  live units, enabled/active state, and exact health all pass.
-- Deployment self-tests, ShellCheck, 39 focused worker tests, and `pnpm check` passed locally.
-  Hosted jobs were pending when this file was drafted.
-- Nothing was deployed, migrated, started, stopped, enabled, or tested with a live credential.
+- Package typecheck, 260 Ads API tests, focused lint, and `pnpm check` passed locally. Run
+  `33350806171` passed both jobs on the WP-175 base. The final rebased run `33351512195`, now also
+  containing merged WP-172, was still running when this snapshot was refreshed.
 
 ### Older open work that needs an explicit decision
 
@@ -241,16 +235,17 @@ export batch exists. No live Amazon mutation is permitted under the current `AGE
 
 ## Recommended continuation order
 
-1. Wait for exact-head CI on PRs #81, #82, and #83. Diagnose artifacts, not check labels.
-2. Merge #82 and #83 only when green. Rebase/update the second PR after the first merge if the base
-   changes, then require fresh exact-head evidence.
-3. Keep #81 open until both CI and its hosted migration gate are closed.
+1. Finish exact-main CI for merged WP-172 and the final exact-head CI for PR #82. Diagnose
+   artifacts, not check labels.
+2. Merge #82 only when green, then require a new exact-main run.
+3. Rebase #81 onto that final main and require fresh checks, but keep it open until its hosted
+   migration gate is also closed.
 4. Update this file from the resulting `origin/main`; remove completed PR entries.
 5. Apply only the exact authorized hosted migrations through the documented operator procedure and
    record sanitized count/RLS evidence.
 6. Deploy a revision-stamped web candidate from clean main, complete authenticated QA, and promote
    only after the candidate revision and route artifacts match.
-7. Stage the Evo report worker from that exact clean main revision. Transfer Vercel report claims
+7. Stage the merged Evo report worker from that exact clean main revision. Transfer Vercel report claims
    first, prove the legacy unit retired, then perform the attended activation and exact health/queue
    checks. Never allow overlapping consumers.
 8. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
