@@ -32,7 +32,7 @@ export default defineConfig({
   // Keeping it here made Next retain both the complete operator route graph
   // and every settings graph until the runner reached its bounded heap after
   // all preceding assertions had already passed.
-  testMatch: /(oauth|guards|members|dashboard|grid|profile-context)\.spec\.ts$/,
+  testMatch: /(oauth|guards|members|dashboard|grid)\.spec\.ts$/,
   // The cross-route dashboard acceptance file compiles several large operator
   // routes and owns a fresh Next process through its dedicated configuration.
   testIgnore: /route-acceptance\.dashboard\.spec\.ts$/,
