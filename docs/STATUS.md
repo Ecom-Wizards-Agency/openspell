@@ -2,9 +2,12 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated`.
 
-Reconciled 2026-08-30 against `origin/main` at `5e372c8`. Here, **merged** means the implementation is
-reachable from the recorded main revision. It does not by itself mean live-data verified,
-deployed, or accepted by an operator. Full original evidence and source pointers are in
+Source and deployment headers reconciled 2026-08-31 against `origin/main` at `2154b5a`. The
+implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
+the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
+the implementation is reachable from the recorded main revision. It does not by itself mean
+live-data verified, deployed, or accepted by an operator. Full original evidence and source
+pointers are in
 `docs/workpackages/WP-52-reconciliation.md`; the post-release capability design is in
 `docs/workpackages/WP-68-outstanding-capabilities-design.md`.
 
@@ -126,7 +129,7 @@ implementation brief in `docs/workpackages/`.
 | 119 | Query Intelligence performance | merged | the synthetic 5,000-fact join improved from about 409 ms to 14 ms with semantic parity |
 | 123 | Advertising API capability map | review | open PR; provider support must remain distinct from implemented and live-verified support |
 | 124 | Multi-product campaign creation architecture | merged | guarded SP, SB, SB Video and SD resource graphs are designed; no creation runtime was added |
-| 125 | Campaign creation contracts | review | open PR stacked behind the guarded write gateway |
+| 125 | Campaign creation contracts | review | PR #87 rescues the inactive contract directly onto current main; exact-head CI and merge remain open |
 | 131 | Product budget-usage reads | merged | strict SP/SB/SD endpoint and indexed-response validation; worker integration remains deferred |
 | 134 | Serverless database lifecycle | merged and deployed | bounded web connection reuse passed the production route sweep |
 | 138 | Chart preference migration | merged and deployed | prior default presentations advance once without discarding genuine operator choices |
@@ -152,6 +155,11 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-08-31 exact-main CI run `33367903978` passed both jobs at `2154b5a`, including
+  typecheck, lint, tests, hygiene, disposable migration verification, production web build, and
+  Playwright. Production web still reports `44da7ac`, five commits behind that source; production
+  MCP reports `b5c210d`, 145 commits behind, and the legacy worker has no exact revision stamp. The
+  new report worker is absent. These runtimes are not one proven release.
 - On 2026-08-30 the production web health endpoint reported exact revision
   `5e372c82361776070084e0265fea8c504a0d8781`, matching `origin/main`. GitHub Actions run
   `33298955347` passed typecheck, lint, tests, hygiene, migrations, build and the Playwright job
@@ -324,8 +332,10 @@ implementation brief in `docs/workpackages/`.
 - [x] Exact-main CI run `33256509372` passed both jobs at repository revision `fc254bc`.
 - [x] Exact-main CI run `33298955347` passed both jobs at `5e372c8`; the production web health
       endpoint reports that exact revision after authenticated candidate QA and promotion.
-- [ ] Keep the explicit deployment drift: production web is at `5e372c8` while MCP remains at
-      `b5c210d`. WP-85 hosted data gates and durable 1Password reconciliation remain open.
+- [x] Exact-main CI run `33367903978` passed both jobs at repository revision `2154b5a`.
+- [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
+      `b5c210d`, and the active worker revision is unproven. WP-85 hosted data gates and attended
+      read-only migration reconciliation remain open.
 - [x] Hosted ledger verified for the two newly authorized additive migrations.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [x] Full authenticated Wizard Ads route/state click-through at `bfce504`.
