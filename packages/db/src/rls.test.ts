@@ -34,6 +34,28 @@ describe.skipIf(!available)('row level security', () => {
     `;
     orgA = a?.seed_tenant_fixture ?? '';
     orgB = b?.seed_tenant_fixture ?? '';
+    const jsonArtifact = Buffer.from('{"fixture":true}\n', 'utf8');
+    const csvArtifact = Buffer.from('fixture\n', 'utf8');
+    await database.sql`
+      insert into public.contextual_negative_exports
+        (org_id, profile_id, marketplace_id, note, row_count,
+         json_artifact, json_sha256, csv_artifact, csv_sha256, created_by)
+      select org_id, id, 'rls-marketplace', 'RLS fixture artifact', 1,
+             ${jsonArtifact},
+             ${'218589323cbe80b7ed077e3ee36f1663e7cb5f8f4e4ad02c938ad8a5c2c5a6b9'},
+             ${csvArtifact},
+             ${'e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f'},
+             ${USER_A}
+        from public.ad_profiles where org_id = ${orgA}::uuid
+      union all
+      select org_id, id, 'rls-marketplace', 'RLS fixture artifact', 1,
+             ${jsonArtifact},
+             ${'218589323cbe80b7ed077e3ee36f1663e7cb5f8f4e4ad02c938ad8a5c2c5a6b9'},
+             ${csvArtifact},
+             ${'e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f'},
+             ${USER_B}
+        from public.ad_profiles where org_id = ${orgB}::uuid
+    `;
     tables = await tenantTables(database);
   }, 60_000);
 

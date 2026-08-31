@@ -36,6 +36,7 @@ import {
   sqpPromotionRuns,
 } from '../schema/index.js';
 import { chunkForInsert } from './chunk.js';
+import { contextualNegativeReviewScopeLockKeys } from './contextual-negative-review.js';
 
 const SQP_SOURCE_SYSTEM = 'amazon_sp_api_brand_analytics' as const;
 
@@ -663,7 +664,32 @@ export async function persistContextualNegativeProposals(
     return { offered: 0, upserts: 0, readBack: 0, preservedHumanDecisions: 0 };
   }
 
-  return handle.db.transaction(async (tx) => {
+  try {
+    return await handle.db.transaction(async (tx) => {
+    await tx.execute(sql`set local lock_timeout = '5s'`);
+    const storedMarketplaces = await tx
+      .selectDistinct({ marketplaceId: contextualNegativeProposals.marketplaceId })
+      .from(contextualNegativeProposals)
+      .where(and(
+        eq(contextualNegativeProposals.orgId, input.orgId),
+        eq(contextualNegativeProposals.profileId, input.profileId),
+      ));
+    const lockKeys = contextualNegativeReviewScopeLockKeys([
+      ...storedMarketplaces.map((row) => ({
+        orgId: input.orgId,
+        profileId: input.profileId,
+        marketplaceId: row.marketplaceId,
+      })),
+      ...proposals.map((proposal) => ({
+        orgId: input.orgId,
+        profileId: input.profileId,
+        marketplaceId: proposal.marketplaceId,
+      })),
+    ]);
+    for (const lockKey of lockKeys) {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+    }
+
     const profile = await tx
       .select({ id: adProfiles.id })
       .from(adProfiles)
@@ -705,11 +731,11 @@ export async function persistContextualNegativeProposals(
             contextualNegativeProposals.matchType,
           ],
           set: {
-            marketplaceId: sql`excluded.marketplace_id`,
-            searchTerm: sql`excluded.search_term`,
-            category: sql`excluded.category`,
-            sourceGroupRole: sql`excluded.source_group_role`,
-            reason: sql`excluded.reason`,
+            marketplaceId: sql`case when ${contextualNegativeProposals.status} = 'proposed' then excluded.marketplace_id else ${contextualNegativeProposals.marketplaceId} end`,
+            searchTerm: sql`case when ${contextualNegativeProposals.status} = 'proposed' then excluded.search_term else ${contextualNegativeProposals.searchTerm} end`,
+            category: sql`case when ${contextualNegativeProposals.status} = 'proposed' then excluded.category else ${contextualNegativeProposals.category} end`,
+            sourceGroupRole: sql`case when ${contextualNegativeProposals.status} = 'proposed' then excluded.source_group_role else ${contextualNegativeProposals.sourceGroupRole} end`,
+            reason: sql`case when ${contextualNegativeProposals.status} = 'proposed' then excluded.reason else ${contextualNegativeProposals.reason} end`,
             // A refreshed suggestion never erases an accepted/dismissed/exported decision.
             status: sql`case when ${contextualNegativeProposals.status} = 'proposed' then 'proposed' else ${contextualNegativeProposals.status} end`,
             updatedAt: new Date(),
@@ -753,7 +779,15 @@ export async function persistContextualNegativeProposals(
       readBack: readBack.length,
       preservedHumanDecisions: readBack.filter((row) => row.status !== 'proposed').length,
     };
-  });
+    });
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === '55P03') {
+      throw new SqpPersistenceError(
+        'Contextual-negative review scope is busy; retry the proposal refresh',
+      );
+    }
+    throw error;
+  }
 }
 
 function validatePromotion(input: SqpWeeklyPromotionInput): {

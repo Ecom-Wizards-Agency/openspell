@@ -9,6 +9,7 @@ import { sql } from 'drizzle-orm';
 import {
   boolean,
   check,
+  customType,
   date,
   foreignKey,
   index,
@@ -50,6 +51,10 @@ import {
 import { recommendations } from './analysis.js';
 import { creativeAssets } from './seams.js';
 import { adProfiles, authUsers, orgs } from './tenancy.js';
+
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => 'bytea',
+});
 
 export const reportCoverage = pgTable(
   'report_coverage',
@@ -461,6 +466,38 @@ export const contextualNegativeProposals = pgTable(
     index('contextual_negative_review_idx').on(t.profileId, t.status, t.category, t.createdAt),
   ],
 );
+
+export const contextualNegativeExports = pgTable(
+  'contextual_negative_exports',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').notNull(),
+    marketplaceId: text('marketplace_id').notNull(),
+    note: text('note').notNull(),
+    rowCount: integer('row_count').notNull(),
+    jsonArtifact: bytea('json_artifact').notNull(),
+    jsonSha256: text('json_sha256').notNull(),
+    csvArtifact: bytea('csv_artifact').notNull(),
+    csvSha256: text('csv_sha256').notNull(),
+    createdBy: text('created_by').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.orgId, t.profileId], foreignColumns: [adProfiles.orgId, adProfiles.id] })
+      .onDelete('cascade'),
+    index('contextual_negative_exports_scope_time_idx').on(
+      t.orgId,
+      t.profileId,
+      t.marketplaceId,
+      t.createdAt,
+      t.id,
+    ),
+  ],
+);
+
+export type ContextualNegativeExportRow = typeof contextualNegativeExports.$inferSelect;
+export type NewContextualNegativeExportRow = typeof contextualNegativeExports.$inferInsert;
 
 export const optimizationGroups = pgTable(
   'optimization_groups',

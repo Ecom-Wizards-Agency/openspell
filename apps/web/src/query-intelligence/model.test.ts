@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WeeklyPpcQueryRecord } from '@wizard-ads/db';
 import type {
-  ContextualNegativeProposal,
   QueryCategory,
   QueryVocabularyEntry,
   SqpWeeklyFact,
@@ -109,28 +108,12 @@ const vocabulary: QueryVocabularyEntry[] = [
   },
 ];
 
-const proposal: ContextualNegativeProposal = {
-  id: '00000000-0000-4000-8000-000000000075',
-  profileId: PROFILE,
-  marketplaceId: MARKET,
-  campaignId: 'campaign-proposal',
-  adGroupId: 'ad-group-proposal',
-  searchTerm: 'Excluded Query',
-  normalizedQuery: 'excluded query',
-  category: 'excluded',
-  sourceGroupRole: 'profit',
-  matchType: 'negative_exact',
-  reason: 'Synthetic approved exclusion.',
-  status: 'proposed',
-};
-
 describe('Query Intelligence view model', () => {
   it('retains the full taxonomy and excludes Generic Head from addressable demand only', () => {
     const model = buildQueryIntelligenceModel({
       facts,
       ppc: [],
       vocabulary,
-      proposals: [proposal],
       promotionRuns: [],
     });
 
@@ -164,7 +147,6 @@ describe('Query Intelligence view model', () => {
       facts,
       ppc: ppcRows,
       vocabulary,
-      proposals: [],
       promotionRuns: [],
     });
 
@@ -194,12 +176,11 @@ describe('Query Intelligence view model', () => {
     });
   });
 
-  it('shows human vocabulary state, review-only negatives, and promotion reconciliation', () => {
+  it('shows human vocabulary state and promotion reconciliation', () => {
     const model = buildQueryIntelligenceModel({
       facts,
       ppc: [],
       vocabulary,
-      proposals: [proposal],
       promotionRuns: [
         {
           id: '00000000-0000-4000-8000-000000000076',
@@ -219,7 +200,6 @@ describe('Query Intelligence view model', () => {
     expect(model.approvedVocabulary).toBe(1);
     expect(model.pendingVocabulary).toBe(1);
     expect(model.vocabulary.find((entry) => !entry.approved)?.source).toBe('ai_suggestion');
-    expect(model.proposals).toEqual([expect.objectContaining({ status: 'proposed', adGroupId: 'ad-group-proposal' })]);
     expect(model.promotionReconciled).toBe(true);
   });
 });

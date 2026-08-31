@@ -157,6 +157,191 @@
   padding: 1rem;
 }
 
+.reviewSummary {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 0.75rem;
+}
+
+.statusButton,
+.statusActive {
+  align-items: baseline;
+  background: var(--wa-surface-2);
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-radius);
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 0.5rem;
+  justify-content: space-between;
+  padding: 0.625rem 0.75rem;
+  text-align: left;
+}
+
+.statusActive {
+  border-color: var(--wa-accent);
+  box-shadow: inset 0 0 0 1px var(--wa-accent);
+}
+
+.statusButton span,
+.statusActive span {
+  color: var(--wa-text-muted);
+  font-size: var(--wa-fs-xs);
+}
+
+.statusButton strong,
+.statusActive strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.reviewToolbar {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.625rem;
+  margin-bottom: 0.75rem;
+}
+
+.reviewToolbar label,
+.noteField {
+  color: var(--wa-text-muted);
+  display: flex;
+  flex-direction: column;
+  font-size: var(--wa-fs-xs);
+  gap: 0.25rem;
+}
+
+.reviewSearch {
+  flex: 1 1 15rem;
+}
+
+.selectionTray,
+.reviewPager,
+.exportBar,
+.decisionActions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.selectionTray {
+  background: var(--wa-surface-2);
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-radius);
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 0.625rem;
+}
+
+.selectionTray span,
+.reviewPager span,
+.exportBar span,
+.decisionActions span {
+  color: var(--wa-text-muted);
+  font-size: var(--wa-fs-xs);
+}
+
+.selectionTray button {
+  margin-left: auto;
+}
+
+.reviewPager {
+  justify-content: space-between;
+  padding: 0.625rem 0;
+}
+
+.reviewPager > div {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.decisionBar {
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-radius);
+  margin: 0.25rem 0 0.75rem;
+  padding: 0.625rem;
+}
+
+.decisionBar legend {
+  color: var(--wa-text-muted);
+  font-size: var(--wa-fs-xs);
+  padding: 0 0.25rem;
+}
+
+.noteField span {
+  font-size: var(--wa-fs-2xs);
+}
+
+.decisionActions {
+  margin-top: 0.5rem;
+}
+
+.decisionActions span {
+  margin-left: auto;
+}
+
+.exportBar {
+  background: var(--wa-surface-2);
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-radius);
+  margin-bottom: 0.75rem;
+  padding: 0.625rem;
+}
+
+.exportHistory {
+  border-top: 1px solid var(--wa-border);
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+}
+
+.exportHistory summary {
+  cursor: pointer;
+  font-size: var(--wa-fs-sm);
+}
+
+.exportHistory ul {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  list-style: none;
+  margin: 0.625rem 0 0;
+  padding: 0;
+}
+
+.exportHistory li {
+  display: flex;
+  font-size: var(--wa-fs-xs);
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.capacityFacts {
+  display: grid;
+  gap: 0.625rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0.75rem 0;
+}
+
+.capacityFacts div {
+  background: var(--wa-surface-2);
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-radius);
+  padding: 0.625rem;
+}
+
+.capacityFacts dt {
+  color: var(--wa-text-muted);
+  font-size: var(--wa-fs-2xs);
+  text-transform: uppercase;
+}
+
+.capacityFacts dd {
+  font-variant-numeric: tabular-nums;
+  margin: 0.125rem 0 0;
+}
+
 .cellSub {
   color: var(--wa-text-muted);
   display: block;
@@ -257,7 +442,9 @@
 
 @media (max-width: 48rem) {
   .intentGrid,
-  .attributionGrid {
+  .attributionGrid,
+  .reviewSummary,
+  .capacityFacts {
     grid-template-columns: 1fr;
   }
 

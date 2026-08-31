@@ -1,11 +1,9 @@
 import type { RequestDatabase, WeeklyPpcQueryRecord } from '@wizard-ads/db';
 import {
-  ContextualNegativeProposal,
   QueryVocabularyEntry,
   SqpWeeklyFact,
 } from '@wizard-ads/shared';
 import type {
-  ContextualNegativeProposal as ContextualNegativeProposalType,
   QueryVocabularyEntry as QueryVocabularyEntryType,
   SqpWeeklyFact as SqpWeeklyFactType,
 } from '@wizard-ads/shared';
@@ -264,52 +262,6 @@ async function readVocabulary(
   return vocabulary;
 }
 
-async function readProposals(
-  handle: Pick<RequestDatabase, 'sql'>,
-  input: { orgId: string; profileId: string; marketplaceId: string },
-): Promise<ContextualNegativeProposalType[]> {
-  const rows = await handle.sql<{
-    id: string;
-    profile_id: string;
-    marketplace_id: string;
-    campaign_id: string;
-    ad_group_id: string;
-    search_term: string;
-    normalized_query: string;
-    category: ContextualNegativeProposalType['category'];
-    source_group_role: ContextualNegativeProposalType['sourceGroupRole'];
-    match_type: ContextualNegativeProposalType['matchType'];
-    reason: string;
-    status: ContextualNegativeProposalType['status'];
-  }[]>`
-    select id, profile_id, marketplace_id, campaign_id, ad_group_id,
-           search_term, normalized_query, category, source_group_role,
-           match_type, reason, status
-      from public.contextual_negative_proposals
-     where org_id = ${input.orgId}
-       and profile_id = ${input.profileId}
-       and marketplace_id = ${input.marketplaceId}
-     order by case status when 'proposed' then 0 else 1 end, search_term
-     limit 250
-  `;
-  const proposals = rows.map((row) => ContextualNegativeProposal.parse({
-    id: row.id,
-    profileId: row.profile_id,
-    marketplaceId: row.marketplace_id,
-    campaignId: row.campaign_id,
-    adGroupId: row.ad_group_id,
-    searchTerm: row.search_term,
-    normalizedQuery: row.normalized_query,
-    category: row.category,
-    sourceGroupRole: row.source_group_role,
-    matchType: row.match_type,
-    reason: row.reason,
-    status: row.status,
-  }));
-  if (proposals.length !== rows.length) throw new Error('Contextual proposal parse count mismatch');
-  return proposals;
-}
-
 async function readPromotionEvidence(
   handle: Pick<RequestDatabase, 'sql'>,
   input: { orgId: string; profileId: string; marketplaceId: string; weekStart: string },
@@ -361,12 +313,11 @@ export async function loadQueryIntelligenceSource(
     weekEnd: string;
   },
 ): Promise<QueryIntelligenceSource> {
-  const [facts, ppc, vocabulary, proposals, promotionRuns] = await Promise.all([
+  const [facts, ppc, vocabulary, promotionRuns] = await Promise.all([
     readFacts(handle, input),
     readPpc(handle, input),
     readVocabulary(handle, input),
-    readProposals(handle, input),
     readPromotionEvidence(handle, input),
   ]);
-  return { facts, ppc, vocabulary, proposals, promotionRuns };
+  return { facts, ppc, vocabulary, promotionRuns };
 }

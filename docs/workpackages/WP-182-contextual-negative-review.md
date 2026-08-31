@@ -111,10 +111,10 @@ contextual_negative_exports
 `created_by` retains the actor identifier as text rather than using an
 `ON DELETE SET NULL` foreign key that would rewrite historical evidence. The
 table has a composite foreign key to the exact organisation/profile pair,
-tenant-read RLS, and service-only writes. Triggers reject updates and ordinary
-deletes. A deliberate organisation purge must set the transaction-local
-`app.contextual_negative_purge` guard before the existing cascade can delete an
-artifact. No application route can set that guard. Database constraints require
+tenant-read RLS, and service-only writes. Triggers reject updates, truncation,
+and ordinary deletes. They permit deletion only when the parent organisation
+row is already absent inside its cascading purge transaction; no session flag
+can spoof or widen that exact tenant context. Database constraints require
 a positive row count, non-empty artifacts, and lowercase 64-character SHA-256
 values.
 
@@ -142,8 +142,9 @@ Golden tests freeze all three encodings and prove that changing any semantic
 field changes the fingerprint.
 
 Decision history remains in the existing service-written audit log. The
-migration adds guards that reject updates or deletes of `query_negative.*`
-events unless the same explicit tenant-purge context is active. Authenticated
+migration adds guards that reject updates, truncation, or ordinary deletes of
+`query_negative.*` events; only the cascade after that event's parent
+organisation has been deleted may remove it. Authenticated
 roles retain no audit write grant. Each
 transition event stores the complete reviewed before-state, target status, and
 note, so historical review evidence does not depend on later mutable proposal
@@ -165,7 +166,9 @@ legacy decisions; the migration does not invent an actor or timestamp.
    complete set in memory so every row remains reachable without rendering an
    unbounded DOM. Keyset pagination must replace this path before any oversized
    scope can be enabled; silent truncation is never used. Exact status counts
-   and rows come from the same snapshot.
+   and rows come from the same snapshot. If the statistics statement itself
+   times out, measurements are marked unavailable rather than presenting
+   fallback zeros as observed facts.
 3. The browser may select only rows it has rendered. Selection is explicit,
    remains visible in a tray, clears when profile or marketplace changes, and is
    capped at 500 rows per command.
@@ -184,7 +187,9 @@ legacy decisions; the migration does not invent an actor or timestamp.
    generator writer, and it must acquire this lock before any upsert.
 6. Missing, foreign-scope, duplicated, stale, oversized, or terminal selected
    rows fail the whole command. Cross-tenant ids are indistinguishable from
-   missing or stale ids.
+   missing or stale ids. After the shared scope lock, a selected command counts
+   its review-field bytes in PostgreSQL and fails above 8 MiB before loading row
+   bodies; the transaction also has a five-second statement timeout.
 7. Dismissal requires a note. Export requires a note, owner/admin capability,
    explicit confirmation at the route, and every selected row still being
    accepted. Mixed selections fail; nothing is silently skipped.
@@ -227,7 +232,8 @@ legacy decisions; the migration does not invent an actor or timestamp.
   surface.
 - Request JSON cannot provide `orgId` or `actorId`; both come from the active
   `RequestActor`. Contextual-negative audit rows are service-only and guarded
-  against update/delete outside the explicit tenant-purge transaction.
+  against update, truncation, and ordinary delete; only a cascading
+  organisation purge may remove them.
 
 The UI uses compact status pages rather than the stale branch's four large
 lanes. There is no implicit “export every accepted row” action and no invisible
@@ -288,9 +294,9 @@ generic apply-ledger file changes.
   denial, mismatched org/profile/marketplace refusal, semantic stale conflicts,
   canonical concurrent locking, all-or-nothing transitions, terminal exports,
   audit linkage, authenticated and ordinary-service audit tampering refusal,
-  ordinary-delete refusal, guarded tenant purge, artifact immutability,
-  exact-byte hash replay, strict CSV/JSON row counts, and preservation across
-  refresh.
+  ordinary-delete and service-role truncation refusal, cascade-only tenant
+  purge, selected-command byte/time ceilings, artifact immutability, exact-byte
+  hash replay, strict CSV/JSON row counts, and preservation across refresh.
 - Route tests prove the role matrix, explicit confirmation, non-empty and
   bounded selections, ignored body-supplied org/actor ids, 409 reload guidance,
   tenant-hidden downloads, and `amazonUpdated: false`.
@@ -311,8 +317,8 @@ generic apply-ledger file changes.
    creates additive storage first and revokes authenticated proposal writes last
    in one transaction.
 4. Obtain separate authorization for the exact migration and target.
-5. Apply it attended and verify columns, table, update/delete guards, grants,
-   RLS, composite scope constraints, indexes, and proposal counts.
+5. Apply it attended and verify columns, table, update/delete/truncate guards,
+   grants, RLS, composite scope constraints, indexes, and proposal counts.
 6. Deploy the exact dependent web revision only after the schema is ready.
 7. Exercise one bounded, explicitly authorized tenant/profile scope and verify
    decision counts, artifact hashes, audit evidence, and the absence of Amazon

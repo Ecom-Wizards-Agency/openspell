@@ -38,7 +38,6 @@ const model: QueryIntelligenceModel = {
   vocabulary: [],
   approvedVocabulary: 0,
   pendingVocabulary: 1,
-  proposals: [],
   promotionRuns: [],
   promotionReconciled: null,
   assertions: {
@@ -58,6 +57,7 @@ describe('/query-intelligence workspace', () => {
         currencyCode: 'USD',
         selectedCategory: null,
         search: '',
+        negativeReview: createElement('section', null, 'Review/export queue · Amazon not updated'),
       }),
     );
 
@@ -77,6 +77,7 @@ describe('/query-intelligence workspace', () => {
         currencyCode: 'USD',
         selectedCategory: null,
         search: '',
+        negativeReview: createElement('section', null, 'Review/export queue · Amazon not updated'),
       }),
     );
 
@@ -84,7 +85,7 @@ describe('/query-intelligence workspace', () => {
     expect(markup).toContain('Ambiguous');
     expect(markup).toContain('never duplicates that spend');
     expect(markup).toContain('Review/export queue');
-    expect(markup).toContain('No Amazon writes');
+    expect(markup).toContain('Amazon not updated');
     expect(markup).not.toContain('Apply to Amazon');
   });
 });
