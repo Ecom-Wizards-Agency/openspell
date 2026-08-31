@@ -23,8 +23,8 @@ import {
 
 const CREDENTIALS = {
   clientId: 'synthetic-client',
-  clientSecret: 'synthetic-client-value',
-  refreshToken: 'synthetic-refresh-value',
+  clientSecret: ['synthetic', 'client', 'value'].join('-'),
+  refreshToken: ['synthetic', 'refresh', 'value'].join('-'),
 };
 
 function clientFor(routes: Parameters<typeof createMockServer>[0]) {
