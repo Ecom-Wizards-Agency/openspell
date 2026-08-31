@@ -222,7 +222,7 @@ function requestOptions(options: SpWriteAdapterOptions): {
 }
 
 function headersFor(
-  getAccessToken: (force: boolean) => Promise<string>,
+  getAccessToken: (force: boolean, signal?: AbortSignal) => Promise<string>,
   clientId: string,
   profileId: string,
   mediaType: string,
@@ -287,7 +287,9 @@ class DefaultSpWriteAdapter implements SpWriteAdapter {
           url: `${hostFor(input.plan.providerScope.region)}${call.observation.path}`,
           path: call.observation.path,
           headers: headersFor(
-            (force) => force ? this.tokens.forceRefresh() : this.tokens.getAccessToken(),
+            (force, signal) => force
+              ? this.tokens.forceRefresh(signal)
+              : this.tokens.getAccessToken(signal),
             this.options.credentials.clientId,
             input.plan.providerScope.amazonProfileId,
             call.observation.mediaType,
@@ -345,7 +347,7 @@ class DefaultSpWriteAdapter implements SpWriteAdapter {
         method: 'PUT',
         url: `${hostFor(input.plan.providerScope.region)}${call.mutation.path}`,
         headers: headersFor(
-          () => this.tokens.getAccessToken(),
+          (_force, signal) => this.tokens.getAccessToken(signal),
           this.options.credentials.clientId,
           input.plan.providerScope.amazonProfileId,
           call.mutation.mediaType,

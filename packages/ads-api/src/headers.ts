@@ -30,11 +30,11 @@ export interface HeaderInput {
  * token before the retry.
  */
 export function adsHeaders(
-  getAccessToken: (force: boolean) => Promise<string>,
+  getAccessToken: (force: boolean, signal?: AbortSignal) => Promise<string>,
   input: HeaderInput,
 ): HeaderFactory {
-  return async (force: boolean) => {
-    const token = await getAccessToken(force);
+  return async (force: boolean, signal?: AbortSignal) => {
+    const token = await getAccessToken(force, signal);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
       'Amazon-Advertising-API-ClientId': input.clientId,

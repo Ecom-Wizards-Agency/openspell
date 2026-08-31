@@ -92,6 +92,7 @@ async function postToken(
     // LWA reports a dead grant as 400/401 with a machine-readable body. Read it
     // rather than throwing a bare "failed with 400" that hides the reason.
     expectedStatuses: [400, 401],
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
 
   const text = decodeText(result.body);
@@ -219,13 +220,24 @@ export class TokenProvider {
   }
 
   /** Cached until 60 seconds before expiry, then refreshed. */
-  async getAccessToken(): Promise<string> {
+  async getAccessToken(signal?: AbortSignal): Promise<string> {
     if (this.accessToken !== null && this.now < this.expiresAt) return this.accessToken;
-    return this.forceRefresh();
+    return this.forceRefresh(signal);
   }
 
   /** Discard the cached token and mint a new one. The 401 recovery path. */
-  async forceRefresh(): Promise<string> {
+  async forceRefresh(signal?: AbortSignal): Promise<string> {
+    if (signal !== undefined) {
+      // A signal-scoped attempt must own its refresh. Sharing it would let
+      // one caller's cancellation abort another caller's credential request.
+      const { accessToken, expiresIn } = await refreshAccessToken(
+        this.credentials,
+        { ...this.options, signal },
+      );
+      this.accessToken = accessToken;
+      this.expiresAt = this.now + (expiresIn - TOKEN_REFRESH_MARGIN_SECONDS) * 1_000;
+      return accessToken;
+    }
     if (this.inFlight !== null) return this.inFlight;
     const pending = refreshAccessToken(this.credentials, this.options)
       .then(({ accessToken, expiresIn }) => {

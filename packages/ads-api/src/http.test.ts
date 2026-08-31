@@ -529,6 +529,41 @@ describe('transport failures', () => {
     expect(calls).toBe(1);
     expect(effects.slept).toEqual([]);
   });
+
+  it('cancels a retry sleep and never issues a later idempotent attempt', async () => {
+    const controller = new AbortController();
+    const reason = new DOMException('synthetic retry cancellation', 'AbortError');
+    let calls = 0;
+    let markSleeping: (() => void) | undefined;
+    const sleeping = new Promise<void>((resolve) => {
+      markSleeping = resolve;
+    });
+    const ctx = createHttpContext('NA', {
+      fetch: async () => {
+        calls += 1;
+        return new Response('unavailable', { status: 503 });
+      },
+      sleep: () => {
+        markSleeping?.();
+        return new Promise<void>(() => undefined);
+      },
+      retry: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 1, jitter: 0 },
+    });
+    const pending = httpRequest(ctx, {
+      method: 'GET',
+      url: `${URL_BASE}/v2/profiles`,
+      path: '/v2/profiles',
+      headers: staticHeaders,
+      idempotent: true,
+      signal: controller.signal,
+    });
+
+    await sleeping;
+    controller.abort(reason);
+
+    await expect(pending).rejects.toBe(reason);
+    expect(calls).toBe(1);
+  });
 });
 
 describe('expected statuses', () => {

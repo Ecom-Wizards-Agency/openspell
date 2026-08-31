@@ -321,6 +321,45 @@ describe('SP write adapter', () => {
     expect(result.positions.map((position) => position.outcome)).toEqual(['ambiguous']);
   });
 
+  it('cancels a cold LWA fetch and never issues a late mutation', async () => {
+    const controller = new AbortController();
+    const marker = ['synthetic', 'cancel', 'reason'].join('-');
+    const requestedUrls: string[] = [];
+    const capture: { signal?: AbortSignal } = {};
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const fetch: FetchLike = async (input, init = {}) => {
+      requestedUrls.push(input);
+      if (input !== 'https://api.amazon.com/auth/o2/token') {
+        throw new Error('mutation must not be reached');
+      }
+      if (init.signal !== undefined && init.signal !== null) capture.signal = init.signal;
+      markStarted?.();
+      return new Promise<Response>((_resolve, reject) => {
+        capture.signal?.addEventListener('abort', () => reject(capture.signal?.reason), { once: true });
+      });
+    };
+    const adapter = adapterWith(fetch);
+    const plan = keywordPlan();
+    const call = adapter.preparePlan(plan)[0]!;
+    const pending = adapter.executeOneAttempt({
+      plan,
+      intent: intentFor(plan, [...call.positions]),
+      resultId: RESULT_ID,
+    }, { signal: controller.signal });
+
+    await started;
+    controller.abort(new DOMException(marker, 'AbortError'));
+    const result = await pending;
+
+    expect(capture.signal?.aborted).toBe(true);
+    expect(requestedUrls).toEqual(['https://api.amazon.com/auth/o2/token']);
+    expect(result.positions.map((position) => position.outcome)).toEqual(['ambiguous']);
+    expect(JSON.stringify(result)).not.toContain(marker);
+  });
+
   it('turns malformed provider content into closed evidence without leaking it', async () => {
     const marker = ['synthetic', 'private', 'marker'].join('-');
     const provider = fakeFetch([{ status: 207, body: {

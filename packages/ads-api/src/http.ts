@@ -19,7 +19,10 @@ import { AdsApiHttpError, AdsThrottleError } from './errors.js';
 import type { FetchLike, RetryEvent, RetryPolicy, ThrottleState } from './types.js';
 
 /** Headers are produced per attempt so a forced token refresh can change them. */
-export type HeaderFactory = (forceTokenRefresh: boolean) => Promise<Record<string, string>>;
+export type HeaderFactory = (
+  forceTokenRefresh: boolean,
+  signal?: AbortSignal,
+) => Promise<Record<string, string>>;
 
 interface HttpTransportSpec {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE';
@@ -42,7 +45,7 @@ export interface HttpAttemptSpec extends HttpTransportSpec {
   maxResponseBytes?: number;
 }
 
-export interface HttpRequestSpec extends HttpTransportSpec {
+export interface HttpRequestSpec extends HttpAttemptSpec {
   /** Path (or a short label) used in retry events; never carries a token. */
   path: string;
   /**
@@ -342,7 +345,7 @@ export async function httpRequestOnce(ctx: Pick<HttpContext, 'fetch'>, spec: Htt
     let headers: Record<string, string>;
     try {
       throwIfAttemptAborted(cancellation.signal);
-      headers = await waitFor(spec.headers(false), cancellation.signal);
+      headers = await waitFor(spec.headers(false, cancellation.signal), cancellation.signal);
     } catch (cause) {
       throw new HttpAttemptError('headers', cause);
     }
@@ -391,6 +394,7 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
     try {
       result = await httpRequestOnce(ctx, spec);
     } catch (attemptError) {
+      if (spec.signal?.aborted === true) throw abortReason(spec.signal);
       if (attemptError instanceof HttpAttemptError && attemptError.phase === 'body') {
         throw attemptError.originalCause;
       }
@@ -409,10 +413,11 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
       }
       const delayMs = backoffDelay(ctx.retry, attempt, ctx.random());
       emit(ctx, spec, 'network', attempt, null, delayMs, null);
-      await ctx.sleep(delayMs);
+      await waitFor(ctx.sleep(delayMs), spec.signal);
       continue;
     }
 
+    throwIfAttemptAborted(spec.signal);
     const { body: buffer, headers, status } = result;
 
     if ((status >= 200 && status < 300) || expected.includes(status)) {
@@ -437,7 +442,7 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
           ? backoffDelay(ctx.retry, attempt, ctx.random())
           : Math.min(retryAfterMs, ctx.retry.maxRetryAfterMs);
       emit(ctx, spec, 'throttled', attempt, status, delayMs, retryAfterMs);
-      await ctx.sleep(delayMs);
+      await waitFor(ctx.sleep(delayMs), spec.signal);
       continue;
     }
 
@@ -446,7 +451,7 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
     // revoked refresh token is how an LWA app gets rate limited.
     if (isAuthError(status) && !tokenRefreshed && !isLast) {
       tokenRefreshed = true;
-      await spec.headers(true);
+      await spec.headers(true, spec.signal);
       emit(ctx, spec, 'token-expired', attempt, status, 0, null);
       continue;
     }
@@ -454,7 +459,7 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
     if (isServerError(status) && spec.idempotent && !isLast) {
       const delayMs = backoffDelay(ctx.retry, attempt, ctx.random());
       emit(ctx, spec, 'server-error', attempt, status, delayMs, null);
-      await ctx.sleep(delayMs);
+      await waitFor(ctx.sleep(delayMs), spec.signal);
       continue;
     }
 
