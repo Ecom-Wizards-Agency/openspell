@@ -48,10 +48,14 @@ import {
   type SpWriteKind,
 } from './endpoints.js';
 import {
+  AdsAuthError,
   AdsApiNotImplementedError,
+  AdsApiHttpError,
   AdsApiParseError,
+  AdsThrottleError,
   DuplicateReportError,
   DuplicateWriteError,
+  UnifiedReportCreateAmbiguousError,
 } from './errors.js';
 import {
   EXPORT_ENDPOINTS,
@@ -131,6 +135,13 @@ import {
 } from './suggested-bids.js';
 import type { AdsApiClientOptions, ListOptions, ListResult, ThrottleState } from './types.js';
 import {
+  prepareUnifiedReportCreate,
+  prepareUnifiedReportRetrieve,
+  type CreateUnifiedReportsInput,
+  type UnifiedReportBatchResult,
+  type UnifiedReportDefinition,
+} from './unified-reporting.js';
+import {
   batchSpWrites,
   buildSpArchiveBody,
   buildSpWriteBody,
@@ -156,6 +167,24 @@ import {
   type SpTargetCreateInput,
   type SpTargetUpdateInput,
 } from './writes.js';
+
+/** Preserve retry-relevant error classes without retaining a provider body. */
+function sanitizedUnifiedHttpError(cause: AdsApiHttpError): AdsApiHttpError {
+  const message = `Unified Reporting request failed with ${cause.status}`;
+  if (cause instanceof AdsThrottleError) {
+    return new AdsThrottleError(
+      message,
+      cause.status,
+      '',
+      cause.attempts,
+      cause.retryAfterMs,
+    );
+  }
+  if (cause instanceof AdsAuthError) {
+    return new AdsAuthError(message, cause.status, '', cause.attempts);
+  }
+  return new AdsApiHttpError(message, cause.status, '', cause.attempts);
+}
 
 /** A page walk plus what mapping made of it. The two counts are the Rule 4 assertion. */
 export interface MappedListResult<T> extends ListResult<T> {
@@ -1092,6 +1121,77 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
     throw new AdsApiNotImplementedError(
       'Sponsored Brands v4 creative archive remains unavailable: no generic archive endpoint is defined',
     );
+  }
+
+  // -- Unified Reporting ----------------------------------------------
+
+  /**
+   * Submit one account-scoped batch without ever replaying an ambiguous
+   * create. Waiting, persistence and later promotion remain worker concerns.
+   */
+  async createUnifiedReports(
+    input: CreateUnifiedReportsInput,
+  ): Promise<UnifiedReportBatchResult<UnifiedReportDefinition>> {
+    const operation = prepareUnifiedReportCreate(input);
+    if (operation.submittedCount === 0) return operation.decodeResponse({ success: [], error: [] });
+
+    let result: HttpResult;
+    try {
+      result = await httpRequest(this.ctx, {
+        method: 'POST',
+        url: `${hostFor(this.region)}${operation.path}`,
+        path: operation.path,
+        headers: this.headers({ contentType: 'application/json', accept: 'application/json' }),
+        body: operation.body,
+        idempotent: operation.idempotent,
+      });
+    } catch (cause) {
+      if (cause instanceof AdsApiHttpError && (cause.status === 0 || cause.status >= 500)) {
+        throw new UnifiedReportCreateAmbiguousError(
+          operation.submittedCount,
+          cause.status === 0 ? 'transport' : 'server-response',
+          cause.status,
+        );
+      }
+      if (cause instanceof AdsApiHttpError) throw sanitizedUnifiedHttpError(cause);
+      throw cause;
+    }
+
+    try {
+      return operation.decodeResponse(this.json(result, `POST ${operation.path}`));
+    } catch (cause) {
+      if (cause instanceof AdsApiParseError) {
+        throw new UnifiedReportCreateAmbiguousError(
+          operation.submittedCount,
+          'response-decoding',
+          result.status,
+        );
+      }
+      throw cause;
+    }
+  }
+
+  /** Retrieve one status batch. This POST is an idempotent analytical read. */
+  async retrieveUnifiedReports(
+    reportIds: readonly string[],
+  ): Promise<UnifiedReportBatchResult<string>> {
+    const operation = prepareUnifiedReportRetrieve(reportIds);
+    if (operation.submittedCount === 0) return operation.decodeResponse({ success: [], error: [] });
+    let result: HttpResult;
+    try {
+      result = await httpRequest(this.ctx, {
+        method: 'POST',
+        url: `${hostFor(this.region)}${operation.path}`,
+        path: operation.path,
+        headers: this.headers({ contentType: 'application/json', accept: 'application/json' }),
+        body: operation.body,
+        idempotent: operation.idempotent,
+      });
+    } catch (cause) {
+      if (cause instanceof AdsApiHttpError) throw sanitizedUnifiedHttpError(cause);
+      throw cause;
+    }
+    return operation.decodeResponse(this.json(result, `POST ${operation.path}`));
   }
 
   // -- reporting v3 -----------------------------------------------------
