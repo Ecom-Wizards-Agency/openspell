@@ -21,4 +21,3 @@ export * from './optimization.js';
 export * from './reporting.js';
 export * from './dayparting.js';
 export * from './campaign-creation.js';
-export * from './sp-writes.js';

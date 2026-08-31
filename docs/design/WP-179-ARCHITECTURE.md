@@ -27,7 +27,7 @@ import {
   serializeSpWriteActionFingerprint,
   serializeSpWritePlanFingerprint,
   verifySpWritePlanFingerprints,
-} from '@wizard-ads/shared';
+} from '@wizard-ads/shared/sp-writes';
 
 const actions = orderSpWriteActions(actionsWithFingerprints);
 const plan = SpWritePlan.parse({ ...header, actions, counts, fingerprint });
@@ -284,9 +284,13 @@ canonical ordering, grouping, inverse pairing, cross-artifact identity, retry re
 closure, and status derivation. Provider wire types and storage rows stay out of the contract.
 
 The implementation starts as one `packages/shared/src/sp-writes.ts` module plus focused tests. This
-matches the package's existing flat layout and keeps cross-artifact invariants in one place. Split
-it by owned concepts only if implementation produces repeated friction; do not split by execution
-stage.
+matches the package's existing flat layout and keeps cross-artifact invariants in one place. The
+package exposes it only through `@wizard-ads/shared/sp-writes`, not the shared root barrel. Every
+current web route imports the root barrel from TypeScript source; adding this large, inactive module
+there caused the exact-head serial Playwright server to exhaust its bounded heap while compiling an
+unrelated OAuth route. An explicit subpath keeps the future capability opt-in and preserves the
+existing root surface. Split the module by owned concepts only if implementation produces repeated
+friction; do not split by execution stage.
 
 ## Synthesis decision
 
@@ -307,6 +311,8 @@ need to reconstruct provider grouping and replacement semantics.
 
 - We accept a larger inert shared contract in exchange for avoiding incompatible lifecycle types in
   the DB, worker, web, and Ads client.
+- We accept an explicit `@wizard-ads/shared/sp-writes` import in future write packages in exchange
+  for keeping inactive write machinery out of every current web route's source compilation graph.
 - We accept canonical decimal strings in exchange for exact fingerprints and database comparison.
 - We accept unavailable placement previews when complete provider state cannot be read in exchange
   for never erasing sibling bidding settings.

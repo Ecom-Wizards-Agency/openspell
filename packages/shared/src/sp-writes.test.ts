@@ -2,9 +2,11 @@
 
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import * as sharedRoot from '@wizard-ads/shared';
+import { SpWritePlan as ExportedSpWritePlan } from '@wizard-ads/shared/sp-writes';
+import { JobPayload } from './jobs.js';
 import {
   ApproveSpWritePlan,
-  JobPayload,
   SpCanonicalDecimal,
   SpCompleteCampaignBiddingState,
   SpWriteAction,
@@ -49,7 +51,7 @@ import {
   type SpWriteProviderCallIntent as SpWriteProviderCallIntentType,
   type SpWriteProviderResult as SpWriteProviderResultType,
   type SpWriteRouteCounts,
-} from './index.js';
+} from './sp-writes.js';
 
 const sha256 = {
   algorithm: 'sha256' as const,
@@ -585,6 +587,11 @@ function executionEvidence(
 }
 
 describe('guarded Sponsored Products write contracts', () => {
+  it('exposes write contracts only through the explicit package subpath', () => {
+    expect(ExportedSpWritePlan).toBe(SpWritePlan);
+    expect('SpWritePlan' in sharedRoot).toBe(false);
+  });
+
   it('uses canonical exact decimals instead of JavaScript numbers or fixed minor units', () => {
     for (const value of ['0', '1', '1.25', '999999999999.123456']) {
       expect(SpCanonicalDecimal.parse(value)).toBe(value);

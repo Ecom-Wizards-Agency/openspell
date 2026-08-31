@@ -15,7 +15,9 @@ This package may edit only:
 
 - `packages/shared/src/sp-writes.ts`;
 - `packages/shared/src/sp-writes.test.ts`;
-- the shared package export in `packages/shared/src/index.ts`;
+- `packages/shared/package.json` for the explicit `./sp-writes` subpath export;
+- the shared root export in `packages/shared/src/index.ts`, solely to keep the new contract out of
+  the root barrel;
 - this brief and `docs/design/WP-179-ARCHITECTURE.md`;
 - rolling handover/status prose after verification.
 
@@ -92,6 +94,8 @@ and other irreversible or immutable provider operations are excluded.
 - Ambiguous requested-state observation remains distinguishable from provider-accepted success.
 - Tampered accounting and caller-selected status fail.
 - Real `JobPayload` rejects both future SP write job types.
+- `@wizard-ads/shared/sp-writes` resolves to the contract while the shared root barrel does not
+  import or re-export it.
 - Focused shared tests, full `pnpm check`, `git diff --check`, staged hygiene, and hosted exact-head
   CI pass.
 - A static repository check proves no current worker registers or dispatches either future job.
