@@ -19,16 +19,35 @@ import { AdsApiHttpError, AdsThrottleError } from './errors.js';
 import type { FetchLike, RetryEvent, RetryPolicy, ThrottleState } from './types.js';
 
 /** Headers are produced per attempt so a forced token refresh can change them. */
-export type HeaderFactory = (forceTokenRefresh: boolean) => Promise<Record<string, string>>;
+export type HeaderFactory = (
+  forceTokenRefresh: boolean,
+  signal?: AbortSignal,
+) => Promise<Record<string, string>>;
 
-export interface HttpRequestSpec {
+interface HttpTransportSpec {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   url: string;
-  /** Path (or a short label) used in retry events; never carries a token. */
-  path: string;
   headers: HeaderFactory;
   /** JSON strings for most calls; media upload also needs an exact multipart byte body. */
   body?: string | ArrayBuffer;
+}
+
+/**
+ * Controls for exactly one HTTP attempt. A timeout covers header resolution,
+ * fetch, and response consumption; it is not a retry-wide deadline.
+ */
+export interface HttpAttemptSpec extends HttpTransportSpec {
+  signal?: AbortSignal;
+  /** Positive, finite milliseconds for this one attempt. */
+  timeoutMs?: number;
+  redirect?: NonNullable<RequestInit['redirect']>;
+  /** Maximum response bytes retained in memory. Zero permits only an empty body. */
+  maxResponseBytes?: number;
+}
+
+export interface HttpRequestSpec extends HttpAttemptSpec {
+  /** Path (or a short label) used in retry events; never carries a token. */
+  path: string;
   /**
    * True when re-sending the request cannot change server state. List
    * endpoints are POSTs and are still reads, hence a flag rather than a verb
@@ -45,6 +64,32 @@ export interface HttpResult {
   body: Uint8Array;
   /** Attempts spent, first try included. Asserted by the fixture suite. */
   attempts: number;
+}
+
+export type HttpAttemptPhase = 'headers' | 'fetch' | 'body';
+
+/** Identifies the failed stage without classifying an HTTP status. */
+export class HttpAttemptError extends Error {
+  override readonly name = 'HttpAttemptError';
+
+  constructor(
+    readonly phase: HttpAttemptPhase,
+    readonly originalCause: unknown,
+  ) {
+    super(`HTTP attempt failed during ${phase}`, { cause: originalCause });
+  }
+}
+
+/** Raised before a response can exceed the caller's in-memory bound. */
+export class HttpResponseTooLargeError extends Error {
+  override readonly name = 'HttpResponseTooLargeError';
+
+  constructor(
+    readonly maxResponseBytes: number,
+    readonly observedResponseBytes: number,
+  ) {
+    super(`HTTP response exceeded the ${maxResponseBytes}-byte limit`);
+  }
 }
 
 export interface HttpContext {
@@ -141,6 +186,198 @@ function errorBody(body: Uint8Array): string {
   return text.length > 2_000 ? `${text.slice(0, 2_000)}...` : text;
 }
 
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+interface AttemptCancellation {
+  signal: AbortSignal | undefined;
+  dispose: () => void;
+}
+
+function validateAttemptSpec(spec: HttpAttemptSpec): void {
+  if (
+    spec.timeoutMs !== undefined &&
+    (!Number.isSafeInteger(spec.timeoutMs) || spec.timeoutMs <= 0 || spec.timeoutMs > MAX_TIMER_DELAY_MS)
+  ) {
+    throw new RangeError(`timeoutMs must be a positive integer no greater than ${MAX_TIMER_DELAY_MS}`);
+  }
+  if (
+    spec.maxResponseBytes !== undefined &&
+    (!Number.isSafeInteger(spec.maxResponseBytes) || spec.maxResponseBytes < 0)
+  ) {
+    throw new RangeError('maxResponseBytes must be a non-negative safe integer');
+  }
+}
+
+function timeoutError(timeoutMs: number): DOMException {
+  return new DOMException(`HTTP attempt timed out after ${timeoutMs}ms`, 'TimeoutError');
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('HTTP attempt aborted', 'AbortError');
+}
+
+function createAttemptCancellation(spec: HttpAttemptSpec): AttemptCancellation {
+  if (spec.signal === undefined && spec.timeoutMs === undefined) {
+    return { signal: undefined, dispose: () => undefined };
+  }
+
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let removeExternalListener = (): void => undefined;
+
+  if (spec.signal !== undefined) {
+    const externalSignal = spec.signal;
+    const forwardAbort = (): void => controller.abort(abortReason(externalSignal));
+    if (externalSignal.aborted) {
+      forwardAbort();
+    } else {
+      externalSignal.addEventListener('abort', forwardAbort, { once: true });
+      removeExternalListener = () => externalSignal.removeEventListener('abort', forwardAbort);
+    }
+  }
+
+  const timeoutMs = spec.timeoutMs;
+  if (timeoutMs !== undefined && !controller.signal.aborted) {
+    timer = setTimeout(() => controller.abort(timeoutError(timeoutMs)), timeoutMs);
+  }
+
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      removeExternalListener();
+      if (timer !== undefined) clearTimeout(timer);
+    },
+  };
+}
+
+async function waitFor<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) throw abortReason(signal);
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener('abort', onAbort);
+      reject(abortReason(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (cause: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(cause);
+      },
+    );
+  });
+}
+
+function cancelBody(body: ReadableStream<Uint8Array> | null, reason: unknown): void {
+  if (body === null || body.locked) return;
+  void body.cancel(reason).catch(() => undefined);
+}
+
+function throwIfAttemptAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) throw abortReason(signal);
+}
+
+async function responseBytes(
+  response: Response,
+  maxResponseBytes: number | undefined,
+  signal: AbortSignal | undefined,
+): Promise<Uint8Array> {
+  const contentLength = response.headers.get('content-length');
+  if (maxResponseBytes !== undefined && contentLength !== null && /^\d+$/.test(contentLength)) {
+    const declaredBytes = Number(contentLength);
+    if (declaredBytes > maxResponseBytes) {
+      cancelBody(response.body, new HttpResponseTooLargeError(maxResponseBytes, declaredBytes));
+      throw new HttpResponseTooLargeError(maxResponseBytes, declaredBytes);
+    }
+  }
+
+  if (response.body === null) return new Uint8Array();
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    for (;;) {
+      const chunk = await waitFor(reader.read(), signal);
+      if (chunk.done) break;
+      const nextTotal = totalBytes + chunk.value.byteLength;
+      if (maxResponseBytes !== undefined && nextTotal > maxResponseBytes) {
+        throw new HttpResponseTooLargeError(maxResponseBytes, nextTotal);
+      }
+      chunks.push(chunk.value);
+      totalBytes = nextTotal;
+    }
+  } catch (cause) {
+    void reader.cancel(cause).catch(() => undefined);
+    throw cause;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // A non-compliant fetch double can leave read() pending after cancel.
+    }
+  }
+
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
+/**
+ * Perform at most one fetch and return its response without interpreting status.
+ * Cancellation and timeout remain active until the response body is consumed.
+ */
+export async function httpRequestOnce(ctx: Pick<HttpContext, 'fetch'>, spec: HttpAttemptSpec): Promise<HttpResult> {
+  validateAttemptSpec(spec);
+  const cancellation = createAttemptCancellation(spec);
+
+  try {
+    let headers: Record<string, string>;
+    try {
+      throwIfAttemptAborted(cancellation.signal);
+      headers = await waitFor(spec.headers(false, cancellation.signal), cancellation.signal);
+    } catch (cause) {
+      throw new HttpAttemptError('headers', cause);
+    }
+
+    let response: Response;
+    try {
+      throwIfAttemptAborted(cancellation.signal);
+      response = await waitFor(
+        ctx.fetch(spec.url, {
+          method: spec.method,
+          headers,
+          ...(spec.body === undefined ? {} : { body: spec.body }),
+          ...(cancellation.signal === undefined ? {} : { signal: cancellation.signal }),
+          ...(spec.redirect === undefined ? {} : { redirect: spec.redirect }),
+        }),
+        cancellation.signal,
+      );
+    } catch (cause) {
+      throw new HttpAttemptError('fetch', cause);
+    }
+
+    try {
+      const body = await responseBytes(response, spec.maxResponseBytes, cancellation.signal);
+      return { status: response.status, headers: response.headers, body, attempts: 1 };
+    } catch (cause) {
+      throw new HttpAttemptError('body', cause);
+    }
+  } finally {
+    cancellation.dispose();
+  }
+}
+
 /**
  * Send one request, retrying inside the policy, and return whatever Amazon
  * finally said. Only exhausted retries and unexpected statuses throw.
@@ -148,19 +385,43 @@ function errorBody(body: Uint8Array): string {
 export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Promise<HttpResult> {
   const expected = spec.expectedStatuses ?? [];
   let tokenRefreshed = false;
+  let forceTokenRefresh = false;
   let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= ctx.retry.maxAttempts; attempt += 1) {
     const isLast = attempt === ctx.retry.maxAttempts;
-    let response: Response;
+    let result: HttpResult;
+    const forceForAttempt = forceTokenRefresh;
+    let forcedHeaderCompleted = !forceForAttempt;
 
     try {
-      response = await ctx.fetch(spec.url, {
-        method: spec.method,
-        headers: await spec.headers(false),
-        ...(spec.body === undefined ? {} : { body: spec.body }),
+      result = await httpRequestOnce(ctx, {
+        ...spec,
+        headers: async (_force, signal) => {
+          if (forceForAttempt) {
+            await spec.headers(true, signal);
+            forcedHeaderCompleted = true;
+          }
+          return spec.headers(false, signal);
+        },
       });
-    } catch (cause) {
+      forceTokenRefresh = false;
+    } catch (attemptError) {
+      if (forceForAttempt && !forcedHeaderCompleted
+        && attemptError instanceof HttpAttemptError && attemptError.phase === 'headers') {
+        // Preserve the legacy rule: a failed explicit 401 recovery is not
+        // classified as a retryable provider transport error.
+        throw attemptError.originalCause;
+      }
+      if (forcedHeaderCompleted
+        || !(attemptError instanceof HttpAttemptError) || attemptError.phase !== 'headers') {
+        forceTokenRefresh = false;
+      }
+      if (spec.signal?.aborted === true) throw abortReason(spec.signal);
+      if (attemptError instanceof HttpAttemptError && attemptError.phase === 'body') {
+        throw attemptError.originalCause;
+      }
+      const cause = attemptError instanceof HttpAttemptError ? attemptError.originalCause : attemptError;
       lastError = cause;
       // A transport failure on a write is ambiguous: the request may well have
       // been executed. Only reads are re-sent.
@@ -175,20 +436,20 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
       }
       const delayMs = backoffDelay(ctx.retry, attempt, ctx.random());
       emit(ctx, spec, 'network', attempt, null, delayMs, null);
-      await ctx.sleep(delayMs);
+      await waitFor(ctx.sleep(delayMs), spec.signal);
       continue;
     }
 
-    const buffer = new Uint8Array(await response.arrayBuffer());
-    const { status } = response;
+    throwIfAttemptAborted(spec.signal);
+    const { body: buffer, headers, status } = result;
 
     if ((status >= 200 && status < 300) || expected.includes(status)) {
       ctx.throttle.recordSuccess();
-      return { status, headers: response.headers, body: buffer, attempts: attempt };
+      return { status, headers, body: buffer, attempts: attempt };
     }
 
     if (status === 429) {
-      const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'), ctx.now());
+      const retryAfterMs = parseRetryAfter(headers.get('retry-after'), ctx.now());
       ctx.throttle.recordThrottle(ctx.now(), retryAfterMs);
       if (isLast) {
         throw new AdsThrottleError(
@@ -204,7 +465,7 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
           ? backoffDelay(ctx.retry, attempt, ctx.random())
           : Math.min(retryAfterMs, ctx.retry.maxRetryAfterMs);
       emit(ctx, spec, 'throttled', attempt, status, delayMs, retryAfterMs);
-      await ctx.sleep(delayMs);
+      await waitFor(ctx.sleep(delayMs), spec.signal);
       continue;
     }
 
@@ -213,7 +474,9 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
     // revoked refresh token is how an LWA app gets rate limited.
     if (isAuthError(status) && !tokenRefreshed && !isLast) {
       tokenRefreshed = true;
-      await spec.headers(true);
+      // Resolve the replacement token inside the next attempt so that the
+      // same composed attempt deadline covers both LWA and provider I/O.
+      forceTokenRefresh = true;
       emit(ctx, spec, 'token-expired', attempt, status, 0, null);
       continue;
     }
@@ -221,7 +484,7 @@ export async function httpRequest(ctx: HttpContext, spec: HttpRequestSpec): Prom
     if (isServerError(status) && spec.idempotent && !isLast) {
       const delayMs = backoffDelay(ctx.retry, attempt, ctx.random());
       emit(ctx, spec, 'server-error', attempt, status, delayMs, null);
-      await ctx.sleep(delayMs);
+      await waitFor(ctx.sleep(delayMs), spec.signal);
       continue;
     }
 

@@ -9,7 +9,17 @@
 import { describe, expect, it } from 'vitest';
 import { createHttpContext } from './context.js';
 import { AdsApiHttpError, AdsThrottleError } from './errors.js';
-import { backoffCeiling, backoffDelay, decodeText, httpRequest, parseRetryAfter } from './http.js';
+import {
+  backoffCeiling,
+  backoffDelay,
+  decodeText,
+  HttpAttemptError,
+  HttpResponseTooLargeError,
+  httpRequest,
+  httpRequestOnce,
+  parseRetryAfter,
+  type HttpAttemptSpec,
+} from './http.js';
 import type { RetryEvent } from './types.js';
 import { createMockServer, testEffects } from './__fixtures__/server.js';
 
@@ -28,6 +38,190 @@ function context(fetchImpl: ReturnType<typeof createMockServer>['fetch'], onRetr
 }
 
 const staticHeaders = async () => ({ Authorization: 'Bearer fake-access-token' });
+
+function attemptSpec(overrides: Partial<HttpAttemptSpec> = {}): HttpAttemptSpec {
+  return {
+    method: 'POST',
+    url: `${URL_BASE}/sp/campaigns`,
+    headers: staticHeaders,
+    body: '{}',
+    ...overrides,
+  };
+}
+
+describe('one-attempt transport', () => {
+  it('returns an unclassified status after exactly one fetch', async () => {
+    let fetches = 0;
+
+    const result = await httpRequestOnce(
+      {
+        fetch: async () => {
+          fetches += 1;
+          return new Response('throttled', { status: 429 });
+        },
+      },
+      attemptSpec(),
+    );
+
+    expect(result.status).toBe(429);
+    expect(result.attempts).toBe(1);
+    expect(decodeText(result.body)).toBe('throttled');
+    expect(fetches).toBe(1);
+  });
+
+  it("passes redirect: 'error' to fetch", async () => {
+    let capturedInit: RequestInit | undefined;
+
+    await httpRequestOnce(
+      {
+        fetch: async (_input, init) => {
+          capturedInit = init;
+          return new Response(null, { status: 207 });
+        },
+      },
+      attemptSpec({ redirect: 'error' }),
+    );
+
+    expect(capturedInit?.redirect).toBe('error');
+  });
+
+  it('aborts delayed header resolution without issuing a late fetch', async () => {
+    const controller = new AbortController();
+    const reason = new DOMException('operator cancelled', 'AbortError');
+    let resolveHeaders: ((headers: Record<string, string>) => void) | undefined;
+    let fetches = 0;
+    const headers = new Promise<Record<string, string>>((resolve) => {
+      resolveHeaders = resolve;
+    });
+
+    const pending = httpRequestOnce(
+      {
+        fetch: async () => {
+          fetches += 1;
+          return new Response(null, { status: 207 });
+        },
+      },
+      attemptSpec({ headers: async () => headers, signal: controller.signal }),
+    );
+
+    controller.abort(reason);
+    const error = await pending.catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(HttpAttemptError);
+    expect(error).toMatchObject({ phase: 'headers', originalCause: reason });
+
+    resolveHeaders?.({ Authorization: 'Bearer later-token' });
+    await Promise.resolve();
+    expect(fetches).toBe(0);
+  });
+
+  it('enforces a finite timeout while fetch is pending', async () => {
+    let fetches = 0;
+
+    const error = await httpRequestOnce(
+      {
+        fetch: () => {
+          fetches += 1;
+          return new Promise<Response>(() => undefined);
+        },
+      },
+      attemptSpec({ timeoutMs: 10 }),
+    ).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(HttpAttemptError);
+    expect(error).toMatchObject({ phase: 'fetch' });
+    expect((error as HttpAttemptError).originalCause).toMatchObject({ name: 'TimeoutError' });
+    expect(fetches).toBe(1);
+  });
+
+  it('rejects an oversized streaming body before retaining the excess chunk', async () => {
+    const encoder = new TextEncoder();
+    let bodyCancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(stream) {
+        stream.enqueue(encoder.encode('123'));
+        stream.enqueue(encoder.encode('456'));
+      },
+      cancel() {
+        bodyCancelled = true;
+      },
+    });
+
+    const error = await httpRequestOnce(
+      { fetch: async () => new Response(body, { status: 207 }) },
+      attemptSpec({ maxResponseBytes: 4 }),
+    ).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(HttpAttemptError);
+    expect(error).toMatchObject({ phase: 'body' });
+    expect((error as HttpAttemptError).originalCause).toBeInstanceOf(HttpResponseTooLargeError);
+    expect((error as HttpAttemptError).originalCause).toMatchObject({
+      maxResponseBytes: 4,
+      observedResponseBytes: 6,
+    });
+    expect(bodyCancelled).toBe(true);
+  });
+
+  it('cancels a pending response reader when the external signal aborts', async () => {
+    const controller = new AbortController();
+    const reason = new DOMException('operator cancelled', 'AbortError');
+    let bodyCancelled = false;
+    let bodyReadStarted: (() => void) | undefined;
+    const reading = new Promise<void>((resolve) => {
+      bodyReadStarted = resolve;
+    });
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull() {
+          bodyReadStarted?.();
+          return new Promise<void>(() => undefined);
+        },
+        cancel() {
+          bodyCancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+
+    const pending = httpRequestOnce(
+      { fetch: async () => new Response(body, { status: 207 }) },
+      attemptSpec({ signal: controller.signal }),
+    );
+
+    await reading;
+    controller.abort(reason);
+    const error = await pending.catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(HttpAttemptError);
+    expect(error).toMatchObject({ phase: 'body', originalCause: reason });
+    expect(bodyCancelled).toBe(true);
+  });
+
+  it('validates bounds before resolving headers or calling fetch', async () => {
+    let headerCalls = 0;
+    let fetches = 0;
+
+    await expect(
+      httpRequestOnce(
+        {
+          fetch: async () => {
+            fetches += 1;
+            return new Response(null, { status: 207 });
+          },
+        },
+        attemptSpec({
+          headers: async () => {
+            headerCalls += 1;
+            return {};
+          },
+          timeoutMs: Number.POSITIVE_INFINITY,
+        }),
+      ),
+    ).rejects.toBeInstanceOf(RangeError);
+
+    expect(headerCalls).toBe(0);
+    expect(fetches).toBe(0);
+  });
+});
 
 describe('backoff arithmetic', () => {
   it('doubles per attempt and stops at the ceiling', () => {
@@ -305,6 +499,69 @@ describe('transport failures', () => {
         idempotent: false,
       }),
     ).rejects.toBeInstanceOf(AdsApiHttpError);
+    expect(calls).toBe(1);
+  });
+
+  it('preserves the legacy rule that a response-body failure is not retried', async () => {
+    const bodyFailure = new Error('response stream failed');
+    let calls = 0;
+    const { ctx, effects } = context(async () => {
+      calls += 1;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(stream) {
+            stream.error(bodyFailure);
+          },
+        }),
+        { status: 200 },
+      );
+    });
+
+    const error = await httpRequest(ctx, {
+      method: 'GET',
+      url: `${URL_BASE}/v2/profiles`,
+      path: '/v2/profiles',
+      headers: staticHeaders,
+      idempotent: true,
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toBe(bodyFailure);
+    expect(calls).toBe(1);
+    expect(effects.slept).toEqual([]);
+  });
+
+  it('cancels a retry sleep and never issues a later idempotent attempt', async () => {
+    const controller = new AbortController();
+    const reason = new DOMException('synthetic retry cancellation', 'AbortError');
+    let calls = 0;
+    let markSleeping: (() => void) | undefined;
+    const sleeping = new Promise<void>((resolve) => {
+      markSleeping = resolve;
+    });
+    const ctx = createHttpContext('NA', {
+      fetch: async () => {
+        calls += 1;
+        return new Response('unavailable', { status: 503 });
+      },
+      sleep: () => {
+        markSleeping?.();
+        return new Promise<void>(() => undefined);
+      },
+      retry: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 1, jitter: 0 },
+    });
+    const pending = httpRequest(ctx, {
+      method: 'GET',
+      url: `${URL_BASE}/v2/profiles`,
+      path: '/v2/profiles',
+      headers: staticHeaders,
+      idempotent: true,
+      signal: controller.signal,
+    });
+
+    await sleeping;
+    controller.abort(reason);
+
+    await expect(pending).rejects.toBe(reason);
     expect(calls).toBe(1);
   });
 });

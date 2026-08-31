@@ -18,6 +18,8 @@ export interface EffectOptions {
   random?: () => number;
   retry?: Partial<RetryPolicy>;
   onRetry?: (event: RetryEvent) => void;
+  /** Optional cancellation for a bounded standalone effect such as LWA. */
+  signal?: AbortSignal;
 }
 
 const defaultSleep = (ms: number): Promise<void> =>

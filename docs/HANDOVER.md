@@ -37,13 +37,12 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- `origin/main` is `cd5c167ee8fbeed6b5cc693650af8aa8e6f9b090`. PR run `33376303005`
-  passed both exact-head jobs before merge: all 18 typechecks, lint, migration assertions,
-  package/UI tests, the production web build, and Playwright. Exact-main run `33377445361` also
-  passed both jobs on that squash.
+- `origin/main` is `4a0d91c0495ae62096360c0b3b9e94fb151d4183`. PR #88 exact-head run
+  `33390222064` and exact-main run `33391341005` both passed the typecheck/lint/test/hygiene and
+  production-build Playwright jobs.
 - Production web health and the READY Vercel deployment behind the public alias agree on
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, six commits behind current main.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 146 commits behind
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, seven commits behind current main.
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 147 commits behind
   current main, and still returns the legacy `wizard-ads` service shape.
 - The new Evo report-worker unit is not installed and its loopback health is unavailable. The
   legacy integration worker is active with zero recorded restarts, but exposes no revision stamp.
@@ -84,6 +83,9 @@ Recent verified source work includes:
   ambiguity-safe create behavior, idempotent retrieval, and no download or promotion claim;
 - inactive campaign-creation plans, approvals, write-ahead evidence, closed accounting, and exact
   observation-gated dependencies; no creation job is active and no provider runtime exists;
+- inert, guarded Sponsored Products update-plan contracts under the explicit
+  `@wizard-ads/shared/sp-writes` subpath, with exact fingerprints, bounded provider accounting,
+  complete placement-state evidence, and no job, migration, provider call, or worker activation;
 - default-off password recovery, TOTP, passkey, and provider-login security paths. Provider rollout
   remains separately gated.
 
@@ -109,11 +111,11 @@ Reconcile heads and checks again before acting.
 
 ### Older open work that needs an explicit decision
 
-- PR #17: contextual-negative review/export; 145 commits behind and conflicting. Preserve its useful
+- PR #17: contextual-negative review/export; 146 commits behind and conflicting. Preserve its useful
   brief and rescue the distinct negative workflow promptly, or close it as superseded.
-- PR #24: guarded Sponsored Products write gateway; 103 commits behind and conflicting. The former
-  policy blocker is gone, but the branch is monolithic. Replace it contract-first, then add
-  persistence/API/worker slices before closing the old PR.
+- PR #24: guarded Sponsored Products write gateway; 104 commits behind and conflicting. WP-179
+  supersedes its shared-contract portion. Preserve only its still-distinct adapter, persistence,
+  and worker ideas through current, separately reviewed slices, then close the old PR.
 - PR #35: release-artifact checks; conflicting and partly superseded by the merged release
   transport. Port only the still-distinct SVG, Grid context/date, brand, and recommendation artifact
   assertions into the current verifier, then close it.
@@ -131,11 +133,11 @@ The following tracked files were not proven present in the hosted ledger during 
 - `20260830170000_marketing_stream_correctness.sql`
 - PR #81 adds `20260830180000_optimization_weekday_schedules.sql`
 
-This machine has no linked Supabase project, authenticated Supabase CLI session, active secret-
-manager CLI session, or injected read-only database credential. The production environment confirms
-that database variables exist but does not expose their values through the available read-only
-session. Hosted truth for all six files therefore remains unproven; no database connection,
-migration, seed, or schema mutation was attempted.
+This machine has no linked Supabase project or injected read-only database credential. The Vercel
+session confirms that database variables exist without exposing their values. The 1Password CLI
+has no injected service-account session, and the local 1Password integration could not authenticate
+while its desktop app was unavailable. Hosted truth for all six files therefore remains unproven;
+no database connection, migration, seed, or schema mutation was attempted.
 
 Before any application:
 
@@ -244,9 +246,10 @@ an exact current-task authorization.
 6. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
 7. Add the Unified Reporting worker dual-run without changing promotion authority.
 8. After PR #81 clears its overlapping web files, implement the sidebar-scroll regression package.
-9. Continue the useful old-PR slices in dependency order: rescue the guarded Sponsored Products
-   gateway contract first, then persistence/API/worker slices only behind their gates; follow with
-   contextual negatives and distinctive release-artifact assertions.
+9. Continue the useful old-PR slices in dependency order: WP-179's inert Sponsored Products
+   contract is merged; next implement the pure provider adapter, then persistence and worker slices
+   behind separate gates. Close PR #24 after its distinct work is preserved. Follow with contextual
+   negatives and distinctive release-artifact assertions.
 10. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again.
 
 If an external gate blocks one lane, continue with the next independent source-only package. Do
