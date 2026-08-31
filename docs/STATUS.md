@@ -1,8 +1,8 @@
 # OpenSpell — program status board
 
-Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated`.
+Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated` · `superseded`.
 
-Source and deployment headers reconciled 2026-09-01 against `origin/main` at `d75ec26`. The
+Source and deployment headers reconciled 2026-09-01 against `origin/main` at `6d182e6`. The
 implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
 the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
 the implementation is reachable from the recorded main revision. It does not by itself mean
@@ -114,9 +114,9 @@ implementation brief in `docs/workpackages/`.
 | 83 | SB Video contract probe | merged; live gated | non-persisting readers and count-only reconciliation prove documented shapes; no authorized live probe has run |
 | 84 | Transactional SP report promotion | merged; live gated | complete-date replacement is wired for four SP report grains; live worker count review remains open |
 | 85 | Observed SB Video ingestion | merged; hosted data gate open | current-snapshot ad/version-to-Asset-ID mapping and same-day fact gates are in the deployed code; hosted migration and live parity remain open |
-| 86 | Contextual-negative review/export | review | open PR; analytics repair and ad-group proposal review remain separate from Amazon actions |
+| 86 | Contextual-negative review/export | superseded | stale PR #17 was rebuilt on current main as WP-182 and closed |
 | 89 | Data context and filtered selection | merged and deployed | compact freshness context plus working filtered select/deselect behavior |
-| 90 | Weekday preview schedule | review | open PR; profile-local weekdays schedule recommendation previews only |
+| 90 | Weekday preview schedule | superseded | PR #40 was closed; current replacement is WP-171 in PR #81 |
 | 91 | Live route performance | in-progress | Grid and Time Machine remain above the live targets recorded below |
 | 93 | Guarded Amazon write policy | merged; runtime gated | manually approved writes are authorized only through immutable worker plans, allowlists, audit and resync; no general live mutation path exists |
 | 96 | Guarded Sponsored Products write gateway | review; contract and adapter superseded | WP-179 and WP-180 replace the stale PR's shared-contract and provider-adapter portions; persistence and worker slices remain unmerged and all runtime gates remain closed |
@@ -124,10 +124,10 @@ implementation brief in `docs/workpackages/`.
 | 112 | Release-artifact checks | review | open PR; exact distinctive runtime artifacts still need reconciliation |
 | 113 | OpenSpell MCP connection name | merged and deployed in web | setup snippets use `openspell`; stable environment-variable and package identifiers remain unchanged |
 | 114 | Date-range browser gate | merged | Dashboard and Grid presets are covered in the authenticated suite |
-| 116 | Hydration-safe E2E interactions | review | open PR awaiting exact-head reconciliation |
-| 117 | Shared route acceptance | review | open PR awaiting exact-head reconciliation |
+| 116 | Hydration-safe E2E interactions | merged | exact interaction-readiness assertions merged through PR #38 at `4c95778` |
+| 117 | Shared route acceptance | merged | shared date/profile route acceptance merged through PR #39 at `03d63ec` |
 | 119 | Query Intelligence performance | merged | the synthetic 5,000-fact join improved from about 409 ms to 14 ms with semantic parity |
-| 123 | Advertising API capability map | review | open PR; provider support must remain distinct from implemented and live-verified support |
+| 123 | Advertising API capability map | merged | capability/support distinctions merged through PR #41 at `97ce0ba`; live verification remains separate |
 | 124 | Multi-product campaign creation architecture | merged | guarded SP, SB, SB Video and SD resource graphs are designed; no creation runtime was added |
 | 125 | Campaign creation contracts | merged; runtime gated | inactive plans, approvals, write-ahead evidence, deterministic accounting and observation-gated dependencies merged in `cd5c167`; no migration, provider call, worker executor or deployment was activated |
 | 131 | Product budget-usage reads | merged | strict SP/SB/SD endpoint and indexed-response validation; worker integration remains deferred |
@@ -140,11 +140,14 @@ implementation brief in `docs/workpackages/`.
 | 143 | Experiment scope UX | merged and deployed | campaign-name selection, profile isolation, optional scope and filtered select-all are live |
 | 144 | Public-runner CI reliability | merged | database test concurrency is bounded without weakening the gate |
 | 145 | OpenSpell repository policy | merged | public-repository and 1Password boundaries align with the current product name |
-| 147 | Marketing Stream correctness recovery | in-progress | signed revisions, settling, budget corrections, locking and subscription identity are under fresh-tree review |
-| 148 | Live release evidence | in-progress | current revision, CI, deployment, authenticated QA and open gaps reconciled without runtime changes |
+| 147 | Marketing Stream correctness recovery | merged; hosted/runtime gated | signed revisions, settling, budget corrections, locking and subscription identity merged through PR #64 at `49c35d9`; hosted migration and live subscription remain open |
+| 148 | Live release evidence | merged | source, CI, deployment, authenticated QA and open gaps were reconciled through PR #59 at `d7beb71`; later drift is recorded below |
+| 171 | Weekday preview schedules | review; schema-before-web gated | open PR #81; profile-local weekday/timezone controls require its hosted migration before web integration |
 | 179 | Guarded SP write contracts | merged; runtime gated | inert update-plan, approval, fingerprint and bounded provider-result contracts merged in `4a0d91c` under `@wizard-ads/shared/sp-writes`; no job, migration, provider call, worker executor or deployment was activated |
 | 180 | Guarded SP provider adapter | merged; runtime gated | complete observation, marketplace decimal conversion and one-attempt mutation semantics merged in `3d30f52` under `@wizard-ads/ads-api/sp-write-adapter`; no worker consumer, migration, deployment, provider grant or live mutation was activated |
 | 181 | Unified Reporting dual-run | merged; runtime gated | default-off `spCampaigns` sidecar merged in `d75ec26` with explicit advertiser binding, a durable one-send create fence, bounded retrieval and a separate outcome ledger; Reporting v3 remains the sole fact and promotion authority; PR #91 performed no hosted or provider action, while hosted migration and binding state remain unverified |
+| 182 | Contextual-negative review/export | merged; hosted schema and deployment gated | complete bounded review, audit-backed decisions, review-preserving refresh and immutable exact-byte JSON/CSV evidence merged in `5d36457`; WP-182 adds no Amazon action path and performed no hosted migration or deployment |
+| 183 | Calendar-boundary fixture reliability | merged; test-only | tenant fixtures now open their current and preceding fact months, with SQP-crossing and Sunday-month-start regressions; merged in `6d182e6` without a migration or hosted data change |
 
 ## Milestone gates
 
@@ -158,6 +161,18 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-09-01 WP-182 merged at `5d36457` after PR #93 exact-head run `33445328649`
+  passed both jobs on attempt 2; attempt 1 had one unrelated invitation redirect timing failure.
+  Exact-main run `33447338899` then exposed a pre-existing Next dev HMR `networkidle` wait after its
+  required redirect artifacts rendered. The isolated PR #94 repair merged at `eee6923`; exact-head
+  run `33449128504` and exact-main run `33449983074` passed both jobs on their first attempts.
+  The closeout run then exposed a fresh-database prior-month partition gap after crossing into
+  September. Test-only PR #96 merged the fixture repair at `6d182e6`; exact-head run `33454770170`
+  and exact-main run `33455623011` passed both jobs on their first attempts. Production web remains
+  at `44da7ac`, 21 commits behind; production MCP remains at `b5c210d`, 161 commits behind; the
+  active legacy worker revision is unproven. WP-182 and its closeout performed no hosted migration,
+  deployment, provider call, feature activation or Amazon mutation; hosted state for its migration
+  remains unverified.
 - On 2026-09-01 WP-181 merged at `d75ec26` after PR #91 exact-head run `33423728036` passed both
   jobs. Exact-main run `33424944462` passed both jobs on attempt 2; attempt 1 had one unrelated
   invitation redirect timing failure while the repository gate and WP-181 auth-role suite passed.
@@ -277,12 +292,16 @@ implementation brief in `docs/workpackages/`.
   pending-result deferral without failure-budget consumption, strict document parsing, counted
   transactional replacement, vocabulary approval preservation, spend-conserving PPC joins and
   routing-gated review proposals. Overlapping promotions take sorted per-ASIN transaction locks
-  and reject stale evidence from an immutable source-report freshness ledger before deletion. The
-  WP-79 adds an exact advertising-profile/marketplace to SP-API account binding, service-role-only
-  Vault custody, LWA token caching and one-time unauthorized retry, counted active advertised-ASIN
+  and reject stale evidence from an immutable source-report freshness ledger before deletion.
+  WP-182 adds a complete 5,000-row/8-MiB review boundary, explicit accept/dismiss/reopen decisions,
+  review-preserving refresh, immutable exact-byte JSON/CSV artifacts, and exact audit/count/hash
+  linkage. Export remains evidence only and explicitly records that Amazon was not updated. WP-79
+  adds an exact advertising-profile/marketplace to SP-API account binding, service-role-only Vault
+  custody, LWA token caching and one-time unauthorized retry, counted active advertised-ASIN
   selection, and a weekly due-work scheduler. Live execution remains gated on applying its additive
-  migration, configuring the deployment-owned LWA application and app role, creating tenant bindings, and
-  proving count parity with one real read-only report.
+  migrations, configuring the deployment-owned LWA application and app role, creating tenant
+  bindings, deploying a matching web revision, and proving count parity with one real read-only
+  report.
 - Dayparting now has an append-only revision ledger, exact-source stale guards, normalized SP/SB/SD
   hourly facts, DST-local derivation, settling/revised states, confidence-shrunk proposals and
   CSV/JSON serialization. The optional SQS consumer uses the standard AWS credential chain,
@@ -362,9 +381,14 @@ implementation brief in `docs/workpackages/`.
       `41f447f` and merged revision `4a0d91c`, respectively.
 - [x] PR #91 exact-head CI run `33423728036` and exact-main run `33424944462` attempt 2 passed both
       jobs at `d343a81` and merged revision `d75ec26`, respectively.
+- [x] PR #93 exact-head CI run `33445328649` attempt 2 passed both jobs at `8da15d9`; the isolated
+      HMR synchronization repair passed PR #94 run `33449128504` at `97d8700`, and exact-main run
+      `33449983074` passed both jobs at `eee6923` on its first attempt.
+- [x] PR #96 exact-head CI run `33454770170` and exact-main run `33455623011` passed both jobs at
+      `c5f79ca` and merged revision `6d182e6`, respectively, on their first attempts.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
-      `b5c210d`, and the active worker revision is unproven. WP-85 and WP-181 hosted data gates and
-      attended read-only migration reconciliation remain open.
+      `b5c210d`, and the active worker revision is unproven. WP-85, WP-181 and WP-182 hosted data
+      gates and attended read-only migration reconciliation remain open.
 - [x] Hosted ledger verified for the two newly authorized additive migrations.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [x] Full authenticated Wizard Ads route/state click-through at `bfce504`.
@@ -395,6 +419,9 @@ implementation brief in `docs/workpackages/`.
       `20260831100000_unified_reporting_dual_run.sql` only after ledger reconciliation and exact
       hosted authorization. Keep the Unified sidecar off until its binding, deployment revision,
       consumer ownership and one authorized read-only cohort are proven.
+- [ ] Apply `20260901000000_contextual_negative_review_exports.sql` only after ledger
+      reconciliation and exact hosted authorization. Verify its guards, grants, RLS, constraints,
+      indexes and proposal counts before deploying the exact dependent web revision.
 - [ ] Run the authorized, non-persisting SB Video probe and review one read-only SP report per
       supported grain with source, promoted, superseded and canonical counts.
 - [ ] v1 crosscheck exit gate: consecutive verified days, campaign-grain parity, and explained
