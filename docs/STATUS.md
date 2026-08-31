@@ -2,7 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated`.
 
-Source and deployment headers reconciled 2026-08-31 against `origin/main` at `cd5c167`. The
+Source and deployment headers reconciled 2026-08-31 against `origin/main` at `4a0d91c`. The
 implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
 the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
 the implementation is reachable from the recorded main revision. It does not by itself mean
@@ -119,7 +119,7 @@ implementation brief in `docs/workpackages/`.
 | 90 | Weekday preview schedule | review | open PR; profile-local weekdays schedule recommendation previews only |
 | 91 | Live route performance | in-progress | Grid and Time Machine remain above the live targets recorded below |
 | 93 | Guarded Amazon write policy | merged; runtime gated | manually approved writes are authorized only through immutable worker plans, allowlists, audit and resync; no general live mutation path exists |
-| 96 | Guarded Sponsored Products write gateway | review | open PR; migration, deployment and one-entity live proof remain gated |
+| 96 | Guarded Sponsored Products write gateway | review; contract superseded | WP-179 replaces the stale PR's shared-contract portion; adapter, persistence and worker slices remain unmerged and all runtime gates remain closed |
 | 110 | Focused operator navigation | merged and deployed | task-oriented groups and quiet utility footer |
 | 112 | Release-artifact checks | review | open PR; exact distinctive runtime artifacts still need reconciliation |
 | 113 | OpenSpell MCP connection name | merged and deployed in web | setup snippets use `openspell`; stable environment-variable and package identifiers remain unchanged |
@@ -142,6 +142,7 @@ implementation brief in `docs/workpackages/`.
 | 145 | OpenSpell repository policy | merged | public-repository and 1Password boundaries align with the current product name |
 | 147 | Marketing Stream correctness recovery | in-progress | signed revisions, settling, budget corrections, locking and subscription identity are under fresh-tree review |
 | 148 | Live release evidence | in-progress | current revision, CI, deployment, authenticated QA and open gaps reconciled without runtime changes |
+| 179 | Guarded SP write contracts | merged; runtime gated | inert update-plan, approval, fingerprint and bounded provider-result contracts merged in `4a0d91c` under `@wizard-ads/shared/sp-writes`; no job, migration, provider call, worker executor or deployment was activated |
 
 ## Milestone gates
 
@@ -155,6 +156,10 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-08-31 PR #88 exact-head run `33390222064` and exact-main run `33391341005` passed both
+  jobs before and after the guarded Sponsored Products contracts merged at `4a0d91c`. Production
+  web remains at `44da7ac`, seven commits behind; production MCP remains at `b5c210d`, 147 commits
+  behind; the worker revision is still unproven. No write runtime was activated.
 - On 2026-08-31 exact-main CI run `33377445361` passed both jobs at `cd5c167` after the inactive
   campaign-creation contracts merged. Production web remains at `44da7ac`, six commits behind;
   production MCP remains at `b5c210d`, 146 commits behind; the worker revision is still unproven.
@@ -337,6 +342,8 @@ implementation brief in `docs/workpackages/`.
       endpoint reports that exact revision after authenticated candidate QA and promotion.
 - [x] Exact-main CI run `33367903978` passed both jobs at repository revision `2154b5a`.
 - [x] Exact-main CI run `33377445361` passed both jobs at repository revision `cd5c167`.
+- [x] PR #88 exact-head CI run `33390222064` and exact-main run `33391341005` passed both jobs at
+      `41f447f` and merged revision `4a0d91c`, respectively.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
       `b5c210d`, and the active worker revision is unproven. WP-85 hosted data gates and attended
       read-only migration reconciliation remain open.
