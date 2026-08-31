@@ -2,7 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated`.
 
-Source and deployment headers reconciled 2026-08-31 against `origin/main` at `3d30f52`. The
+Source and deployment headers reconciled 2026-09-01 against `origin/main` at `d75ec26`. The
 implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
 the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
 the implementation is reachable from the recorded main revision. It does not by itself mean
@@ -144,6 +144,7 @@ implementation brief in `docs/workpackages/`.
 | 148 | Live release evidence | in-progress | current revision, CI, deployment, authenticated QA and open gaps reconciled without runtime changes |
 | 179 | Guarded SP write contracts | merged; runtime gated | inert update-plan, approval, fingerprint and bounded provider-result contracts merged in `4a0d91c` under `@wizard-ads/shared/sp-writes`; no job, migration, provider call, worker executor or deployment was activated |
 | 180 | Guarded SP provider adapter | merged; runtime gated | complete observation, marketplace decimal conversion and one-attempt mutation semantics merged in `3d30f52` under `@wizard-ads/ads-api/sp-write-adapter`; no worker consumer, migration, deployment, provider grant or live mutation was activated |
+| 181 | Unified Reporting dual-run | merged; runtime gated | default-off `spCampaigns` sidecar merged in `d75ec26` with explicit advertiser binding, a durable one-send create fence, bounded retrieval and a separate outcome ledger; Reporting v3 remains the sole fact and promotion authority; PR #91 performed no hosted or provider action, while hosted migration and binding state remain unverified |
 
 ## Milestone gates
 
@@ -157,6 +158,13 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-09-01 WP-181 merged at `d75ec26` after PR #91 exact-head run `33423728036` passed both
+  jobs. Exact-main run `33424944462` passed both jobs on attempt 2; attempt 1 had one unrelated
+  invitation redirect timing failure while the repository gate and WP-181 auth-role suite passed.
+  Production web remains at `44da7ac`, 16 commits behind; production MCP remains at `b5c210d`, 156
+  commits behind; the active legacy worker revision is unproven. PR #91 and this reconciliation
+  performed no hosted migration, tenant binding, deployment, feature activation, provider call,
+  download, fact write or Amazon mutation; hosted migration and binding state remain unverified.
 - On 2026-08-31 PR #89 exact-head run `33401540530` and exact-main run `33402961215` passed both
   jobs before and after the inert Sponsored Products provider adapter merged at `3d30f52`.
   Production web remains at `44da7ac`, 13 commits behind; production MCP remains at `b5c210d`, 153
@@ -239,8 +247,10 @@ implementation brief in `docs/workpackages/`.
   monthly before its partitions are dropped.
 - The UI uses a generic 14-day settling rule. Accepted SP promotions retain pre-promotion
   observations, but there is no validated account-specific attribution-maturity curve.
-- Unified reporting, maximum-history bootstrap and a live-verified coverage matrix remain absent.
-  Stale-row reconciliation now applies only to accepted complete SP report dates.
+- A default-off Unified Reporting request-status sidecar now exists for `spCampaigns`, but provider
+  downloads, fact equivalence, promotion, maximum-history bootstrap and a live-verified coverage
+  matrix remain absent. Stale-row reconciliation still applies only to accepted complete SP report
+  dates, with Reporting v3 as the sole promotion authority.
 
 ## Released data foundations
 
@@ -350,9 +360,11 @@ implementation brief in `docs/workpackages/`.
 - [x] Exact-main CI run `33377445361` passed both jobs at repository revision `cd5c167`.
 - [x] PR #88 exact-head CI run `33390222064` and exact-main run `33391341005` passed both jobs at
       `41f447f` and merged revision `4a0d91c`, respectively.
+- [x] PR #91 exact-head CI run `33423728036` and exact-main run `33424944462` attempt 2 passed both
+      jobs at `d343a81` and merged revision `d75ec26`, respectively.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
-      `b5c210d`, and the active worker revision is unproven. WP-85 hosted data gates and attended
-      read-only migration reconciliation remain open.
+      `b5c210d`, and the active worker revision is unproven. WP-85 and WP-181 hosted data gates and
+      attended read-only migration reconciliation remain open.
 - [x] Hosted ledger verified for the two newly authorized additive migrations.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [x] Full authenticated Wizard Ads route/state click-through at `bfce504`.
@@ -378,6 +390,11 @@ implementation brief in `docs/workpackages/`.
       `20260829160100_sb_video_observed_ingestion.sql` only after exact hosted authorization, then
       activate the already-deployed WP-85 path and prove mapping/fact counts with an authorized
       read-only profile.
+- [ ] Apply `20260830170000_marketing_stream_correctness.sql`, PR #81's
+      `20260830180000_optimization_weekday_schedules.sql`, and
+      `20260831100000_unified_reporting_dual_run.sql` only after ledger reconciliation and exact
+      hosted authorization. Keep the Unified sidecar off until its binding, deployment revision,
+      consumer ownership and one authorized read-only cohort are proven.
 - [ ] Run the authorized, non-persisting SB Video probe and review one read-only SP report per
       supported grain with source, promoted, superseded and canonical counts.
 - [ ] v1 crosscheck exit gate: consecutive verified days, campaign-grain parity, and explained
