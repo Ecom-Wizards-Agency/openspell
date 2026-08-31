@@ -117,6 +117,11 @@ and a JSON-only group schedule, which would weaken constraints and indexing.
 - The optimization-group browser workflow owns a fresh authenticated Next process. Adding its
   route graph to the already broad auth suite exhausted the shared runner's four-gigabyte heap;
   the isolated suite keeps that infrastructure failure separate from product assertions.
+- Account-scope navigation owns another fresh process because it deliberately compiles every
+  operator route. This keeps its same-document proof independent of the broad auth route graph.
+- The optimizer preserves an explicit preset id. Calendar and rolling presets can resolve to the
+  same dates at a month boundary; identical dates must not silently relabel “Month to date” as
+  “Last 30 days.”
 - Full typecheck, lint, tests, hygiene and web build must pass before merge.
 
 ## Production gate
