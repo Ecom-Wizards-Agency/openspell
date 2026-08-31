@@ -1,6 +1,6 @@
 # OpenSpell continuation handover
 
-Last reconciled: 2026-08-31. This is a rolling handover for the next implementation chat, not a
+Last reconciled: 2026-09-01. This is a rolling handover for the next implementation chat, not a
 historical changelog.
 
 ## How to use and maintain this file
@@ -37,21 +37,22 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- `origin/main` is `3d30f52908f86f994c2ce22163b81addeb727a8e`. PR #89 exact-head run
-  `33401540530` and exact-main run `33402961215` both passed the typecheck/lint/test/hygiene and
-  production-build Playwright jobs.
+- `origin/main` is `d75ec26a172d774819a4af7d6fd89c7c90f7e351`. PR #91 exact-head run
+  `33423728036` passed both CI jobs. Exact-main run `33424944462` passed both jobs on attempt 2;
+  its first Playwright attempt had one unrelated invitation redirect timing failure, while the
+  repository gate and the WP-181 auth-role suite passed.
 - Production web health and the READY Vercel deployment behind the public alias agree on
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 13 commits behind current main.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 153 commits behind
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 16 commits behind current main.
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 156 commits behind
   current main, and still returns the legacy `wizard-ads` service shape.
 - The new Evo report-worker unit is not installed and its loopback health is unavailable. The
-  legacy integration worker is active with zero recorded restarts, but exposes no revision stamp.
-  Its installed 35-file worker tree matches a range of 25 historical main commits, so its exact
-  source revision is unproven.
+  legacy integration worker is active but exposes no revision stamp. Its recent journal has
+  recurring Keepa `/product` failures, so exact source revision and integration health are both
+  unproven.
 - Current source, deployed web, deployed MCP, and the active worker are not one proven release. Do
   not describe post-deployment main features as live until a revision-stamped candidate is promoted
   and checked.
-- `docs/STATUS.md` now records WP-179 and WP-180, but the implementation-wave table remains
+- `docs/STATUS.md` now records WP-179 through WP-181, but the implementation-wave table remains
   incomplete between WP-149 and WP-178. Use Git, CI, code, the migration ledger, and live health as
   evidence; then update status prose.
 
@@ -82,6 +83,10 @@ Recent verified source work includes:
   one deployment lock, exact verification, and fail-closed recovery. It has not been activated;
 - strict provider-native Unified Reporting create/retrieve methods with exact indexed accounting,
   ambiguity-safe create behavior, idempotent retrieval, and no download or promotion claim;
+- a default-off Unified Reporting dual-run sidecar for `spCampaigns`, with explicit advertiser
+  bindings, a durable one-send create fence, bounded retrieval, separate provider outcomes, and
+  Reporting v3 as the sole fact and promotion authority. No hosted migration, binding, activation,
+  provider call, download, fact write, or history bootstrap followed the merge;
 - inactive campaign-creation plans, approvals, write-ahead evidence, closed accounting, and exact
   observation-gated dependencies; no creation job is active and no provider runtime exists;
 - inert, guarded Sponsored Products update-plan contracts under the explicit
@@ -102,12 +107,13 @@ Reconcile heads and checks again before acting.
 
 ### PR #81 — WP-171 weekday schedules
 
-- Head at handover preparation: `2dccb6109332cd598747a45bf2e918d5f52853e6`.
+- Head at handover preparation: `2dccb6109332cd598747a45bf2e918d5f52853e6`; it is conflicting,
+  13 commits behind current main, and six commits ahead of its merge base.
 - Replaces ambiguous cadence intervals with profile-local weekday, local-time, and timezone
   controls for optimization groups.
-- Local `pnpm check` passed. Run `33352215777` passed both jobs, but GitHub tested a synthetic merge
-  against older main `e55ff36f`; it is not proof for the raw head on current main. Update or rebase
-  after the migration gate closes, then require both jobs on the resulting exact integration SHA.
+- Local `pnpm check` passed. Its two displayed checks are green, but GitHub tested a synthetic merge
+  against older main; they are not proof for the raw head on current main. Update or rebase after
+  the migration gate closes, then require both jobs on the resulting exact integration SHA.
 - The latest head isolates the optimization-group workflow in a fresh authenticated Next process.
 - Do not merge before the final current-main integration jobs pass and the hosted schema includes
   `20260830180000_optimization_weekday_schedules.sql`. The new web code reads the new columns
@@ -116,14 +122,14 @@ Reconcile heads and checks again before acting.
 
 ### Older open work that needs an explicit decision
 
-- PR #17: contextual-negative review/export; 152 commits behind and conflicting. Preserve its useful
-  brief and rescue the distinct negative workflow promptly, or close it as superseded.
-- PR #24: guarded Sponsored Products write gateway; 110 commits behind and conflicting. WP-179 and
-  WP-180 supersede its shared-contract and provider-adapter portions. Preserve only its
+- PR #17: contextual-negative review/export; 155 commits behind, conflicting, and failing. Preserve
+  its useful brief and rescue the distinct negative workflow promptly, or close it as superseded.
+- PR #24: guarded Sponsored Products write gateway; 113 commits behind, conflicting, and failing.
+  WP-179 and WP-180 supersede its shared-contract and provider-adapter portions. Preserve only its
   still-distinct persistence and worker ideas through current, separately reviewed slices, then
   close the old PR.
-- PR #35: release-artifact checks; 110 commits behind, conflicting and partly superseded by the
-  merged release transport. Port only the still-distinct SVG, Grid context/date, brand, and
+- PR #35: release-artifact checks; 113 commits behind, conflicting, failing, and partly superseded
+  by the merged release transport. Port only the still-distinct SVG, Grid context/date, brand, and
   recommendation artifact assertions into the current verifier, then close it.
 Do not keep stale pull requests merely as storage. Preserve useful design in a current brief,
 replace or rebase live work, and close branches that are proven superseded.
@@ -138,12 +144,13 @@ The following tracked files were not proven present in the hosted ledger during 
 - `20260829160100_sb_video_observed_ingestion.sql`
 - `20260830170000_marketing_stream_correctness.sql`
 - PR #81 adds `20260830180000_optimization_weekday_schedules.sql`
+- `20260831100000_unified_reporting_dual_run.sql`
 
 This machine has no linked Supabase project or injected read-only database credential. The Vercel
-session confirms that database variables exist without exposing their values. The 1Password CLI
-has no injected service-account session, and the local 1Password integration could not authenticate
-while its desktop app was unavailable. Hosted truth for all six files therefore remains unproven;
-no database connection, migration, seed, or schema mutation was attempted.
+session confirms that database variables exist without exposing their values. The expected
+1Password account is configured, but this shell is not signed in and has no injected service-account
+token. Hosted truth for all seven files therefore remains unproven; no database connection,
+migration, seed, or schema mutation was attempted.
 
 Before any application:
 
@@ -204,11 +211,12 @@ daily reports are not authoritative hourly Marketing Stream data.
 
 ### Unified Reporting
 
-PR #82 is only a strict transport boundary. The next package should add a worker-owned, feature-
-gated dual-run coordinator that retains Reporting v3 as promotion authority, stores each provider's
-outcome separately, and never erases a v3 success because Unified Reporting was ambiguous. Ground
-completed parts and any hourly availability with primary evidence before adding downloads or
-history bootstrap.
+WP-181 adds the worker-owned, default-off dual-run coordinator on top of PR #82's strict transport.
+It accepts only `spCampaigns`, binds the advertiser explicitly, stores each provider outcome
+separately, and leaves Reporting v3 as the sole fact and promotion authority even when Unified
+Reporting is ambiguous. Its hosted migration, tenant bindings, deployment, activation, and one
+authorized read-only cohort remain open. Ground provider downloads, fact equivalence, history, and
+any hourly availability with primary evidence before extending this boundary.
 
 ### Optimizer and Time Machine
 
@@ -250,7 +258,9 @@ an exact current-task authorization.
    claims first, prove the legacy unit retired, then perform the attended activation and exact
    health/queue checks. Never allow overlapping consumers.
 6. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
-7. Add the Unified Reporting worker dual-run without changing promotion authority.
+7. Keep the merged Unified Reporting dual-run off until its exact hosted migration, binding,
+   deployment revision, consumer ownership, and one authorized read-only cohort are proven. Do not
+   add download or promotion behavior from request-status parity alone.
 8. After PR #81 clears its overlapping web files, implement the sidebar-scroll regression package.
 9. Continue the useful old-PR slices in dependency order: WP-179's inert Sponsored Products
    contract and WP-180's inert provider adapter are merged; next reconcile the hosted ledger and

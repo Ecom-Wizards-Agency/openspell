@@ -2,9 +2,10 @@
 
 ## Status
 
-Implemented and locally verified. High correctness and Extra-High adversarial safety reviews found
-no remaining defects. This package remains source-only and default-off: its hosted migration,
-tenant bindings, deployment, and feature activation have not been applied.
+Merged at `d75ec26` after exact-head and exact-main CI passed. High correctness and Extra-High
+adversarial safety reviews found no remaining defects. This package remains source-only and
+default-off: its hosted migration, tenant bindings, deployment, feature activation, and provider
+probe have not been applied.
 
 ## Outcome
 
