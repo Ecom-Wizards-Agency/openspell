@@ -1,13 +1,18 @@
 import type { CSSProperties } from 'react';
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
+import {
+  loadContextualNegativeReview,
+  listContextualNegativeExports,
+  type ContextualNegativeReviewLoad,
+} from '@wizard-ads/db';
 import { QueryCategory } from '@wizard-ads/shared';
 import {
   authenticationDestination,
   openWebDatabase,
   requestActor,
-  requireOrgMembership,
 } from '../../src/server/request-context';
+import { requireOrgRole } from '../../src/server/org-role';
 import { listOrgProfiles, selectOrgProfile } from '../../src/recommendations/data';
 import {
   listQueryIntelligenceScopes,
@@ -18,6 +23,10 @@ import {
   QUERY_CATEGORY_OPTIONS,
   QueryIntelligenceWorkspace,
 } from './workspace';
+import {
+  NegativeProposalReview,
+  type ContextualNegativeReviewState,
+} from './negative-review';
 import styles from './query-intelligence.module.css';
 
 export const runtime = 'nodejs';
@@ -41,6 +50,51 @@ function selectedScope(
   );
 }
 
+function reviewState(review: ContextualNegativeReviewLoad): ContextualNegativeReviewState {
+  if (review.status === 'capacity_exceeded') {
+    const reasons = {
+      row_limit: 'The review scope exceeds its row limit.',
+      byte_limit: 'The review fields exceed their byte limit.',
+      timeout: 'The complete review snapshot exceeded its five-second query budget.',
+    } as const;
+    return {
+      status: 'capacity_exceeded',
+      rowCount: review.rowCount,
+      reviewBytes: review.reviewBytes,
+      rowLimit: review.limits.rows,
+      byteLimit: review.limits.reviewBytes,
+      measurementsAvailable: review.measurementsAvailable,
+      reason: reasons[review.reason],
+    };
+  }
+  return {
+    status: 'ready',
+    proposals: review.proposals.map((proposal) => ({
+      id: proposal.id,
+      profileId: proposal.profileId,
+      marketplaceId: proposal.marketplaceId,
+      campaignId: proposal.campaignId,
+      adGroupId: proposal.adGroupId,
+      searchTerm: proposal.searchTerm,
+      normalizedQuery: proposal.normalizedQuery,
+      category: proposal.category,
+      sourceGroupRole: proposal.sourceGroupRole,
+      matchType: proposal.matchType,
+      reason: proposal.reason,
+      status: proposal.status,
+      reviewFingerprint: proposal.reviewFingerprint,
+    })),
+    counts: {
+      proposed: review.statusCounts.proposed,
+      accepted: review.statusCounts.accepted,
+      dismissed: review.statusCounts.dismissed,
+      exported: review.statusCounts.exported,
+    },
+    rowCount: review.rowCount,
+    reviewBytes: review.reviewBytes,
+  };
+}
+
 export default async function QueryIntelligencePage({
   searchParams,
 }: {
@@ -49,7 +103,7 @@ export default async function QueryIntelligencePage({
   const database = openWebDatabase();
   try {
     const actor = await requestActor(await headers());
-    await requireOrgMembership(database, actor);
+    const role = await requireOrgRole(database, actor);
     const query = await searchParams;
     const profiles = await listOrgProfiles(database, actor.orgId);
     const profile = selectOrgProfile(profiles, one(query['profile']));
@@ -100,13 +154,20 @@ export default async function QueryIntelligencePage({
       );
     }
 
-    const source = await loadQueryIntelligenceSource(database, {
+    const reviewScope = {
       orgId: actor.orgId,
       profileId: profile.id,
       marketplaceId: scope.marketplaceId,
-      weekStart: scope.weekStart,
-      weekEnd: scope.weekEnd,
-    });
+    };
+    const [source, contextualReview, contextualExports] = await Promise.all([
+      loadQueryIntelligenceSource(database, {
+        ...reviewScope,
+        weekStart: scope.weekStart,
+        weekEnd: scope.weekEnd,
+      }),
+      loadContextualNegativeReview(database, reviewScope),
+      listContextualNegativeExports(database, reviewScope),
+    ]);
     const model = buildQueryIntelligenceModel(source);
 
     return (
@@ -118,7 +179,7 @@ export default async function QueryIntelligencePage({
               {profile.label} · {scope.marketplaceId} · {scope.weekStart} to {scope.weekEnd}
             </p>
           </div>
-          <span className="wa-badge wa-badge--info">Read-only operator workspace</span>
+          <span className="wa-badge wa-badge--info">Review and evidence only · Amazon not updated</span>
         </header>
 
         <form className="wa-toolbar" method="get" aria-label="Query intelligence filters">
@@ -178,6 +239,21 @@ export default async function QueryIntelligencePage({
           currencyCode={profile.currencyCode}
           selectedCategory={category}
           search={search}
+          negativeReview={(
+            <NegativeProposalReview
+              key={`${profile.id}:${scope.marketplaceId}`}
+              review={reviewState(contextualReview)}
+              exports={contextualExports.map((record) => ({
+                id: record.id,
+                rowCount: record.rowCount,
+                createdAt: record.createdAt.toISOString(),
+                note: record.note,
+              }))}
+              profileId={profile.id}
+              marketplaceId={scope.marketplaceId}
+              role={role}
+            />
+          )}
         />
       </main>
     );

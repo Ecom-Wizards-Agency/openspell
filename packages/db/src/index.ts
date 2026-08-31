@@ -27,6 +27,7 @@ export * from './queries/creative-pilot-preflight.js';
 export * from './queries/creative-sync-producer.js';
 export * from './queries/dayparting.js';
 export * from './queries/connections.js';
+export * from './queries/contextual-negative-review.js';
 export * from './queries/entities.js';
 export * from './queries/experiments.js';
 export * from './queries/facts.js';

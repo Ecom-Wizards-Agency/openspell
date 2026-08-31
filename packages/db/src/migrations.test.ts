@@ -9,7 +9,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable, migrationFiles } from './testing/harness.js';
-import { tenantTables } from './testing/rls.js';
+import { asServiceRole, tenantTables } from './testing/rls.js';
 import type { TestDatabase } from './testing/harness.js';
 
 const available = await databaseAvailable();
@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260831100000_unified_reporting_dual_run.sql');
+    expect(files.at(-1)).toBe('20260901000000_contextual_negative_review_exports.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -394,6 +394,7 @@ describe.skipIf(!available)('migrations', () => {
       'ad_creative_asset_mappings', 'fact_creative_daily',
       'creative_sync_snapshots',
       'sqp_promotion_runs', 'query_vocabulary', 'contextual_negative_proposals',
+      'contextual_negative_exports',
       'optimization_groups', 'campaign_optimization_assignments',
       'recommendation_observations', 'marketing_stream_subscription_bindings',
       'marketing_stream_events', 'marketing_stream_projection_blocks',
@@ -402,6 +403,187 @@ describe.skipIf(!available)('migrations', () => {
     ]) {
       expect(tables, `missing table ${expected}`).toContain(expected);
     }
+  });
+
+  it('installs the immutable one-row contextual-negative artifact contract', async () => {
+    const columns = await database.sql<{
+      column_name: string;
+      data_type: string;
+      is_nullable: string;
+    }[]>`
+      select column_name, data_type, is_nullable
+        from information_schema.columns
+       where table_schema = 'public'
+         and table_name = 'contextual_negative_exports'
+       order by ordinal_position
+    `;
+    expect(columns).toEqual([
+      { column_name: 'id', data_type: 'uuid', is_nullable: 'NO' },
+      { column_name: 'org_id', data_type: 'uuid', is_nullable: 'NO' },
+      { column_name: 'profile_id', data_type: 'uuid', is_nullable: 'NO' },
+      { column_name: 'marketplace_id', data_type: 'text', is_nullable: 'NO' },
+      { column_name: 'note', data_type: 'text', is_nullable: 'NO' },
+      { column_name: 'row_count', data_type: 'integer', is_nullable: 'NO' },
+      { column_name: 'json_artifact', data_type: 'bytea', is_nullable: 'NO' },
+      { column_name: 'json_sha256', data_type: 'text', is_nullable: 'NO' },
+      { column_name: 'csv_artifact', data_type: 'bytea', is_nullable: 'NO' },
+      { column_name: 'csv_sha256', data_type: 'text', is_nullable: 'NO' },
+      { column_name: 'created_by', data_type: 'text', is_nullable: 'NO' },
+      { column_name: 'created_at', data_type: 'timestamp with time zone', is_nullable: 'NO' },
+    ]);
+
+    const [scopeForeignKey] = await database.sql<{ definition: string }[]>`
+      select pg_get_constraintdef(oid) as definition
+        from pg_constraint
+       where conname = 'contextual_negative_exports_profile_fkey'
+    `;
+    expect(scopeForeignKey?.definition).toContain(
+      'FOREIGN KEY (org_id, profile_id) REFERENCES ad_profiles(org_id, id) ON DELETE CASCADE',
+    );
+
+    const policies = await database.sql<{ tablename: string; cmd: string }[]>`
+      select tablename, cmd from pg_policies
+       where schemaname = 'public'
+         and tablename in ('contextual_negative_exports', 'contextual_negative_proposals')
+       order by tablename, cmd
+    `;
+    expect(policies).toEqual([
+      { tablename: 'contextual_negative_exports', cmd: 'SELECT' },
+      { tablename: 'contextual_negative_proposals', cmd: 'SELECT' },
+    ]);
+    const [grants] = await database.sql<{
+      proposal_insert: boolean;
+      proposal_update: boolean;
+      proposal_delete: boolean;
+      artifact_insert: boolean;
+      artifact_update: boolean;
+      artifact_delete: boolean;
+      artifact_truncate: boolean;
+      audit_truncate: boolean;
+    }[]>`
+      select
+        has_table_privilege('authenticated', 'public.contextual_negative_proposals', 'insert')
+          as proposal_insert,
+        has_table_privilege('authenticated', 'public.contextual_negative_proposals', 'update')
+          as proposal_update,
+        has_table_privilege('authenticated', 'public.contextual_negative_proposals', 'delete')
+          as proposal_delete,
+        has_table_privilege('authenticated', 'public.contextual_negative_exports', 'insert')
+          as artifact_insert,
+        has_table_privilege('authenticated', 'public.contextual_negative_exports', 'update')
+          as artifact_update,
+        has_table_privilege('authenticated', 'public.contextual_negative_exports', 'delete')
+          as artifact_delete,
+        has_table_privilege('service_role', 'public.contextual_negative_exports', 'truncate')
+          as artifact_truncate,
+        has_table_privilege('service_role', 'public.audit_log', 'truncate')
+          as audit_truncate
+    `;
+    expect(grants).toEqual({
+      proposal_insert: false,
+      proposal_update: false,
+      proposal_delete: false,
+      artifact_insert: false,
+      artifact_update: false,
+      artifact_delete: false,
+      artifact_truncate: false,
+      audit_truncate: false,
+    });
+
+    const triggers = await database.sql<{ tgname: string }[]>`
+      select tgname from pg_trigger
+       where not tgisinternal
+         and tgname in (
+           'contextual_negative_exports_immutable',
+           'contextual_negative_exports_no_truncate',
+           'audit_log_contextual_negative_immutable',
+           'audit_log_contextual_negative_no_truncate'
+         )
+       order by tgname
+    `;
+    expect(triggers.map((row) => row.tgname)).toEqual([
+      'audit_log_contextual_negative_immutable',
+      'audit_log_contextual_negative_no_truncate',
+      'contextual_negative_exports_immutable',
+      'contextual_negative_exports_no_truncate',
+    ]);
+  });
+
+  it('guards evidence from service tampering and permits only a cascading organisation purge', async () => {
+    const actor = '85858585-8585-4858-8858-858585858585';
+    const [fixture] = await database.sql<{ seed_tenant_fixture: string }[]>`
+      select app.seed_tenant_fixture('contextual-guard', ${actor}::uuid, 'owner')
+    `;
+    const orgId = fixture?.seed_tenant_fixture ?? '';
+    const [profile] = await database.sql<{ id: string }[]>`
+      select id from public.ad_profiles where org_id = ${orgId}::uuid limit 1
+    `;
+    const profileId = profile?.id ?? '';
+    const jsonArtifact = Buffer.from('{"fixture":true}\n', 'utf8');
+    const csvArtifact = Buffer.from('fixture\n', 'utf8');
+    await database.sql`
+      insert into public.contextual_negative_exports
+        (org_id, profile_id, marketplace_id, note, row_count,
+         json_artifact, json_sha256, csv_artifact, csv_sha256, created_by)
+      values (
+        ${orgId}::uuid, ${profileId}::uuid, 'guard-marketplace', 'guard artifact', 1,
+        ${jsonArtifact}, ${'218589323cbe80b7ed077e3ee36f1663e7cb5f8f4e4ad02c938ad8a5c2c5a6b9'},
+        ${csvArtifact}, ${'e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f'},
+        ${actor}
+      )
+    `;
+    const [artifact] = await database.sql<{ id: string }[]>`
+      select id from public.contextual_negative_exports where org_id = ${orgId}::uuid
+    `;
+    const artifactId = artifact?.id ?? '';
+    const [audit] = await database.sql<{ id: number }[]>`
+      insert into public.audit_log
+        (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
+      values (
+        ${orgId}::uuid, 'user', ${actor}, 'query_negative.accepted',
+        'contextual_negative_proposal', 'fixture', '{"before":{}}', 'test'
+      )
+      returning id
+    `;
+
+    await asServiceRole(database, async (sql) => {
+      await sql`select set_config('app.contextual_negative_purge', 'on', false)`;
+      await sql`select set_config('app.contextual_negative_purge_org_id', ${orgId}, false)`;
+      await expect(sql`
+        update public.contextual_negative_exports set note = 'changed' where id = ${artifactId}::uuid
+      `).rejects.toThrow(/artifacts are immutable/i);
+      await expect(sql`
+        delete from public.contextual_negative_exports where id = ${artifactId}::uuid
+      `).rejects.toThrow(/artifacts are immutable/i);
+      await expect(sql`
+        update public.audit_log set payload = '{}' where id = ${audit?.id ?? 0}
+      `).rejects.toThrow(/audit evidence is immutable/i);
+      await expect(sql`
+        delete from public.audit_log where id = ${audit?.id ?? 0}
+      `).rejects.toThrow(/audit evidence is immutable/i);
+      await expect(sql`truncate public.contextual_negative_exports`).rejects.toThrow(/permission denied/i);
+      await expect(sql`truncate public.audit_log`).rejects.toThrow(/permission denied/i);
+      await expect(sql`truncate public.orgs cascade`).rejects.toThrow(/permission denied/i);
+      await sql`select set_config('app.contextual_negative_purge', '', false)`;
+      await sql`select set_config('app.contextual_negative_purge_org_id', '', false)`;
+    });
+
+    await expect(database.sql`truncate public.contextual_negative_exports`)
+      .rejects.toThrow(/must not be truncated/i);
+    await expect(database.sql`truncate public.audit_log`)
+      .rejects.toThrow(/must not be truncated/i);
+    await expect(database.sql`truncate public.orgs cascade`)
+      .rejects.toThrow(/must not be truncated/i);
+
+    await database.sql`delete from public.orgs where id = ${orgId}::uuid`;
+    const [remaining] = await database.sql<{ artifacts: number; audits: number }[]>`
+      select
+        (select count(*)::int from public.contextual_negative_exports where org_id = ${orgId}::uuid)
+          as artifacts,
+        (select count(*)::int from public.audit_log where org_id = ${orgId}::uuid)
+          as audits
+    `;
+    expect(remaining).toEqual({ artifacts: 0, audits: 0 });
   });
 
   it('keeps Keepa observation identity non-null and creates constrained event grain', async () => {

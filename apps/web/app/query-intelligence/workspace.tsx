@@ -78,6 +78,7 @@ export interface QueryIntelligenceWorkspaceProps {
   currencyCode: string;
   selectedCategory: QueryCategory | null;
   search: string;
+  negativeReview: ReactNode;
 }
 
 export function QueryIntelligenceWorkspace({
@@ -85,6 +86,7 @@ export function QueryIntelligenceWorkspace({
   currencyCode,
   selectedCategory,
   search,
+  negativeReview,
 }: QueryIntelligenceWorkspaceProps): ReactNode {
   const money = currencyFormatter(currencyCode);
   const normalizedSearch = search.trim().toLocaleLowerCase('und');
@@ -129,9 +131,9 @@ export function QueryIntelligenceWorkspace({
           </span>
         </article>
         <article className="wa-kpi">
-          <span className="wa-kpi__label">Negative proposals</span>
-          <strong className="wa-kpi__value">{INTEGER.format(model.proposals.length)}</strong>
-          <span className="wa-kpi__delta">Ad-group review and export only</span>
+          <span className="wa-kpi__label">Contextual negatives</span>
+          <strong className="wa-kpi__value">Review</strong>
+          <span className="wa-kpi__delta">Explicit decisions and evidence export only</span>
         </article>
       </section>
 
@@ -288,59 +290,7 @@ export function QueryIntelligenceWorkspace({
           </div>
         </section>
 
-        <section className="wa-card" aria-labelledby="negatives-title">
-          <header className="wa-card__head">
-            <div>
-              <span className="wa-label">Contextual negatives</span>
-              <h2 id="negatives-title" className="wa-card__title">Review/export queue</h2>
-            </div>
-            <span className="wa-card__sub">No Amazon writes</span>
-          </header>
-          <div className="wa-card__body wa-card__body--flush">
-            {model.proposals.length === 0 ? (
-              <div className={styles.compactEmpty}>
-                No contextual negative proposals are waiting for this marketplace. Core and Generic
-                Head terms are never negated merely because of their category.
-              </div>
-            ) : (
-              <div className={styles.innerTableWrap}>
-                <table className="wa-table wa-table--dense">
-                  <thead>
-                    <tr>
-                      <th>Search term</th>
-                      <th>Route</th>
-                      <th>Ad group</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {model.proposals.slice(0, 100).map((proposal) => (
-                      <tr key={proposal.id ?? `${proposal.adGroupId}:${proposal.normalizedQuery}`}>
-                        <td>
-                          <strong>{proposal.searchTerm}</strong>
-                          <small className={styles.cellSub}>
-                            {QUERY_CATEGORY_LABELS[proposal.category]} · {proposal.matchType.replace('_', ' ')}
-                          </small>
-                        </td>
-                        <td>{ROLE_LABELS[proposal.sourceGroupRole]}</td>
-                        <td>{proposal.adGroupId}</td>
-                        <td>
-                          <span className={proposal.status === 'proposed' ? 'wa-badge wa-badge--warn' : 'wa-badge'}>
-                            {proposal.status}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            <p className={styles.cardNote}>
-              Own Brand remains valid in Shield. Competitor terms remain valid in conquest. Every
-              proposal targets an ad group and still requires human review before export.
-            </p>
-          </div>
-        </section>
+        {negativeReview}
       </div>
 
       <section className="wa-card" aria-labelledby="coverage-title">

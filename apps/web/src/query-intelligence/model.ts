@@ -6,7 +6,6 @@ import {
 } from '@wizard-ads/core';
 import type { WeeklyPpcQueryRecord } from '@wizard-ads/db';
 import type {
-  ContextualNegativeProposal,
   QueryCategory,
   QueryJoinAttribution,
   QueryVocabularyEntry,
@@ -53,7 +52,6 @@ export interface QueryIntelligenceSource {
   facts: SqpWeeklyFact[];
   ppc: WeeklyPpcQueryRecord[];
   vocabulary: QueryVocabularyEntry[];
-  proposals: ContextualNegativeProposal[];
   promotionRuns: SqpPromotionEvidence[];
 }
 
@@ -111,7 +109,6 @@ export interface QueryIntelligenceModel {
   vocabulary: QueryVocabularyEntry[];
   approvedVocabulary: number;
   pendingVocabulary: number;
-  proposals: ContextualNegativeProposal[];
   promotionRuns: SqpPromotionEvidence[];
   promotionReconciled: boolean | null;
   assertions: {
@@ -288,10 +285,6 @@ export function buildQueryIntelligenceModel(
     ),
     approvedVocabulary: source.vocabulary.filter((entry) => entry.approved).length,
     pendingVocabulary: source.vocabulary.filter((entry) => !entry.approved).length,
-    proposals: [...source.proposals].sort(
-      (left, right) =>
-        left.status.localeCompare(right.status) || left.searchTerm.localeCompare(right.searchTerm),
-    ),
     promotionRuns: source.promotionRuns,
     promotionReconciled:
       source.promotionRuns.length === 0
