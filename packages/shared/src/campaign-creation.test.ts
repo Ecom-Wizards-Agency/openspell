@@ -1,7 +1,11 @@
+/// <reference types="node" />
+
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   ApproveCampaignCreationPlan,
   CampaignCreationAccounting,
+  CampaignCreationAuthorizationReceipt,
   CampaignCreationExecutionEvidence,
   CampaignCreationExecutionSnapshot,
   CampaignCreationJobPayload,
@@ -10,9 +14,14 @@ import {
   CampaignCreationProviderResult,
   CampaignCreationResourceObservation,
   JobPayload,
+  deriveCampaignCreationExecutionStatus,
   orderCampaignCreationNodes,
   serializeCampaignCreationNodeFingerprint,
   serializeCampaignCreationPlanFingerprint,
+  verifyCampaignCreationJobArtifacts,
+  verifyCampaignCreationObservationArtifacts,
+  verifyCampaignCreationPlanFingerprints,
+  verifyCampaignCreationProviderCallArtifacts,
   type CampaignCreationNode as CampaignCreationNodeType,
   type CampaignCreationPlan as CampaignCreationPlanType,
 } from './index.js';
@@ -24,12 +33,17 @@ const EXECUTION_ID = '00000000-0000-4000-8000-000000000004';
 const ATTEMPT_ID = '00000000-0000-4000-8000-000000000005';
 const CALL_ID = '00000000-0000-4000-8000-000000000006';
 const GENERATION_ID = '00000000-0000-4000-8000-000000000007';
+const AUTHORIZATION_ID = '00000000-0000-4000-8000-000000000008';
 const PRODUCT_NODE_ID = '00000000-0000-4000-8000-000000000011';
 const CAMPAIGN_NODE_ID = '00000000-0000-4000-8000-000000000012';
 const AD_GROUP_NODE_ID = '00000000-0000-4000-8000-000000000013';
 const AD_NODE_ID = '00000000-0000-4000-8000-000000000014';
 const TARGET_NODE_ID = '00000000-0000-4000-8000-000000000015';
 const sha = (character: string): string => character.repeat(64);
+const sha256 = {
+  algorithm: 'sha256' as const,
+  digest: (value: string): string => createHash('sha256').update(value).digest('hex'),
+};
 
 function spNodes(): CampaignCreationNodeType[] {
   return [
@@ -162,6 +176,23 @@ function spPlan(): CampaignCreationPlanType {
       rollback: 'none',
       compensatingAction: 'separate_reviewed_pause_or_archive',
     },
+  });
+}
+
+function fingerprintedSpPlan(): CampaignCreationPlanType {
+  const base = spPlan();
+  const nodes = base.nodes.map((node) => ({
+    ...node,
+    fingerprint: sha256.digest(serializeCampaignCreationNodeFingerprint(node)),
+  })) as CampaignCreationNodeType[];
+  const withNodeFingerprints = CampaignCreationPlan.parse({
+    ...base,
+    nodes,
+    fingerprint: sha('0'),
+  });
+  return CampaignCreationPlan.parse({
+    ...withNodeFingerprints,
+    fingerprint: sha256.digest(serializeCampaignCreationPlanFingerprint(withNodeFingerprints)),
   });
 }
 
@@ -485,7 +516,11 @@ function completedSpExecutionEvidence(plan: CampaignCreationPlanType = spPlan())
     attemptId: `00000000-0000-4000-8000-${String(index + 101).padStart(12, '0')}`,
     providerCallId: `00000000-0000-4000-8000-${String(index + 201).padStart(12, '0')}`,
     nodeFingerprint: node.fingerprint,
-    requestIndex: null,
+    requestIndex: node.effect === 'read_check' ? null : 0,
+    ...(node.effect === 'irreversible_create' ? {
+      requestDigest: sha(String((index + 6) % 10)),
+      nodeRequestDigest: sha(String((index + 7) % 10)),
+    } : {}),
     outcome: node.effect === 'read_check' ? 'passed' : 'succeeded',
     providerEntityId: node.kind === 'eligibility.require_product' ? node.payload.asin
       : node.kind === 'eligibility.require_brand' ? node.payload.brandId
@@ -500,17 +535,47 @@ function completedSpExecutionEvidence(plan: CampaignCreationPlanType = spPlan())
     startedAt: `2026-08-30T00:02:${String(index * 2).padStart(2, '0')}.000Z`,
     completedAt: `2026-08-30T00:02:${String(index * 2 + 1).padStart(2, '0')}.000Z`,
   }));
+  const providerCallIntents = plan.nodes
+    .map((node, index) => ({ node, index, result: providerResults[index] }))
+    .filter(({ node }) => node.effect === 'irreversible_create')
+    .map(({ node, index, result }) => ({
+      planId: plan.id,
+      planFingerprint: plan.fingerprint,
+      executionId: EXECUTION_ID,
+      authorizationId: AUTHORIZATION_ID,
+      generation: GENERATION_ID,
+      attemptId: result?.attemptId,
+      providerCallId: result?.providerCallId,
+      requestDigest: result?.requestDigest,
+      positions: [{
+        requestIndex: 0,
+        nodeId: node.nodeId,
+        nodeFingerprint: node.fingerprint,
+        requestDigest: result?.nodeRequestDigest,
+      }],
+      recordedAt: `2026-08-30T00:02:${String(index * 2 - 1).padStart(2, '0')}.500Z`,
+    }));
   const observations = plan.nodes
     .filter((node) => node.effect === 'irreversible_create')
     .map((node) => ({
       providerResult: providerResults.find((result) => result.nodeId === node.nodeId),
+      providerIntent: providerCallIntents.find((intent) => (
+        intent.positions.some((position) => position.nodeId === node.nodeId)
+      )),
       node,
     }))
-    .map(({ node, providerResult }) => ({
+    .map(({ node, providerIntent, providerResult }) => ({
       planId: plan.id,
       nodeId: node.nodeId,
       executionId: EXECUTION_ID,
+      authorizationId: providerIntent?.authorizationId,
+      generation: providerIntent?.generation,
+      attemptId: providerIntent?.attemptId,
+      providerCallId: providerIntent?.providerCallId,
       nodeFingerprint: node.fingerprint,
+      requestDigest: providerIntent?.requestDigest,
+      nodeRequestDigest: providerIntent?.positions[0]?.requestDigest,
+      basis: 'provider_result_identity',
       providerEntityId: providerResult?.providerEntityId,
       observation: 'observed',
       amazonModerationStatus: 'not_applicable',
@@ -521,6 +586,7 @@ function completedSpExecutionEvidence(plan: CampaignCreationPlanType = spPlan())
   return {
     plan,
     executionId: EXECUTION_ID,
+    providerCallIntents,
     providerResults,
     nonProviderDispositions: [],
     observations,
@@ -559,11 +625,14 @@ function failedCampaignExecutionEvidence() {
     completed.providerResults[0],
     {
       ...campaignResult,
-      outcome: 'failed',
+      outcome: 'authoritative_rejected',
       providerEntityId: null,
       providerCode: 'SYNTHETIC_FAILURE',
     },
   ];
+  const providerCallIntents = completed.providerCallIntents.filter((intent) => (
+    intent.positions.some((position) => position.nodeId === CAMPAIGN_NODE_ID)
+  ));
   const nonProviderDispositions = completed.plan.nodes
     .filter((node) => node.effect === 'irreversible_create' && node.nodeId !== CAMPAIGN_NODE_ID)
     .map((node) => ({
@@ -576,6 +645,7 @@ function failedCampaignExecutionEvidence() {
     }));
   return {
     ...completed,
+    providerCallIntents,
     providerResults,
     nonProviderDispositions,
     observations: [],
@@ -640,6 +710,28 @@ describe('campaign creation plan', () => {
         ? { ...node, fingerprint: sha('b') }
         : node),
     })).not.toBe(originalPreimage);
+  });
+
+  it('recomputes every stored fingerprint before a persisted plan is trusted', () => {
+    expect(sha256.digest('abc')).toBe(
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    );
+    const plan = fingerprintedSpPlan();
+    expect(verifyCampaignCreationPlanFingerprints(plan, sha256)).toEqual(plan);
+
+    const changedNodes = plan.nodes.map((node) => node.kind === 'campaign.create'
+      ? {
+          ...node,
+          payload: { ...node.payload, name: 'Tampered synthetic campaign' },
+        }
+      : node);
+    const tamperedNodePlan = CampaignCreationPlan.parse({ ...plan, nodes: changedNodes });
+    expect(() => verifyCampaignCreationPlanFingerprints(tamperedNodePlan, sha256))
+      .toThrow(/node .* fingerprint does not match/);
+
+    const tamperedEnvelope = CampaignCreationPlan.parse({ ...plan, orgId: GENERATION_ID });
+    expect(() => verifyCampaignCreationPlanFingerprints(tamperedEnvelope, sha256))
+      .toThrow('campaign creation plan fingerprint does not match');
   });
 
   it('rejects count drift, non-canonical order, cycles, missing dependencies, and scope drift', () => {
@@ -1340,12 +1432,290 @@ describe('campaign creation approval and evidence', () => {
       expectedCounts: plan.counts,
       noRollbackAcknowledgement: plan.noRollbackAcknowledgement,
     }).expectedCounts.irreversibleCreates).toBe(4);
+    expect(CampaignCreationAuthorizationReceipt.parse({
+      authorizationId: AUTHORIZATION_ID,
+      executionId: EXECUTION_ID,
+      generation: GENERATION_ID,
+      schemaVersion: plan.schemaVersion,
+      planId: plan.id,
+      planFingerprint: plan.fingerprint,
+      orgId: plan.orgId,
+      profileId: plan.profileId,
+      marketplaceId: plan.marketplaceId,
+      adProduct: plan.adProduct,
+      apiDialect: plan.apiDialect,
+      expiresAt: plan.expiresAt,
+      expectedCounts: plan.counts,
+      noRollbackAcknowledgement: plan.noRollbackAcknowledgement,
+      confirmationVersion: 'openspell.campaign-creation.no-delete-rollback.v1',
+      approvedBy: '00000000-0000-4000-8000-000000000009',
+      approvedAt: '2026-08-30T00:01:30.000Z',
+      gateSnapshotDigest: sha('d'),
+    }).authorizationId).toBe(AUTHORIZATION_ID);
+    expect(CampaignCreationAuthorizationReceipt.safeParse({
+      authorizationId: AUTHORIZATION_ID,
+      executionId: EXECUTION_ID,
+      generation: GENERATION_ID,
+      schemaVersion: plan.schemaVersion,
+      planId: plan.id,
+      planFingerprint: plan.fingerprint,
+      orgId: plan.orgId,
+      profileId: plan.profileId,
+      marketplaceId: plan.marketplaceId,
+      adProduct: plan.adProduct,
+      apiDialect: plan.apiDialect,
+      expiresAt: plan.expiresAt,
+      expectedCounts: plan.counts,
+      noRollbackAcknowledgement: plan.noRollbackAcknowledgement,
+      confirmationVersion: 'openspell.campaign-creation.no-delete-rollback.v1',
+      approvedBy: '00000000-0000-4000-8000-000000000009',
+      approvedAt: plan.expiresAt,
+      gateSnapshotDigest: sha('d'),
+    }).success).toBe(false);
     expect(ApproveCampaignCreationPlan.safeParse({
       planId: plan.id,
       planFingerprint: plan.fingerprint,
       orgId: plan.orgId,
       profileId: plan.profileId,
     }).success).toBe(false);
+  });
+
+  it('joins the exact frozen plan, receipt, job, generation, and call intent at runtime', () => {
+    const plan = fingerprintedSpPlan();
+    const authorization = {
+      authorizationId: AUTHORIZATION_ID,
+      executionId: EXECUTION_ID,
+      generation: GENERATION_ID,
+      schemaVersion: plan.schemaVersion,
+      planId: plan.id,
+      planFingerprint: plan.fingerprint,
+      orgId: plan.orgId,
+      profileId: plan.profileId,
+      marketplaceId: plan.marketplaceId,
+      adProduct: plan.adProduct,
+      apiDialect: plan.apiDialect,
+      expiresAt: plan.expiresAt,
+      expectedCounts: plan.counts,
+      noRollbackAcknowledgement: plan.noRollbackAcknowledgement,
+      confirmationVersion: 'openspell.campaign-creation.no-delete-rollback.v1',
+      approvedBy: '00000000-0000-4000-8000-000000000009',
+      approvedAt: '2026-08-30T00:01:15.000Z',
+      gateSnapshotDigest: sha('d'),
+    } as const;
+    const job = {
+      type: 'campaign_creation.dispatch',
+      orgId: plan.orgId,
+      profileId: plan.profileId,
+      planId: plan.id,
+      planFingerprint: plan.fingerprint,
+      executionId: EXECUTION_ID,
+      authorizationId: AUTHORIZATION_ID,
+      generation: GENERATION_ID,
+    } as const;
+    const node = plan.nodes.find((candidate) => candidate.effect === 'irreversible_create');
+    if (node === undefined) throw new Error('synthetic create node missing');
+    const intent = {
+      planId: plan.id,
+      planFingerprint: plan.fingerprint,
+      executionId: EXECUTION_ID,
+      authorizationId: AUTHORIZATION_ID,
+      generation: GENERATION_ID,
+      attemptId: ATTEMPT_ID,
+      providerCallId: CALL_ID,
+      requestDigest: sha('e'),
+      positions: [{
+        requestIndex: 0,
+        nodeId: node.nodeId,
+        nodeFingerprint: node.fingerprint,
+        requestDigest: sha('f'),
+      }],
+      recordedAt: '2026-08-30T00:02:01.500Z',
+    } as const;
+    const completed = completedSpExecutionEvidence(plan);
+    const currentEvidence = {
+      ...completed,
+      providerCallIntents: [],
+      providerResults: completed.providerResults.filter((result) => result.effect === 'read_check'),
+      nonProviderDispositions: plan.nodes
+        .filter((candidate) => candidate.effect === 'irreversible_create')
+        .map((candidate) => ({
+          planId: plan.id,
+          nodeId: candidate.nodeId,
+          executionId: EXECUTION_ID,
+          nodeFingerprint: candidate.fingerprint,
+          outcome: 'pending_dispatch' as const,
+          sanitizedReason: null,
+        })),
+      observations: [],
+      snapshot: {
+        status: 'running' as const,
+        accounting: {
+          operatorApproved: plan.counts.irreversibleCreates,
+          pendingDispatch: plan.counts.irreversibleCreates,
+          attempted: 0,
+          succeeded: 0,
+          failed: 0,
+          ambiguous: 0,
+          refusedAtExecution: 0,
+          blockedByDependency: 0,
+          observed: 0,
+          pendingObservation: 0,
+          observationNotFound: 0,
+          observationConflict: 0,
+          readChecksRequested: plan.counts.readChecks,
+          readChecksPending: 0,
+          readChecksPassed: plan.counts.readChecks,
+          readChecksRefused: 0,
+          readChecksFailed: 0,
+        },
+      },
+    };
+
+    expect(verifyCampaignCreationJobArtifacts(
+      plan,
+      authorization,
+      job,
+      '2026-08-30T00:03:00.000Z',
+      sha256,
+    ).authorization.authorizationId).toBe(AUTHORIZATION_ID);
+    expect(verifyCampaignCreationProviderCallArtifacts(
+      plan,
+      authorization,
+      job,
+      currentEvidence,
+      intent,
+      '2026-08-30T00:03:00.000Z',
+      sha256,
+    ).intent.providerCallId).toBe(CALL_ID);
+
+    expect(() => verifyCampaignCreationJobArtifacts(
+      plan,
+      { ...authorization, planId: GENERATION_ID },
+      job,
+      '2026-08-30T00:02:00.000Z',
+      sha256,
+    )).toThrow(/receipt does not match/);
+    expect(() => verifyCampaignCreationJobArtifacts(
+      plan,
+      authorization,
+      { ...job, authorizationId: GENERATION_ID },
+      '2026-08-30T00:02:00.000Z',
+      sha256,
+    )).toThrow(/job does not match/);
+    expect(() => verifyCampaignCreationJobArtifacts(
+      plan,
+      authorization,
+      { ...job, generation: AUTHORIZATION_ID },
+      '2026-08-30T00:02:00.000Z',
+      sha256,
+    )).toThrow(/job does not match/);
+    expect(() => verifyCampaignCreationProviderCallArtifacts(
+      plan,
+      authorization,
+      job,
+      currentEvidence,
+      { ...intent, generation: AUTHORIZATION_ID },
+      '2026-08-30T00:03:00.000Z',
+      sha256,
+    )).toThrow(/intent does not match/);
+    expect(() => verifyCampaignCreationProviderCallArtifacts(
+      plan,
+      authorization,
+      job,
+      currentEvidence,
+      {
+        ...intent,
+        positions: [{ ...intent.positions[0], nodeFingerprint: sha('0') }],
+      },
+      '2026-08-30T00:03:00.000Z',
+      sha256,
+    )).toThrow(/position does not match/);
+    expect(() => verifyCampaignCreationProviderCallArtifacts(
+      plan,
+      authorization,
+      job,
+      completed,
+      {
+        ...intent,
+        attemptId: '00000000-0000-4000-8000-000000000090',
+        providerCallId: '00000000-0000-4000-8000-000000000091',
+        recordedAt: '2026-08-30T00:02:10.000Z',
+      },
+      '2026-08-30T00:03:00.000Z',
+      sha256,
+    )).toThrow(/not exclusively pending/);
+    expect(() => verifyCampaignCreationProviderCallArtifacts(
+      plan,
+      { ...authorization, approvedAt: '2026-08-30T00:02:02.000Z' },
+      job,
+      completed,
+      { ...intent, recordedAt: '2026-08-30T00:02:03.000Z' },
+      '2026-08-30T00:03:00.000Z',
+      sha256,
+    )).toThrow(/outside the authority window/);
+    const adGroupNode = plan.nodes.find((candidate) => candidate.nodeId === AD_GROUP_NODE_ID);
+    if (adGroupNode === undefined) throw new Error('synthetic ad-group node missing');
+    expect(() => verifyCampaignCreationProviderCallArtifacts(
+      plan,
+      authorization,
+      job,
+      currentEvidence,
+      {
+        ...intent,
+        positions: [{
+          requestIndex: 0,
+          nodeId: adGroupNode.nodeId,
+          nodeFingerprint: adGroupNode.fingerprint,
+          requestDigest: sha('7'),
+        }],
+      },
+      '2026-08-30T00:03:00.000Z',
+      sha256,
+    )).toThrow(/dependency that is not satisfied/);
+    expect(() => verifyCampaignCreationJobArtifacts(
+      plan,
+      authorization,
+      job,
+      plan.expiresAt,
+      sha256,
+    )).toThrow(/expired/);
+    const observeJob = { ...job, type: 'campaign_creation.observe', attempt: 1 } as const;
+    expect(verifyCampaignCreationJobArtifacts(
+      plan,
+      { ...authorization },
+      observeJob,
+      '2026-08-31T00:00:00.000Z',
+      sha256,
+    ).job.type).toBe('campaign_creation.observe');
+    const campaignObservation = completed.observations.find((candidate) => (
+      candidate.nodeId === CAMPAIGN_NODE_ID
+    ));
+    if (campaignObservation === undefined) {
+      throw new Error('synthetic campaign observation missing');
+    }
+    const advancedObservation = {
+      ...campaignObservation,
+      observedAt: '2026-08-30T00:04:00.000Z',
+      sourceSyncJobId: '00000000-0000-4000-8000-000000000093',
+    };
+    expect(verifyCampaignCreationObservationArtifacts(
+      plan,
+      authorization,
+      observeJob,
+      completed,
+      advancedObservation,
+      '2026-08-31T00:00:00.000Z',
+      sha256,
+    ).observation.providerEntityId).toBe(campaignObservation.providerEntityId);
+    expect(() => verifyCampaignCreationObservationArtifacts(
+      plan,
+      authorization,
+      observeJob,
+      completed,
+      { ...advancedObservation, providerEntityId: 'UNRELATED-CAMPAIGN' },
+      '2026-08-31T00:00:00.000Z',
+      sha256,
+    )).toThrow(/not exactly correlated/);
   });
 
   it('requires provider identity for passed checks, successful creates, and observations', () => {
@@ -1357,11 +1727,13 @@ describe('campaign creation approval and evidence', () => {
       providerCallId: CALL_ID,
       nodeFingerprint: sha('a'),
       requestIndex: 0,
+      requestDigest: sha('c'),
+      nodeRequestDigest: sha('d'),
       providerEntityVersion: null,
       providerCode: null,
       sanitizedMessage: null,
       providerRequestId: null,
-      responseDigest: null,
+      responseDigest: sha('e'),
       startedAt: '2026-08-30T00:02:00.000Z',
       completedAt: '2026-08-30T00:02:01.000Z',
     };
@@ -1391,18 +1763,32 @@ describe('campaign creation approval and evidence', () => {
       outcome: 'refused',
       providerEntityId: null,
     }).success).toBe(false);
+    expect(CampaignCreationProviderResult.safeParse({
+      ...common,
+      effect: 'irreversible_create',
+      outcome: 'ambiguous',
+      providerEntityId: 'UNCORRELATED-ENTITY',
+      responseDigest: null,
+    }).success).toBe(false);
 
     const observation = {
       planId: PLAN_ID,
       nodeId: CAMPAIGN_NODE_ID,
       executionId: EXECUTION_ID,
+      authorizationId: AUTHORIZATION_ID,
+      generation: GENERATION_ID,
+      attemptId: ATTEMPT_ID,
+      providerCallId: CALL_ID,
       nodeFingerprint: sha('a'),
+      requestDigest: sha('c'),
+      nodeRequestDigest: sha('d'),
+      basis: 'provider_result_identity',
       providerEntityId: null,
       observation: 'pending',
       amazonModerationStatus: 'not_applicable',
       deliveryStatus: 'unknown',
       observedAt: '2026-08-30T00:03:00.000Z',
-      sourceSyncJobId: null,
+      sourceSyncJobId: GENERATION_ID,
     } as const;
     expect(CampaignCreationResourceObservation.safeParse({
       ...observation,
@@ -1411,6 +1797,12 @@ describe('campaign creation approval and evidence', () => {
     expect(CampaignCreationResourceObservation.safeParse({
       ...observation,
       deliveryStatus: 'delivering',
+    }).success).toBe(false);
+    expect(CampaignCreationResourceObservation.safeParse({
+      ...observation,
+      basis: 'intent_reconciliation',
+      observation: 'observed',
+      providerEntityId: 'UNRELATED-CAMPAIGN',
     }).success).toBe(false);
   });
 
@@ -1438,6 +1830,7 @@ describe('campaign creation approval and evidence', () => {
     expect(CampaignCreationAccounting.safeParse({ ...valid, observed: 3 }).success).toBe(false);
     expect(CampaignCreationAccounting.safeParse({ ...valid, blockedByDependency: 0 }).success)
       .toBe(false);
+    expect(deriveCampaignCreationExecutionStatus(valid)).toBe('awaiting_observation');
     expect(CampaignCreationExecutionSnapshot.safeParse({
       status: 'succeeded',
       accounting: valid,
@@ -1478,6 +1871,70 @@ describe('campaign creation approval and evidence', () => {
       status: 'running',
       accounting: valid,
     }).success).toBe(false);
+
+    const queued = {
+      operatorApproved: 4,
+      pendingDispatch: 4,
+      attempted: 0,
+      succeeded: 0,
+      failed: 0,
+      ambiguous: 0,
+      refusedAtExecution: 0,
+      blockedByDependency: 0,
+      observed: 0,
+      pendingObservation: 0,
+      observationNotFound: 0,
+      observationConflict: 0,
+      readChecksRequested: 1,
+      readChecksPending: 1,
+      readChecksPassed: 0,
+      readChecksRefused: 0,
+      readChecksFailed: 0,
+    };
+    expect(deriveCampaignCreationExecutionStatus(queued)).toBe('queued');
+    expect(CampaignCreationExecutionSnapshot.safeParse({
+      status: 'running',
+      accounting: queued,
+    }).success).toBe(false);
+
+    const mixedConflict = {
+      ...queued,
+      pendingDispatch: 0,
+      attempted: 2,
+      succeeded: 1,
+      failed: 1,
+      blockedByDependency: 2,
+      observationConflict: 1,
+      readChecksPending: 0,
+      readChecksPassed: 1,
+    };
+    expect(deriveCampaignCreationExecutionStatus(mixedConflict)).toBe('ambiguous');
+    expect(CampaignCreationExecutionSnapshot.safeParse({
+      status: 'partial_failed',
+      accounting: mixedConflict,
+    }).success).toBe(false);
+
+    const terminalBase = {
+      ...queued,
+      pendingDispatch: 0,
+      readChecksPending: 0,
+      readChecksPassed: 1,
+    };
+    expect(deriveCampaignCreationExecutionStatus({
+      ...terminalBase,
+      refusedAtExecution: 1,
+      blockedByDependency: 3,
+    })).toBe('refused');
+    expect(deriveCampaignCreationExecutionStatus({
+      ...terminalBase,
+      blockedByDependency: 4,
+    })).toBe('blocked');
+    expect(deriveCampaignCreationExecutionStatus({
+      ...terminalBase,
+      attempted: 1,
+      failed: 1,
+      blockedByDependency: 3,
+    })).toBe('failed');
   });
 
   it('reconciles every exact node, provider position, disposition, and observation', () => {
@@ -1502,6 +1959,12 @@ describe('campaign creation approval and evidence', () => {
         ? { ...result, nodeFingerprint: sha('f') }
         : result),
     }).success).toBe(false);
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...evidence,
+      observations: evidence.observations.map((observation, index) => index === 0
+        ? { ...observation, providerCallId: CALL_ID }
+        : observation),
+    }).success).toBe(false);
 
     const notFound = {
       ...evidence,
@@ -1514,7 +1977,7 @@ describe('campaign creation approval and evidence', () => {
           }
         : observation),
       snapshot: {
-        status: 'partial_failed',
+        status: 'awaiting_observation',
         accounting: {
           ...evidence.snapshot.accounting,
           observed: 3,
@@ -1524,6 +1987,127 @@ describe('campaign creation approval and evidence', () => {
     };
     expect(CampaignCreationExecutionEvidence.parse(notFound).snapshot.accounting.observationNotFound)
       .toBe(1);
+    expect(CampaignCreationExecutionEvidence.parse(notFound).snapshot.status)
+      .toBe('awaiting_observation');
+  });
+
+  it('requires write-ahead intent and keeps an unresolved create quarantined', () => {
+    const evidence = completedSpExecutionEvidence();
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...evidence,
+      providerCallIntents: evidence.providerCallIntents.filter((intent) => (
+        !intent.positions.some((position) => position.nodeId === TARGET_NODE_ID)
+      )),
+    }).success).toBe(false);
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...evidence,
+      providerCallIntents: evidence.providerCallIntents.map((intent, index) => index === 1
+        ? { ...intent, authorizationId: '00000000-0000-4000-8000-000000000092' }
+        : intent),
+    }).success).toBe(false);
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...evidence,
+      providerResults: evidence.providerResults.map((result) => (
+        result.nodeId === TARGET_NODE_ID && result.effect === 'irreversible_create'
+          ? { ...result, requestDigest: sha('9') }
+          : result
+      )),
+    }).success).toBe(false);
+
+    const firstIntent = evidence.providerCallIntents[0];
+    if (firstIntent === undefined) throw new Error('synthetic provider intent missing');
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...evidence,
+      providerCallIntents: [
+        ...evidence.providerCallIntents,
+        {
+          ...firstIntent,
+          attemptId: '00000000-0000-4000-8000-000000000090',
+          providerCallId: '00000000-0000-4000-8000-000000000091',
+        },
+      ],
+    }).success).toBe(false);
+
+    const unresolved = {
+      ...evidence,
+      providerResults: evidence.providerResults.filter((result) => (
+        result.nodeId !== TARGET_NODE_ID
+      )),
+      observations: evidence.observations.map((observation) => (
+        observation.nodeId === TARGET_NODE_ID
+          ? {
+              ...observation,
+              providerEntityId: null,
+              basis: 'intent_reconciliation' as const,
+              observation: 'not_found' as const,
+              deliveryStatus: 'unknown' as const,
+            }
+          : observation
+      )),
+      snapshot: {
+        status: 'awaiting_observation' as const,
+        accounting: {
+          ...evidence.snapshot.accounting,
+          succeeded: 3,
+          ambiguous: 1,
+          observed: 3,
+          observationNotFound: 1,
+        },
+      },
+    };
+    expect(CampaignCreationExecutionEvidence.parse(unresolved).snapshot.status)
+      .toBe('awaiting_observation');
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...unresolved,
+      snapshot: { ...unresolved.snapshot, status: 'partial_failed' },
+    }).success).toBe(false);
+
+    const crashAfterIntent = {
+      ...unresolved,
+      observations: unresolved.observations.filter((observation) => (
+        observation.nodeId !== TARGET_NODE_ID
+      )),
+      snapshot: {
+        status: 'awaiting_observation' as const,
+        accounting: {
+          ...unresolved.snapshot.accounting,
+          pendingObservation: 1,
+          observationNotFound: 0,
+        },
+      },
+    };
+    expect(CampaignCreationExecutionEvidence.parse(crashAfterIntent).snapshot.accounting
+      .pendingObservation).toBe(1);
+
+    const successAwaitingFirstObservation = {
+      ...evidence,
+      observations: evidence.observations.filter((observation) => (
+        observation.nodeId !== TARGET_NODE_ID
+      )),
+      snapshot: {
+        status: 'awaiting_observation' as const,
+        accounting: {
+          ...evidence.snapshot.accounting,
+          observed: 3,
+          pendingObservation: 1,
+        },
+      },
+    };
+    expect(CampaignCreationExecutionEvidence.parse(successAwaitingFirstObservation).snapshot.status)
+      .toBe('awaiting_observation');
+
+    const campaignResult = evidence.providerResults.find(
+      (result) => result.nodeId === CAMPAIGN_NODE_ID,
+    );
+    if (campaignResult === undefined) throw new Error('synthetic campaign result missing');
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...evidence,
+      providerCallIntents: evidence.providerCallIntents.map((intent) => (
+        intent.positions.some((position) => position.nodeId === CAMPAIGN_NODE_ID)
+          ? { ...intent, recordedAt: campaignResult.completedAt }
+          : intent
+      )),
+    }).success).toBe(false);
   });
 
   it('represents staged running work while a created dependency awaits observation', () => {
@@ -1535,6 +2119,9 @@ describe('campaign creation approval and evidence', () => {
     const pendingNodeIds = new Set([AD_GROUP_NODE_ID, AD_NODE_ID, TARGET_NODE_ID]);
     const staged = {
       ...evidence,
+      providerCallIntents: evidence.providerCallIntents.filter((intent) => (
+        intent.positions.some((position) => position.nodeId === CAMPAIGN_NODE_ID)
+      )),
       providerResults: evidence.providerResults.filter(
         (result) => result.nodeId === PRODUCT_NODE_ID || result.nodeId === CAMPAIGN_NODE_ID,
       ),
@@ -1645,6 +2232,73 @@ describe('campaign creation approval and evidence', () => {
         ? { ...observation, providerEntityId: 'TARGET-SAME' }
         : observation),
     }).success).toBe(false);
+
+    const targetIntents = duplicateIdentity.providerCallIntents.filter((intent) => (
+      intent.positions.some((position) => targetNodeIds.has(position.nodeId))
+    ));
+    const firstTargetIntent = targetIntents[0];
+    if (firstTargetIntent === undefined || targetIntents.length !== 2) {
+      throw new Error('synthetic target call intents missing');
+    }
+    const batchedRequestDigest = sha('8');
+    const batchedPositions = targetIntents.map((intent, requestIndex) => {
+      const position = intent.positions[0];
+      if (position === undefined) throw new Error('synthetic target call position missing');
+      return { ...position, requestIndex };
+    });
+    const batchedIntent = {
+      ...firstTargetIntent,
+      requestDigest: batchedRequestDigest,
+      positions: batchedPositions,
+    };
+    const batchedEvidence = {
+      ...duplicateIdentity,
+      providerCallIntents: [
+        ...duplicateIdentity.providerCallIntents.filter((intent) => (
+          !intent.positions.some((position) => targetNodeIds.has(position.nodeId))
+        )),
+        batchedIntent,
+      ],
+      providerResults: duplicateIdentity.providerResults.map((result) => {
+        const requestIndex = batchedPositions.findIndex(
+          (position) => position.nodeId === result.nodeId,
+        );
+        if (requestIndex < 0 || result.effect !== 'irreversible_create') return result;
+        const position = batchedPositions[requestIndex];
+        if (position === undefined) throw new Error('synthetic batched position missing');
+        return {
+          ...result,
+          attemptId: batchedIntent.attemptId,
+          providerCallId: batchedIntent.providerCallId,
+          requestIndex,
+          requestDigest: batchedRequestDigest,
+          nodeRequestDigest: position.requestDigest,
+        };
+      }),
+      observations: duplicateIdentity.observations.map((observation) => {
+        const position = batchedPositions.find((candidate) => (
+          candidate.nodeId === observation.nodeId
+        ));
+        if (position === undefined) return observation;
+        return {
+          ...observation,
+          attemptId: batchedIntent.attemptId,
+          providerCallId: batchedIntent.providerCallId,
+          requestDigest: batchedRequestDigest,
+          nodeRequestDigest: position.requestDigest,
+        };
+      }),
+    };
+    expect(CampaignCreationExecutionEvidence.parse(batchedEvidence).providerCallIntents.at(-1)
+      ?.positions).toHaveLength(2);
+    expect(CampaignCreationExecutionEvidence.safeParse({
+      ...batchedEvidence,
+      providerCallIntents: batchedEvidence.providerCallIntents.map((intent) => (
+        intent.providerCallId === batchedIntent.providerCallId
+          ? { ...intent, positions: [...intent.positions].reverse() }
+          : intent
+      )),
+    }).success).toBe(false);
   });
 
   it('enforces execution dependencies and provider/observation chronology', () => {
@@ -1740,7 +2394,10 @@ describe('campaign creation approval and evidence', () => {
       orgId: ORG_ID,
       profileId: PROFILE_ID,
       planId: PLAN_ID,
+      planFingerprint: sha('a'),
       executionId: EXECUTION_ID,
+      authorizationId: AUTHORIZATION_ID,
+      generation: GENERATION_ID,
     } as const;
     expect(CampaignCreationJobPayload.parse(dispatch)).toEqual(dispatch);
     expect(JobPayload.safeParse(dispatch).success).toBe(false);
@@ -1749,7 +2406,9 @@ describe('campaign creation approval and evidence', () => {
       orgId: ORG_ID,
       profileId: PROFILE_ID,
       planId: PLAN_ID,
+      planFingerprint: sha('a'),
       executionId: EXECUTION_ID,
+      authorizationId: AUTHORIZATION_ID,
       generation: GENERATION_ID,
       attempt: 8,
     }).success).toBe(false);

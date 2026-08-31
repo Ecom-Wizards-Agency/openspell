@@ -57,15 +57,6 @@ export const CampaignCreationResourceKind = z.enum([
 ]);
 export type CampaignCreationResourceKind = z.infer<typeof CampaignCreationResourceKind>;
 
-export const ExistingCampaignCreationResourceRef = z.object({
-  source: z.literal('existing'),
-  kind: CampaignCreationResourceKind,
-  amazonId: AmazonId,
-}).strict();
-export type ExistingCampaignCreationResourceRef = z.infer<
-  typeof ExistingCampaignCreationResourceRef
->;
-
 export const PlannedCampaignCreationResourceRef = z.object({
   source: z.literal('plan_node'),
   kind: CampaignCreationResourceKind,
@@ -75,10 +66,7 @@ export type PlannedCampaignCreationResourceRef = z.infer<
   typeof PlannedCampaignCreationResourceRef
 >;
 
-export const CampaignCreationResourceRef = z.discriminatedUnion('source', [
-  ExistingCampaignCreationResourceRef,
-  PlannedCampaignCreationResourceRef,
-]);
+export const CampaignCreationResourceRef = PlannedCampaignCreationResourceRef;
 export type CampaignCreationResourceRef = z.infer<typeof CampaignCreationResourceRef>;
 
 function plannedResourceRef(kind: CampaignCreationResourceKind) {
@@ -711,16 +699,14 @@ function nodeReferences(node: CampaignCreationNode): CampaignCreationResourceRef
 }
 
 function referenceKey(reference: CampaignCreationResourceRef): string {
-  return reference.source === 'existing'
-    ? `${reference.source}:${reference.kind}:${reference.amazonId}`
-    : `${reference.source}:${reference.kind}:${reference.nodeId}`;
+  return `${reference.source}:${reference.kind}:${reference.nodeId}`;
 }
 
 function referencedPlanNode(
   reference: CampaignCreationResourceRef,
   byId: ReadonlyMap<string, CampaignCreationNode>,
 ): CampaignCreationNode | undefined {
-  return reference.source === 'plan_node' ? byId.get(reference.nodeId) : undefined;
+  return byId.get(reference.nodeId);
 }
 
 function campaignForParent(
@@ -893,7 +879,6 @@ export const CampaignCreationPlan = z.object({
     }
 
     for (const reference of nodeReferences(node)) {
-      if (reference.source !== 'plan_node') continue;
       const referenced = byId.get(reference.nodeId);
       if (!referenced) {
         context.addIssue({ code: 'custom', path: ['nodes', index], message: 'plan-node reference is missing' });
@@ -912,14 +897,6 @@ export const CampaignCreationPlan = z.object({
       expectedKind: CampaignCreationResourceKind,
       expectedAssetPurpose?: CampaignCreationAssetPurpose,
     ): CampaignCreationNode | undefined => {
-      if (reference.source !== 'plan_node') {
-        context.addIssue({
-          code: 'custom',
-          path: ['nodes', index],
-          message: `${expectedKind} use must reference its explicit plan preflight`,
-        });
-        return undefined;
-      }
       const requirement = byId.get(reference.nodeId);
       if (!requirement || producedResourceKind(requirement) !== expectedKind
         || requirement.effect !== 'read_check') {
@@ -1206,6 +1183,42 @@ export function serializeCampaignCreationPlanFingerprint(rawPlan: CampaignCreati
   ]);
 }
 
+/** Runtime-neutral SHA-256 boundary supplied by a capable caller. */
+export type CampaignCreationSha256Hasher = {
+  algorithm: 'sha256';
+  digest: (preimage: string) => string;
+};
+
+/**
+ * Recompute every stored digest before a persisted plan is approved or used.
+ * Parsing proves shape and graph invariants; this separate trust-boundary check
+ * proves that the immutable artifact still matches its canonical preimages.
+ */
+export function verifyCampaignCreationPlanFingerprints(
+  rawPlan: CampaignCreationPlan,
+  hashSha256: CampaignCreationSha256Hasher,
+): CampaignCreationPlan {
+  const plan = CampaignCreationPlan.parse(rawPlan);
+  if (hashSha256.algorithm !== 'sha256') {
+    throw new Error('campaign creation fingerprint verifier requires SHA-256');
+  }
+  for (const node of plan.nodes) {
+    const actual = CampaignCreationSha256.parse(
+      hashSha256.digest(serializeCampaignCreationNodeFingerprint(node)),
+    );
+    if (actual !== node.fingerprint) {
+      throw new Error(`campaign creation node ${node.nodeId} fingerprint does not match`);
+    }
+  }
+  const actualPlanFingerprint = CampaignCreationSha256.parse(
+    hashSha256.digest(serializeCampaignCreationPlanFingerprint(plan)),
+  );
+  if (actualPlanFingerprint !== plan.fingerprint) {
+    throw new Error('campaign creation plan fingerprint does not match');
+  }
+  return plan;
+}
+
 /** Exact approval ceremony input. Actor and approval time come from the authenticated DB session. */
 export const ApproveCampaignCreationPlan = z.object({
   schemaVersion: CampaignCreationSchemaVersion,
@@ -1228,6 +1241,93 @@ export const ApproveCampaignCreationPlan = z.object({
   }
 });
 export type ApproveCampaignCreationPlan = z.infer<typeof ApproveCampaignCreationPlan>;
+
+export const CampaignCreationConfirmationVersion = z.literal(
+  'openspell.campaign-creation.no-delete-rollback.v1',
+);
+export type CampaignCreationConfirmationVersion = z.infer<
+  typeof CampaignCreationConfirmationVersion
+>;
+
+/**
+ * Immutable authorization evidence issued by the authenticated persistence
+ * boundary after it reloads and verifies the exact frozen plan. A queue job is
+ * only a pointer to this receipt; it never grants authority by itself.
+ */
+export const CampaignCreationAuthorizationReceipt = z.object({
+  authorizationId: CampaignCreationUuid,
+  executionId: CampaignCreationUuid,
+  generation: CampaignCreationUuid,
+  schemaVersion: CampaignCreationSchemaVersion,
+  planId: CampaignCreationUuid,
+  planFingerprint: CampaignCreationSha256,
+  orgId: CampaignCreationUuid,
+  profileId: CampaignCreationUuid,
+  marketplaceId: AmazonId,
+  adProduct: AdProduct,
+  apiDialect: CampaignCreationApiDialect,
+  expiresAt: z.iso.datetime(),
+  expectedCounts: CampaignCreationPlanCounts,
+  noRollbackAcknowledgement: CampaignCreationNoRollbackAcknowledgement,
+  confirmationVersion: CampaignCreationConfirmationVersion,
+  approvedBy: CampaignCreationUuid,
+  approvedAt: z.iso.datetime(),
+  gateSnapshotDigest: CampaignCreationSha256,
+}).strict().superRefine((receipt, context) => {
+  if (!expectedDialectProduct(receipt.apiDialect, receipt.adProduct)) {
+    context.addIssue({ code: 'custom', path: ['apiDialect'], message: 'API dialect does not support this ad product' });
+  }
+  if (receipt.expectedCounts.byKind['campaign.create'] === 0) {
+    context.addIssue({ code: 'custom', path: ['expectedCounts'], message: 'authorization must cover at least one campaign create' });
+  }
+  if (instantMillis(receipt.approvedAt) >= instantMillis(receipt.expiresAt)) {
+    context.addIssue({ code: 'custom', path: ['approvedAt'], message: 'authorization must be issued before the plan expires' });
+  }
+});
+export type CampaignCreationAuthorizationReceipt = z.infer<
+  typeof CampaignCreationAuthorizationReceipt
+>;
+
+export const CampaignCreationProviderCallPosition = z.object({
+  requestIndex: z.number().int().nonnegative(),
+  nodeId: CampaignCreationUuid,
+  nodeFingerprint: CampaignCreationSha256,
+  requestDigest: CampaignCreationSha256,
+}).strict();
+export type CampaignCreationProviderCallPosition = z.infer<
+  typeof CampaignCreationProviderCallPosition
+>;
+
+/**
+ * Write-ahead evidence for an irreversible provider request. Persistence must
+ * commit this intent before network I/O. Once a node appears in an intent, a
+ * retry may observe or reconcile it but must never issue another create.
+ */
+export const CampaignCreationProviderCallIntent = z.object({
+  planId: CampaignCreationUuid,
+  planFingerprint: CampaignCreationSha256,
+  executionId: CampaignCreationUuid,
+  authorizationId: CampaignCreationUuid,
+  generation: CampaignCreationUuid,
+  attemptId: CampaignCreationUuid,
+  providerCallId: CampaignCreationUuid,
+  requestDigest: CampaignCreationSha256,
+  positions: z.array(CampaignCreationProviderCallPosition).min(1),
+  recordedAt: z.iso.datetime(),
+}).strict().superRefine((intent, context) => {
+  const indexes = intent.positions.map((position) => position.requestIndex);
+  const canonicalIndexes = intent.positions.map((_, index) => index);
+  if (JSON.stringify(indexes) !== JSON.stringify(canonicalIndexes)) {
+    context.addIssue({ code: 'custom', path: ['positions'], message: 'provider call positions must be a complete ordered zero-based sequence' });
+  }
+  const nodeIds = intent.positions.map((position) => position.nodeId);
+  if (new Set(nodeIds).size !== nodeIds.length) {
+    context.addIssue({ code: 'custom', path: ['positions'], message: 'a provider call cannot repeat a plan node' });
+  }
+});
+export type CampaignCreationProviderCallIntent = z.infer<
+  typeof CampaignCreationProviderCallIntent
+>;
 
 export const CampaignCreationProviderResult = z.discriminatedUnion('effect', [
   z.object({
@@ -1270,8 +1370,10 @@ export const CampaignCreationProviderResult = z.discriminatedUnion('effect', [
     attemptId: CampaignCreationUuid,
     providerCallId: CampaignCreationUuid,
     nodeFingerprint: CampaignCreationSha256,
-    requestIndex: z.number().int().nonnegative().nullable(),
-    outcome: z.enum(['succeeded', 'failed', 'ambiguous']),
+    requestIndex: z.number().int().nonnegative(),
+    requestDigest: CampaignCreationSha256,
+    nodeRequestDigest: CampaignCreationSha256,
+    outcome: z.enum(['succeeded', 'authoritative_rejected', 'ambiguous']),
     providerEntityId: AmazonId.nullable(),
     providerEntityVersion: z.null(),
     providerCode: z.string().max(160).nullable(),
@@ -1284,8 +1386,17 @@ export const CampaignCreationProviderResult = z.discriminatedUnion('effect', [
     if (value.outcome === 'succeeded' && value.providerEntityId === null) {
       context.addIssue({ code: 'custom', path: ['providerEntityId'], message: 'a successful create must identify the provider resource' });
     }
-    if (value.outcome === 'failed' && value.providerEntityId !== null) {
-      context.addIssue({ code: 'custom', path: ['providerEntityId'], message: 'a failed create cannot claim a provider resource' });
+    if (value.outcome === 'authoritative_rejected' && value.providerEntityId !== null) {
+      context.addIssue({ code: 'custom', path: ['providerEntityId'], message: 'an authoritatively rejected create cannot claim a provider resource' });
+    }
+    if (value.outcome === 'authoritative_rejected' && value.providerCode === null) {
+      context.addIssue({ code: 'custom', path: ['providerCode'], message: 'an authoritative rejection requires the exact provider classification' });
+    }
+    if (value.outcome === 'ambiguous' && value.providerEntityId !== null) {
+      context.addIssue({ code: 'custom', path: ['providerEntityId'], message: 'an ambiguous create cannot claim a correlated provider identity' });
+    }
+    if (value.outcome !== 'ambiguous' && value.responseDigest === null) {
+      context.addIssue({ code: 'custom', path: ['responseDigest'], message: 'a conclusive create outcome requires sanitized response evidence' });
     }
     if (instantMillis(value.completedAt) < instantMillis(value.startedAt)) {
       context.addIssue({ code: 'custom', path: ['completedAt'], message: 'provider result cannot complete before it starts' });
@@ -1311,17 +1422,32 @@ export const CampaignCreationDeliveryStatus = z.enum([
 ]);
 export type CampaignCreationDeliveryStatus = z.infer<typeof CampaignCreationDeliveryStatus>;
 
+export const CampaignCreationObservationBasis = z.enum([
+  'provider_result_identity',
+  'intent_reconciliation',
+]);
+export type CampaignCreationObservationBasis = z.infer<
+  typeof CampaignCreationObservationBasis
+>;
+
 export const CampaignCreationResourceObservation = z.object({
   planId: CampaignCreationUuid,
   nodeId: CampaignCreationUuid,
   executionId: CampaignCreationUuid,
+  authorizationId: CampaignCreationUuid,
+  generation: CampaignCreationUuid,
+  attemptId: CampaignCreationUuid,
+  providerCallId: CampaignCreationUuid,
   nodeFingerprint: CampaignCreationSha256,
+  requestDigest: CampaignCreationSha256,
+  nodeRequestDigest: CampaignCreationSha256,
+  basis: CampaignCreationObservationBasis,
   providerEntityId: AmazonId.nullable(),
   observation: z.enum(['pending', 'observed', 'not_found', 'conflict']),
   amazonModerationStatus: CampaignCreationAmazonModerationStatus,
   deliveryStatus: CampaignCreationDeliveryStatus,
   observedAt: z.iso.datetime(),
-  sourceSyncJobId: CampaignCreationUuid.nullable(),
+  sourceSyncJobId: CampaignCreationUuid,
 }).strict().superRefine((value, context) => {
   if (value.observation === 'observed' && value.providerEntityId === null) {
     context.addIssue({ code: 'custom', path: ['providerEntityId'], message: 'an observed resource needs an Amazon identity' });
@@ -1331,6 +1457,10 @@ export const CampaignCreationResourceObservation = z.object({
   }
   if (value.amazonModerationStatus === 'rejected' && value.deliveryStatus === 'delivering') {
     context.addIssue({ code: 'custom', path: ['deliveryStatus'], message: 'a moderation-rejected resource cannot be reported as delivering' });
+  }
+  if (value.basis === 'intent_reconciliation' && (value.observation === 'observed'
+    || value.providerEntityId !== null)) {
+    context.addIssue({ code: 'custom', path: ['basis'], message: 'intent-only reconciliation cannot claim an exactly correlated provider identity' });
   }
 });
 export type CampaignCreationResourceObservation = z.infer<
@@ -1387,73 +1517,66 @@ export const CampaignCreationAccounting = z.object({
 });
 export type CampaignCreationAccounting = z.infer<typeof CampaignCreationAccounting>;
 
+/**
+ * Deterministic status projection for a closed accounting snapshot. Conflict
+ * is the highest-severity terminal state; in-flight work always remains
+ * nonterminal. Throws when the counters describe no coherent lifecycle state.
+ */
+export function deriveCampaignCreationExecutionStatus(
+  rawAccounting: CampaignCreationAccounting,
+): CampaignCreationExecutionStatus {
+  const counts = CampaignCreationAccounting.parse(rawAccounting);
+  const unresolvedObservation = counts.pendingObservation + counts.observationNotFound;
+  const pendingWork = counts.pendingDispatch + counts.readChecksPending;
+  const created = counts.succeeded + counts.ambiguous;
+  const unsuccessful = counts.failed + counts.refusedAtExecution
+    + counts.blockedByDependency + counts.readChecksRefused + counts.readChecksFailed;
+  const terminal = pendingWork === 0 && unresolvedObservation === 0;
+
+  const queued = counts.pendingDispatch === counts.operatorApproved
+    && counts.attempted === 0
+    && counts.refusedAtExecution === 0
+    && counts.blockedByDependency === 0
+    && counts.observed === 0
+    && counts.observationConflict === 0
+    && counts.readChecksPending === counts.readChecksRequested
+    && counts.readChecksPassed === 0
+    && counts.readChecksRefused === 0
+    && counts.readChecksFailed === 0;
+  if (queued) return 'queued';
+  if (pendingWork > 0) return 'running';
+  if (unresolvedObservation > 0) return 'awaiting_observation';
+  if (terminal && counts.observationConflict > 0) return 'ambiguous';
+  if (terminal && created > 0 && unsuccessful > 0) return 'partial_failed';
+  if (terminal && created === 0 && counts.failed > 0) return 'failed';
+  if (terminal && counts.attempted === 0
+    && counts.refusedAtExecution > 0) return 'refused';
+  if (terminal && counts.attempted === 0
+    && counts.blockedByDependency > 0) return 'blocked';
+  if (terminal && unsuccessful === 0
+    && counts.observed === created) return 'succeeded';
+  throw new Error('campaign creation accounting has no coherent execution status');
+}
+
 export const CampaignCreationExecutionSnapshot = z.object({
   status: CampaignCreationExecutionStatus,
   accounting: CampaignCreationAccounting,
 }).strict().superRefine((snapshot, context) => {
-  const counts = snapshot.accounting;
-  const noDispatchPending = counts.pendingDispatch === 0;
-  const noObservationPending = counts.pendingObservation === 0;
-  const noReadPending = counts.readChecksPending === 0;
-  if (snapshot.status === 'queued'
-    && (counts.attempted !== 0 || counts.pendingDispatch !== counts.operatorApproved
-      || counts.succeeded !== 0 || counts.failed !== 0 || counts.ambiguous !== 0
-      || counts.refusedAtExecution !== 0 || counts.blockedByDependency !== 0
-      || counts.observed !== 0 || counts.pendingObservation !== 0
-      || counts.observationNotFound !== 0 || counts.observationConflict !== 0
-      || counts.readChecksPending !== counts.readChecksRequested
-      || counts.readChecksPassed !== 0
-      || counts.readChecksRefused !== 0 || counts.readChecksFailed !== 0)) {
-    context.addIssue({ code: 'custom', path: ['status'], message: 'queued execution must have every approved create pending dispatch' });
-  }
-  if (snapshot.status === 'awaiting_observation'
-    && (!noDispatchPending || !noReadPending || counts.pendingObservation === 0)) {
-    context.addIssue({ code: 'custom', path: ['status'], message: 'awaiting observation requires dispatched creates, completed preflights, and pending observation work' });
-  }
-  if (snapshot.status === 'succeeded'
-    && (!noDispatchPending || !noObservationPending || !noReadPending
-      || counts.failed !== 0 || counts.refusedAtExecution !== 0
-      || counts.blockedByDependency !== 0 || counts.observationConflict !== 0
-      || counts.observationNotFound !== 0
-      || counts.readChecksRefused !== 0 || counts.readChecksFailed !== 0
-      || counts.observed !== counts.succeeded + counts.ambiguous)) {
-    context.addIssue({ code: 'custom', path: ['status'], message: 'successful execution cannot hide incomplete, refused, failed, blocked, or conflicting work' });
-  }
-  if (snapshot.status === 'partial_failed'
-    && (!noDispatchPending || !noObservationPending || !noReadPending
-      || counts.observationConflict !== 0
-      || counts.succeeded + counts.ambiguous === 0
-      || counts.failed + counts.refusedAtExecution + counts.blockedByDependency
-        + counts.observationNotFound + counts.readChecksRefused + counts.readChecksFailed === 0)) {
-    context.addIssue({ code: 'custom', path: ['status'], message: 'partial failure must be terminal and contain both provider-created and unsuccessful work' });
-  }
-  if (snapshot.status === 'failed'
-    && (!noDispatchPending || !noObservationPending || !noReadPending
-      || counts.observationConflict !== 0 || counts.failed === 0
-      || counts.succeeded + counts.ambiguous !== 0
-      || counts.refusedAtExecution !== 0)) {
-    context.addIssue({ code: 'custom', path: ['status'], message: 'failed execution requires provider failure with no provider-created resources' });
-  }
-  if (snapshot.status === 'ambiguous'
-    && (!noDispatchPending || !noObservationPending || !noReadPending
-      || counts.observationConflict === 0)) {
-    context.addIssue({ code: 'custom', path: ['status'], message: 'terminal ambiguity requires a completed conflicting observation' });
-  }
-  if (snapshot.status === 'refused'
-    && (!noDispatchPending || !noObservationPending || !noReadPending
-      || counts.refusedAtExecution !== counts.operatorApproved
-      || counts.attempted !== 0 || counts.blockedByDependency !== 0)) {
-    context.addIssue({ code: 'custom', path: ['status'], message: 'refused execution requires every approved create to be refused before dispatch' });
-  }
-  if (snapshot.status === 'blocked'
-    && (!noDispatchPending || !noObservationPending || !noReadPending
-      || counts.blockedByDependency === 0 || counts.attempted !== 0
-      || counts.refusedAtExecution !== 0)) {
-    context.addIssue({ code: 'custom', path: ['status'], message: 'blocked execution requires a terminal preflight or dependency block before any create attempt' });
-  }
-  if (snapshot.status === 'running'
-    && counts.pendingDispatch + counts.readChecksPending === 0) {
-    context.addIssue({ code: 'custom', path: ['status'], message: 'running execution requires dispatch or preflight work' });
+  try {
+    const expected = deriveCampaignCreationExecutionStatus(snapshot.accounting);
+    if (snapshot.status !== expected) {
+      context.addIssue({
+        code: 'custom',
+        path: ['status'],
+        message: `execution status must be derived as ${expected}`,
+      });
+    }
+  } catch (error) {
+    context.addIssue({
+      code: 'custom',
+      path: ['status'],
+      message: error instanceof Error ? error.message : 'invalid campaign creation status',
+    });
   }
 });
 export type CampaignCreationExecutionSnapshot = z.infer<
@@ -1467,19 +1590,25 @@ export const CampaignCreationNonProviderDisposition = z.object({
   nodeFingerprint: CampaignCreationSha256,
   outcome: z.enum(['pending_dispatch', 'refused_at_execution', 'blocked_by_dependency']),
   sanitizedReason: z.string().min(1).max(512).nullable(),
-}).strict();
+}).strict().superRefine((disposition, context) => {
+  if (disposition.outcome !== 'pending_dispatch' && disposition.sanitizedReason === null) {
+    context.addIssue({ code: 'custom', path: ['sanitizedReason'], message: 'terminal non-provider dispositions require a sanitized reason' });
+  }
+});
 export type CampaignCreationNonProviderDisposition = z.infer<
   typeof CampaignCreationNonProviderDisposition
 >;
 
 /**
- * Complete current execution view. Raw call attempts remain append-only, while
- * this bundle carries one current provider result or non-provider disposition
- * per create node and one current observation per observable result.
+ * Complete current execution view. Irreversible call intents are append-only
+ * and one-shot per create node. The bundle carries their conclusive results,
+ * or preserves an open intent as ambiguity, plus one current observation per
+ * observable or unresolved create and one disposition per undispatched node.
  */
 export const CampaignCreationExecutionEvidence = z.object({
   plan: CampaignCreationPlan,
   executionId: CampaignCreationUuid,
+  providerCallIntents: z.array(CampaignCreationProviderCallIntent),
   providerResults: z.array(CampaignCreationProviderResult),
   nonProviderDispositions: z.array(CampaignCreationNonProviderDisposition),
   observations: z.array(CampaignCreationResourceObservation),
@@ -1487,9 +1616,66 @@ export const CampaignCreationExecutionEvidence = z.object({
 }).strict().superRefine((evidence, context) => {
   const nodesById = new Map(evidence.plan.nodes.map((node) => [node.nodeId, node]));
   const planPosition = new Map(evidence.plan.nodes.map((node, index) => [node.nodeId, index]));
+  const providerCallIntentsById = new Map<string, CampaignCreationProviderCallIntent>();
+  const intentPositionByNode = new Map<string, {
+    intent: CampaignCreationProviderCallIntent;
+    position: CampaignCreationProviderCallPosition;
+  }>();
+  const intentAttemptIds = new Set<string>();
+  const intentAuthorizationIds = new Set<string>();
+  const intentGenerations = new Set<string>();
+  let previousIntentNodePosition = -1;
+  for (const [intentIndex, intent] of evidence.providerCallIntents.entries()) {
+    intentAuthorizationIds.add(intent.authorizationId);
+    intentGenerations.add(intent.generation);
+    if (intent.planId !== evidence.plan.id
+      || intent.planFingerprint !== evidence.plan.fingerprint
+      || intent.executionId !== evidence.executionId) {
+      context.addIssue({ code: 'custom', path: ['providerCallIntents', intentIndex], message: 'provider call intent does not match the exact frozen plan and execution' });
+    }
+    if (instantMillis(intent.recordedAt) < instantMillis(evidence.plan.frozenAt)
+      || instantMillis(intent.recordedAt) >= instantMillis(evidence.plan.expiresAt)) {
+      context.addIssue({ code: 'custom', path: ['providerCallIntents', intentIndex, 'recordedAt'], message: 'provider call intent must be recorded while the frozen plan is valid' });
+    }
+    if (providerCallIntentsById.has(intent.providerCallId)) {
+      context.addIssue({ code: 'custom', path: ['providerCallIntents', intentIndex, 'providerCallId'], message: 'provider call IDs must be unique' });
+    } else {
+      providerCallIntentsById.set(intent.providerCallId, intent);
+    }
+    if (intentAttemptIds.has(intent.attemptId)) {
+      context.addIssue({ code: 'custom', path: ['providerCallIntents', intentIndex, 'attemptId'], message: 'irreversible provider attempt IDs must be unique' });
+    }
+    intentAttemptIds.add(intent.attemptId);
+    const intentNodeKinds = new Set<string>();
+    for (const [positionIndex, position] of intent.positions.entries()) {
+      const node = nodesById.get(position.nodeId);
+      if (node !== undefined) intentNodeKinds.add(node.kind);
+      if (node === undefined || node.effect !== 'irreversible_create'
+        || node.fingerprint !== position.nodeFingerprint) {
+        context.addIssue({ code: 'custom', path: ['providerCallIntents', intentIndex, 'positions', positionIndex], message: 'provider call position does not match an exact irreversible-create node' });
+      }
+      const currentPosition = planPosition.get(position.nodeId);
+      if (currentPosition !== undefined && currentPosition <= previousIntentNodePosition) {
+        context.addIssue({ code: 'custom', path: ['providerCallIntents', intentIndex, 'positions', positionIndex], message: 'provider call intents must follow canonical plan-node order' });
+      }
+      if (currentPosition !== undefined) previousIntentNodePosition = currentPosition;
+      if (intentPositionByNode.has(position.nodeId)) {
+        context.addIssue({ code: 'custom', path: ['providerCallIntents', intentIndex, 'positions', positionIndex, 'nodeId'], message: 'an irreversible create node may have only one provider call intent' });
+      } else {
+        intentPositionByNode.set(position.nodeId, { intent, position });
+      }
+    }
+    if (intentNodeKinds.size > 1) {
+      context.addIssue({ code: 'custom', path: ['providerCallIntents', intentIndex, 'positions'], message: 'one provider call intent must contain one resource operation kind' });
+    }
+  }
+  if (intentAuthorizationIds.size > 1 || intentGenerations.size > 1) {
+    context.addIssue({ code: 'custom', path: ['providerCallIntents'], message: 'one execution cannot mix authorization receipts or claim generations' });
+  }
+
   const resultsByNode = new Map<string, CampaignCreationProviderResult>();
   const providerPositions = new Set<string>();
-  const providerCallIndexes = new Map<string, Array<number | null>>();
+  const readProviderCallIndexes = new Map<string, Array<number | null>>();
   const providerEntityOwners = new Map<string, string>();
   let previousResultPosition = -1;
 
@@ -1510,6 +1696,22 @@ export const CampaignCreationExecutionEvidence = z.object({
     }
     if (instantMillis(result.startedAt) >= instantMillis(evidence.plan.expiresAt)) {
       context.addIssue({ code: 'custom', path: ['providerResults', index, 'startedAt'], message: 'provider work cannot begin at or after the plan expires' });
+    }
+    if (result.effect === 'irreversible_create') {
+      const intended = intentPositionByNode.get(result.nodeId);
+      if (intended === undefined
+        || intended.intent.providerCallId !== result.providerCallId
+        || intended.intent.attemptId !== result.attemptId
+        || intended.position.requestIndex !== result.requestIndex
+        || intended.position.nodeFingerprint !== result.nodeFingerprint
+        || intended.intent.requestDigest !== result.requestDigest
+        || intended.position.requestDigest !== result.nodeRequestDigest) {
+        context.addIssue({ code: 'custom', path: ['providerResults', index], message: 'irreversible create result lacks its exact write-ahead provider call intent' });
+      } else if (instantMillis(result.startedAt) < instantMillis(intended.intent.recordedAt)) {
+        context.addIssue({ code: 'custom', path: ['providerResults', index, 'startedAt'], message: 'provider create cannot begin before its call intent is recorded' });
+      }
+    } else if (providerCallIntentsById.has(result.providerCallId)) {
+      context.addIssue({ code: 'custom', path: ['providerResults', index, 'providerCallId'], message: 'read checks cannot reuse an irreversible provider call ID' });
     }
     if (node?.effect === 'read_check' && result.effect === 'read_check'
       && result.outcome === 'passed'
@@ -1533,10 +1735,12 @@ export const CampaignCreationExecutionEvidence = z.object({
       context.addIssue({ code: 'custom', path: ['providerResults', index], message: 'provider call positions must be unique' });
     }
     providerPositions.add(providerPosition);
-    providerCallIndexes.set(result.providerCallId, [
-      ...(providerCallIndexes.get(result.providerCallId) ?? []),
-      result.requestIndex,
-    ]);
+    if (result.effect === 'read_check') {
+      readProviderCallIndexes.set(result.providerCallId, [
+        ...(readProviderCallIndexes.get(result.providerCallId) ?? []),
+        result.requestIndex,
+      ]);
+    }
     if (node?.effect === 'irreversible_create' && result.effect === 'irreversible_create'
       && result.providerEntityId !== null) {
       const identity = `${producedResourceKind(node)}:${result.providerEntityId}`;
@@ -1549,7 +1753,7 @@ export const CampaignCreationExecutionEvidence = z.object({
     }
   }
 
-  for (const [providerCallId, indexes] of providerCallIndexes) {
+  for (const [providerCallId, indexes] of readProviderCallIndexes) {
     const sortedIndexes = indexes.filter((value): value is number => value !== null)
       .sort((left, right) => left - right);
     const canonicalIndexes = sortedIndexes.map((_, index) => index);
@@ -1575,7 +1779,8 @@ export const CampaignCreationExecutionEvidence = z.object({
       context.addIssue({ code: 'custom', path: ['nonProviderDispositions', index], message: 'dispositions must follow canonical plan-node order' });
     }
     if (currentPosition !== undefined) previousDispositionPosition = currentPosition;
-    if (dispositionsByNode.has(disposition.nodeId) || resultsByNode.has(disposition.nodeId)) {
+    if (dispositionsByNode.has(disposition.nodeId) || resultsByNode.has(disposition.nodeId)
+      || intentPositionByNode.has(disposition.nodeId)) {
       context.addIssue({ code: 'custom', path: ['nonProviderDispositions', index, 'nodeId'], message: 'create node is accounted more than once' });
     } else {
       dispositionsByNode.set(disposition.nodeId, disposition);
@@ -1586,15 +1791,35 @@ export const CampaignCreationExecutionEvidence = z.object({
   let previousObservationPosition = -1;
   for (const [index, observation] of evidence.observations.entries()) {
     const result = resultsByNode.get(observation.nodeId);
+    const intended = intentPositionByNode.get(observation.nodeId);
     const node = nodesById.get(observation.nodeId);
+    const observableResult = result?.effect === 'irreversible_create'
+      && (result.outcome === 'succeeded' || result.outcome === 'ambiguous');
+    const openIntent = result === undefined && intended !== undefined;
+    const expectedFingerprint = result?.nodeFingerprint ?? intended?.position.nodeFingerprint;
+    const exactIntentBinding = intended !== undefined
+      && observation.authorizationId === intended.intent.authorizationId
+      && observation.generation === intended.intent.generation
+      && observation.attemptId === intended.intent.attemptId
+      && observation.providerCallId === intended.intent.providerCallId
+      && observation.requestDigest === intended.intent.requestDigest
+      && observation.nodeRequestDigest === intended.position.requestDigest;
+    const expectedBasis = result?.effect === 'irreversible_create'
+      && result.outcome === 'succeeded'
+      ? 'provider_result_identity'
+      : 'intent_reconciliation';
+    const exactObservedIdentity = observation.observation !== 'observed'
+      || (result?.effect === 'irreversible_create'
+        && result.outcome === 'succeeded'
+        && observation.providerEntityId === result.providerEntityId);
     if (observation.planId !== evidence.plan.id
       || observation.executionId !== evidence.executionId
-      || result?.effect !== 'irreversible_create'
-      || (result.outcome !== 'succeeded' && result.outcome !== 'ambiguous')
-      || observation.nodeFingerprint !== result.nodeFingerprint
-      || (result.providerEntityId !== null && observation.providerEntityId !== null
-        && observation.providerEntityId !== result.providerEntityId)) {
-      context.addIssue({ code: 'custom', path: ['observations', index], message: 'observation does not match an observable create result' });
+      || (!observableResult && !openIntent)
+      || observation.nodeFingerprint !== expectedFingerprint
+      || !exactIntentBinding
+      || observation.basis !== expectedBasis
+      || !exactObservedIdentity) {
+      context.addIssue({ code: 'custom', path: ['observations', index], message: 'observation does not match an observable create result or unresolved call intent' });
     }
     const currentPosition = planPosition.get(observation.nodeId);
     if (currentPosition !== undefined && currentPosition <= previousObservationPosition) {
@@ -1604,6 +1829,10 @@ export const CampaignCreationExecutionEvidence = z.object({
     if (result !== undefined
       && instantMillis(observation.observedAt) < instantMillis(result.completedAt)) {
       context.addIssue({ code: 'custom', path: ['observations', index, 'observedAt'], message: 'resource observation cannot predate its provider result' });
+    }
+    if (result === undefined && intended !== undefined
+      && instantMillis(observation.observedAt) < instantMillis(intended.intent.recordedAt)) {
+      context.addIssue({ code: 'custom', path: ['observations', index, 'observedAt'], message: 'resource observation cannot predate its provider call intent' });
     }
     if (observationsByNode.has(observation.nodeId)) {
       context.addIssue({ code: 'custom', path: ['observations', index, 'nodeId'], message: 'execution evidence must contain one current observation per node' });
@@ -1635,12 +1864,16 @@ export const CampaignCreationExecutionEvidence = z.object({
       if (result.outcome === 'succeeded') {
         return { state: 'satisfied', completedAt: result.completedAt };
       }
-      if (result.outcome === 'failed') return { state: 'terminal_unsatisfied' };
+      if (result.outcome === 'authoritative_rejected') return { state: 'terminal_unsatisfied' };
       const observation = observationsByNode.get(dependencyId);
-      if (observation?.observation === 'observed') {
-        return { state: 'satisfied', completedAt: observation.observedAt };
+      if (observation?.observation === 'conflict') {
+        return { state: 'terminal_unsatisfied' };
       }
-      if (observation?.observation === 'not_found' || observation?.observation === 'conflict') {
+      return { state: 'pending' };
+    }
+    if (intentPositionByNode.has(dependencyId)) {
+      const observation = observationsByNode.get(dependencyId);
+      if (observation?.observation === 'conflict') {
         return { state: 'terminal_unsatisfied' };
       }
       return { state: 'pending' };
@@ -1656,6 +1889,22 @@ export const CampaignCreationExecutionEvidence = z.object({
     const dependencies = node.dependsOn.map(dependencyState);
     const result = resultsByNode.get(node.nodeId);
     const disposition = dispositionsByNode.get(node.nodeId);
+    const intended = intentPositionByNode.get(node.nodeId);
+    if (intended !== undefined) {
+      if (dependencies.some((dependency) => dependency.state !== 'satisfied')) {
+        context.addIssue({ code: 'custom', path: ['providerCallIntents'], message: `create node ${node.nodeId} was authorized for dispatch before all dependencies succeeded` });
+      }
+      if (node.dependsOn.some((dependencyId) => (
+        intentPositionByNode.get(dependencyId)?.intent.providerCallId
+          === intended.intent.providerCallId
+      ))) {
+        context.addIssue({ code: 'custom', path: ['providerCallIntents'], message: `create node ${node.nodeId} shares a provider call intent with its dependency` });
+      }
+      if (dependencies.some((dependency) => dependency.completedAt !== undefined
+        && instantMillis(intended.intent.recordedAt) < instantMillis(dependency.completedAt))) {
+        context.addIssue({ code: 'custom', path: ['providerCallIntents'], message: `create node ${node.nodeId} call intent predates a dependency completion` });
+      }
+    }
     if (result?.effect === 'irreversible_create') {
       if (dependencies.some((dependency) => dependency.state !== 'satisfied')) {
         context.addIssue({ code: 'custom', path: ['providerResults'], message: `create node ${node.nodeId} ran before all dependencies succeeded` });
@@ -1685,16 +1934,13 @@ export const CampaignCreationExecutionEvidence = z.object({
   for (const node of evidence.plan.nodes) {
     const result = resultsByNode.get(node.nodeId);
     const disposition = dispositionsByNode.get(node.nodeId);
-    if (node.effect === 'irreversible_create' && result === undefined && disposition === undefined) {
+    const intended = intentPositionByNode.get(node.nodeId);
+    if (node.effect === 'irreversible_create' && result === undefined
+      && disposition === undefined && intended === undefined) {
       context.addIssue({ code: 'custom', path: ['snapshot', 'accounting'], message: `create node ${node.nodeId} is absent from execution accounting` });
     }
     if (node.effect === 'read_check' && disposition !== undefined) {
       context.addIssue({ code: 'custom', path: ['nonProviderDispositions'], message: 'read checks cannot carry create dispositions' });
-    }
-    if (result?.effect === 'irreversible_create'
-      && (result.outcome === 'succeeded' || result.outcome === 'ambiguous')
-      && !observationsByNode.has(node.nodeId)) {
-      context.addIssue({ code: 'custom', path: ['observations'], message: `observable node ${node.nodeId} has no current observation` });
     }
   }
 
@@ -1708,17 +1954,31 @@ export const CampaignCreationExecutionEvidence = z.object({
       result.effect === 'read_check'
     ),
   );
+  const attemptedCreateNodes = intentPositionByNode.size;
+  const unresolvedCallIntents = [...intentPositionByNode.keys()].filter(
+    (nodeId) => !resultsByNode.has(nodeId),
+  ).length;
+  const missingCurrentObservations = evidence.plan.nodes.filter((node) => {
+    const result = resultsByNode.get(node.nodeId);
+    const observableResult = result?.effect === 'irreversible_create'
+      && (result.outcome === 'succeeded' || result.outcome === 'ambiguous');
+    const openIntent = node.effect === 'irreversible_create'
+      && intentPositionByNode.has(node.nodeId) && result === undefined;
+    return (observableResult || openIntent) && !observationsByNode.has(node.nodeId);
+  }).length;
   const actualAccounting: CampaignCreationAccounting = {
     operatorApproved: evidence.plan.counts.irreversibleCreates,
     pendingDispatch: evidence.nonProviderDispositions.filter((item) => item.outcome === 'pending_dispatch').length,
-    attempted: createResults.length,
+    attempted: attemptedCreateNodes,
     succeeded: createResults.filter((result) => result.outcome === 'succeeded').length,
-    failed: createResults.filter((result) => result.outcome === 'failed').length,
-    ambiguous: createResults.filter((result) => result.outcome === 'ambiguous').length,
+    failed: createResults.filter((result) => result.outcome === 'authoritative_rejected').length,
+    ambiguous: createResults.filter((result) => result.outcome === 'ambiguous').length
+      + unresolvedCallIntents,
     refusedAtExecution: evidence.nonProviderDispositions.filter((item) => item.outcome === 'refused_at_execution').length,
     blockedByDependency: evidence.nonProviderDispositions.filter((item) => item.outcome === 'blocked_by_dependency').length,
     observed: evidence.observations.filter((item) => item.observation === 'observed').length,
-    pendingObservation: evidence.observations.filter((item) => item.observation === 'pending').length,
+    pendingObservation: evidence.observations.filter((item) => item.observation === 'pending').length
+      + missingCurrentObservations,
     observationNotFound: evidence.observations.filter((item) => item.observation === 'not_found').length,
     observationConflict: evidence.observations.filter((item) => item.observation === 'conflict').length,
     readChecksRequested: evidence.plan.counts.readChecks,
@@ -1745,7 +2005,10 @@ export const CampaignCreationDispatchJob = z.object({
   orgId: CampaignCreationUuid,
   profileId: CampaignCreationUuid,
   planId: CampaignCreationUuid,
+  planFingerprint: CampaignCreationSha256,
   executionId: CampaignCreationUuid,
+  authorizationId: CampaignCreationUuid,
+  generation: CampaignCreationUuid,
 }).strict();
 
 export const CampaignCreationObserveJob = z.object({
@@ -1753,7 +2016,9 @@ export const CampaignCreationObserveJob = z.object({
   orgId: CampaignCreationUuid,
   profileId: CampaignCreationUuid,
   planId: CampaignCreationUuid,
+  planFingerprint: CampaignCreationSha256,
   executionId: CampaignCreationUuid,
+  authorizationId: CampaignCreationUuid,
   generation: CampaignCreationUuid,
   attempt: z.number().int().nonnegative().max(7).default(0),
 }).strict();
@@ -1765,3 +2030,288 @@ export const CampaignCreationJobPayload = z.discriminatedUnion('type', [
 export type CampaignCreationJobPayload = z.infer<typeof CampaignCreationJobPayload>;
 export type CampaignCreationDispatchJob = z.infer<typeof CampaignCreationDispatchJob>;
 export type CampaignCreationObserveJob = z.infer<typeof CampaignCreationObserveJob>;
+
+export type VerifiedCampaignCreationJobArtifacts = {
+  plan: CampaignCreationPlan;
+  authorization: CampaignCreationAuthorizationReceipt;
+  job: CampaignCreationJobPayload;
+};
+
+/**
+ * Reload and join every persisted authority artifact at a queue claim. Shape
+ * validation alone is insufficient because each artifact can be valid while
+ * referring to a different plan, tenant, execution, receipt, or generation.
+ */
+export function verifyCampaignCreationJobArtifacts(
+  rawPlan: unknown,
+  rawAuthorization: unknown,
+  rawJob: unknown,
+  rawNow: unknown,
+  hashSha256: CampaignCreationSha256Hasher,
+): VerifiedCampaignCreationJobArtifacts {
+  const plan = verifyCampaignCreationPlanFingerprints(
+    CampaignCreationPlan.parse(rawPlan),
+    hashSha256,
+  );
+  const authorization = CampaignCreationAuthorizationReceipt.parse(rawAuthorization);
+  const job = CampaignCreationJobPayload.parse(rawJob);
+  const now = z.iso.datetime().parse(rawNow);
+
+  const receiptMatchesPlan = authorization.schemaVersion === plan.schemaVersion
+    && authorization.planId === plan.id
+    && authorization.planFingerprint === plan.fingerprint
+    && authorization.orgId === plan.orgId
+    && authorization.profileId === plan.profileId
+    && authorization.marketplaceId === plan.marketplaceId
+    && authorization.adProduct === plan.adProduct
+    && authorization.apiDialect === plan.apiDialect
+    && authorization.expiresAt === plan.expiresAt
+    && JSON.stringify(authorization.expectedCounts) === JSON.stringify(plan.counts)
+    && JSON.stringify(authorization.noRollbackAcknowledgement)
+      === JSON.stringify(plan.noRollbackAcknowledgement);
+  if (!receiptMatchesPlan) {
+    throw new Error('campaign creation authorization receipt does not match the exact plan');
+  }
+  if (instantMillis(authorization.approvedAt) < instantMillis(plan.frozenAt)) {
+    throw new Error('campaign creation authorization predates the frozen plan');
+  }
+  if (instantMillis(now) < instantMillis(authorization.approvedAt)) {
+    throw new Error('campaign creation authority cannot be verified before approval');
+  }
+
+  const jobMatchesAuthority = job.orgId === plan.orgId
+    && job.profileId === plan.profileId
+    && job.planId === plan.id
+    && job.planFingerprint === plan.fingerprint
+    && job.executionId === authorization.executionId
+    && job.authorizationId === authorization.authorizationId
+    && job.generation === authorization.generation;
+  if (!jobMatchesAuthority) {
+    throw new Error('campaign creation job does not match its plan and authorization receipt');
+  }
+  if (job.type === 'campaign_creation.dispatch'
+    && instantMillis(now) >= instantMillis(authorization.expiresAt)) {
+    throw new Error('campaign creation dispatch authorization is expired');
+  }
+  return { plan, authorization, job };
+}
+
+function verifyCampaignCreationCurrentEvidence(
+  rawCurrentEvidence: unknown,
+  verified: VerifiedCampaignCreationJobArtifacts,
+  now: string,
+): CampaignCreationExecutionEvidence {
+  const currentEvidence = CampaignCreationExecutionEvidence.parse(rawCurrentEvidence);
+  if (currentEvidence.executionId !== verified.authorization.executionId
+    || JSON.stringify(currentEvidence.plan) !== JSON.stringify(verified.plan)) {
+    throw new Error('current execution evidence does not match the verified plan and execution');
+  }
+  if (currentEvidence.providerCallIntents.some((priorIntent) => (
+    priorIntent.authorizationId !== verified.authorization.authorizationId
+      || priorIntent.generation !== verified.authorization.generation
+  )) || currentEvidence.observations.some((observation) => (
+    observation.authorizationId !== verified.authorization.authorizationId
+      || observation.generation !== verified.authorization.generation
+  ))) {
+    throw new Error('current execution evidence contains a different authorization or generation');
+  }
+  if (currentEvidence.providerCallIntents.some((priorIntent) => (
+    instantMillis(priorIntent.recordedAt) < instantMillis(verified.authorization.approvedAt)
+      || instantMillis(priorIntent.recordedAt) >= instantMillis(verified.authorization.expiresAt)
+      || instantMillis(priorIntent.recordedAt) > instantMillis(now)
+  ))) {
+    throw new Error('current execution evidence contains an intent outside the authority window');
+  }
+  if (currentEvidence.providerResults.some((result) => (
+    instantMillis(result.startedAt) < instantMillis(verified.authorization.approvedAt)
+      || instantMillis(result.completedAt) > instantMillis(now)
+  )) || currentEvidence.observations.some((observation) => (
+    instantMillis(observation.observedAt) > instantMillis(now)
+  ))) {
+    throw new Error('current execution evidence contains work outside the verified execution time');
+  }
+  return currentEvidence;
+}
+
+export type VerifiedCampaignCreationProviderCallArtifacts =
+  VerifiedCampaignCreationJobArtifacts & {
+    job: CampaignCreationDispatchJob;
+    currentEvidence: CampaignCreationExecutionEvidence;
+    intent: CampaignCreationProviderCallIntent;
+  };
+
+/** Verify the exact write-ahead intent immediately before provider I/O. */
+export function verifyCampaignCreationProviderCallArtifacts(
+  rawPlan: unknown,
+  rawAuthorization: unknown,
+  rawJob: unknown,
+  rawCurrentEvidence: unknown,
+  rawIntent: unknown,
+  rawNow: unknown,
+  hashSha256: CampaignCreationSha256Hasher,
+): VerifiedCampaignCreationProviderCallArtifacts {
+  const verified = verifyCampaignCreationJobArtifacts(
+    rawPlan,
+    rawAuthorization,
+    rawJob,
+    rawNow,
+    hashSha256,
+  );
+  if (verified.job.type !== 'campaign_creation.dispatch') {
+    throw new Error('provider calls require a campaign creation dispatch job');
+  }
+  const now = z.iso.datetime().parse(rawNow);
+  const currentEvidence = verifyCampaignCreationCurrentEvidence(
+    rawCurrentEvidence,
+    verified,
+    now,
+  );
+  const intent = CampaignCreationProviderCallIntent.parse(rawIntent);
+  const intentMatchesAuthority = intent.planId === verified.plan.id
+    && intent.planFingerprint === verified.plan.fingerprint
+    && intent.executionId === verified.authorization.executionId
+    && intent.authorizationId === verified.authorization.authorizationId
+    && intent.generation === verified.authorization.generation;
+  if (!intentMatchesAuthority) {
+    throw new Error('provider call intent does not match the verified dispatch authority');
+  }
+  if (instantMillis(intent.recordedAt) < instantMillis(verified.authorization.approvedAt)
+    || instantMillis(intent.recordedAt) >= instantMillis(verified.authorization.expiresAt)
+    || instantMillis(intent.recordedAt) > instantMillis(now)) {
+    throw new Error('provider call intent was not recorded during the verified authority window');
+  }
+  const nodesById = new Map(verified.plan.nodes.map((node, index) => (
+    [node.nodeId, { node, index }] as const
+  )));
+  const operationKinds = new Set<string>();
+  const proposedNodeIds = new Set(intent.positions.map((position) => position.nodeId));
+  const priorIntentNodeIds = new Set(currentEvidence.providerCallIntents.flatMap(
+    (priorIntent) => priorIntent.positions.map((position) => position.nodeId),
+  ));
+  const resultsByNode = new Map(currentEvidence.providerResults.map((result) => (
+    [result.nodeId, result] as const
+  )));
+  const dispositionsByNode = new Map(currentEvidence.nonProviderDispositions.map(
+    (disposition) => [disposition.nodeId, disposition] as const,
+  ));
+  let previousPlanIndex = -1;
+  for (const position of intent.positions) {
+    const planned = nodesById.get(position.nodeId);
+    if (planned === undefined || planned.node.effect !== 'irreversible_create'
+      || planned.node.fingerprint !== position.nodeFingerprint) {
+      throw new Error('provider call intent position does not match an exact create plan node');
+    }
+    if (planned.index <= previousPlanIndex) {
+      throw new Error('provider call intent positions do not follow canonical plan order');
+    }
+    previousPlanIndex = planned.index;
+    operationKinds.add(planned.node.kind);
+    if (priorIntentNodeIds.has(position.nodeId) || resultsByNode.has(position.nodeId)
+      || dispositionsByNode.get(position.nodeId)?.outcome !== 'pending_dispatch') {
+      throw new Error('provider call intent position is not exclusively pending dispatch');
+    }
+    for (const dependencyId of planned.node.dependsOn) {
+      if (proposedNodeIds.has(dependencyId)) {
+        throw new Error('provider call intent cannot batch a node with its dependency');
+      }
+      const dependencyResult = resultsByNode.get(dependencyId);
+      const passedRead = dependencyResult?.effect === 'read_check'
+        && dependencyResult.outcome === 'passed';
+      const confirmedCreate = dependencyResult?.effect === 'irreversible_create'
+        && dependencyResult.outcome === 'succeeded';
+      if (!passedRead && !confirmedCreate) {
+        throw new Error('provider call intent has a dependency that is not satisfied');
+      }
+      const dependencyCompletedAt = dependencyResult.completedAt;
+      if (dependencyCompletedAt === undefined
+        || instantMillis(intent.recordedAt) < instantMillis(dependencyCompletedAt)) {
+        throw new Error('provider call intent predates a dependency completion');
+      }
+    }
+  }
+  if (operationKinds.size !== 1) {
+    throw new Error('provider call intent must contain exactly one resource operation kind');
+  }
+  return { ...verified, job: verified.job, currentEvidence, intent };
+}
+
+export type VerifiedCampaignCreationObservationArtifacts =
+  VerifiedCampaignCreationJobArtifacts & {
+    job: CampaignCreationObserveJob;
+    currentEvidence: CampaignCreationExecutionEvidence;
+    observation: CampaignCreationResourceObservation;
+  };
+
+/** Verify a current observation before it may replace the execution projection. */
+export function verifyCampaignCreationObservationArtifacts(
+  rawPlan: unknown,
+  rawAuthorization: unknown,
+  rawJob: unknown,
+  rawCurrentEvidence: unknown,
+  rawObservation: unknown,
+  rawNow: unknown,
+  hashSha256: CampaignCreationSha256Hasher,
+): VerifiedCampaignCreationObservationArtifacts {
+  const verified = verifyCampaignCreationJobArtifacts(
+    rawPlan,
+    rawAuthorization,
+    rawJob,
+    rawNow,
+    hashSha256,
+  );
+  if (verified.job.type !== 'campaign_creation.observe') {
+    throw new Error('resource observations require a campaign creation observe job');
+  }
+  const now = z.iso.datetime().parse(rawNow);
+  const currentEvidence = verifyCampaignCreationCurrentEvidence(
+    rawCurrentEvidence,
+    verified,
+    now,
+  );
+  const observation = CampaignCreationResourceObservation.parse(rawObservation);
+  const intended = currentEvidence.providerCallIntents.flatMap((intent) => (
+    intent.positions.map((position) => ({ intent, position }))
+  )).find(({ position }) => position.nodeId === observation.nodeId);
+  const result = currentEvidence.providerResults.find((candidate) => (
+    candidate.nodeId === observation.nodeId
+  ));
+  const exactIntentBinding = intended !== undefined
+    && observation.planId === verified.plan.id
+    && observation.executionId === verified.authorization.executionId
+    && observation.authorizationId === verified.authorization.authorizationId
+    && observation.generation === verified.authorization.generation
+    && observation.attemptId === intended.intent.attemptId
+    && observation.providerCallId === intended.intent.providerCallId
+    && observation.nodeFingerprint === intended.position.nodeFingerprint
+    && observation.requestDigest === intended.intent.requestDigest
+    && observation.nodeRequestDigest === intended.position.requestDigest;
+  if (!exactIntentBinding || intended === undefined) {
+    throw new Error('campaign creation observation does not match an exact authorized call intent');
+  }
+  const confirmedResult = result?.effect === 'irreversible_create'
+    && result.outcome === 'succeeded';
+  const unresolvedIntent = result === undefined
+    || (result.effect === 'irreversible_create' && result.outcome === 'ambiguous');
+  if ((observation.basis === 'provider_result_identity' && !confirmedResult)
+    || (observation.basis === 'intent_reconciliation' && !unresolvedIntent)) {
+    throw new Error('campaign creation observation basis does not match provider evidence');
+  }
+  if (observation.observation === 'observed'
+    && (!confirmedResult || observation.providerEntityId !== result.providerEntityId)) {
+    throw new Error('campaign creation observation identity is not exactly correlated');
+  }
+  const earliestObservation = confirmedResult ? result.completedAt : intended.intent.recordedAt;
+  if (instantMillis(observation.observedAt) < instantMillis(earliestObservation)
+    || instantMillis(observation.observedAt) > instantMillis(now)) {
+    throw new Error('campaign creation observation falls outside its reconciliation window');
+  }
+  const priorObservation = currentEvidence.observations.find((candidate) => (
+    candidate.nodeId === observation.nodeId
+  ));
+  if (priorObservation !== undefined
+    && JSON.stringify(priorObservation) !== JSON.stringify(observation)
+    && instantMillis(observation.observedAt) <= instantMillis(priorObservation.observedAt)) {
+    throw new Error('campaign creation observation does not advance current evidence');
+  }
+  return { ...verified, job: verified.job, currentEvidence, observation };
+}
