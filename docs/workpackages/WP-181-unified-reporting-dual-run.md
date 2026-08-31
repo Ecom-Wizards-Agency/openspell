@@ -2,7 +2,9 @@
 
 ## Status
 
-Architecture synthesized. Implementation is pending. This package is source-only and default-off.
+Implemented and locally verified. High correctness and Extra-High adversarial safety reviews found
+no remaining defects. This package remains source-only and default-off: its hosted migration,
+tenant bindings, deployment, and feature activation have not been applied.
 
 ## Outcome
 
@@ -69,6 +71,8 @@ semantically unchanged.
 8. Disabled source performs no Unified database read, write, queue insert, or provider call.
 9. The account binding is explicit and synthetic tests never contain real roster values.
 10. No raw provider response or message is persisted or logged.
+11. Deleting a v3 ledger row cascades its sidecar evidence instead of being blocked by it; the
+    independent queue ledger remains intact and any later orphan claim performs zero provider calls.
 
 ## Acceptance checks
 
@@ -78,7 +82,8 @@ semantically unchanged.
   call.
 - Worker tests prove v3 still schedules and succeeds under every Unified outcome.
 - Database tests prove atomic admission, single-winner dispatch, atomic successors, RLS, and
-  tenant/profile foreign keys.
+  tenant/profile foreign keys and scope triggers without new indexes on the populated v3 or queue
+  ledgers.
 - Deployment-policy tests prove the absent/zero gate preserves the current four-type Evo contract,
   the enabled gate requires the exact five-type contract, and Vercel remains disjoint.
 - No test invokes a live provider or hosted database.
@@ -92,3 +97,7 @@ worker, prove all queue consumers use exact filtered ownership, verify the five-
 contract, configure explicit bindings and a bounded allowlist, and obtain authorization for the
 exact read-only provider probe. If any worker can claim all job types or its revision is unknown,
 activation remains blocked.
+
+Rollback disables bindings while the five-type worker is still running, drains or quarantines its
+paused sidecars, then changes the feature gate to `0` and restores the four-type claim set in one
+deployment update. The disabled source intentionally has no five-type drain mode.

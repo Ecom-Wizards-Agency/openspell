@@ -152,7 +152,9 @@ stored separately as an opaque bounded string; it is not cast into this state vo
 
 Operation dispositions distinguish provider success, indexed refusal, create ambiguity,
 transport failure, invalid response, local refusal, and interrupted dispatch. Raw response bodies,
-raw provider messages, tokens, and account rosters never enter logs or fixtures.
+raw provider messages, tokens, and account rosters never enter logs or fixtures. An account-
+mismatched create stores only the invalid-response class; its foreign report id and status are
+discarded.
 
 ### Module map
 
@@ -250,6 +252,28 @@ Source is inert unless all gates agree:
 The binding is re-read immediately before each provider call and acts as a dynamic kill switch.
 Disabling it pauses queued work without touching v3.
 
+Regional provider capacity is acquired before that re-read and dispatch fence. The fence uses a
+nonblocking row lock plus sidecar-local lock and statement timeouts, so contended database work
+cannot monopolize Amazon capacity. The permit is released immediately after the provider outcome
+and before durable settlement.
+
+The v3 ledger remains the parent lifecycle. Deleting a `report_requests` row cascades only its
+Unified run and operations; it never fails because a sidecar exists, and the independent queue
+ledger remains intact. Unified dispatch jobs otherwise follow the existing `sync_jobs` retention
+contract: successful queue-ledger rows are not deleted. If a retained advance job is claimed after
+its parent was deleted, it closes as a local no-op with zero provider calls.
+
+The additive migration does not build composite indexes on the populated `report_requests` or
+`sync_jobs` ledgers. Primary-key foreign keys preserve parent existence. Child scope checks lock
+the selected parent row while validating exact org/profile identity, and parent guards reject
+later tenant-scope changes as invalid for these immutable ledgers, whether or not a sidecar already
+exists. This avoids a write-conflicting full-table index build in the hosted rollout while keeping
+concurrent cross-tenant drift database-invalid.
+
+The remaining parent-table DDL is metadata-only and runs with a five-second lock timeout. A hosted
+apply that cannot acquire its brief lock fails for a later low-traffic retry instead of waiting
+behind the live queue. WP-181 does not apply it to a hosted database.
+
 The current four-type Evo claim contract remains valid while the Unified gate is off. New source
 accepts the four-type base set when disabled and requires the five-type expanded set when enabled.
 Vercel's reduced claim set remains unchanged and contains no Unified job.
@@ -261,8 +285,10 @@ filtered claim set and that no old or unrestricted worker can claim the new job 
 cannot be proved, activation stays blocked and queue protocol fencing becomes a separate package.
 
 Safe rollout is schema, inert source, exact worker ownership, explicit bindings, bounded allowlist,
-then the gate. Safe rollback is gate off, bindings disabled, sidecars drained or quarantined, then
-the four-type claim set. WP-181 performs none of those hosted actions.
+then the gate. Safe rollback first disables every binding while the five-type worker remains live,
+then drains or quarantines the now-paused sidecars, and finally changes the gate to `0` and the
+claim set to four types in the same deployment update. A gate-off five-type drain mode does not
+exist. WP-181 performs none of those hosted actions.
 
 ## Accounting and tests
 

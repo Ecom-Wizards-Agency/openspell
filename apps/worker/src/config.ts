@@ -3,6 +3,8 @@ import { JobType, type JobType as JobTypeValue } from '@wizard-ads/shared';
 import { isIP } from 'node:net';
 import {
   resolveWorkerDeploymentPolicy,
+  resolveUnifiedReportingDualRunPolicy,
+  type UnifiedReportingDualRunPolicy,
   type WorkerDeploymentRole,
 } from './deployment-role.js';
 
@@ -23,6 +25,8 @@ export interface WorkerConfig {
   revision: string;
   /** Whether this process hosts timers and independent background consumers. */
   startsBackgroundPasses: boolean;
+  /** Default-off WP-181 cohort. Account bindings remain database-owned. */
+  unifiedReporting: UnifiedReportingDualRunPolicy;
   /**
    * Root of the crosscheck export inbox (WP-10). A path, so a mounted bucket
    * works. Never a tracked default: a schedule's payload carries only the
@@ -89,10 +93,13 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
   if ((spApiClientId === undefined) !== (spApiClientSecret === undefined)) {
     throw new Error('SP_API_LWA_CLIENT_ID and SP_API_LWA_CLIENT_SECRET must be configured together');
   }
+  const unifiedReady = env['OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY'] === '1';
   const deployment = resolveWorkerDeploymentPolicy(
     env['WORKER_DEPLOYMENT_ROLE'],
     workerJobTypesFromEnv(env['WORKER_JOB_TYPES']),
+    unifiedReady,
   );
+  const unifiedReporting = resolveUnifiedReportingDualRunPolicy(env, deployment);
   return {
     databaseUrl: connectionStringFromEnv(env),
     workerId: env['WORKER_ID'] ?? `worker-${process.pid}`,
@@ -105,6 +112,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     deploymentRole: deployment.role,
     revision: workerRevisionFromEnv(env),
     startsBackgroundPasses: deployment.startsBackgroundPasses,
+    unifiedReporting,
     crosscheckInboxDir: env['CROSSCHECK_INBOX_DIR'] || undefined,
     authHealthcheckIntervalMs:
       positiveInteger(env['WORKER_AUTH_HEALTHCHECK_MINUTES'], 60, 'WORKER_AUTH_HEALTHCHECK_MINUTES') * 60_000,

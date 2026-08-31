@@ -16,6 +16,8 @@ import {
 } from './recommendations-run.js';
 import { RecommendationObservationPass } from './recommendation-observer.js';
 import { PostgresWorkerStore } from './store.js';
+import { WorkerUnifiedDualRun } from './unified-reporting.js';
+import { PostgresUnifiedDualRunStore } from './unified-reporting-store.js';
 import {
   ObservedSbVideoIngestion,
   PostgresSbVideoIngestionStore,
@@ -35,6 +37,7 @@ const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
   'report.request',
   'report.poll',
   'report.fetch',
+  'report.unified.advance',
   'creative.sync',
 ]);
 
@@ -61,6 +64,13 @@ const runsAmazonJobs = config.jobTypes === undefined
   || config.jobTypes.some((jobType) => AMAZON_JOB_TYPES.has(jobType));
 // One client instance serves both the queue worker and bid-corridor sync.
 const adsApi = runsAmazonJobs ? createAdsApiClientFromEnv(handle) : undefined;
+const unifiedReporting = adsApi && config.unifiedReporting.enabled
+  ? new WorkerUnifiedDualRun({
+      policy: config.unifiedReporting,
+      store: new PostgresUnifiedDualRunStore(handle),
+      provider: adsApi,
+    })
+  : undefined;
 const recommendationRuns = new PostgresRecommendationRunStore(handle);
 const sbVideo = adsApi
   ? new ObservedSbVideoIngestion(
@@ -88,6 +98,7 @@ const worker = new SyncWorker({
   crosscheckIngest: createCrosscheckIngest(handle, { inboxDir: config.crosscheckInboxDir }),
   recommendationsRun: createRecommendationsRunner(recommendationRuns),
   sbVideo,
+  unifiedReporting,
   integrations: {
     economicsSync: createMrpEconomicsSync(handle),
     rankSync: createDataDiveRankSyncHandler({ handle }),

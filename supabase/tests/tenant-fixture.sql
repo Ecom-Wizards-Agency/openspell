@@ -36,6 +36,10 @@ declare
   v_recommendation uuid;
   v_group uuid;
   v_creative_snapshot uuid;
+  v_unified_binding uuid;
+  v_unified_run uuid := gen_random_uuid();
+  v_unified_operation uuid := gen_random_uuid();
+  v_unified_job uuid := gen_random_uuid();
   v_strategy jsonb := jsonb_build_object(
     'schema', 'wizard-ads.tenant-strategy.v1',
     'pacing', '{}'::jsonb,
@@ -156,6 +160,42 @@ begin
     (org_id, profile_id, report_type, start_date, end_date, status, rows_parsed, rows_loaded)
   values (v_org, v_profile, 'spCampaigns', p_date - 1, p_date, 'completed', 10, 10)
   returning id into v_report;
+
+  -- Unified Reporting sidecar: fixture evidence only. The binding remains
+  -- disabled and no provider call is ever made by this database fixture.
+  insert into public.unified_reporting_bindings
+    (org_id, profile_id, advertiser_account_id, enabled)
+  values (v_org, v_profile, p_slug || '-unified-advertiser', false)
+  returning id into v_unified_binding;
+
+  insert into public.unified_report_runs
+    (id, org_id, profile_id, v3_report_request_id, binding_id,
+     advertiser_account_id, report_type, definition_version, start_date, end_date,
+     state, provider_report_id, provider_status, observation_deadline,
+     operation_count, settled_operation_count, input_count, provider_success_count)
+  values
+    (v_unified_run, v_org, v_profile, v_report, v_unified_binding,
+     p_slug || '-unified-advertiser', 'spCampaigns', 'campaign-observation-v1', p_date - 1, p_date,
+     'observing', p_slug || '-unified-report', 'PENDING', now() + interval '4 hours',
+     1, 1, 1, 1);
+
+  insert into public.sync_jobs (id, org_id, profile_id, job_type, payload)
+  values (
+    v_unified_job, v_org, v_profile, 'report.unified.advance',
+    jsonb_build_object(
+      'type', 'report.unified.advance', 'orgId', v_org, 'profileId', v_profile,
+      'runId', v_unified_run, 'operationId', v_unified_operation
+    )
+  );
+
+  insert into public.unified_report_operations
+    (id, org_id, profile_id, run_id, dispatch_job_id, kind, sequence, state,
+     disposition, dispatch_token, dispatched_at, settled_at,
+     input_count, provider_success_count)
+  values
+    (v_unified_operation, v_org, v_profile, v_unified_run, v_unified_job, 'create', 0, 'settled',
+     'provider_success', gen_random_uuid(), now() - interval '1 minute', now(),
+     1, 1);
 
   -- Analysis
   insert into public.recommendation_runs (org_id, profile_id, status, lookback_days)

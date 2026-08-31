@@ -26,6 +26,7 @@ import {
   type WorkerStore,
 } from './store.js';
 import { SqpWorkflowPendingError } from './sqp.js';
+import type { UnifiedDualRun } from './unified-reporting.js';
 import { RetryableJobError, SyncWorker } from './worker.js';
 
 const orgId = '11111111-1111-4111-8111-111111111111';
@@ -854,6 +855,276 @@ describe('integration handler wiring', () => {
 
     expect(await worker.drainOnce()).toBe(0);
     expect(filters).toEqual([['keepa.sync', 'rank.sync']]);
+  });
+});
+
+describe('Unified Reporting worker isolation', () => {
+  it('keeps a successful v3 request successful when sidecar admission fails', async () => {
+    const payload: Extract<JobPayload, { type: 'report.request' }> = {
+      type: 'report.request',
+      orgId,
+      profileId,
+      reportType: 'spCampaigns',
+      startDate: '2026-08-29',
+      endDate: '2026-08-29',
+    };
+    const job: ClaimedJob = {
+      id: jobId,
+      orgId,
+      profileId,
+      jobType: payload.type,
+      payload,
+      attempts: 1,
+      maxAttempts: 5,
+      dedupeKey: null,
+      claimedBy: 'unified-isolation-worker',
+    };
+    let claimed = false;
+    let outcome: JobOutcome | undefined;
+    let result: unknown;
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      ensureReportRequest: async () => ({
+        id: jobId,
+        orgId,
+        profileId,
+        reportType: 'spCampaigns',
+        startDate: payload.startDate,
+        endDate: payload.endDate,
+        source: 'amazon_api',
+        amazonReportId: null,
+        requestedAt: new Date('2026-08-29T00:00:00.000Z'),
+        pollAttempts: 0,
+      }),
+      finish: async (_id, nextOutcome, options) => {
+        outcome = nextOutcome;
+        result = options?.result;
+      },
+    };
+    const unified: UnifiedDualRun = {
+      admit: async () => { throw new Error('synthetic sidecar persistence failure'); },
+      advance: async () => { throw new Error('unused'); },
+      failTerminal: async () => {},
+    };
+    const worker = new SyncWorker({
+      workerId: 'unified-isolation-worker',
+      store,
+      adsApi: new OneRowApi(),
+      unifiedReporting: unified,
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(outcome).toBe('succeeded');
+    expect(result).toMatchObject({
+      reportRequestId: jobId,
+      amazonReportId: 'unused',
+      pollEnqueued: true,
+      unified: { kind: 'local_failed' },
+    });
+  });
+
+  it.each([
+    ['create success', { state: 'observing', disposition: 'provider_success' }],
+    ['create refusal', { state: 'create_refused', disposition: 'provider_refused' }],
+    ['create ambiguity', { state: 'create_ambiguous', disposition: 'create_ambiguous' }],
+    ['retrieve success', { state: 'provider_status_observed', disposition: 'provider_success' }],
+    ['retrieve refusal', { state: 'retrieve_refused', disposition: 'provider_refused' }],
+    ['retrieve transport failure', { state: 'observing', disposition: 'transport_failure' }],
+    ['invalid response', { state: 'contract_blocked', disposition: 'invalid_response' }],
+    ['local refusal', { state: 'paused', disposition: 'local_refusal' }],
+    ['interrupted retrieve', { state: 'observing', disposition: 'interrupted_dispatch' }],
+  ] as const)('keeps the completed v3 job immutable after a later %s', async (_label, sidecarResult) => {
+    const v3Payload: Extract<JobPayload, { type: 'report.request' }> = {
+      type: 'report.request',
+      orgId,
+      profileId,
+      reportType: 'spCampaigns',
+      startDate: '2026-08-29',
+      endDate: '2026-08-29',
+    };
+    const sidecarJobId = '99999999-9999-4999-8999-999999999999';
+    const sidecarPayload: Extract<JobPayload, { type: 'report.unified.advance' }> = {
+      type: 'report.unified.advance',
+      orgId,
+      profileId,
+      runId: '55555555-5555-4555-8555-555555555555',
+      operationId: '66666666-6666-4666-8666-666666666666',
+    };
+    const jobs: ClaimedJob[] = [
+      {
+        id: jobId, orgId, profileId, jobType: v3Payload.type, payload: v3Payload,
+        attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unified-matrix-worker',
+      },
+      {
+        id: sidecarJobId, orgId, profileId, jobType: sidecarPayload.type, payload: sidecarPayload,
+        attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unified-matrix-worker',
+      },
+    ];
+    const finishes = new Map<string, Array<{ outcome: JobOutcome; result: unknown }>>();
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => {
+        const next = jobs.shift();
+        return next ? [next] : [];
+      },
+      ensureReportRequest: async () => ({
+        id: jobId,
+        orgId,
+        profileId,
+        reportType: 'spCampaigns',
+        startDate: v3Payload.startDate,
+        endDate: v3Payload.endDate,
+        source: 'amazon_api',
+        amazonReportId: null,
+        requestedAt: new Date('2026-08-29T00:00:00.000Z'),
+        pollAttempts: 0,
+      }),
+      finish: async (id, outcome, options) => {
+        finishes.set(id, [
+          ...(finishes.get(id) ?? []),
+          { outcome, result: options?.result },
+        ]);
+      },
+    };
+    const unified: UnifiedDualRun = {
+      admit: async () => ({
+        kind: 'enqueued',
+        runId: sidecarPayload.runId,
+        operationId: sidecarPayload.operationId,
+        inserted: true,
+      }),
+      advance: async () => ({ ...sidecarResult }),
+      failTerminal: async () => {},
+    };
+    const worker = new SyncWorker({
+      workerId: 'unified-matrix-worker',
+      store,
+      adsApi: new OneRowApi(),
+      unifiedReporting: unified,
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce(1)).toBe(1);
+    const completedV3 = structuredClone(finishes.get(jobId));
+    expect(completedV3).toEqual([{
+      outcome: 'succeeded',
+      result: expect.objectContaining({
+        reportRequestId: jobId,
+        amazonReportId: 'unused',
+        pollEnqueued: true,
+        unified: expect.objectContaining({ kind: 'enqueued' }),
+      }),
+    }]);
+
+    expect(await worker.drainOnce(1)).toBe(1);
+    expect(finishes.get(sidecarJobId)).toEqual([{
+      outcome: 'succeeded',
+      result: sidecarResult,
+    }]);
+    expect(finishes.get(jobId)).toEqual(completedV3);
+  });
+
+  it('keeps the completed v3 job immutable when later sidecar persistence fails', async () => {
+    const v3Payload: Extract<JobPayload, { type: 'report.request' }> = {
+      type: 'report.request', orgId, profileId, reportType: 'spCampaigns',
+      startDate: '2026-08-29', endDate: '2026-08-29',
+    };
+    const sidecarJobId = '99999999-9999-4999-8999-999999999999';
+    const sidecarPayload: Extract<JobPayload, { type: 'report.unified.advance' }> = {
+      type: 'report.unified.advance', orgId, profileId,
+      runId: '55555555-5555-4555-8555-555555555555',
+      operationId: '66666666-6666-4666-8666-666666666666',
+    };
+    const jobs: ClaimedJob[] = [
+      {
+        id: jobId, orgId, profileId, jobType: v3Payload.type, payload: v3Payload,
+        attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unified-failure-worker',
+      },
+      {
+        id: sidecarJobId, orgId, profileId, jobType: sidecarPayload.type, payload: sidecarPayload,
+        attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unified-failure-worker',
+      },
+    ];
+    const outcomes = new Map<string, JobOutcome[]>();
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => {
+        const next = jobs.shift();
+        return next ? [next] : [];
+      },
+      ensureReportRequest: async () => ({
+        id: jobId, orgId, profileId, reportType: 'spCampaigns',
+        startDate: v3Payload.startDate, endDate: v3Payload.endDate,
+        source: 'amazon_api', amazonReportId: null,
+        requestedAt: new Date('2026-08-29T00:00:00.000Z'), pollAttempts: 0,
+      }),
+      finish: async (id, outcome) => {
+        outcomes.set(id, [...(outcomes.get(id) ?? []), outcome]);
+      },
+    };
+    const unified: UnifiedDualRun = {
+      admit: async () => ({
+        kind: 'enqueued', runId: sidecarPayload.runId,
+        operationId: sidecarPayload.operationId, inserted: true,
+      }),
+      advance: async () => { throw new Error('synthetic sidecar persistence failure'); },
+      failTerminal: async () => {},
+    };
+    const worker = new SyncWorker({
+      workerId: 'unified-failure-worker', store, adsApi: new OneRowApi(),
+      unifiedReporting: unified, logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce(1)).toBe(1);
+    expect(outcomes.get(jobId)).toEqual(['succeeded']);
+    expect(await worker.drainOnce(1)).toBe(1);
+    expect(outcomes.get(sidecarJobId)).toEqual(['failed']);
+    expect(outcomes.get(jobId)).toEqual(['succeeded']);
+  });
+
+  it('closes a sidecar operation when its own retry budget is exhausted', async () => {
+    const runId = '55555555-5555-4555-8555-555555555555';
+    const operationId = '66666666-6666-4666-8666-666666666666';
+    const payload: Extract<JobPayload, { type: 'report.unified.advance' }> = {
+      type: 'report.unified.advance', orgId, profileId, runId, operationId,
+    };
+    const job: ClaimedJob = {
+      id: jobId,
+      orgId,
+      profileId,
+      jobType: payload.type,
+      payload,
+      attempts: 5,
+      maxAttempts: 5,
+      dedupeKey: null,
+      claimedBy: 'unified-terminal-worker',
+    };
+    let claimed = false;
+    const terminal: Array<{ payload: typeof payload; reason: string }> = [];
+    const unified: UnifiedDualRun = {
+      admit: async () => ({ kind: 'disabled' }),
+      advance: async () => { throw new Error('synthetic sidecar store failure'); },
+      failTerminal: async (failedPayload, reason) => {
+        terminal.push({ payload: failedPayload, reason });
+      },
+    };
+    const worker = new SyncWorker({
+      workerId: 'unified-terminal-worker',
+      store: {
+        ...stubStore(),
+        claim: async () => claimed ? [] : (claimed = true, [job]),
+      },
+      unifiedReporting: unified,
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(terminal).toEqual([{
+      payload,
+      reason: 'report lifecycle stopped after exhausting its retry budget',
+    }]);
   });
 });
 
