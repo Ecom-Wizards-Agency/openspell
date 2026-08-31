@@ -4,8 +4,9 @@
  * Rules, from AGENTS.md:
  *  - Schemas and inferred types only. No logic, no I/O, no dependency but zod.
  *  - Every shape that crosses a package boundary lives here.
- *  - Contracts are frozen. Changing one is WP-00's call with manager sign-off,
- *    because six packages are built in parallel against them.
+ *  - Cross-package contracts land here before dependent implementations.
+ *    Additive guarded-write and campaign-creation contracts are approved by
+ *    the repository authority in AGENTS.md.
  */
 export * from './primitives.js';
 export * from './entities.js';
