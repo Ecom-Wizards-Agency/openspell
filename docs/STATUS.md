@@ -155,6 +155,9 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-08-31 exact-main CI run `33377445361` passed both jobs at `cd5c167` after the inactive
+  campaign-creation contracts merged. Production web remains at `44da7ac`, six commits behind;
+  production MCP remains at `b5c210d`, 146 commits behind; the worker revision is still unproven.
 - On 2026-08-31 exact-main CI run `33367903978` passed both jobs at `2154b5a`, including
   typecheck, lint, tests, hygiene, disposable migration verification, production web build, and
   Playwright. Production web still reports `44da7ac`, five commits behind that source; production
@@ -333,6 +336,7 @@ implementation brief in `docs/workpackages/`.
 - [x] Exact-main CI run `33298955347` passed both jobs at `5e372c8`; the production web health
       endpoint reports that exact revision after authenticated candidate QA and promotion.
 - [x] Exact-main CI run `33367903978` passed both jobs at repository revision `2154b5a`.
+- [x] Exact-main CI run `33377445361` passed both jobs at repository revision `cd5c167`.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
       `b5c210d`, and the active worker revision is unproven. WP-85 hosted data gates and attended
       read-only migration reconciliation remain open.

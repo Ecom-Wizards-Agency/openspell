@@ -39,8 +39,8 @@ At the time this handover was reconciled:
 
 - `origin/main` is `cd5c167ee8fbeed6b5cc693650af8aa8e6f9b090`. PR run `33376303005`
   passed both exact-head jobs before merge: all 18 typechecks, lint, migration assertions,
-  package/UI tests, the production web build, and Playwright. Exact-main run `33377445361` has
-  passed the standard job; Playwright was still running at this checkpoint.
+  package/UI tests, the production web build, and Playwright. Exact-main run `33377445361` also
+  passed both jobs on that squash.
 - Production web health and the READY Vercel deployment behind the public alias agree on
   `44da7ac32e5a0503993e567c41aaccffd5c39b06`, six commits behind current main.
 - Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 146 commits behind
@@ -109,9 +109,9 @@ Reconcile heads and checks again before acting.
 
 ### Older open work that needs an explicit decision
 
-- PR #17: contextual-negative review/export; 144 commits behind and conflicting. Preserve its useful
+- PR #17: contextual-negative review/export; 145 commits behind and conflicting. Preserve its useful
   brief and rescue the distinct negative workflow promptly, or close it as superseded.
-- PR #24: guarded Sponsored Products write gateway; 102 commits behind and conflicting. The former
+- PR #24: guarded Sponsored Products write gateway; 103 commits behind and conflicting. The former
   policy blocker is gone, but the branch is monolithic. Replace it contract-first, then add
   persistence/API/worker slices before closing the old PR.
 - PR #35: release-artifact checks; conflicting and partly superseded by the merged release
