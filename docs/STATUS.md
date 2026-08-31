@@ -144,7 +144,7 @@ implementation brief in `docs/workpackages/`.
 | 148 | Live release evidence | in-progress | current revision, CI, deployment, authenticated QA and open gaps reconciled without runtime changes |
 | 179 | Guarded SP write contracts | merged; runtime gated | inert update-plan, approval, fingerprint and bounded provider-result contracts merged in `4a0d91c` under `@wizard-ads/shared/sp-writes`; no job, migration, provider call, worker executor or deployment was activated |
 | 180 | Guarded SP provider adapter | merged; runtime gated | complete observation, marketplace decimal conversion and one-attempt mutation semantics merged in `3d30f52` under `@wizard-ads/ads-api/sp-write-adapter`; no worker consumer, migration, deployment, provider grant or live mutation was activated |
-| 181 | Unified Reporting dual-run | merged; runtime gated | default-off `spCampaigns` sidecar merged in `d75ec26` with explicit advertiser binding, a durable one-send create fence, bounded retrieval and a separate outcome ledger; Reporting v3 remains the sole fact and promotion authority, and no hosted migration, binding, deployment, activation or provider call followed |
+| 181 | Unified Reporting dual-run | merged; runtime gated | default-off `spCampaigns` sidecar merged in `d75ec26` with explicit advertiser binding, a durable one-send create fence, bounded retrieval and a separate outcome ledger; Reporting v3 remains the sole fact and promotion authority; PR #91 performed no hosted or provider action, while hosted migration and binding state remain unverified |
 
 ## Milestone gates
 
@@ -162,9 +162,9 @@ implementation brief in `docs/workpackages/`.
   jobs. Exact-main run `33424944462` passed both jobs on attempt 2; attempt 1 had one unrelated
   invitation redirect timing failure while the repository gate and WP-181 auth-role suite passed.
   Production web remains at `44da7ac`, 16 commits behind; production MCP remains at `b5c210d`, 156
-  commits behind; the active legacy worker revision is unproven. No hosted migration, tenant
-  binding, deployment, feature activation, provider call, download, fact write or Amazon mutation
-  followed the merge.
+  commits behind; the active legacy worker revision is unproven. PR #91 and this reconciliation
+  performed no hosted migration, tenant binding, deployment, feature activation, provider call,
+  download, fact write or Amazon mutation; hosted migration and binding state remain unverified.
 - On 2026-08-31 PR #89 exact-head run `33401540530` and exact-main run `33402961215` passed both
   jobs before and after the inert Sponsored Products provider adapter merged at `3d30f52`.
   Production web remains at `44da7ac`, 13 commits behind; production MCP remains at `b5c210d`, 153

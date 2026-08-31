@@ -4,8 +4,8 @@
 
 Merged at `d75ec26` after exact-head and exact-main CI passed. High correctness and Extra-High
 adversarial safety reviews found no remaining defects. This package remains source-only and
-default-off: its hosted migration, tenant bindings, deployment, feature activation, and provider
-probe have not been applied.
+default-off in merged source: PR #91 performed no hosted migration, tenant binding, deployment,
+feature activation, or provider probe. Hosted migration and binding state remain unverified.
 
 ## Outcome
 

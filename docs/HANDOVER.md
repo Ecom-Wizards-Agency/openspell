@@ -85,8 +85,9 @@ Recent verified source work includes:
   ambiguity-safe create behavior, idempotent retrieval, and no download or promotion claim;
 - a default-off Unified Reporting dual-run sidecar for `spCampaigns`, with explicit advertiser
   bindings, a durable one-send create fence, bounded retrieval, separate provider outcomes, and
-  Reporting v3 as the sole fact and promotion authority. No hosted migration, binding, activation,
-  provider call, download, fact write, or history bootstrap followed the merge;
+  Reporting v3 as the sole fact and promotion authority. PR #91 and this reconciliation performed
+  no hosted migration, binding, activation, provider call, download, fact write, or history
+  bootstrap; hosted migration and binding state remain unverified;
 - inactive campaign-creation plans, approvals, write-ahead evidence, closed accounting, and exact
   observation-gated dependencies; no creation job is active and no provider runtime exists;
 - inert, guarded Sponsored Products update-plan contracts under the explicit
@@ -214,9 +215,11 @@ daily reports are not authoritative hourly Marketing Stream data.
 WP-181 adds the worker-owned, default-off dual-run coordinator on top of PR #82's strict transport.
 It accepts only `spCampaigns`, binds the advertiser explicitly, stores each provider outcome
 separately, and leaves Reporting v3 as the sole fact and promotion authority even when Unified
-Reporting is ambiguous. Its hosted migration, tenant bindings, deployment, activation, and one
-authorized read-only cohort remain open. Ground provider downloads, fact equivalence, history, and
-any hourly availability with primary evidence before extending this boundary.
+Reporting is ambiguous. Proof of the hosted migration and tenant bindings, plus deployment and
+activation, remain open. Activation separately requires a bounded deployment allowlist, the exact
+five-type Evo health contract, and authorization for the exact read-only provider probe. Ground
+provider downloads, fact equivalence, history, and any hourly availability with primary evidence
+before extending this boundary.
 
 ### Optimizer and Time Machine
 
@@ -259,8 +262,9 @@ an exact current-task authorization.
    health/queue checks. Never allow overlapping consumers.
 6. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
 7. Keep the merged Unified Reporting dual-run off until its exact hosted migration, binding,
-   deployment revision, consumer ownership, and one authorized read-only cohort are proven. Do not
-   add download or promotion behavior from request-status parity alone.
+   deployment revision, consumer ownership, bounded deployment allowlist, exact five-type Evo
+   health contract, and separately authorized read-only provider probe are proven. Do not add
+   download or promotion behavior from request-status parity alone.
 8. After PR #81 clears its overlapping web files, implement the sidebar-scroll regression package.
 9. Continue the useful old-PR slices in dependency order: WP-179's inert Sponsored Products
    contract and WP-180's inert provider adapter are merged; next reconcile the hosted ledger and
