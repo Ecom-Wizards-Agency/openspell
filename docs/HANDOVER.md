@@ -37,13 +37,12 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- `origin/main` is `112ea9652739438a432431c8b1660725eb3044dd`. Exact-main run `33353896355`
-  passed both jobs: all 18 typechecks, lint, migration assertions, package/UI tests, two Next builds,
-  and 68 Playwright cases. The run uploaded no artifacts; five Next development-server
-  `destination stream closed early` warnings were non-fatal.
+- `origin/main` is `2154b5a65ab7e795ff5aa1456c149569444fa14c`. Exact-main run `33367903978`
+  passed both jobs: all 18 typechecks, lint, migration assertions, package/UI tests, the production
+  web build, and Playwright. No artifacts were uploaded.
 - Production web health and the READY Vercel deployment behind the public alias agree on
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, four commits behind current main.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 144 commits behind
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, five commits behind current main.
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 145 commits behind
   current main, and still returns the legacy `wizard-ads` service shape.
 - The new Evo report-worker unit is not installed and its loopback health is unavailable. The
   legacy integration worker is active with zero recorded restarts, but exposes no revision stamp.
@@ -105,16 +104,19 @@ Reconcile heads and checks again before acting.
   unconditionally.
 - PR #40 and its remote branch were closed/deleted because this package supersedes them.
 
-### PR #86 — WP-176 Creative lifecycle copy
+### PR #87 — WP-178 campaign-creation contract rescue
 
-- Initial head: `e89d020c96bd379ed6ddae68b3698f24e7d959ca`.
-- Replaces the nonexistent manual-sync instruction with states derived from producer eligibility,
-  the latest exact-scope Creative queue job, and the latest counted observation.
-- A newer queued or running refresh retains the previous observation timestamp, coverage, and
-  counts. Terminal queue state without a matching snapshot fails closed.
-- Local focused tests, disposable-Postgres tests, `pnpm check`, staged hygiene, diff checks, and the
-  production web build passed. Hosted CI is required for the final current-main integration before
-  merge.
+- Branch `wp-178-campaign-creation-contracts` rescues the distinct PR #45 slice directly onto
+  current main. It changes shared contracts and their design/brief only; creation jobs remain absent
+  from active `JobPayload`, and no migration, provider call, runtime executor, or deployment exists.
+- Fingerprints are recomputed with real SHA-256; receipt/job/intent/result/observation artifacts are
+  joined exactly; write-ahead intents are one-shot; status/accounting are derived; `not_found` and
+  all ambiguous/open creates remain quarantined and cannot unlock descendants.
+- Artifact verification is not live-write authority. Activation remains blocked on a DB-clock,
+  same-transaction environment/profile gate, active authorization, generation, lease, and unique
+  intent check where only the transaction winner may invoke Amazon.
+- Local `pnpm check`, focused shared tests, diff checks, High exact-diff review, and Extra High
+  exploit retest passed. Require both hosted CI jobs on the final pushed head before merge.
 
 ### Older open work that needs an explicit decision
 
@@ -126,8 +128,8 @@ Reconcile heads and checks again before acting.
 - PR #35: release-artifact checks; conflicting and partly superseded by the merged release
   transport. Port only the still-distinct SVG, Grid context/date, brand, and recommendation artifact
   assertions into the current verifier, then close it.
-- PR #45: campaign-creation contracts stacked on PR #24. Unstack its distinct contract work directly
-  onto current main before any gateway implementation.
+- PR #45: superseded by the direct-current-main rescue in PR #87. Close it after PR #87's final
+  exact-head CI passes; do not merge the old stack.
 
 Do not keep stale pull requests merely as storage. Preserve useful design in a current brief,
 replace or rebase live work, and close branches that are proven superseded.
@@ -247,7 +249,7 @@ an exact current-task authorization.
 2. Apply only the exact authorized hosted migrations through the documented operator procedure and
    record sanitized count/RLS evidence.
 3. Update or rebase PR #81 onto current main, require exact integration CI, and merge only after its
-   schema-first gate is proven. Merge PR #86 only after its final pushed head passes both CI jobs.
+   schema-first gate is proven.
 4. Deploy a revision-stamped web candidate from clean main, complete authenticated QA, and promote
    only after the candidate revision and route artifacts match.
 5. Stage the merged Evo report worker from that exact clean main revision. Transfer Vercel report
@@ -256,8 +258,9 @@ an exact current-task authorization.
 6. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
 7. Add the Unified Reporting worker dual-run without changing promotion authority.
 8. After PR #81 clears its overlapping web files, implement the sidebar-scroll regression package.
-9. Rescue the useful old-PR slices in dependency order: campaign contracts, guarded gateway slices,
-   contextual negatives, then distinctive release-artifact assertions.
+9. Merge PR #87 after final exact-head CI, close superseded PR #45, then continue the useful old-PR
+   slices in dependency order: guarded gateway slices, contextual negatives, then distinctive
+   release-artifact assertions.
 10. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again.
 
 If an external gate blocks one lane, continue with the next independent source-only package. Do
