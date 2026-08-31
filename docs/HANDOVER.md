@@ -37,12 +37,13 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- `origin/main` is `2154b5a65ab7e795ff5aa1456c149569444fa14c`. Exact-main run `33367903978`
-  passed both jobs: all 18 typechecks, lint, migration assertions, package/UI tests, the production
-  web build, and Playwright. No artifacts were uploaded.
+- `origin/main` is `cd5c167ee8fbeed6b5cc693650af8aa8e6f9b090`. PR run `33376303005`
+  passed both exact-head jobs before merge: all 18 typechecks, lint, migration assertions,
+  package/UI tests, the production web build, and Playwright. Exact-main run `33377445361` has
+  passed the standard job; Playwright was still running at this checkpoint.
 - Production web health and the READY Vercel deployment behind the public alias agree on
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, five commits behind current main.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 145 commits behind
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, six commits behind current main.
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 146 commits behind
   current main, and still returns the legacy `wizard-ads` service shape.
 - The new Evo report-worker unit is not installed and its loopback health is unavailable. The
   legacy integration worker is active with zero recorded restarts, but exposes no revision stamp.
@@ -81,6 +82,8 @@ Recent verified source work includes:
   one deployment lock, exact verification, and fail-closed recovery. It has not been activated;
 - strict provider-native Unified Reporting create/retrieve methods with exact indexed accounting,
   ambiguity-safe create behavior, idempotent retrieval, and no download or promotion claim;
+- inactive campaign-creation plans, approvals, write-ahead evidence, closed accounting, and exact
+  observation-gated dependencies; no creation job is active and no provider runtime exists;
 - default-off password recovery, TOTP, passkey, and provider-login security paths. Provider rollout
   remains separately gated.
 
@@ -104,33 +107,16 @@ Reconcile heads and checks again before acting.
   unconditionally.
 - PR #40 and its remote branch were closed/deleted because this package supersedes them.
 
-### PR #87 — WP-178 campaign-creation contract rescue
-
-- Branch `wp-178-campaign-creation-contracts` rescues the distinct PR #45 slice directly onto
-  current main. It changes shared contracts and their design/brief only; creation jobs remain absent
-  from active `JobPayload`, and no migration, provider call, runtime executor, or deployment exists.
-- Fingerprints are recomputed with real SHA-256; receipt/job/intent/result/observation artifacts are
-  joined exactly; write-ahead intents are one-shot; status/accounting are derived; `not_found` and
-  all ambiguous/open creates remain quarantined and cannot unlock descendants.
-- Artifact verification is not live-write authority. Activation remains blocked on a DB-clock,
-  same-transaction environment/profile gate, active authorization, generation, lease, and unique
-  intent check where only the transaction winner may invoke Amazon.
-- Local `pnpm check`, focused shared tests, diff checks, High exact-diff review, and Extra High
-  exploit retest passed. Require both hosted CI jobs on the final pushed head before merge.
-
 ### Older open work that needs an explicit decision
 
-- PR #17: contextual-negative review/export; 143 commits behind and conflicting. Preserve its useful
+- PR #17: contextual-negative review/export; 144 commits behind and conflicting. Preserve its useful
   brief and rescue the distinct negative workflow promptly, or close it as superseded.
-- PR #24: guarded Sponsored Products write gateway; 101 commits behind and conflicting. The former
+- PR #24: guarded Sponsored Products write gateway; 102 commits behind and conflicting. The former
   policy blocker is gone, but the branch is monolithic. Replace it contract-first, then add
   persistence/API/worker slices before closing the old PR.
 - PR #35: release-artifact checks; conflicting and partly superseded by the merged release
   transport. Port only the still-distinct SVG, Grid context/date, brand, and recommendation artifact
   assertions into the current verifier, then close it.
-- PR #45: superseded by the direct-current-main rescue in PR #87. Close it after PR #87's final
-  exact-head CI passes; do not merge the old stack.
-
 Do not keep stale pull requests merely as storage. Preserve useful design in a current brief,
 replace or rebase live work, and close branches that are proven superseded.
 
@@ -258,9 +244,9 @@ an exact current-task authorization.
 6. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
 7. Add the Unified Reporting worker dual-run without changing promotion authority.
 8. After PR #81 clears its overlapping web files, implement the sidebar-scroll regression package.
-9. Merge PR #87 after final exact-head CI, close superseded PR #45, then continue the useful old-PR
-   slices in dependency order: guarded gateway slices, contextual negatives, then distinctive
-   release-artifact assertions.
+9. Continue the useful old-PR slices in dependency order: rescue the guarded Sponsored Products
+   gateway contract first, then persistence/API/worker slices only behind their gates; follow with
+   contextual negatives and distinctive release-artifact assertions.
 10. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again.
 
 If an external gate blocks one lane, continue with the next independent source-only package. Do

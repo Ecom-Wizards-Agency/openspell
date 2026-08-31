@@ -2,7 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated`.
 
-Source and deployment headers reconciled 2026-08-31 against `origin/main` at `2154b5a`. The
+Source and deployment headers reconciled 2026-08-31 against `origin/main` at `cd5c167`. The
 implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
 the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
 the implementation is reachable from the recorded main revision. It does not by itself mean
@@ -129,7 +129,7 @@ implementation brief in `docs/workpackages/`.
 | 119 | Query Intelligence performance | merged | the synthetic 5,000-fact join improved from about 409 ms to 14 ms with semantic parity |
 | 123 | Advertising API capability map | review | open PR; provider support must remain distinct from implemented and live-verified support |
 | 124 | Multi-product campaign creation architecture | merged | guarded SP, SB, SB Video and SD resource graphs are designed; no creation runtime was added |
-| 125 | Campaign creation contracts | review | PR #87 rescues the inactive contract directly onto current main; exact-head CI and merge remain open |
+| 125 | Campaign creation contracts | merged; runtime gated | inactive plans, approvals, write-ahead evidence, deterministic accounting and observation-gated dependencies merged in `cd5c167`; no migration, provider call, worker executor or deployment was activated |
 | 131 | Product budget-usage reads | merged | strict SP/SB/SD endpoint and indexed-response validation; worker integration remains deferred |
 | 134 | Serverless database lifecycle | merged and deployed | bounded web connection reuse passed the production route sweep |
 | 138 | Chart preference migration | merged and deployed | prior default presentations advance once without discarding genuine operator choices |
