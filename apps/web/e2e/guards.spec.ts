@@ -180,7 +180,6 @@ test('the same screens open once there is a session', async ({ page }) => {
         name: expectedRedirect.finalHeading,
         exact: true,
       })).toBeVisible();
-      await page.waitForLoadState('networkidle');
     }
     const expectedHeading = PRODUCT_HEADINGS.get(expectedPath);
     if (expectedHeading !== undefined) {
