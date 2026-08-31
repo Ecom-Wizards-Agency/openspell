@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { configFromEnv, workerJobTypesFromEnv, workerRevisionFromEnv } from './config.js';
+import {
+  configFromEnv,
+  workerHealthHostFromEnv,
+  workerJobTypesFromEnv,
+  workerRevisionFromEnv,
+} from './config.js';
 
 describe('WORKER_JOB_TYPES', () => {
   it('uses the whole queue when absent', () => {
@@ -74,6 +79,26 @@ describe('worker revision metadata', () => {
     const rejected = 'release/private-host-detail';
     expect(() => workerRevisionFromEnv({ OPENSPELL_WORKER_REVISION: rejected }))
       .toThrowError('OPENSPELL_WORKER_REVISION must be a 7-64 character hexadecimal Git object id');
+  });
+});
+
+describe('worker health listener', () => {
+  it('preserves the existing default and accepts literal loopback interfaces', () => {
+    expect(workerHealthHostFromEnv(undefined)).toBe('0.0.0.0');
+    expect(workerHealthHostFromEnv(' 127.0.0.1 ')).toBe('127.0.0.1');
+    expect(workerHealthHostFromEnv('::1')).toBe('::1');
+  });
+
+  it('refuses hostnames and arbitrary values', () => {
+    expect(() => workerHealthHostFromEnv('localhost')).toThrow(/literal IPv4 or IPv6/);
+    expect(() => workerHealthHostFromEnv('private-host-detail')).toThrow(/literal IPv4 or IPv6/);
+  });
+
+  it('threads an explicit listener address into worker configuration', () => {
+    expect(configFromEnv({
+      DATABASE_URL: 'postgres://synthetic.invalid/db',
+      WORKER_HEALTH_HOST: '127.0.0.1',
+    }).healthHost).toBe('127.0.0.1');
   });
 });
 

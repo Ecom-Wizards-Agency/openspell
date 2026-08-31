@@ -2,7 +2,6 @@
 set -euo pipefail
 
 expected_revision=
-activate=false
 claim_set='creative.sync,report.request'
 claim_set+=',report.poll,report.fetch'
 while (($# > 0)); do
@@ -11,12 +10,8 @@ while (($# > 0)); do
       expected_revision="${2:-}"
       shift 2
       ;;
-    --activate)
-      activate=true
-      shift
-      ;;
     *)
-      echo "usage: $0 --revision <full-git-object-id> [--activate]" >&2
+      echo "usage: $0 --revision <full-git-object-id>" >&2
       exit 2
       ;;
   esac
@@ -27,6 +22,26 @@ if [[ ! "$expected_revision" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=docs/deploy/report-worker-evo-systemd-lib.sh
+source "$script_dir/report-worker-evo-systemd-lib.sh"
+report_worker_script_dir="$script_dir"
+build_root=
+incoming_release=
+cleanup() {
+  case "$build_root" in
+    /tmp/openspell-report-worker-install.*)
+      find "$build_root" -depth -delete 2>/dev/null || true
+      ;;
+  esac
+  case "$incoming_release" in
+    /opt/openspell-report-worker/releases/.incoming-*)
+      sudo find "$incoming_release" -xdev -depth -delete 2>/dev/null || true
+      ;;
+  esac
+  release_report_worker_deployment_lock
+}
+trap cleanup EXIT
+
 repo_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
 actual_revision="$(git -C "$repo_root" rev-parse HEAD)"
 if [[ "$actual_revision" != "$expected_revision" ]]; then
@@ -53,51 +68,18 @@ if ((node_major < 22)); then
   echo "refusing deployment: system Node 22 or newer is required" >&2
   exit 1
 fi
-for command in diff find git pnpm readlink rg rsync sha256sum sort sudo systemctl systemd-analyze; do
+for command in diff find flock git pnpm readlink rg rsync sha256sum sort sudo systemd-analyze; do
   command -v "$command" >/dev/null || {
     echo "refusing deployment: required command is unavailable: $command" >&2
     exit 1
   }
 done
 
-credential_store=/etc/credstore.encrypted
-credential_ids=(
-  openspell-report-worker-database-url
-  openspell-report-worker-ads-application
-)
-for credential_id in "${credential_ids[@]}"; do
-  credential_path="$credential_store/$credential_id"
-  if ! sudo test -f "$credential_path" || sudo test -L "$credential_path"; then
-    echo "refusing deployment: encrypted runtime credential is unavailable: $credential_id" >&2
-    exit 1
-  fi
-  credential_metadata="$(sudo stat -c '%a:%U:%G' "$credential_path")"
-  case "$credential_metadata" in
-    400:root:root | 600:root:root) ;;
-    *)
-      echo "refusing deployment: encrypted runtime credential metadata is unsafe: $credential_id" >&2
-      exit 1
-      ;;
-  esac
-done
+acquire_report_worker_deployment_lock
 
 bash "$script_dir/test-report-worker-evo-systemd.sh"
 
 build_root="$(mktemp -d /tmp/openspell-report-worker-install.XXXXXX)"
-incoming_release=
-cleanup() {
-  case "$build_root" in
-    /tmp/openspell-report-worker-install.*)
-      find "$build_root" -depth -delete 2>/dev/null || true
-      ;;
-  esac
-  case "$incoming_release" in
-    /opt/openspell-report-worker/releases/.incoming-*)
-      sudo find "$incoming_release" -xdev -depth -delete 2>/dev/null || true
-      ;;
-  esac
-}
-trap cleanup EXIT
 
 pnpm --dir "$repo_root" install --frozen-lockfile >"$build_root/install.log" 2>&1
 release_stage="$build_root/release"
@@ -183,6 +165,8 @@ install -m 0644 "$script_dir/openspell-report-worker-launch.mjs" \
   "$release_stage/bin/openspell-report-worker-launch.mjs"
 install -m 0644 "$script_dir/openspell-report-worker-health.mjs" \
   "$release_stage/bin/openspell-report-worker-health.mjs"
+install -m 0644 "$script_dir/openspell-report-worker-readiness.mjs" \
+  "$release_stage/bin/openspell-report-worker-readiness.mjs"
 install -m 0644 "$script_dir/openspell-report-worker.service" \
   "$release_stage/systemd/openspell-report-worker.service"
 chmod 0644 "$release_stage/REVISION" "$release_stage/public.conf"
@@ -245,48 +229,16 @@ chmod 0644 "$release_stage/ARTIFACT_COUNTS" "$release_stage/ARTIFACT_DIRECTORIES
   "$release_stage/ARTIFACT_LINKS" \
   "$release_stage/ARTIFACT_SHA256" "$release_stage/TYPESCRIPT_RUNTIME.json"
 
-verify_artifact() {
-  local release="$1"
-  local expected="$2"
-  local counts actual_directories actual_files actual_links directory_fixture link_fixture
-  [[ "$(cat "$release/REVISION" 2>/dev/null || true)" == "$expected" ]] || return 1
-  [[ "$(cat "$release/public.conf" 2>/dev/null || true)" == \
-    "OPENSPELL_WORKER_REVISION=$expected"$'\n'"WORKER_DEPLOYMENT_ROLE=evo-report-lane"$'\n'"WORKER_JOB_TYPES=$claim_set" ]] \
-    || return 1
-  (cd "$release" && sha256sum -c ARTIFACT_SHA256 >/dev/null) || return 1
-  counts="$(cat "$release/ARTIFACT_COUNTS" 2>/dev/null || true)"
-  actual_directories="$(find "$release" -type d | wc -l)"
-  actual_files="$(find "$release" -type f | wc -l)"
-  actual_links="$(find "$release" -type l | wc -l)"
-  [[ "$counts" == "directories=$actual_directories"$'\n'"files=$actual_files"$'\n'"symlinks=$actual_links" ]] \
-    || return 1
-  if find "$release" \( -type f -o -type d \) -perm /022 -print -quit | grep -q .; then
-    return 1
-  fi
-  directory_fixture="$(mktemp "$build_root/directories.XXXXXX")"
-  (cd "$release" && find . -type d -printf '%P\n' | LC_ALL=C sort >"$directory_fixture")
-  diff -u "$release/ARTIFACT_DIRECTORIES" "$directory_fixture" >/dev/null || return 1
-  link_fixture="$(mktemp "$build_root/links.XXXXXX")"
-  (cd "$release" && find . -type l -printf '%P\t%l\n' | LC_ALL=C sort >"$link_fixture")
-  diff -u "$release/ARTIFACT_LINKS" "$link_fixture" >/dev/null || return 1
-  while IFS= read -r -d '' link_path; do
-    case "$(readlink -f "$link_path" 2>/dev/null || true)" in
-      "$release"/*) ;;
-      *) return 1 ;;
-    esac
-  done < <(find "$release" -type l -print0)
-}
-
-if ! verify_artifact "$release_stage" "$expected_revision"; then
+if ! verify_report_worker_artifact "$release_stage" "$expected_revision"; then
   echo "refusing deployment: staged artifact failed its retained manifest" >&2
   exit 1
 fi
 
-release_root=/opt/openspell-report-worker
+release_root="$report_worker_release_root"
 release_dir="$release_root/releases/$expected_revision"
 incoming_release="$release_root/releases/.incoming-$expected_revision-$$"
 if sudo test -e "$release_dir"; then
-  if ! verify_artifact "$release_dir" "$expected_revision"; then
+  if ! verify_report_worker_artifact "$release_dir" "$expected_revision" true; then
     echo "refusing deployment: retained release has invalid provenance" >&2
     exit 1
   fi
@@ -323,92 +275,4 @@ if sudo find "$release_dir" -xdev \( ! -user root -o ! -group root \) -print -qu
 fi
 
 echo "staged OpenSpell report worker release $expected_revision"
-if [[ "$activate" != true ]]; then
-  echo "current, systemd units, enablement, and service state were not changed"
-  exit 0
-fi
-
-current_link="$release_root/current"
-prior_target="$(sudo readlink "$current_link" 2>/dev/null || true)"
-if [[ -n "$prior_target" && ! "$prior_target" =~ ^releases/[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
-  echo "refusing activation: current release link has invalid provenance" >&2
-  exit 1
-fi
-if [[ -z "$prior_target" ]] && sudo test -e /etc/systemd/system/openspell-report-worker.service; then
-  echo "refusing activation: an unversioned report worker unit already exists" >&2
-  exit 1
-fi
-prior_active=false
-prior_enabled=false
-systemctl is-active --quiet openspell-report-worker.service 2>/dev/null && prior_active=true
-systemctl is-enabled --quiet openspell-report-worker.service 2>/dev/null && prior_enabled=true
-
-verify_release_unit() {
-  local release="$1"
-  sudo systemd-analyze verify "$release/systemd/openspell-report-worker.service"
-}
-install_release_unit() {
-  local release="$1"
-  local suffix="$2"
-  local staged_unit="/etc/systemd/system/.openspell-report-worker.service.$suffix"
-  sudo install -m 0644 -o root -g root \
-    "$release/systemd/openspell-report-worker.service" "$staged_unit" \
-    && sudo mv -Tf "$staged_unit" /etc/systemd/system/openspell-report-worker.service
-}
-switch_link() {
-  local target="$1"
-  local next_link="$release_root/.current-switch"
-  sudo ln -sfn "$target" "$next_link"
-  sudo mv -Tf "$next_link" "$current_link"
-}
-restore_prior() {
-  sudo systemctl stop openspell-report-worker.service >/dev/null 2>&1 || true
-  if [[ "$prior_target" == releases/* ]]; then
-    switch_link "$prior_target" || return 1
-    verify_release_unit "$release_root/$prior_target" || return 1
-    install_release_unit "$release_root/$prior_target" rollback || return 1
-  else
-    sudo unlink "$current_link" 2>/dev/null || true
-    sudo unlink /etc/systemd/system/openspell-report-worker.service 2>/dev/null || true
-  fi
-  sudo systemctl daemon-reload || return 1
-  if [[ "$prior_enabled" == true ]]; then
-    sudo systemctl enable openspell-report-worker.service >/dev/null || return 1
-  else
-    sudo systemctl disable openspell-report-worker.service >/dev/null 2>&1 || true
-  fi
-  if [[ "$prior_active" == true ]]; then
-    sudo systemctl restart openspell-report-worker.service || return 1
-  fi
-}
-
-if [[ "$prior_target" == releases/* ]]; then
-  prior_revision="$(sudo cat "$release_root/$prior_target/REVISION" 2>/dev/null || true)"
-  if [[ ! "$prior_revision" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
-    || ! verify_release_unit "$release_root/$prior_target"; then
-    echo "refusing activation: prior release cannot provide a verified rollback" >&2
-    exit 1
-  fi
-fi
-if ! verify_release_unit "$release_dir"; then
-  echo "refusing activation: staged release unit is invalid" >&2
-  exit 1
-fi
-
-switch_link "releases/$expected_revision"
-if ! install_release_unit "$release_dir" "$expected_revision" \
-  || ! sudo systemctl daemon-reload \
-  || ! sudo systemctl enable openspell-report-worker.service >/dev/null \
-  || ! sudo systemctl restart openspell-report-worker.service \
-  || ! "$node_runtime" "$release_root/current/bin/openspell-report-worker-health.mjs" \
-    http://127.0.0.1:3000/healthz "$expected_revision" 120; then
-  if restore_prior; then
-    echo "OpenSpell report worker activation failed; the prior deployment was restored" >&2
-  else
-    sudo systemctl stop openspell-report-worker.service >/dev/null 2>&1 || true
-    echo "OpenSpell report worker activation failed; service remains stopped for manual recovery" >&2
-  fi
-  exit 1
-fi
-
-echo "activated OpenSpell report worker release $expected_revision"
+echo "current, systemd units, enablement, and service state were not changed"

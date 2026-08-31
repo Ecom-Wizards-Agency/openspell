@@ -42,7 +42,7 @@ bash docs/deploy/rollback-report-worker-evo-systemd.sh \
 
 ## Shape
 
-`install-report-worker-evo-systemd.sh` is the single public staging interface. It accepts one
+`install-report-worker-evo-systemd.sh` is the stage-only interface. It accepts one
 full Git object ID, requires that ID to equal a clean `origin/main` checkout, packages only
 `@wizard-ads/worker`, injects the pinned TypeScript runtime, and delegates workspace-path
 normalization to `normalize-report-worker-evo-artifact.mjs`. The normalizer expects exactly
@@ -61,13 +61,14 @@ the retained revision, and the three-key public configuration before setting the
 `DATABASE_URL`, `LWA_CLIENT_ID`, and `LWA_CLIENT_SECRET`. It contains no 1Password locator,
 profile selector, or service token. Tenant refresh credentials remain in database Vault.
 
-Every stage, activation, and release rollback takes the same root-owned, fail-closed operation
-lock. Activation and rollback switch `current` and the retained unit definition as one recoverable
+Every stage, activation, verification, and release rollback takes the same root-owned `flock`.
+Activation refuses unless the legacy unit is absent or exactly inactive and disabled. Activation
+and rollback switch `current` and the retained unit definition as one recoverable
 operation. A failed start or health check restores only a prior release whose full artifact,
 current-link suffix, retained unit, live unit, service state, and exact health were proven. If
 restoration cannot be reproven, the service remains stopped for attended recovery. Health requires
 the full revision, `evo-report-lane`, and exactly `creative.sync`, `report.request`, `report.poll`,
-and `report.fetch`.
+and `report.fetch`. The immutable launcher binds that health server to loopback.
 
 Before the worker module can import or open health, the credential launcher performs one bounded,
 read-only database transaction. It proves service-role access, the queue relation and enum, the
@@ -110,13 +111,11 @@ between them. Neither interface exposes packaging internals or shares mutable ch
   environment files, command arguments, repository content, and release files.
 - We accept a separate Vercel handoff decision in exchange for making a source deploy unable to
   transfer report claims accidentally.
-- We accept a fail-closed stale lock that needs attended removal after a killed deployment process
-  in exchange for serialization without running the build or package manager as root.
+- We accept immediate refusal instead of waiting for a deployment lock in exchange for keeping
+  every state transition explicit and bounded.
 - We accept attended Vercel claim evidence in this package because the current public web health
   contract exposes revision, not effective queue ownership; the activation flag is an assertion,
   not a machine probe.
-- We accept host-firewall verification as an activation prerequisite because the current worker
-  health server binds on all interfaces and this package does not own worker source.
 
 ## Open questions and risks
 
@@ -124,7 +123,6 @@ between them. Neither interface exposes packaging internals or shares mutable ch
   redeployed, and observed reduced Vercel ownership before invoking activation?
 - Should a future web package expose a signed, short-lived effective-claim receipt so activation
   can replace its attended assertion with machine evidence?
-- Does the Evo host firewall restrict the health port to the host/monitoring network?
 - Are both encrypted credentials sealed on this Evo host under the exact runtime IDs in the
   deployment guide?
 
@@ -151,7 +149,7 @@ between them. Neither interface exposes packaging internals or shares mutable ch
 
 This package is deployment code only. It does not deploy, start, stop, enable, or restart a
 production service. Attended activation requires the exact staged revision, both encrypted
-credential files, host firewall review, verified Vercel relinquishment before Evo starts, a
+credential files, verified Vercel relinquishment before Evo starts, a
 retired legacy worker, and exact worker health. Current web health cannot prove effective Vercel
 claims, so `--vercel-report-claims-relinquished` records attended evidence rather than automated
 evidence. No Amazon write is part of activation.

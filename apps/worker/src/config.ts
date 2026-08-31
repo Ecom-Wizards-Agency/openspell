@@ -1,5 +1,6 @@
 import { connectionStringFromEnv } from '@wizard-ads/db';
 import { JobType, type JobType as JobTypeValue } from '@wizard-ads/shared';
+import { isIP } from 'node:net';
 import {
   resolveWorkerDeploymentPolicy,
   type WorkerDeploymentRole,
@@ -9,6 +10,8 @@ export interface WorkerConfig {
   databaseUrl: string;
   workerId: string;
   port: number;
+  /** Literal interface address for the health listener. */
+  healthHost: string;
   pollIntervalMs: number;
   claimBatchSize: number;
   maxConcurrentJobs: number;
@@ -57,6 +60,14 @@ function positiveInteger(value: string | undefined, fallback: number, name: stri
   return parsed;
 }
 
+export function workerHealthHostFromEnv(value: string | undefined): string {
+  const host = value?.trim() || '0.0.0.0';
+  if (isIP(host) === 0) {
+    throw new Error('WORKER_HEALTH_HOST must be a literal IPv4 or IPv6 address');
+  }
+  return host;
+}
+
 export function workerJobTypesFromEnv(value: string | undefined): readonly JobTypeValue[] | undefined {
   if (value === undefined) return undefined;
   const tokens = value.split(',').map((token) => token.trim());
@@ -86,6 +97,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     databaseUrl: connectionStringFromEnv(env),
     workerId: env['WORKER_ID'] ?? `worker-${process.pid}`,
     port: positiveInteger(env['PORT'], 3000, 'PORT'),
+    healthHost: workerHealthHostFromEnv(env['WORKER_HEALTH_HOST']),
     pollIntervalMs: positiveInteger(env['WORKER_POLL_INTERVAL_MS'], 1_000, 'WORKER_POLL_INTERVAL_MS'),
     claimBatchSize: positiveInteger(env['WORKER_CLAIM_BATCH_SIZE'], 10, 'WORKER_CLAIM_BATCH_SIZE'),
     maxConcurrentJobs: positiveInteger(env['WORKER_MAX_CONCURRENT_JOBS'], 10, 'WORKER_MAX_CONCURRENT_JOBS'),

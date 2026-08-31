@@ -107,7 +107,7 @@ const health = await startHealthServer(worker, config.port, {
     jobTypes: config.jobTypes ?? 'all',
   },
   marketingStream,
-});
+}, config.healthHost);
 const authHealth = config.startsBackgroundPasses && adsApi
   ? new AuthHealthMonitor(worker, config.authHealthcheckIntervalMs)
   : undefined;

@@ -4,19 +4,26 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 unit="$script_dir/openspell-report-worker.service"
 installer="$script_dir/install-report-worker-evo-systemd.sh"
+activator="$script_dir/activate-report-worker-evo-systemd.sh"
 rollback="$script_dir/rollback-report-worker-evo-systemd.sh"
 launcher="$script_dir/openspell-report-worker-launch.mjs"
 contract="$script_dir/openspell-report-worker-contract.mjs"
 health="$script_dir/openspell-report-worker-health.mjs"
+readiness="$script_dir/openspell-report-worker-readiness.mjs"
+readiness_test="$script_dir/test-report-worker-readiness.mjs"
+service_state="$script_dir/openspell-report-worker-service-state.mjs"
+deployment_lib="$script_dir/report-worker-evo-systemd-lib.sh"
 verifier="$script_dir/verify-report-worker-evo-systemd.sh"
 normalizer="$script_dir/normalize-report-worker-evo-artifact.mjs"
 
-for script in "$installer" "$rollback" "$verifier" "$0"; do
+for script in "$installer" "$activator" "$rollback" "$verifier" "$deployment_lib" "$0"; do
   bash -n "$script"
 done
-for script in "$launcher" "$contract" "$health" "$normalizer"; do
+for script in "$launcher" "$contract" "$health" "$readiness" "$readiness_test" \
+  "$service_state" "$normalizer"; do
   node --check "$script"
 done
+node "$script_dir/../../node_modules/tsx/dist/cli.mjs" "$readiness_test"
 
 require_line() {
   local file="$1"
@@ -40,7 +47,16 @@ require_line "$unit" "ProtectSystem=strict"
 require_line "$unit" "ProtectProc=invisible"
 require_line "$unit" "CapabilityBoundingSet="
 
-if ! rg -F 'sudo test -L "$credential_path"' "$installer" >/dev/null \
+readiness_line="$(rg -n -F 'await verifyReportWorkerDatabaseReadiness' "$launcher" | cut -d: -f1)"
+worker_import_line="$(rg -n -F "await import(new URL('../src/main.ts'" "$launcher" | cut -d: -f1)"
+if [[ -z "$readiness_line" || -z "$worker_import_line" \
+  || "$readiness_line" -ge "$worker_import_line" ]] \
+  || ! rg -F "process.env.WORKER_HEALTH_HOST = '127.0.0.1'" "$launcher" >/dev/null; then
+  echo "database readiness or loopback health is not enforced before worker import" >&2
+  exit 1
+fi
+
+if ! rg -F 'test -L "$credential_path"' "$deployment_lib" >/dev/null \
   || ! rg -F 'system Node 22 or newer' "$installer" >/dev/null \
   || ! rg -F 'OPENSPELL_WORKER_REVISION=$expected_revision' "$installer" >/dev/null \
   || ! rg -F 'WORKER_DEPLOYMENT_ROLE=evo-report-lane' "$installer" >/dev/null \
@@ -49,31 +65,47 @@ if ! rg -F 'sudo test -L "$credential_path"' "$installer" >/dev/null \
   echo "revision, credential, role, or claim invariant is missing" >&2
   exit 1
 fi
-if ! rg -F 'install_release_unit "$release_dir"' "$installer" >/dev/null \
-  || ! rg -F 'install_release_unit "$to_target"' "$rollback" >/dev/null \
-  || ! rg -F 'ARTIFACT_SHA256' "$installer" "$verifier" "$rollback" >/dev/null; then
+if ! rg -F 'install_report_worker_unit "$release"' "$activator" >/dev/null \
+  || ! rg -F 'install_report_worker_unit "$destination"' "$rollback" >/dev/null \
+  || ! rg -F 'ARTIFACT_SHA256' "$installer" "$deployment_lib" >/dev/null; then
   echo "versioned unit or full artifact rollback invariant is missing" >&2
   exit 1
 fi
-if rg -n -U -- 'install_release_unit[^\n]*(\\\n[^\n]*)?\|\| true' \
-  "$installer" "$rollback" \
-  || ! rg -F 'service remains stopped for manual recovery' \
-    "$installer" "$rollback" >/dev/null; then
+if rg -n -U -- 'install_report_worker_unit[^\n]*(\\\n[^\n]*)?\|\| true' \
+  "$activator" "$rollback" "$deployment_lib" \
+  || ! rg -F 'service remains stopped for attended recovery' \
+    "$activator" "$rollback" >/dev/null; then
   echo "unit restoration is not fail-closed" >&2
   exit 1
 fi
 
-# Match the literal activation guard in the installer.
-# shellcheck disable=SC2016
-stage_prefix="$(sed '/if \[\[ "$activate" != true \]\]/q' "$installer")"
 if rg -n -- 'sudo systemctl (start|stop|restart|enable|disable|daemon-reload)|/etc/systemd/system/openspell-report-worker' \
-  <<<"$stage_prefix"; then
+  "$installer"; then
   echo "staging can mutate a service or live unit" >&2
   exit 1
 fi
+if rg -F 'verify_report_worker_credentials' "$installer" >/dev/null; then
+  echo "staging depends on live credentials" >&2
+  exit 1
+fi
+trap_line="$(rg -n -F 'trap cleanup EXIT' "$installer" | head -n 1 | cut -d: -f1)"
+lock_line="$(rg -n -F 'acquire_report_worker_deployment_lock' "$installer" | head -n 1 | cut -d: -f1)"
+mktemp_line="$(rg -n -F 'build_root="$(mktemp -d' "$installer" | head -n 1 | cut -d: -f1)"
+if [[ -z "$trap_line" || -z "$lock_line" || -z "$mktemp_line" \
+  || "$trap_line" -ge "$lock_line" || "$lock_line" -ge "$mktemp_line" ]]; then
+  echo "installer cleanup trap, lock, and temporary allocation are ordered unsafely" >&2
+  exit 1
+fi
+if ! rg -F -- '--vercel-report-claims-relinquished' "$activator" >/dev/null \
+  || ! rg -F 'assert_legacy_report_worker_retired' "$activator" "$rollback" "$verifier" >/dev/null \
+  || ! rg -F 'restore_report_worker_live' "$activator" "$rollback" >/dev/null \
+  || ! rg -F 'verify_report_worker_live' "$deployment_lib" "$activator" "$rollback" "$verifier" >/dev/null; then
+  echo "claim handoff, legacy retirement, or full recovery proof is missing" >&2
+  exit 1
+fi
 if rg -n -- 'openspell-mcp|wizard-ads-mcp|cloudflared|docker' \
-  "$unit" "$installer" "$rollback" "$launcher" "$contract" "$health" \
-  "$verifier" "$normalizer"; then
+  "$unit" "$installer" "$activator" "$rollback" "$launcher" "$contract" "$health" \
+  "$readiness" "$deployment_lib" "$verifier" "$normalizer"; then
   echo "report worker deployment can mutate an MCP or connector service" >&2
   exit 1
 fi
@@ -81,8 +113,8 @@ private_locator_pattern='op:/''/'
 for forbidden_pattern in '/home/' "$private_locator_pattern" 'Environment=HOME=' \
   'Environment=.*(DATABASE|SECRET|TOKEN)'; do
   if rg -n -- "$forbidden_pattern" \
-    "$unit" "$installer" "$rollback" "$launcher" "$contract" "$health" \
-    "$verifier" "$normalizer"; then
+    "$unit" "$installer" "$activator" "$rollback" "$launcher" "$contract" "$health" \
+    "$readiness" "$deployment_lib" "$verifier" "$normalizer"; then
     echo "deployment files contain a private path, locator, or inline secret" >&2
     exit 1
   fi
@@ -90,8 +122,10 @@ done
 
 test_tmp="$(mktemp -d /tmp/openspell-report-worker-test.XXXXXX)"
 server_pid=
+dirty_probe=
 cleanup() {
   if [[ -n "$server_pid" ]]; then kill "$server_pid" 2>/dev/null || true; fi
+  if [[ -n "$dirty_probe" ]]; then find "$dirty_probe" -delete 2>/dev/null || true; fi
   case "$test_tmp" in
     /tmp/openspell-report-worker-test.*)
       find "$test_tmp" -depth -delete 2>/dev/null || true
@@ -102,6 +136,85 @@ trap cleanup EXIT
 
 repo_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
 fixture_revision=0000000000000000000000000000000000000000
+
+node --input-type=module - "$service_state" <<'NODE'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const { assertLegacyReportWorkerRetired } = await import(pathToFileURL(process.argv[2]));
+const accepted = [
+  'LoadState=not-found\nActiveState=inactive\nUnitFileState=\n',
+  'UnitFileState=disabled\nLoadState=loaded\nActiveState=inactive\n',
+];
+for (const state of accepted) assert.doesNotThrow(() => assertLegacyReportWorkerRetired(state));
+const refused = [
+  'LoadState=loaded\nActiveState=active\nUnitFileState=disabled\n',
+  'LoadState=loaded\nActiveState=inactive\nUnitFileState=enabled\n',
+  'LoadState=loaded\nActiveState=failed\nUnitFileState=disabled\n',
+  'LoadState=loaded\nActiveState=inactive\nUnitFileState=static\n',
+  'LoadState=not-found\nActiveState=inactive\nUnitFileState=disabled\n',
+  'LoadState=loaded\nActiveState=inactive\n',
+];
+for (const state of refused) assert.throws(() => assertLegacyReportWorkerRetired(state));
+NODE
+
+(
+  # shellcheck source=docs/deploy/report-worker-evo-systemd-lib.sh
+  source "$deployment_lib"
+  report_worker_run_privileged() {
+    if [[ "$1" == chown ]]; then return 0; fi
+    if [[ "$1" == stat ]]; then printf '%s\n' '600:root:root'; return 0; fi
+    command "$@"
+  }
+  lock_fixture="$test_tmp/deployment.lock"
+  acquire_report_worker_deployment_lock "$lock_fixture"
+  if (
+    # shellcheck source=docs/deploy/report-worker-evo-systemd-lib.sh
+    source "$deployment_lib"
+    report_worker_run_privileged() {
+      if [[ "$1" == chown ]]; then return 0; fi
+      if [[ "$1" == stat ]]; then printf '%s\n' '600:root:root'; return 0; fi
+      command "$@"
+    }
+    acquire_report_worker_deployment_lock "$lock_fixture"
+  ) >/dev/null 2>&1; then
+    echo "deployment serialization lock admitted a concurrent operation" >&2
+    exit 1
+  fi
+  release_report_worker_deployment_lock
+  acquire_report_worker_deployment_lock "$lock_fixture"
+  release_report_worker_deployment_lock
+)
+
+(
+  # shellcheck source=docs/deploy/report-worker-evo-systemd-lib.sh
+  source "$deployment_lib"
+  report_worker_release_root="$test_tmp/recovery-root"
+  recovery_log="$test_tmp/recovery.log"
+  verify_report_worker_release() { printf '%s\n' "verify-release:$2" >>"$recovery_log"; }
+  report_worker_run_privileged() { printf '%s\n' "privileged:$*" >>"$recovery_log"; }
+  switch_report_worker_link() { printf '%s\n' "switch:$1" >>"$recovery_log"; }
+  install_report_worker_unit() { printf '%s\n' "install-unit:$2" >>"$recovery_log"; }
+  verify_report_worker_live() { printf '%s\n' "verify-live:$1" >>"$recovery_log"; }
+  restore_report_worker_live "$fixture_revision"
+  expected_recovery="$test_tmp/recovery.expected"
+  cat >"$expected_recovery" <<EOF
+verify-release:$fixture_revision
+privileged:systemctl stop openspell-report-worker.service
+switch:releases/$fixture_revision
+install-unit:recovery
+privileged:systemctl daemon-reload
+privileged:systemctl enable openspell-report-worker.service
+privileged:systemctl restart openspell-report-worker.service
+verify-live:$fixture_revision
+EOF
+  diff -u "$expected_recovery" "$recovery_log"
+  verify_report_worker_live() { return 1; }
+  if restore_report_worker_live "$fixture_revision" >/dev/null 2>&1; then
+    echo "recovery accepted an unverified restored live deployment" >&2
+    exit 1
+  fi
+)
+
 runtime_fixture="$test_tmp/runtime"
 credential_fixture="$test_tmp/credentials"
 install -d -m 0700 "$runtime_fixture" "$credential_fixture"
@@ -374,6 +487,10 @@ if bash "$installer" --revision 0000000 >/dev/null 2>&1; then
   echo "installer accepted an abbreviated revision" >&2
   exit 1
 fi
+if bash "$activator" --revision "$fixture_revision" >/dev/null 2>&1; then
+  echo "activator accepted a missing Vercel report-claim handoff" >&2
+  exit 1
+fi
 wrong_revision=1111111111111111111111111111111111111111
 if bash "$installer" --revision "$wrong_revision" >/dev/null 2>&1; then
   echo "installer accepted a mismatched revision" >&2
@@ -381,7 +498,16 @@ if bash "$installer" --revision "$wrong_revision" >/dev/null 2>&1; then
 fi
 dirty_probe="$repo_root/.wp172-dirty-probe"
 touch "$dirty_probe"
-if bash "$installer" --revision "$(git -C "$repo_root" rev-parse HEAD)" \
+fake_bin="$test_tmp/fake-bin"
+install -d "$fake_bin"
+cat >"$fake_bin/mktemp" <<EOF
+#!/usr/bin/env bash
+touch "$test_tmp/mktemp-was-called"
+exit 91
+EOF
+chmod +x "$fake_bin/mktemp"
+if PATH="$fake_bin:$PATH" bash "$installer" \
+  --revision "$(git -C "$repo_root" rev-parse HEAD)" \
   >"$test_tmp/dirty.out" 2>&1; then
   echo "installer accepted a dirty checkout" >&2
   find "$dirty_probe" -delete
@@ -390,6 +516,10 @@ fi
 find "$dirty_probe" -delete
 if ! rg -F 'checkout is not clean' "$test_tmp/dirty.out" >/dev/null; then
   echo "installer did not fail at the dirty-checkout boundary" >&2
+  exit 1
+fi
+if [[ -e "$test_tmp/mktemp-was-called" ]]; then
+  echo "installer allocated a temporary directory before refusing a dirty checkout" >&2
   exit 1
 fi
 
