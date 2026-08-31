@@ -19,10 +19,10 @@ historical changelog.
 ## Non-negotiable repository boundaries
 
 - The repository is public. Run `pnpm hygiene` before every push.
-- `AGENTS.md` still makes v1 read-only. Source code, status prose, or prior authorization that says
-  otherwise does not override it. OpenSpell may analyze, propose, preview, and export; it must not
-  call an Amazon mutation endpoint until `AGENTS.md` is explicitly changed and a new guarded
-  package is approved.
+- Amazon writes are allowed only through the guarded contract in `AGENTS.md`: worker-only
+  execution, explicit environment and profile enablement, immutable preview, unambiguous approval,
+  idempotent conflict checks, exact counts, audit/resynchronization, and fail-closed cadence gates.
+  A read credential, sync, proposal, or schedule never implies write permission.
 - `packages/shared` is authoritative. Do not introduce duplicate local contracts or widen it as a
   convenience.
 - Amazon calls belong in `apps/worker`; `apps/web` never receives Amazon credentials or imports
@@ -35,24 +35,22 @@ historical changelog.
 
 ## Verified repository and deployment snapshot
 
-At the time this handover was finalized:
+At the time this handover was reconciled:
 
-- Product-source baseline before this documentation-only handover:
-  `e55ff36f2bf0e485c4d53dcfc610d233845cd1c7`. If the only newer main commit is this handover,
-  the product tree is unchanged.
-- WP-175 is merged at that revision. It preserves exact date-preset identity and gives the
-  account-context browser workflow a fresh Next process. Exact-main run `33350779724` passed both
-  jobs at its revision.
-- WP-172 is also merged. Exact-main run `33351492101` passed both jobs for the combined
-  WP-172/WP-175 revision.
-- WP-173 is merged after its final rebased run `33351512195` passed both jobs. Exact-main run
-  `33352156827` also passed both jobs for the combined WP-172/WP-173/WP-175 revision.
-- Tracked production web evidence still identifies
-  `5e372c82361776070084e0265fea8c504a0d8781`.
-- Tracked MCP evidence still identifies
-  `b5c210dca2c28576180223dbe853e61ae7092e73`.
-- Therefore current source, deployed web, and deployed MCP are three different revisions. Do not
-  describe post-deployment main features as live until a revision-stamped candidate is promoted
+- `origin/main` is `112ea9652739438a432431c8b1660725eb3044dd`. Exact-main run `33353896355`
+  passed both jobs: all 18 typechecks, lint, migration assertions, package/UI tests, two Next builds,
+  and 68 Playwright cases. The run uploaded no artifacts; five Next development-server
+  `destination stream closed early` warnings were non-fatal.
+- Production web health and the READY Vercel deployment behind the public alias agree on
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, four commits behind current main.
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 144 commits behind
+  current main, and still returns the legacy `wizard-ads` service shape.
+- The new Evo report-worker unit is not installed and its loopback health is unavailable. The
+  legacy integration worker is active with zero recorded restarts, but exposes no revision stamp.
+  Its installed 35-file worker tree matches a range of 25 historical main commits, so its exact
+  source revision is unproven.
+- Current source, deployed web, deployed MCP, and the active worker are not one proven release. Do
+  not describe post-deployment main features as live until a revision-stamped candidate is promoted
   and checked.
 - `docs/STATUS.md` was reconciled against the older web revision and is stale for WP-149 onward.
   Use Git, CI, code, the migration ledger, and live health as evidence; then update status prose.
@@ -98,24 +96,38 @@ Reconcile heads and checks again before acting.
 - Head at handover preparation: `2dccb6109332cd598747a45bf2e918d5f52853e6`.
 - Replaces ambiguous cadence intervals with profile-local weekday, local-time, and timezone
   controls for optimization groups.
-- Local `pnpm check` passed after the final rebase onto merged WP-172/WP-173/WP-175. Final
-  exact-head run `33352215777` passed both jobs. The earlier Playwright failure combined a
-  four-gigabyte Next development-server heap exhaustion and the now-fixed shared date-preset bug.
+- Local `pnpm check` passed. Run `33352215777` passed both jobs, but GitHub tested a synthetic merge
+  against older main `e55ff36f`; it is not proof for the raw head on current main. Update or rebase
+  after the migration gate closes, then require both jobs on the resulting exact integration SHA.
 - The latest head isolates the optimization-group workflow in a fresh authenticated Next process.
-- Do not merge before the exact-head jobs pass and the hosted schema includes
+- Do not merge before the final current-main integration jobs pass and the hosted schema includes
   `20260830180000_optimization_weekday_schedules.sql`. The new web code reads the new columns
   unconditionally.
 - PR #40 and its remote branch were closed/deleted because this package supersedes them.
 
+### PR #86 — WP-176 Creative lifecycle copy
+
+- Initial head: `e89d020c96bd379ed6ddae68b3698f24e7d959ca`.
+- Replaces the nonexistent manual-sync instruction with states derived from producer eligibility,
+  the latest exact-scope Creative queue job, and the latest counted observation.
+- A newer queued or running refresh retains the previous observation timestamp, coverage, and
+  counts. Terminal queue state without a matching snapshot fails closed.
+- Local focused tests, disposable-Postgres tests, `pnpm check`, staged hygiene, diff checks, and the
+  production web build passed. Hosted CI is required for the final current-main integration before
+  merge.
+
 ### Older open work that needs an explicit decision
 
-- PR #17: contextual-negative review/export; conflicting and red.
-- PR #24: guarded Sponsored Products write gateway; conflicting and red. It cannot merge while the
-  authoritative read-only boundary remains unchanged.
-- PR #35: release-artifact checks; conflicting and red. Compare its acceptance criteria with newer
-  merged release verification before rebasing or closing it.
-- PR #45: campaign-creation contracts stacked on PR #24; red and bound by the same write-policy
-  conflict.
+- PR #17: contextual-negative review/export; 143 commits behind and conflicting. Preserve its useful
+  brief and rescue the distinct negative workflow promptly, or close it as superseded.
+- PR #24: guarded Sponsored Products write gateway; 101 commits behind and conflicting. The former
+  policy blocker is gone, but the branch is monolithic. Replace it contract-first, then add
+  persistence/API/worker slices before closing the old PR.
+- PR #35: release-artifact checks; conflicting and partly superseded by the merged release
+  transport. Port only the still-distinct SVG, Grid context/date, brand, and recommendation artifact
+  assertions into the current verifier, then close it.
+- PR #45: campaign-creation contracts stacked on PR #24. Unstack its distinct contract work directly
+  onto current main before any gateway implementation.
 
 Do not keep stale pull requests merely as storage. Preserve useful design in a current brief,
 replace or rebase live work, and close branches that are proven superseded.
@@ -130,6 +142,12 @@ The following tracked files were not proven present in the hosted ledger during 
 - `20260829160100_sb_video_observed_ingestion.sql`
 - `20260830170000_marketing_stream_correctness.sql`
 - PR #81 adds `20260830180000_optimization_weekday_schedules.sql`
+
+This machine has no linked Supabase project, authenticated Supabase CLI session, active secret-
+manager CLI session, or injected read-only database credential. The production environment confirms
+that database variables exist but does not expose their values through the available read-only
+session. Hosted truth for all six files therefore remains unproven; no database connection,
+migration, seed, or schema mutation was attempted.
 
 Before any application:
 
@@ -169,9 +187,8 @@ bounded pilot. It is not proven automatically active in production. Activation r
 - source/ad/creative/asset/report/mapped/upsert count reconciliation;
 - live UI verification against authoritative Amazon Asset IDs.
 
-The current empty-state sentence telling the operator to “Run a Creative sync” is misleading when
-the automatic producer is enabled. A later web package should derive copy from the actual lifecycle:
-inactive gate, queued, report pending, mapping pending, unsupported, blocked, or current.
+PR #86 replaces the misleading manual-sync sentence with lifecycle-aware automatic-sync copy. It is
+source-only until final integration CI, merge, deployment, and live verification complete.
 
 ### SQP and Query Intelligence
 
@@ -202,7 +219,8 @@ history bootstrap.
 Stateful recommendation evidence, synchronization observation, hold/continue/revert decisions,
 conflict-safe inverse exports, bounded campaign windows, and persistent groups exist. WP-171 makes
 schedule intent operator-readable. A complete live reversion remains unproven until an eligible
-export batch exists. No live Amazon mutation is permitted under the current `AGENTS.md`.
+export batch exists. Any Amazon application or reversion must satisfy the guarded write contract and
+an exact current-task authorization.
 
 ## Known UX and performance follow-ups
 
@@ -211,33 +229,35 @@ export batch exists. No live Amazon mutation is permitted under the current `AGE
    fresh serialized web package after WP-171: keep brand/footer non-shrinking, give only the main
    navigation `min-height: 0` plus vertical overflow, simplify the active marker, and add a browser
    regression at the affected viewport with every group open.
-2. Replace the Creative empty-state command copy with lifecycle-aware automatic-sync copy.
-3. Production Grid and Time Machine first loads remain above the intended targets. Use the closed
+2. Production Grid and Time Machine first loads remain above the intended targets. Use the closed
    `Server-Timing` spans to choose the next bottleneck; do not hide the delay with optimistic copy
    or weaken complete-row/count behavior.
-4. Re-run a complete authenticated OpenSpell click-through after deploying a current revision.
+3. Re-run a complete authenticated OpenSpell click-through after deploying a current revision.
    Cover loaded, empty, partial, stale, settling, error, and permission states; both themes;
    keyboard operation; exact exports; and realistic row counts.
-5. Repeat the equivalent read-only workflows in AdLabs and SYNQ, then classify differences as
+4. Repeat the equivalent read-only workflows in AdLabs and SYNQ, then classify differences as
    correctness, missing capability, interaction friction, unnecessary complexity, hierarchy, or
    polish. Do not modify competitor state or copy unsafe push behavior.
-6. Reconcile the large current-state drift in `docs/STATUS.md` only after live deployment and QA.
+5. Reconcile the large current-state drift in `docs/STATUS.md` only after live deployment and QA.
 
 ## Recommended continuation order
 
-1. Finish exact-main CI for the current merged source. Diagnose artifacts, not check labels.
-2. Keep CI-green PR #81 open until its hosted migration gate is closed.
-3. Update this file if either revision moves; remove completed PR entries.
-4. Apply only the exact authorized hosted migrations through the documented operator procedure and
+1. Obtain operator-attended read-only access to the exact hosted database and reconcile the ledger,
+   schema, locks, row counts, indexes, and RLS without exposing credentials or row data.
+2. Apply only the exact authorized hosted migrations through the documented operator procedure and
    record sanitized count/RLS evidence.
-5. Deploy a revision-stamped web candidate from clean main, complete authenticated QA, and promote
+3. Update or rebase PR #81 onto current main, require exact integration CI, and merge only after its
+   schema-first gate is proven. Merge PR #86 only after its final pushed head passes both CI jobs.
+4. Deploy a revision-stamped web candidate from clean main, complete authenticated QA, and promote
    only after the candidate revision and route artifacts match.
-6. Stage the merged Evo report worker from that exact clean main revision. Transfer Vercel report
+5. Stage the merged Evo report worker from that exact clean main revision. Transfer Vercel report
    claims first, prove the legacy unit retired, then perform the attended activation and exact
    health/queue checks. Never allow overlapping consumers.
-7. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
-8. Add the Unified Reporting worker dual-run without changing promotion authority.
-9. Implement the sidebar and Creative-copy fixes, then repeat deployed OpenSpell and competitor QA.
+6. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
+7. Add the Unified Reporting worker dual-run without changing promotion authority.
+8. After PR #81 clears its overlapping web files, implement the sidebar-scroll regression package.
+9. Rescue the useful old-PR slices in dependency order: campaign contracts, guarded gateway slices,
+   contextual negatives, then distinctive release-artifact assertions.
 10. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again.
 
 If an external gate blocks one lane, continue with the next independent source-only package. Do
