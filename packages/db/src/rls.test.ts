@@ -9,7 +9,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from './testing/harness.js';
-import { asAnon, asUser, tenantTables } from './testing/rls.js';
+import { asAnon, asServiceRole, asUser, tenantTables } from './testing/rls.js';
 import type { TestDatabase } from './testing/harness.js';
 
 const available = await databaseAvailable();
@@ -85,10 +85,20 @@ describe.skipIf(!available)('row level security', () => {
     const invisible: string[] = [];
     // Deliberately invisible to an analyst: reading the audit log is an
     // owner/admin act, asserted separately below.
-    const adminOnly = new Set(['audit_log', 'org_invitations']);
+    const adminOnly = new Set([
+      'audit_log',
+      'org_invitations',
+    ]);
+    // These are proved separately below because authenticated has no relation
+    // grant at all, so attempting the generic SELECT would abort the loop.
+    const serviceOnly = new Set([
+      'sp_write_bounded_authorization_profiles',
+      'sp_write_bounded_authorization_entities',
+    ]);
 
     await asUser(database, USER_A, async (sql) => {
       for (const table of tables) {
+        if (serviceOnly.has(table)) continue;
         const rows = await sql<{ own: string; foreign_rows: string }[]>`
           select
             count(*) filter (where org_id = ${orgA}) as own,
@@ -106,6 +116,29 @@ describe.skipIf(!available)('row level security', () => {
     // The other half of the check: the policy must not be so tight that a
     // member cannot see their own data either.
     expect(invisible).toEqual([]);
+  });
+
+  it('keeps bounded SP authority details service-only and non-vacuous', async () => {
+    for (const table of [
+      'sp_write_bounded_authorization_profiles',
+      'sp_write_bounded_authorization_entities',
+    ]) {
+      await asUser(database, USER_A, async (sql) => {
+        await expect(sql`select * from ${sql(table)}`).rejects.toThrow(/permission denied/i);
+      });
+      await asUser(database, USER_B, async (sql) => {
+        await expect(sql`select * from ${sql(table)}`).rejects.toThrow(/permission denied/i);
+      });
+      await asAnon(database, async (sql) => {
+        await expect(sql`select * from ${sql(table)}`).rejects.toThrow(/permission denied/i);
+      });
+      await asServiceRole(database, async (sql) => {
+        const rows = await sql<{ org_id: string }[]>`
+          select org_id from ${sql(table)} order by org_id
+        `;
+        expect(rows.map((row) => row.org_id)).toEqual([orgA, orgB].sort());
+      });
+    }
   });
 
   it('shows a member of org A no org B org row', async () => {

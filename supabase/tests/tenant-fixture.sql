@@ -40,6 +40,26 @@ declare
   v_unified_run uuid := gen_random_uuid();
   v_unified_operation uuid := gen_random_uuid();
   v_unified_job uuid := gen_random_uuid();
+  v_sp_gate_version uuid := gen_random_uuid();
+  v_sp_grant_id uuid := gen_random_uuid();
+  v_sp_grant_version uuid := gen_random_uuid();
+  v_sp_authorization uuid := gen_random_uuid();
+  v_sp_plan uuid := gen_random_uuid();
+  v_sp_intent_action uuid := gen_random_uuid();
+  v_sp_refusal_action uuid := gen_random_uuid();
+  v_sp_approval_request uuid := gen_random_uuid();
+  v_sp_execution uuid := gen_random_uuid();
+  v_sp_approval uuid := gen_random_uuid();
+  v_sp_generation uuid := gen_random_uuid();
+  v_sp_lease uuid := gen_random_uuid();
+  v_sp_predispatch_observation uuid := gen_random_uuid();
+  v_sp_disposition uuid := gen_random_uuid();
+  v_sp_intent uuid := gen_random_uuid();
+  v_sp_provider_call uuid := gen_random_uuid();
+  v_sp_result uuid;
+  v_sp_outbox uuid := gen_random_uuid();
+  v_sp_source_sync_job uuid := gen_random_uuid();
+  v_sp_observation uuid := gen_random_uuid();
   v_week_start date := p_date - extract(dow from p_date)::integer;
   v_previous_month date := (date_trunc('month', p_date) - interval '1 month')::date;
   v_strategy jsonb := jsonb_build_object(
@@ -433,6 +453,212 @@ begin
      evidence_end, settled_hours, blocks)
   values (v_org, v_profile, 'c-1', 'fixture baseline', p_date - 7, p_date,
           24, '[]'::jsonb);
+
+  -- WP-187 inert SP-write evidence. These are synthetic, disabled fixture
+  -- rows only; they create no worker job and grant no provider authority.
+  insert into public.sp_write_environment_gate_versions
+    (version_id, enabled, max_unresolved_calls, created_by)
+  values (v_sp_gate_version, false, 1, p_user_id);
+
+  insert into public.sp_write_profile_grant_versions
+    (grant_id, version_id, org_id, profile_id, enabled, amazon_profile_id,
+     connection_id, region, marketplace_id, currency_code, api_dialect, created_by)
+  values (v_sp_grant_id, v_sp_grant_version, v_org, v_profile, false,
+          p_slug || '-profile-1', v_conn, 'NA', p_slug || '-market', 'USD', 'sp_v3', p_user_id);
+  -- The generic tenant-table walk requires the head relation to be nonempty.
+  -- It points only at this explicitly disabled version; with no environment
+  -- head, no approval or reservation capability can derive write authority.
+  insert into public.sp_write_profile_grant_heads
+    (org_id, profile_id, grant_id, version_id)
+  values (v_org, v_profile, v_sp_grant_id, v_sp_grant_version);
+
+  insert into public.sp_write_bounded_authorizations
+    (authorization_id, artifact_text, artifact, fingerprint_preimage, fingerprint,
+     issued_at, expires_at, max_logical_changes_per_plan, max_provider_rows_per_plan,
+     max_concurrent_mutations, max_cycles, max_executions,
+     require_current_value_match, require_forward_observation_before_inverse,
+     stop_on_conflict, disable_after_cycle)
+  values (v_sp_authorization, '{}'::text, '{}'::jsonb, '[]'::text,
+          md5(p_slug || ':sp-auth') || md5(p_slug || ':sp-auth:2'),
+          now() - interval '1 hour', now() + interval '1 hour', 2, 2, 1, 1, 2,
+          true, true, true, true);
+  insert into public.sp_write_bounded_authorization_profiles
+    (authorization_id, profile_index, org_id, profile_id, amazon_profile_id,
+     connection_id, region, marketplace_id, currency_code, api_dialect)
+  values (v_sp_authorization, 0, v_org, v_profile, p_slug || '-profile-1',
+          v_conn, 'NA', p_slug || '-market', 'USD', 'sp_v3');
+  insert into public.sp_write_bounded_authorization_entities
+    (authorization_id, profile_index, entity_index, org_id, profile_id,
+     route_key, amazon_entity_id, allowed_change_keys, max_absolute_money_delta,
+     max_absolute_placement_delta)
+  values (v_sp_authorization, 0, 0, v_org, v_profile,
+          'sp.v3.keywords.update', 'kw-1', array['keyword.bid'], '0.1', null);
+
+  insert into public.sp_write_plans
+    (plan_id, org_id, profile_id, direction, artifact_text, artifact,
+     fingerprint_preimage, fingerprint, amazon_profile_id, connection_id,
+     region, marketplace_id, currency_code, api_dialect, generated_at,
+     frozen_at, expires_at, logical_changes, provider_rows, unique_entities)
+  values (v_sp_plan, v_org, v_profile, 'forward', '{}'::text, '{}'::jsonb,
+          '[]'::text, md5(p_slug || ':sp-plan') || md5(p_slug || ':sp-plan:2'),
+          p_slug || '-profile-1', v_conn, 'NA', p_slug || '-market', 'USD', 'sp_v3',
+          now() - interval '10 minutes', now() - interval '9 minutes',
+          now() + interval '1 hour', 2, 2, 2);
+  insert into public.sp_write_plan_actions
+    (org_id, profile_id, plan_id, action_id, action_index, route_key,
+     amazon_entity_id, artifact_text, artifact, fingerprint_preimage, fingerprint)
+  values
+    (v_org, v_profile, v_sp_plan, v_sp_intent_action, 0,
+     'sp.v3.keywords.update', 'kw-1', '{}'::text, '{}'::jsonb, '[]'::text,
+     md5(p_slug || ':sp-action-1') || md5(p_slug || ':sp-action-1:2')),
+    (v_org, v_profile, v_sp_plan, v_sp_refusal_action, 1,
+     'sp.v3.keywords.update', 'kw-2', '{}'::text, '{}'::jsonb, '[]'::text,
+     md5(p_slug || ':sp-action-2') || md5(p_slug || ':sp-action-2:2'));
+
+  insert into public.sp_write_approval_requests
+    (approval_request_id, org_id, profile_id, plan_id, plan_fingerprint,
+     approval_mode, artifact_text, artifact, confirmation_version)
+  values (v_sp_approval_request, v_org, v_profile, v_sp_plan,
+          md5(p_slug || ':sp-plan') || md5(p_slug || ':sp-plan:2'),
+          'manual', '{}'::text, '{}'::jsonb,
+          'openspell.amazon-sp-write-confirmation.v1');
+  insert into public.sp_write_execution_cycles
+    (execution_id, org_id, profile_id, created_at)
+  values (v_sp_execution, v_org, v_profile, now() - interval '8 minutes');
+  insert into public.sp_write_authorization_receipts
+    (approval_id, org_id, profile_id, execution_id, approval_request_id,
+     plan_id, generation, approval_mode, artifact_text, artifact, approved_by,
+     approved_at, expires_at, environment_gate_version, profile_grant_id,
+     profile_grant_version, gate_snapshot_preimage, gate_snapshot_fingerprint)
+  values (v_sp_approval, v_org, v_profile, v_sp_execution, v_sp_approval_request,
+          v_sp_plan, v_sp_generation, 'manual', '{}'::text, '{}'::jsonb, p_user_id,
+          now() - interval '8 minutes', now() - interval '1 minute', v_sp_gate_version,
+          v_sp_grant_id, v_sp_grant_version, 'fixture-gate',
+          md5(p_slug || ':sp-gate') || md5(p_slug || ':sp-gate:2'));
+  insert into public.sp_write_cycle_plans
+    (org_id, profile_id, execution_id, plan_id, receipt_plan_id, approval_id,
+     generation, direction, bound_at)
+  values (v_org, v_profile, v_sp_execution, v_sp_plan, v_sp_plan, v_sp_approval,
+          v_sp_generation, 'forward', now() - interval '8 minutes');
+  insert into public.sp_write_execution_requests
+    (org_id, profile_id, execution_id, plan_id, approval_id, generation, requested_at)
+  values (v_org, v_profile, v_sp_execution, v_sp_plan, v_sp_approval,
+          v_sp_generation, now() - interval '7 minutes');
+  -- Direct, already-expired evidence for RLS coverage only. It was not
+  -- produced by a capability, and the expired receipt plus absent environment
+  -- head prevents start/reservation from yielding provider authority.
+  insert into public.sp_write_dispatch_leases
+    (lease_id, org_id, profile_id, execution_id, plan_id, approval_id, generation,
+     route_key, acquired_at, expires_at)
+  values (v_sp_lease, v_org, v_profile, v_sp_execution, v_sp_plan, v_sp_approval,
+          v_sp_generation, 'sp.v3.keywords.update', now() - interval '6 minutes',
+          now() - interval '4 minutes');
+
+  insert into public.sp_write_predispatch_observations
+    (observation_id, org_id, profile_id, execution_id, plan_id, approval_id,
+     generation, route_key, observed_at, valid_until, artifact_text, artifact,
+     fingerprint_preimage, fingerprint)
+  values (v_sp_predispatch_observation, v_org, v_profile, v_sp_execution, v_sp_plan,
+          v_sp_approval, v_sp_generation, 'sp.v3.keywords.update',
+          now() - interval '5 minutes', now() - interval '4 minutes', '{}'::text,
+          '{}'::jsonb, '[]'::text,
+          md5(p_slug || ':sp-pre') || md5(p_slug || ':sp-pre:2'));
+  insert into public.sp_write_predispatch_observation_items
+    (org_id, profile_id, observation_id, execution_id, plan_id, approval_id,
+     generation, item_index, action_id, action_fingerprint, route_key,
+     amazon_entity_id, observed)
+  values (v_org, v_profile, v_sp_predispatch_observation, v_sp_execution, v_sp_plan,
+          v_sp_approval, v_sp_generation, 0, v_sp_intent_action,
+          md5(p_slug || ':sp-action-1') || md5(p_slug || ':sp-action-1:2'),
+          'sp.v3.keywords.update', 'kw-1', '{}'::jsonb);
+  insert into public.sp_write_predispatch_dispositions
+    (disposition_id, org_id, profile_id, execution_id, plan_id, approval_id,
+     generation, action_id, action_fingerprint, reason, recorded_at, persisted_at,
+     artifact_text, artifact, fingerprint_preimage, fingerprint)
+  values (v_sp_disposition, v_org, v_profile, v_sp_execution, v_sp_plan,
+          v_sp_approval, v_sp_generation, v_sp_refusal_action,
+          md5(p_slug || ':sp-action-2') || md5(p_slug || ':sp-action-2:2'),
+          'lease_unavailable', now() - interval '4 minutes', now() - interval '4 minutes',
+          '{}'::text, '{}'::jsonb, '[]'::text,
+          md5(p_slug || ':sp-disposition') || md5(p_slug || ':sp-disposition:2'));
+
+  v_sp_result := app.sp_write_reserved_result_id(v_sp_intent);
+  insert into public.sp_write_provider_call_intents
+    (intent_id, provider_call_id, reserved_result_id, org_id, profile_id,
+     execution_id, plan_id, approval_id, generation, route_key, attempt_number,
+     dispatch_lease_id, provider_observation_fingerprint,
+     request_fingerprint_preimage, request_fingerprint,
+     intent_fingerprint_preimage, fingerprint, artifact_text, artifact,
+     recorded_at, checked_at, dispatch_start_deadline, provider_attempt_deadline)
+  values (v_sp_intent, v_sp_provider_call, v_sp_result, v_org, v_profile,
+          v_sp_execution, v_sp_plan, v_sp_approval, v_sp_generation,
+          'sp.v3.keywords.update', 1, v_sp_lease,
+          md5(p_slug || ':sp-pre') || md5(p_slug || ':sp-pre:2'),
+          '[]'::text, md5(p_slug || ':sp-request') || md5(p_slug || ':sp-request:2'),
+          '[]'::text, md5(p_slug || ':sp-intent') || md5(p_slug || ':sp-intent:2'),
+          '{}'::text, '{}'::jsonb, now() - interval '5 minutes',
+          now() - interval '5 minutes', now() - interval '4 minutes 55 seconds',
+          now() - interval '4 minutes 25 seconds');
+  insert into public.sp_write_provider_call_positions
+    (org_id, profile_id, execution_id, plan_id, intent_id, request_index,
+     action_id, action_fingerprint, amazon_entity_id, action_request_fingerprint)
+  values (v_org, v_profile, v_sp_execution, v_sp_plan, v_sp_intent, 0,
+          v_sp_intent_action,
+          md5(p_slug || ':sp-action-1') || md5(p_slug || ':sp-action-1:2'),
+          'kw-1', md5(p_slug || ':sp-action-request') || md5(p_slug || ':sp-action-request:2'));
+  insert into public.sp_write_action_resolutions
+    (org_id, profile_id, execution_id, plan_id, action_id, resolution_kind,
+     disposition_id, intent_id, resolved_at)
+  values
+    (v_org, v_profile, v_sp_execution, v_sp_plan, v_sp_intent_action,
+     'intent', null, v_sp_intent, now() - interval '5 minutes'),
+    (v_org, v_profile, v_sp_execution, v_sp_plan, v_sp_refusal_action,
+     'refusal', v_sp_disposition, null, now() - interval '4 minutes');
+  insert into public.sp_write_provider_results
+    (result_id, org_id, profile_id, intent_id, origin, artifact_text, artifact,
+     fingerprint_preimage, fingerprint, intent_fingerprint, provider_call_id,
+     request_fingerprint, completed_at)
+  values (v_sp_result, v_org, v_profile, v_sp_intent, 'provider_adapter',
+          '{}'::text, '{}'::jsonb, '[]'::text,
+          md5(p_slug || ':sp-result') || md5(p_slug || ':sp-result:2'),
+          md5(p_slug || ':sp-intent') || md5(p_slug || ':sp-intent:2'),
+          v_sp_provider_call,
+          md5(p_slug || ':sp-request') || md5(p_slug || ':sp-request:2'),
+          now() - interval '4 minutes');
+  insert into public.sp_write_provider_result_positions
+    (org_id, profile_id, result_id, intent_id, request_index, action_id,
+     action_fingerprint, action_request_fingerprint, outcome, provider_entity_id)
+  values (v_org, v_profile, v_sp_result, v_sp_intent, 0, v_sp_intent_action,
+          md5(p_slug || ':sp-action-1') || md5(p_slug || ':sp-action-1:2'),
+          md5(p_slug || ':sp-action-request') || md5(p_slug || ':sp-action-request:2'),
+          'accepted', 'kw-1');
+  insert into public.sp_write_outbox
+    (outbox_id, org_id, profile_id, execution_id, plan_id, approval_id, generation,
+     kind, provider_call_id, intent_id, source_sync_job_id, created_at)
+  values (v_sp_outbox, v_org, v_profile, v_sp_execution, v_sp_plan, v_sp_approval,
+          v_sp_generation, 'observe_and_recover', v_sp_provider_call, v_sp_intent,
+          v_sp_source_sync_job, now() - interval '4 minutes');
+  insert into public.sp_write_observations
+    (observation_id, org_id, profile_id, execution_id, plan_id, approval_id,
+     generation, intent_id, result_id, provider_call_id, action_id,
+     action_fingerprint, intent_fingerprint, request_fingerprint, route_key,
+     source_sync_job_id, outcome, observed, observed_at, artifact_text, artifact,
+     fingerprint_preimage, fingerprint)
+  values (v_sp_observation, v_org, v_profile, v_sp_execution, v_sp_plan,
+          v_sp_approval, v_sp_generation, v_sp_intent, v_sp_result,
+          v_sp_provider_call, v_sp_intent_action,
+          md5(p_slug || ':sp-action-1') || md5(p_slug || ':sp-action-1:2'),
+          md5(p_slug || ':sp-intent') || md5(p_slug || ':sp-intent:2'),
+          md5(p_slug || ':sp-request') || md5(p_slug || ':sp-request:2'),
+          'sp.v3.keywords.update', v_sp_source_sync_job, 'observed_requested',
+          '{}'::jsonb, now() - interval '3 minutes', '{}'::text, '{}'::jsonb,
+          '[]'::text, md5(p_slug || ':sp-observation') || md5(p_slug || ':sp-observation:2'));
+  insert into public.sp_write_late_result_audits
+    (org_id, profile_id, intent_id, result_id, submitted_fingerprint,
+     completed_at, position_count, diagnostic_codes)
+  values (v_org, v_profile, v_sp_intent, v_sp_result,
+          md5(p_slug || ':sp-late') || md5(p_slug || ':sp-late:2'),
+          now() - interval '2 minutes', 1, array[]::text[]);
 
   return v_org;
 end;
