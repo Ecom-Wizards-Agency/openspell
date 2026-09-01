@@ -37,20 +37,16 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- `origin/main` is `6d182e6e7a1e51958da2a347044e71fd365d0e41`. WP-182 merged through PR
-  #93 at `5d36457f7f4c414fdc58f62130b69c0407361db2`; exact-head run `33445328649`
-  passed both jobs on attempt 2 after one unrelated invitation redirect timing failure. Exact-main
-  run `33447338899` then exposed a pre-existing Next dev HMR `networkidle` test defect after the
-  required redirect artifacts had rendered. PR #94 removed only that redundant wait; its exact-head
-  run `33449128504` and exact-main run `33449983074` passed both jobs on their first attempts.
-- The WP-182 closeout run then crossed the September boundary and exposed a fresh-database fixture
-  gap for prior-month facts. Test-only PR #96 made the tenant fixture open its current and preceding
-  calendar months. It merged at `6d182e6e7a1e51958da2a347044e71fd365d0e41`; exact-head run
-  `33454770170` and exact-main run `33455623011` passed both jobs on their first attempts.
+- `origin/main` is `c7a141ad05e6b1d78cd857d0d0e31342fbec69e3`. WP-184 merged through PR
+  #97 after exact-head run `33466339339` passed both jobs at
+  `de0eee763c43a462342aaa89e194871551f7e7a8`; exact-main run `33467035459` then passed
+  repository and Playwright jobs on the actual two-parent merge. The final CI correction partitions
+  the original authenticated coverage into fresh 9-test core, 5-test member, and 7-test OAuth
+  processes without changing assertions; the complete browser inventory remains 68 tests.
 - Vercel reports the latest production-target deployment READY at
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 21 commits behind current main. A direct anonymous
-  `/api/healthz` request now redirects to Vercel SSO, so web health was not independently rechecked.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 161 commits behind
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 27 commits behind current main. WP-184 did not deploy
+  or promote a candidate, so its new verifier and route artifacts are not live evidence.
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 167 commits behind
   current main, and still returns the legacy `wizard-ads` service shape.
 - The new Evo report-worker unit is not installed and its loopback health is unavailable. The
   legacy integration worker is active but exposes no revision stamp. Its recent journal has
@@ -59,7 +55,7 @@ At the time this handover was reconciled:
 - Current source, deployed web, deployed MCP, and the active worker are not one proven release. Do
   not describe post-deployment main features as live until a revision-stamped candidate is promoted
   and checked.
-- `docs/STATUS.md` now records WP-179 through WP-183, but the implementation-wave table remains
+- `docs/STATUS.md` now records WP-179 through WP-184, but the implementation-wave table remains
   incomplete between WP-149 and WP-178. Use Git, CI, code, the migration ledger, and live health as
   evidence; then update status prose.
 
@@ -104,6 +100,10 @@ Recent verified source work includes:
   `@wizard-ads/ads-api/sp-write-adapter` subpath, with complete observation, marketplace decimal
   policy, one-attempt mutation transport, strict indexed-result closure, cancellation-safe
   credentials, and no worker consumer or live provider activation;
+- a revision-bound distinctive-release verifier with exact official-SVG byte proof, rendered Grid
+  and Recommendations capability checks, locked GET-only Vercel transport, and deterministic
+  privacy-safe evidence that grants no deployment or promotion authority. It is merged source only;
+  no WP-184 candidate was deployed, verified, or promoted;
 - a complete, bounded contextual-negative decision queue with explicit accept, dismiss and reopen,
   review-preserving refresh, and immutable exact-byte JSON/CSV evidence export. It remains an
   operator review/export workflow: it does not enqueue or apply an Amazon action, and its hosted
@@ -120,7 +120,7 @@ Reconcile heads and checks again before acting.
 ### PR #81 — WP-171 weekday schedules
 
 - Head at handover preparation: `2dccb6109332cd598747a45bf2e918d5f52853e6`; it is conflicting,
-  18 commits behind current main, and six commits ahead of its merge base.
+  24 commits behind current main, and six commits ahead of its merge base.
 - Replaces ambiguous cadence intervals with profile-local weekday, local-time, and timezone
   controls for optimization groups.
 - Local `pnpm check` passed. Its two displayed checks are green, but GitHub tested a synthetic merge
@@ -134,19 +134,17 @@ Reconcile heads and checks again before acting.
 
 ### Older open work that needs an explicit decision
 
-- PR #24: guarded Sponsored Products write gateway; 118 commits behind, conflicting, and failing.
+- PR #24: guarded Sponsored Products write gateway; 124 commits behind, conflicting, and failing.
   WP-179 and WP-180 supersede its shared-contract and provider-adapter portions. Preserve only its
   still-distinct persistence and worker ideas through current, separately reviewed slices, then
   close the old PR.
-- PR #35: release-artifact checks; 118 commits behind, conflicting, failing, and partly superseded
-  by the merged release transport. Port only the still-distinct SVG, Grid context/date, brand, and
-  recommendation artifact assertions into the current verifier, then close it.
 Do not keep stale pull requests merely as storage. Preserve useful design in a current brief,
 replace or rebase live work, and close branches that are proven superseded.
 
 PR #17 and its remote branch were closed/deleted after PR #93 preserved the distinct
 contextual-negative workflow on current main with stricter capacity, audit, tenant, and immutable
-artifact guarantees.
+artifact guarantees. PR #35 was closed after PR #97 preserved and strengthened its distinct
+release-artifact requirements on current main.
 
 ## Hosted migration gates
 
@@ -162,10 +160,9 @@ The following tracked files were not proven present in the hosted ledger during 
 - `20260901000000_contextual_negative_review_exports.sql`
 
 This machine has no linked Supabase project or injected read-only database credential. The Vercel
-session confirms that database variables exist without exposing their values. The expected
-1Password account is configured, but this shell is not signed in and has no injected service-account
-token. Hosted truth for all eight files therefore remains unproven; no database connection,
-migration, seed, or schema mutation was attempted.
+session is authenticated, but the current shell has no injected 1Password service-account token and
+`op` is not authenticated. Hosted truth for all eight files therefore remains unproven; no database
+connection, migration, seed, or schema mutation was attempted.
 
 Before any application:
 
@@ -206,8 +203,8 @@ bounded pilot. It is not proven automatically active in production. Activation r
 - source/ad/creative/asset/report/mapped/upsert count reconciliation;
 - live UI verification against authoritative Amazon Asset IDs.
 
-PR #86 replaces the misleading manual-sync sentence with lifecycle-aware automatic-sync copy. It is
-source-only until final integration CI, merge, deployment, and live verification complete.
+PR #86 merged the lifecycle-aware automatic-sync copy at `2154b5a65ab7e795ff5aa1456c149569444fa14c`.
+It remains source-only until a matching web revision is deployed and verified live.
 
 ### SQP and Query Intelligence
 
@@ -286,8 +283,9 @@ an exact current-task authorization.
 9. Continue the useful old-PR slices in dependency order: WP-179's inert Sponsored Products
    contract and WP-180's inert provider adapter are merged; next reconcile the hosted ledger and
    obtain exact migration authorization before the persistence slice, then implement the worker
-   slice behind a separate gate. Close PR #24 after its distinct work is preserved. Follow with
-   WP-184 distinctive release-artifact assertions; the contextual-negative rescue is complete.
+   slice behind a separate gate. Close PR #24 after its distinct work is preserved. WP-184's
+   distinctive release evidence and the contextual-negative rescue are complete in source; their
+   deployment and hosted gates remain separate.
 10. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again.
 
 If an external gate blocks one lane, continue with the next independent source-only package. Do
