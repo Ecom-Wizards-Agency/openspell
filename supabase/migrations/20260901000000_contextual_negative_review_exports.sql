@@ -3,6 +3,11 @@
 -- These artifacts prove what an operator reviewed and downloaded. Nothing in
 -- this migration represents an Amazon mutation or can enqueue one.
 
+-- The proposal-policy changes and audit index below need brief relation locks.
+-- Fail closed instead of waiting behind an active reader or writer; an
+-- attended operator can reconcile the ledger and retry safely.
+set local lock_timeout = '5s';
+
 create table public.contextual_negative_exports (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null references public.orgs (id) on delete cascade,

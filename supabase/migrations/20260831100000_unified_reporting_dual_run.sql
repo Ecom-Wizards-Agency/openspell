@@ -7,7 +7,7 @@
 -- Parent-ledger DDL below is metadata-only but still needs brief table locks.
 -- Fail rather than wait behind live traffic; the operator can retry the inert
 -- migration in a quieter window without causing a lock convoy.
-set lock_timeout = '5s';
+set local lock_timeout = '5s';
 
 alter type public.sync_job_type add value 'report.unified.advance';
 
@@ -365,5 +365,3 @@ for each row execute function app.guard_unified_job_parent_scope();
 select app.install_tenant_rls('public.unified_reporting_bindings', array['owner', 'admin']);
 select app.install_tenant_rls('public.unified_report_runs');
 select app.install_tenant_rls('public.unified_report_operations');
-
-reset lock_timeout;
