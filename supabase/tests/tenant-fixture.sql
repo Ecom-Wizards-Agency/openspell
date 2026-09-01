@@ -40,6 +40,8 @@ declare
   v_unified_run uuid := gen_random_uuid();
   v_unified_operation uuid := gen_random_uuid();
   v_unified_job uuid := gen_random_uuid();
+  v_week_start date := p_date - extract(dow from p_date)::integer;
+  v_previous_month date := (date_trunc('month', p_date) - interval '1 month')::date;
   v_strategy jsonb := jsonb_build_object(
     'schema', 'wizard-ads.tenant-strategy.v1',
     'pacing', '{}'::jsonb,
@@ -53,6 +55,13 @@ declare
     'naming', '{}'::jsonb
   );
 begin
+  -- Tests commonly extend this fixture with recent lookback facts. Fresh
+  -- databases only open partitions from their creation month forward, so make
+  -- the fixture month and its preceding calendar month explicit. The latter
+  -- also covers Sunday-based SQP weeks that cross a month boundary.
+  perform app.ensure_fact_partitions(p_date, 0);
+  perform app.ensure_fact_partitions(v_previous_month, 0);
+
   perform public.auth_user_stub(p_user_id);
 
   insert into public.orgs (slug, name) values (p_slug, initcap(p_slug)) returning id into v_org;
@@ -266,9 +275,9 @@ begin
   insert into public.fact_sales_traffic_daily (org_id, profile_id, date, asin, sessions)
   values (v_org, v_profile, p_date, 'B0TEST0001', 10);
   insert into public.fact_sqp_weekly (org_id, profile_id, week_start, asin, search_query, search_volume)
-  values (v_org, v_profile, p_date - extract(dow from p_date)::integer, 'B0TEST0001', 'blue widget', 1000);
+  values (v_org, v_profile, v_week_start, 'B0TEST0001', 'blue widget', 1000);
   insert into public.supa_flags (org_id, profile_id, week_start, asin, search_query, rule)
-  values (v_org, v_profile, p_date - extract(dow from p_date)::integer, 'B0TEST0001', 'blue widget', 'P3');
+  values (v_org, v_profile, v_week_start, 'B0TEST0001', 'blue widget', 'P3');
   insert into public.rank_observations (org_id, profile_id, asin, keyword, observed_on, organic_rank)
   values (v_org, v_profile, 'B0TEST0001', 'blue widget', p_date, 12);
   insert into public.keepa_bsr_observations (org_id, asin, observed_at, category, bsr)

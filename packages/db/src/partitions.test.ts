@@ -19,6 +19,8 @@ import type { TestDatabase } from './testing/harness.js';
 
 const available = await databaseAvailable();
 const USER = '44444444-4444-4444-8444-444444444444';
+const BOUNDARY_USER = '55555555-5555-4555-8555-555555555555';
+const LOOKBACK_USER = '66666666-6666-4666-8666-666666666666';
 
 /** First of the month, `offset` months from now, as YYYY-MM-DD. */
 function monthStart(offset: number): string {
@@ -26,6 +28,54 @@ function monthStart(offset: number): string {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1))
     .toISOString()
     .slice(0, 10);
+}
+
+function futureCrossMonthSundayBoundary(): {
+  date: string;
+  month: string;
+  weekStart: string;
+  weekMonth: string;
+} {
+  const now = new Date();
+  for (let offset = 18; offset < 30; offset += 1) {
+    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1));
+    if (date.getUTCDay() === 0) continue;
+
+    const weekStart = new Date(date);
+    weekStart.setUTCDate(date.getUTCDate() - date.getUTCDay());
+    return {
+      date: date.toISOString().slice(0, 10),
+      month: date.toISOString().slice(0, 8) + '01',
+      weekStart: weekStart.toISOString().slice(0, 10),
+      weekMonth: weekStart.toISOString().slice(0, 8) + '01',
+    };
+  }
+  throw new Error('Could not find a future cross-month Sunday boundary');
+}
+
+function futureSundayMonthStart(): {
+  date: string;
+  month: string;
+  previousDate: string;
+  previousMonth: string;
+} {
+  const now = new Date();
+  // Keep this range disjoint from futureCrossMonthSundayBoundary(), whose
+  // fixture also creates the month immediately before its selected month.
+  for (let offset = 42; offset < 72; offset += 1) {
+    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1));
+    if (date.getUTCDay() !== 0) continue;
+
+    const previousDate = new Date(date);
+    previousDate.setUTCDate(0);
+    return {
+      date: date.toISOString().slice(0, 10),
+      month: date.toISOString().slice(0, 8) + '01',
+      previousDate: previousDate.toISOString().slice(0, 10),
+      previousMonth: previousDate.toISOString().slice(0, 8) + '01',
+    };
+  }
+  throw new Error('Could not find a future Sunday month start');
 }
 
 describe.skipIf(!available)('partition automation', () => {
@@ -111,6 +161,88 @@ describe.skipIf(!available)('partition automation', () => {
     const nextMonth = monthStart(1);
     expect(
       partitions.some((row) => row.tableName === 'fact_sp_target_daily' && row.month === nextMonth),
+    ).toBe(true);
+  });
+
+  it('opens the preceding month when a fixture week crosses a month boundary', async () => {
+    const boundary = futureCrossMonthSundayBoundary();
+    const before = await listFactPartitions(database);
+    expect(before.some((row) => row.month === boundary.month)).toBe(false);
+    expect(before.some((row) => row.month === boundary.weekMonth)).toBe(false);
+
+    const [boundaryOrg] = await database.sql<{ seed_tenant_fixture: string }[]>`
+      select app.seed_tenant_fixture(
+        'parts-boundary',
+        ${BOUNDARY_USER},
+        'owner',
+        ${boundary.date}::date
+      )
+    `;
+    const boundaryOrgId = boundaryOrg?.seed_tenant_fixture ?? '';
+
+    const sqpRows = await database.sql<{ weekStart: string }[]>`
+      select week_start::text as "weekStart"
+        from public.fact_sqp_weekly
+       where org_id = ${boundaryOrgId}
+    `;
+    const salesRows = await database.sql<{ date: string }[]>`
+      select date::text as date
+        from public.fact_sales_traffic_daily
+       where org_id = ${boundaryOrgId}
+    `;
+
+    expect(boundaryOrgId).not.toBe('');
+    expect(sqpRows).toEqual([{ weekStart: boundary.weekStart }]);
+    expect(salesRows).toEqual([{ date: boundary.date }]);
+
+    const partitions = await listFactPartitions(database);
+    expect(
+      partitions.some(
+        (row) => row.tableName === 'fact_sqp_weekly' && row.month === boundary.weekMonth,
+      ),
+    ).toBe(true);
+    expect(
+      partitions.some(
+        (row) => row.tableName === 'fact_sales_traffic_daily' && row.month === boundary.month,
+      ),
+    ).toBe(true);
+  });
+
+  it('opens the preceding month for fixture lookbacks when the month starts Sunday', async () => {
+    const boundary = futureSundayMonthStart();
+    const before = await listFactPartitions(database);
+    expect(before.some((row) => row.month === boundary.month)).toBe(false);
+    expect(before.some((row) => row.month === boundary.previousMonth)).toBe(false);
+
+    const [boundaryOrg] = await database.sql<{ seed_tenant_fixture: string }[]>`
+      select app.seed_tenant_fixture(
+        'parts-lookback-boundary',
+        ${LOOKBACK_USER},
+        'owner',
+        ${boundary.date}::date
+      )
+    `;
+    const boundaryOrgId = boundaryOrg?.seed_tenant_fixture ?? '';
+    const [profile] = await database.sql<{ id: string }[]>`
+      select id from public.ad_profiles where org_id = ${boundaryOrgId} limit 1
+    `;
+    const inserted = await database.sql<{ date: string }[]>`
+      insert into public.fact_profile_daily
+        (org_id, profile_id, date, currency_code, impressions, clicks, cost,
+         purchases_7d, sales_7d, units_sold_7d, provisional)
+      values (${boundaryOrgId}, ${profile?.id ?? ''}, ${boundary.previousDate}::date,
+              'USD', 1, 1, 1, 0, 0, 0, false)
+      returning date::text as date
+    `;
+
+    expect(boundaryOrgId).not.toBe('');
+    expect(inserted).toEqual([{ date: boundary.previousDate }]);
+
+    const partitions = await listFactPartitions(database);
+    expect(
+      partitions.some(
+        (row) => row.tableName === 'fact_profile_daily' && row.month === boundary.previousMonth,
+      ),
     ).toBe(true);
   });
 
