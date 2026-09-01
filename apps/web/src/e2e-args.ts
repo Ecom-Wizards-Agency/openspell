@@ -4,6 +4,8 @@ export const E2E_SUITES = [
   'grid-performance',
   'profile-context',
   'auth',
+  'auth-members',
+  'auth-oauth',
   'auth-roles',
   'route-acceptance',
 ] as const;
