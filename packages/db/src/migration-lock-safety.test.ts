@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -10,7 +10,11 @@ const lockSensitiveMigrations = [
   '20260830170000_marketing_stream_correctness.sql',
   '20260831100000_unified_reporting_dual_run.sql',
   '20260901000000_contextual_negative_review_exports.sql',
+  '20260901010000_authenticated_relation_privilege_hardening.sql',
 ] as const;
+
+const DDL_SERIALIZATION_BOUNDARY =
+  '20260901010000_authenticated_relation_privilege_hardening.sql';
 
 function topLevelSql(source: string): string | undefined {
   let output = '';
@@ -103,11 +107,51 @@ function hasBoundedLockEnvelope(source: string): boolean {
   );
 }
 
+function hasDdlSerializationEnvelope(source: string): boolean {
+  const executable = topLevelSql(source);
+  if (executable === undefined) return false;
+
+  return /^\s*set local lock_timeout = '5s';\s*select\s+pg_advisory_xact_lock\s*\(\s*pg_catalog\.hashtextextended\s*\(\s*'wizard-ads:schema-ddl:v1'\s*,\s*0\s*\)\s*\)\s*;/i.test(
+    executable,
+  );
+}
+
 describe('hosted migration lock safety', () => {
   it.each(lockSensitiveMigrations)('%s fails closed on lock contention', async (file) => {
     const source = await readFile(`${MIGRATIONS_DIR}${file}`, 'utf8');
 
     expect(hasBoundedLockEnvelope(source)).toBe(true);
+  });
+
+  it('serializes WP-186 and every later repository migration on one DDL lock', async () => {
+    const files = (await readdir(MIGRATIONS_DIR))
+      .filter((file) => file.endsWith('.sql') && file >= DDL_SERIALIZATION_BOUNDARY)
+      .sort();
+
+    expect(files).not.toEqual([]);
+    for (const file of files) {
+      const source = await readFile(`${MIGRATIONS_DIR}${file}`, 'utf8');
+      expect(hasBoundedLockEnvelope(source), file).toBe(true);
+      expect(hasDdlSerializationEnvelope(source), file).toBe(true);
+    }
+  });
+
+  it.each([
+    `-- pg-delta: transaction=false
+set local lock_timeout = '5s';
+select pg_advisory_xact_lock(
+  pg_catalog.hashtextextended('wizard-ads:schema-ddl:v1', 0)
+);
+create table public.fixture (id integer);`,
+    `set local lock_timeout = '5s';
+select pg_advisory_xact_lock(
+  pg_catalog.hashtextextended('wizard-ads:schema-ddl:v1', 0)
+);
+commit;
+create table public.fixture (id integer);`,
+  ])('rejects a serialization prefix whose transaction envelope can escape', (source) => {
+    expect(hasDdlSerializationEnvelope(source)).toBe(true);
+    expect(hasBoundedLockEnvelope(source)).toBe(false);
   });
 
   it.each([
