@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260901010000_authenticated_relation_privilege_hardening.sql');
+    expect(files.at(-1)).toBe('20260901020000_sp_write_persistence_ledger.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -618,6 +618,33 @@ describe.skipIf(!available)('migrations', () => {
     await expect(database.sql`truncate public.orgs cascade`)
       .rejects.toThrow(/must not be truncated/i);
 
+    const spTenantTables = await database.sql<{ table_name: string }[]>`
+      select c.relname as table_name
+        from pg_catalog.pg_class c
+        join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+        join pg_catalog.pg_attribute a
+          on a.attrelid = c.oid
+         and a.attname = 'org_id'
+         and not a.attisdropped
+       where n.nspname = 'public'
+         and c.relkind = 'r'
+         and c.relname like 'sp_write_%'
+       order by c.relname
+    `;
+    expect(spTenantTables).toHaveLength(23);
+    for (const { table_name: tableName } of spTenantTables) {
+      const [beforePurge] = await database.sql<{ count: number }[]>`
+        select count(*)::int as count
+          from ${database.sql(tableName)}
+         where org_id = ${orgId}::uuid
+      `;
+      expect(beforePurge?.count, `${tableName} fixture coverage before org purge`)
+        .toBeGreaterThan(0);
+    }
+    await expect(database.sql`
+      delete from public.sp_write_late_result_audits where org_id = ${orgId}::uuid
+    `).rejects.toThrow(/immutable/i);
+
     await database.sql`delete from public.orgs where id = ${orgId}::uuid`;
     const [remaining] = await database.sql<{ artifacts: number; audits: number }[]>`
       select
@@ -627,6 +654,14 @@ describe.skipIf(!available)('migrations', () => {
           as audits
     `;
     expect(remaining).toEqual({ artifacts: 0, audits: 0 });
+    for (const { table_name: tableName } of spTenantTables) {
+      const [afterPurge] = await database.sql<{ count: number }[]>`
+        select count(*)::int as count
+          from ${database.sql(tableName)}
+         where org_id = ${orgId}::uuid
+      `;
+      expect(afterPurge?.count, `${tableName} survived org purge`).toBe(0);
+    }
   });
 
   it('keeps Keepa observation identity non-null and creates constrained event grain', async () => {

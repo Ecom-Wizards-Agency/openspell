@@ -49,10 +49,10 @@ data, or any hosted database. Do not transplant PR #24.
    its authorizing receipt/generation. Approval alone creates no intent or outbox.
 7. Start execution and issue time-bounded dispatch leases only through service-role capabilities.
    Neither a start request, outbox wake, nor lease is mutation authority.
-8. In one DB-clock reservation transaction, lock and recheck global environment capacity, the exact
-   gate/grant versions, live mutation route, receipt, generation, authorization/revocation/capacity,
-   child plan, inverse eligibility, route, lease, fresh provider observation, expected values,
-   counts, and prior action resolutions.
+8. In one DB-clock reservation transaction, first hold the owning organisation against deletion,
+   then lock and recheck global environment capacity, the exact gate/grant versions, live mutation
+   route, receipt, generation, authorization/revocation/capacity, child plan, inverse eligibility,
+   route, lease, fresh provider observation, expected values, counts, and prior action resolutions.
 9. A winning reservation independently verifies the provider-request and intent fingerprint
    preimages, then atomically inserts one observation, exact items, one intent, exact
    positions, stable reserved result ID, permanent per-action resolutions, and one inert
@@ -77,7 +77,11 @@ data, or any hosted database. Do not transplant PR #24.
     only permitted tenant evidence and cannot directly mutate; service role uses controlled
     capabilities and cannot directly mutate evidence.
 15. Make frozen and evidence relations immutable against update, delete, and truncate, including
-    accidental privileged DML.
+    accidental privileged DML. Bounded approval atomically inserts a payload-free global
+    authorization/cycle consumption tombstone which survives tenant purge, so `maxCycles: 1`
+    cannot be resurrected through cascade. Preserve the repository's deliberate tenant-scoped
+    organisation purge only when no committed provider-call intent lacks a durable result/recovery
+    and the database proves the parent `orgs` row is already absent during its cascading delete.
 16. Keep the current `JobPayload`, `sync_job_type`, queue claimant protocol, worker, web, MCP, Ads
     adapter reachability, Time Machine, ApplyRow lifecycle, deployment, and schedules unchanged.
 
@@ -135,15 +139,20 @@ data, or any hosted database. Do not transplant PR #24.
   and complete position set; 49 callers receive no ticket;
 - two otherwise-ready profiles under the global capacity-one environment gate produce one winner;
 - one bounded authorization cannot admit a second profile cycle because its literal `maxCycles: 1`
-  remains enforced;
+  consumption survives first-profile organisation purge without retaining tenant/provider data;
 - gate, grant, route, generation, authorization, and revocation races have one serialized outcome;
-- the documented environment-head, profile-head, authorization, cycle/child, and sorted-entity lock
-  order prevents a later expected-version activation operation from bypassing reservation;
+- the documented organisation-parent, environment-head, profile-head, authorization, cycle/child,
+  and sorted-entity lock order prevents purge or a later expected-version activation operation from
+  bypassing reservation;
 - two manual cycles targeting the same provider entity cannot overlap between provider result and
   terminal observation; the second receives `busy` with no evidence/action resolution and can be
   reconsidered only after the first obtains terminal observation;
 - crash before intent commit leaves no intent/outbox; every crash after intent commit produces no
   second intent or provider authority;
+- an organisation delete racing reservation has exactly two safe outcomes: delete wins before the
+  reservation's parent lock and reservation fails, or reservation commits first and delete is
+  refused; an organisation with an unresolved intent cannot be purged, while purge succeeds after
+  a durable provider result or recovery;
 - provider result versus recovery ambiguity has one immutable winner;
 - recovery before either the provider-attempt deadline or dispatch-lease expiry is refused and does
   not release global capacity;
@@ -158,7 +167,8 @@ data, or any hosted database. Do not transplant PR #24.
 - tenant A/B, anon, authenticated non-member/member/admin, and service-role matrices for every new
   relation, view, sequence, and function;
 - direct insert/update/delete/truncate denied to API roles; immutability also rejects privileged
-  update/delete/truncate;
+  update/delete/truncate; the global consumption tombstone is service-readable only and permanent,
+  while a quiescent parent-verified organisation purge still cascades tenant rows;
 - no cross-tenant scalar FK path and no credential/Vault value in evidence;
 - static repository proof of no SP job union/enum, queue handler, worker import, provider call, web or
   MCP route, deployment variable, grant seed, hosted operation, Time Machine link, or ApplyRow

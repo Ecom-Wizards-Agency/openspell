@@ -39,6 +39,13 @@ import {
   UnifiedReportRunState,
   WorkerReportType,
 } from '@wizard-ads/shared';
+import {
+  SpWriteApprovalMode,
+  SpWriteObservationOutcome,
+  SpWriteProviderPositionOutcome,
+  SpWriteRefusalReason,
+  SpWriteRouteKey,
+} from '@wizard-ads/shared/sp-writes';
 
 /**
  * `pgEnum` wants a non-empty tuple; a contract's `.options` is an array of
@@ -208,3 +215,43 @@ export const hourSettlingState = pgEnum(
   'hour_settling_state',
   tuple(HourSettlingState.options),
 );
+
+// WP-187's storage-only write-ledger enums. Canonical lifecycle vocabulary
+// comes from the explicit frozen-contract subpath; DB-internal state remains
+// deliberately narrow and does not widen the current job or queue contracts.
+export const spWriteRouteKey = pgEnum(
+  'sp_write_route_key',
+  tuple(SpWriteRouteKey.options),
+);
+export const spWritePlanDirection = pgEnum('sp_write_plan_direction', [
+  'forward',
+  'inverse',
+]);
+export const spWriteApprovalMode = pgEnum(
+  'sp_write_approval_mode',
+  tuple(SpWriteApprovalMode.options),
+);
+export const spWriteActionResolutionKind = pgEnum(
+  'sp_write_action_resolution_kind',
+  ['refusal', 'intent'],
+);
+export const spWriteResultOrigin = pgEnum('sp_write_result_origin', [
+  'provider_adapter',
+  'recovery_synthesized',
+]);
+export const spWriteProviderOutcome = pgEnum(
+  'sp_write_provider_outcome',
+  tuple(SpWriteProviderPositionOutcome.options),
+);
+export const spWriteObservationOutcome = pgEnum(
+  'sp_write_observation_outcome',
+  tuple(SpWriteObservationOutcome.options),
+);
+export const spWriteRefusalReason = pgEnum(
+  'sp_write_refusal_reason',
+  tuple(SpWriteRefusalReason.options),
+);
+export const spWriteOutboxKind = pgEnum('sp_write_outbox_kind', [
+  'dispatch',
+  'observe_and_recover',
+]);

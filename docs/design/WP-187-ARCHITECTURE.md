@@ -105,7 +105,8 @@ introduced.
 The relations are grouped by the knowledge they own rather than by worker timing:
 
 - authority: environment-gate heads and immutable versions, profile-grant heads and immutable
-  full-scope versions, bounded authorizations and append-only revocations;
+  full-scope versions, bounded authorizations, append-only revocations, and a global consumption
+  tombstone carrying only authorization/cycle identity;
 - approvals: plans, ordered actions, approval requests, DB-issued receipts/cycles, and forward or
   inverse child plan executions keyed by `(execution_id, plan_id)`;
 - mutation fencing: immutable dispatch leases, direct predispatch observations/items, per-action
@@ -155,10 +156,13 @@ relationship without making that live row the parent of historical evidence.
 Bounded authorizations remain service-only because one authorization may list multiple tenant
 profiles. Tenant-visible receipts expose only the exact authorization binding needed by WP-179.
 Their literal `maxCycles: 1`, `maxExecutions: 2`, and `maxConcurrentMutations: 1` limits are enforced
-without reinterpretation. Because one cycle binds one profile, a bounded authorization cannot admit
-two profiles into separate cycles. A DB-owned environment-gate safety limit additionally permits
-only one unresolved provider call globally in v1; this is the independently testable cross-profile
-capacity race. Manual cycles also permit at most one unresolved call within the cycle.
+without reinterpretation. Approval consumes a bounded authorization under its existing lock by
+inserting a service-only, immutable global tombstone keyed uniquely by both authorization ID and
+cycle ID. The tombstone contains no tenant or provider data and deliberately survives tenant
+purge, so deleting one profile's cycle cannot resurrect `maxCycles: 1` for another profile. A
+DB-owned environment-gate safety limit additionally permits only one unresolved provider call
+globally in v1; this is the independently testable cross-profile capacity race. Manual cycles also
+permit at most one unresolved call within the cycle.
 
 ### Cycle, execution, and inverse identity
 
@@ -332,7 +336,16 @@ deadlines described above have elapsed. WP-187 adds no consumer.
 
 ## SQL capability surface
 
-WP-187 keeps direct DML closed to `anon`, `authenticated`, and `service_role`. Fixed-search-path,
+WP-187 keeps direct DML closed to `anon`, `authenticated`, and `service_role`. Frozen authority and
+evidence also reject privileged direct update, delete, and truncate. The sole delete exception for
+tenant-scoped rows is the repository's existing deliberate organisation purge. A `BEFORE DELETE`
+guard refuses that purge while the organisation has any provider-call intent without a durable
+provider result or recovery fact. Reservation takes a `KEY SHARE` lock on the owning organisation
+before every authority/tenant lock and holds it through intent commit: either deletion wins and
+reservation cannot proceed, or deletion waits and then observes the committed unresolved intent.
+Once calls are durably closed, cascading deletion may proceed only after the tenant's parent `orgs`
+row is already absent, an unspoofable database fact. The global bounded-authorization consumption
+tombstone does not cascade. Fixed-search-path,
 `SECURITY DEFINER` functions provide only complete capabilities:
 
 - service role: record a verified plan/authorization, start a child execution, acquire a dispatch
@@ -344,9 +357,11 @@ WP-187 keeps direct DML closed to `anon`, `authenticated`, and `service_role`. F
 No gate/grant activation function is executable by an application role in this slice. Every
 function is explicitly revoked from `public` and granted only to its intended role. Any later
 authority mutation must use expected-version compare-and-swap and the same lock order as approval
-and reservation: global environment head first, profile-grant head second, bounded authorization
-third, then cycle/child and sorted provider-entity locks. Tests simulate those locked head changes
-with privileged transactions now so later activation cannot define an incompatible order.
+and reservation. Reservation locks the owning organisation first, then the global environment head,
+profile-grant head, bounded authorization, cycle/child, and sorted provider entities. Approval has no
+intent-producing tenant mutation before its environment/profile/authorization sequence. Tests
+simulate those locked head changes with privileged transactions now so later activation cannot
+define an incompatible order.
 
 ## Synthesis decision
 
@@ -439,6 +454,13 @@ bytes and every independently required preimage.
 - Exact authenticated read visibility for raw plan/result diagnostics must be least-privilege
   reviewed. The default is tenant-member evidence reads and service-only bounded-authorization
   detail.
+- An organisation purge is refused while any of its committed provider-call intents lacks a durable
+  provider result/recovery. After closure, purge removes tenant bindings and lifecycle evidence but
+  preserves the payload-free bounded-authorization consumption tombstone. The immutable bounded-
+  authorization root remains global because one operator authorization may span organisations;
+  its permanent consumption prevents a surviving profile binding from reusing `maxCycles: 1`.
+  Expired/orphan global-authority retention and cleanup is later manager-only operational work, not
+  an application capability in WP-187.
 - The 5-second dispatch-start, 35-second provider-attempt, and 70-second minimum-lease constants are
   public safety protocol, not doctrine. Changing them requires a coordinated persistence/adapter
   review; operational recovery cadence remains for the later worker package.
