@@ -1,5 +1,5 @@
 /**
- * End-to-end configuration for auth, OAuth and operator navigation (WP-04).
+ * End-to-end configuration for auth and operator navigation (WP-04).
  *
  * There is no default `playwright.config.ts` in this app on purpose: the
  * browser suites have different server or process-isolation needs, so each has
@@ -32,7 +32,13 @@ export default defineConfig({
   // Keeping it here made Next retain both the complete operator route graph
   // and every settings graph until the runner reached its bounded heap after
   // all preceding assertions had already passed.
-  testMatch: /(oauth|guards|members|dashboard|grid)\.spec\.ts$/,
+  // The OAuth round trip also owns a fresh process. Its settings and callback
+  // route graphs pushed this already broad shard over the bounded CI heap even
+  // though the same assertions passed in isolation.
+  // Member and invitation flows own a fresh process too. Their auth
+  // continuation timed out after the guard matrix had compiled every
+  // protected route, before the later OAuth heap exhaustion.
+  testMatch: /(guards|dashboard|grid)\.spec\.ts$/,
   // The cross-route dashboard acceptance file compiles several large operator
   // routes and owns a fresh Next process through its dedicated configuration.
   testIgnore: /route-acceptance\.dashboard\.spec\.ts$/,

@@ -14,6 +14,8 @@
     "test:e2e:grid-performance": "tsx e2e/run.ts grid-performance",
     "test:e2e:profile-context": "tsx e2e/run.ts profile-context",
     "test:e2e:auth": "tsx e2e/run.ts auth",
+    "test:e2e:auth-members": "tsx e2e/run.ts auth-members",
+    "test:e2e:auth-oauth": "tsx e2e/run.ts auth-oauth",
     "test:e2e:auth-roles": "tsx e2e/run.ts auth-roles",
     "test:e2e:route-acceptance": "tsx e2e/run.ts route-acceptance",
     "verify:release-candidate": "tsx scripts/release-candidate-entry.ts"
@@ -35,9 +37,11 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
+    "@types/jsdom": "^27.0.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "jsdom": "^28.1.0",
-    "tsx": "^4.23.12"
+    "tsx": "^4.23.12",
+    "vercel": "59.5.0"
   }
 }

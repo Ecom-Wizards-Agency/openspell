@@ -1,19 +1,31 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { tmpdir } from 'node:os';
-import type { CandidateHttpResponse } from './candidate-redirect';
+import { createHash } from 'node:crypto';
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { join } from 'node:path';
+import type { CandidateHttpResponse, CandidateMediaType } from './candidate-redirect';
 import { parseGridServerTiming } from './grid-server-timing';
+import { lockedVercelCliLaunch } from './vercel-cli-runtime';
+import type { VercelCliLaunch } from './vercel-cli-runtime';
 
 const RESPONSE_MARKER = '\nOPENSPELL_RESPONSE:';
 const CURL_WRITE_OUT = [
   '\\nOPENSPELL_RESPONSE:',
   '%{http_code}',
-  '\\t%{redirect_url}',
-  '\\t%header{server-timing}',
+  '\\t%{url_effective}',
+  '\\t%{header_json}',
 ].join('');
 const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 const MAX_DIAGNOSTIC_BYTES = 256 * 1024;
 const PROCESS_TIMEOUT_MS = 35_000;
+// The launcher is Bash/Unix-only. Ignore caller-controlled TMPDIR so a linked
+// checkout cannot become Vercel's project context.
+const RELEASE_TEMP_ROOT = '/tmp';
 
 export type ReleaseTransportErrorCode =
   | 'arguments_invalid'
@@ -49,8 +61,35 @@ export async function requestCandidate(input: {
   cookieHeader?: string;
 }): Promise<CandidateHttpResponse> {
   const args = buildVercelCurlArgs(input.candidate, input.url);
-  const stdout = await boundedVercelCurl(args, buildCurlConfig(input));
-  return parseCurlResponse(stdout);
+  let launcher: VercelCliLaunch;
+  try {
+    launcher = lockedVercelCliLaunch();
+  } catch {
+    throw new ReleaseTransportError('curl_failed');
+  }
+  const stdout = await boundedVercelCurl(
+    args,
+    buildCurlConfig(input),
+    launcher,
+  );
+  return parseCurlResponse(stdout, input.url);
+}
+
+/** @internal Test processes inject a synthetic CLI without an environment-controlled runtime seam. */
+export async function requestCandidateWithTestLauncher(
+  input: {
+    candidate: URL;
+    url: URL;
+    cookieHeader?: string;
+  },
+  launcher: VercelCliLaunch,
+): Promise<CandidateHttpResponse> {
+  if (process.env['NODE_ENV'] !== 'test') {
+    throw new ReleaseTransportError('curl_failed');
+  }
+  const args = buildVercelCurlArgs(input.candidate, input.url);
+  const stdout = await boundedVercelCurl(args, buildCurlConfig(input), launcher);
+  return parseCurlResponse(stdout, input.url);
 }
 
 export function buildVercelCurlArgs(candidate: URL, url: URL): string[] {
@@ -106,45 +145,110 @@ export function buildCurlConfig(input: {
   return `${lines.join('\n')}\n`;
 }
 
-function parseCurlResponse(stdout: string): CandidateHttpResponse {
-  const marker = stdout.lastIndexOf(RESPONSE_MARKER);
+function parseCurlResponse(stdout: Buffer, requestedUrl: URL): CandidateHttpResponse {
+  const markerBytes = Buffer.from(RESPONSE_MARKER, 'utf8');
+  const marker = stdout.lastIndexOf(markerBytes);
   if (marker < 0) throw new ReleaseTransportError('curl_failed');
-  const metadata = stdout.slice(marker + RESPONSE_MARKER.length);
-  const match = /^(\d{3})\t([^\t\r\n]*)\t([^\r\n]*)$/.exec(metadata);
-  if (match?.[1] === undefined || match[2] === undefined || match[3] === undefined) {
+  const body = stdout.subarray(0, marker);
+  let metadata: string;
+  let responseBody: string;
+  try {
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    metadata = decoder.decode(stdout.subarray(marker + markerBytes.byteLength));
+    responseBody = decoder.decode(body);
+  } catch {
     throw new ReleaseTransportError('curl_failed');
   }
-  const status = Number(match[1]);
-  const rawLocation = match[2] === '' ? null : match[2];
+  const firstSeparator = metadata.indexOf('\t');
+  const secondSeparator = metadata.indexOf('\t', firstSeparator + 1);
+  if (firstSeparator < 0 || secondSeparator < 0) {
+    throw new ReleaseTransportError('curl_failed');
+  }
+  const statusText = metadata.slice(0, firstSeparator);
+  const effectiveUrl = metadata.slice(firstSeparator + 1, secondSeparator);
+  const rawHeaders = metadata.slice(secondSeparator + 1);
+  if (!/^\d{3}$/.test(statusText) || hasControl(effectiveUrl)) {
+    throw new ReleaseTransportError('curl_failed');
+  }
+  const headers = policyHeaders(rawHeaders);
+  const status = Number(statusText);
+  const rawLocation = headers.location;
   if (rawLocation !== null && hasControl(rawLocation)) {
     throw new ReleaseTransportError('curl_failed');
   }
   return {
     status,
-    responseBody: stdout.slice(0, marker),
+    responseBody,
+    responseBodySha256: `sha256:${createHash('sha256').update(body).digest('hex')}`,
     rawLocation,
-    serverTiming: parseGridServerTiming(match[3]),
+    mediaType: candidateMediaType(headers.contentType ?? ''),
+    effectiveUrlMatched: effectiveUrlMatches(effectiveUrl, requestedUrl),
+    serverTiming: parseGridServerTiming(headers.serverTiming ?? ''),
   };
 }
 
-function boundedVercelCurl(args: string[], input: string): Promise<string> {
+function policyHeaders(raw: string): {
+  readonly contentType: string | null;
+  readonly location: string | null;
+  readonly serverTiming: string | null;
+} {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new ReleaseTransportError('curl_failed');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new ReleaseTransportError('curl_failed');
+  }
+  const headers = parsed as Record<string, unknown>;
+  return {
+    contentType: singlePolicyHeader(headers, 'content-type'),
+    location: singlePolicyHeader(headers, 'location'),
+    serverTiming: singlePolicyHeader(headers, 'server-timing'),
+  };
+}
+
+function singlePolicyHeader(headers: Record<string, unknown>, name: string): string | null {
+  const value = headers[name];
+  if (value === undefined) return null;
+  if (!Array.isArray(value) || value.length !== 1 || typeof value[0] !== 'string') {
+    throw new ReleaseTransportError('curl_failed');
+  }
+  return value[0];
+}
+
+function boundedVercelCurl(
+  args: string[],
+  input: string,
+  launcher: VercelCliLaunch,
+): Promise<Buffer> {
+  let workingDirectory: string | null = null;
+  try {
+    workingDirectory = isolatedVercelWorkingDirectory();
+  } catch {
+    if (workingDirectory !== null) removeWorkingDirectory(workingDirectory);
+    return Promise.reject(new ReleaseTransportError('curl_failed'));
+  }
   return new Promise((resolve, reject) => {
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawn('vercel', args, {
-        // An unlinked working directory prevents `vercel curl` from creating
-        // a project protection credential when a deployment has none. The CLI
-        // may only reuse its already authenticated global context.
-        cwd: tmpdir(),
-        env: vercelEnvironment(),
+      child = spawn(launcher.command, [...launcher.argumentsPrefix, ...args], {
+        // Vercel may create a deployment-protection token when its cwd resolves
+        // to the target project. A fresh directory with an exact-cwd empty repo
+        // boundary prevents ancestor links from granting that provider-write
+        // authority.
+        cwd: workingDirectory,
+        env: vercelEnvironment(workingDirectory, launcher.systemPath),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch {
+      removeWorkingDirectory(workingDirectory);
       reject(new ReleaseTransportError('curl_failed'));
       return;
     }
 
-    let stdout = '';
+    const stdout: Buffer[] = [];
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let failure: ReleaseTransportError | null = null;
@@ -160,7 +264,7 @@ function boundedVercelCurl(args: string[], input: string): Promise<string> {
     child.stdout.on('data', (chunk: Buffer) => {
       stdoutBytes += chunk.byteLength;
       if (stdoutBytes > MAX_RESPONSE_BYTES) fail('curl_output_exceeded');
-      else stdout += chunk.toString('utf8');
+      else stdout.push(chunk);
     });
     // Diagnostics are counted but never retained because the CLI or curl must
     // not echo an authenticated request boundary into the release report.
@@ -175,15 +279,18 @@ function boundedVercelCurl(args: string[], input: string): Promise<string> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      removeWorkingDirectory(workingDirectory);
       reject(new ReleaseTransportError('curl_failed'));
     });
     child.on('close', (exitCode) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (failure !== null) reject(failure);
+      const cleaned = removeWorkingDirectory(workingDirectory);
+      if (!cleaned) reject(new ReleaseTransportError('curl_failed'));
+      else if (failure !== null) reject(failure);
       else if (exitCode !== 0) reject(new ReleaseTransportError('curl_failed'));
-      else resolve(stdout);
+      else resolve(Buffer.concat(stdout, stdoutBytes));
     });
     try {
       child.stdin.end(input);
@@ -193,27 +300,44 @@ function boundedVercelCurl(args: string[], input: string): Promise<string> {
   });
 }
 
-function vercelEnvironment(): NodeJS.ProcessEnv {
+function isolatedVercelWorkingDirectory(): string {
+  const directory = mkdtempSync(join(RELEASE_TEMP_ROOT, 'openspell-vercel-curl-'));
+  try {
+    // Vercel searches ancestor repo.json files before it consults Git roots.
+    // An empty repo boundary at the exact private cwd ends that search without
+    // linking any project, even if a writable ancestor contains stale metadata.
+    const vercelDirectory = join(directory, '.vercel');
+    mkdirSync(vercelDirectory, { mode: 0o700 });
+    writeFileSync(join(vercelDirectory, 'repo.json'), '{"projects":[]}\n', {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
+    return directory;
+  } catch (error) {
+    removeWorkingDirectory(directory);
+    throw error;
+  }
+}
+
+function removeWorkingDirectory(directory: string): boolean {
+  try {
+    rmSync(directory, { force: true, recursive: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function vercelEnvironment(workingDirectory: string, systemPath: string): NodeJS.ProcessEnv {
   const allowed = [
-    'PATH',
     'HOME',
     'XDG_CONFIG_HOME',
     'XDG_DATA_HOME',
     'VERCEL_TOKEN',
-    'TMPDIR',
-    'TEMP',
-    'TMP',
     'LANG',
     'LC_ALL',
     'TZ',
-    'HTTP_PROXY',
-    'HTTPS_PROXY',
-    'NO_PROXY',
-    'http_proxy',
-    'https_proxy',
-    'no_proxy',
-    'SSL_CERT_FILE',
-    'SSL_CERT_DIR',
   ] as const;
   const environment: NodeJS.ProcessEnv = {
     CI: '1',
@@ -221,12 +345,41 @@ function vercelEnvironment(): NodeJS.ProcessEnv {
     FORCE_COLOR: '0',
     NO_COLOR: '1',
     NODE_ENV: 'production',
+    PATH: systemPath,
+    TEMP: workingDirectory,
+    TMP: workingDirectory,
+    TMPDIR: workingDirectory,
     VERCEL_TELEMETRY_DISABLED: '1',
+    VERCEL_CLI_USE_NATIVE_BINARY: '0',
   };
   for (const name of allowed) {
     if (process.env[name] !== undefined) environment[name] = process.env[name];
   }
   return environment;
+}
+
+function candidateMediaType(raw: string): CandidateMediaType {
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === '') return 'missing';
+  if (normalized === 'image/svg+xml') return 'image/svg+xml';
+  if (/^application\/json(?:\s*;\s*charset=utf-8)?$/.test(normalized)) {
+    return 'application/json';
+  }
+  if (/^text\/html(?:\s*;\s*charset=utf-8)?$/.test(normalized)) return 'text/html';
+  return 'other';
+}
+
+function effectiveUrlMatches(raw: string, requestedUrl: URL): boolean {
+  if (raw === '' || hasControl(raw)) return false;
+  try {
+    const effective = new URL(raw);
+    return effective.protocol === 'https:'
+      && effective.username === ''
+      && effective.password === ''
+      && effective.href === requestedUrl.href;
+  } catch {
+    return false;
+  }
 }
 
 function escapeConfig(value: string): string {

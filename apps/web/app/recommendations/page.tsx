@@ -34,6 +34,7 @@ import { listOrgProfiles, selectOrgProfile } from '../../src/recommendations/dat
 import { toProposalView } from '../../src/recommendations/view';
 import { selectRecommendationRun } from '../../src/recommendations/runs';
 import { EmptyState } from '../../src/ui/primitives';
+import { RELEASE_ARTIFACT } from '../../src/ui/artifact-markers';
 import { requestedProfileId } from '../_lib/profiles';
 import { ReviewWorkspace } from './review';
 
@@ -59,7 +60,10 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
     const profile = selectOrgProfile(profiles, requested);
     if (profile === null) {
       return (
-        <main style={main}>
+        <main
+          style={main}
+          data-release-artifact={RELEASE_ARTIFACT.recommendationReview}
+        >
           <h1 style={heading}>Recommendations</h1>
           <EmptyState
             title="No profiles yet"
@@ -94,7 +98,11 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
     );
 
     return (
-      <main style={main} data-interactive="true">
+      <main
+        style={main}
+        data-interactive="true"
+        data-release-artifact={RELEASE_ARTIFACT.recommendationReview}
+      >
         <header style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
           <div style={{ alignItems: 'center', display: 'flex', justifyContent: 'space-between' }}>
             <h1 style={heading}>Recommendations</h1>

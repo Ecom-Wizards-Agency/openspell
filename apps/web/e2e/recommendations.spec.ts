@@ -15,6 +15,7 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { RELEASE_ARTIFACT } from '../src/ui/artifact-markers';
 
 const PROFILE = process.env['WIZARD_ADS_E2E_PROFILE_A'] ?? '';
 const PROPOSALS = Number(process.env['WIZARD_ADS_E2E_REC_PROPOSALS'] ?? '0');
@@ -24,7 +25,12 @@ const INPUT_KEYS = ['rpc', 'clicks', 'cvrSourceLevel', 'ceilingApplied', 'capCla
 
 async function openReview(page: Page): Promise<void> {
   await page.goto(`/recommendations?profile=${PROFILE}`);
-  await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
+  const review = page.locator('main[data-interactive="true"]');
+  await expect(review).toBeVisible();
+  await expect(review).toHaveAttribute(
+    'data-release-artifact',
+    RELEASE_ARTIFACT.recommendationReview,
+  );
 }
 
 async function openExplorer(page: Page): Promise<void> {
