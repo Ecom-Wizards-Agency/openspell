@@ -22,16 +22,27 @@
 
 do $$
 begin
+  if to_regnamespace('auth') is null then
+    -- Roles are cluster-wide while test databases are not. Serialize the
+    -- first-role bootstrap across parallel disposable databases, then recheck
+    -- each identity under the lock before creating it.
+    lock table pg_catalog.pg_authid in share row exclusive mode;
+  end if;
   if not exists (select 1 from pg_catalog.pg_roles where rolname = 'anon') then
-    create role anon nologin noinherit;
+    create role anon nologin inherit;
   end if;
   if not exists (select 1 from pg_catalog.pg_roles where rolname = 'authenticated') then
-    create role authenticated nologin noinherit;
+    create role authenticated nologin inherit;
   end if;
   if not exists (select 1 from pg_catalog.pg_roles where rolname = 'service_role') then
     -- bypassrls is what makes the worker's connection able to write facts for
     -- every org, exactly as on Supabase.
     create role service_role nologin noinherit bypassrls;
+  end if;
+  if not exists (select 1 from pg_catalog.pg_roles where rolname = 'supabase_admin') then
+    -- Hosted owns this internal role. Plain PostgreSQL needs only its identity
+    -- and creator-specific default ACLs; the test superuser remains separate.
+    create role supabase_admin nologin noinherit;
   end if;
 end;
 $$;
@@ -49,9 +60,14 @@ declare
   v_privilege text;
 begin
   if to_regnamespace('auth') is null then
+    grant usage, create on schema public to supabase_admin;
     alter default privileges in schema public
       grant all on tables to anon, authenticated, service_role;
     alter default privileges in schema public
+      grant all on sequences to anon, authenticated, service_role;
+    alter default privileges for role supabase_admin in schema public
+      grant all on tables to anon, authenticated, service_role;
+    alter default privileges for role supabase_admin in schema public
       grant all on sequences to anon, authenticated, service_role;
 
     create table public.wizard_ads_platform_acl_probe (
