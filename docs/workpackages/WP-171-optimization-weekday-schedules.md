@@ -129,6 +129,10 @@ and a JSON-only group schedule, which would weaken constraints and indexing.
 Apply `20260830180000_optimization_weekday_schedules.sql` to a named hosted project only after the
 operator approves that exact target and file. The migration keeps a transaction-scoped five-second
 lock timeout through Supabase's ledger write and aborts behind live contention. Before application,
-preview the daily-or-faster, anchored and ambiguous counts. Automatic scheduled recommendation
-execution remains disabled until its existing environment gate is deliberately enabled; Amazon
-apply cadence is a separate guarded system.
+preview the daily-or-faster, anchored and ambiguous counts. Keep optimizer-group edits frozen from
+the start of the migration until the exact weekday-aware web revision is live: the pre-weekday web
+revision remains read-compatible with the additive columns, but its legacy write path omits
+`review_weekdays` and cannot preserve an operator's intended cadence under the new model. Do not
+deploy the weekday-aware web revision before the migration because its reads require the new
+columns. Automatic scheduled recommendation execution remains disabled until its existing
+environment gate is deliberately enabled; Amazon apply cadence is a separate guarded system.
