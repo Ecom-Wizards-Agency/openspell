@@ -3,10 +3,22 @@ import type { GridServerTimingDurations } from './grid-server-timing';
 export interface CandidateHttpResponse {
   status: number | null;
   responseBody: string;
+  /** Domain-prefixed SHA-256 of the raw response bytes before UTF-8 decoding. */
+  responseBodySha256: `sha256:${string}`;
   rawLocation: string | null;
+  mediaType: CandidateMediaType;
+  /** Curl's final effective URL was exactly the requested candidate URL. */
+  effectiveUrlMatched: boolean;
   /** Closed, identifier-free Grid timing only; every other header is discarded. */
   serverTiming: GridServerTimingDurations | null;
 }
+
+export type CandidateMediaType =
+  | 'application/json'
+  | 'text/html'
+  | 'image/svg+xml'
+  | 'other'
+  | 'missing';
 
 export interface CandidateRouteResponse extends CandidateHttpResponse {
   finalUrl: URL | null;
@@ -33,6 +45,7 @@ export async function requestCandidateRoute(
 ): Promise<CandidateRouteResponse> {
   const initialUrl = candidateRouteUrl(input.candidate, input.route, input.expectedProfileId);
   const first = await input.request(initialUrl);
+  if (!first.effectiveUrlMatched) return result(first, null, 0, true);
   if (!isRedirect(first.status)) return result(first, initialUrl, 0, false);
 
   const destination = first.rawLocation === null
@@ -148,7 +161,10 @@ function result(
   return {
     status: response.status,
     responseBody: response.responseBody,
+    responseBodySha256: response.responseBodySha256,
     rawLocation: null,
+    mediaType: response.mediaType,
+    effectiveUrlMatched: response.effectiveUrlMatched,
     serverTiming: response.serverTiming,
     finalUrl,
     redirectsFollowed,

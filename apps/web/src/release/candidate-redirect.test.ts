@@ -14,7 +14,10 @@ function response(status: number, rawLocation: string | null = null): CandidateH
   return {
     status,
     responseBody: '<!DOCTYPE html><main>Dashboard</main>',
+    responseBodySha256: `sha256:${'0'.repeat(64)}`,
     rawLocation,
+    mediaType: 'text/html',
+    effectiveUrlMatched: true,
     serverTiming: null,
   };
 }
@@ -116,6 +119,28 @@ describe('release candidate redirects', () => {
       redirectsFollowed: 1,
       redirectRejected: true,
       finalUrl: null,
+    });
+  });
+
+  it('rejects a response curl did not bind to the exact requested URL', async () => {
+    const request = vi.fn(async () => ({
+      ...response(307, `/dashboard?profile=${PROFILE}`),
+      effectiveUrlMatched: false,
+    }));
+
+    const result = await requestCandidateRoute({
+      candidate: CANDIDATE,
+      route: '/',
+      expectedProfileId: PROFILE,
+      request,
+    });
+
+    expect(request).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      redirectsFollowed: 0,
+      redirectRejected: true,
+      finalUrl: null,
+      effectiveUrlMatched: false,
     });
   });
 });

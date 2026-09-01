@@ -18,6 +18,8 @@ This package may edit:
 - web revision identity and `/api/healthz`;
 - the release candidate transport, redirect response shape, capability verifier, evidence
   projection, launcher, and their tests;
+- the web package manifest and workspace lockfile for DOM-parser typings and the exact locked
+  verifier CLI/runtime dependency;
 - the shared web UI artifact-marker constants, real brand element, and collected source test;
 - the Recommendations page and its existing browser proof;
 - this brief and architecture rationale;
@@ -34,16 +36,21 @@ configuration, provider state, or Amazon state. It must not deploy or promote a 
    value fails closed. A local fallback can never prove a Vercel candidate.
 3. Health and official SVG requests run before CDP access and never receive cookies.
 4. Only exact public health and SVG evidence creates the opaque candidate capability accepted by
-   authenticated checks.
+   authenticated checks. Runtime membership is mandatory; copied or fabricated values fail.
 5. The official SVG requires exact status, redirect absence, effective URL, media type, and raw
    body digest.
 6. Authenticated requests remain GET-only, bounded, manual-redirected, same-origin, exact-profile,
    serialized, and supplied through stdin rather than arguments, files, or logs.
 7. The child that receives cookies inherits no proxy, custom-CA, database, Amazon, preload,
-   diagnostic, bypass, or unrelated OpenSpell environment values. CDP is loopback-only.
+   diagnostic, bypass, or unrelated OpenSpell environment values. It runs from a fresh disposable
+   directory whose exact cwd has an empty Vercel repository boundary. It invokes only the exact,
+   integrity-locked Vercel 59.5.0 package through the current absolute Node runtime, disables the
+   native trampoline, and supplies a verified root-owned system path for curl instead of inherited
+   `PATH`. It cannot acquire provider-write authority through executable or ancestor project state.
+   CDP is loopback-only.
 8. Campaign Grid uses the campaigns entity and explicit dates. The server DOM must contain the
-   real heading, nonempty active-account context, real date control values, and versioned brand
-   element.
+   authenticated shell, real heading, nonempty active-account context, scoped real date control
+   values, and versioned real brand element.
 9. Recommendations carries one versioned review marker on every authenticated non-error data
    state. A heading alone, login, alert, or error document fails.
 10. Grid rows use the same campaign/profile/date context and require exact safe counts, no
@@ -71,7 +78,13 @@ configuration, provider state, or Amazon state. It must not deploy or promote a 
 - Grid tests reject count mismatch, truncation, malformed or unsafe JSON counts, missing timing,
   and mismatched campaign/profile/date requests.
 - Transport tests prove exact argv/stdin separation, raw-body digest, closed media types, effective
-  URL matching, bounded output, fixed errors, and environment removal.
+  URL matching, duplicate policy-header rejection, bounded output, the exact-cwd empty repository
+  boundary, isolated cwd cleanup after success and failure, fixed errors, and environment removal.
+- Runtime tests prove the exact Vercel version and registry integrity are locked, the package-local
+  entry point runs through the current absolute Node binary, the native trampoline is disabled, an
+  injected `PATH` executable is ignored, and only the verified root-owned curl path reaches the CLI.
+- Session tests prove auth, organization, and profile cookies have the exact production host and
+  root path; parent-domain and narrower-path cookies fail before forwarding.
 - A subprocess test proves public checks precede CDP, no cookie reaches public requests, malicious
   inherited diagnostic/proxy/custom-CA/database/Amazon values are absent, and output contains none
   of the supplied canaries.

@@ -15,6 +15,17 @@ describe('GET /api/healthz', () => {
       status: 'ok',
       product: 'OpenSpell',
       revision: '1234567890abcdef1234567890abcdef12345678',
+      revisionSource: 'explicit',
+    });
+  });
+
+  it('reports Vercel authority and fails closed on an override conflict', async () => {
+    vi.stubEnv('VERCEL_GIT_COMMIT_SHA', '1234567890abcdef1234567890abcdef12345678');
+    vi.stubEnv('OPENSPELL_WEB_REVISION', 'abcdef1234567890abcdef1234567890abcdef12');
+
+    await expect(GET().json()).resolves.toMatchObject({
+      revision: 'unknown',
+      revisionSource: 'unknown',
     });
   });
 });

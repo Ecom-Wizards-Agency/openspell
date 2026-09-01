@@ -17,95 +17,50 @@
  */
 import type { BrowserContext } from '@playwright/test';
 import { ORG_COOKIE, PROFILE_COOKIE } from '../src/cookies';
-import { requestCandidateRoute } from '../src/release/candidate-redirect';
+import {
+  verifyBoundCandidateCapabilities,
+  verifyPublicCandidateIdentity,
+} from '../src/release/candidate-artifacts';
 import {
   ReleaseTransportError,
   releaseFailure,
   requestCandidate,
 } from '../src/release/candidate-transport';
-import {
-  isCompleteGridRowsEvidence,
-  type GridServerTimingDurations,
-} from '../src/release/grid-server-timing';
+import { serializeReleaseEvidence } from '../src/release/release-evidence';
 import { webRevision } from '../src/revision';
 import { periodFromParams, todayIso } from '../app/_lib/periods';
 
-const PRODUCTION_ORIGIN = process.env['OPENSPELL_PRODUCTION_ORIGIN']
-  ?? 'https://ads.ecomwizards.agency';
+const PRODUCTION_ORIGIN = 'https://ads.ecomwizards.agency';
 const CDP_URL = process.env['OPENSPELL_CDP_URL'] ?? 'http://127.0.0.1:9222';
 const AUTH_COOKIE = /^sb-.*-auth-token(?:\.\d+)?$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CANDIDATE_HOST = /^wizard-[a-z0-9]+-ecom-wizards\.vercel\.app$/;
-const REJECTED_BODY = /role=["']alert["']|Application error|Internal Server Error|Login – Vercel/i;
 
-const ROUTES = [
-  { route: '/', expectedText: 'Dashboard' },
-  { route: '/dashboard', expectedText: 'Dashboard' },
-  // The complete Grid hydrates after the server document arrives. Its default
-  // entity heading is server-rendered; the scroller test id is not.
-  { route: '/grid', expectedText: 'Search terms' },
-  { route: '/optimizer', expectedText: 'Campaign Optimizer' },
-  { route: '/optimizer/groups', expectedText: 'Optimization Groups' },
-  { route: '/creative', expectedText: 'Creative Performance' },
-  { route: '/campaigns', expectedText: 'Campaign Builder' },
-  { route: '/recommendations', expectedText: 'Recommendations' },
-  { route: '/tags', expectedText: 'Tags' },
-  { route: '/time-machine', expectedText: 'Time Machine' },
-  { route: '/settings/integrations', expectedText: 'Integrations' },
-] as const;
+type BrowserCookie = Awaited<ReturnType<BrowserContext['cookies']>>[number];
 
-interface RouteResult {
-  route: string;
-  status: number | null;
-  finalPath: string | null;
-  finalProfileMatched: boolean;
-  checkDurationMs: number;
-  responseBytes: number;
-  htmlDocumentFound: boolean;
-  appShellFound: boolean;
-  nextRedirectFound: boolean;
-  expectedTextFound: boolean;
-  rejectedBodyFound: boolean;
-  loginPageFound: boolean;
-  noProfileFound: boolean;
-  gateBlockedFound: boolean;
-  redirectsFollowed: number;
-  redirectRejected: boolean;
-  passed: boolean;
-}
-
-interface RevisionResult {
-  expected: string;
-  observed: string;
-  status: number | null;
-  passed: boolean;
-}
-
-interface GridRowsTimingResult {
-  status: number | null;
-  checkDurationMs: number;
-  responseBytes: number;
-  rowCount: number | null;
-  returnedRows: number | null;
-  truncated: boolean | null;
-  serverTiming: GridServerTimingDurations | null;
-  passed: boolean;
-}
-
-async function main(): Promise<void> {
+async function main(request: typeof requestCandidate): Promise<void> {
   const inputs = process.argv.slice(2).filter((argument) => argument !== '--');
   if (inputs.length !== 2) throw new ReleaseTransportError('arguments_invalid');
   const candidate = candidateOrigin(inputs[0]);
   const expectedRevision = requiredRevision(inputs[1]);
-  const production = productionOrigin(PRODUCTION_ORIGIN);
+  const production = new URL(PRODUCTION_ORIGIN);
   clearSensitiveEnvironment();
   if (candidate.origin === production.origin) {
     throw new ReleaseTransportError('candidate_invalid');
   }
 
-  const revision = await verifyRevision(candidate, expectedRevision);
-  if (!revision.passed) {
-    console.log(JSON.stringify({ target: 'immutable-candidate', passed: false, revision, routes: [] }, null, 2));
+  const publicIdentity = await verifyPublicCandidateIdentity({
+    candidate,
+    expectedRevision,
+    request: async (url) => request({ candidate, url }),
+  });
+  if (!publicIdentity.passed) {
+    console.log(serializeReleaseEvidence({
+      candidate,
+      expectedRevision,
+      observedRevision: publicIdentity.revision,
+      checks: publicIdentity.checks,
+    }));
     process.exitCode = 1;
     return;
   }
@@ -117,10 +72,7 @@ async function main(): Promise<void> {
   } catch {
     throw new ReleaseTransportError('cdp_unavailable');
   }
-  const sourceContext = browser.contexts()[0];
-  if (sourceContext === undefined) {
-    throw new ReleaseTransportError('session_unavailable');
-  }
+  const sourceContext = productionBrowserContext(browser.contexts(), production);
 
   let browserCookies: Awaited<ReturnType<typeof sourceContext.cookies>>;
   try {
@@ -128,230 +80,182 @@ async function main(): Promise<void> {
   } catch {
     throw new ReleaseTransportError('session_unavailable');
   }
-  const sourceCookies = browserCookies.filter((cookie) => AUTH_COOKIE.test(cookie.name));
-  if (sourceCookies.length === 0) {
-    throw new ReleaseTransportError('session_unavailable');
+  const sourceCookies = validatedAuthCookies(browserCookies, production);
+  const profileCookie = validatedProfileCookie(browserCookies, production);
+  const pageProfileIds = await selectedProfileIds(sourceContext, production);
+  if (pageProfileIds.length > 1) throw new ReleaseTransportError('profile_unavailable');
+  const pageProfileId = pageProfileIds[0] ?? null;
+  const cookieProfileId = profileCookie?.value ?? null;
+  if (pageProfileId !== null && cookieProfileId !== null && pageProfileId !== cookieProfileId) {
+    throw new ReleaseTransportError('profile_unavailable');
   }
-  const profileCookie = browserCookies.find((cookie) => cookie.name === PROFILE_COOKIE);
-  const pageProfileId = await selectedProfileId(sourceContext, production);
-  const profileId = pageProfileId
-    ?? (profileCookie !== undefined && UUID.test(profileCookie.value) ? profileCookie.value : null);
+  const profileId = pageProfileId ?? cookieProfileId;
   if (profileId === null || !UUID.test(profileId)) {
     throw new ReleaseTransportError('profile_unavailable');
   }
-  const orgCookie = browserCookies.find(
-    (cookie) => cookie.name === ORG_COOKIE && UUID.test(cookie.value),
-  );
-  const forwardedCookies = orgCookie === undefined ? sourceCookies : [...sourceCookies, orgCookie];
+  const orgCookie = validatedOrgCookie(browserCookies, production);
+  const forwardedCookies = orgCookie === null
+    ? sourceCookies
+    : [...sourceCookies, orgCookie];
   const cookieHeader = forwardedCookies
     .map((cookie) => `${cookie.name}=${cookie.value}`)
     .join('; ');
-
-  // Keep database-backed route checks serial. A concurrent sweep can consume
-  // the production session pool and manufacture 500s that real navigation
-  // would never create.
-  const results: RouteResult[] = [];
-  for (const check of ROUTES) {
-    results.push(await verifyRoute(
-      candidate,
-      check,
-      cookieHeader,
-      profileId,
-    ));
+  if (Buffer.byteLength(cookieHeader) > 16 * 1024) {
+    throw new ReleaseTransportError('session_unavailable');
   }
 
-  const gridRows = await verifyGridRows(candidate, cookieHeader, profileId);
-
-  const passed = results.every((result) => result.passed) && gridRows.passed;
-  console.log(JSON.stringify({
-    target: 'immutable-candidate',
-    passed,
-    revision,
-    routes: results,
-    gridRows,
-  }, null, 2));
+  const period = periodFromParams({}, todayIso());
+  const authenticatedChecks = await verifyBoundCandidateCapabilities({
+    candidate: publicIdentity.candidate,
+    expectedProfileId: profileId,
+    period,
+    request: async (url) => request({ candidate, url, cookieHeader }),
+  });
+  const checks = [...publicIdentity.checks, ...authenticatedChecks];
+  const passed = checks.every((check) => check.verdict === 'pass');
+  console.log(serializeReleaseEvidence({
+    candidate,
+    expectedRevision,
+    observedRevision: publicIdentity.revision,
+    checks,
+  }));
   if (!passed) process.exitCode = 1;
 }
 
-async function verifyGridRows(
-  candidate: URL,
-  cookieHeader: string,
-  profileId: string,
-): Promise<GridRowsTimingResult> {
-  const period = periodFromParams({}, todayIso());
-  const url = new URL('/api/grid/rows', candidate);
-  url.searchParams.set('profile', profileId);
-  url.searchParams.set('entity', 'search_terms');
-  url.searchParams.set('from', period.start);
-  url.searchParams.set('to', period.end);
-
-  const startedAt = performance.now();
-  const response = await requestCandidate({ candidate, url, cookieHeader });
-  const checkDurationMs = Math.round(performance.now() - startedAt);
-  let rowCount: number | null = null;
-  let returnedRows: number | null = null;
-  let truncated: boolean | null = null;
-  try {
-    const payload = JSON.parse(response.responseBody) as Record<string, unknown>;
-    rowCount = typeof payload['rowCount'] === 'number' ? payload['rowCount'] : null;
-    returnedRows = Array.isArray(payload['rows']) ? payload['rows'].length : null;
-    truncated = typeof payload['truncated'] === 'boolean' ? payload['truncated'] : null;
-  } catch {
-    // The fixed summary below is intentionally all the verifier retains.
-  }
-
-  return {
-    status: response.status,
-    checkDurationMs,
-    responseBytes: Buffer.byteLength(response.responseBody),
-    rowCount,
-    returnedRows,
-    truncated,
-    serverTiming: response.serverTiming,
-    passed: isCompleteGridRowsEvidence({
-      status: response.status,
-      rowCount,
-      returnedRows,
-      truncated,
-      serverTiming: response.serverTiming,
-    }),
-  };
-}
-
-async function verifyRevision(
-  candidate: URL,
-  expected: string,
-): Promise<RevisionResult> {
-  const response = await requestCandidate({
-    candidate,
-    url: new URL('/api/healthz', candidate),
-  });
-
-  let observed = 'unknown';
-  let healthy: boolean;
-  try {
-    const payload = JSON.parse(response.responseBody) as Record<string, unknown>;
-    observed = webRevision({ OPENSPELL_WEB_REVISION: String(payload['revision'] ?? '') });
-    healthy = payload['status'] === 'ok' && payload['product'] === 'OpenSpell';
-  } catch {
-    healthy = false;
-  }
-
-  return {
-    expected,
-    observed,
-    status: response.status,
-    passed:
-      response.status === 200
-      && healthy
-      && observed === expected,
-  };
-}
-
-async function selectedProfileId(
+async function selectedProfileIds(
   context: BrowserContext,
   production: URL,
-): Promise<string | null> {
+): Promise<readonly string[]> {
+  const observed = new Set<string>();
   const pages = context.pages().filter((page) => new URL(page.url()).origin === production.origin);
   for (const page of pages) {
-    const candidates = await page.evaluate((cookieName) => {
-      const values: Array<string | null> = [
-        new URL(window.location.href).searchParams.get('profile'),
-      ];
-      for (const element of document.querySelectorAll<HTMLElement>(
-        'input[name="profile"], select[name*="profile" i]',
-      )) {
-        values.push(
-          element instanceof HTMLInputElement || element instanceof HTMLSelectElement
-            ? element.value
-            : null,
-        );
-      }
-      for (const anchor of document.querySelectorAll<HTMLAnchorElement>('a[href*="profile="]')) {
-        values.push(new URL(anchor.href, window.location.href).searchParams.get('profile'));
-      }
-      const remembered = document.cookie
-        .split(';')
-        .map((part) => part.trim())
-        .find((part) => part.startsWith(`${cookieName}=`));
-      if (remembered !== undefined) {
-        values.push(decodeURIComponent(remembered.split('=').slice(1).join('=')));
-      }
-      return values;
-    }, PROFILE_COOKIE);
-    const profile = candidates.find((candidate) => candidate !== null && UUID.test(candidate));
-    if (profile !== undefined) return profile;
+    const candidates = await page.evaluate(activeProfileCandidatesInPage, PROFILE_COOKIE);
+    for (const candidate of candidates) {
+      if (candidate !== null && UUID.test(candidate)) observed.add(candidate);
+    }
   }
-  return null;
+  return Array.from(observed).sort();
 }
 
-async function verifyRoute(
-  candidate: URL,
-  check: { route: string; expectedText: string },
-  cookieHeader: string,
-  profileId: string,
-): Promise<RouteResult> {
-  const startedAt = performance.now();
-  const response = await requestCandidateRoute({
-    candidate,
-    route: check.route,
-    expectedProfileId: profileId,
-    request: async (url) => requestCandidate({
-      candidate,
-      url,
-      cookieHeader,
-    }),
-  });
-  const responseBody = response.responseBody;
-  const finalUrl = response.finalUrl;
-  const finalPath = finalUrl?.pathname ?? null;
-  const expectedTextFound = responseBody.includes(check.expectedText);
-  const rejectedBodyFound = REJECTED_BODY.test(responseBody);
-  const htmlDocumentFound = /<!DOCTYPE html>/i.test(responseBody);
-  const appShellFound = responseBody.includes('data-testid="app-nav"');
-  const nextRedirectFound = responseBody.includes('NEXT_REDIRECT');
-  const loginPageFound = /Email me a sign-in link|Sign in with your work address/.test(responseBody);
-  const noProfileFound = /Choose an advertising profile|No advertising profiles yet|No profiles yet/.test(
-    responseBody,
-  );
-  const gateBlockedFound = /cannot reach its database|DATABASE_URL is not set|not a member of any organisation/.test(
-    responseBody,
-  );
-  const expectedFinalPath = check.route === '/'
-    ? '/dashboard'
-    : new URL(check.route, candidate).pathname;
-  return {
-    route: check.route,
-    status: response.status,
-    finalPath,
-    finalProfileMatched: finalUrl?.searchParams.get('profile') === profileId,
-    checkDurationMs: Math.round(performance.now() - startedAt),
-    responseBytes: Buffer.byteLength(responseBody),
-    htmlDocumentFound,
-    appShellFound,
-    nextRedirectFound,
-    expectedTextFound,
-    rejectedBodyFound,
-    loginPageFound,
-    noProfileFound,
-    gateBlockedFound,
-    redirectsFollowed: response.redirectsFollowed,
-    redirectRejected: response.redirectRejected,
-    passed:
-      response.status === 200
-      && !response.redirectRejected
-      && finalUrl?.origin === candidate.origin
-      && finalPath === expectedFinalPath
-      && finalUrl?.searchParams.get('profile') === profileId
-      && htmlDocumentFound
-      && appShellFound
-      && !nextRedirectFound
-      && expectedTextFound
-      && !rejectedBodyFound
-      && !loginPageFound
-      && !noProfileFound
-      && !gateBlockedFound,
-  };
+/** Browser-side active state only. Navigation links may advertise other profiles. */
+export function activeProfileCandidatesInPage(cookieName: string): readonly (string | null)[] {
+  const values: Array<string | null> = [
+    new URL(window.location.href).searchParams.get('profile'),
+  ];
+  for (const element of document.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
+    'input[name="profile"], select[name="profile"]',
+  )) {
+    values.push(element.value);
+  }
+  const remembered = document.cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${cookieName}=`));
+  if (remembered !== undefined) {
+    try {
+      values.push(decodeURIComponent(remembered.split('=').slice(1).join('=')));
+    } catch {
+      values.push(null);
+    }
+  }
+  return values;
+}
+
+function productionBrowserContext(
+  contexts: readonly BrowserContext[],
+  production: URL,
+): BrowserContext {
+  const matches = contexts.filter((context) => context.pages().some((page) => {
+    try {
+      return new URL(page.url()).origin === production.origin;
+    } catch {
+      return false;
+    }
+  }));
+  if (matches.length !== 1 || matches[0] === undefined) {
+    throw new ReleaseTransportError('session_unavailable');
+  }
+  return matches[0];
+}
+
+export function validatedAuthCookies(
+  cookies: readonly BrowserCookie[],
+  production: URL,
+): readonly BrowserCookie[] {
+  const auth = cookies.filter((cookie) => AUTH_COOKIE.test(cookie.name));
+  if (auth.length === 0 || auth.length > 12) {
+    throw new ReleaseTransportError('session_unavailable');
+  }
+  const names = new Set<string>();
+  for (const cookie of auth) {
+    if (names.has(cookie.name) || !safeProductionCookie(cookie, production)) {
+      throw new ReleaseTransportError('session_unavailable');
+    }
+    names.add(cookie.name);
+  }
+  const families = new Set(auth.map((cookie) => cookie.name.replace(/\.\d+$/, '')));
+  if (families.size !== 1) throw new ReleaseTransportError('session_unavailable');
+  const family = families.values().next().value;
+  if (family === undefined) throw new ReleaseTransportError('session_unavailable');
+  const unchunked = auth.some((cookie) => cookie.name === family);
+  const chunkNumbers = auth
+    .filter((cookie) => cookie.name !== family)
+    .map((cookie) => Number(cookie.name.slice(family.length + 1)))
+    .sort((left, right) => left - right);
+  if (
+    (unchunked && auth.length !== 1)
+    || (!unchunked && chunkNumbers.some((chunk, index) => chunk !== index))
+  ) {
+    throw new ReleaseTransportError('session_unavailable');
+  }
+  return [...auth].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function validatedOrgCookie(
+  cookies: readonly BrowserCookie[],
+  production: URL,
+): BrowserCookie | null {
+  const org = cookies.filter((cookie) => cookie.name === ORG_COOKIE);
+  if (org.length === 0) return null;
+  if (
+    org.length !== 1
+    || org[0] === undefined
+    || !UUID.test(org[0].value)
+    || !safeProductionCookie(org[0], production)
+  ) {
+    throw new ReleaseTransportError('session_unavailable');
+  }
+  return org[0];
+}
+
+export function validatedProfileCookie(
+  cookies: readonly BrowserCookie[],
+  production: URL,
+): BrowserCookie | null {
+  const profile = cookies.filter((cookie) => cookie.name === PROFILE_COOKIE);
+  if (profile.length === 0) return null;
+  if (
+    profile.length !== 1
+    || profile[0] === undefined
+    || !UUID.test(profile[0].value)
+    || !safeProductionCookie(profile[0], production)
+  ) {
+    throw new ReleaseTransportError('profile_unavailable');
+  }
+  return profile[0];
+}
+
+function safeProductionCookie(cookie: BrowserCookie, production: URL): boolean {
+  // Current Supabase and org-cookie writers do not set Secure. Provenance is
+  // instead restricted to host-only cookies for the fixed HTTPS production
+  // origin; the child sends them only to the validated HTTPS candidate.
+  return cookie.domain === production.hostname
+    && cookie.path === '/'
+    && /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(cookie.name)
+    && !Array.from(cookie.value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 0x20 || code === 0x7f || character === ';';
+    });
 }
 
 function candidateOrigin(input: string | undefined): URL {
@@ -387,22 +291,23 @@ function requiredRevision(input: string | undefined): string {
   return revision;
 }
 
-function productionOrigin(input: string): URL {
-  try {
-    const url = new URL(input);
-    if (!['http:', 'https:'].includes(url.protocol) || url.username !== '' || url.password !== '') {
-      throw new Error('invalid');
-    }
-    return url;
-  } catch {
-    throw new ReleaseTransportError('arguments_invalid');
-  }
-}
-
 function requiredCdpEndpoint(input: string): string {
   try {
     const url = new URL(input);
-    if (!['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)) throw new Error('invalid');
+    const loopback = url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+    const httpDiscovery = url.protocol === 'http:' && url.pathname === '/';
+    const websocket = url.protocol === 'ws:' && url.pathname.startsWith('/devtools/browser/');
+    if (
+      !loopback
+      || (!httpDiscovery && !websocket)
+      || url.username !== ''
+      || url.password !== ''
+      || url.port === ''
+      || url.search !== ''
+      || url.hash !== ''
+    ) {
+      throw new Error('invalid');
+    }
     return url.href;
   } catch {
     throw new ReleaseTransportError('cdp_unavailable');
@@ -418,15 +323,26 @@ function clearSensitiveEnvironment(): void {
     'NODE_V8_COVERAGE',
     'PWDEBUG',
     'OPENSPELL_CDP_URL',
+    'OPENSPELL_PRODUCTION_ORIGIN',
     'VERCEL_AUTOMATION_BYPASS_SECRET',
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'no_proxy',
+    'SSL_CERT_FILE',
+    'SSL_CERT_DIR',
   ]) {
     delete process.env[name];
   }
 }
 
-export async function runReleaseCandidateCli(): Promise<void> {
+export async function runReleaseCandidateCli(
+  request: typeof requestCandidate = requestCandidate,
+): Promise<void> {
   try {
-    await main();
+    await main(request);
   } catch (error) {
     console.error(releaseFailure(error));
     process.exitCode = 1;

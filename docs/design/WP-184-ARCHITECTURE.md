@@ -98,7 +98,7 @@ operations reflect the credential boundary rather than incidental execution stag
 declare const revisionBound: unique symbol;
 
 export interface RevisionBoundCandidate {
-  readonly origin: URL;
+  readonly origin: string;
   readonly expectedRevision: string;
   readonly [revisionBound]: true;
 }
@@ -158,20 +158,22 @@ raw-body SHA-256:
 ec87eb73689b1792fabd9c7098b03f7b7c86f4192ced9c9ad63a64ab85ed0a55
 ```
 
-Only that conjunction creates `RevisionBoundCandidate`. The second operation accepts the bound
-type and an authenticated request closure. It owns the route list, serial execution, redirect
-policy integration, DOM assertions, Grid request, and fixed diagnostics.
+Only that conjunction registers a frozen, string-backed `RevisionBoundCandidate` in a private
+runtime capability set. A fabricated object, copied object, mutable `URL`, or malformed expected
+revision cannot enter the authenticated operation. That operation owns the route list, serial
+execution, redirect policy integration, DOM assertions, Grid request, and fixed diagnostics.
 
 The Campaign Grid request is exactly `/grid?entity=campaigns` plus the selected profile and an
-explicit complete reporting window. Its parsed server document must contain:
+explicit complete reporting window. Its parsed server document must contain an authenticated app
+shell and:
 
 - the real `Campaigns` heading;
 - the `Active advertising account and reporting window` region with a nonempty account value;
-- the real date-range component and matching `from` and `to` form values;
-- the versioned official-brand marker on the existing `.wa-brand-mark` element.
+- the real date-range component, inside that account context, with matching `from` and `to` values;
+- the versioned official-brand marker on the real brand-link element.
 
 The Recommendations document must contain its heading and the versioned focused-review marker on
-every authenticated data state. An error or login document never carries the marker. Existing
+its `main` element for every authenticated data state. An error or login document never carries the marker. Existing
 Playwright coverage proves the marked successful state also renders and operates the real
 `ReviewWorkspace`; the marker is identity, not a substitute implementation.
 
@@ -209,13 +211,30 @@ export interface CandidateHttpResponse {
 `candidate-transport.ts` remains one bounded GET-only `vercel curl` subprocess. Candidate host and
 path stay in fixed arguments; query and cookies stay in stdin configuration; redirects stay under
 manual policy; stderr is counted but never replayed. The parser hashes raw body bytes before UTF-8
-decoding, reduces content type to the closed enum, and compares curl's effective URL to the exact
-requested URL. Arbitrary headers and effective URLs never leave the transport.
+decoding, requires exactly one of each policy-bearing response header, reduces content type and
+Grid timing to closed values, and compares curl's effective URL to the exact requested URL.
+Duplicate or conflicting Content-Type, Location, or Server-Timing headers fail before reduction.
+Arbitrary headers and effective URLs never leave the transport.
 
-The child environment keeps only the Vercel CLI context, required filesystem locations, locale,
-time zone, and executable path. Proxy and custom-CA variables no longer cross into the child that
-receives the cookie header. The verifier accepts CDP only on an uncredentialed loopback endpoint
-with no query or fragment.
+Each call runs from a fresh mode-0700 directory under the fixed Unix temporary root, with an empty
+`.vercel/repo.json` at that exact directory and child temp variables pinned there. The empty file
+terminates the reviewed repository-first lookup before any ancestor project link can be used.
+Cleanup is mandatory. Vercel CLI 59.5.0 is an exact web development dependency whose registry
+integrity is recorded in `pnpm-lock.yaml`. The launcher resolves that package's local manifest and
+entry point, validates its name, version, and bin mapping, and invokes it through the current
+absolute Node executable. It neither searches `PATH` for Vercel nor executes the CLI shebang. The
+native CLI trampoline is disabled. The CLI receives only the verified root-owned, non-writable
+system directory containing `/usr/bin/curl` as `PATH`; writable and caller-provided directories are
+excluded. Together with the repository boundary, these constraints stop inherited executable or
+project state from granting provider-write authority. The child environment otherwise keeps only
+the Vercel CLI context, required filesystem locations, locale, and time zone. Proxy and custom-CA
+variables do not cross into the child that receives the cookie header.
+
+Session cookies come only from the fixed HTTPS production origin. The verifier accepts the
+application's current non-Secure cookie shape but requires the exact host-only production domain,
+root path, one valid Supabase auth chunk family, bounded unique names and values, and an optional
+UUID org selector. It forwards them only to the validated HTTPS candidate. CDP remains restricted
+to an uncredentialed loopback endpoint with no query or fragment.
 
 ### Public evidence projection
 
@@ -357,6 +376,14 @@ uncollected `.test.tsx` coverage, or more than one public evidence constructor.
   passing evidence document.
 - The child receives no proxy, custom-CA, database, Amazon, diagnostic, preload, bypass-secret, or
   unrelated OpenSpell environment values.
+- The integrity-locked Vercel package runs through the current absolute Node executable, ignores
+  an injected `PATH` executable, disables its native trampoline, and exposes only the verified
+  root-owned system path needed for curl. It runs behind the exact-cwd empty repository boundary,
+  cannot resolve an inherited project link, and cannot create provider state. Cleanup is proved
+  after success and failure.
+- Auth, organization, and profile cookies require the exact production host and root path before
+  forwarding; parent-domain and narrower-path cookies fail closed.
+- Duplicate policy headers, fabricated capabilities, and unvalidated public evidence values fail.
 - Remote or credentialed CDP endpoints fail before browser connection.
 - Every new Vitest file ends in `.test.ts`; the brand source test proves its marker, CSS asset path,
   and real tracked SVG digest.
@@ -364,8 +391,3 @@ uncollected `.test.tsx` coverage, or more than one public evidence constructor.
   exact-head CI, and exact-main CI pass.
 - Implementation and tests perform no deployment, promotion, migration, database mutation,
   provider write, or Amazon call.
-
-## Next implementation step
-
-Implement revision identity, the collected brand source proof, and the public candidate identity
-gate first; then add authenticated capability inspection and the sanitized evidence projection.
