@@ -3,6 +3,11 @@
 -- `cadence` deliberately remains in place as dormant rollback evidence. New
 -- scheduling decisions use only review_weekdays + the profile timezone/hour.
 
+-- Function replacement, column DDL, backfill updates and trigger creation need
+-- brief relation locks. Keep the timeout transaction-scoped through Supabase's
+-- migration-ledger write and fail closed behind live optimizer traffic.
+set local lock_timeout = '5s';
+
 create or replace function app.canonical_optimization_weekdays(p_weekdays smallint[])
 returns smallint[]
 language sql

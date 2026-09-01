@@ -127,7 +127,8 @@ and a JSON-only group schedule, which would weaken constraints and indexing.
 ## Production gate
 
 Apply `20260830180000_optimization_weekday_schedules.sql` to a named hosted project only after the
-operator approves that exact target and file. Before application, preview the daily-or-faster,
-anchored and ambiguous counts. Automatic scheduled recommendation execution remains disabled until
-its existing environment gate is deliberately enabled; Amazon apply cadence is a separate guarded
-system.
+operator approves that exact target and file. The migration keeps a transaction-scoped five-second
+lock timeout through Supabase's ledger write and aborts behind live contention. Before application,
+preview the daily-or-faster, anchored and ambiguous counts. Automatic scheduled recommendation
+execution remains disabled until its existing environment gate is deliberately enabled; Amazon
+apply cadence is a separate guarded system.
