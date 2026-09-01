@@ -241,13 +241,19 @@ DB-derived stable result ID, one permanent action-resolution row per position, a
 `observe_and_recover` outbox wake. Offered, inserted, and outbox counts are asserted before
 returning. Only the transaction that inserted these rows returns `won` and the dispatch ticket.
 
-The stable result UUID is a version/variant-normalized UUID derived from the first 128 bits of
-SHA-256 over this UTF-8 preimage:
+The stable result UUID is an RFC 9562 UUIDv8 derived from the first 128 bits of SHA-256 over this
+UTF-8 preimage:
 
 ```text
 openspell.sp-write-reserved-result-id.sql.v1
 <lowercase intent UUID>
 ```
+
+Take the first 16 digest bytes, replace the high nibble of octet 6 with `0b1000` (version 8), and
+replace the high two bits of octet 8 with `0b10` (the IETF variant), preserving every other digest
+bit. Format the result as a lowercase `8-4-4-4-12` UUID. UUIDv8 is intentional: RFC 9562 reserves
+it for custom formats and illustrates this same SHA-256 name-based construction; UUIDv5 would
+mislabel a SHA-256 derivation as the standardized SHA-1 algorithm.
 
 `result_id` is globally unique. A collision between distinct intent IDs is a fail-closed reservation
 error; it never reuses an existing result identity.

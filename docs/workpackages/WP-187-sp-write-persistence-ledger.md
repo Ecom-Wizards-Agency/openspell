@@ -85,8 +85,9 @@ data, or any hosted database. Do not transplant PR #24.
 
 - Gate snapshot preimage: the exact LF-separated, no-trailing-LF
   `openspell.sp-write-gate-snapshot.sql.v1` format documented in the architecture.
-- Reserved result ID: the version/variant-normalized first 128 SHA-256 bits of the exact
-  `openspell.sp-write-reserved-result-id.sql.v1` preimage documented in the architecture.
+- Reserved result ID: the RFC 9562 UUIDv8-normalized first 128 SHA-256 bits of the exact
+  `openspell.sp-write-reserved-result-id.sql.v1` preimage documented in the architecture: set the
+  version nibble to `8` and the IETF variant bits to `10`, preserving every other digest bit.
 - For still-pending actions, `approval_expired` precedes every other terminal authority/state
   category. Its disposition `recordedAt` is exact receipt expiry as the authority-cutoff effective
   instant; DB `persisted_at >= expiresAt` retains the later durability time. Prior resolution returns
