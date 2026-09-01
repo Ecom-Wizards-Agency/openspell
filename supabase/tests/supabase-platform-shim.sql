@@ -38,6 +38,60 @@ $$;
 
 grant usage on schema public to anon, authenticated, service_role;
 
+-- Hosted Supabase grants new public tables and sequences broadly to its API
+-- roles before application migrations narrow them. Reproduce that baseline on
+-- plain PostgreSQL so a narrow GRANT cannot hide a missing preceding REVOKE.
+-- An existing Supabase database already has `auth`, so this remains a no-op on
+-- the platform-owned local stack.
+do $$
+declare
+  v_role text;
+  v_privilege text;
+begin
+  if to_regnamespace('auth') is null then
+    alter default privileges in schema public
+      grant all on tables to anon, authenticated, service_role;
+    alter default privileges in schema public
+      grant all on sequences to anon, authenticated, service_role;
+
+    create table public.wizard_ads_platform_acl_probe (
+      id bigint generated always as identity primary key
+    );
+    foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
+      foreach v_privilege in array array[
+        'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
+      ] loop
+        if not has_table_privilege(
+          v_role,
+          'public.wizard_ads_platform_acl_probe',
+          v_privilege
+        ) then
+          raise exception 'platform table default ACL simulation is incomplete';
+        end if;
+      end loop;
+      if current_setting('server_version_num')::integer >= 170000
+         and not has_table_privilege(
+           v_role,
+           'public.wizard_ads_platform_acl_probe',
+           'MAINTAIN'
+         ) then
+        raise exception 'platform PG17 table default ACL simulation is incomplete';
+      end if;
+      foreach v_privilege in array array['SELECT', 'UPDATE', 'USAGE'] loop
+        if not has_sequence_privilege(
+          v_role,
+          'public.wizard_ads_platform_acl_probe_id_seq',
+          v_privilege
+        ) then
+          raise exception 'platform sequence default ACL simulation is incomplete';
+        end if;
+      end loop;
+    end loop;
+    drop table public.wizard_ads_platform_acl_probe;
+  end if;
+end;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- auth
 -- ---------------------------------------------------------------------------

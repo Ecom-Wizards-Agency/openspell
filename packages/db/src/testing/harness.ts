@@ -74,11 +74,21 @@ export interface TestDatabase extends DbHandle {
   drop(): Promise<void>;
 }
 
+export interface TestDatabaseOptions {
+  /** Stop after this exact migration; useful for forward-migration upgrade proofs. */
+  throughMigration?: string;
+  /** Defaults to true. */
+  applyFixture?: boolean;
+}
+
 /**
  * Create a database, apply the shim, then every migration in order, then the
  * tenant fixture. Returns a handle plus the teardown.
  */
-export async function createTestDatabase(label = 'db'): Promise<TestDatabase> {
+export async function createTestDatabase(
+  label = 'db',
+  options: TestDatabaseOptions = {},
+): Promise<TestDatabase> {
   const admin = adminConnectionString();
   const name = `wizard_ads_test_${label}_${randomUUID().slice(0, 8)}`.toLowerCase();
   const adminSql = postgres(admin, { max: 1, onnotice: () => {} });
@@ -94,10 +104,18 @@ export async function createTestDatabase(label = 'db'): Promise<TestDatabase> {
 
   try {
     await applySqlFile(handle, SHIM);
+    let reachedRequestedMigration = options.throughMigration === undefined;
     for (const file of await migrationFiles()) {
       await applySqlFile(handle, `${MIGRATIONS_DIR}/${file}`);
+      if (file === options.throughMigration) {
+        reachedRequestedMigration = true;
+        break;
+      }
     }
-    await applySqlFile(handle, FIXTURE);
+    if (!reachedRequestedMigration) {
+      throw new Error(`migration not found: ${options.throughMigration}`);
+    }
+    if (options.applyFixture !== false) await applySqlFile(handle, FIXTURE);
   } catch (error) {
     await handle.close();
     await dropDatabase(admin, name);

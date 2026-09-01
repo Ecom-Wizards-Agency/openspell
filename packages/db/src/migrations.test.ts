@@ -9,7 +9,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable, migrationFiles } from './testing/harness.js';
-import { asServiceRole, tenantTables } from './testing/rls.js';
+import { asServiceRole, asUser, tenantTables } from './testing/rls.js';
 import type { TestDatabase } from './testing/harness.js';
 
 const available = await databaseAvailable();
@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260901000000_contextual_negative_review_exports.sql');
+    expect(files.at(-1)).toBe('20260901010000_authenticated_relation_privilege_hardening.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -622,6 +622,231 @@ describe.skipIf(!available)('migrations', () => {
     `;
     const unprotected = rows.filter((row) => !row.relrowsecurity).map((row) => row.relname);
     expect(unprotected).toEqual([]);
+  });
+
+  it('matches every authenticated relation privilege to an applicable RLS policy', async () => {
+    const mismatches = await database.sql<{
+      mismatch: string;
+      table_name: string;
+      privilege: string;
+    }[]>`
+      with protected_relations as (
+        select class.oid, class.relname, class.relowner
+          from pg_catalog.pg_class class
+          join pg_catalog.pg_namespace namespace on namespace.oid = class.relnamespace
+         where namespace.nspname = 'public'
+           and class.relkind in ('r', 'p')
+           and class.relrowsecurity
+      ),
+      expected as (
+        select distinct
+               policy.tablename as table_name,
+               privilege.value as privilege
+          from pg_catalog.pg_policies policy
+          cross join lateral unnest(
+            case policy.cmd
+              when 'ALL' then array['SELECT', 'INSERT', 'UPDATE', 'DELETE']::text[]
+              else array[policy.cmd]::text[]
+            end
+          ) privilege(value)
+         where policy.schemaname = 'public'
+           and policy.roles && array['authenticated', 'public']::name[]
+      ),
+      actual as (
+        select distinct
+               relation.relname as table_name,
+               upper(privilege.privilege_type) as privilege
+          from protected_relations relation
+          join pg_catalog.pg_class relation_acl on relation_acl.oid = relation.oid
+          cross join lateral pg_catalog.aclexplode(
+            coalesce(relation_acl.relacl, pg_catalog.acldefault('r', relation.relowner))
+          ) privilege
+         where privilege.grantee in (
+           0::oid,
+           (select oid from pg_catalog.pg_roles where rolname = 'authenticated')
+         )
+      ),
+      missing as (
+        select table_name, privilege from expected
+        except
+        select table_name, privilege from actual
+      ),
+      unexpected as (
+        select table_name, privilege from actual
+        except
+        select table_name, privilege from expected
+      )
+      select 'missing' as mismatch, table_name, privilege from missing
+      union all
+      select 'unexpected' as mismatch, table_name, privilege from unexpected
+      order by table_name, privilege, mismatch
+    `;
+
+    expect(mismatches).toEqual([]);
+  });
+
+  it('keeps API-role sequence and creator defaults at the exact minimum', async () => {
+    const sequencePrivileges = await database.sql<{
+      sequence_name: string;
+      grantee: string;
+      privilege: string;
+    }[]>`
+      select sequence.relname as sequence_name,
+             case privilege.grantee
+               when 0 then 'public'
+               else grantee.rolname
+             end as grantee,
+             upper(privilege.privilege_type) as privilege
+        from pg_catalog.pg_class sequence
+        join pg_catalog.pg_namespace namespace on namespace.oid = sequence.relnamespace
+        cross join lateral pg_catalog.aclexplode(
+          coalesce(sequence.relacl, pg_catalog.acldefault('S', sequence.relowner))
+        ) privilege
+        left join pg_catalog.pg_roles grantee on grantee.oid = privilege.grantee
+       where namespace.nspname = 'public'
+         and sequence.relkind = 'S'
+         and (
+           privilege.grantee = 0
+           or grantee.rolname in ('anon', 'authenticated')
+         )
+       order by sequence.relname, grantee, privilege
+    `;
+    expect(sequencePrivileges).toEqual([
+      {
+        sequence_name: 'experiment_events_id_seq',
+        grantee: 'authenticated',
+        privilege: 'USAGE',
+      },
+    ]);
+
+    const defaultPrivileges = await database.sql<{
+      creator: string;
+      object_type: string;
+      grantee: string;
+      privilege: string;
+    }[]>`
+      select creator.rolname as creator,
+             defaults.defaclobjtype as object_type,
+             case privilege.grantee
+               when 0 then 'public'
+               else grantee.rolname
+             end as grantee,
+             upper(privilege.privilege_type) as privilege
+        from pg_catalog.pg_default_acl defaults
+        cross join lateral pg_catalog.aclexplode(defaults.defaclacl) privilege
+        join pg_catalog.pg_roles creator on creator.oid = defaults.defaclrole
+        left join pg_catalog.pg_roles grantee on grantee.oid = privilege.grantee
+       where defaults.defaclnamespace in (0::oid, 'public'::regnamespace::oid)
+         and defaults.defaclobjtype in ('r', 'S')
+         and (
+           privilege.grantee = 0
+           or grantee.rolname in ('anon', 'authenticated')
+         )
+       order by creator, object_type, grantee, privilege
+    `;
+    expect(defaultPrivileges).toEqual([]);
+
+    await asUser(database, '18618618-6186-4186-8186-186186186186', async (sql) => {
+      const [advanced] = await sql<{ value: string }[]>`
+        select nextval('public.experiment_events_id_seq')::text as value
+      `;
+      const [sessionValue] = await sql<{ value: string }[]>`
+        select currval('public.experiment_events_id_seq')::text as value
+      `;
+      expect(sessionValue?.value).toBe(advanced?.value);
+      await expect(
+        sql`select setval('public.experiment_events_id_seq', 1, false)`,
+      ).rejects.toMatchObject({ code: '42501' });
+      await expect(
+        sql`select last_value from public.experiment_events_id_seq`,
+      ).rejects.toMatchObject({ code: '42501' });
+    });
+  });
+
+  it('makes future relations closed and narrows hostile installer inheritance', async () => {
+    const relationPrivileges = async (tableName: string) =>
+      database.sql<{ grantee: string; privilege: string }[]>`
+        select grantee.rolname as grantee,
+               upper(privilege.privilege_type) as privilege
+          from pg_catalog.pg_class relation
+          cross join lateral pg_catalog.aclexplode(
+            coalesce(relation.relacl, pg_catalog.acldefault('r', relation.relowner))
+          ) privilege
+          join pg_catalog.pg_roles grantee on grantee.oid = privilege.grantee
+         where relation.oid = ${`public.${tableName}`}::regclass
+           and grantee.rolname in ('anon', 'authenticated')
+         order by grantee, privilege
+      `;
+
+    try {
+      await database.sql`
+        create table public.wp186_default_probe (
+          id bigint generated always as identity primary key,
+          org_id uuid not null
+        )
+      `;
+      expect(await relationPrivileges('wp186_default_probe')).toEqual([]);
+      const defaultSequencePrivileges = await database.sql<{ privilege: string }[]>`
+        select upper(privilege.privilege_type) as privilege
+          from pg_catalog.pg_class sequence
+          cross join lateral pg_catalog.aclexplode(
+            coalesce(sequence.relacl, pg_catalog.acldefault('S', sequence.relowner))
+          ) privilege
+          join pg_catalog.pg_roles grantee on grantee.oid = privilege.grantee
+         where sequence.oid = 'public.wp186_default_probe_id_seq'::regclass
+           and grantee.rolname in ('anon', 'authenticated')
+      `;
+      expect(defaultSequencePrivileges).toEqual([]);
+
+      await database.sql`create table public.wp186_read_probe (org_id uuid not null)`;
+      await database.sql`create table public.wp186_write_probe (org_id uuid not null)`;
+      await database.sql`
+        grant all on table public.wp186_read_probe, public.wp186_write_probe
+        to anon, authenticated
+      `;
+      await database.sql`select app.install_tenant_rls('public.wp186_read_probe')`;
+      await database.sql`
+        select app.install_tenant_rls(
+          'public.wp186_write_probe', array['owner', 'admin']
+        )
+      `;
+
+      expect(await relationPrivileges('wp186_read_probe')).toEqual([
+        { grantee: 'authenticated', privilege: 'SELECT' },
+      ]);
+      expect(await relationPrivileges('wp186_write_probe')).toEqual([
+        { grantee: 'authenticated', privilege: 'DELETE' },
+        { grantee: 'authenticated', privilege: 'INSERT' },
+        { grantee: 'authenticated', privilege: 'SELECT' },
+        { grantee: 'authenticated', privilege: 'UPDATE' },
+      ]);
+
+      const [helperGrants] = await database.sql<{
+        anon: boolean;
+        authenticated: boolean;
+        service_role: boolean;
+      }[]>`
+        select
+          has_function_privilege(
+            'anon', 'app.install_tenant_rls(regclass,text[])', 'execute'
+          ) as anon,
+          has_function_privilege(
+            'authenticated', 'app.install_tenant_rls(regclass,text[])', 'execute'
+          ) as authenticated,
+          has_function_privilege(
+            'service_role', 'app.install_tenant_rls(regclass,text[])', 'execute'
+          ) as service_role
+      `;
+      expect(helperGrants).toEqual({
+        anon: false,
+        authenticated: false,
+        service_role: true,
+      });
+    } finally {
+      await database.sql`drop table if exists public.wp186_read_probe`;
+      await database.sql`drop table if exists public.wp186_write_probe`;
+      await database.sql`drop table if exists public.wp186_default_probe`;
+    }
   });
 
   it('gives every tenant table a read policy and no grant to anon', async () => {
