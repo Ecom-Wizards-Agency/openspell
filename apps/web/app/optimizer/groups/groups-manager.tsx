@@ -6,6 +6,10 @@ import type {
   OptimizationGroupRecord,
   OptimizationWorkspace,
 } from '@wizard-ads/db';
+import {
+  OPTIMIZATION_WEEKDAYS,
+  type OptimizationWeekday,
+} from '@wizard-ads/shared';
 
 interface GroupDraft {
   id: string | null;
@@ -18,7 +22,7 @@ interface GroupDraft {
   bidDecreaseCapPercent: string;
   placementIncreaseCapPercent: string;
   placementDecreaseCapPercent: string;
-  cadenceDays: string;
+  reviewWeekdays: OptimizationWeekday[];
   prioritization: '' | 'efficiency_first' | 'growth_first' | 'balanced';
   exclusions: string;
   enabled: boolean;
@@ -36,7 +40,7 @@ const EMPTY: GroupDraft = {
   bidDecreaseCapPercent: '',
   placementIncreaseCapPercent: '',
   placementDecreaseCapPercent: '',
-  cadenceDays: '',
+  reviewWeekdays: [...OPTIMIZATION_WEEKDAYS],
   prioritization: '',
   exclusions: '',
   enabled: true,
@@ -48,6 +52,16 @@ const ROLE_LABELS: Record<Exclude<GroupDraft['role'], ''>, string> = {
   discovery: 'Discovery',
   profit: 'Profit',
   shield: 'Shield',
+};
+
+const WEEKDAY_LABELS: Readonly<Record<OptimizationWeekday, string>> = {
+  monday: 'Mon',
+  tuesday: 'Tue',
+  wednesday: 'Wed',
+  thursday: 'Thu',
+  friday: 'Fri',
+  saturday: 'Sat',
+  sunday: 'Sun',
 };
 
 export function OptimizationGroupsManager({
@@ -112,6 +126,19 @@ export function OptimizationGroupsManager({
     }));
   }
 
+  function toggleWeekday(weekday: OptimizationWeekday): void {
+    setDraft((current) => {
+      const selected = current.reviewWeekdays.includes(weekday);
+      if (selected && current.reviewWeekdays.length === 1) return current;
+      return {
+        ...current,
+        reviewWeekdays: OPTIMIZATION_WEEKDAYS.filter((candidate) =>
+          candidate === weekday ? !selected : current.reviewWeekdays.includes(candidate),
+        ),
+      };
+    });
+  }
+
   function toggleVisibleCampaigns(): void {
     const visibleIds = new Set(visibleCampaigns.map((campaign) => campaign.campaignId));
     setDraft((current) => ({
@@ -152,7 +179,7 @@ export function OptimizationGroupsManager({
           bidDecreaseCapPercent: draft.bidDecreaseCapPercent,
           placementIncreaseCapPercent: draft.placementIncreaseCapPercent,
           placementDecreaseCapPercent: draft.placementDecreaseCapPercent,
-          cadenceDays: draft.cadenceDays,
+          reviewWeekdays: draft.reviewWeekdays,
           prioritization: draft.prioritization,
           exclusions: draft.exclusions.split('\n').map((value) => value.trim()).filter(Boolean),
           enabled: draft.enabled,
@@ -248,7 +275,7 @@ export function OptimizationGroupsManager({
                   {ROLE_LABELS[record.group.role]} · {record.campaignIds.length} campaign{record.campaignIds.length === 1 ? '' : 's'}
                 </span>
                 <span className="wa-opt-group-item__meta">
-                  Target ACOS {(record.group.targetAcos * 100).toFixed(1)}% · {record.group.cadence}
+                  Target ACOS {(record.group.targetAcos * 100).toFixed(1)}% · {weekdaySummary(record.group.reviewSchedule.weekdays)}
                 </span>
               </button>
             ))}
@@ -292,13 +319,37 @@ export function OptimizationGroupsManager({
             <Field label="Target ACOS" suffix="%">
               <input type="number" min="0" step="0.1" value={draft.targetAcosPercent} onChange={(event) => patch('targetAcosPercent', event.target.value)} required disabled={!canManage} />
             </Field>
-            <Field
-              label="Review every"
-              suffix="days"
-              info="How often this group becomes due for a new read-only recommendation preview. It does not apply changes to Amazon."
-            >
-              <input type="number" min="1" step="1" value={draft.cadenceDays} onChange={(event) => patch('cadenceDays', event.target.value)} required disabled={!canManage} />
-            </Field>
+            <div className="wa-field wa-weekday-schedule">
+              <span>
+                Review schedule
+                <span
+                  aria-label="Selected weekdays make this group eligible for a recommendation preview at the profile review hour. Manual previews remain available on any day."
+                  className="wa-info-mark"
+                  role="img"
+                  tabIndex={0}
+                  title="Selected weekdays make this group eligible for a recommendation preview at the profile review hour. Manual previews remain available on any day."
+                >i</span>
+              </span>
+              <div className="wa-weekday-options" role="group" aria-label="Review weekdays">
+                {OPTIMIZATION_WEEKDAYS.map((weekday) => (
+                  <label key={weekday}>
+                    <input
+                      type="checkbox"
+                      checked={draft.reviewWeekdays.includes(weekday)}
+                      disabled={!canManage}
+                      onChange={() => toggleWeekday(weekday)}
+                    />
+                    <span>{WEEKDAY_LABELS[weekday]}</span>
+                  </label>
+                ))}
+              </div>
+              <small>
+                {workspace.profileTimezone} · {String(workspace.reviewHour).padStart(2, '0')}:00 local
+                {selectedRecord?.nextRunAt
+                  ? ` · next ${formatNextDue(selectedRecord.nextRunAt, workspace.profileTimezone)}`
+                  : ''}
+              </small>
+            </div>
             <label className="wa-check-field">
               <input type="checkbox" checked={draft.enabled} onChange={(event) => patch('enabled', event.target.checked)} disabled={!canManage} />
               <span><strong>Enabled</strong><small>Eligible for due-group preview runs.</small></span>
@@ -468,7 +519,6 @@ function CampaignChoice({
 }
 
 function draftFromRecord(record: OptimizationGroupRecord): GroupDraft {
-  const days = /^(\d+)\s+days?$/.exec(record.group.cadence)?.[1] ?? '';
   return {
     id: record.group.id,
     name: record.group.name,
@@ -480,12 +530,29 @@ function draftFromRecord(record: OptimizationGroupRecord): GroupDraft {
     bidDecreaseCapPercent: decimal(record.group.bidDecreaseCap * 100),
     placementIncreaseCapPercent: decimal(record.group.placementIncreaseCap * 100),
     placementDecreaseCapPercent: decimal(record.group.placementDecreaseCap * 100),
-    cadenceDays: days,
+    reviewWeekdays: [...record.group.reviewSchedule.weekdays],
     prioritization: record.group.prioritization,
     exclusions: record.group.exclusions.join('\n'),
     enabled: record.group.enabled,
     campaignIds: record.campaignIds,
   };
+}
+
+function weekdaySummary(weekdays: readonly OptimizationWeekday[]): string {
+  if (weekdays.length === 7) return 'Every day';
+  return weekdays.map((weekday) => WEEKDAY_LABELS[weekday]).join(', ');
+}
+
+function formatNextDue(value: string, timezone: string): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date(value));
 }
 
 function decimal(value: number): string {

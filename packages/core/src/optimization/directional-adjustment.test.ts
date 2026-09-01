@@ -1,11 +1,12 @@
-import { DirectionalAdjustmentProvenance, OptimizationGroup } from '@wizard-ads/shared';
+import { DirectionalAdjustmentProvenance, ScheduledOptimizationGroup } from '@wizard-ads/shared';
 import { describe, expect, it } from 'vitest';
 import {
   adjustBidAwayFromMechanicalValue,
   adjustPlacementAwayFromMechanicalValue,
 } from './directional-adjustment.js';
 
-const group = OptimizationGroup.parse({
+const group = ScheduledOptimizationGroup.parse({
+  version: 2,
   id: '00000000-0000-4000-8000-000000000201',
   orgId: '00000000-0000-4000-8000-000000000202',
   profileId: '00000000-0000-4000-8000-000000000203',
@@ -19,7 +20,7 @@ const group = OptimizationGroup.parse({
   placementIncreaseCap: 0.5,
   placementDecreaseCap: 0.5,
   exclusions: [],
-  cadence: 'synthetic cadence',
+  reviewSchedule: { version: 2, weekdays: ['wednesday'] },
   prioritization: 'balanced',
   enabled: true,
 });

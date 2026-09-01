@@ -515,6 +515,8 @@ export const optimizationGroups = pgTable(
     placementIncreaseCap: money('placement_increase_cap', 9, 6).notNull(),
     placementDecreaseCap: money('placement_decrease_cap', 9, 6).notNull(),
     exclusions: text('exclusions').array().notNull().default([]),
+    reviewWeekdays: smallint('review_weekdays').array().$type<number[]>().notNull().default([1, 2, 3, 4, 5, 6, 7]),
+    /** Dormant rollback evidence. Runtime scheduling uses reviewWeekdays. */
     cadence: interval('cadence').notNull(),
     prioritization: optimizationPrioritization('prioritization').notNull(),
     enabled: boolean('enabled').notNull().default(true),

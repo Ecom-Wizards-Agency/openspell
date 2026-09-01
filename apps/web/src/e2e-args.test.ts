@@ -21,6 +21,7 @@ describe('web E2E runner arguments', () => {
       suites: [
         'tags-goto',
         'grid-performance',
+        'optimization-groups',
         'profile-context',
         'auth',
         'auth-members',
@@ -37,6 +38,7 @@ describe('web E2E runner arguments', () => {
       suites: [
         'tags-goto',
         'grid-performance',
+        'optimization-groups',
         'profile-context',
         'auth',
         'auth-members',
@@ -50,7 +52,7 @@ describe('web E2E runner arguments', () => {
 
   it('rejects an unknown suite instead of silently running everything', () => {
     expect(() => parseE2EArgs(['unknown'])).toThrow(
-      "Unknown suite 'unknown'. Expected one of: tags-goto, grid-performance, profile-context, auth, auth-members, auth-oauth, auth-roles, route-acceptance, all.",
+      "Unknown suite 'unknown'. Expected one of: tags-goto, grid-performance, optimization-groups, profile-context, auth, auth-members, auth-oauth, auth-roles, route-acceptance, all.",
     );
   });
 });

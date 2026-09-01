@@ -103,8 +103,8 @@ export async function GET(request: Request): Promise<Response> {
       sql: handle.sql,
       store,
       worker,
-      // Operator rule (2026-08-27): no automation without approval. Weekly
-      // recommendation runs stay off until explicitly opted in; Run now is
+      // Operator rule (2026-08-27): no automation without approval. Weekday-
+      // scheduled recommendation runs stay off until explicitly opted in; Run now is
       // unaffected.
       ...(process.env['WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS'] === '1'
         ? { recommendationSchedules: () => recommendationRuns.enqueueDueRecommendationRuns() }

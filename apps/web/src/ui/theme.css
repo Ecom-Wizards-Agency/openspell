@@ -3856,6 +3856,54 @@ button {
   font-size: var(--wa-fs-2xs);
 }
 
+.wa-weekday-schedule {
+  grid-column: span 2;
+}
+
+.wa-weekday-options {
+  display: grid;
+  gap: 0.3rem;
+  grid-template-columns: repeat(7, minmax(2.75rem, 1fr));
+}
+
+.wa-weekday-options label {
+  align-items: center;
+  background: var(--wa-surface-sunken);
+  border: 1px solid var(--wa-border-strong);
+  border-radius: var(--wa-radius-sm);
+  cursor: pointer;
+  display: flex;
+  gap: 0.3rem;
+  justify-content: center;
+  min-height: 2.5rem;
+}
+
+.wa-weekday-options input {
+  accent-color: var(--wa-accent);
+  margin: 0;
+}
+
+.wa-weekday-options span {
+  font-size: var(--wa-fs-xs);
+  font-weight: 700;
+}
+
+.wa-weekday-options label:has(input:checked) {
+  background: color-mix(in srgb, var(--wa-accent) 12%, var(--wa-surface));
+  border-color: var(--wa-accent);
+  color: var(--wa-accent-strong);
+}
+
+.wa-weekday-options label:has(input:focus-visible) {
+  outline: 2px solid var(--wa-focus);
+  outline-offset: 2px;
+}
+
+.wa-weekday-options label:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
 .wa-divider {
   border-top: 1px solid var(--wa-border);
 }

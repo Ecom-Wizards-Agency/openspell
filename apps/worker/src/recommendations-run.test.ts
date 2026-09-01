@@ -3,7 +3,7 @@
  * packages/core; these cases assert assembly, lifecycle, mapping and writes.
  */
 import { describe, expect, it } from 'vitest';
-import type { OptimizationGroup, TenantStrategy } from '@wizard-ads/shared';
+import type { ScheduledOptimizationGroup, TenantStrategy } from '@wizard-ads/shared';
 import {
   BID_REASON_TO_DATABASE,
   databaseReason,
@@ -266,7 +266,8 @@ describe('recommendations runner', () => {
   });
 
   it('uses one immutable group context and records a legal non-mechanical bid', async () => {
-    const group: OptimizationGroup = {
+    const group: ScheduledOptimizationGroup = {
+      version: 2,
       id: GROUP_ID,
       orgId: ORG_ID,
       profileId: PROFILE_ID,
@@ -280,7 +281,7 @@ describe('recommendations runner', () => {
       placementIncreaseCap: 0.2,
       placementDecreaseCap: 0.2,
       exclusions: [],
-      cadence: '7 days',
+      reviewSchedule: { version: 2, weekdays: ['thursday'] },
       prioritization: 'efficiency_first',
       enabled: true,
     };
@@ -293,7 +294,19 @@ describe('recommendations runner', () => {
     store.startResult = {
       alreadySucceeded: false,
       proposalsCount: 0,
-      groupRun: { group, dueAt: '2026-08-27T00:00:00.000Z' },
+      groupRun: {
+        group,
+        dueAt: '2026-08-27T00:00:00.000Z',
+        scheduleContext: {
+          version: 2,
+          trigger: 'scheduled',
+          profileTimezone: 'UTC',
+          weekdays: ['thursday'],
+          localHour: 4,
+          dueAt: '2026-08-27T00:00:00.000Z',
+          evaluatedAt: '2026-08-27T00:00:01.000Z',
+        },
+      },
     };
 
     await runRecommendations(
@@ -321,7 +334,8 @@ describe('recommendations runner', () => {
   });
 
   it('holds every group proposal while an exported recommendation is awaiting evidence', async () => {
-    const group: OptimizationGroup = {
+    const group: ScheduledOptimizationGroup = {
+      version: 2,
       id: GROUP_ID,
       orgId: ORG_ID,
       profileId: PROFILE_ID,
@@ -335,7 +349,7 @@ describe('recommendations runner', () => {
       placementIncreaseCap: 0.2,
       placementDecreaseCap: 0.2,
       exclusions: [],
-      cadence: '7 days',
+      reviewSchedule: { version: 2, weekdays: ['thursday'] },
       prioritization: 'efficiency_first',
       enabled: true,
     };
@@ -343,7 +357,19 @@ describe('recommendations runner', () => {
     store.startResult = {
       alreadySucceeded: false,
       proposalsCount: 0,
-      groupRun: { group, dueAt: '2026-08-27T00:00:00.000Z' },
+      groupRun: {
+        group,
+        dueAt: '2026-08-27T00:00:00.000Z',
+        scheduleContext: {
+          version: 2,
+          trigger: 'scheduled',
+          profileTimezone: 'UTC',
+          weekdays: ['thursday'],
+          localHour: 4,
+          dueAt: '2026-08-27T00:00:00.000Z',
+          evaluatedAt: '2026-08-27T00:00:01.000Z',
+        },
+      },
     };
     store.groupSafety = {
       mayPropose: false,

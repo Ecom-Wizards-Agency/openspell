@@ -1,16 +1,16 @@
 import type {
   DirectionalAdjustmentProvenance,
-  OptimizationGroup,
+  OptimizationGroupPolicy,
 } from '@wizard-ads/shared';
 
 export interface DirectionalAdjustmentResult {
-  groupId: OptimizationGroup['id'];
+  groupId: OptimizationGroupPolicy['id'];
   provenance: DirectionalAdjustmentProvenance;
   legalRange: { minimum: number; maximum: number };
 }
 
 export interface NonMechanicalBidRequest {
-  group: OptimizationGroup;
+  group: OptimizationGroupPolicy;
   currentValue: number;
   requestedValue: number;
   direction: DirectionalAdjustmentProvenance['direction'];
@@ -23,7 +23,7 @@ export interface NonMechanicalBidRequest {
 }
 
 export interface NonMechanicalPlacementRequest {
-  group: OptimizationGroup;
+  group: OptimizationGroupPolicy;
   currentValue: number;
   requestedValue: number;
   direction: DirectionalAdjustmentProvenance['direction'];

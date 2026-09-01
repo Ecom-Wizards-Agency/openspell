@@ -26,8 +26,16 @@
  * and unless every proposal it touched actually changed status.
  */
 import { createHash } from 'node:crypto';
-import { OptimizationGroup, serializeApplyRows } from '@wizard-ads/shared';
-import type { ApplyRow, RecommendationInputs } from '@wizard-ads/shared';
+import {
+  OptimizationRunScheduleContext,
+  normalizeOptimizationGroupSnapshot,
+  serializeApplyRows,
+} from '@wizard-ads/shared';
+import type {
+  ApplyRow,
+  OptimizationGroupSnapshot,
+  RecommendationInputs,
+} from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
 import { lockCurrentApplyStates, resolveCurrentApplyStates } from './apply-state.js';
 import type { JsonValue } from './goto.js';
@@ -117,9 +125,10 @@ export interface RecommendationRunSummary {
   createdAt: Date;
   finishedAt: Date | null;
   groupId: string | null;
-  groupRole: OptimizationGroup['role'] | null;
-  groupSnapshot: OptimizationGroup | null;
+  groupRole: OptimizationGroupSnapshot['role'] | null;
+  groupSnapshot: OptimizationGroupSnapshot | null;
   dueAt: Date | null;
+  scheduleContext: ReturnType<typeof OptimizationRunScheduleContext.parse> | null;
   /** Live counts per status, so "exported N of M accepted" needs no second query. */
   counts: Record<RecommendationStatusName, number>;
 }
@@ -232,9 +241,10 @@ interface RunRow {
   created_at: Date | string;
   finished_at: Date | string | null;
   group_id: string | null;
-  group_role: OptimizationGroup['role'] | null;
+  group_role: OptimizationGroupSnapshot['role'] | null;
   group_snapshot: unknown;
   due_at: Date | string | null;
+  schedule_context: unknown;
   counts: Record<string, number> | null;
 }
 
@@ -247,7 +257,13 @@ function toRunSummary(row: RunRow): RecommendationRunSummary {
   }
   const groupSnapshot = row.group_snapshot === null
     ? null
-    : OptimizationGroup.parse(row.group_snapshot);
+    : normalizeOptimizationGroupSnapshot(row.group_snapshot).group;
+  const scheduleContext = row.schedule_context === null
+    ? null
+    : OptimizationRunScheduleContext.parse(row.schedule_context);
+  if (groupSnapshot !== null && 'version' in groupSnapshot && scheduleContext === null) {
+    throw new Error('weekday recommendation run is missing immutable schedule context');
+  }
   if (groupSnapshot !== null && groupSnapshot.id !== row.group_id) {
     throw new Error('recommendation run group snapshot does not match group_id');
   }
@@ -267,6 +283,7 @@ function toRunSummary(row: RunRow): RecommendationRunSummary {
     groupRole: row.group_role,
     groupSnapshot,
     dueAt: toDateOrNull(row.due_at),
+    scheduleContext,
     counts,
   };
 }
@@ -285,6 +302,7 @@ export async function listRecommendationRuns(
            r.window_start::text as window_start, r.window_end::text as window_end,
            r.engine_version, r.proposals_count, r.created_at, r.finished_at,
            r.group_id, r.group_role::text as group_role, r.group_snapshot, r.due_at,
+           r.schedule_context,
            (
              select jsonb_object_agg(s.status, s.count)
                from (
@@ -313,6 +331,7 @@ export async function getRecommendationRun(
            r.window_start::text as window_start, r.window_end::text as window_end,
            r.engine_version, r.proposals_count, r.created_at, r.finished_at,
            r.group_id, r.group_role::text as group_role, r.group_snapshot, r.due_at,
+           r.schedule_context,
            r.strategy_snapshot,
            (
              select jsonb_object_agg(s.status, s.count)
@@ -871,7 +890,7 @@ export interface NegativeProposalResult {
  * Record "propose as negative" clicks as real proposals.
  *
  * They land in their own run, marked with an engine version that says a human
- * asked for them rather than the weekly engine: a proposal whose provenance is
+ * asked for them rather than the scheduled engine: a proposal whose provenance is
  * "an operator clicked a gram" must not be indistinguishable from one the
  * White Box formula produced.
  */

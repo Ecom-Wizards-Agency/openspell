@@ -8,7 +8,12 @@
  * ship.
  */
 import { date, index, integer, jsonb, pgTable, text, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
-import type { OptimizationGroup, RecommendationInputs, TenantStrategy } from '@wizard-ads/shared';
+import type {
+  OptimizationGroupSnapshot,
+  OptimizationRunScheduleContext,
+  RecommendationInputs,
+  TenantStrategy,
+} from '@wizard-ads/shared';
 import { money, ts } from './columns.js';
 import {
   adProduct,
@@ -39,8 +44,9 @@ export const recommendationRuns = pgTable(
     strategySnapshot: jsonb('strategy_snapshot').$type<TenantStrategy>(),
     groupId: uuid('group_id'),
     groupRole: optimizationGroupRole('group_role'),
-    groupSnapshot: jsonb('group_snapshot').$type<OptimizationGroup>(),
+    groupSnapshot: jsonb('group_snapshot').$type<OptimizationGroupSnapshot>(),
     dueAt: ts('due_at'),
+    scheduleContext: jsonb('schedule_context').$type<OptimizationRunScheduleContext>(),
     engineVersion: text('engine_version'),
     proposalsCount: integer('proposals_count').notNull().default(0),
     startedAt: ts('started_at'),

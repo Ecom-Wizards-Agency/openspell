@@ -1,22 +1,24 @@
 /**
  * Tenant-scoped optimization-group workspace and atomic internal writes.
  *
- * These writes configure Wizard Ads only. They never call Amazon and never
+ * These writes configure OpenSpell only. They never call Amazon and never
  * mutate an advertising entity. The full settings document and campaign set
- * move in one transaction so a rename or cadence edit cannot leave assignments
+ * move in one transaction so a rename or weekday edit cannot leave assignments
  * attached to a half-updated policy.
  */
 import { randomUUID } from 'node:crypto';
 import {
-  OptimizationGroup,
+  ScheduledOptimizationGroup,
+  optimizationWeekdaysFromIso,
+  optimizationWeekdaysToIso,
   type AdProduct,
-  type OptimizationGroup as OptimizationGroupValue,
+  type ScheduledOptimizationGroup as OptimizationGroupValue,
 } from '@wizard-ads/shared';
 import type { DbHandle, QuerySql } from '../client.js';
 
 export type OptimizationGroupSettings = Omit<
   OptimizationGroupValue,
-  'id' | 'orgId' | 'profileId'
+  'id' | 'orgId' | 'profileId' | 'version'
 >;
 
 export interface OptimizationCampaignChoice {
@@ -46,6 +48,8 @@ export interface OptimizationGroupRecord {
 export interface OptimizationWorkspace {
   groups: OptimizationGroupRecord[];
   campaigns: OptimizationCampaignChoice[];
+  profileTimezone: string;
+  reviewHour: number;
   assignedCampaigns: number;
   unassignedCampaigns: number;
 }
@@ -81,7 +85,7 @@ interface GroupWireRow {
   placement_increase_cap: string | number;
   placement_decrease_cap: string | number;
   exclusions: string[];
-  cadence: string;
+  review_weekdays: number[];
   prioritization: OptimizationGroupValue['prioritization'];
   enabled: boolean;
   next_run_at: Date | string | null;
@@ -102,6 +106,11 @@ interface CampaignWireRow {
   group_id: string | null;
 }
 
+interface ProfileScheduleWireRow {
+  timezone: string;
+  review_hour: string | number;
+}
+
 export class OptimizationGroupPersistenceError extends Error {
   constructor(message: string) {
     super(message);
@@ -114,13 +123,13 @@ export async function readOptimizationWorkspace(
   handle: Pick<DbHandle, 'sql'>,
   input: { orgId: string; profileId: string },
 ): Promise<OptimizationWorkspace> {
-  const [groups, campaigns] = await Promise.all([
+  const [groups, campaigns, profiles] = await Promise.all([
     handle.sql<GroupWireRow[]>`
       select g.id, g.org_id, g.profile_id, g.name, g.role::text as role,
              g.target_acos, g.bid_floor, g.bid_ceiling,
              g.bid_increase_cap, g.bid_decrease_cap,
              g.placement_increase_cap, g.placement_decrease_cap,
-             g.exclusions, g.cadence::text as cadence,
+             g.exclusions, g.review_weekdays,
              g.prioritization::text as prioritization, g.enabled, g.next_run_at,
              coalesce(assignments.campaign_ids, '{}'::text[]) as campaign_ids,
              latest.id as last_run_id, latest.status::text as last_run_status,
@@ -165,7 +174,15 @@ export async function readOptimizationWorkspace(
          and c.deleted_at is null
        order by c.ad_product, lower(c.name), c.amazon_id
     `,
+    handle.sql<ProfileScheduleWireRow[]>`
+      select timezone, coalesce(preferred_sync_hour, 4) as review_hour
+        from public.ad_profiles
+       where org_id = ${input.orgId} and id = ${input.profileId}
+    `,
   ]);
+
+  const profile = profiles[0];
+  if (!profile) throw new OptimizationGroupPersistenceError('profile not found in organisation');
 
   const records = groups.map(groupRecordFromWire);
   const campaignRows = campaigns.map((row) => ({
@@ -180,6 +197,8 @@ export async function readOptimizationWorkspace(
   return {
     groups: records,
     campaigns: campaignRows,
+    profileTimezone: profile.timezone,
+    reviewHour: Number(profile.review_hour),
     assignedCampaigns,
     unassignedCampaigns: campaignRows.length - assignedCampaigns,
   };
@@ -194,7 +213,8 @@ export async function saveOptimizationGroup(
   input: SaveOptimizationGroupInput,
 ): Promise<SaveOptimizationGroupResult> {
   const id = input.id ?? randomUUID();
-  const group = OptimizationGroup.parse({
+  const group = ScheduledOptimizationGroup.parse({
+    version: 2,
     id,
     orgId: input.orgId,
     profileId: input.profileId,
@@ -206,8 +226,9 @@ export async function saveOptimizationGroup(
   }
 
   return handle.sql.begin(async (sql) => {
-    const [profile] = await sql<{ id: string }[]>`
-      select id from public.ad_profiles
+    const [profile] = await sql<{ id: string; timezone: string; review_hour: number | string }[]>`
+      select id, timezone, coalesce(preferred_sync_hour, 4) as review_hour
+        from public.ad_profiles
        where org_id = ${input.orgId} and id = ${input.profileId}
        for update
     `;
@@ -244,14 +265,15 @@ export async function saveOptimizationGroup(
         id, org_id, profile_id, name, role, target_acos,
         bid_floor, bid_ceiling, bid_increase_cap, bid_decrease_cap,
         placement_increase_cap, placement_decrease_cap, exclusions,
-        cadence, prioritization, enabled, next_run_at
+        review_weekdays, cadence, prioritization, enabled, next_run_at
       ) values (
         ${group.id}, ${group.orgId}, ${group.profileId}, ${group.name},
         ${group.role}::public.optimization_group_role, ${group.targetAcos},
         ${group.bidFloor}, ${group.bidCeiling}, ${group.bidIncreaseCap},
         ${group.bidDecreaseCap}, ${group.placementIncreaseCap},
         ${group.placementDecreaseCap}, ${group.exclusions},
-        ${group.cadence}::interval,
+        ${optimizationWeekdaysToIso(group.reviewSchedule.weekdays)}::smallint[],
+        interval '7 days',
         ${group.prioritization}::public.optimization_prioritization,
         ${group.enabled}, case when ${group.enabled} then now() else null end
       )
@@ -266,12 +288,12 @@ export async function saveOptimizationGroup(
         placement_increase_cap = excluded.placement_increase_cap,
         placement_decrease_cap = excluded.placement_decrease_cap,
         exclusions = excluded.exclusions,
-        cadence = excluded.cadence,
+        review_weekdays = excluded.review_weekdays,
         prioritization = excluded.prioritization,
         enabled = excluded.enabled,
         next_run_at = case
           when not excluded.enabled then null
-          else coalesce(public.optimization_groups.next_run_at, now())
+          else public.optimization_groups.next_run_at
         end
       where public.optimization_groups.org_id = excluded.org_id
         and public.optimization_groups.profile_id = excluded.profile_id
@@ -344,6 +366,9 @@ export async function saveOptimizationGroup(
           movedCampaigns,
           removedCampaigns: removed.length,
           enabled: group.enabled,
+          reviewWeekdays: group.reviewSchedule.weekdays,
+          profileTimezone: profile.timezone,
+          reviewHour: Number(profile.review_hour),
         })}::jsonb,
         'web'
       )
@@ -368,7 +393,7 @@ async function readGroupRecords(
            g.target_acos, g.bid_floor, g.bid_ceiling,
            g.bid_increase_cap, g.bid_decrease_cap,
            g.placement_increase_cap, g.placement_decrease_cap,
-           g.exclusions, g.cadence::text as cadence,
+           g.exclusions, g.review_weekdays,
            g.prioritization::text as prioritization, g.enabled, g.next_run_at,
            coalesce(assignments.campaign_ids, '{}'::text[]) as campaign_ids,
            latest.id as last_run_id, latest.status::text as last_run_status,
@@ -400,7 +425,8 @@ async function readGroupRecords(
 }
 
 function groupRecordFromWire(row: GroupWireRow): OptimizationGroupRecord {
-  const group = OptimizationGroup.parse({
+  const group = ScheduledOptimizationGroup.parse({
+    version: 2,
     id: row.id,
     orgId: row.org_id,
     profileId: row.profile_id,
@@ -414,7 +440,10 @@ function groupRecordFromWire(row: GroupWireRow): OptimizationGroupRecord {
     placementIncreaseCap: Number(row.placement_increase_cap),
     placementDecreaseCap: Number(row.placement_decrease_cap),
     exclusions: row.exclusions,
-    cadence: row.cadence,
+    reviewSchedule: {
+      version: 2,
+      weekdays: optimizationWeekdaysFromIso(row.review_weekdays),
+    },
     prioritization: row.prioritization,
     enabled: row.enabled,
   });

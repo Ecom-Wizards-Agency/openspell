@@ -2,9 +2,9 @@ import { evaluateRecommendationEvidence } from '@wizard-ads/core';
 import type { DbHandle, QuerySql } from '@wizard-ads/db';
 import {
   OptimizationRunContext,
+  normalizeOptimizationGroupSnapshot,
   TenantStrategy,
   type IsoDate,
-  type OptimizationGroup,
   type RecommendationEvidencePolicy,
 } from '@wizard-ads/shared';
 
@@ -19,6 +19,7 @@ interface CandidateRow {
   group_id: string | null;
   group_role: string | null;
   group_snapshot: unknown;
+  schedule_context: unknown;
   run_id: string;
   due_at: Date | string | null;
   window_start: string | null;
@@ -239,13 +240,19 @@ function prepareCandidate(candidate: CandidateRow): PreparedCandidate | { ok: fa
     candidate.window_start === null || candidate.window_end === null
   ) return { ok: false, reason: 'missing_group_context' };
   if (candidate.apply_row_count !== 1) return { ok: false, reason: 'ambiguous_apply_rows' };
-  const group = candidate.group_snapshot as OptimizationGroup;
+  let group;
+  try {
+    group = normalizeOptimizationGroupSnapshot(candidate.group_snapshot).group;
+  } catch {
+    return { ok: false, reason: 'invalid_group_context' };
+  }
   const context = OptimizationRunContext.safeParse({
     runId: candidate.run_id,
     profileId: candidate.profile_id,
     groupId: candidate.group_id,
     groupRole: candidate.group_role,
     groupSnapshot: group,
+    ...(candidate.schedule_context === null ? {} : { scheduleContext: candidate.schedule_context }),
     dueAt: toDate(candidate.due_at ?? candidate.exported_at).toISOString(),
     windowStart: candidate.window_start,
     windowEnd: candidate.window_end,
@@ -310,6 +317,7 @@ async function queryCandidates(
            recommendation.org_id, recommendation.profile_id,
            coalesce(profile.timezone, 'UTC') as profile_timezone,
            run.group_id, run.group_role::text as group_role, run.group_snapshot,
+           run.schedule_context,
            run.id as run_id, run.due_at, run.window_start::text as window_start,
            run.window_end::text as window_end, run.lookback_days, run.strategy_snapshot,
            recommendation.entity_type::text as entity_type, recommendation.entity_id,

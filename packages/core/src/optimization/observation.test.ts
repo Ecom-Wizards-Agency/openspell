@@ -1,5 +1,5 @@
 import {
-  OptimizationGroup,
+  ScheduledOptimizationGroup,
   OptimizationRunContext,
   RecommendationObservation,
 } from '@wizard-ads/shared';
@@ -16,7 +16,8 @@ const RUN_ID = '00000000-0000-4000-8000-000000000104';
 const RECOMMENDATION_ID = '00000000-0000-4000-8000-000000000105';
 const PRIOR_RECOMMENDATION_ID = '00000000-0000-4000-8000-000000000106';
 
-const group = OptimizationGroup.parse({
+const group = ScheduledOptimizationGroup.parse({
+  version: 2,
   id: GROUP_ID,
   orgId: ORG_ID,
   profileId: PROFILE_ID,
@@ -30,7 +31,7 @@ const group = OptimizationGroup.parse({
   placementIncreaseCap: 0.5,
   placementDecreaseCap: 0.5,
   exclusions: [],
-  cadence: 'synthetic cadence',
+  reviewSchedule: { version: 2, weekdays: ['wednesday'] },
   prioritization: 'balanced',
   enabled: true,
 });
@@ -42,6 +43,15 @@ const context = OptimizationRunContext.parse({
   groupRole: 'profit',
   groupSnapshot: group,
   dueAt: '2026-08-20T00:00:00Z',
+  scheduleContext: {
+    version: 2,
+    trigger: 'scheduled',
+    profileTimezone: 'UTC',
+    weekdays: ['wednesday'],
+    localHour: 4,
+    dueAt: '2026-08-20T00:00:00Z',
+    evaluatedAt: '2026-08-20T00:00:01Z',
+  },
   windowStart: '2026-07-20',
   windowEnd: '2026-08-19',
 });

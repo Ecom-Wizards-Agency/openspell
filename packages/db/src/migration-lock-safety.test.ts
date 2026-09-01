@@ -8,6 +8,7 @@ const MIGRATIONS_DIR = fileURLToPath(
 
 const lockSensitiveMigrations = [
   '20260830170000_marketing_stream_correctness.sql',
+  '20260830180000_optimization_weekday_schedules.sql',
   '20260831100000_unified_reporting_dual_run.sql',
   '20260901000000_contextual_negative_review_exports.sql',
   '20260901010000_authenticated_relation_privilege_hardening.sql',

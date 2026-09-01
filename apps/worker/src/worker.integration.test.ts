@@ -21,9 +21,14 @@ import {
   type TestDatabase,
 } from '@wizard-ads/db/testing';
 import {
+  createDb,
   enqueueDueSchedules,
+  readOptimizationWorkspace,
   revokeIntegrationSecret,
+  saveOptimizationGroup,
   storeIntegrationSecret,
+  type DbHandle,
+  type OptimizationGroupRecord,
   type ReportDatePromotionResult,
   type StagedReportDate,
 } from '@wizard-ads/db';
@@ -149,6 +154,121 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     await database.sql`delete from public.report_requests where org_id = ${orgId}`;
     await database.sql`delete from public.fact_profile_daily where profile_id = ${profileId}`;
   });
+
+  async function waitForBackendLock(pid: number): Promise<void> {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const [activity] = await database.sql<{ wait_event_type: string | null }[]>`
+        select wait_event_type
+          from pg_catalog.pg_stat_activity
+         where pid = ${pid}
+      `;
+      if (activity?.wait_event_type === 'Lock') return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`backend ${pid} did not reach the expected lock wait`);
+  }
+
+  function settingsFromRecord(record: OptimizationGroupRecord) {
+    return {
+      name: record.group.name,
+      role: record.group.role,
+      targetAcos: record.group.targetAcos,
+      bidFloor: record.group.bidFloor,
+      bidCeiling: record.group.bidCeiling,
+      bidIncreaseCap: record.group.bidIncreaseCap,
+      bidDecreaseCap: record.group.bidDecreaseCap,
+      placementIncreaseCap: record.group.placementIncreaseCap,
+      placementDecreaseCap: record.group.placementDecreaseCap,
+      exclusions: record.group.exclusions,
+      reviewSchedule: record.group.reviewSchedule,
+      prioritization: record.group.prioritization,
+      enabled: record.group.enabled,
+    };
+  }
+
+  async function raceDueSchedulerAgainst(
+    contender: (handle: DbHandle, record: OptimizationGroupRecord) => Promise<unknown>,
+  ): Promise<readonly [PromiseSettledResult<number>, PromiseSettledResult<unknown>]> {
+    await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
+    await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+    const workspace = await readOptimizationWorkspace(database, { orgId, profileId });
+    const record = workspace.groups[0];
+    if (!record) throw new Error('seeded optimization group missing');
+    const now = new Date();
+    await database.sql`
+      update public.optimization_groups
+         set enabled = true,
+             review_weekdays = array[1, 2, 3, 4, 5, 6, 7]::smallint[]
+       where id = ${record.group.id}
+    `;
+    await database.sql`
+      update public.optimization_groups
+         set next_run_at = ${now.toISOString()}::timestamptz - interval '1 minute'
+       where id = ${record.group.id}
+    `;
+
+    await database.sql.unsafe(`
+      create or replace function app.test_wp171_pause_run_insert()
+      returns trigger
+      language plpgsql
+      set search_path = pg_catalog
+      as $trigger$
+      begin
+        perform pg_advisory_xact_lock(171001);
+        return new;
+      end;
+      $trigger$;
+      create trigger test_wp171_pause_run_insert
+      before insert on public.recommendation_runs
+      for each row execute function app.test_wp171_pause_run_insert();
+    `);
+
+    const gateHandle = createDb({ connectionString: database.connectionString, max: 1 });
+    const schedulerHandle = createDb({ connectionString: database.connectionString, max: 1 });
+    const contenderHandle = createDb({ connectionString: database.connectionString, max: 1 });
+    let releaseGate = () => {};
+    let markGateHeld = () => {};
+    const gateHeld = new Promise<void>((resolve) => { markGateHeld = resolve; });
+    const gateRelease = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const gate = gateHandle.sql.begin(async (sql) => {
+      await sql`select pg_advisory_xact_lock(171001)`;
+      markGateHeld();
+      await gateRelease;
+    });
+
+    try {
+      await gateHeld;
+      const [schedulerBackend] = await schedulerHandle.sql<{ pid: number }[]>`
+        select pg_backend_pid() as pid
+      `;
+      const [contenderBackend] = await contenderHandle.sql<{ pid: number }[]>`
+        select pg_backend_pid() as pid
+      `;
+      if (!schedulerBackend || !contenderBackend) throw new Error('test backend missing');
+
+      const scheduled = new PostgresRecommendationRunStore(schedulerHandle)
+        .enqueueDueRecommendationRuns(now);
+      await waitForBackendLock(schedulerBackend.pid);
+      const concurrent = contender(contenderHandle, record);
+      await waitForBackendLock(contenderBackend.pid);
+      releaseGate();
+      const outcomes = await Promise.allSettled([scheduled, concurrent]);
+      await gate;
+      return outcomes;
+    } finally {
+      releaseGate();
+      await Promise.allSettled([gate]);
+      await database.sql.unsafe(`
+        drop trigger if exists test_wp171_pause_run_insert on public.recommendation_runs;
+        drop function if exists app.test_wp171_pause_run_insert();
+      `);
+      await Promise.all([
+        gateHandle.close(),
+        schedulerHandle.close(),
+        contenderHandle.close(),
+      ]);
+    }
+  }
 
   afterAll(async () => { await database?.drop(); }, 30_000);
 
@@ -302,9 +422,9 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     });
   });
 
-  it('mints one delayed weekly run/job per due optimization group', async () => {
+  it('mints one run/job per due optimization-group weekday schedule', async () => {
     await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
-    // N-gram proposals share recommendation_runs but are not weekly optimizer
+    // N-gram proposals share recommendation_runs but are not scheduled optimizer
     // executions, so a recent one must not suppress this profile's due run.
     await database.sql`
       insert into public.recommendation_runs
@@ -313,6 +433,22 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     `;
     const store = new PostgresRecommendationRunStore(database);
     const now = new Date();
+    await database.sql`
+      update public.optimization_groups group_row
+         set review_weekdays = array[
+               extract(isodow from ${now.toISOString()}::timestamptz at time zone profile.timezone)::smallint
+             ]
+        from public.ad_profiles profile
+       where group_row.org_id = ${orgId}
+         and group_row.profile_id = ${profileId}
+         and profile.org_id = group_row.org_id
+         and profile.id = group_row.profile_id
+    `;
+    await database.sql`
+      update public.optimization_groups
+         set next_run_at = ${now.toISOString()}::timestamptz - interval '1 minute'
+       where org_id = ${orgId} and profile_id = ${profileId}
+    `;
 
     expect(await store.enqueueDueRecommendationRuns(now)).toBe(1);
     expect(await store.enqueueDueRecommendationRuns(now)).toBe(0);
@@ -326,12 +462,18 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       priority: number;
       delay_seconds: number;
       engine_version: string;
+      schedule_trigger: string | null;
+      schedule_timezone: string | null;
+      schedule_due_at: string | null;
     }[]>`
       select r.id as run_id,
              j.payload ->> 'runId' as payload_run_id,
              r.group_id,
              j.payload ->> 'groupId' as payload_group_id,
              r.group_snapshot ->> 'id' as group_snapshot_id,
+             r.schedule_context ->> 'trigger' as schedule_trigger,
+             r.schedule_context ->> 'profileTimezone' as schedule_timezone,
+             r.schedule_context ->> 'dueAt' as schedule_due_at,
              r.engine_version,
              j.priority,
              extract(epoch from (j.run_after - ${now.toISOString()}::timestamptz)) as delay_seconds
@@ -345,9 +487,140 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     expect(job?.group_id).not.toBeNull();
     expect(job?.payload_group_id).toBe(job?.group_id);
     expect(job?.group_snapshot_id).toBe(job?.group_id);
+    expect(job?.schedule_trigger).toBe('scheduled');
+    expect(job?.schedule_timezone).toBe('UTC');
+    expect(job?.schedule_due_at).toBe(new Date(now.getTime() - 60_000).toISOString());
     expect(job?.engine_version).toBe(RECOMMENDATIONS_ENGINE_VERSION);
     expect(job?.priority).toBe(RECOMMENDATION_SCHEDULE_PRIORITY);
     expect(Number(job?.delay_seconds)).toBe(5 * 60 * 60);
+  });
+
+  it('keeps profile-first lock order against a concurrent manual preview', async () => {
+    const [scheduled, manual] = await raceDueSchedulerAgainst((handle, record) =>
+      new PostgresRecommendationRunStore(handle).enqueueRecommendationRun({
+        orgId,
+        profileId,
+        groupId: record.group.id,
+        source: 'web',
+      }));
+
+    expect(scheduled).toEqual({ status: 'fulfilled', value: 1 });
+    expect(manual.status).toBe('rejected');
+    if (manual.status === 'rejected') {
+      expect(String(manual.reason)).toMatch(/queued or running preview/);
+      expect(String(manual.reason)).not.toMatch(/deadlock detected/i);
+    }
+  });
+
+  it('keeps profile-first lock order against a concurrent group save', async () => {
+    const [scheduled, saved] = await raceDueSchedulerAgainst((handle, record) =>
+      saveOptimizationGroup(handle, {
+        orgId,
+        profileId,
+        actorId: USER,
+        id: record.group.id,
+        settings: settingsFromRecord(record),
+        campaignIds: record.campaignIds,
+      }));
+
+    expect(scheduled).toEqual({ status: 'fulfilled', value: 1 });
+    expect(saved.status).toBe('fulfilled');
+    if (saved.status === 'rejected') {
+      expect(String(saved.reason)).not.toMatch(/deadlock detected/i);
+    }
+  });
+
+  it('keeps profile-first lock order against a concurrent profile schedule edit', async () => {
+    const [scheduled, updated] = await raceDueSchedulerAgainst(async (handle) => {
+      const rows = await handle.sql<{ id: string }[]>`
+        update public.ad_profiles
+           set preferred_sync_hour = (coalesce(preferred_sync_hour, 4) + 1) % 24
+         where org_id = ${orgId} and id = ${profileId}
+        returning id
+      `;
+      if (rows.length !== 1) throw new Error('updated 0 of 1 profile schedules');
+    });
+
+    expect(scheduled).toEqual({ status: 'fulfilled', value: 1 });
+    expect(updated.status).toBe('fulfilled');
+    if (updated.status === 'rejected') {
+      expect(String(updated.reason)).not.toMatch(/deadlock detected/i);
+    }
+  });
+
+  it('reconciles every due group once across concurrent schedulers', async () => {
+    await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
+    await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+    const [fixture] = await database.sql<{ id: string }[]>`
+      select id from public.optimization_groups
+       where org_id = ${orgId} and profile_id = ${profileId}
+       order by id limit 1
+    `;
+    if (!fixture) throw new Error('seeded optimization group missing');
+    const [second] = await database.sql<{ id: string }[]>`
+      insert into public.optimization_groups (
+        org_id, profile_id, name, role, target_acos,
+        bid_floor, bid_ceiling, bid_increase_cap, bid_decrease_cap,
+        placement_increase_cap, placement_decrease_cap, exclusions,
+        review_weekdays, cadence, prioritization, enabled
+      )
+      select org_id, profile_id, name || ' concurrent', 'discovery', target_acos,
+             bid_floor, bid_ceiling, bid_increase_cap, bid_decrease_cap,
+             placement_increase_cap, placement_decrease_cap, exclusions,
+             array[1, 2, 3, 4, 5, 6, 7]::smallint[], cadence, prioritization, true
+        from public.optimization_groups
+       where id = ${fixture.id}
+      returning id
+    `;
+    if (!second) throw new Error('second optimization group missing');
+    const groupIds = [fixture.id, second.id];
+    const now = new Date();
+    const firstHandle = createDb({ connectionString: database.connectionString, max: 1 });
+    const secondHandle = createDb({ connectionString: database.connectionString, max: 1 });
+
+    try {
+      await database.sql`
+        update public.optimization_groups
+           set enabled = true,
+               review_weekdays = array[1, 2, 3, 4, 5, 6, 7]::smallint[]
+         where id = any (${groupIds}::uuid[])
+      `;
+      await database.sql`
+        update public.optimization_groups
+           set next_run_at = ${now.toISOString()}::timestamptz - interval '1 minute'
+         where id = any (${groupIds}::uuid[])
+      `;
+
+      const counts = await Promise.all([
+        new PostgresRecommendationRunStore(firstHandle).enqueueDueRecommendationRuns(now),
+        new PostgresRecommendationRunStore(secondHandle).enqueueDueRecommendationRuns(now),
+      ]);
+      expect(counts.reduce((sum, count) => sum + count, 0)).toBe(2);
+
+      const [evidence] = await database.sql<{
+        runs: string;
+        distinct_groups: string;
+        jobs: string;
+        advanced: string;
+      }[]>`
+        select count(*)::text as runs,
+               count(distinct run.group_id)::text as distinct_groups,
+               count(job.id)::text as jobs,
+               count(*) filter (where group_row.next_run_at > ${now.toISOString()}::timestamptz)::text
+                 as advanced
+          from public.recommendation_runs run
+          join public.sync_jobs job on job.payload ->> 'runId' = run.id::text
+          join public.optimization_groups group_row on group_row.id = run.group_id
+         where run.org_id = ${orgId}
+           and run.group_id = any (${groupIds}::uuid[])
+      `;
+      expect(evidence).toEqual({ runs: '2', distinct_groups: '2', jobs: '2', advanced: '2' });
+    } finally {
+      await Promise.all([firstHandle.close(), secondHandle.close()]);
+      await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
+      await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+      await database.sql`delete from public.optimization_groups where id = ${second.id}`;
+    }
   });
 
   it('refuses overlapping group previews and holds after export until complete continue evidence', async () => {
@@ -360,12 +633,27 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     `;
     if (!group) throw new Error('seeded optimization group missing');
     const store = new PostgresRecommendationRunStore(database);
+    await database.sql`
+      update public.optimization_groups
+         set review_weekdays = array[
+           case extract(isodow from now())::int when 7 then 1
+                else extract(isodow from now())::int + 1 end
+         ]::smallint[]
+       where id = ${group.id}
+    `;
     const first = await store.enqueueRecommendationRun({
       orgId,
       profileId,
       groupId: group.id,
       source: 'web',
     });
+    const [manualContext] = await database.sql<{ trigger: string; weekdays: unknown }[]>`
+      select schedule_context ->> 'trigger' as trigger,
+             schedule_context -> 'weekdays' as weekdays
+        from public.recommendation_runs where id = ${first.runId}
+    `;
+    expect(manualContext?.trigger).toBe('manual');
+    expect(manualContext?.weekdays).toHaveLength(1);
     await expect(store.enqueueRecommendationRun({
       orgId,
       profileId,
