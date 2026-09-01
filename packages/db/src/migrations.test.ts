@@ -728,7 +728,7 @@ describe.skipIf(!available)('migrations', () => {
     expect(mismatches).toEqual([]);
   });
 
-  it('keeps API-role sequence and creator defaults at the exact minimum', async () => {
+  it('keeps API-role sequences and repository creator defaults at the exact minimum', async () => {
     const sequencePrivileges = await database.sql<{
       sequence_name: string;
       grantee: string;
@@ -764,20 +764,31 @@ describe.skipIf(!available)('migrations', () => {
 
     const defaultPrivileges = await database.sql<{
       creator: string;
+      grantor: string;
+      scope: string;
       object_type: string;
       grantee: string;
       privilege: string;
+      grantable: boolean;
     }[]>`
       select creator.rolname as creator,
+             grantor.rolname as grantor,
+             case defaults.defaclnamespace
+               when 0 then 'global'
+               else namespace.nspname
+             end as scope,
              defaults.defaclobjtype as object_type,
              case privilege.grantee
                when 0 then 'public'
                else grantee.rolname
              end as grantee,
-             upper(privilege.privilege_type) as privilege
+             upper(privilege.privilege_type) as privilege,
+             privilege.is_grantable as grantable
         from pg_catalog.pg_default_acl defaults
         cross join lateral pg_catalog.aclexplode(defaults.defaclacl) privilege
         join pg_catalog.pg_roles creator on creator.oid = defaults.defaclrole
+        join pg_catalog.pg_roles grantor on grantor.oid = privilege.grantor
+        left join pg_catalog.pg_namespace namespace on namespace.oid = defaults.defaclnamespace
         left join pg_catalog.pg_roles grantee on grantee.oid = privilege.grantee
        where defaults.defaclnamespace in (0::oid, 'public'::regnamespace::oid)
          and defaults.defaclobjtype in ('r', 'S')
@@ -785,9 +796,48 @@ describe.skipIf(!available)('migrations', () => {
            privilege.grantee = 0
            or grantee.rolname in ('anon', 'authenticated')
          )
-       order by creator, object_type, grantee, privilege
+       order by creator,
+                case defaults.defaclobjtype when 'S' then 0 else 1 end,
+                grantee, privilege, grantor, scope, grantable
     `;
-    expect(defaultPrivileges).toEqual([]);
+    const [server] = await database.sql<{ version: number }[]>`
+      select current_setting('server_version_num')::integer as version
+    `;
+    const tablePrivileges = [
+      'DELETE',
+      'INSERT',
+      ...((server?.version ?? 0) >= 170000 ? ['MAINTAIN'] : []),
+      'REFERENCES',
+      'SELECT',
+      'TRIGGER',
+      'TRUNCATE',
+      'UPDATE',
+    ];
+    const expectedDefaults = [
+      ...['anon', 'authenticated'].flatMap((grantee) =>
+        ['SELECT', 'UPDATE', 'USAGE'].map((privilege) => ({
+          creator: 'supabase_admin',
+          grantor: 'supabase_admin',
+          scope: 'public',
+          object_type: 'S',
+          grantee,
+          privilege,
+          grantable: false,
+        })),
+      ),
+      ...['anon', 'authenticated'].flatMap((grantee) =>
+        tablePrivileges.map((privilege) => ({
+          creator: 'supabase_admin',
+          grantor: 'supabase_admin',
+          scope: 'public',
+          object_type: 'r',
+          grantee,
+          privilege,
+          grantable: false,
+        })),
+      ),
+    ];
+    expect(defaultPrivileges).toEqual(expectedDefaults);
 
     await asUser(database, '18618618-6186-4186-8186-186186186186', async (sql) => {
       const [advanced] = await sql<{ value: string }[]>`
@@ -806,7 +856,7 @@ describe.skipIf(!available)('migrations', () => {
     });
   });
 
-  it('makes future relations closed and narrows hostile installer inheritance', async () => {
+  it('closes repository-created relations while preserving the platform creator baseline', async () => {
     const relationPrivileges = async (tableName: string) =>
       database.sql<{ grantee: string; privilege: string }[]>`
         select grantee.rolname as grantee,
@@ -840,6 +890,28 @@ describe.skipIf(!available)('migrations', () => {
            and grantee.rolname in ('anon', 'authenticated')
       `;
       expect(defaultSequencePrivileges).toEqual([]);
+
+      await database.sql.begin(async (sql) => {
+        await sql`set local role supabase_admin`;
+        await sql`
+          create table public.wp186_platform_default_probe (
+            id bigint generated always as identity primary key
+          )
+        `;
+      });
+      const [platformAuthority] = await database.sql<{
+        table_truncate: boolean;
+        sequence_update: boolean;
+      }[]>`
+        select
+          has_table_privilege(
+            'authenticated', 'public.wp186_platform_default_probe', 'truncate'
+          ) as table_truncate,
+          has_sequence_privilege(
+            'authenticated', 'public.wp186_platform_default_probe_id_seq', 'update'
+          ) as sequence_update
+      `;
+      expect(platformAuthority).toEqual({ table_truncate: true, sequence_update: true });
 
       await database.sql`create table public.wp186_read_probe (org_id uuid not null)`;
       await database.sql`create table public.wp186_write_probe (org_id uuid not null)`;
@@ -889,6 +961,7 @@ describe.skipIf(!available)('migrations', () => {
       await database.sql`drop table if exists public.wp186_read_probe`;
       await database.sql`drop table if exists public.wp186_write_probe`;
       await database.sql`drop table if exists public.wp186_default_probe`;
+      await database.sql`drop table if exists public.wp186_platform_default_probe`;
     }
   });
 
