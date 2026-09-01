@@ -2,7 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated` · `superseded`.
 
-Source and deployment headers reconciled 2026-09-01 against `origin/main` at `6d182e6`. The
+Source and deployment headers reconciled 2026-09-01 against `origin/main` at `c7a141a`. The
 implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
 the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
 the implementation is reachable from the recorded main revision. It does not by itself mean
@@ -121,7 +121,7 @@ implementation brief in `docs/workpackages/`.
 | 93 | Guarded Amazon write policy | merged; runtime gated | manually approved writes are authorized only through immutable worker plans, allowlists, audit and resync; no general live mutation path exists |
 | 96 | Guarded Sponsored Products write gateway | review; contract and adapter superseded | WP-179 and WP-180 replace the stale PR's shared-contract and provider-adapter portions; persistence and worker slices remain unmerged and all runtime gates remain closed |
 | 110 | Focused operator navigation | merged and deployed | task-oriented groups and quiet utility footer |
-| 112 | Release-artifact checks | review | open PR; exact distinctive runtime artifacts still need reconciliation |
+| 112 | Release-artifact checks | superseded | stale PR #35 was closed after WP-184 preserved and strengthened its distinct requirements |
 | 113 | OpenSpell MCP connection name | merged and deployed in web | setup snippets use `openspell`; stable environment-variable and package identifiers remain unchanged |
 | 114 | Date-range browser gate | merged | Dashboard and Grid presets are covered in the authenticated suite |
 | 116 | Hydration-safe E2E interactions | merged | exact interaction-readiness assertions merged through PR #38 at `4c95778` |
@@ -148,6 +148,7 @@ implementation brief in `docs/workpackages/`.
 | 181 | Unified Reporting dual-run | merged; runtime gated | default-off `spCampaigns` sidecar merged in `d75ec26` with explicit advertiser binding, a durable one-send create fence, bounded retrieval and a separate outcome ledger; Reporting v3 remains the sole fact and promotion authority; PR #91 performed no hosted or provider action, while hosted migration and binding state remain unverified |
 | 182 | Contextual-negative review/export | merged; hosted schema and deployment gated | complete bounded review, audit-backed decisions, review-preserving refresh and immutable exact-byte JSON/CSV evidence merged in `5d36457`; WP-182 adds no Amazon action path and performed no hosted migration or deployment |
 | 183 | Calendar-boundary fixture reliability | merged; test-only | tenant fixtures now open their current and preceding fact months, with SQP-crossing and Sunday-month-start regressions; merged in `6d182e6` without a migration or hosted data change |
+| 184 | Distinctive release evidence | merged; deployment gated | exact Vercel revision authority, official-SVG bytes, rendered Grid/Recommendations capabilities, locked GET-only transport and deterministic non-authorizing evidence merged in `c7a141a`; no candidate was deployed, verified or promoted |
 
 ## Milestone gates
 
@@ -161,6 +162,13 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-09-01 WP-184 merged at `c7a141a` after PR #97 exact-head run `33466339339`
+  passed both jobs at corrected head `de0eee7`; exact-main run `33467035459` then passed both jobs,
+  including migration replay, the production web build and all 68 serial browser tests. Production
+  web remains at `44da7ac`, 27 commits behind; production MCP remains at `b5c210d`, 167 commits
+  behind and still exposes the legacy service shape; the worker revision remains unproven. WP-184
+  performed no hosted migration, deployment, promotion, provider write, credential retrieval or
+  Amazon action. Its source verifier is therefore not yet a live product-release claim.
 - On 2026-09-01 WP-182 merged at `5d36457` after PR #93 exact-head run `33445328649`
   passed both jobs on attempt 2; attempt 1 had one unrelated invitation redirect timing failure.
   Exact-main run `33447338899` then exposed a pre-existing Next dev HMR `networkidle` wait after its
@@ -386,9 +394,13 @@ implementation brief in `docs/workpackages/`.
       `33449983074` passed both jobs at `eee6923` on its first attempt.
 - [x] PR #96 exact-head CI run `33454770170` and exact-main run `33455623011` passed both jobs at
       `c5f79ca` and merged revision `6d182e6`, respectively, on their first attempts.
+- [x] PR #97 exact-head CI run `33466339339` and exact-main run `33467035459` passed both jobs at
+      corrected head `de0eee7` and merged revision `c7a141a`, respectively. The exact-main browser
+      job passed all 68 tests.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
       `b5c210d`, and the active worker revision is unproven. WP-85, WP-181 and WP-182 hosted data
-      gates and attended read-only migration reconciliation remain open.
+      gates, WP-184 deployment verification, and attended read-only migration reconciliation remain
+      open.
 - [x] Hosted ledger verified for the two newly authorized additive migrations.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [x] Full authenticated Wizard Ads route/state click-through at `bfce504`.
