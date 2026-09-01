@@ -175,14 +175,17 @@ The facade maps them to a discriminated union:
 
 ```ts
 type ReservationOutcome =
-  | { kind: 'dispatch_once'; checkedAt: Date; ticket: SpWriteDispatchTicket }
-  | { kind: 'defer_and_reobserve'; checkedAt: Date; reason: 'busy' }
+  | { kind: 'dispatch_once'; checkedAt: string; ticket: SpWriteDispatchTicket }
+  | { kind: 'defer_and_reobserve'; checkedAt: string; reason: 'busy' }
   | {
       kind: 'closed_without_dispatch';
-      checkedAt: Date;
+      checkedAt: string;
       reason: SpWriteRefusalReason | 'already_intended' | 'dispatch_window_elapsed';
     };
 ```
+
+All returned instants are immutable ISO strings. This avoids exporting mutable `Date` internals;
+ordering and expiry are still decided at full precision by PostgreSQL.
 
 Only `dispatch_once` contains a ticket. A ticket contains the exact parsed intent, stable reserved
 result ID, persisted dispatch-start deadline, persisted provider-attempt deadline, and the database
@@ -202,6 +205,11 @@ deadlines, together with `clock_timestamp()`. It returns a ticket only when all 
 Any unexpected combination fails closed. An elapsed readback returns
 `closed_without_dispatch/dispatch_window_elapsed`; recovery later closes the committed intent. A
 transport loss, malformed response, or failed readback never yields a ticket.
+
+JavaScript cannot provide linear types: an in-process caller that already holds a ticket can copy
+its fields. The later activation package must therefore keep one local dispatch call site, recheck
+the frozen deadline immediately before use, and discard the ticket after that attempt. WP-188 has
+no provider import or consumer, so no reusable ticket currently reaches a mutation surface.
 
 `busy`, `refused`, and `already_intended` must carry null result ID and intent text. A mixed batch's
 dominant refusal does not imply that every offered action was resolved; future orchestration must
@@ -235,7 +243,10 @@ parent counts, and rejects partial or truncated evidence. It then runs
 malformed, or inconsistent identity is a protocol failure.
 
 The loader does not claim or deliver outbox work, list tenants, expose service-only bounded
-authorization details, or turn evidence into provider authority.
+authorization details, or turn evidence into provider authority. It is deliberately a global
+service-role capability rather than an end-user tenant-scoped client: callers must supply the full
+tenant/cycle tuple, mixed tuples return no evidence, and authenticated tenant isolation remains the
+separate RLS boundary already proved by WP-187.
 
 ## Error boundary
 
@@ -276,11 +287,15 @@ binding coverage is exact, result decoders reject every impossible combination, 
 carry a ticket, result origins are fixed, reservation SQL is invoked at most once, and sanitized
 errors contain no sentinel from any raw error field or cause.
 
-Disposable PostgreSQL 17 tests exercise the real WP-187 migration through the facade: empty-state
-refusal, staging round trips, start idempotence, lease contention, one winner under concurrent
-reservations, duplicate no-redispatch behavior, result/recovery races and replay, final observation
-replay, tenant isolation, exact evidence/accounting closure, and visibility of the committed intent
-before a ticket is returned.
+Disposable PostgreSQL 17 tests exercise the real WP-187 migration through the same root SQL pool
+shape used by the facade and independently switch an actual connection to `service_role` to prove
+its RPC and relation ACLs reach validation rather than permission denial. The facade matrix covers
+empty-state refusal, staging round trips, start idempotence, lease and global-capacity contention,
+one winner under concurrent reservations, duplicate no-redispatch behavior, expected-state refusal,
+exact result/observation replay, mixed-identity rejection, exact evidence/accounting closure, and
+visibility of the committed intent from another connection before ticket use. The existing WP-187
+PostgreSQL suite remains the consolidated proof for authority switches, provider/recovery races,
+purge interlocks, crash cuts, and authenticated RLS isolation.
 
 Blast-radius tests prove the explicit subpath is absent from the root barrel and every current app,
 the current job schemas and database enum still reject SP lifecycle jobs, no provider adapter is

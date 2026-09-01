@@ -88,7 +88,8 @@ intent authority.
 - invalid artifact or binding fails before SQL;
 - plan/action/authorization/observation/request/intent/result preimages and bytes match the frozen
   shared serializers exactly;
-- bounded binding coverage rejects missing, extra, duplicate, reordered, or cross-scope inputs;
+- bounded binding coverage accepts keyed input order while rejecting missing, extra, duplicate, or
+  cross-scope inputs;
 - exact one-row and scalar decoders reject empty, extra, unknown, nullable, inconsistent, or
   over-authoritative responses;
 - compile-time and runtime checks prove non-winners cannot expose a ticket;
@@ -105,15 +106,20 @@ intent authority.
 - start is idempotent and emits one inert wake;
 - lease contention is typed and an unknown lease response cannot be recovered as authority;
 - concurrent facade reservations produce exactly one ticket and all losers expose none;
-- the committed intent and purge guard are visible to another connection before ticket return;
+- the committed intent is visible to another connection before ticket use; the existing WP-187
+  concurrency suite separately proves the purge guard against the same committed intent;
 - duplicate reservation never reconstructs a ticket;
-- gate, grant, route, generation, bounded authorization, lease, capacity, expected-state, and prior
-  resolution verdicts remain exact controlled outcomes;
-- provider/recovery races have one canonical immutable result; exact append replay converges;
+- facade tests cover default-off, lease, capacity, expected-state, and replay outcomes while the
+  existing WP-187 PostgreSQL matrix continues to prove gate, grant, route, generation, bounded
+  authorization, prior-resolution, purge, and crash-cut semantics;
+- the facade fixes provider/recovery origins and preserves their controlled outcomes; the existing
+  WP-187 race matrix proves one canonical immutable result, and exact facade append replay converges;
 - final observation replay converges and authoritative rejection cannot be observed;
 - full evidence parses from stored bytes, closes every count, passes the shared verifier, and equals
   the database accounting view;
-- mismatched tenant identity returns no evidence and tenant A cannot read tenant B.
+- a mixed or mismatched full tenant/cycle identity returns no evidence. The service facade is an
+  intentionally global worker capability; authenticated end-user tenant isolation remains the
+  separately tested WP-187 RLS boundary.
 
 ### Blast radius
 
