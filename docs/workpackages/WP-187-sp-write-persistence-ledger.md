@@ -176,15 +176,17 @@ data, or any hosted database. Do not transplant PR #24.
 
 ## Acceptance
 
-- [ ] Architecture/work-package commit precedes implementation.
-- [ ] Migration and Drizzle mirror implement the selected proof-ledger shape.
-- [ ] Empty installed state yields zero write authority.
-- [ ] High correctness review reports no unresolved blocker/high finding.
-- [ ] Extra-High adversarial review reports no unresolved blocker/high finding.
-- [ ] Focused DB, concurrency, RLS/ACL, immutability, migration, and blast-radius proofs pass.
-- [ ] Full `CI=1 pnpm check`, production build/Playwright, diff check, and staged hygiene pass.
-- [ ] Exact-head PR CI and exact-main post-merge CI pass.
-- [ ] Handover/status update only after merge and continues with the typed DB query slice.
+- [x] Architecture/work-package commit precedes implementation.
+- [x] Migration and Drizzle mirror implement the selected proof-ledger shape.
+- [x] Empty installed state yields zero write authority.
+- [x] High correctness review reports no unresolved blocker/high/medium finding.
+- [x] Extra-High adversarial review reports no unresolved blocker/high/medium finding.
+- [x] Focused DB, concurrency, RLS/ACL, immutability, migration, and blast-radius proofs pass.
+- [x] Full CI-equivalent typecheck, lint, migration, repository/UI test, production build/Playwright,
+      diff-check, and staged-hygiene lanes pass.
+- [x] PR #104 exact-head run `33540942307` and exact-main run `33542410285` pass both jobs at
+      `f4f0070` and merged revision `be2b7bd`, respectively.
+- [x] Handover/status update occurs only after merge and continues with the typed DB query slice.
 
 ## Deliberately deferred
 

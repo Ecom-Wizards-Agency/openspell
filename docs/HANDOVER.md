@@ -1,6 +1,6 @@
 # OpenSpell continuation handover
 
-Last reconciled: 2026-09-01. This is a rolling handover for the next implementation chat, not a
+Last reconciled: 2026-09-02. This is a rolling handover for the next implementation chat, not a
 historical changelog.
 
 ## How to use and maintain this file
@@ -37,25 +37,24 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- `origin/main` is `85e9a1d4501954d71ac43b51fcb03ca703f334f1`. PR #81 merged the weekday
-  schedule source at `8a4bd0addc248022c4b31d621df5af95bcaa59bb` after exact-head run
-  `33500087803`; exact-main run `33501292698` then passed both jobs. PR #102 merged the corrected
-  WP-186 privilege migration at the current main revision after exact-head run `33509780625`;
-  exact-main run `33511203991` passed repository and Playwright jobs on that merge.
+- `origin/main` is `be2b7bd9a99333a84c552e86b45ad25918493710`. PR #104 merged the inert WP-187
+  persistence ledger after exact-head run `33540942307` passed both jobs at `f4f0070`; exact-main
+  run `33542410285` then passed repository and Playwright jobs on the merge.
 - Vercel reports the latest production-target deployment READY at
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 48 commits behind current main. No later package
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 54 commits behind current main. No later package
   deployed or promoted a candidate, so its newer source artifacts are not live evidence.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 188 commits behind
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 194 commits behind
   current main, and still returns the legacy `wizard-ads` service shape.
 - The new Evo report-worker unit is not installed and its loopback health is unavailable. The
   legacy integration worker is active after the attended WP-186 window, but exposes no revision
-  stamp. It was manually restarted, reconnected to hosted Postgres, retained `NRestarts=0`, and
-  left no blocking or long-running query; exact source revision and full integration health remain
-  unproven.
+  stamp. After the manual restart it later exited once on an uncaught PostgreSQL statement timeout
+  in `claimSyncJobs`; systemd restarted it after 30 seconds. It is active with `NRestarts=1`, but
+  current source also lets a claim-loop exception escape `SyncWorker.start`. Exact source revision,
+  failure containment and full integration health remain unproven.
 - Current source, deployed web, deployed MCP, and the active worker are not one proven release. Do
   not describe post-deployment main features as live until a revision-stamped candidate is promoted
   and checked.
-- `docs/STATUS.md` now records WP-179 through WP-186, but the implementation-wave table remains
+- `docs/STATUS.md` now records WP-179 through WP-187, but the implementation-wave table remains
   incomplete between WP-149 and WP-178. Use Git, CI, code, the migration ledger, and live health as
   evidence; then update status prose.
 
@@ -100,6 +99,11 @@ Recent verified source work includes:
   `@wizard-ads/ads-api/sp-write-adapter` subpath, with complete observation, marketplace decimal
   policy, one-attempt mutation transport, strict indexed-result closure, cancellation-safe
   credentials, and no worker consumer or live provider activation;
+- a default-empty Sponsored Products write-persistence ledger with immutable exact-byte evidence,
+  versioned environment/profile authority, authenticated approvals, single-winner write-ahead
+  reservation, stable result/recovery identity, derived accounting, tenant isolation and
+  concurrency-safe purge behavior. Its migration is merged source only; no hosted schema, job,
+  worker consumer, provider call, deployment or live mutation was activated;
 - bounded five-second transactional lock waits on every migration that was pending before the
   attended four-file hosted push, plus a source guard that prevents later lock-sensitive migrations
   from silently removing or moving that boundary;
@@ -127,11 +131,11 @@ Reconcile heads and checks again before acting.
 
 ### Older open work that needs an explicit decision
 
-- PR #24: guarded Sponsored Products write gateway; head `78e718b`, 145 current-main commits
+- PR #24: guarded Sponsored Products write gateway; head `78e718b`, 151 current-main commits
   behind, 12 branch commits ahead, conflicting, and failing.
-  WP-179 and WP-180 supersede its shared-contract and provider-adapter portions. Preserve only its
-  still-distinct persistence and worker ideas through current, separately reviewed slices, then
-  close the old PR.
+  WP-179, WP-180 and WP-187 supersede its shared-contract, provider-adapter and persistence
+  portions. Preserve only its still-distinct worker lifecycle through a current, separately
+  reviewed slice, then close the old PR.
 
 Do not keep stale pull requests merely as storage. Preserve useful design in a current brief,
 replace or rebase live work, and close branches that are proven superseded.
@@ -164,6 +168,11 @@ Keep optimizer-group edits and manual or scheduled recommendation-job creation f
 weekday-aware worker and web revisions are deployed and verified. The automatic scheduled-run gate
 remains off; schema presence did not activate it.
 
+WP-187's `20260901020000_sp_write_persistence_ledger.sql` is merged source only and was not added to
+the hosted ledger. Do not apply it as part of the typed-query or worker slices; a future hosted apply
+requires a separately reconciled ledger-compatible artifact, exact action authorization and
+pre/postflight. Its absence keeps every new persistence relation and capability unavailable live.
+
 WP-186 was applied from the isolated 41-file artifact at SHA-256
 `db3def960f433c1e221c0257aacd3551e8c7b023fd178a078831ba2a038b7e2c`. The attended window stopped
 the legacy worker and paused only cron jobs 3 and 4. Preflight captured 77 roots, seven sequences,
@@ -173,7 +182,8 @@ row with all 27 statements, unchanged rows, policies, partitions, platform defau
 ACLs and queue aggregates, zero `postgres` target defaults, and exact direct and effective table,
 column, partition and sequence authority. Both cron jobs were restored to the exact recorded
 schedule, command, database, user and active state; the worker
-was manually restarted, reconnected, and retained `NRestarts=0`.
+was manually restarted and reconnected. That postflight saw `NRestarts=0`; the current snapshot
+above records the later automatic restart.
 
 Do not repair migration history, pull hosted schema into the repository, replay an applied file, or
 deploy code that assumes a schema until its exact source and postflight are proven. Guarded broker,
@@ -269,30 +279,33 @@ exact current-task authorization.
 
 ## Recommended continuation order
 
-1. Preserve PR #24's still-distinct persistence and worker lifecycle on current main without
-   cherry-picking its superseded shared or provider code. Assign any new persistence work a
-   forward-only migration identity after hosted version `20260901010000`; the stale branch's
-   `20260829180000` filename cannot be introduced behind the hosted ledger. Obtain the narrow
-   manager signoff before any frozen shared lifecycle correction, review persistence and worker
-   slices separately, keep every runtime gate closed, then close PR #24.
-2. Stage the weekday-aware Evo report worker from an exact clean main revision. Transfer Vercel
+1. Implement the typed `packages/db/src/queries` facade and worker-facing refusal/error mapping for
+   the merged WP-187 ledger. Keep it source-only, use only the frozen shared contracts and
+   controlled database capabilities, add no job type or worker/provider reachability, and preserve
+   the default-empty gate. Review this DB query slice separately before any worker lifecycle work.
+2. Preserve PR #24's still-distinct worker lifecycle on current main without cherry-picking its
+   superseded shared, provider or persistence code. Keep every runtime gate closed, review queue
+   ownership and crash recovery independently at Extra High, and make the always-on claim loop
+   contain transient database failures without spinning or dropping in-flight work. Then close
+   PR #24 once its last useful behavior is preserved.
+3. Stage the weekday-aware Evo report worker from an exact clean main revision. Transfer Vercel
    report claims first, prove the legacy unit retired, then perform the attended activation and
    exact health/queue checks. Never allow overlapping consumers, and keep the optimizer freeze.
-3. Deploy a revision-stamped web candidate from the same clean main, complete authenticated QA, and
+4. Deploy a revision-stamped web candidate from the same clean main, complete authenticated QA, and
    promote only after the candidate revision and route artifacts match. Release the optimizer-edit
    and recommendation-job freeze only after every job-claiming worker and the web are both proven
    weekday-aware.
-4. Replace or revision-stamp the MCP deployment from the same proven release and repeat its
+5. Replace or revision-stamp the MCP deployment from the same proven release and repeat its
    read-only health, tool and audit verification before claiming runtime coherence.
-5. Implement the sidebar-scroll regression now that WP-171 no longer overlaps its web files.
-6. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
-7. Keep the merged Unified Reporting dual-run off until its binding, deployment revision, consumer
+6. Implement the sidebar-scroll regression now that WP-171 no longer overlaps its web files.
+7. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
+8. Keep the merged Unified Reporting dual-run off until its binding, deployment revision, consumer
    ownership, bounded deployment allowlist, exact five-type Evo health contract, and separately
    authorized read-only provider probe are proven. Do not add download or promotion behavior from
    request-status parity alone.
-8. Keep WP-184's distinctive release evidence and the contextual-negative rescue separate from
+9. Keep WP-184's distinctive release evidence and the contextual-negative rescue separate from
    their remaining deployment and live-verification gates.
-9. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again.
+10. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again.
 
 If an external gate blocks one lane, continue with the next independent source-only package. Do
 not reinterpret waiting as authorization to mutate production.
