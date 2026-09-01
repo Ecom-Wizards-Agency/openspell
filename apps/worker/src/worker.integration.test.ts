@@ -548,6 +548,81 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     }
   });
 
+  it('reconciles every due group once across concurrent schedulers', async () => {
+    await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
+    await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+    const [fixture] = await database.sql<{ id: string }[]>`
+      select id from public.optimization_groups
+       where org_id = ${orgId} and profile_id = ${profileId}
+       order by id limit 1
+    `;
+    if (!fixture) throw new Error('seeded optimization group missing');
+    const [second] = await database.sql<{ id: string }[]>`
+      insert into public.optimization_groups (
+        org_id, profile_id, name, role, target_acos,
+        bid_floor, bid_ceiling, bid_increase_cap, bid_decrease_cap,
+        placement_increase_cap, placement_decrease_cap, exclusions,
+        review_weekdays, cadence, prioritization, enabled
+      )
+      select org_id, profile_id, name || ' concurrent', 'discovery', target_acos,
+             bid_floor, bid_ceiling, bid_increase_cap, bid_decrease_cap,
+             placement_increase_cap, placement_decrease_cap, exclusions,
+             array[1, 2, 3, 4, 5, 6, 7]::smallint[], cadence, prioritization, true
+        from public.optimization_groups
+       where id = ${fixture.id}
+      returning id
+    `;
+    if (!second) throw new Error('second optimization group missing');
+    const groupIds = [fixture.id, second.id];
+    const now = new Date();
+    const firstHandle = createDb({ connectionString: database.connectionString, max: 1 });
+    const secondHandle = createDb({ connectionString: database.connectionString, max: 1 });
+
+    try {
+      await database.sql`
+        update public.optimization_groups
+           set enabled = true,
+               review_weekdays = array[1, 2, 3, 4, 5, 6, 7]::smallint[]
+         where id = any (${groupIds}::uuid[])
+      `;
+      await database.sql`
+        update public.optimization_groups
+           set next_run_at = ${now.toISOString()}::timestamptz - interval '1 minute'
+         where id = any (${groupIds}::uuid[])
+      `;
+
+      const counts = await Promise.all([
+        new PostgresRecommendationRunStore(firstHandle).enqueueDueRecommendationRuns(now),
+        new PostgresRecommendationRunStore(secondHandle).enqueueDueRecommendationRuns(now),
+      ]);
+      expect(counts.reduce((sum, count) => sum + count, 0)).toBe(2);
+
+      const [evidence] = await database.sql<{
+        runs: string;
+        distinct_groups: string;
+        jobs: string;
+        advanced: string;
+      }[]>`
+        select count(*)::text as runs,
+               count(distinct run.group_id)::text as distinct_groups,
+               count(job.id)::text as jobs,
+               count(*) filter (where group_row.next_run_at > ${now.toISOString()}::timestamptz)::text
+                 as advanced
+          from public.recommendation_runs run
+          join public.sync_jobs job on job.payload ->> 'runId' = run.id::text
+          join public.optimization_groups group_row on group_row.id = run.group_id
+         where run.org_id = ${orgId}
+           and run.group_id = any (${groupIds}::uuid[])
+      `;
+      expect(evidence).toEqual({ runs: '2', distinct_groups: '2', jobs: '2', advanced: '2' });
+    } finally {
+      await Promise.all([firstHandle.close(), secondHandle.close()]);
+      await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
+      await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+      await database.sql`delete from public.optimization_groups where id = ${second.id}`;
+    }
+  });
+
   it('refuses overlapping group previews and holds after export until complete continue evidence', async () => {
     await database.sql`delete from public.apply_batches where org_id = ${orgId}`;
     await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
