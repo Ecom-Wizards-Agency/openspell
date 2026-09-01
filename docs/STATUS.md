@@ -2,7 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated` · `superseded`.
 
-Source and deployment headers reconciled 2026-09-01 against `origin/main` at `5608849`. The
+Source and deployment headers reconciled 2026-09-01 against `origin/main` at `85e9a1d`. The
 implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
 the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
 the implementation is reachable from the recorded main revision. It does not by itself mean
@@ -116,10 +116,10 @@ implementation brief in `docs/workpackages/`.
 | 85 | Observed SB Video ingestion | merged; activation gated | current-snapshot ad/version-to-Asset-ID mapping and same-day fact gates are in the deployed code; hosted migrations are present, while revision-matched activation and live parity remain open |
 | 86 | Contextual-negative review/export | superseded | stale PR #17 was rebuilt on current main as WP-182 and closed |
 | 89 | Data context and filtered selection | merged and deployed | compact freshness context plus working filtered select/deselect behavior |
-| 90 | Weekday preview schedule | superseded | PR #40 was closed; current replacement is WP-171 in PR #81 |
+| 90 | Weekday preview schedule | superseded | PR #40 was closed; WP-171 is the merged replacement |
 | 91 | Live route performance | in-progress | Grid and Time Machine remain above the live targets recorded below |
 | 93 | Guarded Amazon write policy | merged; runtime gated | manually approved writes are authorized only through immutable worker plans, allowlists, audit and resync; no general live mutation path exists |
-| 96 | Guarded Sponsored Products write gateway | review; contract and adapter superseded | WP-179 and WP-180 replace the stale PR's shared-contract and provider-adapter portions; persistence and worker slices remain unmerged and all runtime gates remain closed |
+| 96 | Guarded Sponsored Products write gateway | review; contract and adapter superseded | sole open PR #24 at `78e718b` is 145 current-main commits behind, conflicting and failing; WP-179 and WP-180 replace its shared-contract and provider-adapter portions, while distinct persistence and worker slices remain unmerged and every runtime gate remains closed |
 | 110 | Focused operator navigation | merged and deployed | task-oriented groups and quiet utility footer |
 | 112 | Release-artifact checks | superseded | stale PR #35 was closed after WP-184 preserved and strengthened its distinct requirements |
 | 113 | OpenSpell MCP connection name | merged and deployed in web | setup snippets use `openspell`; stable environment-variable and package identifiers remain unchanged |
@@ -142,7 +142,7 @@ implementation brief in `docs/workpackages/`.
 | 145 | OpenSpell repository policy | merged | public-repository and 1Password boundaries align with the current product name |
 | 147 | Marketing Stream correctness recovery | merged; runtime gated | signed revisions, settling, budget corrections, locking and subscription identity merged through PR #64 at `49c35d9`; hosted migration is present and the live subscription remains open |
 | 148 | Live release evidence | merged | source, CI, deployment, authenticated QA and open gaps were reconciled through PR #59 at `d7beb71`; later drift is recorded below |
-| 171 | Weekday preview schedules | review; integration gated | open PR #81 at `755926b`; its hosted migration and aggregate-only data postflight are proven, while current-main integration CI and revision-matched deployment remain open |
+| 171 | Weekday preview schedules | merged; deployment gated | merged through PR #81 at `8a4bd0a`; hosted migration, aggregate-only data postflight, exact-head CI and exact-main CI are proven, while revision-matched worker/web deployment and QA remain open |
 | 179 | Guarded SP write contracts | merged; runtime gated | inert update-plan, approval, fingerprint and bounded provider-result contracts merged in `4a0d91c` under `@wizard-ads/shared/sp-writes`; no job, migration, provider call, worker executor or deployment was activated |
 | 180 | Guarded SP provider adapter | merged; runtime gated | complete observation, marketplace decimal conversion and one-attempt mutation semantics merged in `3d30f52` under `@wizard-ads/ads-api/sp-write-adapter`; no worker consumer, migration, deployment, provider grant or live mutation was activated |
 | 181 | Unified Reporting dual-run | merged; runtime gated | default-off `spCampaigns` sidecar merged in `d75ec26` with explicit advertiser binding, a durable one-send create fence, bounded retrieval and a separate outcome ledger; its hosted migration is present, while binding, deployment and activation remain open; Reporting v3 remains sole fact and promotion authority |
@@ -150,7 +150,7 @@ implementation brief in `docs/workpackages/`.
 | 183 | Calendar-boundary fixture reliability | merged; test-only | tenant fixtures now open their current and preceding fact months, with SQP-crossing and Sunday-month-start regressions; merged in `6d182e6` without a migration or hosted data change |
 | 184 | Distinctive release evidence | merged; deployment gated | exact Vercel revision authority, official-SVG bytes, rendered Grid/Recommendations capabilities, locked GET-only transport and deterministic non-authorizing evidence merged in `c7a141a`; no candidate was deployed, verified or promoted |
 | 185 | Hosted migration lock safety | merged; source guard | five-second transaction-scoped lock waits and source enforcement merged in `7276d8d`; the four guarded pending files were subsequently applied through the attended operator path |
-| 186 | Authenticated relation privileges | merged; hosted schema gated | exact public-root and sequence privilege matrices, fail-closed creator defaults, upgrade proofs and the cooperative DDL lock protocol merged in `5608849`; its sole forward migration remains unapplied and separately gated |
+| 186 | Authenticated relation privileges | merged and hosted | corrected exact public-root, column, partition, sequence and creator-default matrices plus upgrade/concurrency proofs merged through PR #102 at `85e9a1d`; the sole forward migration is ledger row 41 with all 27 statements and passed attended production postflight |
 
 ## Milestone gates
 
@@ -164,22 +164,22 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
-- On 2026-09-01 WP-186 merged at `5608849` after PR #100 exact-head run `33492048378`
-  passed both jobs at `5a3ea64`; exact-main run `33493274146` then passed both jobs. The
-  authenticated Supabase CLI 2.116.0 ledger matches 40 migration versions through
-  `20260901000000`, including the attended Marketing Stream, WP-171, Unified Reporting and
-  contextual-negative push. Schema postflight confirms the expected objects and RLS shape. The
-  aggregate-only WP-171 postflight returned audit rows/groups/daily/anchored/ambiguous `1/1/0/1/1`,
-  group rows/disabled/populated/canonical/disabled-next-run-null `1/1/1/1/1`, and post-marker
-  recommendation runs/contextual runs/jobs `0/0/0`, all transaction-read-only. Hosted contains
-  WP-171's migration before main, while main contains WP-186's
-  `20260901010000` privilege migration before hosted. Those are current logical content skews;
-  persistent historical filename remapping means the literal directories are never the deployment
-  comparison. WP-186 remains unapplied and requires its separately
-  authorized exclusive DDL window. Production web is still `44da7ac`, 33 commits behind;
-  production MCP is `b5c210d`, 173 commits behind and retains the legacy service shape; the new
-  report worker is absent and the active legacy worker has no revision stamp. No deployment,
-  provider call, feature activation or Amazon mutation followed.
+- On 2026-09-01 PR #81 merged WP-171 at `8a4bd0a` after exact-head run `33500087803`; exact-main
+  run `33501292698` passed both jobs. Corrected WP-186 then merged through PR #102 at `85e9a1d`
+  after exact-head run `33509780625`; exact-main run `33511203991` passed both jobs. The attended
+  WP-186 window stopped the legacy worker, paused only the partition and retention cron jobs, and
+  captured 77 roots, seven sequences, 230 partitions, 157 policies, 1,578,190 rows, exact platform
+  and non-target ACL fingerprints, zero schema-capable transactions and zero blocking or exclusive
+  locks. The exact migration SHA-256 was
+  `db3def960f433c1e221c0257aacd3551e8c7b023fd178a078831ba2a038b7e2c`; the ledger now has 41
+  versions through `20260901010000` and stores all 27 WP-186 statements. Postflight proved exact
+  direct/effective table, column, partition, sequence and default authority, unchanged rows,
+  policies, partitions, platform defaults, non-target ACLs and queue aggregates, and zero
+  `postgres` target defaults. Both cron jobs were restored exactly; the legacy worker was manually
+  restarted, reconnected and retained `NRestarts=0`, with no blocking or long-running query.
+  Production web remains `44da7ac`, 48 commits behind; MCP remains `b5c210d`, 188 commits behind
+  with the legacy service identity; the new report worker remains absent and the legacy worker has
+  no revision stamp. No deployment, feature activation, provider call or Amazon mutation followed.
 - On 2026-09-01 WP-184 merged at `c7a141a` after PR #97 exact-head run `33466339339`
   passed both jobs at corrected head `de0eee7`; exact-main run `33467035459` then passed both jobs,
   including migration replay, the production web build and all 68 serial browser tests. Production
@@ -421,12 +421,19 @@ implementation brief in `docs/workpackages/`.
       `1afd642` and merged revision `7276d8d`, respectively.
 - [x] PR #100 exact-head CI run `33492048378` and exact-main run `33493274146` passed both jobs at
       `5a3ea64` and merged revision `5608849`, respectively.
+- [x] PR #81 exact-head CI run `33500087803` and exact-main run `33501292698` passed both jobs at
+      corrected head `ece43ac` and merged revision `8a4bd0a`, respectively.
+- [x] PR #102 exact-head CI run `33509780625` and exact-main run `33511203991` passed both jobs at
+      corrected head `fb9e693` and merged revision `85e9a1d`, respectively.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
-      `b5c210d`, the new report worker is absent, and the active legacy worker revision is unproven.
-      Revision-matched deployment, activation and live-data parity gates remain open.
-- [x] Hosted ledger verified for 40 migration versions through `20260901000000`, including the
-      feature, SP-API, SB Video, Marketing Stream, WP-171, Unified Reporting and contextual-negative
-      schema files. Schema presence does not complete their separate runtime gates.
+      `b5c210d` (48 and 188 current-main commits behind, respectively), the new report worker is
+      absent, and the active legacy worker revision is unproven. Revision-matched deployment,
+      activation and live-data parity gates remain open.
+- [x] Hosted ledger verified for 41 migration versions through `20260901010000`, including the
+      feature, SP-API, SB Video, Marketing Stream, WP-171, Unified Reporting,
+      contextual-negative and WP-186 schema files. WP-186's exact 27-statement ledger, privilege,
+      count, lock, queue and recovery postflight passed; schema presence does not complete the
+      other features' separate runtime gates.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [x] Full authenticated Wizard Ads route/state click-through at `bfce504`.
 - [x] Authenticated click-through at `b5c210d`: 21 of 21 production routes returned HTTP 200 with
@@ -443,14 +450,14 @@ implementation brief in `docs/workpackages/`.
       migrations and synthetic tenant fixtures. The UI 3,597-row performance suite remained green.
 - [x] Release-candidate Playwright: 27 production-build workflows and 27 authenticated-dev
       workflows passed, including every new intelligence route and anonymous redirects.
-- [ ] Merge WP-171's source history after fresh current-main CI and keep optimizer edits and
-      recommendation-job creation frozen until its worker and web consumers are revision-matched,
-      deployed and verified. Keep every newly hosted feature disabled until its remaining binding,
-      consumer, provider and counted parity gates pass.
-- [ ] Apply only `20260901010000_authenticated_relation_privilege_hardening.sql` after PR #81 is
-      integrated and the ledger-compatible 41-file fetched-history workdir is revalidated to propose
-      only WP-186, its exclusive DDL window is established, and the operator authorizes that exact
-      target and file; keep the freeze through exact privilege and queue postflight.
+- [x] WP-171 source is on main after fresh integration and exact-main CI.
+- [ ] Keep optimizer edits and recommendation-job creation frozen until WP-171's worker and web
+      consumers are revision-matched, deployed and verified. Keep every newly hosted feature
+      disabled until its remaining binding, consumer, provider and counted parity gates pass.
+- [x] Applied only `20260901010000_authenticated_relation_privilege_hardening.sql` from the
+      ledger-compatible 41-file artifact after exact authorization and an exclusive DDL window;
+      exact privilege, preserved-state, ledger, lock, queue, cron and worker-recovery postflight
+      passed.
 - [ ] Run the authorized, non-persisting SB Video probe and review one read-only SP report per
       supported grain with source, promoted, superseded and canonical counts.
 - [ ] v1 crosscheck exit gate: consecutive verified days, campaign-grain parity, and explained

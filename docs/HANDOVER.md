@@ -37,18 +37,20 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- `origin/main` is `56088492e1a727e2d2ec3a9966d0d27724a01941`. WP-186 merged through PR
-  #100 after exact-head run `33492048378` passed both jobs at
-  `5a3ea64a7740160c0bd636357cae6765c64816dd`; exact-main run `33493274146` then passed
-  repository and Playwright jobs on the actual two-parent merge.
+- `origin/main` is `85e9a1d4501954d71ac43b51fcb03ca703f334f1`. PR #81 merged the weekday
+  schedule source at `8a4bd0addc248022c4b31d621df5af95bcaa59bb` after exact-head run
+  `33500087803`; exact-main run `33501292698` then passed both jobs. PR #102 merged the corrected
+  WP-186 privilege migration at the current main revision after exact-head run `33509780625`;
+  exact-main run `33511203991` passed repository and Playwright jobs on that merge.
 - Vercel reports the latest production-target deployment READY at
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 33 commits behind current main. No later package
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 48 commits behind current main. No later package
   deployed or promoted a candidate, so its newer source artifacts are not live evidence.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 173 commits behind
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 188 commits behind
   current main, and still returns the legacy `wizard-ads` service shape.
 - The new Evo report-worker unit is not installed and its loopback health is unavailable. The
-  legacy integration worker is active but exposes no revision stamp. Its recent journal has
-  recurring Keepa `/product` failures, so exact source revision and integration health are both
+  legacy integration worker is active after the attended WP-186 window, but exposes no revision
+  stamp. It was manually restarted, reconnected to hosted Postgres, retained `NRestarts=0`, and
+  left no blocking or long-running query; exact source revision and full integration health remain
   unproven.
 - Current source, deployed web, deployed MCP, and the active worker are not one proven release. Do
   not describe post-deployment main features as live until a revision-stamped candidate is promoted
@@ -103,8 +105,9 @@ Recent verified source work includes:
   from silently removing or moving that boundary;
 - exact authenticated relation-privilege hardening for 77 public RLS roots and seven sequences,
   fail-closed `postgres` creator defaults, an advisory DDL protocol for later migrations, and
-  executable upgrade and drift refusal proofs. This is merged source only: its hosted migration has
-  not been authorized or applied;
+  executable upgrade and drift refusal proofs. Its sole hosted migration was applied through the
+  attended exclusive window and passed exact ledger, ACL, row, policy, lock, queue and recovery
+  postflight;
 - a revision-bound distinctive-release verifier with exact official-SVG byte proof, rendered Grid
   and Recommendations capability checks, locked GET-only Vercel transport, and deterministic
   privacy-safe evidence that grants no deployment or promotion authority. It is merged source only;
@@ -122,40 +125,21 @@ These are source outcomes, not blanket claims of live behavior.
 
 Reconcile heads and checks again before acting.
 
-### PR #81 — WP-171 weekday schedules
-
-- Head at handover preparation: `755926b17ab1988abd138955f6e72020cc89af29`; GitHub reports it
-  mergeable, ten commits ahead of its merge base and two current-main commits behind.
-- Replaces ambiguous cadence intervals with profile-local weekday, local-time, and timezone
-  controls for optimization groups.
-- Local `pnpm check` and exact-head run `33477450815` passed both jobs against WP-185 main. The head
-  predates WP-186, so update or rebase it onto current main now and require both jobs on the
-  resulting exact integration SHA before opening the WP-186 hosted gate.
-- The latest head isolates the optimization-group workflow in a fresh authenticated Next process.
-- The hosted ledger includes `20260830180000_optimization_weekday_schedules.sql`, and schema-only
-  and aggregate-only data postflight confirms its new objects, RLS shape, single canonical disabled
-  group backfill and zero post-migration recommendation activity. Do not merge before final
-  current-main integration jobs pass; the new web code reads the new columns unconditionally.
-- PR #40 and its remote branch were closed/deleted because this package supersedes them.
-
 ### Older open work that needs an explicit decision
 
-- PR #24: guarded Sponsored Products write gateway; 130 commits behind, conflicting, and failing.
+- PR #24: guarded Sponsored Products write gateway; head `78e718b`, 145 current-main commits
+  behind, 12 branch commits ahead, conflicting, and failing.
   WP-179 and WP-180 supersede its shared-contract and provider-adapter portions. Preserve only its
   still-distinct persistence and worker ideas through current, separately reviewed slices, then
   close the old PR.
+
 Do not keep stale pull requests merely as storage. Preserve useful design in a current brief,
 replace or rebase live work, and close branches that are proven superseded.
 
-PR #17 and its remote branch were closed/deleted after PR #93 preserved the distinct
-contextual-negative workflow on current main with stricter capacity, audit, tenant, and immutable
-artifact guarantees. PR #35 was closed after PR #97 preserved and strengthened its distinct
-release-artifact requirements on current main.
-
 ## Hosted migration gates
 
-The authenticated Supabase CLI 2.116.0 ledger now matches 40 versions in the isolated
-fetched-history workdir through `20260901000000_contextual_negative_review_exports.sql`. It
+The authenticated Supabase CLI 2.116.0 ledger now matches 41 versions in the isolated
+fetched-history workdir through `20260901010000_authenticated_relation_privilege_hardening.sql`. It
 includes the four earlier feature, SP-API and SB Video migrations plus the attended four-file push
 of:
 
@@ -164,12 +148,10 @@ of:
 - `20260831100000_unified_reporting_dual_run.sql`;
 - `20260901000000_contextual_negative_review_exports.sql`.
 
-Beyond the persistent historical ledger filename remapping, repository and hosted content have two
-current logical skews: hosted contains PR #81's `20260830180000` file before that branch is on main,
-while current main contains WP-186's pending `20260901010000` file. Integrating PR #81 and applying
-WP-186 will close those two content skews; it will not make the literal hosted and repository
-migration directories identical. The ledger-compatible fetched-history workdir remains the only
-hosted deployment artifact.
+PR #81 is on main and WP-186 is in the hosted ledger, so the two prior logical content skews are
+closed. Persistent historical filename remapping still means the literal hosted and repository
+migration directories are never the deployment comparison. The ledger-compatible fetched-history
+workdir remains the only hosted deployment artifact.
 
 The push completed in filename order. Schema-only postflight confirms expected objects, columns,
 constraints, indexes, grants and RLS definitions with no blocking locks. Guarded browser postflight
@@ -182,18 +164,21 @@ Keep optimizer-group edits and manual or scheduled recommendation-job creation f
 weekday-aware worker and web revisions are deployed and verified. The automatic scheduled-run gate
 remains off; schema presence did not activate it.
 
-Current main adds one unapplied file:
-`20260901010000_authenticated_relation_privilege_hardening.sql`. Its exact bytes were staged in the
-isolated fetched-history workdir and a successful dry run proposed only that file. Applying it
-requires the exclusive schema-change window in WP-186: pause and drain every partition/retention or
-backfill DDL producer, drain schema-capable and idle transactions, prohibit concurrent DDL, obtain
-exact operator authorization for this target and file, run the operator procedure, and keep the
-freeze through exact ACL, owner, default-privilege, ledger, count, lock and queue postflight.
+WP-186 was applied from the isolated 41-file artifact at SHA-256
+`db3def960f433c1e221c0257aacd3551e8c7b023fd178a078831ba2a038b7e2c`. The attended window stopped
+the legacy worker and paused only cron jobs 3 and 4. Preflight captured 77 roots, seven sequences,
+230 partitions, 157 policies, 1,578,190 rows, exact platform and non-target ACL fingerprints, zero
+schema-capable transactions and zero blocking or exclusive locks. Postflight proved the 41st ledger
+row with all 27 statements, unchanged rows, policies, partitions, platform defaults, non-target
+ACLs and queue aggregates, zero `postgres` target defaults, and exact direct and effective table,
+column, partition and sequence authority. Both cron jobs were restored to the exact recorded
+schedule, command, database, user and active state; the worker
+was manually restarted, reconnected, and retained `NRestarts=0`.
 
 Do not repair migration history, pull hosted schema into the repository, replay an applied file, or
-deploy code that assumes a schema until its exact source and postflight are proven. The guarded
-broker/browser route is the normal access path; direct secret injection is neither required nor
-permitted.
+deploy code that assumes a schema until its exact source and postflight are proven. Guarded broker,
+browser and authenticated project-scoped CLI routes are the normal access paths; direct secret
+injection is neither required nor permitted.
 
 ## Feature truth and open activation work
 
@@ -257,16 +242,17 @@ before extending this boundary.
 
 Stateful recommendation evidence, synchronization observation, hold/continue/revert decisions,
 conflict-safe inverse exports, bounded campaign windows, and persistent groups exist. WP-171 makes
-schedule intent operator-readable. Its hosted migration and aggregate data-state postflight are
-proven, but current-main integration remains open. A complete live reversion remains unproven until
-an eligible export batch exists. Any Amazon application or reversion must satisfy the guarded write
-contract and an exact current-task authorization.
+schedule intent operator-readable. Its hosted migration, aggregate data-state postflight,
+current-main integration and exact-main CI are proven; revision-matched worker/web deployment and
+authenticated QA remain open. A complete live reversion remains unproven until an eligible export
+batch exists. Any Amazon application or reversion must satisfy the guarded write contract and an
+exact current-task authorization.
 
 ## Known UX and performance follow-ups
 
 1. When every navigation group is expanded, the active marker and utility footer collide because
    the entire sidebar owns scrolling while the footer is also pushed with auto margin. Fix in a
-   fresh serialized web package after WP-171: keep brand/footer non-shrinking, give only the main
+   fresh serialized web package: keep brand/footer non-shrinking, give only the main
    navigation `min-height: 0` plus vertical overflow, simplify the active marker, and add a browser
    regression at the affected viewport with every group open.
 2. Production Grid and Time Machine first loads remain above the intended targets. Use the closed
@@ -278,39 +264,35 @@ contract and an exact current-task authorization.
 4. Repeat the equivalent read-only workflows in AdLabs and SYNQ, then classify differences as
    correctness, missing capability, interaction friction, unnecessary complexity, hierarchy, or
    polish. Do not modify competitor state or copy unsafe push behavior.
-5. Reconcile the large current-state drift in `docs/STATUS.md` only after live deployment and QA.
+5. Fill the remaining WP-149–178 implementation-wave gaps in `docs/STATUS.md` during the next live
+   deployment/QA reconciliation, using Git, CI and runtime evidence rather than inferred status.
 
 ## Recommended continuation order
 
-1. Update or rebase PR #81 onto current main without changing its already-hosted migration bytes,
-   require exact integration CI, merge, and require exact-main CI. Keep optimizer edits and
-   recommendation-job creation frozen until its consumers are deployed and verified.
-2. Rebuild or revalidate the isolated 41-file fetched-history workdir and require a dry run that
-   proposes only WP-186's migration. The normal repository migration directory is not the hosted
-   deployment artifact because historical filenames differ.
-3. Establish WP-186's exclusive schema-change window, obtain exact authorization for its sole
-   pending migration, apply it through the operator procedure, and retain the freeze through exact
-   privilege, ledger, count, lock and queue postflight.
-4. Stage the weekday-aware Evo report worker from that exact clean main revision. Transfer Vercel
+1. Preserve PR #24's still-distinct persistence and worker lifecycle on current main without
+   cherry-picking its superseded shared or provider code. Assign any new persistence work a
+   forward-only migration identity after hosted version `20260901010000`; the stale branch's
+   `20260829180000` filename cannot be introduced behind the hosted ledger. Obtain the narrow
+   manager signoff before any frozen shared lifecycle correction, review persistence and worker
+   slices separately, keep every runtime gate closed, then close PR #24.
+2. Stage the weekday-aware Evo report worker from an exact clean main revision. Transfer Vercel
    report claims first, prove the legacy unit retired, then perform the attended activation and
    exact health/queue checks. Never allow overlapping consumers, and keep the optimizer freeze.
-5. Deploy a revision-stamped web candidate from the same clean main, complete authenticated QA, and
+3. Deploy a revision-stamped web candidate from the same clean main, complete authenticated QA, and
    promote only after the candidate revision and route artifacts match. Release the optimizer-edit
    and recommendation-job freeze only after every job-claiming worker and the web are both proven
    weekday-aware.
+4. Replace or revision-stamp the MCP deployment from the same proven release and repeat its
+   read-only health, tool and audit verification before claiming runtime coherence.
+5. Implement the sidebar-scroll regression now that WP-171 no longer overlaps its web files.
 6. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
 7. Keep the merged Unified Reporting dual-run off until its binding, deployment revision, consumer
    ownership, bounded deployment allowlist, exact five-type Evo health contract, and separately
    authorized read-only provider probe are proven. Do not add download or promotion behavior from
    request-status parity alone.
-8. After PR #81 clears its overlapping web files, implement the sidebar-scroll regression package.
-9. Continue the useful old-PR slices in dependency order: WP-179's inert Sponsored Products
-   contract and WP-180's inert provider adapter are merged; the shared lifecycle correction remains
-   frozen until its narrow manager signoff, then persistence and worker slices each receive separate
-   review and runtime gates. Close PR #24 after its distinct work is preserved. WP-184's
-   distinctive release evidence and the contextual-negative rescue are complete in source; their
-   remaining deployment and live-verification gates remain separate.
-10. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again.
+8. Keep WP-184's distinctive release evidence and the contextual-negative rescue separate from
+   their remaining deployment and live-verification gates.
+9. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again.
 
 If an external gate blocks one lane, continue with the next independent source-only package. Do
 not reinterpret waiting as authorization to mutate production.
