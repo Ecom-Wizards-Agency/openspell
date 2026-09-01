@@ -111,7 +111,9 @@ and a JSON-only group schedule, which would weaken constraints and indexing.
 - Migration tests cover schema, immutable clock authority, profile-trigger wiring, DST boundaries,
   canonical constraints and RLS isolation.
 - Worker integration tests cover due selection, immutable scheduled context, retry idempotency,
-  next-occurrence advancement, manual weekday bypass and disabled-group exclusion.
+  next-occurrence advancement, manual weekday bypass and disabled-group exclusion. Deterministic
+  two-connection tests also prove the profile-before-group lock order against manual previews,
+  optimization-group saves and profile schedule edits.
 - Web tests cover native weekday controls, non-empty selection, timezone/hour/next-due copy and
   viewer restrictions.
 - The optimization-group browser workflow owns a fresh authenticated Next process. Adding its

@@ -1559,7 +1559,39 @@ implements RecommendationRunStore, RecommendationScheduleStore {
   async enqueueDueRecommendationRuns(now = new Date()): Promise<number> {
     const nowIso = now.toISOString();
     return this.handle.sql.begin(async (sql) => {
-      const dueGroups = await sql<OptimizationGroupWireRow[]>`
+      // Manual enqueue, group persistence, and profile schedule edits all lock
+      // profile before group. Claim profiles in a separate statement so tuple-
+      // lock order does not depend on the join plan; contended profiles stay due
+      // for the next pass.
+      const claimedProfiles = await sql<{ profile_id: string }[]>`
+        select profile.id as profile_id
+          from public.ad_profiles profile
+         where profile.sync_enabled
+           and exists (
+             select 1
+               from public.optimization_groups candidate
+              where candidate.org_id = profile.org_id
+                and candidate.profile_id = profile.id
+                and candidate.enabled
+                and (
+                  candidate.next_run_at is null
+                  or candidate.next_run_at <= ${nowIso}::timestamptz
+                )
+                and not exists (
+                  select 1 from public.recommendation_runs active
+                   where active.org_id = candidate.org_id
+                     and active.profile_id = candidate.profile_id
+                     and active.group_id = candidate.id
+                     and active.status in ('queued', 'running')
+                )
+           )
+         order by profile.org_id, profile.id
+         for update of profile skip locked
+      `;
+      const claimedProfileIds = claimedProfiles.map((row) => row.profile_id);
+      const dueGroups = claimedProfileIds.length === 0
+        ? []
+        : await sql<OptimizationGroupWireRow[]>`
         select g.id, g.org_id, g.profile_id, g.name, g.role::text as role,
                g.target_acos, g.bid_floor, g.bid_ceiling,
                g.bid_increase_cap, g.bid_decrease_cap,
@@ -1571,8 +1603,8 @@ implements RecommendationRunStore, RecommendationScheduleStore {
           from public.optimization_groups g
           join public.ad_profiles p
             on p.org_id = g.org_id and p.id = g.profile_id
-         where p.sync_enabled
-           and g.enabled
+         where g.enabled
+           and g.profile_id = any (${claimedProfileIds}::uuid[])
            and (g.next_run_at is null or g.next_run_at <= ${nowIso}::timestamptz)
            and not exists (
              select 1 from public.recommendation_runs r
@@ -1646,7 +1678,7 @@ implements RecommendationRunStore, RecommendationScheduleStore {
 
       // Migration compatibility: profiles without a single persisted group
       // keep their prior weekly run until the operator assigns them.
-      const dueProfiles = await sql<{ org_id: string; profile_id: string }[]>`
+      const legacyDueProfiles = await sql<{ org_id: string; profile_id: string }[]>`
         select p.org_id, p.id as profile_id
           from public.ad_profiles p
          where p.sync_enabled
@@ -1665,7 +1697,7 @@ implements RecommendationRunStore, RecommendationScheduleStore {
          order by p.id
          for update of p skip locked
       `;
-      for (const profile of dueProfiles) {
+      for (const profile of legacyDueProfiles) {
         const runs = await sql<{ id: string }[]>`
           insert into public.recommendation_runs
             (org_id, profile_id, status, lookback_days, engine_version)
@@ -1695,7 +1727,7 @@ implements RecommendationRunStore, RecommendationScheduleStore {
         if (jobs.length !== 1) throw new Error('Enqueued 0 of 1 scheduled recommendation jobs');
         enqueued += jobs.length;
       }
-      const offered = dueGroups.length - heldGroups + dueProfiles.length;
+      const offered = dueGroups.length - heldGroups + legacyDueProfiles.length;
       if (enqueued !== offered) {
         throw new Error(`Found ${offered} due recommendation scopes, enqueued ${enqueued}`);
       }
