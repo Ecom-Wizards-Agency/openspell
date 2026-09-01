@@ -2,7 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated` · `superseded`.
 
-Source and deployment headers reconciled 2026-09-02 against `origin/main` at `be2b7bd`. The
+Source and deployment headers reconciled 2026-09-02 against `origin/main` at `5fc9471`. The
 implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
 the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
 the implementation is reachable from the recorded main revision. It does not by itself mean
@@ -119,7 +119,7 @@ implementation brief in `docs/workpackages/`.
 | 90 | Weekday preview schedule | superseded | PR #40 was closed; WP-171 is the merged replacement |
 | 91 | Live route performance | in-progress | Grid and Time Machine remain above the live targets recorded below |
 | 93 | Guarded Amazon write policy | merged; runtime gated | manually approved writes are authorized only through immutable worker plans, allowlists, audit and resync; no general live mutation path exists |
-| 96 | Guarded Sponsored Products write gateway | review; contract, adapter and persistence superseded | sole open PR #24 at `78e718b` is 151 current-main commits behind, conflicting and failing; WP-179, WP-180 and WP-187 replace its shared-contract, provider-adapter and persistence portions, while its distinct worker lifecycle remains unmerged and every runtime gate remains closed |
+| 96 | Guarded Sponsored Products write gateway | review; contract, adapter, persistence and DB facade superseded | sole open PR #24 at `78e718b` is 156 current-main commits behind, conflicting and failing; WP-179, WP-180, WP-187 and WP-188 replace its shared-contract, provider-adapter, persistence and typed-database-facade portions, while its distinct worker lifecycle remains unmerged and every runtime gate remains closed |
 | 110 | Focused operator navigation | merged and deployed | task-oriented groups and quiet utility footer |
 | 112 | Release-artifact checks | superseded | stale PR #35 was closed after WP-184 preserved and strengthened its distinct requirements |
 | 113 | OpenSpell MCP connection name | merged and deployed in web | setup snippets use `openspell`; stable environment-variable and package identifiers remain unchanged |
@@ -152,6 +152,7 @@ implementation brief in `docs/workpackages/`.
 | 185 | Hosted migration lock safety | merged; source guard | five-second transaction-scoped lock waits and source enforcement merged in `7276d8d`; the four guarded pending files were subsequently applied through the attended operator path |
 | 186 | Authenticated relation privileges | merged and hosted | corrected exact public-root, column, partition, sequence and creator-default matrices plus upgrade/concurrency proofs merged through PR #102 at `85e9a1d`; the sole forward migration is ledger row 41 with all 27 statements and passed attended production postflight |
 | 187 | Guarded SP write persistence ledger | merged; source-only | default-empty immutable evidence, exact authority/version snapshots, single-winner reservation, result/recovery closure, derived accounting and tenant-safe purge proofs merged through PR #104 at `be2b7bd`; exact-head and exact-main CI passed, while the migration was not hosted and no job, worker, provider call, deployment or live mutation was activated |
+| 188 | Guarded SP write query facade | merged; source-only | explicit staging/runtime database capabilities, committed single-winner dispatch tickets, controlled refusal/error mapping and exact evidence/accounting verification merged through PR #106 at `5fc9471`; exact-head and exact-main CI passed, while no migration, job, worker/provider reachability, deployment setting or live mutation was activated |
 
 ## Milestone gates
 
@@ -165,6 +166,13 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-09-02 PR #106 merged the inert WP-188 Sponsored Products write query facade at
+  `5fc9471` after exact-head run `33555304056` passed both jobs at `20fe1ab`; exact-main run
+  `33556738961` then passed both jobs on the merge. Focused facade proofs passed 21 tests, the
+  existing ledger and migration-safety set passed 51 tests, and High correctness plus Extra-High
+  adversarial reviews reported no blocker, high or medium finding. The facade adds no job type,
+  worker/provider consumer, deployment variable or activation; the underlying WP-187 migration
+  remains unhosted and no Amazon mutation occurred.
 - On 2026-09-02 PR #104 merged the inert WP-187 Sponsored Products write-persistence ledger at
   `be2b7bd` after exact-head run `33540942307` passed both jobs at `f4f0070`; exact-main run
   `33542410285` then passed both jobs on the merge. High correctness and Extra-High adversarial
@@ -439,8 +447,10 @@ implementation brief in `docs/workpackages/`.
       corrected head `fb9e693` and merged revision `85e9a1d`, respectively.
 - [x] PR #104 exact-head CI run `33540942307` and exact-main run `33542410285` passed both jobs at
       `f4f0070` and merged revision `be2b7bd`, respectively.
+- [x] PR #106 exact-head CI run `33555304056` and exact-main run `33556738961` passed both jobs at
+      `20fe1ab` and merged revision `5fc9471`, respectively.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
-      `b5c210d` (54 and 194 current-main commits behind, respectively), the new report worker is
+      `b5c210d` (59 and 199 current-main commits behind, respectively), the new report worker is
       absent, and the active legacy worker revision is unproven. The legacy worker has one automatic
       restart after an uncaught claim timeout. Revision-matched deployment, claim-failure
       containment, activation and live-data parity gates remain open.
