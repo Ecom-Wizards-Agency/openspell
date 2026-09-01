@@ -4,6 +4,11 @@
 -- valid with null provider columns; provider-native rows must carry the whole
 -- immutable identity selected by an active binding.
 
+-- The event-table constraints and indexes below need brief metadata/table
+-- locks. Fail closed instead of waiting behind live ingestion; an attended
+-- operator can reconcile the ledger and retry in a quieter window.
+set local lock_timeout = '5s';
+
 create table public.marketing_stream_subscription_bindings (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null references public.orgs (id) on delete cascade,
