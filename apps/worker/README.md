@@ -137,6 +137,26 @@ all. `variant` joins the key; existing rows default to `default` and keep the un
 | `SP_API_LWA_CLIENT_SECRET` | unset | SP-API LWA application secret. Deployment environment only; tenant refresh credentials remain in Vault. |
 | `SP_API_REPORT_MIN_INTERVAL_MS` | `1000` | Serial floor between Reports API operations. Provider `Retry-After` still controls throttled retries. |
 
+### Claim-loop health and retry
+
+The always-on worker contains only a direct PostgreSQL `57014` cancellation from the atomic claim
+RPC. It records the fixed `postgres_query_cancelled` category, waits with equal-jitter backoff from
+half of the current window through the full window, caps that window at 30 seconds, and retries the
+same worker id and job-type allowlist with freshly calculated capacity. The raw database error,
+statement, parameters and connection details never enter this log or `/healthz` state. Every other
+claim error remains fatal, and the one-shot `drainOnce()` path never retries.
+
+`worker.claimLoop` in `/healthz` reports the phase, consecutive failure count, sanitized
+timestamps/category and scheduled delay. The endpoint remains ready for the first two contained
+failures and returns 503 on the third. It also returns 503 before the claim loop starts, while it is
+stopping, after it stopped, or after a fatal loop exit. A real successful claim RPC resets the
+failure evidence even when the queue is empty; a pass skipped because local capacity is full does
+not.
+
+Shutdown interrupts idle and backoff waits. If an atomic claim was already in progress, shutdown
+waits for it, registers any returned jobs once, and then uses the existing handler drain and timed
+release behavior. A stopped worker instance cannot be started again.
+
 ### Bounded Creative pilot preflight
 
 The daily Creative producer remains off unless the Vercel deployment has all

@@ -40,11 +40,14 @@ export function startHealthServer(
       || (marketingStream.consecutiveFailures ?? 0) >= MARKETING_STREAM_SUSTAINED_FAILURE_THRESHOLD
     );
     const workerStatus = worker.status();
+    const workerDead = !workerStatus.claimLoop.ready;
+    const degraded = streamDead || workerDead;
     const body = JSON.stringify({
-      status: streamDead ? 'degraded' : 'ok',
+      status: degraded ? 'degraded' : 'ok',
       worker: {
         stopping: workerStatus.stopping,
         running: workerStatus.running,
+        claimLoop: workerStatus.claimLoop,
       },
       deployment: {
         ...components.deployment,
@@ -54,7 +57,7 @@ export function startHealthServer(
         marketingStream,
       },
     });
-    response.writeHead(streamDead ? 503 : 200, {
+    response.writeHead(degraded ? 503 : 200, {
       'content-type': 'application/json', 'content-length': Buffer.byteLength(body),
     });
     response.end(body);
