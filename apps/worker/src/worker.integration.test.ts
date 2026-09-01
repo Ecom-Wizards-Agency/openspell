@@ -1064,6 +1064,133 @@ describe.skipIf(!available)('worker + real Postgres', () => {
   // Resilience
   // -------------------------------------------------------------------------
 
+  it('rolls back a timed-out post-update claim and completes the same job once on retry', async () => {
+    const advisoryKey = 189_001;
+    const dedupeKey = 'wp189-post-update-timeout';
+    const payload = { type: 'keepa.sync', orgId, profileId, includeCompetitors: false } as const;
+    const [inserted] = await database.sql<{ id: string }[]>`
+      insert into public.sync_jobs (org_id, profile_id, job_type, payload, dedupe_key)
+      values (${orgId}, ${profileId}, 'keepa.sync', ${JSON.stringify(payload)}::jsonb, ${dedupeKey})
+      returning id
+    `;
+    const insertedId = inserted?.id ?? '';
+    await database.sql.unsafe(`
+      create or replace function app.test_wp189_pause_claim_after_update()
+      returns trigger
+      language plpgsql
+      set search_path = pg_catalog
+      as $trigger$
+      begin
+        if new.dedupe_key = 'wp189-post-update-timeout'
+           and old.status = 'queued'
+           and new.status = 'running' then
+          perform pg_advisory_xact_lock(189001);
+        end if;
+        return new;
+      end;
+      $trigger$;
+      create trigger test_wp189_pause_claim_after_update
+      after update on public.sync_jobs
+      for each row execute function app.test_wp189_pause_claim_after_update();
+    `);
+
+    const gateHandle = createDb({ connectionString: database.connectionString, max: 1 });
+    const claimHandle = createDb({
+      connectionString: database.connectionString,
+      max: 1,
+      statementTimeoutSeconds: 1,
+    });
+    let gateHeld = false;
+    let worker: SyncWorker | undefined;
+    let started: Promise<void> | undefined;
+    let handlerCalls = 0;
+
+    try {
+      await gateHandle.sql`select pg_advisory_lock(${advisoryKey})`;
+      gateHeld = true;
+      const [backend] = await claimHandle.sql<{ pid: number }[]>`select pg_backend_pid() as pid`;
+      const backendPid = Number(backend?.pid);
+      worker = new SyncWorker({
+        workerId: 'wp189-resilient-worker',
+        store: new PostgresWorkerStore(claimHandle),
+        jobTypes: ['keepa.sync'],
+        claimBatchSize: 1,
+        maxConcurrentJobs: 1,
+        pollIntervalMs: 1,
+        logger: quietLogger,
+        integrations: {
+          keepaSync: async () => {
+            handlerCalls += 1;
+            return { handled: handlerCalls };
+          },
+        },
+      });
+      started = worker.start();
+
+      await waitForBackendLock(backendPid);
+      await waitFor(async () => (worker?.status().claimLoop.consecutiveFailures ?? 0) === 1, 5_000);
+
+      const [rolledBack] = await database.sql<{
+        status: string;
+        attempts: number;
+        claimed_by: string | null;
+        payload: unknown;
+      }[]>`
+        select status, attempts, claimed_by, payload
+          from public.sync_jobs
+         where id = ${insertedId}
+      `;
+      expect(rolledBack).toEqual({
+        status: 'queued',
+        attempts: 0,
+        claimed_by: null,
+        payload,
+      });
+      expect(handlerCalls).toBe(0);
+
+      await gateHandle.sql`select pg_advisory_unlock(${advisoryKey})`;
+      gateHeld = false;
+      await waitFor(async () => {
+        const [job] = await database.sql<{ status: string }[]>`
+          select status from public.sync_jobs where id = ${insertedId}
+        `;
+        return job?.status === 'succeeded';
+      }, 10_000);
+
+      await expect(worker.shutdown()).resolves.toEqual({ released: 0 });
+      await expect(started).resolves.toBeUndefined();
+      const [completed] = await database.sql<{
+        status: string;
+        attempts: number;
+        claimed_by: string | null;
+        result: unknown;
+      }[]>`
+        select status, attempts, claimed_by, result
+          from public.sync_jobs
+         where id = ${insertedId}
+      `;
+      expect(completed).toEqual({
+        status: 'succeeded',
+        attempts: 1,
+        claimed_by: 'wp189-resilient-worker',
+        result: { handled: 1 },
+      });
+      expect(handlerCalls).toBe(1);
+    } finally {
+      if (gateHeld) {
+        await gateHandle.sql`select pg_advisory_unlock(${advisoryKey})`.catch(() => {});
+      }
+      await worker?.shutdown().catch(() => {});
+      await started?.catch(() => {});
+      await database.sql.unsafe(`
+        drop trigger if exists test_wp189_pause_claim_after_update on public.sync_jobs;
+        drop function if exists app.test_wp189_pause_claim_after_update();
+      `);
+      await claimHandle.close();
+      await gateHandle.close();
+    }
+  }, 30_000);
+
   it('reclaims and completes a job after the claiming process is SIGKILLed', async () => {
     await queueEntity(database, orgId, profileId, 'kill-resume', false);
     const fixture = fileURLToPath(new URL('./test-fixtures/claim-and-hang.ts', import.meta.url));

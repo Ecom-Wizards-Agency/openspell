@@ -52,12 +52,22 @@ import {
 } from './sqp.js';
 import type { WeeklySqpScheduleProducer } from './sqp-scheduler.js';
 import type { UnifiedDualRun } from './unified-reporting.js';
+import {
+  ClaimLoopController,
+  isContainedClaimFailure,
+  type ClaimLoopState,
+} from './claim-loop.js';
 
 const MINUTE_MS = 60_000;
 const FOUR_HOURS_MS = 4 * 60 * MINUTE_MS;
 const POLL_DELAYS_MINUTES = [5, 10, 20, 30] as const;
 const SP_REPORT_TYPES = new Set(['spCampaigns', 'spTargeting', 'spSearchTerm', 'spPlacement']);
 type BaseReportRequestState = Omit<ReportRequestState, 'reportType'> & { reportType: ReportType };
+
+type LongLivedClaimPass =
+  | { kind: 'no_capacity' }
+  | { kind: 'rpc_success'; jobs: readonly ClaimedJob[] }
+  | { kind: 'rpc_failure'; error: unknown };
 
 /** A failure retrying cannot fix. Goes straight to `dead` with its attempts unspent. */
 export class PermanentJobError extends Error {
@@ -141,7 +151,10 @@ export class SyncWorker {
   private readonly pollIntervalMs: number;
   private readonly now: () => Date;
   private readonly logger: WorkerLogger;
+  private readonly claimLoop: ClaimLoopController;
   private readonly running = new Map<string, Promise<void>>();
+  private activeClaimPass: Promise<LongLivedClaimPass> | null = null;
+  private shutdownPromise: Promise<{ released: number }> | null = null;
   private stopping = false;
 
   constructor(options: SyncWorkerOptions) {
@@ -160,17 +173,60 @@ export class SyncWorker {
     this.pollIntervalMs = options.pollIntervalMs ?? 1_000;
     this.now = options.now ?? (() => new Date());
     this.logger = options.logger ?? consoleLogger;
+    this.claimLoop = new ClaimLoopController(this.pollIntervalMs, this.now);
   }
 
-  status(): { workerId: string; stopping: boolean; running: number } {
-    return { workerId: this.workerId, stopping: this.stopping, running: this.running.size };
+  status(): { workerId: string; stopping: boolean; running: number; claimLoop: ClaimLoopState } {
+    return {
+      workerId: this.workerId,
+      stopping: this.stopping,
+      running: this.running.size,
+      claimLoop: this.claimLoop.status(),
+    };
   }
 
   async start(): Promise<void> {
-    this.stopping = false;
-    while (!this.stopping) {
-      const claimed = await this.claimAvailable();
-      if (claimed === 0) await delay(this.pollIntervalMs);
+    this.claimLoop.beginStart();
+    try {
+      while (!this.stopping && this.claimLoop.beginClaim()) {
+        const pass = this.runLongLivedClaimPass();
+        this.activeClaimPass = pass;
+        let outcome: LongLivedClaimPass;
+        try {
+          outcome = await pass;
+        } finally {
+          if (this.activeClaimPass === pass) this.activeClaimPass = null;
+        }
+
+        if (outcome.kind === 'rpc_failure') {
+          if (!isContainedClaimFailure(outcome.error)) throw outcome.error;
+          const failure = this.claimLoop.recordContainedFailure();
+          this.logger.error('sync job claim temporarily unavailable', {
+            failureKind: failure.failureKind,
+            consecutiveFailures: failure.consecutiveFailures,
+            retryInMs: failure.retryInMs,
+          });
+          if (
+            this.stopping
+            || failure.retryInMs === null
+            || !(await this.claimLoop.wait(failure.retryInMs))
+          ) break;
+          continue;
+        }
+
+        if (outcome.kind === 'no_capacity') {
+          this.claimLoop.recordNoCapacity();
+          if (this.stopping || !(await this.claimLoop.wait(this.pollIntervalMs))) break;
+          continue;
+        }
+
+        this.claimLoop.recordSuccess(outcome.jobs.length > 0);
+        if (this.stopping) break;
+        if (outcome.jobs.length === 0 && !(await this.claimLoop.wait(this.pollIntervalMs))) break;
+      }
+    } catch (error) {
+      this.claimLoop.recordFatalFailure();
+      throw error;
     }
     await Promise.allSettled(this.running.values());
   }
@@ -189,28 +245,43 @@ export class SyncWorker {
   async drainOnce(maxJobs?: number, deadlineMs?: number): Promise<number> {
     if (deadlineMs !== undefined && Date.now() >= deadlineMs) return 0;
     const before = new Set(this.running.keys());
-    const claimed = await this.claimAvailable(maxJobs);
+    const batchSize = this.availableClaimBatchSize(maxJobs);
+    if (batchSize <= 0) return 0;
+    const jobs = await this.fetchClaimBatch(batchSize);
+    this.startClaimedJobs(jobs);
     const batch = [...this.running.entries()]
       .filter(([id]) => !before.has(id))
       .map(([, promise]) => promise);
     await Promise.allSettled(batch);
-    return claimed;
+    return jobs.length;
   }
 
-  async shutdown(releaseAfterMs = 25_000): Promise<{ released: number }> {
-    this.stopping = true;
-    if (this.running.size === 0) return { released: 0 };
+  shutdown(releaseAfterMs = 25_000): Promise<{ released: number }> {
+    this.shutdownPromise ??= this.performShutdown(releaseAfterMs);
+    return this.shutdownPromise;
+  }
 
-    let timedOut = false;
-    let timeout: NodeJS.Timeout | undefined;
-    await Promise.race([
-      Promise.allSettled(this.running.values()),
-      new Promise<void>((resolve) => {
-        timeout = setTimeout(() => { timedOut = true; resolve(); }, releaseAfterMs);
-      }),
-    ]);
-    if (timeout) clearTimeout(timeout);
-    return { released: timedOut ? await this.store.release(this.workerId) : 0 };
+  private async performShutdown(releaseAfterMs: number): Promise<{ released: number }> {
+    this.stopping = true;
+    this.claimLoop.beginShutdown();
+    try {
+      const activeClaimPass = this.activeClaimPass;
+      if (activeClaimPass) await Promise.allSettled([activeClaimPass]);
+      if (this.running.size === 0) return { released: 0 };
+
+      let timedOut = false;
+      let timeout: NodeJS.Timeout | undefined;
+      await Promise.race([
+        Promise.allSettled(this.running.values()),
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(() => { timedOut = true; resolve(); }, releaseAfterMs);
+        }),
+      ]);
+      if (timeout) clearTimeout(timeout);
+      return { released: timedOut ? await this.store.release(this.workerId) : 0 };
+    } finally {
+      this.claimLoop.finishShutdown();
+    }
   }
 
   async runAuthHealthcheck(): Promise<{ ok: Region[]; failed: Region[] }> {
@@ -230,17 +301,35 @@ export class SyncWorker {
     return { ok, failed };
   }
 
-  private async claimAvailable(maxJobs?: number): Promise<number> {
+  private availableClaimBatchSize(maxJobs?: number): number {
     if (this.stopping) return 0;
     const capacity = this.maxConcurrentJobs - this.running.size;
     if (capacity <= 0) return 0;
-    const batchSize = Math.min(maxJobs ?? this.claimBatchSize, capacity);
-    const jobs = await this.store.claim(this.workerId, batchSize, this.jobTypes);
+    return Math.min(maxJobs ?? this.claimBatchSize, capacity);
+  }
+
+  private fetchClaimBatch(batchSize: number): Promise<readonly ClaimedJob[]> {
+    return this.store.claim(this.workerId, batchSize, this.jobTypes);
+  }
+
+  private startClaimedJobs(jobs: readonly ClaimedJob[]): void {
     for (const job of jobs) {
       const task = this.runClaimed(job).finally(() => this.running.delete(job.id));
       this.running.set(job.id, task);
     }
-    return jobs.length;
+  }
+
+  private async runLongLivedClaimPass(): Promise<LongLivedClaimPass> {
+    const batchSize = this.availableClaimBatchSize();
+    if (batchSize <= 0) return { kind: 'no_capacity' };
+    let jobs: readonly ClaimedJob[];
+    try {
+      jobs = await this.fetchClaimBatch(batchSize);
+    } catch (error) {
+      return { kind: 'rpc_failure', error };
+    }
+    this.startClaimedJobs(jobs);
+    return { kind: 'rpc_success', jobs };
   }
 
   private async runClaimed(job: ClaimedJob): Promise<void> {
@@ -1191,10 +1280,6 @@ function formatReasons(reasons: Record<string, number>): string {
 
 function addMinutes(date: Date, minutes: number): Date {
   return new Date(date.getTime() + minutes * MINUTE_MS);
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function errorMessage(error: unknown): string {
