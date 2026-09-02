@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { terminateAfterFatalWorkerFailure } from './fatal-exit.js';
@@ -10,12 +11,23 @@ describe('fatal worker termination', () => {
     );
     const child = spawn(process.execPath, ['--import', 'tsx', fixture], {
       cwd: process.cwd(),
+      env: { ...process.env, FATAL_AUDIT_TEST_MODE: 'release' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
-    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
-    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    const ready = new Promise<void>((resolve) => {
+      child.stderr.on('data', (chunk: string) => {
+        stderr += chunk;
+        if (stderr.includes('audit-backpressure-ready')) resolve();
+      });
+    });
+    await ready;
+    // The pipe was genuinely backpressured before this test begins draining it.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
 
     const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
       (resolve, reject) => {
@@ -35,10 +47,61 @@ describe('fatal worker termination', () => {
     );
 
     expect(result).toEqual({ code: 78, signal: null });
-    expect(stdout).toContain('shutdown-complete { released: 0, unresolved: 1 }');
+    expect(stdout).toContain('shutdown-complete\n');
+    const audit = stdout.slice(stdout.indexOf('{"event":"report_worker_final_shutdown"'));
+    expect(JSON.parse(audit.trim())).toEqual({
+      event: 'report_worker_final_shutdown',
+      trigger: 'fatal',
+      exitCode: 78,
+      released: 0,
+      unresolved: 1,
+      settlementFailure: 'custody_quarantined',
+      evidenceAvailable: true,
+    });
     expect(stderr).toContain("failureKind: 'custody_quarantined'");
     expect(`${stdout}\n${stderr}`).not.toContain('provider');
     expect(`${stdout}\n${stderr}`).not.toContain('token');
+  });
+
+  it('exits 78 by deadline when the final audit pipe never drains', async () => {
+    const fixture = fileURLToPath(
+      new URL('./test-fixtures/fatal-exit-with-handle.ts', import.meta.url),
+    );
+    const child = spawn(process.execPath, ['--import', 'tsx', fixture], {
+      cwd: process.cwd(),
+      env: { ...process.env, FATAL_AUDIT_TEST_MODE: 'never-drain' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stderr.setEncoding('utf8');
+    let stderr = '';
+    const ready = new Promise<void>((resolve) => {
+      child.stderr.on('data', (chunk: string) => {
+        stderr += chunk;
+        if (stderr.includes('audit-backpressure-ready')) resolve();
+      });
+    });
+    await ready;
+    const startedAt = Date.now();
+    const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve, reject) => {
+        const timeout = setTimeout(() => {
+          child.kill('SIGKILL');
+          reject(new Error('audit deadline did not bound fatal worker termination'));
+        }, 2_000);
+        child.once('error', (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+        child.once('exit', (code, signal) => {
+          clearTimeout(timeout);
+          resolve({ code, signal });
+        });
+      },
+    );
+    child.stdout.destroy();
+
+    expect(result).toEqual({ code: 78, signal: null });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 
   it('uses exit 1 only after a clean non-custody fatal shutdown', async () => {
@@ -57,6 +120,9 @@ describe('fatal worker termination', () => {
       },
       logger: { error: () => undefined },
       exit,
+      auditStream: new Writable({
+        write(_chunk, _encoding, callback) { callback(); },
+      }),
     })).rejects.toThrow('synthetic process exit');
     expect(order).toEqual(['shutdown', 'exit:1']);
   });

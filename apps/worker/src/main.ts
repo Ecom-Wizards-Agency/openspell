@@ -23,7 +23,10 @@ import {
   PostgresSbVideoIngestionStore,
 } from './sb-video-ingestion.js';
 import { createMrpEconomicsSync } from './mrp.js';
-import { terminateAfterFatalWorkerFailure } from './fatal-exit.js';
+import {
+  terminateAfterFatalWorkerFailure,
+  terminateAfterFinalShutdown,
+} from './fatal-exit.js';
 import {
   AuthHealthMonitor,
   BidSeriesSyncPass,
@@ -169,20 +172,31 @@ async function performShutdown(): Promise<WorkerShutdownEvidence> {
   recommendationObserver?.stop();
   await marketingStream?.stop();
   const evidence = await worker.shutdown();
-  console.info('report worker shutdown evidence', evidence);
   await closeServer(health);
   await handle.close();
   return evidence;
 }
 
 async function shutdownForSignal(): Promise<void> {
+  let evidence: WorkerShutdownEvidence = { released: 0, unresolved: 1 };
+  let evidenceAvailable = false;
   try {
-    const evidence = await shutdown();
-    process.exit(shutdownExitCode(evidence, worker.status().settlementFailure));
+    evidence = await shutdown();
+    evidenceAvailable = true;
   } catch {
     console.error('report worker shutdown evidence unavailable');
-    process.exit(CUSTODY_EXIT_CODE);
   }
+  const settlementFailure = worker.status().settlementFailure;
+  const exitCode = evidenceAvailable
+    ? shutdownExitCode(evidence, settlementFailure)
+    : CUSTODY_EXIT_CODE;
+  await terminateAfterFinalShutdown({
+    trigger: 'signal',
+    exitCode,
+    evidence,
+    settlementFailure,
+    evidenceAvailable,
+  });
 }
 
 process.once('SIGTERM', () => void shutdownForSignal());
