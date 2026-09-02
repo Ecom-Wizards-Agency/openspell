@@ -62,10 +62,13 @@ fence even when the write reports an error. A committed write whose reply was lo
 a pre-commit failure, conflicting id, replaced claim or unavailable readback strands fenced custody
 for attended reconciliation and admits no poll.
 
-Report downloads gain explicit compressed-byte, decompressed-byte, idle and total-time limits before
-activation. The outer transport is aborted and its iterator/cancel operation is awaited. JSON parsing
-runs in a terminable worker thread with a heap ceiling, while deployment restricts the lane to one
-claim and one active job. Exceeding any limit aborts parsing without completing the report or
+Report downloads gain explicit compressed-byte, decompressed-byte, parsed-row, idle and total-time
+limits before activation. The outer transport is aborted as soon as a local limit fires. Its
+iterator/cancel operation must then finish inside a bounded cancellation deadline; an unproved cancel
+is itself a custody failure. JSON parsing runs in a terminable worker thread with a heap ceiling and
+returns acknowledged row chunks instead of cloning a complete provider document into the parent.
+Both source rows and normalized parent accumulation have hard ceilings. Deployment restricts the lane
+to one claim and one active job. Exceeding any limit aborts parsing without completing the report or
 releasing its claim. The process exits with a non-restarting custody code, and startup refuses a
 stranded claim. Values are justified against aggregate observed report sizes, never client data in
 source.
@@ -227,7 +230,12 @@ The running map key is `token` for fenced work and job id for legacy work. Start
 for the same job therefore cannot overwrite the first promise. After shutdown begins, no new claim
 starts. A graceful completion may settle normally. If the drain deadline expires, legacy work retains
 its current release behavior while fenced work remains running and makes shutdown report unresolved
-custody.
+custody. A quarantined claim remains in separate unresolved evidence even after its handler promise
+ends, so a signal racing the fatal path cannot turn a custody failure into a clean exit.
+
+The fenced deployment policy is exactly `creative.sync`, `report.request`, `report.poll` and
+`report.fetch`. Configuration and creative preflight reject the existing five-type Unified Reporting
+variant before startup; WP-194 does not silently widen the database authority contract.
 
 An unknown report-create outcome is terminal queue evidence, not a retry. The corresponding report
 ledger admits no poll job without a claim-confirmed durable provider id. Under fenced custody the
@@ -249,7 +257,8 @@ automatically adopted or changed.
    remain retired for first activation.
 6. Stage Evo in standby. The transition helper independently hashes the nine trusted SQL function
    bodies and verifies their owner, language, volatility, leakproof/security mode, search path and
-   exact ACL; a release-provided helper cannot certify itself.
+   exact ACL. It also verifies the authority table's exact named constraint types, columns and
+   normalized definitions; a release-provided helper cannot certify itself.
 7. Activation takes the database authority barrier after the drained snapshot, accepts only
    `activated | already_fenced` with zero unresolved custody, re-proves authority and custody, and
    then starts the single-flight consumer. Authority is never automatically reverted.
@@ -274,13 +283,19 @@ process and exact-deployment evidence gathered by the activator.
 - A 425 with an id is adopted once; a 425 without one is quarantined.
 - Provider-id persistence proves failure-before-commit, commit-before-reply recovery, conflicting-id
   refusal and stale/replaced-claim refusal under a real queue-row lock.
-- Compressed bytes, decompressed bytes, idle time and total time are bounded; every limit cancels the
-  source, settles no fenced transition and leaves custody for attended reconciliation.
+- Compressed bytes, decompressed bytes, parsed-row chunks, normalized parent accumulation, idle time
+  and total time are bounded. Every limit promptly aborts the source, proves cancellation inside a
+  bounded deadline or raises a stronger cancellation failure, settles no fenced transition and
+  leaves custody for attended reconciliation.
 - Report input, parsed, refused, promoted and loaded counts still reconcile exactly.
 - Activation and rollback refuse unresolved claims, mutated SQL bodies/catalog metadata and
   incompatible revisions before switching.
+- Readiness rejects count-preserving authority-constraint changes to a name, type, column, order or
+  normalized definition before activation.
 - First-activation failure restores exact service absence only while no fenced claim exists.
 - Launcher restart refuses non-fenced authority or stranded custody with the systemd non-restart exit.
+- Configuration and preflight reject any fenced claim set other than the exact four-type report lane.
+- Quarantined completed handlers remain visible as unresolved shutdown evidence and force exit 78.
 - Migration replay preserves every existing queue and report row and creates no automatic recovery work.
 - ACL tests prove only `service_role` can call the fenced functions and authenticated callers cannot
   select `claim_token` while retaining the complete safe queue view.
