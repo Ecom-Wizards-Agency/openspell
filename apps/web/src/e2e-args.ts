@@ -1,16 +1,9 @@
 /** Pure command-line parsing for the web E2E runner. */
-export const E2E_SUITES = [
-  'tags-goto',
-  'grid-performance',
-  'optimization-groups',
-  'profile-context',
-  'auth',
-  'auth-members',
-  'auth-oauth',
-  'auth-roles',
-  'route-acceptance',
-] as const;
-export type E2ESuite = (typeof E2E_SUITES)[number];
+import { E2E_SUITES } from './e2e-suite-registry.js';
+import type { E2ESuite } from './e2e-suite-registry.js';
+
+export { E2E_SUITES } from './e2e-suite-registry.js';
+export type { E2ESuite } from './e2e-suite-registry.js';
 
 export interface E2EInvocation {
   suites: E2ESuite[];

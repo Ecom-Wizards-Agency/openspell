@@ -14,6 +14,8 @@
     "test:e2e:grid-performance": "tsx e2e/run.ts grid-performance",
     "test:e2e:optimization-groups": "tsx e2e/run.ts optimization-groups",
     "test:e2e:profile-context": "tsx e2e/run.ts profile-context",
+    "test:e2e:auth-guards-anonymous": "tsx e2e/run.ts auth-guards-anonymous",
+    "test:e2e:auth-guards-signed-in": "tsx e2e/run.ts auth-guards-signed-in",
     "test:e2e:auth": "tsx e2e/run.ts auth",
     "test:e2e:auth-members": "tsx e2e/run.ts auth-members",
     "test:e2e:auth-oauth": "tsx e2e/run.ts auth-oauth",

@@ -20,10 +20,8 @@ import { BASE_URL } from './e2e/support/fixture';
 
 export default defineConfig({
   testDir: './e2e',
-  // `guards.spec.ts` rides this config because it needs the same thing the
-  // other authenticated specs do and one thing only this suite has: a session that can be
-  // absent. The WP-08 config arms the header bridge, so every request there is
-  // authenticated before it is routed and "anonymous" cannot be expressed.
+  // Anonymous and signed-in route guards own separate fresh processes because
+  // together their two full route graphs exhausted this suite's bounded heap.
   // The 3,597-row Grid performance fixture has its own process/configuration.
   // Keeping it here makes Next dev retain that route graph and payload while
   // compiling every guarded route, eventually exhausting the bounded E2E heap
@@ -38,7 +36,7 @@ export default defineConfig({
   // Member and invitation flows own a fresh process too. Their auth
   // continuation timed out after the guard matrix had compiled every
   // protected route, before the later OAuth heap exhaustion.
-  testMatch: /(guards|dashboard|grid)\.spec\.ts$/,
+  testMatch: /(dashboard|grid)\.spec\.ts$/,
   // The cross-route dashboard acceptance file compiles several large operator
   // routes and owns a fresh Next process through its dedicated configuration.
   testIgnore: /route-acceptance\.dashboard\.spec\.ts$/,
