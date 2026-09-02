@@ -37,17 +37,16 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- `origin/main` is `12313425284f2d3022b3fd63e6954047bf41f722`. PR #111 first merged the
-  narrowly scoped database-test timeout prerequisite at `2ea10e1`; exact-head run `33576253788`
-  and exact-main run `33576320746` passed both jobs on their first attempts. PR #110 then merged
-  WP-190's test-only browser-process isolation. Exact-head run `33577280436` passed both jobs at
-  `adf410b`, and exact-main run `33578277240` passed both jobs at the merge revision on their first
-  attempts. The unchanged 69 browser tests now run in 11 fresh serial processes while preserving
-  the explicit 4 GB heap cap, one Playwright worker, zero retries and exact route conservation.
+- `origin/main` is `82911581a3e91556c93f12d973509f0acaa94b35`. PR #113 merged WP-191's
+  architecture-only token-fenced SP outbox protocol. Exact-head run `33582983015` passed both jobs
+  at `fd47827` on its first attempt; exact-main run `33583810523` passed both jobs at the merge
+  revision on its first attempt. High correctness and Extra-High adversarial reviews reported no
+  blocker, high or medium finding. The package changed no migration, app, job, provider path,
+  hosted schema, deployment or activation.
 - Production web health returns `ok` at
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 71 commits behind current main. No later package
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 75 commits behind current main. No later package
   deployed or promoted a candidate, so its newer source artifacts are not live evidence.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 211 commits behind
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 215 commits behind
   current main, and still returns the legacy `wizard-ads` service shape.
 - The new Evo report-worker unit is not installed and its loopback health is unavailable. The
   legacy integration worker is active, but exposes no revision stamp. Earlier in this continuation
@@ -60,7 +59,7 @@ At the time this handover was reconciled:
 - Current source, deployed web, deployed MCP, and the active worker are not one proven release. Do
   not describe post-deployment main features as live until a revision-stamped candidate is promoted
   and checked.
-- `docs/STATUS.md` now records WP-179 through WP-190, but the implementation-wave table remains
+- `docs/STATUS.md` now records WP-179 through WP-191, but the implementation-wave table remains
   incomplete between WP-149 and WP-178. Use Git, CI, code, the migration ledger, and live health as
   evidence; then update status prose.
 
@@ -125,6 +124,12 @@ Recent verified source work includes:
   suites in fresh serial processes. Exact route-manifest conservation, crash-safe setup/cleanup,
   one worker, zero retries and the explicit 4 GB heap cap are enforced; no application behavior,
   authentication rule, migration, deployment or runtime activation changed;
+- an accepted architecture for token-fenced SP outbox delivery using private mutable custody heads,
+  immutable transition journals, typed non-JSON claim credentials, database-clock ownership,
+  claim-bound dispatch-lease and reservation wrappers, exact completion/error semantics and
+  separately gated source, coordinator and activation packages. It is documentation only; no
+  schema, facade implementation, worker consumer, provider reachability or runtime activation was
+  added;
 - bounded five-second transactional lock waits on every migration that was pending before the
   attended four-file hosted push, plus a source guard that prevents later lock-sensitive migrations
   from silently removing or moving that boundary;
@@ -150,15 +155,9 @@ These are source outcomes, not blanket claims of live behavior.
 
 Reconcile heads and checks again before acting.
 
-### Older open work that needs an explicit decision
-
-- PR #24: guarded Sponsored Products write gateway; head `78e718b`, 168 current-main commits
-  behind, 12 branch commits ahead, conflicting, and failing.
-  WP-179, WP-180, WP-187 and WP-188 supersede its shared-contract, provider-adapter, persistence
-  and typed-database-facade portions. WP-189 preserves its reusable generic worker lifecycle, but
-  its token-fenced Sponsored Products outbox ownership and recovery boundary remains distinct.
-  Keep the old PR open only until a current, separately numbered successor accepts that boundary as
-  archival design or merges its guarded runtime; then close it rather than rebasing stale code.
+There are no open pull requests. PR #24 was closed unmerged at archival head `78e718b` after
+WP-191 preserved its remaining token-fenced ownership/recovery lesson on accepted current main.
+Its superseded source was not rebased, cherry-picked or merged.
 
 Do not keep stale pull requests merely as storage. Preserve useful design in a current brief,
 replace or rebase live work, and close branches that are proven superseded.
@@ -196,6 +195,11 @@ the hosted ledger. WP-188 added only a source facade and did not apply or assume
 not apply it as part of a worker or outbox slice; a future hosted apply requires a separately
 reconciled ledger-compatible artifact, exact action authorization and pre/postflight. Its absence
 keeps every new persistence relation and capability unavailable live.
+
+WP-191 added architecture documents only. Its database/facade successor may add one inert forward
+migration after rechecking the exact last source migration, but must not host WP-187 or that new
+migration, import the facade from an app, register a consumer, reach the provider or activate a
+write gate in the same package.
 
 WP-186 was applied from the isolated 41-file artifact at SHA-256
 `db3def960f433c1e221c0257aacd3551e8c7b023fd178a078831ba2a038b7e2c`. The attended window stopped
@@ -303,12 +307,12 @@ exact current-task authorization.
 
 ## Recommended continuation order
 
-1. Design the token-fenced Sponsored Products outbox successor on current main without importing or
-   cherry-picking PR #24's superseded contracts, adapter or persistence code. Keep the WP-187
-   migration, job registration, provider reachability and every runtime gate closed. Review tenant
-   fencing, reservation-token custody, crash recovery and queue ownership independently at Extra
-   High. Close PR #24 only after this separately numbered successor is accepted as archival
-   preservation or merged runtime.
+1. Implement the separately numbered inert WP-191 database/facade successor from exact current
+   main. Add only the private delivery head/journal, controlled claim transitions, claim-bound
+   dispatch-lease/reservation wrappers, tokenless grant revocations, explicit DB facade and focused
+   proofs. Keep both SP migrations unhosted, add no app/job/provider reachability and leave every
+   runtime gate closed. Use High for implementation correctness and Extra High for migration,
+   stale-token, lock-order, purge and no-redispatch review.
 2. Stage the weekday-aware Evo report worker from an exact clean main revision. Transfer Vercel
    report claims first, prove the legacy unit retired, then perform the attended activation and
    exact health/queue checks. Never allow overlapping consumers, and keep the optimizer freeze.

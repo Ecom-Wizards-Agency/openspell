@@ -2,7 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated` · `superseded`.
 
-Source and deployment headers reconciled 2026-09-02 against `origin/main` at `1231342`. The
+Source and deployment headers reconciled 2026-09-02 against `origin/main` at `8291158`. The
 implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
 the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
 the implementation is reachable from the recorded main revision. It does not by itself mean
@@ -119,7 +119,7 @@ implementation brief in `docs/workpackages/`.
 | 90 | Weekday preview schedule | superseded | PR #40 was closed; WP-171 is the merged replacement |
 | 91 | Live route performance | in-progress | Grid and Time Machine remain above the live targets recorded below |
 | 93 | Guarded Amazon write policy | merged; runtime gated | manually approved writes are authorized only through immutable worker plans, allowlists, audit and resync; no general live mutation path exists |
-| 96 | Guarded Sponsored Products write gateway | review; all but token-fenced outbox boundary superseded | sole open PR #24 at `78e718b` is 168 current-main commits behind, conflicting and failing; WP-179, WP-180, WP-187 and WP-188 replace its contracts, adapter, persistence and DB facade, while WP-189 replaces the reusable generic worker lifecycle; a separately numbered current outbox successor must accept or merge the remaining token-fenced ownership/recovery boundary before the stale PR closes, and every runtime gate remains closed |
+| 96 | Guarded Sponsored Products write gateway | superseded | PR #24 was closed unmerged at archival head `78e718b` after WP-191 accepted its remaining token-fenced ownership/recovery lesson on current main; no stale source was rebased, cherry-picked or merged |
 | 110 | Focused operator navigation | merged and deployed | task-oriented groups and quiet utility footer |
 | 112 | Release-artifact checks | superseded | stale PR #35 was closed after WP-184 preserved and strengthened its distinct requirements |
 | 113 | OpenSpell MCP connection name | merged and deployed in web | setup snippets use `openspell`; stable environment-variable and package identifiers remain unchanged |
@@ -155,6 +155,7 @@ implementation brief in `docs/workpackages/`.
 | 188 | Guarded SP write query facade | merged; source-only | explicit staging/runtime database capabilities, committed single-winner dispatch tickets, controlled refusal/error mapping and exact evidence/accounting verification merged through PR #106 at `5fc9471`; exact-head and exact-main CI passed, while no migration, job, worker/provider reachability, deployment setting or live mutation was activated |
 | 189 | Worker claim-loop resilience | merged; deployment gated | direct claim-RPC `57014` containment, capped equal-jitter backoff, single-flight one-shot lifecycle, active-claim shutdown draining and sanitized health merged through PR #108 at `882a229`; real PostgreSQL proves canceled-claim rollback and exactly-once later completion, while no migration, job type, queue owner, provider call, deployment or SP-write activation changed and the active legacy worker revision remains unproven |
 | 190 | Auth guard process isolation | merged; test-only | the unchanged 69 browser tests run as 11 fresh serial processes with exact route-manifest conservation, crash-safe setup/cleanup, the explicit 4 GB heap cap, one worker and zero retries; merged through PR #110 at `1231342` after first-attempt exact-head and exact-main CI, with no application, authentication, migration, deployment or runtime change |
+| 191 | Token-fenced SP outbox protocol architecture | merged; architecture only | private mutable custody heads plus immutable journals, typed non-JSON claim tokens, database-clock transitions, claim-bound dispatch-lease/reservation wrappers, exact closure/error outcomes and separate source/coordinator/activation packages were accepted through PR #113 at `8291158`; no migration, facade code, job, provider reachability, hosted schema, deployment or activation changed |
 
 ## Milestone gates
 
@@ -168,6 +169,12 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-09-02 PR #113 merged WP-191's architecture-only token-fenced SP outbox protocol at
+  `8291158` after exact-head run `33582983015` passed both jobs at `fd47827`; exact-main run
+  `33583810523` then passed both jobs on its first attempt. High correctness and Extra-High
+  adversarial reviews reported no blocker, high or medium finding. PR #24 was then closed unmerged
+  because its remaining ownership lesson has a durable current-main home. No migration, hosted
+  apply, app/job/provider path, deployment, restart, feature activation or Amazon mutation occurred.
 - On 2026-09-02 PR #111 merged a one-line, test-only database timeout budget at `2ea10e1` after
   exact-head run `33576253788` passed both jobs at `9330305`; exact-main run `33576320746` then
   passed both jobs on its first attempt. The change preserved every assertion, SQL statement,
@@ -485,8 +492,11 @@ implementation brief in `docs/workpackages/`.
 - [x] PR #110 exact-head CI run `33577280436` and exact-main run `33578277240` passed both jobs at
       `adf410b` and merged revision `1231342`, respectively, on their first attempts; both browser
       jobs passed all 69 tests across 11 fresh serial processes.
+- [x] PR #113 exact-head CI run `33582983015` and exact-main run `33583810523` passed both jobs at
+      `fd47827` and merged revision `8291158`, respectively, on their first attempts. High and
+      Extra-High reviews found no blocker, high or medium architecture defect.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
-      `b5c210d` (71 and 211 current-main commits behind, respectively), the new report worker is
+      `b5c210d` (75 and 215 current-main commits behind, respectively), the new report worker is
       absent, and the active legacy worker revision is unproven. The attended stop/start reset its
       restart counter to zero; the worker is active/running and now reports one later automatic
       restart whose cause the unprivileged journal does not expose. Claim-failure containment is
