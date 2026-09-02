@@ -228,6 +228,16 @@ schedule policy without enqueueing a zero-scope job. Every newly enqueued recomm
 scoped; deployment must prove no legacy queued or running recommendation jobs before the new worker
 contract is activated.
 
+The compatibility boundary is asymmetric. A pre-WP-195 worker understands the unchanged job payload,
+but it does not understand immutable scope rows or enqueue-time policy snapshots. Cutover therefore
+applies the hosted migration, blocks recommendation enqueue, proves `legacy_active = 0`, retires every
+pre-WP-195 recommendation consumer (including a cron overlap), activates a WP-195-compatible worker,
+and only then exposes the new POST route. `docs/deploy/wp-195-recommendation-cutover.sql` is the
+read-only evidence query. After the first scoped job exists, a pre-WP-195 revision is not a valid live
+rollback destination unless enqueue is blocked, the compatible consumer is stopped, and the same query
+proves both `legacy_active = 0` and `scoped_active = 0`. Normal rollback must remain within
+WP-195-compatible revisions.
+
 ## Worker lifecycle
 
 `startRun` locks the run, loads its sorted scope rows, verifies version/count/fingerprint and verifies
@@ -277,4 +287,3 @@ ledger.
   persisted-scope proof, unchanged assignment rows and visible status transition without manual reload;
 - blast radius: frozen shared package unchanged, web still imports no Ads client, no Amazon mutation call,
   one new source-only migration and no deployment or hosted apply.
-

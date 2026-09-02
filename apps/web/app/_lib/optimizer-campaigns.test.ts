@@ -37,7 +37,12 @@ suite('optimizer campaign fact aggregation', () => {
         (${orgId}, ${profileId}, 'perf-sp', 'SP', 'Synthetic SP', 'enabled', 10, 'daily'),
         (${orgId}, ${profileId}, 'perf-sb', 'SB', 'Synthetic SB', 'paused', 20, 'daily'),
         (${orgId}, ${profileId}, 'perf-sd', 'SD', 'Synthetic SD', 'enabled', 30, 'daily'),
-        (${orgId}, ${profileId}, 'perf-empty', 'SP', 'Synthetic empty', 'enabled', 40, 'daily')
+        (${orgId}, ${profileId}, 'perf-empty', 'SP', 'Synthetic empty', 'enabled', 40, 'daily'),
+        (${orgId}, ${profileId}, 'perf-deleted', 'SP', 'Synthetic deleted', 'enabled', 50, 'daily')
+    `;
+    await database.sql`
+      update public.campaigns set deleted_at = now()
+       where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = 'perf-deleted'
     `;
 
     await database.sql`
@@ -128,12 +133,18 @@ suite('optimizer campaign fact aggregation', () => {
       comparisonRows: 0,
       comparisonSpend: 0,
     });
+    expect(byId.get('perf-deleted')).toMatchObject({
+      state: 'deleted',
+      currentRows: 0,
+      spend: 0,
+    });
 
     expect([...byId.keys()]).toEqual(expect.arrayContaining([
       'perf-sp',
       'perf-sb',
       'perf-sd',
       'perf-empty',
+      'perf-deleted',
     ]));
   });
 });

@@ -95,6 +95,9 @@ after reviewed merge, exact-main CI and external-state reconciliation.
 - [ ] `pnpm typecheck`, `pnpm lint`, `pnpm test` and `pnpm hygiene` pass.
 - [ ] Exact-head pull-request CI and exact-main CI pass both jobs.
 - [ ] Hosted migration and deployment actions remain separately authorized and exactly evidenced.
+- [ ] Cutover evidence uses `docs/deploy/wp-195-recommendation-cutover.sql`; no pre-WP-195 consumer
+      overlaps scoped enqueue, and any rollback destination is WP-195-compatible unless enqueue is
+      blocked and both legacy/scoped active counts are zero.
 - [ ] Handover and status are updated only after reviewed merge and exact-main CI.
 
 ## External gates
@@ -102,5 +105,9 @@ after reviewed merge, exact-main CI and external-state reconciliation.
 Merging WP-195 authorizes no external action. Hosted apply requires an exact ordered review because
 production currently ends at `20260901010000` while WP-187, WP-192 and WP-194 precede this source
 migration. Web deployment requires the exact merged revision and hosted schema. Worker rollout requires
-the exact release plus proof that no legacy queued/running recommendation job remains. Amazon mutation
-remains locked behind the separate parity and write-activation program gates.
+the exact release plus proof that no legacy queued/running recommendation job remains, retirement of
+every pre-WP-195 recommendation consumer, and activation before the new web POST is exposed. Once any
+scoped job has been enqueued, rollback is limited to a WP-195-compatible revision unless enqueue is
+blocked, the compatible consumer is stopped, and the read-only cutover query proves zero legacy and
+zero scoped active jobs. Amazon mutation remains locked behind the separate parity and write-activation
+program gates.

@@ -109,6 +109,9 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
   const go = (profileId: string): void => {
     const next = new URLSearchParams(searchParams.toString());
     next.set('profile', profileId);
+    // Preview batches are profile-scoped. Carrying one across the profile
+    // switch would make the new workspace poll a foreign batch.
+    next.delete('batch');
     document.cookie = `${PROFILE_COOKIE}=${encodeURIComponent(profileId)}; path=/; max-age=31536000; SameSite=Lax`;
     setSelected(profileId);
     setOpen(false);

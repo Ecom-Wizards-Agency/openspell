@@ -32,7 +32,17 @@ afterEach(() => {
 
 describe('profile App Router navigation', () => {
   it('writes the profile cookie before requesting the next RSC and preserves route state', () => {
-    window.history.replaceState(null, '', '/grid?profile=profile-current&entity=targets&from=2026-08-01');
+    const currentRoute = new URLSearchParams({
+      profile: 'profile-current',
+      entity: 'targets',
+      from: '2026-08-01',
+      batch: 'profile-bound-preview',
+    });
+    window.history.replaceState(
+      null,
+      '',
+      `/grid?${currentRoute.toString()}`,
+    );
     let cookieAtPush = '';
     navigation.push.mockImplementation(() => {
       cookieAtPush = document.cookie;

@@ -106,6 +106,7 @@ export const syncJobs = pgTable(
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
   (t) => [
+    uniqueIndex('sync_jobs_tenant_identity_key').on(t.orgId, t.profileId, t.id),
     index('sync_jobs_org_status_idx').on(t.orgId, t.status),
     index('sync_jobs_profile_idx').on(t.profileId),
   ],

@@ -36,9 +36,11 @@ import {
   type EntityListFailure,
 } from './ads-api.js';
 import { runBidSeriesSync, type BidSeriesSyncDeps } from './bid-series.js';
-import type {
-  RecommendationScheduleStore,
-  RecommendationsRun,
+import {
+  RecommendationExecutionCustodyError,
+  RecommendationScopeIntegrityError,
+  type RecommendationsRun,
+  type RecommendationScheduleStore,
 } from './recommendations-run.js';
 import {
   DEFAULT_REPORT_DOWNLOAD_LIMITS,
@@ -616,7 +618,7 @@ export class SyncWorker {
         if (!this.recommendationsRun) {
           throw new PermanentJobError('recommendations runner is not configured on this worker');
         }
-        return { ...(await this.recommendationsRun(payload)) };
+        return { ...(await this.recommendationsRun(payload, { jobId: job.id })) };
       case 'crosscheck.ingest':
         return this.ingestCrosscheck(payload);
       case 'keepa.sync':
@@ -1590,6 +1592,8 @@ function errorMessage(error: unknown): string {
 
 function isPermanentJobFailure(error: unknown): boolean {
   return error instanceof PermanentJobError ||
+    error instanceof RecommendationExecutionCustodyError ||
+    error instanceof RecommendationScopeIntegrityError ||
     error instanceof ReportCreateOutcomeUnknownError ||
     (error instanceof ReportDownloadLimitError &&
       (error.kind === 'compressed_bytes' || error.kind === 'decompressed_bytes')) ||
