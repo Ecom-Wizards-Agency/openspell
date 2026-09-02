@@ -23,6 +23,7 @@ import {
   PostgresSbVideoIngestionStore,
 } from './sb-video-ingestion.js';
 import { createMrpEconomicsSync } from './mrp.js';
+import { terminateAfterFatalWorkerFailure } from './fatal-exit.js';
 import {
   AuthHealthMonitor,
   BidSeriesSyncPass,
@@ -191,14 +192,10 @@ try {
   await worker.start();
 } catch (error) {
   const failureKind = error instanceof QueueSettlementError ? error.kind : 'unexpected';
-  console.error('report worker stopped after fatal failure', { failureKind });
-  let evidence: WorkerShutdownEvidence = { released: 0, unresolved: 1 };
-  try {
-    evidence = await shutdown();
-  } catch {
-    console.error('report worker fatal shutdown evidence unavailable');
-  }
-  process.exitCode = error instanceof QueueSettlementError || evidence.unresolved > 0
-    ? CUSTODY_EXIT_CODE
-    : 1;
+  await terminateAfterFatalWorkerFailure({
+    failureKind,
+    custodyFailure: error instanceof QueueSettlementError,
+    shutdown,
+    logger: console,
+  });
 }
