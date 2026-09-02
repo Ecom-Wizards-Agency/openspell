@@ -36,8 +36,8 @@ command -v git >/dev/null || {
   echo "refusing rollback: required command is unavailable: git" >&2
   exit 1
 }
-if ! assert_report_worker_transition_source; then
-  echo "refusing rollback: transition helper is not from a clean tracked checkout" >&2
+if ! assert_report_worker_transition_source "$from_revision"; then
+  echo "refusing rollback: transition helper does not match the current live revision" >&2
   exit 1
 fi
 
@@ -59,11 +59,11 @@ if ! verify_report_worker_fenced_protocol \
   echo "refusing rollback: current release does not advertise the fenced protocol" >&2
   exit 1
 fi
-if ! verify_report_worker_database_contract "$destination"; then
+if ! verify_report_worker_database_contract "$from_revision"; then
   echo "refusing rollback: hosted database does not expose the exact fenced contract" >&2
   exit 1
 fi
-if ! verify_report_worker_fenced_authority "$destination"; then
+if ! verify_report_worker_fenced_authority "$from_revision"; then
   echo "refusing rollback: database report-lane authority is not fenced" >&2
   exit 1
 fi
@@ -72,7 +72,7 @@ if ! stop_report_worker_and_prove_inactive; then
   echo "refusing rollback: current report worker did not become inactive" >&2
   exit 1
 fi
-if ! custody_before="$(capture_report_worker_custody_snapshot "$destination")" \
+if ! custody_before="$(capture_report_worker_custody_snapshot "$from_revision")" \
   || ! assert_report_worker_custody_drained "$custody_before"; then
   if leave_report_worker_stopped; then
     echo "refusing rollback: report-lane custody is unresolved; the service is inactive and disabled" >&2
@@ -98,7 +98,7 @@ if [[ "$rollback_ok" != true ]]; then
     exit 1
   fi
   custody_after=
-  if custody_after="$(capture_report_worker_custody_snapshot "$destination")" \
+  if custody_after="$(capture_report_worker_custody_snapshot "$from_revision")" \
     && restore_report_worker_state_if_unchanged \
       "$custody_before" "$custody_after" "$from_revision"; then
     echo "OpenSpell report worker rollback failed before a claim; the original deployment was fully restored" >&2

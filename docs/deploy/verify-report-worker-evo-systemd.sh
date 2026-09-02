@@ -29,8 +29,8 @@ command -v git >/dev/null || {
   echo "OpenSpell report worker Git is unavailable" >&2
   exit 1
 }
-if ! assert_report_worker_transition_source; then
-  echo "OpenSpell report worker transition helper is not from a clean tracked checkout" >&2
+if ! assert_report_worker_transition_source "$expected_revision"; then
+  echo "OpenSpell report worker transition helper does not match the live revision" >&2
   exit 1
 fi
 
@@ -39,8 +39,8 @@ verify_report_worker_credentials
 assert_legacy_report_worker_retired
 release="$report_worker_release_root/releases/$expected_revision"
 if ! verify_report_worker_fenced_protocol "$release" "$expected_revision" \
-  || ! verify_report_worker_database_contract "$release" \
-  || ! verify_report_worker_fenced_authority "$release" \
+  || ! verify_report_worker_database_contract "$expected_revision" \
+  || ! verify_report_worker_fenced_authority "$expected_revision" \
   || ! verify_report_worker_live "$expected_revision"; then
   echo "OpenSpell report worker live deployment is incomplete or mismatched" >&2
   exit 1

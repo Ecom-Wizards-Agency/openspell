@@ -187,9 +187,43 @@ if ! rg -F '"$report_worker_script_dir/openspell-report-worker-readiness.mjs"' \
 fi
 if ! rg -F 'assert_report_worker_transition_source' \
   "$activator" "$rollback" "$verifier" >/dev/null \
+  || ! rg -F 'local expected_transition_revision="$1"' \
+    "$deployment_lib" >/dev/null \
+  || ! rg -F 'assert_report_worker_transition_source "$expected_transition_revision"' \
+    "$deployment_lib" >/dev/null \
+  || ! rg -F 'verify_report_worker_database_contract "$expected_revision"' \
+    "$activator" "$verifier" >/dev/null \
+  || ! rg -F 'assert_report_worker_transition_source "$from_revision"' \
+    "$rollback" >/dev/null \
+  || ! rg -F 'verify_report_worker_database_contract "$from_revision"' \
+    "$rollback" >/dev/null \
+  || ! rg -F 'verify_report_worker_fenced_authority "$from_revision"' \
+    "$rollback" >/dev/null \
+  || ! rg -F 'capture_report_worker_custody_snapshot "$from_revision"' \
+    "$rollback" >/dev/null \
   || ! rg -F 'status --porcelain --untracked-files=normal' "$deployment_lib" >/dev/null \
   || ! rg -F '[[ "$helper_mode" == 100755\ * ]]' "$deployment_lib" >/dev/null; then
-  echo "deployment transition does not prove a clean executable tracked helper" >&2
+  echo "deployment transition does not bind a clean executable tracked helper to its live revision" >&2
+  exit 1
+fi
+if rg -n '(verify_report_worker_database_contract|verify_report_worker_fenced_authority|activate_report_worker_fenced_authority|capture_report_worker_custody_snapshot) "\$(release|destination)"' \
+  "$activator" "$rollback" "$verifier"; then
+  echo "database probe provenance is still expressed as an unused release path" >&2
+  exit 1
+fi
+rollback_source_line="$(rg -n -F 'assert_report_worker_transition_source "$from_revision"' \
+  "$rollback" | cut -d: -f1)"
+rollback_contract_line="$(rg -n -F 'verify_report_worker_database_contract "$from_revision"' \
+  "$rollback" | cut -d: -f1)"
+rollback_custody_line="$(rg -n -F 'custody_before="$(capture_report_worker_custody_snapshot' \
+  "$rollback" | head -1 | cut -d: -f1)"
+rollback_switch_line="$(rg -n -F 'switch_report_worker_link' "$rollback" | cut -d: -f1)"
+if [[ -z "$rollback_source_line" || -z "$rollback_contract_line" \
+  || -z "$rollback_custody_line" || -z "$rollback_switch_line" \
+  || "$rollback_source_line" -ge "$rollback_contract_line" \
+  || "$rollback_source_line" -ge "$rollback_custody_line" \
+  || "$rollback_source_line" -ge "$rollback_switch_line" ]]; then
+  echo "rollback does not bind its helper to the live revision before probing or switching" >&2
   exit 1
 fi
 if rg -n -- 'openspell-mcp|wizard-ads-mcp|cloudflared|docker' \
@@ -262,6 +296,62 @@ fixture_revision=0000000000000000000000000000000000000000
     exit 1
   fi
 )
+
+# Execute a real rollback entrypoint from a clean, tracked older checkout. The live
+# revision is a later commit in that same fixture repository. Rejection must happen
+# at the source-provenance gate, before any privileged/database operation can run.
+stale_transition_repo="$test_tmp/stale-transition-repo"
+stale_transition_scripts="$stale_transition_repo/docs/deploy"
+install -d "$stale_transition_scripts"
+install -m 0755 "$rollback" \
+  "$stale_transition_scripts/rollback-report-worker-evo-systemd.sh"
+install -m 0644 "$deployment_lib" \
+  "$stale_transition_scripts/report-worker-evo-systemd-lib.sh"
+install -m 0755 "$readiness" \
+  "$stale_transition_scripts/openspell-report-worker-readiness.mjs"
+git -C "$stale_transition_repo" init -q
+git -C "$stale_transition_repo" add docs/deploy
+git -C "$stale_transition_repo" -c user.name=fixture -c user.email=fixture@example.invalid \
+  commit -qm stale-helper
+stale_transition_revision="$(git -C "$stale_transition_repo" rev-parse HEAD)"
+printf '%s\n' live >"$stale_transition_repo/LIVE_REVISION_FIXTURE"
+git -C "$stale_transition_repo" add LIVE_REVISION_FIXTURE
+git -C "$stale_transition_repo" -c user.name=fixture -c user.email=fixture@example.invalid \
+  commit -qm live-revision
+live_transition_revision="$(git -C "$stale_transition_repo" rev-parse HEAD)"
+git -C "$stale_transition_repo" checkout -q "$stale_transition_revision"
+
+stale_probe_bin="$test_tmp/stale-probe-bin"
+stale_probe_log="$test_tmp/stale-probe-called"
+install -d "$stale_probe_bin"
+cat >"$stale_probe_bin/systemd-creds" <<'EOF'
+#!/bin/sh
+printf '%s\n' systemd-creds >>"$REPORT_WORKER_STALE_PROBE_LOG"
+exit 97
+EOF
+cat >"$stale_probe_bin/sudo" <<'EOF'
+#!/bin/sh
+printf '%s\n' sudo >>"$REPORT_WORKER_STALE_PROBE_LOG"
+exit 97
+EOF
+chmod 0755 "$stale_probe_bin/systemd-creds" "$stale_probe_bin/sudo"
+if stale_rollback_output="$(
+  REPORT_WORKER_STALE_PROBE_LOG="$stale_probe_log" \
+    PATH="$stale_probe_bin:$PATH" \
+    bash "$stale_transition_scripts/rollback-report-worker-evo-systemd.sh" \
+      "$live_transition_revision" "$fixture_revision" 2>&1
+)"; then
+  echo "rollback accepted a clean helper from a mismatched revision" >&2
+  exit 1
+fi
+if [[ "$stale_rollback_output" != *"transition helper does not match the current live revision"* ]]; then
+  echo "rollback did not reject the stale helper at its source-provenance gate" >&2
+  exit 1
+fi
+if [[ -e "$stale_probe_log" ]]; then
+  echo "rollback performed a privileged or database operation before rejecting a stale helper" >&2
+  exit 1
+fi
 
 node --input-type=module - "$service_state" <<'NODE'
 import assert from 'node:assert/strict';

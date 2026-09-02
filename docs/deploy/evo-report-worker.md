@@ -192,7 +192,9 @@ bash docs/deploy/rollback-report-worker-evo-systemd.sh \
 
 Rollback refuses stale `current`, incomplete artifacts, a mismatched live unit, an unretired legacy
 service, a destination without the exact fenced marker, a database that fails exact readiness, or
-authority that is not already fenced. It never changes authority.
+authority that is not already fenced. Run it from a clean tracked checkout at exactly the current
+live `from_revision`; a clean helper from any other revision is rejected before database readiness or
+custody is inspected. It never changes authority.
 It stops and proves the source inactive, then requires a drained custody snapshot before changing the
 link. If the destination fails to start, the original revision is restarted only when the post-failure
 snapshot exactly matches the drained pre-switch snapshot. Otherwise both revisions remain stopped.

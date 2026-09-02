@@ -62,7 +62,7 @@ if ! verify_report_worker_fenced_protocol "$release" "$expected_revision"; then
   echo "refusing activation: staged release does not advertise the exact fenced protocol" >&2
   exit 1
 fi
-if ! verify_report_worker_database_contract "$release"; then
+if ! verify_report_worker_database_contract "$expected_revision"; then
   echo "refusing activation: hosted database does not expose the exact fenced contract" >&2
   exit 1
 fi
@@ -91,7 +91,7 @@ elif ! assert_report_worker_exact_absence; then
 fi
 
 if [[ "$prior_revision" == "$expected_revision" ]]; then
-  if ! verify_report_worker_fenced_authority "$release"; then
+  if ! verify_report_worker_fenced_authority "$expected_revision"; then
     echo "refusing activation: active release does not have fenced database authority" >&2
     exit 1
   fi
@@ -103,7 +103,7 @@ if [[ -n "$prior_revision" ]] && ! stop_report_worker_and_prove_inactive; then
   echo "refusing activation: prior report worker did not become inactive" >&2
   exit 1
 fi
-if ! custody_before="$(capture_report_worker_custody_snapshot "$release")" \
+if ! custody_before="$(capture_report_worker_custody_snapshot "$expected_revision")" \
   || ! assert_report_worker_custody_drained "$custody_before"; then
   if leave_report_worker_stopped; then
     echo "refusing activation: report-lane custody is unresolved; the service is inactive and disabled" >&2
@@ -115,10 +115,10 @@ fi
 
 authority_result=
 authority_activated=false
-if authority_result="$(activate_report_worker_fenced_authority "$release")" \
+if authority_result="$(activate_report_worker_fenced_authority "$expected_revision")" \
   && assert_report_worker_authority_activated "$authority_result"; then
   authority_activated=true
-elif verify_report_worker_fenced_authority "$release"; then
+elif verify_report_worker_fenced_authority "$expected_revision"; then
   # The activation RPC may have committed even if its response was lost. The
   # read-only authority proof below contains that ambiguity without reversing it.
   authority_activated=true
@@ -131,8 +131,8 @@ if [[ "$authority_activated" != true ]]; then
   fi
   exit 1
 fi
-if ! verify_report_worker_fenced_authority "$release" \
-  || ! custody_before="$(capture_report_worker_custody_snapshot "$release")" \
+if ! verify_report_worker_fenced_authority "$expected_revision" \
+  || ! custody_before="$(capture_report_worker_custody_snapshot "$expected_revision")" \
   || ! assert_report_worker_custody_drained "$custody_before"; then
   if leave_report_worker_stopped; then
     echo "refusing activation: fenced authority and drained custody were not jointly re-proved; authority is not automatically reverted and the service is inactive and disabled" >&2
@@ -158,7 +158,7 @@ if [[ "$activation_ok" != true ]]; then
     exit 1
   fi
   custody_after=
-  if custody_after="$(capture_report_worker_custody_snapshot "$release")" \
+  if custody_after="$(capture_report_worker_custody_snapshot "$expected_revision")" \
     && restore_report_worker_state_if_unchanged \
       "$custody_before" "$custody_after" "$prior_revision"; then
     if [[ -n "$prior_revision" ]]; then

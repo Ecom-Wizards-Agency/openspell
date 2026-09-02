@@ -171,8 +171,13 @@ verify_report_worker_credentials() {
 }
 
 report_worker_database_probe() {
+  local expected_transition_revision="$1"
   local mode="$2"
   local database_credential=/etc/credstore.encrypted/openspell-report-worker-database-url
+  if ! assert_report_worker_transition_source "$expected_transition_revision"; then
+    echo "refusing database probe: transition helper does not match the approved revision" >&2
+    return 1
+  fi
   report_worker_run_privileged systemd-creds decrypt "$database_credential" - \
     | /usr/local/bin/node "$report_worker_script_dir/../../node_modules/tsx/dist/cli.mjs" \
       "$report_worker_script_dir/openspell-report-worker-readiness.mjs" "$mode"
