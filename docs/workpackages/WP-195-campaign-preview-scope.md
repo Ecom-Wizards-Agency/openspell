@@ -88,26 +88,31 @@ after reviewed merge, exact-main CI and external-state reconciliation.
 
 ## Acceptance checks
 
-- [ ] Architecture and work-package contract committed separately before implementation.
-- [ ] Focused migration, DB, worker, web and Playwright tests pass.
-- [ ] Disposable PostgreSQL migration, concurrency and immutable-scope proofs pass serially.
-- [ ] High correctness and Extra-High adversarial reviews find no blocker, high or medium defect.
-- [ ] `pnpm typecheck`, `pnpm lint`, `pnpm test` and `pnpm hygiene` pass.
-- [ ] Exact-head pull-request CI and exact-main CI pass both jobs.
-- [ ] Hosted migration and deployment actions remain separately authorized and exactly evidenced.
-- [ ] Cutover evidence uses `docs/deploy/wp-195-recommendation-cutover.sql`; no pre-WP-195 consumer
-      overlaps scoped enqueue, and any rollback destination is WP-195-compatible unless enqueue is
-      blocked and both legacy/scoped active counts are zero.
-- [ ] Handover and status are updated only after reviewed merge and exact-main CI.
+- [x] Architecture and work-package contract committed separately before implementation.
+- [x] Focused migration, DB, worker, web and Playwright tests pass.
+- [x] Disposable PostgreSQL migration, concurrency and immutable-scope proofs pass serially.
+- [x] High correctness and Extra-High adversarial reviews find no blocker, high or medium defect.
+- [x] `pnpm typecheck`, `pnpm lint`, `pnpm test` and `pnpm hygiene` pass.
+- [x] Exact-head pull-request CI and exact-main CI pass both jobs.
+- [x] The source package performed no hosted migration, deployment, service, provider or Amazon
+      action and preserved the separate-authorization boundary.
+- [ ] Hosted migration apply and deployment each have exact action-specific authorization and
+      pre/postflight evidence.
+- [ ] Live cutover evidence uses `docs/deploy/wp-195-recommendation-cutover.sql`; no pre-WP-195
+      consumer overlaps scoped enqueue, and any rollback destination is WP-195-compatible unless
+      enqueue is blocked and both legacy/scoped active counts are zero.
+- [x] Handover and status are updated only after reviewed merge and exact-main CI.
 
 ## External gates
 
 Merging WP-195 authorizes no external action. Hosted apply requires an exact ordered review because
 production currently ends at `20260901010000` while WP-187, WP-192 and WP-194 precede this source
-migration. Web deployment requires the exact merged revision and hosted schema. Worker rollout requires
-the exact release plus proof that no legacy queued/running recommendation job remains, retirement of
-every pre-WP-195 recommendation consumer, and activation before the new web POST is exposed. Once any
-scoped job has been enqueued, rollback is limited to a WP-195-compatible revision unless enqueue is
-blocked, the compatible consumer is stopped, and the read-only cutover query proves zero legacy and
-zero scoped active jobs. Amazon mutation remains locked behind the separate parity and write-activation
-program gates.
+migration. Web deployment requires the exact merged revision and hosted schema. The four-type Evo
+report worker does not claim `recommendations.run`; a separate source package must first design and
+revision-prove a WP-195-compatible recommendation claimant and exclusive handoff. Its staging and
+activation require distinct exact authorizations plus proof that no legacy queued/running
+recommendation job remains, retirement of every pre-WP-195 recommendation consumer, and exclusive
+health before the new web POST is exposed. Once any scoped job has been enqueued, rollback is limited
+to a WP-195-compatible revision unless enqueue is blocked, the compatible consumer is stopped, and
+the read-only cutover query proves zero legacy and zero scoped active jobs. Amazon mutation remains
+locked behind the separate parity and write-activation program gates.

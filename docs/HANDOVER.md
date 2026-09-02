@@ -37,17 +37,19 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- WP-194 source is merged at `3e1f39186829d528993c88c8555392441c08ffc8`. PR #119 added
-  one-way report-claim authority, opaque fenced custody, ambiguity-safe provider-id persistence,
-  bounded report parsing and fail-closed shutdown/deployment proofs. Exact-head run `33626943610`
-  passed both jobs at `3e61a42`; exact-main run `33628287979` passed both jobs at the merge revision.
-  High correctness and Extra-High adversarial reviews found no blocker, high or medium defect. The
-  package changed no hosted schema, service, queue ownership, production data or provider state.
+- WP-195 source is merged at `857ce0c6f2d925448c7823d2437a79456497c1e2`. PR #121 added
+  AdLabs-style campaign checkboxes, explicit all-versus-selected preview scope, immutable
+  tenant-closed child runs, queue-job custody and bounded observable polling. Corrected exact-head
+  run `33645864956` passed both jobs at `8f63b95`; exact-main run `33647461569` passed both jobs at
+  the merge revision. The first exact-head browser run exposed and led to correction of a stale
+  one-job fixture assertion. High correctness, Extra-High adversarial and scope-safety reviews ended
+  with no blocker, high or medium defect. The package applied no hosted migration, deployment,
+  service change, provider call or Amazon mutation.
 - Production web health returns `ok` at
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 110 commits behind the WP-194 source merge. No later
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 116 commits behind the WP-195 source merge. No later
   package deployed or promoted a candidate, so its newer source artifacts are not live evidence.
 - Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 224 commits behind
-  the WP-193 source merge and 250 commits behind the WP-194 source merge, and still returns the
+  the WP-193 source merge and 256 commits behind the WP-195 source merge, and still returns the
   legacy `wizard-ads` service shape.
 - The new Evo report-worker unit is not installed and its loopback health is unavailable. The
   legacy integration worker is active, but exposes no revision stamp. Earlier in this continuation
@@ -60,7 +62,7 @@ At the time this handover was reconciled:
 - Current source, deployed web, deployed MCP, and the active worker are not one proven release. Do
   not describe post-deployment main features as live until a revision-stamped candidate is promoted
   and checked.
-- `docs/STATUS.md` now records WP-179 through WP-194, but the implementation-wave table remains
+- `docs/STATUS.md` now records WP-179 through WP-195, but the implementation-wave table remains
   incomplete between WP-149 and WP-178. Use Git, CI, code, the migration ledger, and live health as
   evidence; then update status prose.
 
@@ -93,6 +95,10 @@ Recent verified source work includes:
   authority, treats uncertain provider effects as quarantine, bounds download/parser resources and
   final audit output, and refuses activation or rollback when exact custody/revision proofs fail. Its
   migration is not hosted and the new worker remains absent;
+- source-only campaign-scoped optimizer previews with native campaign checkboxes, cross-page
+  filtered selection, explicit all-versus-selected modes, one idempotent parent batch, immutable
+  per-group and unassigned child scopes, exact queue-job custody, bounded polling and honest
+  terminal state. The migration is not hosted and no compatible worker or web revision is live;
 - strict provider-native Unified Reporting create/retrieve methods with exact indexed accounting,
   ambiguity-safe create behavior, idempotent retrieval, and no download or promotion claim;
 - a default-off Unified Reporting dual-run sidecar for `spCampaigns`, with explicit advertiser
@@ -159,7 +165,7 @@ These are source outcomes, not blanket claims of live behavior.
 
 Reconcile heads and checks again before acting.
 
-There are no open pull requests. PR #119 merged WP-194 at `3e1f391`; PR #24 remains closed unmerged
+There are no open pull requests. PR #121 merged WP-195 at `857ce0c`; PR #24 remains closed unmerged
 at archival head `78e718b` after WP-191 preserved its remaining token-fenced ownership/recovery
 lesson on accepted current main. Its superseded source was not rebased, cherry-picked or merged.
 
@@ -195,13 +201,14 @@ weekday-aware worker and web revisions are deployed and verified. The automatic 
 remains off; schema presence did not activate it.
 
 WP-187's `20260901020000_sp_write_persistence_ledger.sql`, WP-192's
-`20260901030000_sp_write_outbox_delivery.sql`, and WP-194's
-`20260901040000_fenced_sync_claims.sql` are merged source only and were not added to the hosted
-ledger. WP-188 and WP-192 expose source facades but no app imports them, and the fenced report
-runtime remains absent. Do not apply any of the three as part of a source package; a future hosted
-apply requires a separately reconciled ledger-compatible artifact, exact action authorization and
-pre/postflight. Their absence keeps the SP delivery capabilities and fenced report custody
-unavailable live.
+`20260901030000_sp_write_outbox_delivery.sql`, WP-194's
+`20260901040000_fenced_sync_claims.sql`, and WP-195's
+`20260901050000_recommendation_preview_scopes.sql` are merged source only and were not added to the
+hosted ledger. WP-188 and WP-192 expose source facades but no app imports them, and the fenced
+report and scoped-preview runtimes remain absent. Do not apply any of the four as part of a source
+package; a future hosted apply requires a separately reconciled ledger-compatible artifact, exact
+action authorization and pre/postflight. Their absence keeps the SP delivery, fenced report custody
+and scoped-preview capabilities unavailable live.
 
 WP-186 was applied from the isolated 41-file artifact at SHA-256
 `db3def960f433c1e221c0257aacd3551e8c7b023fd178a078831ba2a038b7e2c`. The attended window stopped
@@ -288,61 +295,68 @@ authenticated QA remain open. A complete live reversion remains unproven until a
 batch exists. Any Amazon application or reversion must satisfy the guarded write contract and an
 exact current-task authorization.
 
-The visible `Run now` flow does not poll/refetch after enqueue, so a valid queued run can appear
-stuck. It also lacks AdLabs-style campaign scope selection. WP-195 is the next source package: a
-searchable campaign list with row checkboxes, header select-all, clear selection, selected count and
-explicit All campaigns versus Selected campaigns scope; enqueue-time scope is an immutable sorted
-eligible campaign-id snapshot plus fingerprint. This remains preview/read-only source work until
-the revision-matched runtime and live gates are satisfied.
+WP-195 now supplies the source implementation for a searchable campaign list with native row
+checkboxes, filtered cross-page header selection, global clear, exact selected counts, explicit All
+eligible versus Selected campaigns scope, observable parent/child progress and immutable
+enqueue-time campaign/policy evidence. It remains preview-only and unavailable live until the four
+  pending migrations, an exclusive WP-195-compatible recommendation claimant and a matching web revision are
+  separately authorized, deployed and verified. No Amazon apply path was added.
 
 ## Known UX and performance follow-ups
 
-1. Complete WP-195 optimizer run visibility and campaign scope: poll/refetch queued runs, show
-   terminal/refusal states, and provide accessible row selection, filtered select-all/clear,
-   selected count and explicit All versus Selected scope without changing live optimizer data.
-2. When every navigation group is expanded, the active marker and utility footer collide because
+1. When every navigation group is expanded, the active marker and utility footer collide because
    the entire sidebar owns scrolling while the footer is also pushed with auto margin. Fix in a
    fresh serialized web package: keep brand/footer non-shrinking, give only the main
    navigation `min-height: 0` plus vertical overflow, simplify the active marker, and add a browser
    regression at the affected viewport with every group open.
-3. Production Grid and Time Machine first loads remain above the intended targets. Use the closed
+2. Production Grid and Time Machine first loads remain above the intended targets. Use the closed
    `Server-Timing` spans to choose the next bottleneck; do not hide the delay with optimistic copy
    or weaken complete-row/count behavior.
-4. Re-run a complete authenticated OpenSpell click-through after deploying a current revision.
+3. Re-run a complete authenticated OpenSpell click-through after deploying a current revision.
    Cover loaded, empty, partial, stale, settling, error, and permission states; both themes;
    keyboard operation; exact exports; and realistic row counts.
-5. Repeat the equivalent read-only workflows in AdLabs and SYNQ, then classify differences as
+4. Repeat the equivalent read-only workflows in AdLabs and SYNQ, then classify differences as
    correctness, missing capability, interaction friction, unnecessary complexity, hierarchy, or
    polish. Do not modify competitor state or copy unsafe push behavior.
-6. Fill the remaining WP-149–178 implementation-wave gaps in `docs/STATUS.md` during the next live
+5. Fill the remaining WP-149–178 implementation-wave gaps in `docs/STATUS.md` during the next live
    deployment/QA reconciliation, using Git, CI and runtime evidence rather than inferred status.
 
 ## Recommended continuation order
 
-1. Implement WP-195 as a source-only optimizer slice: live run polling/refetch, accessible campaign
-   checkboxes, filtered select-all/clear, selected count, explicit All versus Selected scope, and an
-   immutable enqueue-time eligible-campaign snapshot/fingerprint. Do not create a live job or call
-   Amazon while the optimizer freeze remains in force.
-2. Build and review the exact ledger-compatible hosted artifact for WP-187, WP-192 and WP-194, but
-   do not apply it without action-specific authorization and exact pre/postflight.
-3. After that authorization, stage the exact clean-main Evo report worker, transfer report claims,
-   prove the legacy owner retired, and perform the attended fenced-authority activation and exact
-   health/queue checks. Never allow overlapping consumers.
-4. Deploy a revision-stamped web candidate from the same proven main, complete authenticated QA of
-   Run now and campaign selection, and promote only after candidate revision and route artifacts
-   match. Release the optimizer-edit/job-creation freeze only after every job-claiming worker and
-   the web are both proven weekday-aware.
-5. Replace or revision-stamp the MCP deployment from the same proven release and repeat its
+1. Build and review the exact ledger-compatible hosted artifact for WP-187, WP-192, WP-194 and
+   WP-195; do not apply it as part of artifact construction or review.
+2. Only with authorization for that exact database action, apply only the reviewed artifact and
+   prove the ledger, schema, privileges, preserved state and queue postflight. Database approval
+   does not authorize staging, service, queue-ownership or deployment changes.
+3. In a separate source package, design and revision-prove the WP-195-compatible recommendation
+   claimant and its exclusive handoff. The four-type Evo report worker refuses
+   `recommendations.run`; it cannot be treated as the optimizer consumer or as proof that the
+   optimizer lane is ready.
+4. With separate action-specific staging authorization for each exact target, stage the clean-main
+   Evo report worker and the independently proven recommendation claimant. Staging must leave
+   current service enablement, claim authority and web enqueue unchanged.
+5. With separate action-specific activation authorization for each exact handoff, block new
+   recommendation enqueue; move report ownership and recommendation ownership independently; prove
+   each old claimant retired, each new claimant exclusively healthy, and zero incompatible active
+   work; then retain the exact rollback/custody evidence. Never allow overlapping consumers or
+   strand `recommendations.run` jobs.
+6. With separate web-deployment authorization, deploy a revision-stamped candidate from the same
+   proven main only after the recommendation claimant is exclusively healthy. Complete authenticated
+   QA of Run preview, cross-page campaign selection, reload/resume, refusal and terminal states;
+   promote only after candidate revision and route artifacts match. Release the
+   optimizer-edit/job-creation freeze only after every consumer and the web are revision-matched and
+   weekday-aware.
+7. Replace or revision-stamp the MCP deployment from the same proven release and repeat its
    read-only health, tool and audit verification before claiming runtime coherence.
-6. Implement the sidebar-scroll regression after the serialized WP-195 web slice.
-7. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
-8. Keep the merged Unified Reporting dual-run off until its binding, deployment revision, consumer
+8. Implement the sidebar-scroll regression as the next independent source-only UI slice.
+9. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
+10. Keep the merged Unified Reporting dual-run off until its binding, deployment revision, consumer
    ownership, bounded deployment allowlist, exact five-type Evo health contract, and separately
    authorized read-only provider probe are proven. Do not add download or promotion behavior from
    request-status parity alone.
-9. Keep WP-184's distinctive release evidence and the contextual-negative rescue separate from
+11. Keep WP-184's distinctive release evidence and the contextual-negative rescue separate from
    their remaining deployment and live-verification gates.
-10. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again; then
+12. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again; then
     remove only clean, merged, obsolete worktrees after proving their branch and dirty state.
 
 If an external gate blocks one lane, continue with the next independent source-only package. Do
