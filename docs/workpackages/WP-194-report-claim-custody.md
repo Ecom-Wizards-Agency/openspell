@@ -99,14 +99,14 @@ exact-main CI and external state reconciliation.
 
 ## Acceptance checks
 
-- [ ] Architecture and work-package contract committed separately before implementation.
-- [ ] Focused DB, worker and deployment tests pass.
-- [ ] Disposable PostgreSQL migration and concurrency proofs pass serially.
-- [ ] High correctness and Extra-High adversarial reviews find no blocker, high or medium defect.
-- [ ] `pnpm typecheck`, `pnpm lint`, `pnpm test` and `pnpm hygiene` pass.
-- [ ] Exact-head pull-request CI and exact-main CI pass both jobs.
-- [ ] Hosted migration and deployment actions remain separately authorized and exactly evidenced.
-- [ ] Handover and status are updated only after reviewed merge and exact-main CI.
+- [x] Architecture and work-package contract committed separately before implementation.
+- [x] Focused DB, worker and deployment tests pass.
+- [x] Disposable PostgreSQL migration and concurrency proofs pass serially.
+- [x] High correctness and Extra-High adversarial reviews find no blocker, high or medium defect.
+- [x] `pnpm typecheck`, `pnpm lint`, `pnpm test` and `pnpm hygiene` pass.
+- [x] Exact-head pull-request CI and exact-main CI pass both jobs.
+- [x] Hosted migration and deployment actions remain separately authorized and exactly evidenced.
+- [x] Handover and status are updated only after reviewed merge and exact-main CI.
 
 ## External gates
 
