@@ -15,6 +15,7 @@
  * in the run-level audit payload. This is intentional: inventing an entity ref
  * for an account-wide note would turn narrative into an exportable fake action.
  */
+import { createHash, randomUUID } from 'node:crypto';
 import type { DbHandle, QuerySql } from '@wizard-ads/db';
 import {
   buildRecommendations,
@@ -36,6 +37,8 @@ import {
 } from '@wizard-ads/core';
 import {
   ScheduledOptimizationGroup,
+  RecommendationsRunJob,
+  TenantStrategy,
   OptimizationRunScheduleContext,
   normalizeOptimizationGroupSnapshot,
   optimizationWeekdaysFromIso,
@@ -43,9 +46,7 @@ import {
   type EntityRef,
   type Recommendation,
   type RecommendationReason,
-  type RecommendationsRunJob,
   type OptimizationGroupSnapshot,
-  type TenantStrategy,
 } from '@wizard-ads/shared';
 import {
   changeCapsFor,
@@ -62,6 +63,89 @@ export const RECOMMENDATIONS_ENGINE_VERSION = 'white-box-v1';
 export const RECOMMENDATION_SCHEDULE_CADENCE = DEFAULT_CADENCES.recommendations.cadence;
 export const RECOMMENDATION_SCHEDULE_DELAY = DEFAULT_CADENCES.recommendations.delay;
 export const RECOMMENDATION_SCHEDULE_PRIORITY = DEFAULT_CADENCES.recommendations.priority;
+export const RECOMMENDATION_SCOPE_VERSION = 1;
+export const MAX_RECOMMENDATION_PREVIEW_CAMPAIGNS = 10_000;
+export const MAX_RECOMMENDATION_PREVIEW_REQUEST_BYTES = 512 * 1024;
+
+export type RecommendationPreviewErrorCode =
+  | 'invalid_request'
+  | 'stale_selection'
+  | 'idempotency_conflict'
+  | 'active_run_conflict'
+  | 'safety_hold'
+  | 'integrity_failure';
+
+/** Fixed-code, operator-safe failure boundary for the optimizer HTTP adapter. */
+export class RecommendationPreviewError extends Error {
+  override readonly name: string = 'RecommendationPreviewError';
+
+  constructor(
+    readonly code: RecommendationPreviewErrorCode,
+    readonly httpStatus: 400 | 409 | 413 | 422 | 500,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/** A retry cannot repair persisted run evidence that no longer closes exactly. */
+export class RecommendationScopeIntegrityError extends RecommendationPreviewError {
+  override readonly name: string = 'RecommendationScopeIntegrityError';
+
+  constructor(message = 'Recommendation preview evidence failed its integrity check.') {
+    super('integrity_failure', 500, message);
+  }
+}
+
+/** The executing queue claim is not the immutable job linked to this run. */
+export class RecommendationExecutionCustodyError extends RecommendationPreviewError {
+  override readonly name: string = 'RecommendationExecutionCustodyError';
+
+  constructor(message = 'Recommendation execution does not own the linked queue job.') {
+    super('integrity_failure', 500, message);
+  }
+}
+
+export type RecommendationPreviewSelection =
+  | { mode: 'all' }
+  | { mode: 'selected'; campaignIds: readonly string[] };
+
+export interface EnqueueRecommendationPreviewBatchInput extends ProfileScope {
+  actorId: string;
+  clientRequestId: string;
+  scope: RecommendationPreviewSelection;
+  lookbackDays?: number;
+  runAt?: Date;
+}
+
+export interface RecommendationPreviewAccepted {
+  batchId: string;
+  status: 'queued';
+  scope: {
+    mode: 'all' | 'selected';
+    campaignCount: number;
+    fingerprint: string;
+  };
+  childCount: number;
+}
+
+export interface RecommendationPreviewBatchScope extends ProfileScope {
+  batchId: string;
+}
+
+export interface RecommendationPreviewBatchStatus {
+  batchId: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  campaignCount: number;
+  proposalsCount: number;
+  children: Array<{
+    runId: string;
+    groupName: string | null;
+    status: 'queued' | 'running' | 'succeeded' | 'failed';
+    campaignCount: number;
+    proposalsCount: number;
+  }>;
+}
 
 type BidReason = Extract<
   RecommendationReason,
@@ -173,6 +257,8 @@ export interface StartRunResult {
   alreadySucceeded: boolean;
   proposalsCount: number;
   groupRun?: RecommendationGroupRun | null;
+  strategySnapshot: TenantStrategy;
+  strategyGoal: string;
 }
 
 export interface ProposalDiagnostics {
@@ -214,12 +300,15 @@ export interface RunCompletion extends RunScope {
 }
 
 export interface RecommendationRunStore {
-  startRun(scope: RunScope, expectedGroupId?: string): Promise<StartRunResult>;
+  startRun(
+    scope: RunScope,
+    expectedGroupId: string | undefined,
+    expectedJobId: string,
+  ): Promise<StartRunResult>;
   loadProfile(scope: ProfileScope): Promise<RecommendationProfile>;
   loadInputs(
-    scope: ProfileScope,
+    scope: RunScope,
     window: DateWindow,
-    groupId?: string,
   ): Promise<RecommendationRunInputs>;
   loadGroupRecommendationSafety(
     scope: ProfileScope,
@@ -244,6 +333,12 @@ export interface QueuedRecommendationRun {
 export interface RecommendationScheduleStore {
   enqueueDueRecommendationRuns(now?: Date): Promise<number>;
   enqueueRecommendationRun(input: QueueRecommendationRunInput): Promise<QueuedRecommendationRun>;
+  enqueueRecommendationPreviewBatch(
+    input: EnqueueRecommendationPreviewBatchInput,
+  ): Promise<RecommendationPreviewAccepted>;
+  getRecommendationPreviewBatchStatus(
+    scope: RecommendationPreviewBatchScope,
+  ): Promise<RecommendationPreviewBatchStatus | null>;
 }
 
 export interface RecommendationRunResult {
@@ -253,8 +348,14 @@ export interface RecommendationRunResult {
   alreadySucceeded: boolean;
 }
 
+export interface RecommendationRunExecutionContext {
+  /** The exact fenced queue row currently executing this immutable run. */
+  jobId: string;
+}
+
 export type RecommendationsRun = (
   payload: Omit<RecommendationsRunJob, 'lookbackDays'> & { lookbackDays?: number },
+  execution: RecommendationRunExecutionContext,
 ) => Promise<RecommendationRunResult>;
 
 export interface RecommendationsRunnerOptions {
@@ -280,12 +381,13 @@ export function createRecommendationsRunner(
   options: RecommendationsRunnerOptions = {},
 ): RecommendationsRun {
   const now = options.now ?? (() => new Date());
-  return async (payload) => runRecommendations(store, payload, now());
+  return async (payload, execution) => runRecommendations(store, payload, execution, now());
 }
 
 export async function runRecommendations(
   store: RecommendationRunStore,
   payload: Omit<RecommendationsRunJob, 'lookbackDays'> & { lookbackDays?: number },
+  execution: RecommendationRunExecutionContext,
   now = new Date(),
 ): Promise<RecommendationRunResult> {
   const scope: RunScope = {
@@ -293,7 +395,15 @@ export async function runRecommendations(
     profileId: payload.profileId,
     runId: payload.runId,
   };
-  const started = await store.startRun(scope, payload.groupId);
+  let started: StartRunResult;
+  try {
+    started = await store.startRun(scope, payload.groupId, execution.jobId);
+  } catch (error) {
+    if (error instanceof RecommendationScopeIntegrityError) {
+      await store.failRun(scope, error.message.slice(0, 4_000));
+    }
+    throw error;
+  }
   if (started.alreadySucceeded) {
     return {
       runId: payload.runId,
@@ -307,15 +417,14 @@ export async function runRecommendations(
     const lookbackDays = payload.lookbackDays ?? DEFAULT_RECOMMENDATION_LOOKBACK_DAYS;
     const profile = await store.loadProfile(scope);
     const window = recommendationWindow(profile.timezone, lookbackDays, now);
-    const inputs = await store.loadInputs(scope, window, started.groupRun?.group.id);
+    const inputs = await store.loadInputs(scope, window);
     const groupSafety = started.groupRun === null || started.groupRun === undefined
       ? null
       : await store.loadGroupRecommendationSafety(scope, started.groupRun.group.id);
-    const resolved = resolveStrategy({
-      goal: profile.goal,
-      tenant: inputs.tenantStrategy,
-      profile: inputs.profileStrategy,
-    });
+    const resolved = {
+      value: started.strategySnapshot,
+      goal: started.strategyGoal,
+    };
 
     const pacing = computePacing(
       inputs.profileFacts.map((row) => ({ date: row.date, spend: row.cost ?? 0 })),
@@ -798,6 +907,128 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function bytewiseSorted(values: readonly string[]): string[] {
+  return [...values].sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+}
+
+function canonicalFingerprint(domain: string, values: readonly string[]): string {
+  const hash = createHash('sha256');
+  hash.update(`${domain}\n`);
+  for (const value of values) {
+    hash.update(`${Buffer.byteLength(value, 'utf8')}:`);
+    hash.update(value);
+    hash.update('\n');
+  }
+  return hash.digest('hex');
+}
+
+function requestFingerprint(
+  profileId: string,
+  mode: RecommendationPreviewSelection['mode'],
+  campaignIds: readonly string[],
+): string {
+  return canonicalFingerprint(
+    'openspell.recommendation-preview.request.v1',
+    [profileId, mode, ...bytewiseSorted(campaignIds)],
+  );
+}
+
+function batchScopeFingerprint(profileId: string, campaignIds: readonly string[]): string {
+  return canonicalFingerprint(
+    'openspell.recommendation-preview.batch-scope.v1',
+    [profileId, ...bytewiseSorted(campaignIds)],
+  );
+}
+
+function runScopeFingerprint(
+  profileId: string,
+  groupId: string | null,
+  campaignIds: readonly string[],
+): string {
+  return canonicalFingerprint(
+    'openspell.recommendation-preview.run-scope.v1',
+    [profileId, groupId ?? 'unassigned', ...bytewiseSorted(campaignIds)],
+  );
+}
+
+interface ValidatedPreviewRequest {
+  mode: 'all' | 'selected';
+  campaignIds: string[];
+  fingerprint: string;
+}
+
+function validatePreviewRequest(
+  input: EnqueueRecommendationPreviewBatchInput,
+): ValidatedPreviewRequest {
+  if (!UUID_PATTERN.test(input.orgId) || !UUID_PATTERN.test(input.profileId) ||
+      !UUID_PATTERN.test(input.actorId) || !UUID_PATTERN.test(input.clientRequestId)) {
+    throw new RecommendationPreviewError('invalid_request', 400, 'Preview request identity is invalid.');
+  }
+  const requestBytes = Buffer.byteLength(serializeJson(input.scope), 'utf8');
+  if (requestBytes > MAX_RECOMMENDATION_PREVIEW_REQUEST_BYTES) {
+    throw new RecommendationPreviewError('invalid_request', 413, 'Preview selection is too large.');
+  }
+  if (input.scope.mode === 'all') {
+    if ('campaignIds' in input.scope) {
+      throw new RecommendationPreviewError(
+        'invalid_request',
+        400,
+        'All-campaign previews must not include campaign ids.',
+      );
+    }
+    return {
+      mode: 'all',
+      campaignIds: [],
+      fingerprint: requestFingerprint(input.profileId, 'all', []),
+    };
+  }
+  if (input.scope.mode !== 'selected' || !Array.isArray(input.scope.campaignIds)) {
+    throw new RecommendationPreviewError('invalid_request', 400, 'Preview selection mode is invalid.');
+  }
+  const campaignIds = [...input.scope.campaignIds];
+  if (campaignIds.length === 0 || campaignIds.length > MAX_RECOMMENDATION_PREVIEW_CAMPAIGNS) {
+    throw new RecommendationPreviewError(
+      'invalid_request',
+      400,
+      `Select between 1 and ${MAX_RECOMMENDATION_PREVIEW_CAMPAIGNS} campaigns.`,
+    );
+  }
+  if (campaignIds.some((id) => typeof id !== 'string' || id.trim() === '')) {
+    throw new RecommendationPreviewError('invalid_request', 400, 'Campaign ids must be non-empty strings.');
+  }
+  if (new Set(campaignIds).size !== campaignIds.length) {
+    throw new RecommendationPreviewError('invalid_request', 400, 'Campaign selection contains duplicates.');
+  }
+  return {
+    mode: 'selected',
+    campaignIds: bytewiseSorted(campaignIds),
+    fingerprint: requestFingerprint(input.profileId, 'selected', campaignIds),
+  };
+}
+
+interface EligibleCampaignRow {
+  campaign_id: string;
+  group_id: string | null;
+}
+
+interface ResolvedStrategySnapshot {
+  strategy: TenantStrategy;
+  goal: string;
+}
+
+function recommendationPreviewChildStatus(
+  runStatus: string,
+  jobStatus: string,
+): 'queued' | 'running' | 'succeeded' | 'failed' {
+  if (jobStatus === 'dead' || jobStatus === 'failed') return 'failed';
+  if (jobStatus === 'queued') return 'queued';
+  if (jobStatus === 'running') return 'running';
+  if (jobStatus === 'succeeded') return runStatus === 'succeeded' ? 'succeeded' : 'failed';
+  throw new RecommendationScopeIntegrityError();
+}
+
 interface TargetWireRow {
   target_id: string;
   target_kind: 'keyword' | 'target';
@@ -875,23 +1106,209 @@ interface OptimizationGroupWireRow {
   review_hour: string | number;
 }
 
+async function readResolvedStrategySnapshot(
+  sql: QuerySql,
+  scope: ProfileScope,
+): Promise<ResolvedStrategySnapshot> {
+  const [profiles, strategies] = await Promise.all([
+    sql<{ goal_lens: string | null }[]>`
+      select goal_lens
+        from public.ad_profiles
+       where org_id = ${scope.orgId} and id = ${scope.profileId}
+    `,
+    sql<{ profile_id: string | null; doc: StrategyDocument }[]>`
+      select profile_id, doc
+        from public.profile_strategy
+       where org_id = ${scope.orgId}
+         and (profile_id is null or profile_id = ${scope.profileId})
+    `,
+  ]);
+  const profile = profiles[0];
+  if (profile === undefined) {
+    throw new RecommendationPreviewError('invalid_request', 400, 'Advertising profile was not found.');
+  }
+  const resolved = resolveStrategy({
+    goal: profile.goal_lens,
+    tenant: strategies.find((row) => row.profile_id === null)?.doc ?? null,
+    profile: strategies.find((row) => row.profile_id === scope.profileId)?.doc ?? null,
+  });
+  return { strategy: resolved.value, goal: resolved.goal };
+}
+
+async function readProfileOptimizationGroups(
+  sql: QuerySql,
+  scope: ProfileScope,
+): Promise<Map<string, { group: ScheduledOptimizationGroup; wire: OptimizationGroupWireRow }>> {
+  const rows = await sql<OptimizationGroupWireRow[]>`
+    select g.id, g.org_id, g.profile_id, g.name, g.role::text as role, g.target_acos,
+           g.bid_floor, g.bid_ceiling, g.bid_increase_cap, g.bid_decrease_cap,
+           g.placement_increase_cap, g.placement_decrease_cap, g.exclusions,
+           g.review_weekdays, g.prioritization::text as prioritization,
+           g.enabled, g.next_run_at, p.timezone as profile_timezone,
+           coalesce(p.preferred_sync_hour, 4) as review_hour
+      from public.optimization_groups g
+      join public.ad_profiles p on p.org_id = g.org_id and p.id = g.profile_id
+     where g.org_id = ${scope.orgId} and g.profile_id = ${scope.profileId}
+     order by g.id
+     for update of g
+  `;
+  return new Map(rows.map((wire) => [wire.id, { group: optimizationGroupFromWire(wire), wire }]));
+}
+
+async function readEligibleCampaigns(
+  sql: QuerySql,
+  scope: ProfileScope,
+  selectedIds?: readonly string[],
+): Promise<EligibleCampaignRow[]> {
+  return sql<EligibleCampaignRow[]>`
+    select campaign.amazon_id as campaign_id, assignment.group_id
+      from public.campaigns campaign
+      left join public.campaign_optimization_assignments assignment
+        on assignment.org_id = campaign.org_id
+       and assignment.profile_id = campaign.profile_id
+       and assignment.campaign_id = campaign.amazon_id
+      left join public.optimization_groups optimization_group
+        on optimization_group.org_id = assignment.org_id
+       and optimization_group.profile_id = assignment.profile_id
+       and optimization_group.id = assignment.group_id
+     where campaign.org_id = ${scope.orgId}
+       and campaign.profile_id = ${scope.profileId}
+       and campaign.ad_product = 'SP'
+       and campaign.state = 'enabled'
+       and campaign.deleted_at is null
+       and (${selectedIds === undefined} or campaign.amazon_id = any (${selectedIds ?? []}::text[]))
+       and (assignment.group_id is null or optimization_group.enabled)
+     order by campaign.amazon_id collate "C"
+  `;
+}
+
+interface InsertScopedRecommendationRunInput extends ProfileScope {
+  batchId: string | null;
+  campaignIds: readonly string[];
+  group: ScheduledOptimizationGroup | null;
+  strategy: ResolvedStrategySnapshot;
+  lookbackDays: number;
+  source: 'schedule' | 'web';
+  runAfter: string;
+  delay?: string;
+  dueAt: string | null;
+  scheduleContext: ReturnType<typeof OptimizationRunScheduleContext.parse> | null;
+}
+
+async function insertScopedRecommendationRun(
+  sql: QuerySql,
+  input: InsertScopedRecommendationRunInput,
+): Promise<QueuedRecommendationRun> {
+  const campaignIds = bytewiseSorted(input.campaignIds);
+  if (campaignIds.length === 0 || campaignIds.length > MAX_RECOMMENDATION_PREVIEW_CAMPAIGNS ||
+      new Set(campaignIds).size !== campaignIds.length) {
+    throw new RecommendationScopeIntegrityError();
+  }
+  const runId = randomUUID();
+  const jobId = randomUUID();
+  const fingerprint = runScopeFingerprint(input.profileId, input.group?.id ?? null, campaignIds);
+  const payload = {
+    type: 'recommendations.run' as const,
+    orgId: input.orgId,
+    profileId: input.profileId,
+    runId,
+    lookbackDays: input.lookbackDays,
+    ...(input.group === null ? {} : { groupId: input.group.id }),
+  };
+  RecommendationsRunJob.parse(payload);
+
+  const jobs = await sql<{ id: string }[]>`
+    insert into public.sync_jobs
+      (id, org_id, profile_id, job_type, payload, priority, dedupe_key, run_after)
+    values (${jobId}, ${input.orgId}, ${input.profileId}, 'recommendations.run',
+            ${serializeJson(payload)}::text::jsonb,
+            ${input.source === 'schedule' ? RECOMMENDATION_SCHEDULE_PRIORITY : 100},
+            ${`recommendations.run:${runId}`},
+            ${input.runAfter}::timestamptz + ${input.delay ?? '0 seconds'}::interval)
+    returning id
+  `;
+  if (jobs.length !== 1 || jobs[0]?.id !== jobId) {
+    throw new RecommendationScopeIntegrityError();
+  }
+
+  const runs = await sql<{ id: string }[]>`
+    insert into public.recommendation_runs
+      (id, org_id, profile_id, status, lookback_days, engine_version,
+       strategy_snapshot, strategy_goal, group_id, group_role, group_snapshot,
+       due_at, schedule_context, batch_id, scope_version, scope_count,
+       scope_fingerprint, job_id)
+    values (${runId}, ${input.orgId}, ${input.profileId}, 'queued', ${input.lookbackDays},
+            ${RECOMMENDATIONS_ENGINE_VERSION},
+            ${serializeJson(input.strategy.strategy)}::text::jsonb, ${input.strategy.goal},
+            ${input.group?.id ?? null},
+            ${input.group?.role ?? null}::public.optimization_group_role,
+            ${input.group === null ? null : serializeJson(input.group)}::text::jsonb,
+            ${input.dueAt}::timestamptz,
+            ${input.scheduleContext === null ? null : serializeJson(input.scheduleContext)}::text::jsonb,
+            ${input.batchId}::uuid, ${RECOMMENDATION_SCOPE_VERSION}, ${campaignIds.length},
+            ${fingerprint}, ${jobId})
+    returning id
+  `;
+  if (runs.length !== 1 || runs[0]?.id !== runId) {
+    throw new RecommendationScopeIntegrityError();
+  }
+
+  const inserted = await sql<{ campaign_id: string }[]>`
+    insert into public.recommendation_run_campaigns
+      (org_id, profile_id, batch_id, run_id, campaign_id)
+    select ${input.orgId}, ${input.profileId}, ${input.batchId}::uuid, ${runId}, offered.campaign_id
+      from unnest(${campaignIds}::text[]) as offered(campaign_id)
+    returning campaign_id
+  `;
+  const readback = await sql<{ campaign_id: string }[]>`
+    select campaign_id
+      from public.recommendation_run_campaigns
+     where org_id = ${input.orgId} and profile_id = ${input.profileId} and run_id = ${runId}
+     order by campaign_id collate "C"
+  `;
+  const readIds = readback.map((row) => row.campaign_id);
+  if (
+    inserted.length !== campaignIds.length || readIds.length !== campaignIds.length ||
+    new Set(readIds).size !== readIds.length ||
+    runScopeFingerprint(input.profileId, input.group?.id ?? null, readIds) !== fingerprint
+  ) {
+    throw new RecommendationScopeIntegrityError();
+  }
+  return { runId, jobId };
+}
+
 /** Postgres implementation: storage representations never leave this class. */
 export class PostgresRecommendationRunStore
 implements RecommendationRunStore, RecommendationScheduleStore {
   constructor(readonly handle: DbHandle) {}
 
-  async startRun(scope: RunScope, expectedGroupId?: string): Promise<StartRunResult> {
+  async startRun(
+    scope: RunScope,
+    expectedGroupId: string | undefined,
+    expectedJobId: string,
+  ): Promise<StartRunResult> {
     return this.handle.sql.begin(async (sql) => {
       const rows = await sql<{
         status: string;
         proposals_count: number;
+        lookback_days: number;
+        batch_id: string | null;
         group_id: string | null;
+        group_role: string | null;
         group_snapshot: unknown;
         due_at: Date | string | null;
         schedule_context: unknown;
+        strategy_snapshot: unknown;
+        strategy_goal: string | null;
+        scope_version: number | null;
+        scope_count: number | null;
+        scope_fingerprint: string | null;
+        job_id: string | null;
       }[]>`
-        select status::text as status, proposals_count,
-               group_id, group_snapshot, due_at, schedule_context
+        select status::text as status, proposals_count, lookback_days, batch_id,
+               group_id, group_role::text as group_role, group_snapshot, due_at, schedule_context,
+               strategy_snapshot, strategy_goal, scope_version, scope_count,
+               scope_fingerprint, job_id
           from public.recommendation_runs
          where id = ${scope.runId}
            and org_id = ${scope.orgId}
@@ -900,30 +1317,102 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       `;
       const run = rows[0];
       if (!run) throw new Error(`No scoped recommendation run ${scope.runId}`);
-      if ((run.group_id ?? undefined) !== expectedGroupId) {
-        throw new Error('recommendation job group does not match its stored run context');
+      if (run.job_id !== expectedJobId) {
+        throw new RecommendationExecutionCustodyError();
       }
-      const groupRun = run.group_id === null
-        ? null
-        : (() => {
-            const snapshot = normalizeOptimizationGroupSnapshot(run.group_snapshot);
-            const scheduleContext = run.schedule_context === null
-              ? null
-              : OptimizationRunScheduleContext.parse(run.schedule_context);
-            if (snapshot.version === 2 && scheduleContext === null) {
-              throw new Error('weekday recommendation run is missing immutable schedule context');
-            }
-            return {
-              group: snapshot.group,
-              dueAt: toTimestamp(run.due_at, 'group run due_at'),
-              scheduleContext,
-            };
-          })();
-      if (groupRun !== null && groupRun.group.id !== run.group_id) {
-        throw new Error('recommendation run group snapshot does not match group_id');
+      if ((run.group_id ?? undefined) !== expectedGroupId) {
+        throw new RecommendationScopeIntegrityError();
+      }
+      if (
+        run.scope_version !== RECOMMENDATION_SCOPE_VERSION ||
+        run.scope_count === null || run.scope_count <= 0 ||
+        run.scope_fingerprint === null || run.job_id === null ||
+        run.strategy_snapshot === null || run.strategy_goal === null
+      ) {
+        throw new RecommendationScopeIntegrityError();
+      }
+      let groupRun: RecommendationGroupRun | null;
+      let strategySnapshot: TenantStrategy;
+      try {
+        groupRun = run.group_id === null
+          ? null
+          : (() => {
+              const snapshot = normalizeOptimizationGroupSnapshot(run.group_snapshot);
+              const scheduleContext = run.schedule_context === null
+                ? null
+                : OptimizationRunScheduleContext.parse(run.schedule_context);
+              if (snapshot.version !== 2 || scheduleContext === null) {
+                throw new RecommendationScopeIntegrityError();
+              }
+              return {
+                group: snapshot.group,
+                dueAt: toTimestamp(run.due_at, 'group run due_at'),
+                scheduleContext,
+              };
+            })();
+        if (
+          groupRun !== null &&
+          (
+            groupRun.group.id !== run.group_id ||
+            groupRun.group.role !== run.group_role ||
+            groupRun.group.orgId !== scope.orgId ||
+            groupRun.group.profileId !== scope.profileId
+          )
+        ) {
+          throw new RecommendationScopeIntegrityError();
+        }
+        strategySnapshot = TenantStrategy.parse(run.strategy_snapshot);
+      } catch (error) {
+        if (error instanceof RecommendationScopeIntegrityError) throw error;
+        throw new RecommendationScopeIntegrityError();
+      }
+
+      const [jobRows, scopeRows] = await Promise.all([
+        sql<{ job_type: string; payload: unknown; status: string }[]>`
+          select job_type::text as job_type, payload, status::text as status
+            from public.sync_jobs
+           where id = ${run.job_id}
+             and org_id = ${scope.orgId}
+             and profile_id = ${scope.profileId}
+        `,
+        sql<{ batch_id: string | null; campaign_id: string }[]>`
+          select batch_id, campaign_id
+            from public.recommendation_run_campaigns
+           where org_id = ${scope.orgId}
+             and profile_id = ${scope.profileId}
+             and run_id = ${scope.runId}
+           order by campaign_id collate "C"
+        `,
+      ]);
+      const job = jobRows[0];
+      const parsedJob = job === undefined ? null : RecommendationsRunJob.safeParse(job.payload);
+      if (
+        jobRows.length !== 1 || job?.job_type !== 'recommendations.run' || job.status !== 'running' ||
+        parsedJob === null || !parsedJob.success ||
+        parsedJob.data.orgId !== scope.orgId || parsedJob.data.profileId !== scope.profileId ||
+        parsedJob.data.runId !== scope.runId || parsedJob.data.lookbackDays !== run.lookback_days ||
+        (parsedJob.data.groupId ?? undefined) !== expectedGroupId
+      ) {
+        throw new RecommendationScopeIntegrityError();
+      }
+      const campaignIds = scopeRows.map((row) => row.campaign_id);
+      const fingerprint = runScopeFingerprint(scope.profileId, run.group_id, campaignIds);
+      if (
+        scopeRows.length !== run.scope_count ||
+        scopeRows.some((row) => row.batch_id !== run.batch_id) ||
+        new Set(campaignIds).size !== campaignIds.length ||
+        fingerprint !== run.scope_fingerprint
+      ) {
+        throw new RecommendationScopeIntegrityError();
       }
       if (run.status === 'succeeded') {
-        return { alreadySucceeded: true, proposalsCount: Number(run.proposals_count), groupRun };
+        return {
+          alreadySucceeded: true,
+          proposalsCount: Number(run.proposals_count),
+          groupRun,
+          strategySnapshot,
+          strategyGoal: run.strategy_goal,
+        };
       }
       const updated = await sql<{ id: string }[]>`
         update public.recommendation_runs
@@ -935,7 +1424,13 @@ implements RecommendationRunStore, RecommendationScheduleStore {
         returning id
       `;
       if (updated.length !== 1) throw new Error(`Started 0 of 1 recommendation runs`);
-      return { alreadySucceeded: false, proposalsCount: 0, groupRun };
+      return {
+        alreadySucceeded: false,
+        proposalsCount: 0,
+        groupRun,
+        strategySnapshot,
+        strategyGoal: run.strategy_goal,
+      };
     });
   }
 
@@ -960,20 +1455,13 @@ implements RecommendationRunStore, RecommendationScheduleStore {
   }
 
   async loadInputs(
-    scope: ProfileScope,
+    scope: RunScope,
     window: DateWindow,
-    groupId?: string,
   ): Promise<RecommendationRunInputs> {
     const profileFactsFrom = firstOfMonth(window.end) < window.start
       ? firstOfMonth(window.end)
       : window.start;
-    const [strategyRows, targetRows, campaignRows, profileRows] = await Promise.all([
-      this.handle.sql<{ profile_id: string | null; doc: StrategyDocument }[]>`
-        select profile_id, doc
-          from public.profile_strategy
-         where org_id = ${scope.orgId}
-           and (profile_id is null or profile_id = ${scope.profileId})
-      `,
+    const [targetRows, campaignRows, profileRows] = await Promise.all([
       this.handle.sql<TargetWireRow[]>`
         with performance as (
           select f.target_id,
@@ -991,14 +1479,12 @@ implements RecommendationRunStore, RecommendationScheduleStore {
            where f.org_id = ${scope.orgId}
              and f.profile_id = ${scope.profileId}
              and f.date between ${window.start} and ${window.end}
-             and (
-               ${groupId ?? null}::uuid is null or exists (
-                 select 1 from public.campaign_optimization_assignments assignment
-                  where assignment.org_id = ${scope.orgId}
-                    and assignment.profile_id = ${scope.profileId}
-                    and assignment.group_id = ${groupId ?? null}::uuid
-                    and assignment.campaign_id = f.campaign_id
-               )
+             and exists (
+               select 1 from public.recommendation_run_campaigns run_campaign
+                where run_campaign.org_id = ${scope.orgId}
+                  and run_campaign.profile_id = ${scope.profileId}
+                  and run_campaign.run_id = ${scope.runId}
+                  and run_campaign.campaign_id = f.campaign_id
              )
            group by f.target_id, f.target_kind, f.campaign_id, f.ad_group_id
         )
@@ -1131,14 +1617,12 @@ implements RecommendationRunStore, RecommendationScheduleStore {
            where f.org_id = ${scope.orgId}
              and f.profile_id = ${scope.profileId}
              and f.date between ${window.start} and ${window.end}
-             and (
-               ${groupId ?? null}::uuid is null or exists (
-                 select 1 from public.campaign_optimization_assignments assignment
-                  where assignment.org_id = ${scope.orgId}
-                    and assignment.profile_id = ${scope.profileId}
-                    and assignment.group_id = ${groupId ?? null}::uuid
-                    and assignment.campaign_id = f.campaign_id
-               )
+             and exists (
+               select 1 from public.recommendation_run_campaigns run_campaign
+                where run_campaign.org_id = ${scope.orgId}
+                  and run_campaign.profile_id = ${scope.profileId}
+                  and run_campaign.run_id = ${scope.runId}
+                  and run_campaign.campaign_id = f.campaign_id
              )
            group by f.campaign_id
           union all
@@ -1148,14 +1632,12 @@ implements RecommendationRunStore, RecommendationScheduleStore {
            where f.org_id = ${scope.orgId}
              and f.profile_id = ${scope.profileId}
              and f.date between ${window.start} and ${window.end}
-             and (
-               ${groupId ?? null}::uuid is null or exists (
-                 select 1 from public.campaign_optimization_assignments assignment
-                  where assignment.org_id = ${scope.orgId}
-                    and assignment.profile_id = ${scope.profileId}
-                    and assignment.group_id = ${groupId ?? null}::uuid
-                    and assignment.campaign_id = f.campaign_id
-               )
+             and exists (
+               select 1 from public.recommendation_run_campaigns run_campaign
+                where run_campaign.org_id = ${scope.orgId}
+                  and run_campaign.profile_id = ${scope.profileId}
+                  and run_campaign.run_id = ${scope.runId}
+                  and run_campaign.campaign_id = f.campaign_id
              )
            group by f.campaign_id
           union all
@@ -1165,14 +1647,12 @@ implements RecommendationRunStore, RecommendationScheduleStore {
            where f.org_id = ${scope.orgId}
              and f.profile_id = ${scope.profileId}
              and f.date between ${window.start} and ${window.end}
-             and (
-               ${groupId ?? null}::uuid is null or exists (
-                 select 1 from public.campaign_optimization_assignments assignment
-                  where assignment.org_id = ${scope.orgId}
-                    and assignment.profile_id = ${scope.profileId}
-                    and assignment.group_id = ${groupId ?? null}::uuid
-                    and assignment.campaign_id = f.campaign_id
-               )
+             and exists (
+               select 1 from public.recommendation_run_campaigns run_campaign
+                where run_campaign.org_id = ${scope.orgId}
+                  and run_campaign.profile_id = ${scope.profileId}
+                  and run_campaign.run_id = ${scope.runId}
+                  and run_campaign.campaign_id = f.campaign_id
              )
            group by f.campaign_id
         )
@@ -1200,11 +1680,11 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       `,
     ]);
 
-    const tenantStrategy = strategyRows.find((row) => row.profile_id === null)?.doc ?? null;
-    const profileStrategy = strategyRows.find((row) => row.profile_id === scope.profileId)?.doc ?? null;
     return {
-      tenantStrategy,
-      profileStrategy,
+      // Scoped execution consumes the resolved enqueue-time snapshot returned
+      // by startRun. Live strategy documents are intentionally not queried.
+      tenantStrategy: null,
+      profileStrategy: null,
       targets: targetRows.map((row) => {
         const entityType = row.target_kind;
         const entityRef: EntityRef = {
@@ -1405,7 +1885,6 @@ implements RecommendationRunStore, RecommendationScheduleStore {
                lookback_days = ${completion.lookbackDays},
                window_start = ${completion.window.start}::date,
                window_end = ${completion.window.end}::date,
-               strategy_snapshot = ${serializeJson(completion.strategySnapshot)}::text::jsonb,
                engine_version = ${RECOMMENDATIONS_ENGINE_VERSION},
                proposals_count = ${inserted.length},
                finished_at = now(),
@@ -1444,7 +1923,17 @@ implements RecommendationRunStore, RecommendationScheduleStore {
            and status <> 'succeeded'
         returning id
       `;
-      if (updated.length !== 1) throw new Error('Failed 0 of 1 recommendation runs');
+      if (updated.length !== 1) {
+        const [existing] = await sql<{ status: string }[]>`
+          select status::text as status
+            from public.recommendation_runs
+           where id = ${scope.runId}
+             and org_id = ${scope.orgId}
+             and profile_id = ${scope.profileId}
+        `;
+        if (existing?.status === 'succeeded') return;
+        throw new Error('Failed 0 of 1 recommendation runs');
+      }
       await sql`
         insert into public.audit_log
           (org_id, actor_type, action, target_type, target_id, payload, source)
@@ -1453,6 +1942,342 @@ implements RecommendationRunStore, RecommendationScheduleStore {
                 ${serializeJson({ error })}::text::jsonb, 'worker')
       `;
     });
+  }
+
+  async enqueueRecommendationPreviewBatch(
+    input: EnqueueRecommendationPreviewBatchInput,
+  ): Promise<RecommendationPreviewAccepted> {
+    const validated = validatePreviewRequest(input);
+    const lookbackDays = input.lookbackDays ?? DEFAULT_RECOMMENDATION_LOOKBACK_DAYS;
+    if (!Number.isInteger(lookbackDays) || lookbackDays <= 0) {
+      throw new RecommendationPreviewError('invalid_request', 400, 'Lookback must be a positive integer.');
+    }
+    const runAt = input.runAt ?? new Date();
+    if (Number.isNaN(runAt.getTime())) {
+      throw new RecommendationPreviewError('invalid_request', 400, 'Preview run time is invalid.');
+    }
+    const requestedAt = runAt.toISOString();
+
+    return this.handle.sql.begin(async (sql) => {
+      const profiles = await sql<{ id: string }[]>`
+        select id from public.ad_profiles
+         where org_id = ${input.orgId} and id = ${input.profileId}
+         for update
+      `;
+      if (profiles.length !== 1) {
+        throw new RecommendationPreviewError('invalid_request', 400, 'Advertising profile was not found.');
+      }
+
+      const existing = await sql<{
+        id: string;
+        selection_mode: 'all' | 'selected';
+        request_fingerprint: string;
+        scope_count: number;
+        scope_fingerprint: string;
+        child_count: number;
+      }[]>`
+        select id, selection_mode, request_fingerprint, scope_count, scope_fingerprint, child_count
+          from public.recommendation_preview_batches
+         where org_id = ${input.orgId}
+           and profile_id = ${input.profileId}
+           and client_request_id = ${input.clientRequestId}
+      `;
+      if (existing.length > 0) {
+        const batch = existing[0];
+        if (existing.length !== 1 || batch === undefined ||
+            batch.request_fingerprint !== validated.fingerprint) {
+          throw new RecommendationPreviewError(
+            'idempotency_conflict',
+            409,
+            'This preview request identity was already used for different input.',
+          );
+        }
+        return {
+          batchId: batch.id,
+          status: 'queued' as const,
+          scope: {
+            mode: batch.selection_mode,
+            campaignCount: Number(batch.scope_count),
+            fingerprint: batch.scope_fingerprint,
+          },
+          childCount: Number(batch.child_count),
+        };
+      }
+
+      const eligible = await readEligibleCampaigns(
+        sql,
+        input,
+        validated.mode === 'selected' ? validated.campaignIds : undefined,
+      );
+      if (validated.mode === 'selected' && eligible.length !== validated.campaignIds.length) {
+        throw new RecommendationPreviewError(
+          'stale_selection',
+          409,
+          'Campaign selection is stale or no longer eligible. Refresh and select again.',
+        );
+      }
+      if (eligible.length === 0) {
+        throw new RecommendationPreviewError(
+          'stale_selection',
+          409,
+          'No eligible campaigns are available for this preview.',
+        );
+      }
+      if (eligible.length > MAX_RECOMMENDATION_PREVIEW_CAMPAIGNS) {
+        throw new RecommendationPreviewError(
+          'invalid_request',
+          422,
+          'The eligible campaign roster is too large for one preview.',
+        );
+      }
+      const effectiveIds = bytewiseSorted(eligible.map((row) => row.campaign_id));
+      if (new Set(effectiveIds).size !== effectiveIds.length) {
+        throw new RecommendationScopeIntegrityError();
+      }
+
+      const groups = await readProfileOptimizationGroups(sql, input);
+      const partitions = new Map<string | null, string[]>();
+      for (const row of eligible) {
+        if (row.group_id !== null) {
+          const resolvedGroup = groups.get(row.group_id)?.group;
+          if (resolvedGroup === undefined || !resolvedGroup.enabled) {
+            throw new RecommendationPreviewError(
+              'stale_selection',
+              409,
+              'Campaign selection is stale or no longer eligible. Refresh and select again.',
+            );
+          }
+        }
+        const current = partitions.get(row.group_id) ?? [];
+        current.push(row.campaign_id);
+        partitions.set(row.group_id, current);
+      }
+
+      const active = await sql<{ group_id: string | null }[]>`
+        select run.group_id
+          from public.recommendation_runs run
+          left join public.sync_jobs job
+            on job.org_id = run.org_id
+           and job.profile_id = run.profile_id
+           and job.id = run.job_id
+         where run.org_id = ${input.orgId} and run.profile_id = ${input.profileId}
+           and (
+             (run.job_id is not null and job.status in ('queued', 'running'))
+             or
+             (run.job_id is null and run.status in ('queued', 'running'))
+           )
+      `;
+      if (active.some((row) => partitions.has(row.group_id))) {
+        throw new RecommendationPreviewError(
+          'active_run_conflict',
+          409,
+          'One selected optimization scope already has a queued or running preview.',
+        );
+      }
+      for (const groupId of partitions.keys()) {
+        if (groupId === null) continue;
+        const safety = await readGroupRecommendationSafety(sql, input, groupId);
+        if (!safety.mayPropose) {
+          throw new RecommendationPreviewError(
+            'safety_hold',
+            409,
+            'One selected optimization group is held by its recommendation safety policy.',
+          );
+        }
+      }
+
+      let strategy: ResolvedStrategySnapshot;
+      try {
+        strategy = await readResolvedStrategySnapshot(sql, input);
+      } catch (error) {
+        if (error instanceof RecommendationPreviewError) throw error;
+        throw new RecommendationPreviewError(
+          'safety_hold',
+          422,
+          'The profile strategy cannot be resolved for a preview.',
+        );
+      }
+      const batchId = randomUUID();
+      const effectiveFingerprint = batchScopeFingerprint(input.profileId, effectiveIds);
+      const orderedPartitions = [...partitions.entries()].sort(([left], [right]) => {
+        if (left === null) return 1;
+        if (right === null) return -1;
+        return Buffer.compare(Buffer.from(left), Buffer.from(right));
+      });
+      const batches = await sql<{ id: string }[]>`
+        insert into public.recommendation_preview_batches
+          (id, org_id, profile_id, client_request_id, selection_mode,
+           request_fingerprint, scope_count, scope_fingerprint, child_count, created_by)
+        values (${batchId}, ${input.orgId}, ${input.profileId}, ${input.clientRequestId},
+                ${validated.mode}, ${validated.fingerprint}, ${effectiveIds.length},
+                ${effectiveFingerprint}, ${orderedPartitions.length}, ${input.actorId})
+        returning id
+      `;
+      if (batches.length !== 1 || batches[0]?.id !== batchId) {
+        throw new RecommendationScopeIntegrityError();
+      }
+
+      for (const [groupId, campaignIds] of orderedPartitions) {
+        const groupContext = groupId === null ? null : groups.get(groupId);
+        if (groupId !== null && groupContext === undefined) {
+          throw new RecommendationScopeIntegrityError();
+        }
+        const group = groupContext?.group ?? null;
+        const scheduleContext = group === null || groupContext == null
+          ? null
+          : OptimizationRunScheduleContext.parse({
+              version: 2,
+              trigger: 'manual',
+              profileTimezone: groupContext.wire.profile_timezone,
+              weekdays: group.reviewSchedule.weekdays,
+              localHour: Number(groupContext.wire.review_hour),
+              dueAt: requestedAt,
+              evaluatedAt: requestedAt,
+            });
+        await insertScopedRecommendationRun(sql, {
+          orgId: input.orgId,
+          profileId: input.profileId,
+          batchId,
+          campaignIds,
+          group,
+          strategy,
+          lookbackDays,
+          source: 'web',
+          runAfter: requestedAt,
+          dueAt: group === null ? null : requestedAt,
+          scheduleContext,
+        });
+      }
+
+      const [closure] = await sql<{
+        child_count: number;
+        campaign_count: number;
+        campaign_ids: string[];
+        job_count: number;
+      }[]>`
+        select count(distinct run.id)::integer as child_count,
+               count(run_campaign.campaign_id)::integer as campaign_count,
+               coalesce(array_agg(run_campaign.campaign_id order by run_campaign.campaign_id collate "C"), '{}')::text[]
+                 as campaign_ids,
+               count(distinct job.id)::integer as job_count
+          from public.recommendation_runs run
+          join public.recommendation_run_campaigns run_campaign
+            on run_campaign.org_id = run.org_id
+           and run_campaign.profile_id = run.profile_id
+           and run_campaign.run_id = run.id
+          join public.sync_jobs job
+            on job.org_id = run.org_id and job.profile_id = run.profile_id and job.id = run.job_id
+         where run.org_id = ${input.orgId}
+           and run.profile_id = ${input.profileId}
+           and run.batch_id = ${batchId}
+      `;
+      if (
+        closure === undefined || closure.child_count !== orderedPartitions.length ||
+        closure.job_count !== orderedPartitions.length || closure.campaign_count !== effectiveIds.length ||
+        batchScopeFingerprint(input.profileId, closure.campaign_ids) !== effectiveFingerprint
+      ) {
+        throw new RecommendationScopeIntegrityError();
+      }
+      return {
+        batchId,
+        status: 'queued' as const,
+        scope: {
+          mode: validated.mode,
+          campaignCount: effectiveIds.length,
+          fingerprint: effectiveFingerprint,
+        },
+        childCount: orderedPartitions.length,
+      };
+    });
+  }
+
+  async getRecommendationPreviewBatchStatus(
+    scope: RecommendationPreviewBatchScope,
+  ): Promise<RecommendationPreviewBatchStatus | null> {
+    if (!UUID_PATTERN.test(scope.orgId) || !UUID_PATTERN.test(scope.profileId) ||
+        !UUID_PATTERN.test(scope.batchId)) {
+      throw new RecommendationPreviewError('invalid_request', 400, 'Preview status identity is invalid.');
+    }
+    const batches = await this.handle.sql<{
+      id: string;
+      scope_count: number;
+      child_count: number;
+    }[]>`
+      select id, scope_count, child_count
+        from public.recommendation_preview_batches
+       where id = ${scope.batchId} and org_id = ${scope.orgId} and profile_id = ${scope.profileId}
+    `;
+    const batch = batches[0];
+    if (batch === undefined) return null;
+    const rows = await this.handle.sql<{
+      run_id: string;
+      run_status: string;
+      proposals_count: number;
+      scope_count: number | null;
+      actual_scope_count: number;
+      group_id: string | null;
+      group_snapshot: unknown;
+      job_status: string | null;
+    }[]>`
+      select run.id as run_id, run.status::text as run_status,
+             run.proposals_count, run.scope_count, run.group_id, run.group_snapshot,
+             job.status::text as job_status,
+             (select count(*)::integer
+                from public.recommendation_run_campaigns run_campaign
+               where run_campaign.org_id = run.org_id
+                 and run_campaign.profile_id = run.profile_id
+                 and run_campaign.run_id = run.id) as actual_scope_count
+        from public.recommendation_runs run
+        left join public.sync_jobs job
+          on job.org_id = run.org_id and job.profile_id = run.profile_id and job.id = run.job_id
+       where run.org_id = ${scope.orgId}
+         and run.profile_id = ${scope.profileId}
+         and run.batch_id = ${scope.batchId}
+       order by run.group_id nulls last, run.id
+    `;
+    if (
+      rows.length !== Number(batch.child_count) ||
+      rows.reduce((sum, row) => sum + Number(row.scope_count ?? 0), 0) !== Number(batch.scope_count) ||
+      rows.some((row) => row.job_status === null || row.scope_count !== row.actual_scope_count)
+    ) {
+      throw new RecommendationScopeIntegrityError();
+    }
+    const children = rows.map((row) => {
+      let groupName: string | null = null;
+      if (row.group_id !== null) {
+        try {
+          const snapshot = normalizeOptimizationGroupSnapshot(row.group_snapshot);
+          if (snapshot.group.id !== row.group_id) throw new Error('group mismatch');
+          groupName = snapshot.group.name;
+        } catch {
+          throw new RecommendationScopeIntegrityError();
+        }
+      }
+      const status = recommendationPreviewChildStatus(row.run_status, row.job_status!);
+      return {
+        runId: row.run_id,
+        groupName,
+        status,
+        campaignCount: Number(row.scope_count),
+        proposalsCount: Number(row.proposals_count),
+      };
+    });
+    const hasFailedChild = children.some((child) => child.status === 'failed');
+    const hasActiveChild = children.some((child) => child.status === 'running');
+    const status = children.every((child) => child.status === 'queued')
+      ? 'queued' as const
+      : hasFailedChild
+        ? 'failed' as const
+        : hasActiveChild || children.some((child) => child.status === 'queued')
+          ? 'running' as const
+          : 'succeeded' as const;
+    return {
+      batchId: batch.id,
+      status,
+      campaignCount: Number(batch.scope_count),
+      proposalsCount: children.reduce((sum, child) => sum + child.proposalsCount, 0),
+      children,
+    };
   }
 
   async enqueueRecommendationRun(input: QueueRecommendationRunInput): Promise<QueuedRecommendationRun> {
@@ -1467,92 +2292,78 @@ implements RecommendationRunStore, RecommendationScheduleStore {
          for update
       `;
       if (profiles.length !== 1) throw new Error('Advertising profile not found');
-      const groupRows = input.groupId === undefined
-        ? []
-        : await sql<OptimizationGroupWireRow[]>`
-            select g.id, g.org_id, g.profile_id, g.name, g.role::text as role, g.target_acos,
-                   g.bid_floor, g.bid_ceiling, g.bid_increase_cap, g.bid_decrease_cap,
-                   g.placement_increase_cap, g.placement_decrease_cap, g.exclusions,
-                   g.review_weekdays, g.prioritization::text as prioritization,
-                   g.enabled, g.next_run_at, p.timezone as profile_timezone,
-                   coalesce(p.preferred_sync_hour, 4) as review_hour
-              from public.optimization_groups g
-              join public.ad_profiles p on p.org_id = g.org_id and p.id = g.profile_id
-             where g.org_id = ${input.orgId}
-               and g.profile_id = ${input.profileId}
-               and g.id = ${input.groupId}
-             for update of g
-          `;
-      const group = groupRows[0] === undefined ? null : optimizationGroupFromWire(groupRows[0]);
-      if (input.groupId !== undefined && group === null) {
+      const groups = await readProfileOptimizationGroups(sql, input);
+      const groupContext = input.groupId === undefined ? undefined : groups.get(input.groupId);
+      const group = groupContext?.group ?? null;
+      if (input.groupId !== undefined && groupContext === undefined) {
         throw new Error('Optimization group not found');
       }
       if (group !== null && !group.enabled) {
         throw new Error('Disabled optimization groups cannot be queued');
       }
+      if (group === null && groups.size > 0) {
+        throw new Error('Profile previews with optimization groups require a partitioned batch');
+      }
+      const active = await sql<{ id: string }[]>`
+        select run.id
+          from public.recommendation_runs run
+          left join public.sync_jobs job
+            on job.org_id = run.org_id
+           and job.profile_id = run.profile_id
+           and job.id = run.job_id
+         where run.org_id = ${input.orgId}
+           and run.profile_id = ${input.profileId}
+           and run.group_id is not distinct from ${group?.id ?? null}::uuid
+           and (
+             (run.job_id is not null and job.status in ('queued', 'running'))
+             or
+             (run.job_id is null and run.status in ('queued', 'running'))
+           )
+         limit 1
+      `;
+      if (active.length > 0) {
+        throw new Error('Optimization scope already has a queued or running preview');
+      }
       if (group !== null) {
-        const active = await sql<{ id: string }[]>`
-          select id
-            from public.recommendation_runs
-           where org_id = ${input.orgId}
-             and profile_id = ${input.profileId}
-             and group_id = ${group.id}
-             and status in ('queued', 'running')
-           limit 1
-        `;
-        if (active.length > 0) {
-          throw new Error('Optimization group already has a queued or running preview');
-        }
         const safety = await readGroupRecommendationSafety(sql, input, group.id);
         if (!safety.mayPropose) throw new Error(safety.reason);
       }
+      const eligible = await readEligibleCampaigns(sql, input);
+      const campaignIds = eligible
+        .filter((row) => row.group_id === (group?.id ?? null))
+        .map((row) => row.campaign_id);
+      if (campaignIds.length === 0) {
+        throw new Error('Optimization scope has no eligible campaigns');
+      }
+      if (campaignIds.length > MAX_RECOMMENDATION_PREVIEW_CAMPAIGNS) {
+        throw new Error('Optimization scope exceeds the campaign limit');
+      }
+      const strategy = await readResolvedStrategySnapshot(sql, input);
       const dueAt = (input.runAt ?? new Date()).toISOString();
-      const scheduleContext = group === null || groupRows[0] === undefined
+      const scheduleContext = group === null || groupContext === undefined
         ? null
         : OptimizationRunScheduleContext.parse({
             version: 2,
             trigger: input.source === 'schedule' ? 'scheduled' : 'manual',
-            profileTimezone: groupRows[0].profile_timezone,
+            profileTimezone: groupContext.wire.profile_timezone,
             weekdays: group.reviewSchedule.weekdays,
-            localHour: Number(groupRows[0].review_hour),
+            localHour: Number(groupContext.wire.review_hour),
             dueAt,
-            evaluatedAt: new Date().toISOString(),
+            evaluatedAt: dueAt,
           });
-      const runs = await sql<{ id: string }[]>`
-        insert into public.recommendation_runs
-          (org_id, profile_id, status, lookback_days, engine_version,
-           group_id, group_role, group_snapshot, due_at, schedule_context)
-        values (${input.orgId}, ${input.profileId}, 'queued', ${lookbackDays},
-                ${RECOMMENDATIONS_ENGINE_VERSION}, ${group?.id ?? null},
-                ${group?.role ?? null}::public.optimization_group_role,
-                ${group === null ? null : serializeJson(group)}::text::jsonb,
-                ${group === null ? null : dueAt}::timestamptz,
-                ${scheduleContext === null ? null : serializeJson(scheduleContext)}::text::jsonb)
-        returning id
-      `;
-      const runId = runs[0]?.id;
-      if (!runId) throw new Error('Minted 0 of 1 recommendation runs');
-      const payload = {
-        type: 'recommendations.run' as const,
+      return insertScopedRecommendationRun(sql, {
         orgId: input.orgId,
         profileId: input.profileId,
-        runId,
+        batchId: null,
+        campaignIds,
+        group,
+        strategy,
         lookbackDays,
-        ...(group === null ? {} : { groupId: group.id }),
-      };
-      const jobs = await sql<{ id: string }[]>`
-        insert into public.sync_jobs
-          (org_id, profile_id, job_type, payload, priority, dedupe_key, run_after)
-        values (${input.orgId}, ${input.profileId}, 'recommendations.run',
-                ${serializeJson(payload)}::text::jsonb,
-                ${input.source === 'schedule' ? RECOMMENDATION_SCHEDULE_PRIORITY : 100},
-                ${`recommendations.run:${runId}`},
-                ${(input.runAt ?? new Date()).toISOString()}::timestamptz)
-        returning id
-      `;
-      const jobId = jobs[0]?.id;
-      if (!jobId) throw new Error('Enqueued 0 of 1 recommendation jobs');
-      return { runId, jobId };
+        source: input.source,
+        runAfter: dueAt,
+        dueAt: group === null ? null : dueAt,
+        scheduleContext,
+      });
     });
   }
 
@@ -1578,11 +2389,20 @@ implements RecommendationRunStore, RecommendationScheduleStore {
                   or candidate.next_run_at <= ${nowIso}::timestamptz
                 )
                 and not exists (
-                  select 1 from public.recommendation_runs active
+                  select 1
+                    from public.recommendation_runs active
+                    left join public.sync_jobs active_job
+                      on active_job.org_id = active.org_id
+                     and active_job.profile_id = active.profile_id
+                     and active_job.id = active.job_id
                    where active.org_id = candidate.org_id
                      and active.profile_id = candidate.profile_id
                      and active.group_id = candidate.id
-                     and active.status in ('queued', 'running')
+                     and (
+                       (active.job_id is not null and active_job.status in ('queued', 'running'))
+                       or
+                       (active.job_id is null and active.status in ('queued', 'running'))
+                     )
                 )
            )
          order by profile.org_id, profile.id
@@ -1607,11 +2427,20 @@ implements RecommendationRunStore, RecommendationScheduleStore {
            and g.profile_id = any (${claimedProfileIds}::uuid[])
            and (g.next_run_at is null or g.next_run_at <= ${nowIso}::timestamptz)
            and not exists (
-             select 1 from public.recommendation_runs r
-              where r.org_id = g.org_id
-                and r.profile_id = g.profile_id
-                and r.group_id = g.id
-                and r.status in ('queued', 'running')
+             select 1
+               from public.recommendation_runs active
+               left join public.sync_jobs active_job
+                 on active_job.org_id = active.org_id
+                and active_job.profile_id = active.profile_id
+                and active_job.id = active.job_id
+              where active.org_id = g.org_id
+                and active.profile_id = g.profile_id
+                and active.group_id = g.id
+                and (
+                  (active.job_id is not null and active_job.status in ('queued', 'running'))
+                  or
+                  (active.job_id is null and active.status in ('queued', 'running'))
+                )
            )
          order by case g.role when 'rank' then 1 when 'profit' then 2
                               when 'discovery' then 3 else 4 end,
@@ -1620,6 +2449,8 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       `;
       let enqueued = 0;
       let heldGroups = 0;
+      const strategyByProfile = new Map<string, ResolvedStrategySnapshot>();
+      const eligibleByProfile = new Map<string, EligibleCampaignRow[]>();
       for (const row of dueGroups) {
         const group = optimizationGroupFromWire(row);
         const safety = await readGroupRecommendationSafety(sql, group, group.id);
@@ -1628,6 +2459,28 @@ implements RecommendationRunStore, RecommendationScheduleStore {
           if (advanced.length !== 1) throw new Error('Advanced 0 of 1 held group schedules');
           heldGroups += 1;
           continue;
+        }
+        let eligible = eligibleByProfile.get(group.profileId);
+        if (eligible === undefined) {
+          eligible = await readEligibleCampaigns(sql, group);
+          eligibleByProfile.set(group.profileId, eligible);
+        }
+        const campaignIds = eligible
+          .filter((campaign) => campaign.group_id === group.id)
+          .map((campaign) => campaign.campaign_id);
+        if (campaignIds.length === 0) {
+          const advanced = await advanceOptimizationSchedule(sql, group, nowIso);
+          if (advanced.length !== 1) throw new Error('Advanced 0 of 1 empty group schedules');
+          heldGroups += 1;
+          continue;
+        }
+        if (campaignIds.length > MAX_RECOMMENDATION_PREVIEW_CAMPAIGNS) {
+          throw new Error('Scheduled optimization scope exceeds the campaign limit');
+        }
+        let strategy = strategyByProfile.get(group.profileId);
+        if (strategy === undefined) {
+          strategy = await readResolvedStrategySnapshot(sql, group);
+          strategyByProfile.set(group.profileId, strategy);
         }
         const dueAt = row.next_run_at === null ? nowIso : toTimestamp(row.next_run_at, 'next_run_at');
         const scheduleContext = OptimizationRunScheduleContext.parse({
@@ -1639,38 +2492,20 @@ implements RecommendationRunStore, RecommendationScheduleStore {
           dueAt,
           evaluatedAt: nowIso,
         });
-        const runs = await sql<{ id: string }[]>`
-          insert into public.recommendation_runs
-            (org_id, profile_id, status, lookback_days, engine_version,
-             group_id, group_role, group_snapshot, due_at, schedule_context)
-          values (${group.orgId}, ${group.profileId}, 'queued',
-                  ${DEFAULT_RECOMMENDATION_LOOKBACK_DAYS}, ${RECOMMENDATIONS_ENGINE_VERSION},
-                  ${group.id}, ${group.role}::public.optimization_group_role,
-                  ${serializeJson(group)}::text::jsonb, ${dueAt}::timestamptz,
-                  ${serializeJson(scheduleContext)}::text::jsonb)
-          returning id
-        `;
-        const runId = runs[0]?.id;
-        if (!runId) throw new Error('Minted 0 of 1 group recommendation runs');
-        const payload = {
-          type: 'recommendations.run' as const,
+        await insertScopedRecommendationRun(sql, {
           orgId: group.orgId,
           profileId: group.profileId,
-          runId,
+          batchId: null,
+          campaignIds,
+          group,
+          strategy,
           lookbackDays: DEFAULT_RECOMMENDATION_LOOKBACK_DAYS,
-          groupId: group.id,
-        };
-        const jobs = await sql<{ id: string }[]>`
-          insert into public.sync_jobs
-            (org_id, profile_id, job_type, payload, priority, dedupe_key, run_after)
-          values (${group.orgId}, ${group.profileId}, 'recommendations.run',
-                  ${serializeJson(payload)}::text::jsonb,
-                  ${RECOMMENDATION_SCHEDULE_PRIORITY},
-                  ${`recommendations.run:${runId}`},
-                  ${nowIso}::timestamptz + ${RECOMMENDATION_SCHEDULE_DELAY}::interval)
-          returning id
-        `;
-        if (jobs.length !== 1) throw new Error('Enqueued 0 of 1 group recommendation jobs');
+          source: 'schedule',
+          runAfter: nowIso,
+          delay: RECOMMENDATION_SCHEDULE_DELAY,
+          dueAt,
+          scheduleContext,
+        });
         const advanced = await advanceOptimizationSchedule(sql, group, nowIso);
         if (advanced.length !== 1) throw new Error('Advanced 0 of 1 group schedules');
         enqueued += 1;
@@ -1697,37 +2532,37 @@ implements RecommendationRunStore, RecommendationScheduleStore {
          order by p.id
          for update of p skip locked
       `;
+      let emptyLegacyProfiles = 0;
       for (const profile of legacyDueProfiles) {
-        const runs = await sql<{ id: string }[]>`
-          insert into public.recommendation_runs
-            (org_id, profile_id, status, lookback_days, engine_version)
-          values (${profile.org_id}, ${profile.profile_id}, 'queued',
-                  ${DEFAULT_RECOMMENDATION_LOOKBACK_DAYS}, ${RECOMMENDATIONS_ENGINE_VERSION})
-          returning id
-        `;
-        const runId = runs[0]?.id;
-        if (!runId) throw new Error('Minted 0 of 1 scheduled recommendation runs');
-        const payload = {
-          type: 'recommendations.run' as const,
+        const profileScope = { orgId: profile.org_id, profileId: profile.profile_id };
+        const campaignIds = (await readEligibleCampaigns(sql, profileScope))
+          .filter((campaign) => campaign.group_id === null)
+          .map((campaign) => campaign.campaign_id);
+        if (campaignIds.length === 0) {
+          emptyLegacyProfiles += 1;
+          continue;
+        }
+        if (campaignIds.length > MAX_RECOMMENDATION_PREVIEW_CAMPAIGNS) {
+          throw new Error('Scheduled optimization scope exceeds the campaign limit');
+        }
+        const strategy = await readResolvedStrategySnapshot(sql, profileScope);
+        await insertScopedRecommendationRun(sql, {
           orgId: profile.org_id,
           profileId: profile.profile_id,
-          runId,
+          batchId: null,
+          campaignIds,
+          group: null,
+          strategy,
           lookbackDays: DEFAULT_RECOMMENDATION_LOOKBACK_DAYS,
-        };
-        const jobs = await sql<{ id: string }[]>`
-          insert into public.sync_jobs
-            (org_id, profile_id, job_type, payload, priority, dedupe_key, run_after)
-          values (${profile.org_id}, ${profile.profile_id}, 'recommendations.run',
-                  ${serializeJson(payload)}::text::jsonb,
-                  ${RECOMMENDATION_SCHEDULE_PRIORITY},
-                  ${`recommendations.run:${runId}`},
-                  ${nowIso}::timestamptz + ${RECOMMENDATION_SCHEDULE_DELAY}::interval)
-          returning id
-        `;
-        if (jobs.length !== 1) throw new Error('Enqueued 0 of 1 scheduled recommendation jobs');
-        enqueued += jobs.length;
+          source: 'schedule',
+          runAfter: nowIso,
+          delay: RECOMMENDATION_SCHEDULE_DELAY,
+          dueAt: null,
+          scheduleContext: null,
+        });
+        enqueued += 1;
       }
-      const offered = dueGroups.length - heldGroups + legacyDueProfiles.length;
+      const offered = dueGroups.length - heldGroups + legacyDueProfiles.length - emptyLegacyProfiles;
       if (enqueued !== offered) {
         throw new Error(`Found ${offered} due recommendation scopes, enqueued ${enqueued}`);
       }

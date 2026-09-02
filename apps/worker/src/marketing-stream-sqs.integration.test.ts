@@ -176,6 +176,8 @@ describe.skipIf(!available)('Marketing Stream SQS against migrated PostgreSQL', 
 
   it('runs provider binding through ledger, durable job, projection, and settling transition', async () => {
     await database.sql`delete from public.unified_report_runs where profile_id = ${profileId}`;
+    await database.sql`delete from public.recommendation_preview_batches where profile_id = ${profileId}`;
+    await database.sql`delete from public.recommendation_runs where profile_id = ${profileId}`;
     await database.sql`delete from public.sync_jobs where profile_id = ${profileId}`;
     await database.sql`delete from public.marketing_stream_projection_blocks where profile_id = ${profileId}`;
     await database.sql`delete from public.marketing_stream_hourly_facts where profile_id = ${profileId}`;
@@ -311,6 +313,8 @@ describe.skipIf(!available)('Marketing Stream SQS against migrated PostgreSQL', 
 
   it('revives a dead operator recovery job and drains 256 then remaining durable scopes', async () => {
     await database.sql`delete from public.unified_report_runs where profile_id = ${profileId}`;
+    await database.sql`delete from public.recommendation_preview_batches where profile_id = ${profileId}`;
+    await database.sql`delete from public.recommendation_runs where profile_id = ${profileId}`;
     await database.sql`delete from public.sync_jobs where profile_id = ${profileId}`;
     await database.sql`delete from public.marketing_stream_projection_blocks where profile_id = ${profileId}`;
     await database.sql`delete from public.marketing_stream_hourly_facts where profile_id = ${profileId}`;

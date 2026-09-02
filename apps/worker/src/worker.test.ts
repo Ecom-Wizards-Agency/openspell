@@ -19,6 +19,10 @@ import {
   type CreateReportInput,
 } from './ads-api.js';
 import { resolveSourcePath } from './crosscheck.js';
+import {
+  RecommendationExecutionCustodyError,
+  RecommendationScopeIntegrityError,
+} from './recommendations-run.js';
 import type { ParsedFactBatch, ReportDownloadLimits } from './parsers.js';
 import { RegionTokenBuckets } from './region-token-buckets.js';
 import {
@@ -749,7 +753,8 @@ describe('recommendations.run wiring', () => {
           results.push(options?.result);
         },
       },
-      recommendationsRun: async (incoming) => {
+      recommendationsRun: async (incoming, execution) => {
+        expect(execution).toEqual({ jobId });
         calls.push(incoming as JobPayload);
         return { runId: incoming.runId, proposals: 2, window: null, alreadySucceeded: false };
       },
@@ -781,6 +786,60 @@ describe('recommendations.run wiring', () => {
 
     expect(await worker.drainOnce()).toBe(1);
     expect(dead).toEqual(['recommendations runner is not configured on this worker']);
+  });
+
+  it('dead-letters immutable scope corruption without spending the retry budget', async () => {
+    const job: ClaimedJob = {
+      id: jobId, orgId, profileId, jobType: payload.type, payload,
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker',
+    };
+    let claimed = false;
+    const dead: string[] = [];
+    const retried: string[] = [];
+    const worker = new SyncWorker({
+      workerId: 'unit-worker', adsApi: new OneRowApi(),
+      buckets: new RegionTokenBuckets(2), logger: { info: () => {}, error: () => {} },
+      store: {
+        ...stubStore(),
+        claim: async () => claimed ? [] : (claimed = true, [job]),
+        deadLetter: async (_id, error) => { dead.push(error); },
+        finish: async (_id, outcome) => { retried.push(outcome); },
+      },
+      recommendationsRun: async () => {
+        throw new RecommendationScopeIntegrityError();
+      },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(dead).toEqual(['Recommendation preview evidence failed its integrity check.']);
+    expect(retried).toEqual([]);
+  });
+
+  it('dead-letters an executing job without exact run custody', async () => {
+    const job: ClaimedJob = {
+      id: jobId, orgId, profileId, jobType: payload.type, payload,
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker',
+    };
+    let claimed = false;
+    const dead: string[] = [];
+    const retried: string[] = [];
+    const worker = new SyncWorker({
+      workerId: 'unit-worker', adsApi: new OneRowApi(),
+      buckets: new RegionTokenBuckets(2), logger: { info: () => {}, error: () => {} },
+      store: {
+        ...stubStore(),
+        claim: async () => claimed ? [] : (claimed = true, [job]),
+        deadLetter: async (_id, error) => { dead.push(error); },
+        finish: async (_id, outcome) => { retried.push(outcome); },
+      },
+      recommendationsRun: async () => {
+        throw new RecommendationExecutionCustodyError();
+      },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(dead).toEqual(['Recommendation execution does not own the linked queue job.']);
+    expect(retried).toEqual([]);
   });
 });
 

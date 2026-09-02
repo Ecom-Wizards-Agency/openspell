@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260901040000_fenced_sync_claims.sql');
+    expect(files.at(-1)).toBe('20260901050000_recommendation_preview_scopes.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -93,6 +93,104 @@ describe.skipIf(!available)('migrations', () => {
       'ad_profiles_refresh_optimization_schedules',
       'optimization_groups_schedule',
     ]);
+  });
+
+  it('installs tenant-closed immutable recommendation preview scope evidence', async () => {
+    const columns = await database.sql<{
+      table_name: string;
+      column_name: string;
+      is_nullable: string;
+    }[]>`
+      select table_name, column_name, is_nullable
+        from information_schema.columns
+       where table_schema = 'public'
+         and (
+           (table_name = 'recommendation_preview_batches' and column_name in (
+             'client_request_id', 'request_fingerprint', 'scope_count',
+             'scope_fingerprint', 'child_count'
+           ))
+           or
+           (table_name = 'recommendation_runs' and column_name in (
+             'batch_id', 'scope_version', 'scope_count', 'scope_fingerprint',
+             'strategy_goal', 'job_id'
+           ))
+           or
+           (table_name = 'recommendation_run_campaigns' and column_name in (
+             'org_id', 'profile_id', 'batch_id', 'run_id', 'campaign_id'
+           ))
+         )
+       order by table_name, column_name
+    `;
+    expect(columns).toHaveLength(16);
+    expect(columns).toContainEqual({
+      table_name: 'recommendation_run_campaigns',
+      column_name: 'campaign_id',
+      is_nullable: 'NO',
+    });
+    expect(columns).toContainEqual({
+      table_name: 'recommendation_runs',
+      column_name: 'scope_version',
+      is_nullable: 'YES',
+    });
+
+    const constraints = await database.sql<{ conname: string }[]>`
+      select conname
+        from pg_catalog.pg_constraint
+       where conrelid in (
+         'public.recommendation_preview_batches'::regclass,
+         'public.recommendation_runs'::regclass,
+         'public.recommendation_run_campaigns'::regclass
+       )
+    `;
+    expect(constraints.map((row) => row.conname)).toEqual(expect.arrayContaining([
+      'recommendation_preview_batches_client_request_key',
+      'recommendation_runs_scope_shape_check',
+      'recommendation_runs_job_fkey',
+      'recommendation_run_campaigns_run_fkey',
+      'recommendation_run_campaigns_batch_fkey',
+      'recommendation_run_campaigns_parent_match_fkey',
+    ]));
+
+    const indexes = await database.sql<{ indexname: string; indexdef: string }[]>`
+      select indexname, indexdef
+        from pg_catalog.pg_indexes
+       where schemaname = 'public'
+         and indexname in (
+           'recommendation_runs_batch_group_key',
+           'recommendation_run_campaigns_batch_campaign_key'
+         )
+       order by indexname
+    `;
+    expect(indexes).toHaveLength(2);
+    expect(indexes.find((row) => row.indexname === 'recommendation_runs_batch_group_key')?.indexdef)
+      .toContain('NULLS NOT DISTINCT');
+    expect(indexes.find((row) => row.indexname === 'recommendation_run_campaigns_batch_campaign_key')?.indexdef)
+      .toContain('WHERE (batch_id IS NOT NULL)');
+
+    const policies = await database.sql<{ tablename: string; cmd: string }[]>`
+      select tablename, cmd from pg_catalog.pg_policies
+       where schemaname = 'public'
+         and tablename in ('recommendation_preview_batches', 'recommendation_run_campaigns')
+       order by tablename, cmd
+    `;
+    expect(policies).toEqual([
+      { tablename: 'recommendation_preview_batches', cmd: 'SELECT' },
+      { tablename: 'recommendation_run_campaigns', cmd: 'SELECT' },
+    ]);
+    const [privileges] = await database.sql<{
+      batch_insert: boolean;
+      scope_update: boolean;
+      scope_delete: boolean;
+    }[]>`
+      select
+        has_table_privilege('authenticated', 'public.recommendation_preview_batches', 'insert')
+          as batch_insert,
+        has_table_privilege('authenticated', 'public.recommendation_run_campaigns', 'update')
+          as scope_update,
+        has_table_privilege('authenticated', 'public.recommendation_run_campaigns', 'delete')
+          as scope_delete
+    `;
+    expect(privileges).toEqual({ batch_insert: false, scope_update: false, scope_delete: false });
   });
 
   it('adds the integration job labels without weakening the report schedule constraint', async () => {
@@ -420,7 +518,8 @@ describe.skipIf(!available)('migrations', () => {
       'sync_schedules', 'sync_jobs', 'report_requests',
       'unified_reporting_bindings', 'unified_report_runs', 'unified_report_operations',
       // analysis
-      'recommendation_runs', 'recommendations', 'insights', 'crosscheck_results',
+      'recommendation_preview_batches', 'recommendation_runs', 'recommendation_run_campaigns',
+      'recommendations', 'insights', 'crosscheck_results',
       // writes
       'apply_batches', 'apply_rows', 'campaign_maps',
       // product surface

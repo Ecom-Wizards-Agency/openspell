@@ -112,7 +112,6 @@ export async function loadOptimizerCampaignFacts(
        and assignment.campaign_id = c.amazon_id
      where c.org_id = ${input.orgId}
        and c.profile_id = ${input.profileId}
-       and c.deleted_at is null
      order by coalesce(performance.spend, 0) desc, lower(c.name), c.amazon_id
     `;
 

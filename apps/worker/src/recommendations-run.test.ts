@@ -6,6 +6,8 @@ import { describe, expect, it } from 'vitest';
 import type { ScheduledOptimizationGroup, TenantStrategy } from '@wizard-ads/shared';
 import {
   BID_REASON_TO_DATABASE,
+  RecommendationExecutionCustodyError,
+  RecommendationScopeIntegrityError,
   databaseReason,
   recommendationWindow,
   runRecommendations,
@@ -108,10 +110,17 @@ function fixtureInputs(): RecommendationRunInputs {
 class FakeStore implements RecommendationRunStore {
   started: RunScope[] = [];
   expectedGroupIds: Array<string | undefined> = [];
+  expectedJobIds: string[] = [];
   loadedGroupIds: Array<string | undefined> = [];
   completed: RunCompletion[] = [];
   failed: Array<{ scope: RunScope; error: string }> = [];
-  startResult: StartRunResult = { alreadySucceeded: false, proposalsCount: 0 };
+  startResult: StartRunResult = {
+    alreadySucceeded: false,
+    proposalsCount: 0,
+    strategySnapshot: STRATEGY,
+    strategyGoal: 'profit-maintain',
+  };
+  startError: Error | null = null;
   loadError: Error | null = null;
   groupSafety = {
     mayPropose: true,
@@ -127,9 +136,15 @@ class FakeStore implements RecommendationRunStore {
     readonly inputs: RecommendationRunInputs = fixtureInputs(),
   ) {}
 
-  async startRun(scope: RunScope, expectedGroupId?: string): Promise<StartRunResult> {
+  async startRun(
+    scope: RunScope,
+    expectedGroupId: string | undefined,
+    expectedJobId: string,
+  ): Promise<StartRunResult> {
     this.started.push(scope);
     this.expectedGroupIds.push(expectedGroupId);
+    this.expectedJobIds.push(expectedJobId);
+    if (this.startError !== null) throw this.startError;
     return this.startResult;
   }
 
@@ -168,6 +183,7 @@ const JOB = {
   runId: RUN_ID,
   lookbackDays: 7,
 };
+const EXECUTION = { jobId: '91919191-9191-4919-8919-919191919191' };
 
 describe('recommendation window', () => {
   it('uses the last complete day in the profile timezone', () => {
@@ -195,7 +211,7 @@ describe('reason enum mapping', () => {
 describe('recommendations runner', () => {
   it('assembles scoped facts, strategy and corridor into a persisted bid proposal', async () => {
     const store = new FakeStore();
-    const result = await runRecommendations(store, JOB, new Date('2026-08-27T12:00:00Z'));
+    const result = await runRecommendations(store, JOB, EXECUTION, new Date('2026-08-27T12:00:00Z'));
 
     expect(result).toEqual({
       runId: RUN_ID,
@@ -204,6 +220,7 @@ describe('recommendations runner', () => {
       alreadySucceeded: false,
     });
     expect(store.started).toEqual([{ orgId: ORG_ID, profileId: PROFILE_ID, runId: RUN_ID }]);
+    expect(store.expectedJobIds).toEqual([EXECUTION.jobId]);
     const completion = store.completed[0];
     expect(completion?.strategySnapshot).toMatchObject({
       schema: STRATEGY.schema,
@@ -251,7 +268,7 @@ describe('recommendations runner', () => {
     target.corridor = null;
     const store = new FakeStore(PROFILE, inputs);
 
-    await runRecommendations(store, JOB, new Date('2026-08-27T12:00:00Z'));
+    await runRecommendations(store, JOB, EXECUTION, new Date('2026-08-27T12:00:00Z'));
 
     expect(store.completed[0]?.proposals).toHaveLength(1);
     expect(store.completed[0]?.proposals[0]?.inputs).toMatchObject({
@@ -294,6 +311,8 @@ describe('recommendations runner', () => {
     store.startResult = {
       alreadySucceeded: false,
       proposalsCount: 0,
+      strategySnapshot: { ...STRATEGY, bids: { mechanical_bid_step: 0.05 } },
+      strategyGoal: 'profit-maintain',
       groupRun: {
         group,
         dueAt: '2026-08-27T00:00:00.000Z',
@@ -312,11 +331,12 @@ describe('recommendations runner', () => {
     await runRecommendations(
       store,
       { ...JOB, groupId: GROUP_ID },
+      EXECUTION,
       new Date('2026-08-27T12:00:00Z'),
     );
 
     expect(store.expectedGroupIds).toEqual([GROUP_ID]);
-    expect(store.loadedGroupIds).toEqual([GROUP_ID]);
+    expect(store.loadedGroupIds).toEqual([undefined]);
     expect(store.completed[0]?.proposals[0]).toMatchObject({
       currentValue: 1,
       proposedValue: 0.54,
@@ -357,6 +377,8 @@ describe('recommendations runner', () => {
     store.startResult = {
       alreadySucceeded: false,
       proposalsCount: 0,
+      strategySnapshot: STRATEGY,
+      strategyGoal: 'profit-maintain',
       groupRun: {
         group,
         dueAt: '2026-08-27T00:00:00.000Z',
@@ -383,6 +405,7 @@ describe('recommendations runner', () => {
     const result = await runRecommendations(
       store,
       { ...JOB, groupId: GROUP_ID },
+      EXECUTION,
       new Date('2026-08-27T12:00:00Z'),
     );
 
@@ -400,7 +423,7 @@ describe('recommendations runner', () => {
     target.stock = { status: 'out_of_stock', asins: target.stock.asins, source: 'fixture' };
     const store = new FakeStore(PROFILE, inputs);
 
-    await runRecommendations(store, JOB, new Date('2026-08-27T12:00:00Z'));
+    await runRecommendations(store, JOB, EXECUTION, new Date('2026-08-27T12:00:00Z'));
 
     expect(store.completed[0]?.proposals).toEqual([]);
     expect(store.completed[0]?.narrative.diagnostics).toMatchObject({
@@ -420,7 +443,7 @@ describe('recommendations runner', () => {
     target.organicRank = { status: 'known', currentRank: 8, previousRank: 12, asin: 'B0TEST5101' };
     const store = new FakeStore(PROFILE, inputs);
 
-    await runRecommendations(store, JOB, new Date('2026-08-27T12:00:00Z'));
+    await runRecommendations(store, JOB, EXECUTION, new Date('2026-08-27T12:00:00Z'));
 
     expect(store.completed[0]?.proposals).toEqual([]);
     expect(store.completed[0]?.narrative.diagnostics).toMatchObject({ proposed: 0, suppressed: 1 });
@@ -433,7 +456,7 @@ describe('recommendations runner', () => {
     const store = new FakeStore();
     store.loadError = new Error('fixture facts unavailable');
 
-    await expect(runRecommendations(store, JOB)).rejects.toThrow('fixture facts unavailable');
+    await expect(runRecommendations(store, JOB, EXECUTION)).rejects.toThrow('fixture facts unavailable');
     expect(store.completed).toEqual([]);
     expect(store.failed).toEqual([
       {
@@ -441,6 +464,27 @@ describe('recommendations runner', () => {
         error: 'fixture facts unavailable',
       },
     ]);
+  });
+
+  it('does not poison the legitimate run when the executing job lacks custody', async () => {
+    const store = new FakeStore();
+    store.startError = new RecommendationExecutionCustodyError();
+
+    await expect(runRecommendations(store, JOB, EXECUTION))
+      .rejects.toBeInstanceOf(RecommendationExecutionCustodyError);
+    expect(store.failed).toEqual([]);
+  });
+
+  it('fails persisted run evidence that cannot pass its integrity check', async () => {
+    const store = new FakeStore();
+    store.startError = new RecommendationScopeIntegrityError();
+
+    await expect(runRecommendations(store, JOB, EXECUTION))
+      .rejects.toBeInstanceOf(RecommendationScopeIntegrityError);
+    expect(store.failed).toEqual([{
+      scope: { orgId: ORG_ID, profileId: PROFILE_ID, runId: RUN_ID },
+      error: 'Recommendation preview evidence failed its integrity check.',
+    }]);
   });
 
   it('succeeds with zero proposals when the profile has no facts', async () => {
@@ -452,7 +496,7 @@ describe('recommendations runner', () => {
       profileFacts: [],
     });
 
-    const result = await runRecommendations(store, JOB, new Date('2026-08-27T12:00:00Z'));
+    const result = await runRecommendations(store, JOB, EXECUTION, new Date('2026-08-27T12:00:00Z'));
     expect(result.proposals).toBe(0);
     expect(store.completed[0]?.proposals).toEqual([]);
     expect(store.completed[0]?.narrative.qualitative.notes).toContain(
@@ -463,8 +507,13 @@ describe('recommendations runner', () => {
 
   it('returns a previously succeeded run without loading or writing again', async () => {
     const store = new FakeStore();
-    store.startResult = { alreadySucceeded: true, proposalsCount: 4 };
-    const result = await runRecommendations(store, JOB);
+    store.startResult = {
+      alreadySucceeded: true,
+      proposalsCount: 4,
+      strategySnapshot: STRATEGY,
+      strategyGoal: 'profit-maintain',
+    };
+    const result = await runRecommendations(store, JOB, EXECUTION);
     expect(result).toEqual({
       runId: RUN_ID,
       proposals: 4,

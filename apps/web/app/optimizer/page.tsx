@@ -23,7 +23,7 @@ import { gate } from '../../src/auth/guard';
 import { can } from '../../src/auth/roles';
 import { canonicalProfilePath } from '../../src/data/active-profile';
 import { gateMessage } from '../../src/ui/gate-message';
-import { Button, EmptyState, PageHeader } from '../../src/ui/primitives';
+import { EmptyState, PageHeader } from '../../src/ui/primitives';
 import { FreshnessBar } from '../../src/ui/dashboard';
 import { OperatorContext } from '../../src/ui/operator-context';
 import { Cockpit } from '../../src/ui/cockpit';
@@ -42,7 +42,6 @@ import { periodFromParams, settledComparisonWindows, todayIso } from '../_lib/pe
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
 import { OptimizerGroupTable, ReasonCoverageRow, SettingsChip } from './optimizer-view';
 import { CampaignWorkspace } from './campaign-workspace';
-import { runOptimizerNow } from './actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,6 +51,7 @@ interface PageProps {
     from?: string;
     to?: string;
     run?: string;
+    batch?: string;
     preset?: string;
   }>;
 }
@@ -161,25 +161,6 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
         subtitle="Campaign performance, group context, and read-only recommendation previews"
         actions={
           <div className="wa-row" style={{ gap: '0.5rem' }}>
-            {mayRunOptimizer && optimizationWorkspace.groups.length === 0 ? (
-              <form action={runOptimizerNow}>
-                <input type="hidden" name="profileId" value={profile.id} />
-                <Button
-                  type="submit"
-                  variant="primary"
-                  size="sm"
-                  data-testid="optimizer-run-now"
-                  title="Queue a seven-day preview using the last complete profile-local day"
-                >
-                  Run now
-                </Button>
-              </form>
-            ) : null}
-            {mayRunOptimizer && optimizationWorkspace.groups.length > 0 ? (
-              <a className="wa-btn wa-btn--primary wa-btn--sm" href={`/optimizer/groups?profile=${profile.id}`}>
-                Run group previews
-              </a>
-            ) : null}
             <SettingsChip summary={summary} group={run?.groupSnapshot} />
             <a
               className="wa-btn wa-btn--sm"
@@ -204,6 +185,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
           preserved={{
             profile: profile.id,
             ...(run === null ? {} : { run: run.id }),
+            batch: params.batch,
             preset: params.preset,
           }}
         />
@@ -248,12 +230,14 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
         />
 
         <CampaignWorkspace
-          key={`${profile.id}:${period.start}:${period.end}`}
+          key={profile.id}
           rows={campaignRows}
           currencyCode={profile.currencyCode}
           profileId={profile.id}
           period={period}
           run={run === null ? null : { id: run.id, status: run.status }}
+          mayRunOptimizer={mayRunOptimizer}
+          initialBatchId={params.batch ?? null}
         />
 
         {run === null ? (

@@ -40,6 +40,9 @@ declare
   v_unified_run uuid := gen_random_uuid();
   v_unified_operation uuid := gen_random_uuid();
   v_unified_job uuid := gen_random_uuid();
+  v_preview_batch uuid := gen_random_uuid();
+  v_preview_run uuid := gen_random_uuid();
+  v_preview_job uuid := gen_random_uuid();
   v_sp_gate_version uuid := gen_random_uuid();
   v_sp_grant_id uuid := gen_random_uuid();
   v_sp_grant_version uuid := gen_random_uuid();
@@ -224,8 +227,51 @@ begin
      1, 1);
 
   -- Analysis
-  insert into public.recommendation_runs (org_id, profile_id, status, lookback_days)
-  values (v_org, v_profile, 'succeeded', 30) returning id into v_run;
+  -- One inert, immutable recommendation-preview scope. The queued job is
+  -- fixture evidence only: this function never starts a worker or calls Amazon.
+  -- Some migration-cutover tests intentionally install this current fixture
+  -- against the immediate predecessor. Keep those historical snapshots usable
+  -- while making current-schema RLS coverage non-vacuous.
+  if to_regclass('public.recommendation_preview_batches') is not null then
+    insert into public.recommendation_preview_batches
+      (id, org_id, profile_id, client_request_id, selection_mode,
+       request_fingerprint, scope_count, scope_fingerprint, child_count, created_by)
+    values
+      (v_preview_batch, v_org, v_profile, gen_random_uuid(), 'selected',
+       md5(p_slug || '-preview-request-a') || md5(p_slug || '-preview-request-b'),
+       1,
+       md5(p_slug || '-preview-batch-a') || md5(p_slug || '-preview-batch-b'),
+       1, p_user_id);
+
+    insert into public.sync_jobs
+      (id, org_id, profile_id, job_type, payload, status, started_at, finished_at)
+    values (
+      v_preview_job, v_org, v_profile, 'recommendations.run',
+      jsonb_build_object(
+        'type', 'recommendations.run', 'orgId', v_org, 'profileId', v_profile,
+        'runId', v_preview_run, 'lookbackDays', 30
+      ),
+      'succeeded', now(), now()
+    );
+
+    insert into public.recommendation_runs
+      (id, org_id, profile_id, status, lookback_days, strategy_snapshot,
+       strategy_goal, batch_id, scope_version, scope_count, scope_fingerprint,
+       job_id, engine_version)
+    values
+      (v_preview_run, v_org, v_profile, 'succeeded', 30, v_strategy,
+       'neutral', v_preview_batch, 1, 1,
+       md5(p_slug || '-preview-run-a') || md5(p_slug || '-preview-run-b'),
+       v_preview_job, 'fixture');
+
+    insert into public.recommendation_run_campaigns
+      (org_id, profile_id, batch_id, run_id, campaign_id)
+    values (v_org, v_profile, v_preview_batch, v_preview_run, 'c-1');
+    v_run := v_preview_run;
+  else
+    insert into public.recommendation_runs (org_id, profile_id, status, lookback_days)
+    values (v_org, v_profile, 'succeeded', 30) returning id into v_run;
+  end if;
   insert into public.recommendations
     (run_id, org_id, profile_id, reason, entity_type, entity_id, field, current_value, proposed_value, inputs)
   values (v_run, v_org, v_profile, 'high_acos', 'keyword', 'kw-1', 'bid', '0.90'::jsonb, '0.70'::jsonb,

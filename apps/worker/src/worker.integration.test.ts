@@ -36,7 +36,7 @@ import {
 import { AdsApiHttpError, MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
 import type { DataDiveQuota, RankRadarData, RankRadarList } from '@wizard-ads/datadive-api';
 import { AdsApiRetryableError } from './ads-api.js';
-import type { EntityRow, Region } from '@wizard-ads/shared';
+import { RecommendationsRunJob, type EntityRow, type Region } from '@wizard-ads/shared';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type {
   AdProductCode,
@@ -60,6 +60,8 @@ import {
   PostgresRecommendationRunStore,
   RECOMMENDATION_SCHEDULE_PRIORITY,
   RECOMMENDATIONS_ENGINE_VERSION,
+  RecommendationExecutionCustodyError,
+  RecommendationScopeIntegrityError,
   createRecommendationsRunner,
 } from './recommendations-run.js';
 import { DEFAULT_REPORT_TYPES, defaultSchedules } from './schedules.js';
@@ -151,6 +153,8 @@ describe.skipIf(!available)('worker + real Postgres', () => {
 
   beforeEach(async () => {
     await database.sql`delete from public.unified_report_runs where org_id = ${orgId}`;
+    await database.sql`delete from public.recommendation_preview_batches where org_id = ${orgId}`;
+    await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
     await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
     await database.sql`delete from public.report_requests where org_id = ${orgId}`;
     await database.sql`delete from public.fact_profile_daily where profile_id = ${profileId}`;
@@ -190,8 +194,8 @@ describe.skipIf(!available)('worker + real Postgres', () => {
   async function raceDueSchedulerAgainst(
     contender: (handle: DbHandle, record: OptimizationGroupRecord) => Promise<unknown>,
   ): Promise<readonly [PromiseSettledResult<number>, PromiseSettledResult<unknown>]> {
-    await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
     await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+    await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
     const workspace = await readOptimizationWorkspace(database, { orgId, profileId });
     const record = workspace.groups[0];
     if (!record) throw new Error('seeded optimization group missing');
@@ -338,11 +342,19 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     `;
 
     const recommendationStore = new PostgresRecommendationRunStore(database);
-    const queued = await recommendationStore.enqueueRecommendationRun({
+    const accepted = await recommendationStore.enqueueRecommendationPreviewBatch({
       orgId,
       profileId,
-      source: 'web',
+      actorId: USER,
+      clientRequestId: '34343434-3434-4434-8434-343434343434',
+      scope: { mode: 'selected', campaignIds: ['c-1'] },
     });
+    const [queued] = await database.sql<{ runId: string; jobId: string }[]>`
+      select id as "runId", job_id as "jobId"
+        from public.recommendation_runs
+       where batch_id = ${accepted.batchId}
+    `;
+    if (!queued) throw new Error('preview child run missing');
     const worker = new SyncWorker({
       workerId: 'recommendations',
       store: new PostgresWorkerStore(database),
@@ -421,6 +433,515 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       proposals: 1,
       narrative: { diagnostics: { proposed: 1 } },
     });
+  });
+
+  it('atomically closes a cross-group selected batch and replays one request identity', async () => {
+    const groupNames = ['batch alpha', 'batch beta'] as const;
+    const groups = await database.sql<{ id: string; name: string }[]>`
+      insert into public.optimization_groups (
+        org_id, profile_id, name, role, target_acos,
+        bid_floor, bid_ceiling, bid_increase_cap, bid_decrease_cap,
+        placement_increase_cap, placement_decrease_cap, exclusions,
+        review_weekdays, cadence, prioritization, enabled
+      )
+      select source.org_id, source.profile_id, offered.name, source.role, source.target_acos,
+             source.bid_floor, source.bid_ceiling, source.bid_increase_cap, source.bid_decrease_cap,
+             source.placement_increase_cap, source.placement_decrease_cap, source.exclusions,
+             source.review_weekdays, source.cadence, source.prioritization, true
+        from (select * from public.optimization_groups
+               where org_id = ${orgId} and profile_id = ${profileId} order by id limit 1) source
+        cross join (values (${groupNames[0]}), (${groupNames[1]})) as offered(name)
+      returning id, name
+    `;
+    const byName = new Map<string, string>(groups.map((group) => [group.name, group.id]));
+    const alphaId = byName.get(groupNames[0]);
+    const betaId = byName.get(groupNames[1]);
+    if (!alphaId || !betaId) throw new Error('batch groups missing');
+    const campaignIds = ['c-batch-alpha', 'c-batch-beta', 'c-batch-unassigned'] as const;
+    await database.sql`
+      insert into public.campaigns
+        (org_id, profile_id, amazon_id, ad_product, name, state,
+         budget_amount, budget_type, targeting_type, bidding_strategy, placement_bidding)
+      select source.org_id, source.profile_id, offered.amazon_id, 'SP', offered.name,
+             'enabled', source.budget_amount, source.budget_type, source.targeting_type,
+             source.bidding_strategy, source.placement_bidding
+        from (select * from public.campaigns
+               where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = 'c-1') source
+        cross join (values
+          (${campaignIds[0]}, 'synthetic alpha campaign'),
+          (${campaignIds[1]}, 'synthetic beta campaign'),
+          (${campaignIds[2]}, 'synthetic unassigned campaign')
+        ) as offered(amazon_id, name)
+    `;
+    await database.sql`
+      insert into public.campaign_optimization_assignments
+        (org_id, profile_id, campaign_id, group_id, assigned_by)
+      values
+        (${orgId}, ${profileId}, ${campaignIds[0]}, ${alphaId}, ${USER}),
+        (${orgId}, ${profileId}, ${campaignIds[1]}, ${betaId}, ${USER})
+    `;
+    const firstHandle = createDb({ connectionString: database.connectionString, max: 1 });
+    const secondHandle = createDb({ connectionString: database.connectionString, max: 1 });
+    const request = {
+      orgId,
+      profileId,
+      actorId: USER,
+      clientRequestId: '45454545-4545-4454-8454-454545454545',
+      scope: { mode: 'selected' as const, campaignIds },
+    };
+    const lateCampaignId = 'c-batch-late';
+    let strategyBefore: { id: string; doc: Record<string, unknown> } | undefined;
+
+    try {
+      const [first, replay] = await Promise.all([
+        new PostgresRecommendationRunStore(firstHandle).enqueueRecommendationPreviewBatch(request),
+        new PostgresRecommendationRunStore(secondHandle).enqueueRecommendationPreviewBatch(request),
+      ]);
+      expect(replay).toEqual(first);
+      expect(first).toMatchObject({
+        scope: {
+          mode: 'selected',
+          campaignCount: 3,
+          fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+        },
+        childCount: 3,
+      });
+      const children = await database.sql<{
+        group_id: string | null;
+        campaign_ids: string[];
+        job_id: string;
+      }[]>`
+        select run.group_id,
+               array_agg(scope.campaign_id order by scope.campaign_id collate "C")::text[] as campaign_ids,
+               run.job_id
+          from public.recommendation_runs run
+          join public.recommendation_run_campaigns scope on scope.run_id = run.id
+         where run.batch_id = ${first.batchId}
+         group by run.id, run.group_id, run.job_id
+         order by run.group_id nulls last
+      `;
+      expect(children).toHaveLength(3);
+      expect(children.flatMap((child) => child.campaign_ids).sort()).toEqual([...campaignIds].sort());
+      expect(new Set(children.map((child) => child.job_id)).size).toBe(3);
+
+      const capturedArtifacts = await database.sql<{
+        id: string;
+        strategy_snapshot: Record<string, unknown>;
+        group_snapshot: Record<string, unknown> | null;
+      }[]>`
+        select id, strategy_snapshot, group_snapshot
+          from public.recommendation_runs
+         where batch_id = ${first.batchId}
+         order by id
+      `;
+      [strategyBefore] = await database.sql<{ id: string; doc: Record<string, unknown> }[]>`
+        select id, doc
+          from public.profile_strategy
+         where org_id = ${orgId} and (profile_id is null or profile_id = ${profileId})
+         order by profile_id nulls last
+         limit 1
+      `;
+      if (strategyBefore === undefined) throw new Error('profile strategy fixture missing');
+
+      await database.sql`
+        update public.campaign_optimization_assignments set group_id = ${betaId}
+         where org_id = ${orgId} and profile_id = ${profileId} and campaign_id = ${campaignIds[0]}
+      `;
+      await database.sql`
+        update public.optimization_groups
+           set target_acos = target_acos + 0.01
+         where id = ${alphaId}
+      `;
+      await database.sql`
+        update public.profile_strategy
+           set doc = jsonb_set(doc, '{pacing}', '{"synthetic_change":true}'::jsonb)
+         where id = ${strategyBefore.id}
+      `;
+      await database.sql`
+        update public.campaigns
+           set state = 'paused', deleted_at = now()
+         where org_id = ${orgId} and profile_id = ${profileId}
+           and amazon_id = ${campaignIds[0]}
+      `;
+      await database.sql`
+        insert into public.campaigns
+          (org_id, profile_id, amazon_id, ad_product, name, state,
+           budget_amount, budget_type, targeting_type, bidding_strategy, placement_bidding)
+        select org_id, profile_id, ${lateCampaignId}, ad_product, 'synthetic late campaign',
+               'enabled', budget_amount, budget_type, targeting_type,
+               bidding_strategy, placement_bidding
+          from public.campaigns
+         where org_id = ${orgId} and profile_id = ${profileId}
+           and amazon_id = ${campaignIds[1]}
+      `;
+      const [captured] = await database.sql<{ group_id: string | null }[]>`
+        select run.group_id
+          from public.recommendation_runs run
+          join public.recommendation_run_campaigns scope on scope.run_id = run.id
+         where run.batch_id = ${first.batchId} and scope.campaign_id = ${campaignIds[0]}
+      `;
+      expect(captured?.group_id).toBe(alphaId);
+      expect(await database.sql<{
+        id: string;
+        strategy_snapshot: Record<string, unknown>;
+        group_snapshot: Record<string, unknown> | null;
+      }[]>`
+        select id, strategy_snapshot, group_snapshot
+          from public.recommendation_runs
+         where batch_id = ${first.batchId}
+         order by id
+      `).toEqual(capturedArtifacts);
+      const immutableScope = await database.sql<{ campaign_id: string }[]>`
+        select campaign_id
+          from public.recommendation_run_campaigns
+         where batch_id = ${first.batchId}
+         order by campaign_id collate "C"
+      `;
+      expect(immutableScope.map((row) => row.campaign_id)).toEqual([...campaignIds].sort());
+      expect(immutableScope.some((row) => row.campaign_id === lateCampaignId)).toBe(false);
+
+      const statusStore = new PostgresRecommendationRunStore(database);
+      expect(await statusStore.getRecommendationPreviewBatchStatus({
+        orgId, profileId, batchId: first.batchId,
+      })).toMatchObject({ status: 'queued', campaignCount: 3 });
+      await database.sql`
+        update public.sync_jobs set status = 'dead'
+         where id = ${children[0]?.job_id ?? null}::uuid
+      `;
+      expect((await statusStore.getRecommendationPreviewBatchStatus({
+        orgId, profileId, batchId: first.batchId,
+      }))?.status).toBe('failed');
+      await database.sql`
+        update public.sync_jobs set status = 'dead'
+         where id = any (${children.slice(1).map((child) => child.job_id)}::uuid[])
+      `;
+      expect((await statusStore.getRecommendationPreviewBatchStatus({
+        orgId, profileId, batchId: first.batchId,
+      }))?.status).toBe('failed');
+
+      await expect(statusStore.enqueueRecommendationPreviewBatch({
+        ...request,
+        scope: { mode: 'selected', campaignIds: campaignIds.slice(0, 2) },
+      })).rejects.toMatchObject({ code: 'idempotency_conflict', httpStatus: 409 });
+    } finally {
+      await Promise.all([firstHandle.close(), secondHandle.close()]);
+      if (strategyBefore !== undefined) {
+        await database.sql`
+          update public.profile_strategy
+             set doc = ${JSON.stringify(strategyBefore.doc)}::text::jsonb
+           where id = ${strategyBefore.id}
+        `;
+      }
+      await database.sql`delete from public.recommendation_preview_batches where org_id = ${orgId}`;
+      await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+      await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
+      await database.sql`delete from public.optimization_groups where id = any (${[alphaId, betaId]}::uuid[])`;
+      await database.sql`
+        delete from public.campaigns
+         where org_id = ${orgId} and profile_id = ${profileId}
+           and amazon_id = any (${[...campaignIds, lateCampaignId]}::text[])
+      `;
+    }
+  });
+
+  it('rejects stale scope without artifacts and permanently fails tampered evidence', async () => {
+    const store = new PostgresRecommendationRunStore(database);
+    await expect(store.getRecommendationPreviewBatchStatus({
+      orgId,
+      profileId,
+      batchId: 'not-a-batch-id',
+    })).rejects.toMatchObject({ code: 'invalid_request', httpStatus: 400 });
+    await expect(store.enqueueRecommendationPreviewBatch({
+      orgId,
+      profileId,
+      actorId: USER,
+      clientRequestId: '56565656-5656-4565-8565-565656565656',
+      scope: { mode: 'selected', campaignIds: ['stale-campaign'] },
+    })).rejects.toMatchObject({ code: 'stale_selection', httpStatus: 409 });
+    await expect(store.enqueueRecommendationPreviewBatch({
+      orgId,
+      profileId,
+      actorId: USER,
+      clientRequestId: '57575757-5757-4575-8575-575757575757',
+      scope: { mode: 'selected', campaignIds: ['c-1', 'c-1'] },
+    })).rejects.toMatchObject({ code: 'invalid_request', httpStatus: 400 });
+    const [empty] = await database.sql<{ batches: number; runs: number; jobs: number }[]>`
+      select
+        (select count(*)::integer from public.recommendation_preview_batches where org_id = ${orgId}) as batches,
+        (select count(*)::integer from public.recommendation_runs where org_id = ${orgId}) as runs,
+        (select count(*)::integer from public.sync_jobs
+          where org_id = ${orgId} and job_type = 'recommendations.run') as jobs
+    `;
+    expect(empty).toEqual({ batches: 0, runs: 0, jobs: 0 });
+
+    const all = await store.enqueueRecommendationPreviewBatch({
+      orgId,
+      profileId,
+      actorId: USER,
+      clientRequestId: '58585858-5858-4585-8585-585858585858',
+      scope: { mode: 'all' },
+    });
+    const [allEvidence] = await database.sql<{ eligible: number; captured: number }[]>`
+      select
+        (select count(*)::integer
+           from public.campaigns campaign
+           left join public.campaign_optimization_assignments assignment
+             on assignment.org_id = campaign.org_id
+            and assignment.profile_id = campaign.profile_id
+            and assignment.campaign_id = campaign.amazon_id
+           left join public.optimization_groups optimization_group
+             on optimization_group.id = assignment.group_id
+            and optimization_group.org_id = assignment.org_id
+            and optimization_group.profile_id = assignment.profile_id
+          where campaign.org_id = ${orgId} and campaign.profile_id = ${profileId}
+            and campaign.ad_product = 'SP' and campaign.state = 'enabled'
+            and campaign.deleted_at is null
+            and (assignment.group_id is null or optimization_group.enabled)) as eligible,
+        (select count(*)::integer from public.recommendation_run_campaigns
+          where batch_id = ${all.batchId}) as captured
+    `;
+    expect(allEvidence).toEqual({ eligible: all.scope.campaignCount, captured: all.scope.campaignCount });
+    await database.sql`delete from public.recommendation_preview_batches where id = ${all.batchId}`;
+    await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+    await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
+
+    const accepted = await store.enqueueRecommendationPreviewBatch({
+      orgId,
+      profileId,
+      actorId: USER,
+      clientRequestId: '67676767-6767-4676-8676-676767676767',
+      scope: { mode: 'selected', campaignIds: ['c-1'] },
+    });
+    const [child] = await database.sql<{ run_id: string; job_id: string; payload: unknown }[]>`
+      select run.id as run_id, job.id as job_id, job.payload
+        from public.recommendation_runs run
+        join public.sync_jobs job on job.id = run.job_id
+       where run.batch_id = ${accepted.batchId}
+    `;
+    if (!child) throw new Error('tamper child missing');
+    await database.sql`update public.sync_jobs set status = 'running' where id = ${child.job_id}`;
+    await database.sql`delete from public.recommendation_run_campaigns where run_id = ${child.run_id}`;
+    await expect(createRecommendationsRunner(store)(
+      RecommendationsRunJob.parse(child.payload),
+      { jobId: child.job_id },
+    ))
+      .rejects.toBeInstanceOf(RecommendationScopeIntegrityError);
+    const [failed] = await database.sql<{ status: string; recommendations: number }[]>`
+      select run.status::text as status,
+             (select count(*)::integer from public.recommendations recommendation
+               where recommendation.run_id = run.id) as recommendations
+        from public.recommendation_runs run where run.id = ${child.run_id}
+    `;
+    expect(failed).toEqual({ status: 'failed', recommendations: 0 });
+
+    // Composite FKs do not compare a nullable component under MATCH SIMPLE.
+    // The worker must independently refuse a scope row detached from its
+    // persisted parent batch even when its campaign/count/hash still match.
+    await database.sql`
+      insert into public.recommendation_run_campaigns
+        (org_id, profile_id, batch_id, run_id, campaign_id)
+      values (${orgId}, ${profileId}, null, ${child.run_id}, 'c-1')
+    `;
+    await expect(createRecommendationsRunner(store)(
+      RecommendationsRunJob.parse(child.payload),
+      { jobId: child.job_id },
+    ))
+      .rejects.toBeInstanceOf(RecommendationScopeIntegrityError);
+  });
+
+  it('rejects a group snapshot whose tenant or profile identity was tampered', async () => {
+    const [group] = await database.sql<{ id: string }[]>`
+      select id from public.optimization_groups
+       where org_id = ${orgId} and profile_id = ${profileId}
+       order by id limit 1
+    `;
+    if (!group) throw new Error('seeded optimization group missing');
+    const store = new PostgresRecommendationRunStore(database);
+    const queued = await store.enqueueRecommendationRun({
+      orgId,
+      profileId,
+      groupId: group.id,
+      source: 'web',
+    });
+    const [job] = await database.sql<{ payload: unknown }[]>`
+      update public.sync_jobs
+         set status = 'running', started_at = now()
+       where id = ${queued.jobId}
+      returning payload
+    `;
+    if (!job) throw new Error('group snapshot queue job missing');
+    await database.sql`
+      update public.recommendation_runs
+         set group_snapshot = jsonb_set(
+           jsonb_set(group_snapshot, '{orgId}', to_jsonb('81818181-8181-4818-8181-818181818181'::text)),
+           '{profileId}', to_jsonb('82828282-8282-4828-8282-828282828282'::text)
+         )
+       where id = ${queued.runId}
+    `;
+    const [tampered] = await database.sql<{ org_id: string; profile_id: string }[]>`
+      select group_snapshot ->> 'orgId' as org_id,
+             group_snapshot ->> 'profileId' as profile_id
+        from public.recommendation_runs
+       where id = ${queued.runId}
+    `;
+    expect(tampered).toEqual({
+      org_id: '81818181-8181-4818-8181-818181818181',
+      profile_id: '82828282-8282-4828-8282-828282828282',
+    });
+
+    await expect(createRecommendationsRunner(store)(
+      RecommendationsRunJob.parse(job.payload),
+      { jobId: queued.jobId },
+    )).rejects.toBeInstanceOf(RecommendationScopeIntegrityError);
+    const [failed] = await database.sql<{ status: string; recommendations: number }[]>`
+      select run.status::text as status,
+             (select count(*)::integer from public.recommendations recommendation
+               where recommendation.run_id = run.id) as recommendations
+        from public.recommendation_runs run
+       where run.id = ${queued.runId}
+    `;
+    expect(failed).toEqual({ status: 'failed', recommendations: 0 });
+  });
+
+  it('atomically refuses every invalid selection class without preview artifacts', async () => {
+    const foreignUser = '83838383-8383-4838-8383-838383838383';
+    const [foreign] = await database.sql<{ org_id: string; profile_id: string }[]>`
+      with tenant as (
+        select app.seed_tenant_fixture('wp195-foreign-selection', ${foreignUser}, 'owner') as org_id
+      )
+      select tenant.org_id,
+             (select id from public.ad_profiles where org_id = tenant.org_id limit 1) as profile_id
+        from tenant
+    `;
+    if (!foreign) throw new Error('foreign selection fixture missing');
+    const [disabledGroup] = await database.sql<{ id: string }[]>`
+      insert into public.optimization_groups (
+        org_id, profile_id, name, role, target_acos,
+        bid_floor, bid_ceiling, bid_increase_cap, bid_decrease_cap,
+        placement_increase_cap, placement_decrease_cap, exclusions,
+        review_weekdays, cadence, prioritization, enabled
+      )
+      select org_id, profile_id, 'invalid selection disabled group', role, target_acos,
+             bid_floor, bid_ceiling, bid_increase_cap, bid_decrease_cap,
+             placement_increase_cap, placement_decrease_cap, exclusions,
+             review_weekdays, cadence, prioritization, false
+        from public.optimization_groups
+       where org_id = ${orgId} and profile_id = ${profileId}
+       order by id limit 1
+      returning id
+    `;
+    if (!disabledGroup) throw new Error('disabled group fixture missing');
+    const localCampaignIds = [
+      'c-refuse-unsupported',
+      'c-refuse-display',
+      'c-refuse-paused',
+      'c-refuse-deleted',
+      'c-refuse-disabled',
+    ] as const;
+    await database.sql`
+      insert into public.campaigns
+        (org_id, profile_id, amazon_id, ad_product, name, state,
+         budget_amount, budget_type, targeting_type, bidding_strategy, placement_bidding, deleted_at)
+      select source.org_id, source.profile_id, offered.amazon_id,
+             offered.ad_product::public.ad_product, offered.name,
+             offered.state::public.entity_state, source.budget_amount, source.budget_type,
+             source.targeting_type, source.bidding_strategy, source.placement_bidding,
+             offered.deleted_at
+        from (select * from public.campaigns
+               where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = 'c-1') source
+        cross join (values
+          (${localCampaignIds[0]}, 'SB', 'unsupported product', 'enabled', null::timestamptz),
+          (${localCampaignIds[1]}, 'SD', 'unsupported display', 'enabled', null::timestamptz),
+          (${localCampaignIds[2]}, 'SP', 'paused selection', 'paused', null::timestamptz),
+          (${localCampaignIds[3]}, 'SP', 'deleted selection', 'enabled', now()),
+          (${localCampaignIds[4]}, 'SP', 'disabled group selection', 'enabled', null::timestamptz)
+        ) as offered(amazon_id, ad_product, name, state, deleted_at)
+    `;
+    await database.sql`
+      insert into public.campaign_optimization_assignments
+        (org_id, profile_id, campaign_id, group_id, assigned_by)
+      values (${orgId}, ${profileId}, ${localCampaignIds[4]}, ${disabledGroup.id}, ${USER})
+    `;
+    await database.sql`
+      insert into public.campaigns
+        (org_id, profile_id, amazon_id, ad_product, name, state,
+         budget_amount, budget_type, targeting_type, bidding_strategy, placement_bidding)
+      select org_id, profile_id, 'c-refuse-foreign', ad_product, 'foreign selection', state,
+             budget_amount, budget_type, targeting_type, bidding_strategy, placement_bidding
+        from public.campaigns
+       where org_id = ${foreign.org_id} and profile_id = ${foreign.profile_id}
+       order by id limit 1
+    `;
+
+    const artifactCounts = async () => {
+      const [counts] = await database.sql<{
+        batches: number;
+        runs: number;
+        scopes: number;
+        jobs: number;
+      }[]>`
+        select
+          (select count(*)::integer from public.recommendation_preview_batches
+            where org_id = ${orgId}) as batches,
+          (select count(*)::integer from public.recommendation_runs
+            where org_id = ${orgId}) as runs,
+          (select count(*)::integer from public.recommendation_run_campaigns
+            where org_id = ${orgId}) as scopes,
+          (select count(*)::integer from public.sync_jobs
+            where org_id = ${orgId} and job_type = 'recommendations.run') as jobs
+      `;
+      if (!counts) throw new Error('preview artifact count missing');
+      return counts;
+    };
+    const baseline = await artifactCounts();
+    const store = new PostgresRecommendationRunStore(database);
+    const attempts = [
+      { id: '84848484-8484-4848-8484-848484848401', campaignIds: [], code: 'invalid_request' },
+      { id: '84848484-8484-4848-8484-848484848402', campaignIds: ['c-1', 'c-1'], code: 'invalid_request' },
+      { id: '84848484-8484-4848-8484-848484848403', campaignIds: ['c-refuse-foreign'], code: 'stale_selection' },
+      { id: '84848484-8484-4848-8484-848484848404', campaignIds: ['c-missing-stale'], code: 'stale_selection' },
+      { id: '84848484-8484-4848-8484-848484848405', campaignIds: [localCampaignIds[0]], code: 'stale_selection' },
+      { id: '84848484-8484-4848-8484-848484848406', campaignIds: [localCampaignIds[1]], code: 'stale_selection' },
+      { id: '84848484-8484-4848-8484-848484848407', campaignIds: [localCampaignIds[2]], code: 'stale_selection' },
+      { id: '84848484-8484-4848-8484-848484848408', campaignIds: [localCampaignIds[3]], code: 'stale_selection' },
+      { id: '84848484-8484-4848-8484-848484848409', campaignIds: [localCampaignIds[4]], code: 'stale_selection' },
+      {
+        id: '84848484-8484-4848-8484-848484848410',
+        campaignIds: Array.from({ length: 10_001 }, (_, index) => `c-oversized-${index}`),
+        code: 'invalid_request',
+      },
+      {
+        id: '84848484-8484-4848-8484-848484848411',
+        campaignIds: [`c-${'x'.repeat(512 * 1_024)}`],
+        code: 'invalid_request',
+      },
+    ] as const;
+
+    try {
+      for (const attempt of attempts) {
+        await expect(store.enqueueRecommendationPreviewBatch({
+          orgId,
+          profileId,
+          actorId: USER,
+          clientRequestId: attempt.id,
+          scope: { mode: 'selected', campaignIds: attempt.campaignIds },
+        })).rejects.toMatchObject({ code: attempt.code });
+        expect(await artifactCounts()).toEqual(baseline);
+      }
+    } finally {
+      await database.sql`
+        delete from public.campaign_optimization_assignments
+         where org_id = ${orgId} and profile_id = ${profileId}
+           and campaign_id = any (${localCampaignIds}::text[])
+      `;
+      await database.sql`delete from public.optimization_groups where id = ${disabledGroup.id}`;
+      await database.sql`
+        delete from public.campaigns
+         where org_id = ${orgId} and profile_id = ${profileId}
+           and amazon_id = any (${localCampaignIds}::text[])
+      `;
+      await database.sql`delete from public.orgs where id = ${foreign.org_id}`;
+    }
   });
 
   it('mints one run/job per due optimization-group weekday schedule', async () => {
@@ -514,20 +1035,54 @@ describe.skipIf(!available)('worker + real Postgres', () => {
   });
 
   it('keeps profile-first lock order against a concurrent group save', async () => {
-    const [scheduled, saved] = await raceDueSchedulerAgainst((handle, record) =>
-      saveOptimizationGroup(handle, {
-        orgId,
-        profileId,
-        actorId: USER,
-        id: record.group.id,
-        settings: settingsFromRecord(record),
-        campaignIds: record.campaignIds,
-      }));
+    let racedRecord: OptimizationGroupRecord | undefined;
+    try {
+      const [scheduled, saved] = await raceDueSchedulerAgainst((handle, record) => {
+        racedRecord = record;
+        return saveOptimizationGroup(handle, {
+          orgId,
+          profileId,
+          actorId: USER,
+          id: record.group.id,
+          settings: settingsFromRecord(record),
+          campaignIds: [],
+        });
+      });
 
-    expect(scheduled).toEqual({ status: 'fulfilled', value: 1 });
-    expect(saved.status).toBe('fulfilled');
-    if (saved.status === 'rejected') {
-      expect(String(saved.reason)).not.toMatch(/deadlock detected/i);
+      expect(scheduled).toEqual({ status: 'fulfilled', value: 1 });
+      expect(saved.status).toBe('fulfilled');
+      if (saved.status === 'rejected') {
+        expect(String(saved.reason)).not.toMatch(/deadlock detected/i);
+      }
+      if (racedRecord === undefined) throw new Error('concurrent group fixture missing');
+      const capturedCampaigns = await database.sql<{ campaign_id: string }[]>`
+        select scope.campaign_id
+          from public.recommendation_runs run
+          join public.recommendation_run_campaigns scope on scope.run_id = run.id
+         where run.org_id = ${orgId} and run.profile_id = ${profileId}
+           and run.group_id = ${racedRecord.group.id}
+         order by scope.campaign_id collate "C"
+      `;
+      expect(capturedCampaigns.map((row) => row.campaign_id))
+        .toEqual([...racedRecord.campaignIds].sort());
+      const liveAssignments = await database.sql<{ campaign_id: string }[]>`
+        select campaign_id
+          from public.campaign_optimization_assignments
+         where org_id = ${orgId} and profile_id = ${profileId}
+           and group_id = ${racedRecord.group.id}
+      `;
+      expect(liveAssignments).toHaveLength(0);
+    } finally {
+      if (racedRecord !== undefined) {
+        await saveOptimizationGroup(database, {
+          orgId,
+          profileId,
+          actorId: USER,
+          id: racedRecord.group.id,
+          settings: settingsFromRecord(racedRecord),
+          campaignIds: racedRecord.campaignIds,
+        });
+      }
     }
   });
 
@@ -549,9 +1104,137 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     }
   });
 
+  it('keeps a transiently failed run active while its exact queue job is retryable', async () => {
+    const [group] = await database.sql<{ id: string }[]>`
+      select id from public.optimization_groups
+       where org_id = ${orgId} and profile_id = ${profileId}
+       order by id limit 1
+    `;
+    if (!group) throw new Error('seeded optimization group missing');
+    const store = new PostgresRecommendationRunStore(database);
+    const first = await store.enqueueRecommendationRun({
+      orgId,
+      profileId,
+      groupId: group.id,
+      source: 'web',
+    });
+    await database.sql`
+      update public.recommendation_runs
+         set status = 'failed', finished_at = now(), error = 'synthetic transient failure'
+       where id = ${first.runId}
+    `;
+    const [retrying] = await database.sql<{ run_status: string; job_status: string }[]>`
+      select run.status::text as run_status, job.status::text as job_status
+        from public.recommendation_runs run
+        join public.sync_jobs job on job.id = run.job_id
+       where run.id = ${first.runId}
+    `;
+    expect(retrying).toEqual({ run_status: 'failed', job_status: 'queued' });
+
+    await expect(store.enqueueRecommendationRun({
+      orgId,
+      profileId,
+      groupId: group.id,
+      source: 'web',
+    })).rejects.toThrow(/queued or running preview/);
+    await expect(store.enqueueRecommendationPreviewBatch({
+      orgId,
+      profileId,
+      actorId: USER,
+      clientRequestId: '78787878-7878-4787-8787-787878787878',
+      scope: { mode: 'selected', campaignIds: ['c-1'] },
+    })).rejects.toMatchObject({ code: 'active_run_conflict', httpStatus: 409 });
+
+    const now = new Date();
+    try {
+      await database.sql`
+        update public.optimization_groups
+           set enabled = true,
+               review_weekdays = array[1, 2, 3, 4, 5, 6, 7]::smallint[],
+               next_run_at = ${now.toISOString()}::timestamptz - interval '1 minute'
+         where id = ${group.id}
+      `;
+      await expect(store.enqueueDueRecommendationRuns(now)).resolves.toBe(0);
+
+      await database.sql`
+        update public.sync_jobs set status = 'dead', finished_at = now() where id = ${first.jobId}
+      `;
+      await expect(store.enqueueRecommendationRun({
+        orgId,
+        profileId,
+        groupId: group.id,
+        source: 'web',
+      })).resolves.toMatchObject({ runId: expect.any(String), jobId: expect.any(String) });
+    } finally {
+      await database.sql`
+        update public.optimization_groups
+           set next_run_at = now() + interval '7 days'
+         where id = ${group.id}
+      `;
+    }
+  });
+
+  it('allows only the exact linked queue job to start a recommendation run', async () => {
+    const [group] = await database.sql<{ id: string }[]>`
+      select id from public.optimization_groups
+       where org_id = ${orgId} and profile_id = ${profileId}
+       order by id limit 1
+    `;
+    if (!group) throw new Error('seeded optimization group missing');
+    const store = new PostgresRecommendationRunStore(database);
+    const queued = await store.enqueueRecommendationRun({
+      orgId,
+      profileId,
+      groupId: group.id,
+      source: 'web',
+    });
+    const [ledger] = await database.sql<{ payload: unknown }[]>`
+      select payload from public.sync_jobs where id = ${queued.jobId}
+    `;
+    if (!ledger) throw new Error('recommendation queue ledger missing');
+    const authoritativePayload = RecommendationsRunJob.parse(ledger.payload);
+    const duplicatePayload = { ...authoritativePayload, groupId: undefined };
+    const duplicateJobId = '79797979-7979-4797-8979-797979797979';
+    await database.sql`
+      update public.sync_jobs set status = 'running', started_at = now() where id = ${queued.jobId}
+    `;
+    await database.sql`
+      insert into public.sync_jobs
+        (id, org_id, profile_id, job_type, payload, status, started_at, dedupe_key)
+      values (${duplicateJobId}, ${orgId}, ${profileId}, 'recommendations.run',
+              ${JSON.stringify(duplicatePayload)}::text::jsonb, 'running', now(),
+              ${`synthetic-duplicate:${queued.runId}`})
+    `;
+
+    const scope = { orgId, profileId, runId: queued.runId };
+    const runner = createRecommendationsRunner(store);
+    await expect(runner(duplicatePayload, { jobId: duplicateJobId }))
+      .rejects.toBeInstanceOf(RecommendationExecutionCustodyError);
+    const [unchanged] = await database.sql<{ status: string }[]>`
+      select status::text as status from public.recommendation_runs where id = ${queued.runId}
+    `;
+    expect(unchanged?.status).toBe('queued');
+    await expect(store.startRun(scope, group.id, queued.jobId)).resolves.toMatchObject({
+      alreadySucceeded: false,
+      proposalsCount: 0,
+    });
+    await database.sql`
+      update public.recommendation_runs
+         set status = 'succeeded', finished_at = now()
+       where id = ${queued.runId}
+    `;
+    await expect(store.failRun(scope, 'late synthetic integrity failure')).resolves.toBeUndefined();
+    const [preserved] = await database.sql<{ status: string; error: string | null }[]>`
+      select status::text as status, error
+        from public.recommendation_runs
+       where id = ${queued.runId}
+    `;
+    expect(preserved).toEqual({ status: 'succeeded', error: null });
+  });
+
   it('reconciles every due group once across concurrent schedulers', async () => {
-    await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
     await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+    await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
     const [fixture] = await database.sql<{ id: string }[]>`
       select id from public.optimization_groups
        where org_id = ${orgId} and profile_id = ${profileId}
@@ -574,6 +1257,21 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       returning id
     `;
     if (!second) throw new Error('second optimization group missing');
+    const secondCampaignId = 'c-scheduler-2';
+    await database.sql`
+      insert into public.campaigns
+        (org_id, profile_id, amazon_id, ad_product, name, state,
+         budget_amount, budget_type, targeting_type, bidding_strategy, placement_bidding)
+      select org_id, profile_id, ${secondCampaignId}, ad_product, 'synthetic scheduled campaign',
+             'enabled', budget_amount, budget_type, targeting_type, bidding_strategy, placement_bidding
+        from public.campaigns
+       where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = 'c-1'
+    `;
+    await database.sql`
+      insert into public.campaign_optimization_assignments
+        (org_id, profile_id, campaign_id, group_id, assigned_by)
+      values (${orgId}, ${profileId}, ${secondCampaignId}, ${second.id}, ${USER})
+    `;
     const groupIds = [fixture.id, second.id];
     const now = new Date();
     const firstHandle = createDb({ connectionString: database.connectionString, max: 1 });
@@ -618,9 +1316,13 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       expect(evidence).toEqual({ runs: '2', distinct_groups: '2', jobs: '2', advanced: '2' });
     } finally {
       await Promise.all([firstHandle.close(), secondHandle.close()]);
-      await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
       await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+      await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
       await database.sql`delete from public.optimization_groups where id = ${second.id}`;
+      await database.sql`
+        delete from public.campaigns
+         where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = ${secondCampaignId}
+      `;
     }
   });
 
@@ -662,11 +1364,15 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       source: 'web',
     })).rejects.toThrow(/queued or running preview/);
 
-    await database.sql`delete from public.sync_jobs where id = ${first.jobId}`;
     await database.sql`
       update public.recommendation_runs
          set status = 'succeeded', started_at = now(), finished_at = now()
        where id = ${first.runId}
+    `;
+    await database.sql`
+      update public.sync_jobs
+         set status = 'succeeded', finished_at = now()
+       where id = ${first.jobId}
     `;
     const [recommendation] = await database.sql<{ id: string }[]>`
       insert into public.recommendations
@@ -716,9 +1422,9 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       groupId: group.id,
       source: 'web',
     })).resolves.toMatchObject({ runId: expect.any(String), jobId: expect.any(String) });
-    await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
     await database.sql`delete from public.apply_batches where id = ${batch.id}`;
     await database.sql`delete from public.recommendation_runs where org_id = ${orgId}`;
+    await database.sql`delete from public.sync_jobs where org_id = ${orgId}`;
   });
 
   // -------------------------------------------------------------------------
