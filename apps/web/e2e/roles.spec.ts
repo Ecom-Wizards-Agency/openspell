@@ -281,8 +281,18 @@ test('sync status renders the ledgers', async ({ page }) => {
 
   await expect(page.getByRole('heading', { name: 'Sync status' })).toBeVisible();
   await expect(page.getByTestId('freshness-row').first()).toBeVisible();
-  // The tenant fixture seeds one job and one completed report request.
-  await expect(page.getByTestId('job-row')).toHaveCount(1);
+  // The tenant fixture seeds the unified-report dispatch plus WP-195's inert,
+  // completed recommendation-preview custody job, and one report request.
+  const jobs = page.getByTestId('job-row');
+  await expect(jobs).toHaveCount(2);
+  expect((await jobs.locator('td:nth-child(1)').allTextContents()).sort()).toEqual([
+    'e2e-profile-1',
+    'e2e-profile-1',
+  ]);
+  expect((await jobs.locator('td:nth-child(2)').allTextContents()).sort()).toEqual([
+    'recommendations.run',
+    'report.unified.advance',
+  ]);
   await expect(page.getByTestId('report-row')).toHaveCount(1);
   await expect(page.getByTestId('report-row').first()).toContainText('yes');
 });
