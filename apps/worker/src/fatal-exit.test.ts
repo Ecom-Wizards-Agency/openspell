@@ -5,6 +5,43 @@ import { describe, expect, it, vi } from 'vitest';
 import { terminateAfterFatalWorkerFailure } from './fatal-exit.js';
 
 describe('fatal worker termination', () => {
+  it('contains callback and later emitted audit errors until prompt exit 78', async () => {
+    const fixture = fileURLToPath(
+      new URL('./test-fixtures/fatal-exit-failing-audit.ts', import.meta.url),
+    );
+    const child = spawn(process.execPath, ['--import', 'tsx', fixture], {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    const startedAt = Date.now();
+    const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve, reject) => {
+        const timeout = setTimeout(() => {
+          child.kill('SIGKILL');
+          reject(new Error('failed audit stream prevented bounded termination'));
+        }, 2_000);
+        child.once('error', (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+        child.once('close', (code, signal) => {
+          clearTimeout(timeout);
+          resolve({ code, signal });
+        });
+      },
+    );
+
+    expect(result).toEqual({ code: 78, signal: null });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(stderr).toContain('shutdown-complete');
+    expect(stderr).toContain('audit-error-event-observed');
+    expect(stderr).not.toContain('uncaught-audit-error');
+    expect(stderr).not.toContain('synthetic audit callback failure');
+    expect(stderr).not.toContain('synthetic later audit event');
+  });
+
   it('exits 78 after shutdown even while a transport handle remains referenced', async () => {
     const fixture = fileURLToPath(
       new URL('./test-fixtures/fatal-exit-with-handle.ts', import.meta.url),

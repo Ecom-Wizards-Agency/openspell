@@ -37,7 +37,6 @@ export function writeFinalShutdownAudit(
     const cleanup = (): void => {
       clearTimeout(timeout);
       stream.removeListener('drain', onDrain);
-      stream.removeListener('error', onError);
     };
     const finish = (result: ShutdownAuditWriteResult): void => {
       if (settled) return;
@@ -53,7 +52,12 @@ export function writeFinalShutdownAudit(
       maybeFinish();
     };
     const onError = (): void => finish('error');
-    stream.once('error', onError);
+    // This is a one-shot final-exit writer. Keep the defensive observer until
+    // process termination: Node Writable implementations may report an error
+    // to the callback and emit one or more `error` events afterward. Removing
+    // it when the callback settles would turn that normal sequence into an
+    // uncaught exception in the narrow window before explicit process.exit.
+    stream.on('error', onError);
     const timeout = setTimeout(() => finish('timeout'), timeoutMs);
     try {
       const accepted = stream.write(line, 'utf8', (error?: Error | null) => {
