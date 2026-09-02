@@ -96,6 +96,8 @@ export const syncJobs = pgTable(
     dedupeKey: text('dedupe_key'),
     claimedBy: text('claimed_by'),
     claimedAt: ts('claimed_at'),
+    /** Opaque per-attempt capability. Null for legacy and unclaimed jobs. */
+    claimToken: uuid('claim_token'),
     startedAt: ts('started_at'),
     finishedAt: ts('finished_at'),
     lastError: text('last_error'),
