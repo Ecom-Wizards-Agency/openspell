@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   ApproveSpWritePlan,
   SpWriteAction,
@@ -19,17 +19,50 @@ import {
   serializeSpWriteProviderResultFingerprint,
   spWritePlanBinding,
 } from '@wizard-ads/shared/sp-writes';
+import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  createSpWriteOutboxLedger,
   createSpWriteRuntimeLedger,
   createSpWriteStagingLedger,
 } from './sp-write-persistence.js';
+import type { SpWriteDispatchOutboxClaim } from './sp-write-persistence.js';
 import { createTestDatabase, databaseAvailable } from './testing/harness.js';
 import { asServiceRole, asUser } from './testing/rls.js';
 import type { TestDatabase } from './testing/harness.js';
 
 const available = await databaseAvailable();
 const OWNER_USER_ID = '00000000-0000-4000-8000-000000009188';
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function waitForDatabaseLock(
+  database: TestDatabase,
+  queryFragment: string,
+  timeoutMs = 4_000,
+): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    const [row] = await database.sql<{ waiting: boolean }[]>`
+      select exists (
+        select 1 from pg_catalog.pg_stat_activity activity
+        where activity.datname = current_database()
+          and activity.pid <> pg_backend_pid()
+          and activity.wait_event_type = 'Lock'
+          and activity.query like ${`%${queryFragment}%`}
+      ) as waiting
+    `;
+    if (row?.waiting) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`database call did not enter a Lock wait: ${queryFragment}`);
+}
 
 function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -398,6 +431,7 @@ describe.skipIf(!available)('SP write persistence facade default-off integration
         userId: uuid(188_880),
       };
       const staging = createSpWriteStagingLedger(database);
+      const outbox = createSpWriteOutboxLedger(database);
       const runtime = createSpWriteRuntimeLedger(database);
       const proof = keywordPlan(tenant, 188_881);
       await expect(staging.recordPlan(proof.plan)).resolves.toBe(proof.plan.id);
@@ -410,16 +444,11 @@ describe.skipIf(!available)('SP write persistence facade default-off integration
         category: 'missing_dependency',
         providerCallAllowed: false,
       });
-      await expect(runtime.acquireDispatchLease({
-        executionId: uuid(188_886),
-        planId: proof.plan.id,
-        generation: uuid(188_887),
-        routeKey: 'sp.v3.keywords.update',
-      })).rejects.toMatchObject({
-        operation: 'acquire_dispatch_lease',
-        category: 'missing_dependency',
-        providerCallAllowed: false,
-      });
+      await expect(outbox.claimAvailable({
+        claimantId: 'empty-facade-worker',
+        kinds: ['dispatch'],
+        limit: 1,
+      })).resolves.toEqual({ offeredCount: 0, claimedCount: 0, claims: [] });
 
       const [time] = await database.sql<{ observed_at: string; valid_until: string }[]>`
         select app.sp_write_instant(clock_timestamp()) as observed_at,
@@ -438,11 +467,36 @@ describe.skipIf(!available)('SP write persistence facade default-off integration
         time.valid_until,
         188_890,
       );
-      await expect(runtime.reserveProviderCall(artifacts)).rejects.toMatchObject({
-        operation: 'reserve_provider_call',
-        category: 'missing_dependency',
+      const forgedClaim = {
+        outboxId: uuid(188_889),
+        orgId: tenant.orgId,
+        profileId: tenant.profileId,
+        executionId: artifacts.intent.executionId,
+        planId: artifacts.intent.planId,
+        approvalId: artifacts.intent.approvalId,
+        generation: artifacts.intent.generation,
+        claimEpoch: '1',
+        claimedAt: time.observed_at,
+        expiresAt: time.valid_until,
+        kind: 'dispatch',
+        toJSON(): never {
+          throw new Error('forged claim');
+        },
+      } as SpWriteDispatchOutboxClaim;
+      await expect(runtime.acquireDispatchLease({
+        claim: forgedClaim,
+        routeKey: 'sp.v3.keywords.update',
+      })).rejects.toMatchObject({
+        operation: 'acquire_dispatch_lease',
+        category: 'invalid_artifact',
         providerCallAllowed: false,
       });
+      await expect(runtime.reserveProviderCall({ ...artifacts, claim: forgedClaim }))
+        .rejects.toMatchObject({
+          operation: 'reserve_provider_call',
+          category: 'invalid_artifact',
+          providerCallAllowed: false,
+        });
       const [closure] = await database.sql<{ intents: number; dispositions: number }[]>`
         select
           (select count(*)::int from public.sp_write_provider_call_intents
@@ -529,6 +583,7 @@ describe.skipIf(!available)('SP write persistence facade integration', () => {
 
   it('closes the service-role lifecycle matrix and reconstructs exact evidence', async () => {
     const staging = createSpWriteStagingLedger(database);
+    const outbox = createSpWriteOutboxLedger(database);
     const runtime = createSpWriteRuntimeLedger(database);
     const proof = keywordPlan(tenant, 188_100);
     const recordedPlanId = await staging.recordPlan(proof.plan);
@@ -594,19 +649,24 @@ describe.skipIf(!available)('SP write persistence facade integration', () => {
     `;
     expect(startCounts).toEqual({ requests: 1, wakes: 1 });
 
+    const firstBatch = await outbox.claimAvailable({
+      claimantId: 'facade-worker-a',
+      kinds: ['dispatch'],
+      limit: 1,
+    });
+    expect(firstBatch).toMatchObject({ offeredCount: 1, claimedCount: 1 });
+    const dispatchClaim = firstBatch.claims[0];
+    if (dispatchClaim?.kind !== 'dispatch') throw new Error('facade dispatch wake was not claimed');
+
     const lease = await runtime.acquireDispatchLease({
-      executionId: receipt.executionId,
-      planId: proof.plan.id,
-      generation: receipt.generation,
+      claim: dispatchClaim,
       routeKey: 'sp.v3.keywords.update',
       leaseSeconds: 120,
     });
     expect(lease.kind).toBe('acquired');
     if (lease.kind !== 'acquired') throw new Error('facade lease was unavailable');
     await expect(runtime.acquireDispatchLease({
-      executionId: receipt.executionId,
-      planId: proof.plan.id,
-      generation: receipt.generation,
+      claim: dispatchClaim,
       routeKey: 'sp.v3.keywords.update',
       leaseSeconds: 120,
     })).resolves.toEqual({ kind: 'unavailable' });
@@ -626,8 +686,8 @@ describe.skipIf(!available)('SP write persistence facade integration', () => {
     );
 
     const reservations = await Promise.all([
-      runtime.reserveProviderCall(artifacts),
-      runtime.reserveProviderCall(artifacts),
+      runtime.reserveProviderCall({ ...artifacts, claim: dispatchClaim }),
+      runtime.reserveProviderCall({ ...artifacts, claim: dispatchClaim }),
     ]);
     const winners = reservations.filter((outcome) => outcome.kind === 'dispatch_once');
     expect(winners).toHaveLength(1);
@@ -656,6 +716,9 @@ describe.skipIf(!available)('SP write persistence facade integration', () => {
       reserved_result_id: winner.ticket.resultId,
       positions: 1,
     });
+    await expect(outbox.completeClaim(dispatchClaim)).resolves.toMatchObject({
+      kind: 'completed',
+    });
 
     const blockedProof = keywordPlan(tenant, 188_200);
     await staging.recordPlan(blockedProof.plan);
@@ -669,10 +732,17 @@ describe.skipIf(!available)('SP write persistence facade integration', () => {
       approvalId: blockedReceipt.approvalId,
       planId: blockedProof.plan.id,
     });
+    const blockedBatch = await outbox.claimAvailable({
+      claimantId: 'facade-worker-b',
+      kinds: ['dispatch'],
+      limit: 1,
+    });
+    const blockedClaim = blockedBatch.claims[0];
+    if (blockedClaim?.kind !== 'dispatch') {
+      throw new Error('blocked facade dispatch wake was not claimed');
+    }
     const blockedLease = await runtime.acquireDispatchLease({
-      executionId: blockedReceipt.executionId,
-      planId: blockedProof.plan.id,
-      generation: blockedReceipt.generation,
+      claim: blockedClaim,
       routeKey: 'sp.v3.keywords.update',
     });
     if (blockedLease.kind !== 'acquired') throw new Error('blocked facade lease was unavailable');
@@ -689,10 +759,11 @@ describe.skipIf(!available)('SP write persistence facade integration', () => {
       blockedTime.valid_until,
       188_210,
     );
-    await expect(runtime.reserveProviderCall(blockedArtifacts)).resolves.toMatchObject({
-      kind: 'defer_and_reobserve',
-      reason: 'busy',
-    });
+    await expect(runtime.reserveProviderCall({ ...blockedArtifacts, claim: blockedClaim }))
+      .resolves.toMatchObject({
+        kind: 'defer_and_reobserve',
+        reason: 'busy',
+      });
 
     const [completion] = await database.sql<{ completed_at: string }[]>`
       select app.sp_write_instant(clock_timestamp()) as completed_at
@@ -721,9 +792,13 @@ describe.skipIf(!available)('SP write persistence facade integration', () => {
       188_220,
       'requested',
     );
-    await expect(runtime.reserveProviderCall(refusalArtifacts)).resolves.toMatchObject({
-      kind: 'closed_without_dispatch',
-      reason: 'stale_expected_state',
+    await expect(runtime.reserveProviderCall({ ...refusalArtifacts, claim: blockedClaim }))
+      .resolves.toMatchObject({
+        kind: 'closed_without_dispatch',
+        reason: 'stale_expected_state',
+      });
+    await expect(outbox.completeClaim(blockedClaim)).resolves.toMatchObject({
+      kind: 'completed',
     });
     const refusedEvidence = await runtime.loadVerifiedExecution({
       orgId: tenant.orgId,
@@ -746,6 +821,18 @@ describe.skipIf(!available)('SP write persistence facade integration', () => {
          and kind = 'observe_and_recover'
     `;
     if (!wake) throw new Error('facade observation wake was not recorded');
+    const observationBatch = await outbox.claimAvailable({
+      claimantId: 'facade-worker-observe',
+      kinds: ['observe_and_recover'],
+      limit: 10,
+    });
+    const observationClaim = observationBatch.claims.find((claim) =>
+      claim.kind === 'observe_and_recover'
+      && claim.intentId === winner.ticket.intent.intentId);
+    if (observationClaim?.kind !== 'observe_and_recover') {
+      throw new Error('facade observation wake was not claimed');
+    }
+    expect(observationClaim.sourceSyncJobId).toBe(wake.source_sync_job_id);
     const observation = requestedObservation(
       proof,
       receipt,
@@ -760,6 +847,9 @@ describe.skipIf(!available)('SP write persistence facade integration', () => {
       observation.observationId,
       observation.observationId,
     ]);
+    await expect(outbox.completeClaim(observationClaim)).resolves.toMatchObject({
+      kind: 'completed',
+    });
 
     const evidence = await runtime.loadVerifiedExecution({
       orgId: tenant.orgId,
@@ -807,4 +897,217 @@ describe.skipIf(!available)('SP write persistence facade integration', () => {
       generation: receipt.generation,
     })).resolves.toBeNull();
   }, 60_000);
+});
+
+describe.skipIf(!available)('SP write outbox reservation purge interlock', () => {
+  it('commits the reservation winner before a waiting purge fails closed', async () => {
+    const database = await createTestDatabase('sp_write_reservation_purge');
+    const blocker = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    const caller = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    const deleter = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    try {
+      const userId = uuid(189_500);
+      const orgId = randomUUID();
+      const profileId = randomUUID();
+      const connectionId = randomUUID();
+      const amazonProfileId = `synthetic-${profileId.slice(0, 8)}`;
+      await database.sql`select public.auth_user_stub(${userId}::uuid)`;
+      await database.sql`
+        insert into public.orgs (id, slug, name)
+        values (${orgId}::uuid, ${`wp192-${orgId.slice(0, 8)}`}, 'WP 192 purge tenant')
+      `;
+      await database.sql`
+        insert into public.org_members (org_id, user_id, role)
+        values (${orgId}::uuid, ${userId}::uuid, 'owner')
+      `;
+      await database.sql`
+        insert into public.ads_connections (id, org_id, label, status)
+        values (${connectionId}::uuid, ${orgId}::uuid, 'synthetic-purge', 'active')
+      `;
+      await database.sql`
+        insert into public.ad_profiles (
+          id, org_id, connection_id, amazon_profile_id, region, country_code,
+          currency_code, timezone, sync_enabled, first_seen_at
+        ) values (
+          ${profileId}::uuid, ${orgId}::uuid, ${connectionId}::uuid,
+          ${amazonProfileId}, 'NA', 'US', 'USD', 'UTC', false, clock_timestamp()
+        )
+      `;
+      const tenant: Tenant = {
+        orgId,
+        profileId,
+        connectionId,
+        amazonProfileId,
+        userId,
+      };
+      await enableAuthority(database, tenant, 189_510);
+      const proof = keywordPlan(tenant, 189_600);
+      await createSpWriteStagingLedger(database).recordPlan(proof.plan);
+      const receipt = await approveManualPlan(database, tenant, proof.plan, uuid(189_605));
+      const outboxId = await createSpWriteRuntimeLedger(database).startExecution({
+        approvalId: receipt.approvalId,
+        planId: proof.plan.id,
+      });
+      const countCycle = async () => {
+        const [row] = await database.sql<{
+          outboxes: number;
+          leases: number;
+          intents: number;
+        }[]>`
+          select
+            (select count(*)::int from public.sp_write_outbox
+              where org_id = ${tenant.orgId}::uuid) as outboxes,
+            (select count(*)::int from public.sp_write_dispatch_leases
+              where org_id = ${tenant.orgId}::uuid) as leases,
+            (select count(*)::int from public.sp_write_provider_call_intents
+              where org_id = ${tenant.orgId}::uuid) as intents
+        `;
+        return row;
+      };
+      expect(await countCycle()).toEqual({ outboxes: 1, leases: 0, intents: 0 });
+      const [claim] = await database.sql<{
+        claim_epoch: string;
+        claim_token: string;
+      }[]>`
+        select claim_epoch::text, claim_token::text
+        from app.claim_sp_write_outbox(
+          'wp192-reservation-purge',
+          array['dispatch']::public.sp_write_outbox_kind[], 1, 120
+        )
+      `;
+      if (!claim) throw new Error('reservation-purge dispatch wake was not claimed');
+      expect(await countCycle()).toEqual({ outboxes: 1, leases: 0, intents: 0 });
+      const [lease] = await database.sql<{ lease_id: string }[]>`
+        select lease_id::text from app.acquire_sp_write_dispatch_lease_for_claim(
+          ${outboxId}::uuid, ${claim.claim_epoch}::bigint, ${claim.claim_token}::uuid,
+          'sp.v3.keywords.update', 120
+        )
+      `;
+      if (!lease) throw new Error('reservation-purge dispatch lease was not acquired');
+      expect(await countCycle()).toEqual({ outboxes: 1, leases: 1, intents: 0 });
+      const [time] = await database.sql<{ observed_at: string; valid_until: string }[]>`
+        select app.sp_write_instant(clock_timestamp()) as observed_at,
+               app.sp_write_instant(clock_timestamp() + interval '60 seconds') as valid_until
+      `;
+      if (!time) throw new Error('reservation-purge timestamps were not derived');
+      const artifacts = reservationArtifacts(
+        proof,
+        receipt,
+        lease.lease_id,
+        time.observed_at,
+        time.valid_until,
+        189_610,
+      );
+      const [baseline] = await database.sql<{
+        outboxes: number;
+        heads: number;
+        leases: number;
+        intents: number;
+        positions: number;
+      }[]>`
+        select
+          (select count(*)::int from public.sp_write_outbox
+            where org_id = ${tenant.orgId}::uuid) as outboxes,
+          (select count(*)::int from app.sp_write_outbox_delivery_heads
+            where org_id = ${tenant.orgId}::uuid) as heads,
+          (select count(*)::int from public.sp_write_dispatch_leases
+            where org_id = ${tenant.orgId}::uuid) as leases,
+          (select count(*)::int from public.sp_write_provider_call_intents
+            where org_id = ${tenant.orgId}::uuid) as intents,
+          (select count(*)::int from public.sp_write_provider_call_positions
+            where org_id = ${tenant.orgId}::uuid) as positions
+      `;
+      expect(baseline).toEqual({
+        outboxes: 1,
+        heads: 1,
+        leases: 1,
+        intents: 0,
+        positions: 0,
+      });
+
+      const locked = deferred();
+      const release = deferred();
+      const blockerWork = blocker.begin(async (transaction) => {
+        await transaction`
+          select 1 from public.sp_write_environment_gate_head head
+          where head.singleton
+          for update
+        `;
+        locked.resolve();
+        await release.promise;
+      });
+      await locked.promise;
+      const reservationCall = caller<{ decision: string; result_id: string | null }[]>`
+          select decision, result_id::text
+          from app.reserve_sp_write_provider_call_for_claim(
+            ${outboxId}::uuid, ${claim.claim_epoch}::bigint, ${claim.claim_token}::uuid,
+            ${receipt.executionId}::uuid, ${proof.plan.id}::uuid,
+            ${receipt.generation}::uuid, ${lease.lease_id}::uuid,
+            ${JSON.stringify(artifacts.observation)},
+            ${serializeSpWritePredispatchObservationFingerprint(artifacts.observation)},
+            ${JSON.stringify(artifacts.intent)},
+            ${serializeSpWriteProviderRequestFingerprint(artifacts.intent)},
+            ${serializeSpWriteProviderCallIntentFingerprint(artifacts.intent)}
+          )
+        `.then((rows) => rows);
+      await waitForDatabaseLock(database, 'reserve_sp_write_provider_call_for_claim');
+      const deletion = deleter`
+          delete /* wp192_reservation_wrapper_purge_wait */ from public.orgs
+          where id = ${tenant.orgId}::uuid
+        `.then(
+          (rows) => ({ rows }),
+          (error: unknown) => ({ error }),
+        );
+      try {
+        await waitForDatabaseLock(database, 'wp192_reservation_wrapper_purge_wait');
+      } finally {
+        release.resolve();
+      }
+      await blockerWork;
+      const [reservation] = await reservationCall;
+      expect(reservation?.decision).toBe('won');
+      expect(reservation?.result_id).toMatch(/^[0-9a-f-]{36}$/u);
+      const deletionResult = await deletion;
+      expect('error' in deletionResult ? deletionResult.error : undefined)
+        .toMatchObject({ code: '55000' });
+      const [counts] = await database.sql<{
+        orgs: number;
+        outboxes: number;
+        heads: number;
+        events: number;
+        leases: number;
+        intents: number;
+        positions: number;
+      }[]>`
+        select
+          (select count(*)::int from public.orgs where id = ${tenant.orgId}::uuid) as orgs,
+          (select count(*)::int from public.sp_write_outbox
+            where org_id = ${tenant.orgId}::uuid) as outboxes,
+          (select count(*)::int from app.sp_write_outbox_delivery_heads
+            where org_id = ${tenant.orgId}::uuid) as heads,
+          (select count(*)::int from app.sp_write_outbox_delivery_events
+            where org_id = ${tenant.orgId}::uuid) as events,
+          (select count(*)::int from public.sp_write_dispatch_leases
+            where org_id = ${tenant.orgId}::uuid) as leases,
+          (select count(*)::int from public.sp_write_provider_call_intents
+            where org_id = ${tenant.orgId}::uuid) as intents,
+          (select count(*)::int from public.sp_write_provider_call_positions
+            where org_id = ${tenant.orgId}::uuid) as positions
+      `;
+      expect(counts).toEqual({
+        orgs: 1,
+        outboxes: 2,
+        heads: 2,
+        events: 1,
+        leases: 1,
+        intents: 1,
+        positions: 1,
+      });
+    } finally {
+      await blocker.end({ timeout: 2 }).catch(() => {});
+      await caller.end({ timeout: 2 }).catch(() => {});
+      await deleter.end({ timeout: 2 }).catch(() => {});
+      await database.drop();
+    }
+  }, 90_000);
 });

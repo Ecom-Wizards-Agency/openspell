@@ -36,15 +36,30 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from './testing/harness.js';
 import { asAnon, asServiceRole, asUser } from './testing/rls.js';
 import * as dbSchema from './schema/index.js';
-import type { TestDatabase } from './testing/harness.js';
+import type { TestDatabase, TestDatabaseOptions } from './testing/harness.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+const WP_187_MIGRATION = '20260901020000_sp_write_persistence_ledger.sql';
 const available = await databaseAvailable();
 const OWNER_USER_ID = '00000000-0000-4000-8000-000000009001';
 const spWriteHasher = {
   algorithm: 'sha256' as const,
   digest: sha256,
 };
+
+/**
+ * WP-187's canonical evidence suite remains pinned to the migration it proves.
+ * Later delivery-protocol migrations have their own upgrade and behavior tests.
+ */
+function createWp187TestDatabase(
+  label: string,
+  options: Omit<TestDatabaseOptions, 'throughMigration'> = {},
+): Promise<TestDatabase> {
+  return createTestDatabase(label, {
+    ...options,
+    throughMigration: WP_187_MIGRATION,
+  });
+}
 
 function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -1487,7 +1502,9 @@ function spWriteDrizzleConfigs() {
   for (const candidate of Object.values(dbSchema)) {
     try {
       const config = getTableConfig(candidate as PgTable);
-      if (config.name.startsWith('sp_write_')) configs.push(config);
+      if (config.schema === undefined && config.name.startsWith('sp_write_')) {
+        configs.push(config);
+      }
     } catch {
       // The schema namespace also exports enums and helpers, which are not tables.
     }
@@ -1523,7 +1540,7 @@ describe.skipIf(!available)('SP write persistence installation', () => {
   let tenant: SpTenant;
 
   beforeAll(async () => {
-    database = await createTestDatabase('sp_write_installation');
+    database = await createWp187TestDatabase('sp_write_installation');
     const [seed] = await database.sql<{ seed_tenant_fixture: string }[]>`
       select app.seed_tenant_fixture(
         'sp-write-proof',
@@ -1590,7 +1607,7 @@ describe.skipIf(!available)('SP write persistence installation', () => {
   });
 
   it('installs default-off with no authority, execution, or wake', async () => {
-    const empty = await createTestDatabase('sp_write_empty', { applyFixture: false });
+    const empty = await createWp187TestDatabase('sp_write_empty', { applyFixture: false });
     try {
       const [counts] = await empty.sql<{
         environment_heads: string;
@@ -3127,7 +3144,7 @@ describe.skipIf(!available)('SP write reservation concurrency', () => {
   let leaseId: string;
 
   beforeAll(async () => {
-    database = await createTestDatabase('sp_write_reservation');
+    database = await createWp187TestDatabase('sp_write_reservation');
     const [seed] = await database.sql<{ seed_tenant_fixture: string }[]>`
       select app.seed_tenant_fixture('sp-race', ${uuid(20_001)}::uuid, 'owner')
     `;
@@ -3491,7 +3508,7 @@ describe.skipIf(!available)('SP write global capacity', () => {
   let tenantB: SpTenant;
 
   beforeAll(async () => {
-    database = await createTestDatabase('sp_write_global_capacity');
+    database = await createWp187TestDatabase('sp_write_global_capacity');
     const seedTenant = async (slug: string, userId: string): Promise<SpTenant> => {
       const [seed] = await database.sql<{ seed_tenant_fixture: string }[]>`
         select app.seed_tenant_fixture(${slug}, ${userId}::uuid, 'owner')
@@ -4073,7 +4090,7 @@ describe.skipIf(!available)('SP write result recovery', () => {
   let tenant: SpTenant;
 
   beforeAll(async () => {
-    database = await createTestDatabase('sp_write_recovery');
+    database = await createWp187TestDatabase('sp_write_recovery');
     const userId = uuid(27_001);
     const [seed] = await database.sql<{ seed_tenant_fixture: string }[]>`
       select app.seed_tenant_fixture('sp-recovery', ${userId}::uuid, 'owner')
@@ -4759,7 +4776,7 @@ describe.skipIf(!available)('SP write bounded stopOnConflict', () => {
   let tenant: SpTenant;
 
   beforeAll(async () => {
-    database = await createTestDatabase('sp_write_stop_on_conflict');
+    database = await createWp187TestDatabase('sp_write_stop_on_conflict');
     const userId = uuid(28_001);
     const [seed] = await database.sql<{ seed_tenant_fixture: string }[]>`
       select app.seed_tenant_fixture('sp-stop-conflict', ${userId}::uuid, 'owner')
@@ -5146,7 +5163,7 @@ describe.skipIf(!available)('SP write terminal reservation boundaries', () => {
   let tenant: SpTenant;
 
   beforeAll(async () => {
-    database = await createTestDatabase('sp_write_refusals');
+    database = await createWp187TestDatabase('sp_write_refusals');
     const userId = uuid(30_001);
     const [seed] = await database.sql<{ seed_tenant_fixture: string }[]>`
       select app.seed_tenant_fixture('sp-refusal', ${userId}::uuid, 'owner')
@@ -5766,7 +5783,7 @@ describe.skipIf(!available)('SP write authority races and crash cuts', () => {
   let tenant: SpTenant;
 
   beforeAll(async () => {
-    database = await createTestDatabase('sp_write_race_crash_matrix');
+    database = await createWp187TestDatabase('sp_write_race_crash_matrix');
     const userId = uuid(33_001);
     const [seed] = await database.sql<{ seed_tenant_fixture: string }[]>`
       select app.seed_tenant_fixture('sp-race-crash', ${userId}::uuid, 'owner')
@@ -6682,7 +6699,7 @@ describe.skipIf(!available)('SP write organisation purge safety', () => {
   let database: TestDatabase;
 
   beforeAll(async () => {
-    database = await createTestDatabase('sp_write_org_purge_safety');
+    database = await createWp187TestDatabase('sp_write_org_purge_safety');
   }, 60_000);
 
   afterAll(async () => {
@@ -7128,7 +7145,7 @@ describe.skipIf(!available)('SP write accounting branch matrix', () => {
   let tenant: SpTenant;
 
   beforeAll(async () => {
-    database = await createTestDatabase('sp_write_accounting_matrix');
+    database = await createWp187TestDatabase('sp_write_accounting_matrix');
     const userId = uuid(32_001);
     const [seed] = await database.sql<{ seed_tenant_fixture: string }[]>`
       select app.seed_tenant_fixture('sp-accounting', ${userId}::uuid, 'owner')
@@ -7730,7 +7747,7 @@ describe.skipIf(!available)('SP write byte and preimage roundtrip matrix', () =>
   let tenant: SpTenant;
 
   beforeAll(async () => {
-    database = await createTestDatabase('sp_write_roundtrip_matrix');
+    database = await createWp187TestDatabase('sp_write_roundtrip_matrix');
     const userId = uuid(31_001);
     const [seed] = await database.sql<{ seed_tenant_fixture: string }[]>`
       select app.seed_tenant_fixture('sp-roundtrip', ${userId}::uuid, 'owner')
@@ -8143,8 +8160,17 @@ describe('SP write runtime blast radius', () => {
       .toBeGreaterThanOrEqual(2);
     await scanActivationFiles(deploymentCandidates, 'Docker/compose/systemd/deploy candidates');
 
-    const otherMigrations = (await sourceFiles(`${REPO_ROOT}supabase/migrations`))
-      .filter((path) => !path.endsWith('/20260901020000_sp_write_persistence_ledger.sql'));
+    const spWriteSourceMigrationSuffixes = [
+      '/20260901020000_sp_write_persistence_ledger.sql',
+      '/20260901030000_sp_write_outbox_delivery.sql',
+    ];
+    const migrationFiles = await sourceFiles(`${REPO_ROOT}supabase/migrations`);
+    const spWriteSourceMigrations = migrationFiles.filter((path) =>
+      spWriteSourceMigrationSuffixes.some((suffix) => path.endsWith(suffix)));
+    expect(spWriteSourceMigrations.map((path) => `/${path.split('/').at(-1)}`).sort())
+      .toEqual([...spWriteSourceMigrationSuffixes].sort());
+    const otherMigrations = migrationFiles.filter((path) =>
+      !spWriteSourceMigrations.includes(path));
     expect(otherMigrations.length, 'other-migration activation scan must be non-vacuous')
       .toBeGreaterThan(0);
     for (const path of otherMigrations) {

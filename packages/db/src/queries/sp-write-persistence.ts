@@ -35,6 +35,18 @@ import type { Sql } from '../client.js';
 import { toDate } from './pg-time.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const BIGINT_DECIMAL_PATTERN = /^(0|[1-9][0-9]*)$/u;
+const CLAIMANT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const OUTBOX_KINDS = new Set<SpWriteOutboxKind>(['dispatch', 'observe_and_recover']);
+const DEFER_REASONS = new Set<SpWriteDeferReason>([
+  'reservation_busy',
+  'observation_pending',
+  'recovery_pending',
+  'shutdown',
+]);
+
+/** Raw delivery credentials are retained only against exact in-process claim objects. */
+const spWriteOutboxClaimTokens = new WeakMap<SpWriteOutboxClaim, string>();
 
 const sha256Hasher: SpWriteSha256Hasher = {
   algorithm: 'sha256',
@@ -44,9 +56,14 @@ const sha256Hasher: SpWriteSha256Hasher = {
 export type SpWritePersistenceOperation =
   | 'create_staging_ledger'
   | 'create_runtime_ledger'
+  | 'create_outbox_ledger'
   | 'record_plan'
   | 'record_bounded_authorization'
   | 'start_execution'
+  | 'claim_outbox'
+  | 'renew_outbox_claim'
+  | 'defer_outbox_claim'
+  | 'complete_outbox_claim'
   | 'acquire_dispatch_lease'
   | 'reserve_provider_call'
   | 'read_dispatch_ticket'
@@ -102,10 +119,78 @@ export interface StartSpWriteExecutionInput {
   planId: string;
 }
 
-export interface AcquireSpWriteDispatchLeaseInput {
+export type SpWriteOutboxKind = 'dispatch' | 'observe_and_recover';
+
+export type SpWriteOutboxClaimBase = Readonly<{
+  outboxId: string;
+  orgId: string;
+  profileId: string;
   executionId: string;
   planId: string;
+  approvalId: string;
   generation: string;
+  claimEpoch: string;
+  claimedAt: string;
+  expiresAt: string;
+  toJSON(): never;
+}>;
+
+export type SpWriteDispatchOutboxClaim = SpWriteOutboxClaimBase & Readonly<{
+  kind: 'dispatch';
+  providerCallId?: never;
+  intentId?: never;
+  sourceSyncJobId?: never;
+}>;
+
+export type SpWriteObserveAndRecoverOutboxClaim = SpWriteOutboxClaimBase & Readonly<{
+  kind: 'observe_and_recover';
+  providerCallId: string;
+  intentId: string;
+  sourceSyncJobId: string;
+}>;
+
+export type SpWriteOutboxClaim =
+  | SpWriteDispatchOutboxClaim
+  | SpWriteObserveAndRecoverOutboxClaim;
+
+export interface ClaimSpWriteOutboxInput {
+  claimantId: string;
+  kinds: readonly SpWriteOutboxKind[];
+  limit: number;
+  leaseSeconds?: number;
+}
+
+export type SpWriteOutboxClaimBatch = Readonly<{
+  offeredCount: number;
+  claimedCount: number;
+  claims: readonly SpWriteOutboxClaim[];
+}>;
+
+export type SpWriteRenewOutcome =
+  | Readonly<{ kind: 'renewed'; expiresAt: string }>
+  | Readonly<{ kind: 'renewal_limit_reached'; expiresAt: string }>
+  | Readonly<{ kind: 'stale_claim' }>;
+
+export type SpWriteDeferReason =
+  | 'reservation_busy'
+  | 'observation_pending'
+  | 'recovery_pending'
+  | 'shutdown';
+
+export type SpWriteDeferOutcome =
+  | Readonly<{
+      kind: 'deferred' | 'already_deferred';
+      reason: SpWriteDeferReason;
+      availableAt: string;
+    }>
+  | Readonly<{ kind: 'stale_claim' }>;
+
+export type SpWriteCompleteOutcome =
+  | Readonly<{ kind: 'completed' | 'already_completed'; completedAt: string }>
+  | Readonly<{ kind: 'not_complete' | 'stale_claim' }>;
+
+export interface AcquireSpWriteDispatchLeaseInput {
+  claim: SpWriteDispatchOutboxClaim;
   routeKey: SpWriteRouteKeyType;
   leaseSeconds?: number;
 }
@@ -120,6 +205,7 @@ export type SpWriteDispatchLeaseOutcome =
   | Readonly<{ kind: 'unavailable' }>;
 
 export interface ReserveSpWriteProviderCallInput {
+  claim: SpWriteDispatchOutboxClaim;
   observation: unknown;
   intent: unknown;
 }
@@ -154,6 +240,7 @@ export type SpWriteReservationOutcome =
       reason:
         | SpWriteRefusalReasonType
         | 'already_intended'
+        | 'claim_unavailable'
         | 'dispatch_window_elapsed';
     }>;
 
@@ -177,6 +264,19 @@ export interface SpWriteStagingLedger {
   recordBoundedAuthorization(
     input: RecordSpWriteBoundedAuthorizationInput,
   ): Promise<string>;
+}
+
+export interface SpWriteOutboxLedger {
+  claimAvailable(input: unknown): Promise<SpWriteOutboxClaimBatch>;
+  renewClaim(
+    claim: SpWriteOutboxClaim,
+    leaseSeconds: number,
+  ): Promise<SpWriteRenewOutcome>;
+  deferClaim(
+    claim: SpWriteOutboxClaim,
+    reason: SpWriteDeferReason,
+  ): Promise<SpWriteDeferOutcome>;
+  completeClaim(claim: SpWriteOutboxClaim): Promise<SpWriteCompleteOutcome>;
 }
 
 export interface SpWriteRuntimeLedger {
@@ -203,30 +303,49 @@ function mapDatabaseError(
   error: unknown,
 ): SpWritePersistenceError {
   const code = errorCode(error);
+  const claimBoundRecovery = operation === 'acquire_dispatch_lease'
+    || operation === 'reserve_provider_call'
+    || operation === 'read_dispatch_ticket';
   if (code === '22023' || code === '22P02') {
-    return new SpWritePersistenceError(operation, 'invalid_artifact', 'stop');
+    return new SpWritePersistenceError(
+      operation,
+      'invalid_artifact',
+      claimBoundRecovery ? 'reconcile_only' : 'stop',
+    );
   }
   if (code === '42501') {
-    return new SpWritePersistenceError(operation, 'permission_denied', 'stop');
+    return new SpWritePersistenceError(
+      operation,
+      'permission_denied',
+      claimBoundRecovery ? 'reconcile_only' : 'stop',
+    );
   }
   if (code === '23503' || code === 'P0002') {
-    return new SpWritePersistenceError(operation, 'missing_dependency', 'reload_state');
+    return new SpWritePersistenceError(
+      operation,
+      'missing_dependency',
+      claimBoundRecovery ? 'reconcile_only' : 'reload_state',
+    );
   }
   if (code === '23505' || code === 'P0003') {
     return new SpWritePersistenceError(
       operation,
       'identity_or_protocol_conflict',
-      'reload_state',
+      claimBoundRecovery ? 'reconcile_only' : 'reload_state',
     );
   }
   if (code === '55000') {
-    return new SpWritePersistenceError(operation, 'authority_unavailable', 'reload_state');
+    return new SpWritePersistenceError(
+      operation,
+      'authority_unavailable',
+      claimBoundRecovery ? 'reconcile_only' : 'reload_state',
+    );
   }
   if (code === '55P03' || code === '40001' || code === '40P01' || code === '57014') {
     return new SpWritePersistenceError(
       operation,
       'transaction_aborted',
-      operation === 'reserve_provider_call' ? 'reconcile_only' : 'reload_state',
+      claimBoundRecovery ? 'reconcile_only' : 'reload_state',
     );
   }
   if (code === undefined || code.startsWith('08') || /^57P0[1-3]$/u.test(code)) {
@@ -268,6 +387,13 @@ function assertUuid(value: string): string {
   return value;
 }
 
+function assertClaimEpoch(value: string): string {
+  if (!BIGINT_DECIMAL_PATTERN.test(value) || BigInt(value) < 1n) {
+    throw new Error('invalid claim epoch');
+  }
+  return value;
+}
+
 function assertFingerprint(actual: string, preimage: string): void {
   if (sha256Hasher.digest(preimage) !== actual) throw new Error('fingerprint mismatch');
 }
@@ -286,7 +412,7 @@ function deepFreeze<T>(value: T): T {
 
 function requireRootSql(
   handle: SpWritePersistenceHandle,
-  operation: 'create_staging_ledger' | 'create_runtime_ledger',
+  operation: 'create_staging_ledger' | 'create_runtime_ledger' | 'create_outbox_ledger',
 ): Sql {
   if (
     typeof handle !== 'object'
@@ -347,6 +473,219 @@ function exactSingleRow<T>(
 ): T {
   if (rows.length !== 1 || rows[0] === undefined) throw protocolFailure(operation);
   return rows[0];
+}
+
+function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length
+    && actual.every((key, index) => key === expected[index]);
+}
+
+function assertLeaseSeconds(value: unknown): number {
+  if (!Number.isInteger(value) || (value as number) < 70 || (value as number) > 300) {
+    throw new Error('invalid lease duration');
+  }
+  return value as number;
+}
+
+function claimToken(
+  operation: SpWritePersistenceOperation,
+  claim: SpWriteOutboxClaim,
+  expectedKind?: SpWriteOutboxKind,
+): string {
+  const token = spWriteOutboxClaimTokens.get(claim);
+  if (token === undefined || (expectedKind !== undefined && claim.kind !== expectedKind)) {
+    throw invalidArtifact(operation);
+  }
+  return token;
+}
+
+interface OutboxClaimRow {
+  offered_count: number;
+  claimed_count: number;
+  claim_ordinal: number | null;
+  outbox_id: string | null;
+  org_id: string | null;
+  profile_id: string | null;
+  execution_id: string | null;
+  plan_id: string | null;
+  approval_id: string | null;
+  generation: string | null;
+  kind: string | null;
+  provider_call_id: string | null;
+  intent_id: string | null;
+  source_sync_job_id: string | null;
+  claim_epoch: string | null;
+  claimed_at: Date | string | null;
+  lease_expires_at: Date | string | null;
+  claim_token: string | null;
+}
+
+const OUTBOX_CLAIM_ROW_KEYS = [
+  'offered_count',
+  'claimed_count',
+  'claim_ordinal',
+  'outbox_id',
+  'org_id',
+  'profile_id',
+  'execution_id',
+  'plan_id',
+  'approval_id',
+  'generation',
+  'kind',
+  'provider_call_id',
+  'intent_id',
+  'source_sync_job_id',
+  'claim_epoch',
+  'claimed_at',
+  'lease_expires_at',
+  'claim_token',
+] as const;
+
+function parseClaimBatch(
+  rows: readonly OutboxClaimRow[],
+  expectedKinds: readonly SpWriteOutboxKind[],
+  expectedLimit: number,
+  expectedLeaseSeconds: number,
+): SpWriteOutboxClaimBatch {
+  if (rows.length === 0 || rows.some((row) => !hasExactKeys(row, OUTBOX_CLAIM_ROW_KEYS))) {
+    throw protocolFailure('claim_outbox');
+  }
+  const header = rows[0];
+  if (
+    header === undefined
+    || !Number.isInteger(header.offered_count)
+    || !Number.isInteger(header.claimed_count)
+    || header.offered_count < 0
+    || header.offered_count > 10
+    || header.offered_count > expectedLimit
+    || header.claimed_count < 0
+    || header.claimed_count > header.offered_count
+  ) {
+    throw protocolFailure('claim_outbox');
+  }
+  if (header.claimed_count === 0) {
+    if (
+      rows.length !== 1
+      || header.offered_count !== 0
+      || OUTBOX_CLAIM_ROW_KEYS.slice(2).some((key) => header[key] !== null)
+    ) {
+      throw protocolFailure('claim_outbox');
+    }
+    return Object.freeze({
+      offeredCount: 0,
+      claimedCount: 0,
+      claims: Object.freeze([]),
+    });
+  }
+  if (header.offered_count !== header.claimed_count || rows.length !== header.claimed_count) {
+    throw protocolFailure('claim_outbox');
+  }
+
+  const identities = new Set<string>();
+  const tokens = new Set<string>();
+  const parsed = rows.map((row, index) => {
+    if (
+      row.offered_count !== header.offered_count
+      || row.claimed_count !== header.claimed_count
+      || row.claim_ordinal !== index + 1
+      || row.outbox_id === null
+      || row.org_id === null
+      || row.profile_id === null
+      || row.execution_id === null
+      || row.plan_id === null
+      || row.approval_id === null
+      || row.generation === null
+      || row.kind === null
+      || row.claim_epoch === null
+      || row.claimed_at === null
+      || row.lease_expires_at === null
+      || row.claim_token === null
+      || !UUID_PATTERN.test(row.outbox_id)
+      || !UUID_PATTERN.test(row.org_id)
+      || !UUID_PATTERN.test(row.profile_id)
+      || !UUID_PATTERN.test(row.execution_id)
+      || !UUID_PATTERN.test(row.plan_id)
+      || !UUID_PATTERN.test(row.approval_id)
+      || !UUID_PATTERN.test(row.generation)
+      || !UUID_PATTERN.test(row.claim_token)
+      || !BIGINT_DECIMAL_PATTERN.test(row.claim_epoch)
+      || BigInt(row.claim_epoch) < 1n
+      || BigInt(row.claim_epoch) > 9_223_372_036_854_775_807n
+      || !OUTBOX_KINDS.has(row.kind as SpWriteOutboxKind)
+      || !expectedKinds.includes(row.kind as SpWriteOutboxKind)
+      || identities.has(row.outbox_id)
+      || tokens.has(row.claim_token)
+    ) {
+      throw protocolFailure('claim_outbox');
+    }
+    identities.add(row.outbox_id);
+    tokens.add(row.claim_token);
+    const claimedAt = parseDatabaseDate('claim_outbox', row.claimed_at);
+    const expiresAt = parseDatabaseDate('claim_outbox', row.lease_expires_at);
+    if (expiresAt.getTime() - claimedAt.getTime() !== expectedLeaseSeconds * 1_000) {
+      throw protocolFailure('claim_outbox');
+    }
+    if (row.kind === 'dispatch') {
+      if (
+        row.provider_call_id !== null
+        || row.intent_id !== null
+        || row.source_sync_job_id !== null
+      ) {
+        throw protocolFailure('claim_outbox');
+      }
+    } else if (
+      row.provider_call_id === null
+      || row.intent_id === null
+      || row.source_sync_job_id === null
+      || !UUID_PATTERN.test(row.provider_call_id)
+      || !UUID_PATTERN.test(row.intent_id)
+      || !UUID_PATTERN.test(row.source_sync_job_id)
+    ) {
+      throw protocolFailure('claim_outbox');
+    }
+    return {
+      row,
+      claimedAt: claimedAt.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+    };
+  });
+
+  const claims = parsed.map(({ row, claimedAt, expiresAt }) => {
+    const common = {
+      outboxId: row.outbox_id as string,
+      orgId: row.org_id as string,
+      profileId: row.profile_id as string,
+      executionId: row.execution_id as string,
+      planId: row.plan_id as string,
+      approvalId: row.approval_id as string,
+      generation: row.generation as string,
+      claimEpoch: row.claim_epoch as string,
+      claimedAt,
+      expiresAt,
+      toJSON(): never {
+        throw protocolFailure('claim_outbox');
+      },
+    };
+    const claim: SpWriteOutboxClaim = row.kind === 'dispatch'
+      ? Object.freeze({ ...common, kind: 'dispatch' as const })
+      : Object.freeze({
+          ...common,
+          kind: 'observe_and_recover' as const,
+          providerCallId: row.provider_call_id as string,
+          intentId: row.intent_id as string,
+          sourceSyncJobId: row.source_sync_job_id as string,
+        });
+    spWriteOutboxClaimTokens.set(claim, row.claim_token as string);
+    return claim;
+  });
+  return Object.freeze({
+    offeredCount: header.offered_count,
+    claimedCount: header.claimed_count,
+    claims: Object.freeze(claims),
+  });
 }
 
 function makeDispatchTicket(input: Omit<SpWriteDispatchTicket, typeof dispatchTicketBrand | 'toJSON'>) {
@@ -439,6 +778,231 @@ class DefaultSpWriteStagingLedger implements SpWriteStagingLedger {
   }
 }
 
+class DefaultSpWriteOutboxLedger implements SpWriteOutboxLedger {
+  constructor(private readonly sql: Sql) {}
+
+  async claimAvailable(input: unknown): Promise<SpWriteOutboxClaimBatch> {
+    const prepared = parseInput('claim_outbox', () => {
+      if (!hasExactKeys(input, ['claimantId', 'kinds', 'limit', 'leaseSeconds'])
+        && !hasExactKeys(input, ['claimantId', 'kinds', 'limit'])) {
+        throw new Error('invalid claim input');
+      }
+      const claimantId = input.claimantId;
+      const kinds = input.kinds;
+      const limit = input.limit;
+      const leaseSeconds = 'leaseSeconds' in input ? (input.leaseSeconds ?? 120) : 120;
+      if (
+        typeof claimantId !== 'string'
+        || !CLAIMANT_ID_PATTERN.test(claimantId)
+        || !Array.isArray(kinds)
+        || kinds.length === 0
+        || kinds.length > 2
+        || !kinds.every((kind): kind is SpWriteOutboxKind =>
+          typeof kind === 'string' && OUTBOX_KINDS.has(kind as SpWriteOutboxKind))
+        || new Set(kinds).size !== kinds.length
+        || !Number.isInteger(limit)
+        || (limit as number) < 1
+        || (limit as number) > 10
+      ) {
+        throw new Error('invalid claim input');
+      }
+      return {
+        claimantId,
+        kinds,
+        limit: limit as number,
+        leaseSeconds: assertLeaseSeconds(leaseSeconds),
+      };
+    });
+
+    return runDatabaseOperation('claim_outbox', async () => {
+      const rows = await this.sql<OutboxClaimRow[]>`
+        select offered_count, claimed_count, claim_ordinal,
+               outbox_id::text, org_id::text, profile_id::text,
+               execution_id::text, plan_id::text, approval_id::text,
+               generation::text, kind::text, provider_call_id::text,
+               intent_id::text, source_sync_job_id::text, claim_epoch::text,
+               claimed_at, lease_expires_at, claim_token::text
+          from app.claim_sp_write_outbox(
+            ${prepared.claimantId},
+            ${this.sql.array([...prepared.kinds])}::public.sp_write_outbox_kind[],
+            ${prepared.limit},
+            ${prepared.leaseSeconds}
+          )
+      `;
+      return parseClaimBatch(rows, prepared.kinds, prepared.limit, prepared.leaseSeconds);
+    });
+  }
+
+  async renewClaim(
+    claim: SpWriteOutboxClaim,
+    leaseSeconds: number,
+  ): Promise<SpWriteRenewOutcome> {
+    const prepared = parseInput('renew_outbox_claim', () => ({
+      outboxId: assertUuid(claim.outboxId),
+      claimEpoch: assertClaimEpoch(claim.claimEpoch),
+      leaseSeconds: assertLeaseSeconds(leaseSeconds),
+    }));
+    const token = parseInput('renew_outbox_claim', () =>
+      claimToken('renew_outbox_claim', claim));
+    return runDatabaseOperation('renew_outbox_claim', async () => {
+      const rows = await this.sql<{
+        decision: string;
+        checked_at: Date | string;
+        expires_at: Date | string | null;
+      }[]>`
+        select decision, checked_at, expires_at
+          from app.renew_sp_write_outbox_claim(
+            ${prepared.outboxId}::uuid,
+            ${prepared.claimEpoch}::bigint,
+            ${token}::uuid,
+            ${prepared.leaseSeconds}
+          )
+      `;
+      const row = exactSingleRow('renew_outbox_claim', rows);
+      if (!hasExactKeys(row, ['decision', 'checked_at', 'expires_at'])) {
+        throw protocolFailure('renew_outbox_claim');
+      }
+      const checkedAt = parseDatabaseDate('renew_outbox_claim', row.checked_at);
+      if (row.decision === 'stale_claim' && row.expires_at === null) {
+        return Object.freeze({ kind: 'stale_claim' });
+      }
+      if (
+        (row.decision !== 'renewed' && row.decision !== 'renewal_limit_reached')
+        || row.expires_at === null
+      ) {
+        throw protocolFailure('renew_outbox_claim');
+      }
+      const expiresAt = parseDatabaseDate('renew_outbox_claim', row.expires_at);
+      if (expiresAt.getTime() <= checkedAt.getTime()) {
+        throw protocolFailure('renew_outbox_claim');
+      }
+      return Object.freeze({
+        kind: row.decision,
+        expiresAt: expiresAt.toISOString(),
+      });
+    });
+  }
+
+  async deferClaim(
+    claim: SpWriteOutboxClaim,
+    reason: SpWriteDeferReason,
+  ): Promise<SpWriteDeferOutcome> {
+    const prepared = parseInput('defer_outbox_claim', () => {
+      if (!DEFER_REASONS.has(reason)) throw new Error('invalid defer reason');
+      return {
+        outboxId: assertUuid(claim.outboxId),
+        claimEpoch: assertClaimEpoch(claim.claimEpoch),
+        reason,
+      };
+    });
+    const token = parseInput('defer_outbox_claim', () =>
+      claimToken('defer_outbox_claim', claim));
+    return runDatabaseOperation('defer_outbox_claim', async () => {
+      const rows = await this.sql<{
+        decision: string;
+        reason: string | null;
+        checked_at: Date | string;
+        available_at: Date | string | null;
+      }[]>`
+        select decision, reason, checked_at, available_at
+          from app.defer_sp_write_outbox_claim(
+            ${prepared.outboxId}::uuid,
+            ${prepared.claimEpoch}::bigint,
+            ${token}::uuid,
+            ${prepared.reason}
+          )
+      `;
+      const row = exactSingleRow('defer_outbox_claim', rows);
+      if (!hasExactKeys(row, ['decision', 'reason', 'checked_at', 'available_at'])) {
+        throw protocolFailure('defer_outbox_claim');
+      }
+      const checkedAt = parseDatabaseDate('defer_outbox_claim', row.checked_at);
+      if (
+        row.decision === 'stale_claim'
+        && row.reason === null
+        && row.available_at === null
+      ) {
+        return Object.freeze({ kind: 'stale_claim' });
+      }
+      if (
+        (row.decision !== 'deferred' && row.decision !== 'already_deferred')
+        || row.reason !== prepared.reason
+        || row.available_at === null
+      ) {
+        throw protocolFailure('defer_outbox_claim');
+      }
+      const availableAt = parseDatabaseDate('defer_outbox_claim', row.available_at);
+      const claimedAt = parseDatabaseDate('defer_outbox_claim', claim.claimedAt);
+      if (
+        checkedAt.getTime() < claimedAt.getTime()
+        || availableAt.getTime() <= claimedAt.getTime()
+        || (row.decision === 'deferred' && availableAt.getTime() <= checkedAt.getTime())
+      ) {
+        throw protocolFailure('defer_outbox_claim');
+      }
+      return Object.freeze({
+        kind: row.decision,
+        reason: prepared.reason,
+        availableAt: availableAt.toISOString(),
+      });
+    });
+  }
+
+  async completeClaim(claim: SpWriteOutboxClaim): Promise<SpWriteCompleteOutcome> {
+    const prepared = parseInput('complete_outbox_claim', () => ({
+      outboxId: assertUuid(claim.outboxId),
+      claimEpoch: assertClaimEpoch(claim.claimEpoch),
+    }));
+    const token = parseInput('complete_outbox_claim', () =>
+      claimToken('complete_outbox_claim', claim));
+    return runDatabaseOperation('complete_outbox_claim', async () => {
+      const rows = await this.sql<{
+        decision: string;
+        checked_at: Date | string;
+        completed_at: Date | string | null;
+      }[]>`
+        select decision, checked_at, completed_at
+          from app.complete_sp_write_outbox_claim(
+            ${prepared.outboxId}::uuid,
+            ${prepared.claimEpoch}::bigint,
+            ${token}::uuid
+          )
+      `;
+      const row = exactSingleRow('complete_outbox_claim', rows);
+      if (!hasExactKeys(row, ['decision', 'checked_at', 'completed_at'])) {
+        throw protocolFailure('complete_outbox_claim');
+      }
+      const checkedAt = parseDatabaseDate('complete_outbox_claim', row.checked_at);
+      if (
+        (row.decision === 'stale_claim' || row.decision === 'not_complete')
+        && row.completed_at === null
+      ) {
+        return Object.freeze({ kind: row.decision });
+      }
+      if (
+        (row.decision !== 'completed' && row.decision !== 'already_completed')
+        || row.completed_at === null
+      ) {
+        throw protocolFailure('complete_outbox_claim');
+      }
+      const completedAt = parseDatabaseDate('complete_outbox_claim', row.completed_at);
+      const claimedAt = parseDatabaseDate('complete_outbox_claim', claim.claimedAt);
+      if (
+        checkedAt.getTime() < claimedAt.getTime()
+        || completedAt.getTime() < claimedAt.getTime()
+        || completedAt.getTime() > checkedAt.getTime()
+        || (row.decision === 'completed' && completedAt.getTime() !== checkedAt.getTime())
+      ) {
+        throw protocolFailure('complete_outbox_claim');
+      }
+      return Object.freeze({
+        kind: row.decision,
+        completedAt: completedAt.toISOString(),
+      });
+    });
+  }
+}
+
 interface ReservationRow {
   decision: string;
   refusal_reason: string | null;
@@ -493,18 +1057,16 @@ class DefaultSpWriteRuntimeLedger implements SpWriteRuntimeLedger {
     input: AcquireSpWriteDispatchLeaseInput,
   ): Promise<SpWriteDispatchLeaseOutcome> {
     const prepared = parseInput('acquire_dispatch_lease', () => {
-      const leaseSeconds = input.leaseSeconds ?? 120;
-      if (!Number.isInteger(leaseSeconds) || leaseSeconds < 70 || leaseSeconds > 300) {
-        throw new Error('invalid lease duration');
-      }
+      const claim = input.claim;
       return {
-        executionId: assertUuid(input.executionId),
-        planId: assertUuid(input.planId),
-        generation: assertUuid(input.generation),
+        outboxId: assertUuid(claim.outboxId),
+        claimEpoch: assertClaimEpoch(claim.claimEpoch),
         routeKey: SpWriteRouteKey.parse(input.routeKey),
-        leaseSeconds,
+        leaseSeconds: assertLeaseSeconds(input.leaseSeconds ?? 120),
       };
     });
+    const token = parseInput('acquire_dispatch_lease', () =>
+      claimToken('acquire_dispatch_lease', input.claim, 'dispatch'));
     try {
       const rows = await this.sql<{
         lease_id: string;
@@ -512,15 +1074,18 @@ class DefaultSpWriteRuntimeLedger implements SpWriteRuntimeLedger {
         expires_at: Date | string;
       }[]>`
         select lease_id::text, acquired_at, expires_at
-          from app.acquire_sp_write_dispatch_lease(
-            ${prepared.executionId}::uuid,
-            ${prepared.planId}::uuid,
-            ${prepared.generation}::uuid,
+          from app.acquire_sp_write_dispatch_lease_for_claim(
+            ${prepared.outboxId}::uuid,
+            ${prepared.claimEpoch}::bigint,
+            ${token}::uuid,
             ${prepared.routeKey}::public.sp_write_route_key,
             ${prepared.leaseSeconds}
           )
       `;
       const row = exactSingleRow('acquire_dispatch_lease', rows);
+      if (!hasExactKeys(row, ['lease_id', 'acquired_at', 'expires_at'])) {
+        throw protocolFailure('acquire_dispatch_lease');
+      }
       if (!UUID_PATTERN.test(row.lease_id)) throw protocolFailure('acquire_dispatch_lease');
       const acquiredAt = parseDatabaseDate('acquire_dispatch_lease', row.acquired_at);
       const expiresAt = parseDatabaseDate('acquire_dispatch_lease', row.expires_at);
@@ -544,10 +1109,15 @@ class DefaultSpWriteRuntimeLedger implements SpWriteRuntimeLedger {
     input: ReserveSpWriteProviderCallInput,
   ): Promise<SpWriteReservationOutcome> {
     const prepared = parseInput('reserve_provider_call', () => {
+      const claim = input.claim;
       const observation = parsePredispatchObservation(input.observation);
       const intent = parseProviderIntent(input.intent);
       if (
-        observation.planId !== intent.planId
+        claim.executionId !== intent.executionId
+        || claim.planId !== intent.planId
+        || claim.approvalId !== intent.approvalId
+        || claim.generation !== intent.generation
+        || observation.planId !== intent.planId
         || observation.planFingerprint !== intent.planFingerprint
         || observation.approvalId !== intent.approvalId
         || observation.executionId !== intent.executionId
@@ -558,6 +1128,8 @@ class DefaultSpWriteRuntimeLedger implements SpWriteRuntimeLedger {
         throw new Error('reservation artifacts disagree');
       }
       return {
+        outboxId: assertUuid(claim.outboxId),
+        claimEpoch: assertClaimEpoch(claim.claimEpoch),
         observation,
         observationText: canonicalArtifactText(observation),
         observationPreimage: serializeSpWritePredispatchObservationFingerprint(observation),
@@ -567,11 +1139,16 @@ class DefaultSpWriteRuntimeLedger implements SpWriteRuntimeLedger {
         intentPreimage: serializeSpWriteProviderCallIntentFingerprint(intent),
       };
     });
+    const token = parseInput('reserve_provider_call', () =>
+      claimToken('reserve_provider_call', input.claim, 'dispatch'));
 
     const reservation = await runDatabaseOperation('reserve_provider_call', async () => {
       const rows = await this.sql<ReservationRow[]>`
         select decision, refusal_reason, checked_at, result_id::text, intent_text
-          from app.reserve_sp_write_provider_call(
+          from app.reserve_sp_write_provider_call_for_claim(
+            ${prepared.outboxId}::uuid,
+            ${prepared.claimEpoch}::bigint,
+            ${token}::uuid,
             ${prepared.intent.executionId}::uuid,
             ${prepared.intent.planId}::uuid,
             ${prepared.intent.generation}::uuid,
@@ -583,11 +1160,26 @@ class DefaultSpWriteRuntimeLedger implements SpWriteRuntimeLedger {
             ${prepared.intentPreimage}
           )
       `;
-      return exactSingleRow('reserve_provider_call', rows);
+      const row = exactSingleRow('reserve_provider_call', rows);
+      if (!hasExactKeys(
+        row,
+        ['decision', 'refusal_reason', 'checked_at', 'result_id', 'intent_text'],
+      )) {
+        throw protocolFailure('reserve_provider_call');
+      }
+      return row;
     });
     const checkedAtDate = parseDatabaseDate('reserve_provider_call', reservation.checked_at);
     const checkedAt = checkedAtDate.toISOString();
 
+    if (reservation.decision === 'claim_unavailable') {
+      assertNoReservationAuthority(reservation);
+      return Object.freeze({
+        kind: 'closed_without_dispatch',
+        checkedAt,
+        reason: 'claim_unavailable',
+      });
+    }
     if (reservation.decision === 'busy') {
       assertNoReservationAuthority(reservation);
       return Object.freeze({ kind: 'defer_and_reobserve', checkedAt, reason: 'busy' });
@@ -660,7 +1252,28 @@ class DefaultSpWriteRuntimeLedger implements SpWriteRuntimeLedger {
            and intent.route_key = ${prepared.intent.routeKey}::public.sp_write_route_key
            and intent.dispatch_lease_id = ${prepared.intent.dispatchLeaseId}::uuid
       `;
-      return exactSingleRow('read_dispatch_ticket', rows);
+      const row = exactSingleRow('read_dispatch_ticket', rows);
+      if (!hasExactKeys(row, [
+        'intent_id',
+        'provider_call_id',
+        'reserved_result_id',
+        'execution_id',
+        'plan_id',
+        'approval_id',
+        'generation',
+        'route_key',
+        'dispatch_lease_id',
+        'artifact_text',
+        'position_count',
+        'checked_at',
+        'dispatch_start_deadline',
+        'provider_attempt_deadline',
+        'database_read_at',
+        'dispatch_window_elapsed',
+      ])) {
+        throw protocolFailure('read_dispatch_ticket');
+      }
+      return row;
     });
     if (
       readback.intent_id !== prepared.intent.intentId
@@ -1125,4 +1738,10 @@ export function createSpWriteRuntimeLedger(
   handle: SpWritePersistenceHandle,
 ): SpWriteRuntimeLedger {
   return new DefaultSpWriteRuntimeLedger(requireRootSql(handle, 'create_runtime_ledger'));
+}
+
+export function createSpWriteOutboxLedger(
+  handle: SpWritePersistenceHandle,
+): SpWriteOutboxLedger {
+  return new DefaultSpWriteOutboxLedger(requireRootSql(handle, 'create_outbox_ledger'));
 }
