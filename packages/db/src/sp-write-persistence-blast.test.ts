@@ -29,11 +29,13 @@ describe('SP write persistence facade blast radius', () => {
   it('resolves only through the explicit subpath surface', async () => {
     expect(persistence.createSpWriteStagingLedger).toBeTypeOf('function');
     expect(persistence.createSpWriteRuntimeLedger).toBeTypeOf('function');
+    expect(persistence.createSpWriteOutboxLedger).toBeTypeOf('function');
     expect(persistence.SpWritePersistenceError).toBeTypeOf('function');
 
     for (const symbol of [
       'createSpWriteStagingLedger',
       'createSpWriteRuntimeLedger',
+      'createSpWriteOutboxLedger',
       'SpWritePersistenceError',
     ]) {
       expect(symbol in rootDatabase).toBe(false);
@@ -134,6 +136,7 @@ describe('SP write persistence facade blast radius', () => {
       '@wizard-ads/ads-api/sp-write-adapter',
       'createSpWriteRuntimeLedger',
       'createSpWriteStagingLedger',
+      'createSpWriteOutboxLedger',
       'record_sp_write_plan',
       'reserve_sp_write_provider_call',
       'sp_write.dispatch',
@@ -150,8 +153,16 @@ describe('SP write persistence facade blast radius', () => {
     expect(matches).toEqual([]);
 
     const migrations = await sourceFiles(`${REPO_ROOT}supabase/migrations`);
+    const inertSpWriteMigrationSuffixes = [
+      '/20260901020000_sp_write_persistence_ledger.sql',
+      '/20260901030000_sp_write_outbox_delivery.sql',
+    ];
+    const inertSpWriteMigrations = migrations.filter((path) =>
+      inertSpWriteMigrationSuffixes.some((suffix) => path.endsWith(suffix)));
+    expect(inertSpWriteMigrations.map((path) => `/${path.split('/').at(-1)}`).sort())
+      .toEqual([...inertSpWriteMigrationSuffixes].sort());
     const nonLedgerMigrations = migrations.filter((path) =>
-      !path.endsWith('/20260901020000_sp_write_persistence_ledger.sql'));
+      !inertSpWriteMigrations.includes(path));
     expect(nonLedgerMigrations.length).toBeGreaterThan(25);
     const activatedMigrations: Array<{ path: string; marker: string }> = [];
     for (const path of nonLedgerMigrations) {

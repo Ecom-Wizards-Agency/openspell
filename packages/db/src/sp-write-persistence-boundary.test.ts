@@ -19,10 +19,14 @@ import {
 import { describe, expect, it } from 'vitest';
 import {
   SpWritePersistenceError,
+  createSpWriteOutboxLedger,
   createSpWriteRuntimeLedger,
   createSpWriteStagingLedger,
 } from './sp-write-persistence.js';
-import type { SpWriteReservationOutcome } from './sp-write-persistence.js';
+import type {
+  SpWriteDispatchOutboxClaim,
+  SpWriteReservationOutcome,
+} from './sp-write-persistence.js';
 
 interface SqlCall {
   readonly text: string;
@@ -42,6 +46,7 @@ function scriptedHandle(...replies: SqlReply[]) {
     return reply;
   };
   const sql = Object.assign(tag, {
+    array: (values: readonly unknown[]) => values,
     begin: async () => {
       throw new Error('scripted facade SQL did not expect a transaction');
     },
@@ -301,6 +306,47 @@ function reservationArtifacts(proof = keywordPlan(601)) {
   return { observation, intent };
 }
 
+function dispatchClaimRow(
+  artifacts = reservationArtifacts(),
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    offered_count: 1,
+    claimed_count: 1,
+    claim_ordinal: 1,
+    outbox_id: uuid(617),
+    org_id: uuid(618),
+    profile_id: uuid(619),
+    execution_id: artifacts.intent.executionId,
+    plan_id: artifacts.intent.planId,
+    approval_id: artifacts.intent.approvalId,
+    generation: artifacts.intent.generation,
+    kind: 'dispatch',
+    provider_call_id: null,
+    intent_id: null,
+    source_sync_job_id: null,
+    claim_epoch: '1',
+    claimed_at: new Date('2026-01-01T00:01:00.000Z'),
+    lease_expires_at: new Date('2026-01-01T00:03:00.000Z'),
+    claim_token: uuid(620),
+    ...overrides,
+  };
+}
+
+async function dispatchClaimFor(
+  artifacts = reservationArtifacts(),
+): Promise<SpWriteDispatchOutboxClaim> {
+  const mock = scriptedHandle([dispatchClaimRow(artifacts)]);
+  const batch = await createSpWriteOutboxLedger(mock.handle).claimAvailable({
+    claimantId: 'boundary-worker',
+    kinds: ['dispatch'],
+    limit: 1,
+  });
+  const claim = batch.claims[0];
+  if (claim?.kind !== 'dispatch') throw new Error('dispatch claim fixture failed');
+  return claim;
+}
+
 function reservationRow(overrides: Record<string, unknown> = {}) {
   return {
     decision: 'busy',
@@ -358,6 +404,8 @@ describe('SP write persistence facade pure boundary', () => {
       .toThrow(SpWritePersistenceError);
     expect(() => createSpWriteRuntimeLedger(transactionHandle))
       .toThrow(SpWritePersistenceError);
+    expect(() => createSpWriteOutboxLedger(transactionHandle))
+      .toThrow(SpWritePersistenceError);
   });
 
   it('rejects malformed artifacts before issuing SQL', async () => {
@@ -384,6 +432,247 @@ describe('SP write persistence facade pure boundary', () => {
     await expect(runtime.appendObservation({ fingerprint: 'not-an-observation' }))
       .rejects.toBeInstanceOf(SpWritePersistenceError);
     expect(runtimeMock.calls).toEqual([]);
+  });
+
+  it('validates claim inputs before SQL and closes the exact zero batch', async () => {
+    for (const input of [
+      null,
+      {},
+      { claimantId: '', kinds: ['dispatch'], limit: 1 },
+      { claimantId: ' worker', kinds: ['dispatch'], limit: 1 },
+      { claimantId: 'worker', kinds: [], limit: 1 },
+      { claimantId: 'worker', kinds: ['dispatch', 'dispatch'], limit: 1 },
+      { claimantId: 'worker', kinds: ['unexpected'], limit: 1 },
+      { claimantId: 'worker', kinds: ['dispatch'], limit: 0 },
+      { claimantId: 'worker', kinds: ['dispatch'], limit: 1, leaseSeconds: 69 },
+      { claimantId: 'worker', kinds: ['dispatch'], limit: 1, extra: true },
+    ]) {
+      const mock = scriptedHandle([]);
+      await expect(createSpWriteOutboxLedger(mock.handle).claimAvailable(input))
+        .rejects.toMatchObject({ operation: 'claim_outbox', category: 'invalid_artifact' });
+      expect(mock.calls).toEqual([]);
+    }
+
+    const zero = dispatchClaimRow(reservationArtifacts(), {
+      offered_count: 0,
+      claimed_count: 0,
+      claim_ordinal: null,
+      outbox_id: null,
+      org_id: null,
+      profile_id: null,
+      execution_id: null,
+      plan_id: null,
+      approval_id: null,
+      generation: null,
+      kind: null,
+      provider_call_id: null,
+      intent_id: null,
+      source_sync_job_id: null,
+      claim_epoch: null,
+      claimed_at: null,
+      lease_expires_at: null,
+      claim_token: null,
+    });
+    const mock = scriptedHandle([zero]);
+    await expect(createSpWriteOutboxLedger(mock.handle).claimAvailable({
+      claimantId: 'worker-1',
+      kinds: ['dispatch', 'observe_and_recover'],
+      limit: 10,
+      leaseSeconds: 300,
+    })).resolves.toEqual({ offeredCount: 0, claimedCount: 0, claims: [] });
+    expect(mock.calls[0]?.values).toEqual([
+      'worker-1',
+      ['dispatch', 'observe_and_recover'],
+      10,
+      300,
+    ]);
+  });
+
+  it('keeps raw claim tokens opaque and rejects clones before SQL', async () => {
+    const artifacts = reservationArtifacts();
+    const token = uuid(620);
+    const mock = scriptedHandle([dispatchClaimRow(artifacts)]);
+    const batch = await createSpWriteOutboxLedger(mock.handle).claimAvailable({
+      claimantId: 'worker-1',
+      kinds: ['dispatch'],
+      limit: 1,
+    });
+    expect(batch).toMatchObject({ offeredCount: 1, claimedCount: 1 });
+    expect(Object.isFrozen(batch)).toBe(true);
+    expect(Object.isFrozen(batch.claims)).toBe(true);
+    const claim = batch.claims[0];
+    expect(claim?.kind).toBe('dispatch');
+    if (claim?.kind !== 'dispatch') throw new Error('expected dispatch claim');
+    expect(Object.isFrozen(claim)).toBe(true);
+    expect(Object.values(claim)).not.toContain(token);
+    expect(Object.keys(claim)).not.toContain('claimToken');
+    expect(() => JSON.stringify(claim)).toThrow(SpWritePersistenceError);
+
+    const cloneMock = scriptedHandle([]);
+    const clone = { ...claim } as SpWriteDispatchOutboxClaim;
+    await expect(createSpWriteOutboxLedger(cloneMock.handle).renewClaim(clone, 120))
+      .rejects.toMatchObject({
+        operation: 'renew_outbox_claim',
+        category: 'invalid_artifact',
+      });
+    expect(cloneMock.calls).toEqual([]);
+  });
+
+  it('discriminates exact observe-and-recover identity without exposing its token', async () => {
+    const artifacts = reservationArtifacts();
+    const row = dispatchClaimRow(artifacts, {
+      kind: 'observe_and_recover',
+      provider_call_id: artifacts.intent.providerCallId,
+      intent_id: artifacts.intent.intentId,
+      source_sync_job_id: uuid(622),
+    });
+    const mock = scriptedHandle([row]);
+    const batch = await createSpWriteOutboxLedger(mock.handle).claimAvailable({
+      claimantId: 'observer-1',
+      kinds: ['observe_and_recover'],
+      limit: 1,
+    });
+    const claim = batch.claims[0];
+    expect(claim).toMatchObject({
+      kind: 'observe_and_recover',
+      providerCallId: artifacts.intent.providerCallId,
+      intentId: artifacts.intent.intentId,
+      sourceSyncJobId: uuid(622),
+    });
+    expect(Object.values(claim ?? {})).not.toContain(uuid(620));
+    expect(Object.keys(claim ?? {})).not.toContain('claimToken');
+    expect(() => JSON.stringify(claim)).toThrow(SpWritePersistenceError);
+  });
+
+  it('fails closed on malformed claim counts, ordinals, identities, and kind nullability', async () => {
+    const artifacts = reservationArtifacts();
+    const missingKey = dispatchClaimRow(artifacts) as Record<string, unknown>;
+    delete missingKey.claim_token;
+    const overLimit = [
+      dispatchClaimRow(artifacts, {
+        offered_count: 2,
+        claimed_count: 2,
+      }),
+      dispatchClaimRow(artifacts, {
+        offered_count: 2,
+        claimed_count: 2,
+        claim_ordinal: 2,
+        outbox_id: uuid(621),
+        claim_token: uuid(622),
+      }),
+    ];
+    const replies: SqlReply[] = [
+      [],
+      [dispatchClaimRow(artifacts), dispatchClaimRow(artifacts)],
+      overLimit,
+      [dispatchClaimRow(artifacts, { claim_ordinal: 0 })],
+      [dispatchClaimRow(artifacts, { offered_count: 2 })],
+      [dispatchClaimRow(artifacts, { outbox_id: 'not-a-uuid' })],
+      [dispatchClaimRow(artifacts, { claim_epoch: '01' })],
+      [dispatchClaimRow(artifacts, { provider_call_id: uuid(621) })],
+      [missingKey],
+    ];
+    for (const reply of replies) {
+      const mock = scriptedHandle(reply);
+      await expect(createSpWriteOutboxLedger(mock.handle).claimAvailable({
+        claimantId: 'worker-1',
+        kinds: ['dispatch'],
+        limit: 1,
+      })).rejects.toMatchObject({
+        operation: 'claim_outbox',
+        category: 'protocol_violation',
+        recovery: 'reconcile_only',
+      });
+      expect(mock.calls).toHaveLength(1);
+    }
+  });
+
+  it('decodes fixed claim transition outcomes without exposing custody', async () => {
+    const artifacts = reservationArtifacts();
+    const claim = await dispatchClaimFor(artifacts);
+    const mock = scriptedHandle(
+      [{
+        decision: 'renewed',
+        checked_at: '2026-01-01T00:02:00.000Z',
+        expires_at: '2026-01-01T00:04:00.000Z',
+      }],
+      [{
+        decision: 'renewal_limit_reached',
+        checked_at: '2026-01-01T00:02:00.000Z',
+        expires_at: '2026-01-01T00:06:00.000Z',
+      }],
+      [{
+        decision: 'stale_claim',
+        checked_at: '2026-01-01T00:02:00.000Z',
+        expires_at: null,
+      }],
+      [{
+        decision: 'deferred',
+        reason: 'reservation_busy',
+        checked_at: '2026-01-01T00:04:00.000Z',
+        available_at: '2026-01-01T00:04:15.000Z',
+      }],
+      [{
+        decision: 'already_deferred',
+        reason: 'reservation_busy',
+        checked_at: '2026-01-01T00:05:00.000Z',
+        available_at: '2026-01-01T00:04:15.000Z',
+      }],
+      [{
+        decision: 'stale_claim',
+        reason: null,
+        checked_at: '2026-01-01T00:04:00.000Z',
+        available_at: null,
+      }],
+      [{
+        decision: 'not_complete',
+        checked_at: '2026-01-01T00:04:30.000Z',
+        completed_at: null,
+      }],
+      [{
+        decision: 'completed',
+        checked_at: '2026-01-01T00:04:30.000Z',
+        completed_at: '2026-01-01T00:04:30.000Z',
+      }],
+      [{
+        decision: 'already_completed',
+        checked_at: '2026-01-01T00:05:00.000Z',
+        completed_at: '2026-01-01T00:04:30.000Z',
+      }],
+    );
+    const outbox = createSpWriteOutboxLedger(mock.handle);
+    await expect(outbox.renewClaim(claim, 120)).resolves.toEqual({
+      kind: 'renewed',
+      expiresAt: '2026-01-01T00:04:00.000Z',
+    });
+    await expect(outbox.renewClaim(claim, 120)).resolves.toEqual({
+      kind: 'renewal_limit_reached',
+      expiresAt: '2026-01-01T00:06:00.000Z',
+    });
+    await expect(outbox.renewClaim(claim, 120)).resolves.toEqual({ kind: 'stale_claim' });
+    await expect(outbox.deferClaim(claim, 'reservation_busy')).resolves.toEqual({
+      kind: 'deferred',
+      reason: 'reservation_busy',
+      availableAt: '2026-01-01T00:04:15.000Z',
+    });
+    await expect(outbox.deferClaim(claim, 'reservation_busy')).resolves.toEqual({
+      kind: 'already_deferred',
+      reason: 'reservation_busy',
+      availableAt: '2026-01-01T00:04:15.000Z',
+    });
+    await expect(outbox.deferClaim(claim, 'reservation_busy'))
+      .resolves.toEqual({ kind: 'stale_claim' });
+    await expect(outbox.completeClaim(claim)).resolves.toEqual({ kind: 'not_complete' });
+    await expect(outbox.completeClaim(claim)).resolves.toEqual({
+      kind: 'completed',
+      completedAt: '2026-01-01T00:04:30.000Z',
+    });
+    await expect(outbox.completeClaim(claim)).resolves.toEqual({
+      kind: 'already_completed',
+      completedAt: '2026-01-01T00:04:30.000Z',
+    });
+    expect(mock.calls).toHaveLength(9);
+    expect(mock.calls[0]?.values).toEqual([claim.outboxId, '1', uuid(620), 120]);
   });
 
   it('derives exact plan/action bytes and preimages instead of accepting proofs', async () => {
@@ -484,13 +773,12 @@ describe('SP write persistence facade pure boundary', () => {
         expires_at: '2026-01-01T00:00:00.000Z',
       }],
     ];
+    const leaseClaim = await dispatchClaimFor();
     for (const reply of leaseReplies) {
       const mock = scriptedHandle(reply);
       const runtime = createSpWriteRuntimeLedger(mock.handle);
       await expect(runtime.acquireDispatchLease({
-        executionId: uuid(57),
-        planId: uuid(58),
-        generation: uuid(59),
+        claim: leaseClaim,
         routeKey: 'sp.v3.keywords.update',
       })).rejects.toMatchObject({
         operation: 'acquire_dispatch_lease',
@@ -593,7 +881,12 @@ describe('SP write persistence facade pure boundary', () => {
 
   it('decodes every no-authority reservation outcome without exposing a ticket', async () => {
     const artifacts = reservationArtifacts();
+    const claim = await dispatchClaimFor(artifacts);
     const cases = [
+      {
+        row: reservationRow({ decision: 'claim_unavailable' }),
+        expected: { kind: 'closed_without_dispatch', reason: 'claim_unavailable' },
+      },
       {
         row: reservationRow(),
         expected: { kind: 'defer_and_reobserve', reason: 'busy' },
@@ -614,7 +907,7 @@ describe('SP write persistence facade pure boundary', () => {
     for (const { row, expected } of cases) {
       const mock = scriptedHandle([row]);
       const runtime = createSpWriteRuntimeLedger(mock.handle);
-      const outcome = await runtime.reserveProviderCall(artifacts);
+      const outcome = await runtime.reserveProviderCall({ ...artifacts, claim });
       expect(outcome).toMatchObject(expected);
       expect('ticket' in outcome).toBe(false);
       expect(JSON.stringify(outcome)).not.toContain(artifacts.intent.intentId);
@@ -624,6 +917,7 @@ describe('SP write persistence facade pure boundary', () => {
 
   it('fails closed on empty, extra, unknown, nullable, or over-authoritative decisions', async () => {
     const artifacts = reservationArtifacts();
+    const claim = await dispatchClaimFor(artifacts);
     const resultId = uuid(620);
     const malformedReplies: SqlReply[] = [
       [],
@@ -644,7 +938,7 @@ describe('SP write persistence facade pure boundary', () => {
     for (const reply of malformedReplies) {
       const mock = scriptedHandle(reply);
       const runtime = createSpWriteRuntimeLedger(mock.handle);
-      await expect(runtime.reserveProviderCall(artifacts)).rejects.toMatchObject({
+      await expect(runtime.reserveProviderCall({ ...artifacts, claim })).rejects.toMatchObject({
         operation: 'reserve_provider_call',
         category: 'protocol_violation',
         recovery: 'reconcile_only',
@@ -656,6 +950,7 @@ describe('SP write persistence facade pure boundary', () => {
 
   it('returns an opaque ticket only after exact committed winner readback', async () => {
     const artifacts = reservationArtifacts();
+    const claim = await dispatchClaimFor(artifacts);
     const resultId = uuid(621);
     const mock = scriptedHandle(
       [reservationRow({
@@ -667,7 +962,7 @@ describe('SP write persistence facade pure boundary', () => {
     );
     const runtime = createSpWriteRuntimeLedger(mock.handle);
 
-    const outcome = await runtime.reserveProviderCall(artifacts);
+    const outcome = await runtime.reserveProviderCall({ ...artifacts, claim });
     expect(outcome.kind).toBe('dispatch_once');
     if (outcome.kind !== 'dispatch_once') throw new Error('winner fixture returned no ticket');
     expect(outcome.ticket.resultId).toBe(resultId);
@@ -680,6 +975,9 @@ describe('SP write persistence facade pure boundary', () => {
     expect(mock.calls).toHaveLength(2);
 
     expect(mock.calls[0]?.values).toEqual([
+      claim.outboxId,
+      claim.claimEpoch,
+      uuid(620),
       artifacts.intent.executionId,
       artifacts.intent.planId,
       artifacts.intent.generation,
@@ -718,6 +1016,7 @@ describe('SP write persistence facade pure boundary', () => {
 
     for (const readback of readbacks) {
       const artifacts = reservationArtifacts();
+      const claim = await dispatchClaimFor(artifacts);
       const mock = scriptedHandle(
         [reservationRow({
           decision: 'won',
@@ -727,7 +1026,7 @@ describe('SP write persistence facade pure boundary', () => {
         readback(artifacts),
       );
       const runtime = createSpWriteRuntimeLedger(mock.handle);
-      await expect(runtime.reserveProviderCall(artifacts)).rejects.toMatchObject({
+      await expect(runtime.reserveProviderCall({ ...artifacts, claim })).rejects.toMatchObject({
         operation: 'read_dispatch_ticket',
         category: 'protocol_violation',
         recovery: 'reconcile_only',
@@ -739,6 +1038,7 @@ describe('SP write persistence facade pure boundary', () => {
 
   it('withholds a ticket when the DB clock crosses the deadline within one JS millisecond', async () => {
     const artifacts = reservationArtifacts();
+    const claim = await dispatchClaimFor(artifacts);
     const resultId = uuid(622);
     const mock = scriptedHandle(
       [reservationRow({
@@ -754,7 +1054,7 @@ describe('SP write persistence facade pure boundary', () => {
     );
     const runtime = createSpWriteRuntimeLedger(mock.handle);
 
-    const outcome = await runtime.reserveProviderCall(artifacts);
+    const outcome = await runtime.reserveProviderCall({ ...artifacts, claim });
     expect(outcome).toMatchObject({
       kind: 'closed_without_dispatch',
       reason: 'dispatch_window_elapsed',
@@ -824,13 +1124,76 @@ describe('SP write persistence facade pure boundary', () => {
       Object.assign(new Error('synthetic lease contention'), { code: '55P03' }),
     );
     const runtime = createSpWriteRuntimeLedger(contention.handle);
+    const claim = await dispatchClaimFor();
     await expect(runtime.acquireDispatchLease({
-      executionId: uuid(932),
-      planId: uuid(933),
-      generation: uuid(934),
+      claim,
       routeKey: 'sp.v3.keywords.update',
     })).resolves.toEqual({ kind: 'unavailable' });
     expect(contention.calls).toHaveLength(1);
+  });
+
+  it('keeps every claim-bound database exception reconciliation-only', async () => {
+    const artifacts = reservationArtifacts();
+    const claim = await dispatchClaimFor(artifacts);
+    const cases = [
+      ['22023', 'invalid_artifact'],
+      ['42501', 'permission_denied'],
+      ['P0002', 'missing_dependency'],
+      ['23505', 'identity_or_protocol_conflict'],
+      ['55000', 'authority_unavailable'],
+      ['40001', 'transaction_aborted'],
+      ['40P01', 'transaction_aborted'],
+      ['57014', 'transaction_aborted'],
+      ['08006', 'outcome_unknown'],
+      ['XX000', 'protocol_violation'],
+    ] as const;
+    for (const [code, category] of cases) {
+      const leaseMock = scriptedHandle(Object.assign(new Error('raw lease failure'), { code }));
+      await expect(createSpWriteRuntimeLedger(leaseMock.handle).acquireDispatchLease({
+        claim,
+        routeKey: 'sp.v3.keywords.update',
+      })).rejects.toMatchObject({
+        operation: 'acquire_dispatch_lease',
+        category,
+        recovery: 'reconcile_only',
+        providerCallAllowed: false,
+      });
+      expect(leaseMock.calls).toHaveLength(1);
+
+      const reservationMock = scriptedHandle(
+        Object.assign(new Error('raw reservation failure'), { code }),
+      );
+      await expect(createSpWriteRuntimeLedger(reservationMock.handle).reserveProviderCall({
+        ...artifacts,
+        claim,
+      })).rejects.toMatchObject({
+        operation: 'reserve_provider_call',
+        category,
+        recovery: 'reconcile_only',
+        providerCallAllowed: false,
+      });
+      expect(reservationMock.calls).toHaveLength(1);
+
+      const resultId = uuid(932);
+      const readbackMock = scriptedHandle(
+        [reservationRow({
+          decision: 'won',
+          result_id: resultId,
+          intent_text: JSON.stringify(artifacts.intent),
+        })],
+        Object.assign(new Error('raw readback failure'), { code }),
+      );
+      await expect(createSpWriteRuntimeLedger(readbackMock.handle).reserveProviderCall({
+        ...artifacts,
+        claim,
+      })).rejects.toMatchObject({
+        operation: 'read_dispatch_ticket',
+        category,
+        recovery: 'reconcile_only',
+        providerCallAllowed: false,
+      });
+      expect(readbackMock.calls).toHaveLength(2);
+    }
   });
 
   it('sanitizes every raw database field and cause without preserving authority', async () => {
@@ -848,11 +1211,12 @@ describe('SP write persistence facade pure boundary', () => {
       constraint_name: sentinel,
     });
     const artifacts = reservationArtifacts();
+    const claim = await dispatchClaimFor(artifacts);
     const mock = scriptedHandle(raw);
     const runtime = createSpWriteRuntimeLedger(mock.handle);
     let failure: unknown;
     try {
-      await runtime.reserveProviderCall(artifacts);
+      await runtime.reserveProviderCall({ ...artifacts, claim });
     } catch (error) {
       failure = error;
     }
