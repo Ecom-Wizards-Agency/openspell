@@ -4,7 +4,8 @@
  * The Vercel worker is one-shot: Vercel Cron hits this route every five minutes
  * and one tick runs under a wall-clock budget. After the explicit report-lane
  * handoff, the separate always-on Evo process owns Creative and report queue
- * jobs while this route retains entity and recommendation claims. The tick
+ * jobs. Recommendation ownership transfers independently to its dedicated
+ * claimant; this route always retains entity claims. The tick
  * itself — lock, repair, provision/enqueue/requeue/drain/bid-series/release —
  * lives in `src/server/sync-tick.ts`; this file is the door.
  *
@@ -38,6 +39,10 @@ import {
   cronSyncJobTypesFromEnv,
   runSyncTick,
 } from '../../../../src/server/sync-tick';
+import {
+  enqueueRecommendationSchedulesIfReady,
+  recommendationLaneIntentFromEnv,
+} from '../../../../src/optimizer/readiness';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -64,9 +69,11 @@ export async function GET(request: Request): Promise<Response> {
 
   let jobTypes;
   let creativeSyncPilot;
+  let recommendationLaneIntent;
   try {
     jobTypes = cronSyncJobTypesFromEnv();
     creativeSyncPilot = creativeSyncPilotFromEnv();
+    recommendationLaneIntent = recommendationLaneIntentFromEnv();
   } catch {
     return NextResponse.json(
       { error: 'cron queue ownership is not configured safely' },
@@ -90,12 +97,15 @@ export async function GET(request: Request): Promise<Response> {
   const store = new PostgresWorkerStore(handle);
   const recommendationRuns = new PostgresRecommendationRunStore(handle);
   const adsApi = createAdsApiClientFromEnv(handle);
+  const claimsRecommendations = jobTypes.includes('recommendations.run');
   const worker = new SyncWorker({
     workerId: `vercel-cron-${randomUUID()}`,
     store,
     adsApi,
     jobTypes,
-    recommendationsRun: createRecommendationsRunner(recommendationRuns),
+    ...(claimsRecommendations
+      ? { recommendationsRun: createRecommendationsRunner(recommendationRuns) }
+      : {}),
   });
 
   try {
@@ -104,10 +114,18 @@ export async function GET(request: Request): Promise<Response> {
       store,
       worker,
       // Operator rule (2026-08-27): no automation without approval. Weekday-
-      // scheduled recommendation runs stay off until explicitly opted in; Run now is
-      // unaffected.
+      // scheduled recommendation runs stay off until explicitly opted in and
+      // the same fresh authority evidence used by both manual POST routes closes.
       ...(process.env['WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS'] === '1'
-        ? { recommendationSchedules: () => recommendationRuns.enqueueDueRecommendationRuns() }
+          && recommendationLaneIntent.state === 'enabled'
+        ? {
+            recommendationSchedules: async () => {
+              return enqueueRecommendationSchedulesIfReady(
+                handle,
+                () => recommendationRuns.enqueueDueRecommendationRuns(),
+              );
+            },
+          }
         : {}),
       ...(creativeSyncPilot.enabled
         ? {

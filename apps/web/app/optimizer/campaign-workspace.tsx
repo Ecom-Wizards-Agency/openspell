@@ -70,6 +70,7 @@ export function CampaignWorkspace({
   period,
   run,
   mayRunOptimizer,
+  previewReady,
   initialBatchId,
 }: {
   rows: readonly OptimizerCampaignRow[];
@@ -78,6 +79,7 @@ export function CampaignWorkspace({
   period: { start: string; end: string };
   run: { id: string; status: string } | null;
   mayRunOptimizer: boolean;
+  previewReady: boolean;
   initialBatchId: string | null;
 }): ReactNode {
   const router = useRouter();
@@ -134,7 +136,7 @@ export function CampaignWorkspace({
   const allModeInvalid = eligibleRows.length === 0 || allModeTooLarge;
   const selectionTooLarge = selectedCampaignIds.size > OPTIMIZER_PREVIEW_CAMPAIGN_MAX;
   const selectedModeInvalid = selectedCampaignIds.size === 0 || selectionTooLarge;
-  const runDisabled = !mayRunOptimizer || submitting || batchActive
+  const runDisabled = !mayRunOptimizer || !previewReady || submitting || batchActive
     || (scopeMode === 'all' ? allModeInvalid : selectedModeInvalid);
   const batchId = activeBatchId;
 
@@ -516,6 +518,10 @@ export function CampaignWorkspace({
         </p>
         {!mayRunOptimizer ? (
           <p className="wa-optimizer-preview__permission">Your role can view previews but cannot queue one.</p>
+        ) : !previewReady ? (
+          <p className="wa-optimizer-preview__permission" role="status">
+            Recommendation previews are temporarily unavailable.
+          </p>
         ) : allModeTooLarge ? (
           <p className="wa-optimizer-preview__error" role="alert">
             One preview supports at most {OPTIMIZER_PREVIEW_CAMPAIGN_MAX.toLocaleString('en-US')} campaigns. Select a smaller campaign set.

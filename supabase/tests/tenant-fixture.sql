@@ -233,15 +233,28 @@ begin
   -- against the immediate predecessor. Keep those historical snapshots usable
   -- while making current-schema RLS coverage non-vacuous.
   if to_regclass('public.recommendation_preview_batches') is not null then
-    insert into public.recommendation_preview_batches
-      (id, org_id, profile_id, client_request_id, selection_mode,
-       request_fingerprint, scope_count, scope_fingerprint, child_count, created_by)
-    values
-      (v_preview_batch, v_org, v_profile, gen_random_uuid(), 'selected',
-       md5(p_slug || '-preview-request-a') || md5(p_slug || '-preview-request-b'),
-       1,
-       md5(p_slug || '-preview-batch-a') || md5(p_slug || '-preview-batch-b'),
-       1, p_user_id);
+    if to_regprocedure(
+      'app.recommendation_run_scope_fingerprint(uuid,uuid,text[])'
+    ) is not null then
+      insert into public.recommendation_preview_batches
+        (id, org_id, profile_id, client_request_id, selection_mode,
+         request_fingerprint, scope_count, scope_fingerprint, child_count, created_by)
+      values
+        (v_preview_batch, v_org, v_profile, gen_random_uuid(), 'selected',
+         md5(p_slug || '-preview-request-a') || md5(p_slug || '-preview-request-b'),
+         1, app.recommendation_batch_scope_fingerprint(v_profile, array['c-1']),
+         1, p_user_id);
+    else
+      insert into public.recommendation_preview_batches
+        (id, org_id, profile_id, client_request_id, selection_mode,
+         request_fingerprint, scope_count, scope_fingerprint, child_count, created_by)
+      values
+        (v_preview_batch, v_org, v_profile, gen_random_uuid(), 'selected',
+         md5(p_slug || '-preview-request-a') || md5(p_slug || '-preview-request-b'),
+         1,
+         md5(p_slug || '-preview-batch-a') || md5(p_slug || '-preview-batch-b'),
+         1, p_user_id);
+    end if;
 
     insert into public.sync_jobs
       (id, org_id, profile_id, job_type, payload, status, started_at, finished_at)
@@ -254,15 +267,29 @@ begin
       'succeeded', now(), now()
     );
 
-    insert into public.recommendation_runs
-      (id, org_id, profile_id, status, lookback_days, strategy_snapshot,
-       strategy_goal, batch_id, scope_version, scope_count, scope_fingerprint,
-       job_id, engine_version)
-    values
-      (v_preview_run, v_org, v_profile, 'succeeded', 30, v_strategy,
-       'neutral', v_preview_batch, 1, 1,
-       md5(p_slug || '-preview-run-a') || md5(p_slug || '-preview-run-b'),
-       v_preview_job, 'fixture');
+    if to_regprocedure(
+      'app.recommendation_run_scope_fingerprint(uuid,uuid,text[])'
+    ) is not null then
+      insert into public.recommendation_runs
+        (id, org_id, profile_id, status, lookback_days, strategy_snapshot,
+         strategy_goal, batch_id, scope_version, scope_count, scope_fingerprint,
+         job_id, engine_version, execution_lineage)
+      values
+        (v_preview_run, v_org, v_profile, 'succeeded', 30, v_strategy,
+         'neutral', v_preview_batch, 1, 1,
+         app.recommendation_run_scope_fingerprint(v_profile, null, array['c-1']),
+         v_preview_job, 'fixture', 'queue');
+    else
+      insert into public.recommendation_runs
+        (id, org_id, profile_id, status, lookback_days, strategy_snapshot,
+         strategy_goal, batch_id, scope_version, scope_count, scope_fingerprint,
+         job_id, engine_version)
+      values
+        (v_preview_run, v_org, v_profile, 'succeeded', 30, v_strategy,
+         'neutral', v_preview_batch, 1, 1,
+         md5(p_slug || '-preview-run-a') || md5(p_slug || '-preview-run-b'),
+         v_preview_job, 'fixture');
+    end if;
 
     insert into public.recommendation_run_campaigns
       (org_id, profile_id, batch_id, run_id, campaign_id)

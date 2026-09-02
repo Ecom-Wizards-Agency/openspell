@@ -38,6 +38,7 @@ import {
 } from '@wizard-ads/worker/deployment-role';
 import type { CreativeSyncPilotPolicy } from '@wizard-ads/worker/deployment-role';
 import type { DailyCreativeSyncEnqueueResult } from '@wizard-ads/db';
+import { requireValidRecommendationLaneIntent } from '../optimizer/readiness';
 
 /** Queue work owned by Vercel cron; integration jobs stay on the always-on host. */
 export const CRON_SYNC_JOB_TYPES = DEFAULT_VERCEL_CRON_JOB_TYPES satisfies readonly JobType[];
@@ -46,7 +47,11 @@ export const CRON_SYNC_JOB_TYPES = DEFAULT_VERCEL_CRON_JOB_TYPES satisfies reado
 export function cronSyncJobTypesFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): readonly JobType[] {
-  return vercelCronJobTypesFromEnv(env['OPENSPELL_EVO_REPORT_LANE_READY']);
+  const current = vercelCronJobTypesFromEnv(env['OPENSPELL_EVO_REPORT_LANE_READY']);
+  const recommendation = requireValidRecommendationLaneIntent(env);
+  return recommendation.state === 'enabled'
+    ? current.filter((jobType) => jobType !== 'recommendations.run')
+    : current;
 }
 
 /**

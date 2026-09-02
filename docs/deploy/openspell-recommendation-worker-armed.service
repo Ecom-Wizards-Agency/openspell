@@ -1,0 +1,55 @@
+[Unit]
+Description=OpenSpell Evo recommendation worker
+Documentation=https://github.com/Ecom-Wizards-Agency/openspell
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=30min
+StartLimitBurst=6
+
+[Service]
+Type=exec
+DynamicUser=yes
+LoadCredentialEncrypted=openspell-recommendation-worker-database-url:/etc/credstore.encrypted/openspell-recommendation-worker-database-url
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/openspell-recommendation-worker/current/public-armed.conf
+ExecStart=/usr/local/bin/node /opt/openspell-recommendation-worker/current/bin/openspell-recommendation-worker-launch.mjs
+ExecStartPost=/usr/local/bin/node /opt/openspell-recommendation-worker/current/bin/openspell-recommendation-worker-health.mjs http://127.0.0.1:3002/healthz ${OPENSPELL_WORKER_REVISION} 1 120
+Restart=on-failure
+RestartPreventExitStatus=78
+RestartSec=15s
+RestartSteps=6
+RestartMaxDelaySec=15min
+TimeoutStartSec=90s
+TimeoutStopSec=35s
+KillSignal=SIGTERM
+StateDirectory=openspell-recommendation-worker
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+TasksMax=64
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

@@ -25,6 +25,8 @@ describe('GET /api/cron/sync', () => {
   const savedReportLane = process.env['OPENSPELL_EVO_REPORT_LANE_READY'];
   const savedCreativeProducer = process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
   const savedCreativeAllowlist = process.env['OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST'];
+  const savedRecommendationLane = process.env['OPENSPELL_RECOMMENDATION_LANE_READY'];
+  const savedRecommendationRevision = process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'];
 
   beforeEach(() => {
     delete process.env['CRON_SECRET'];
@@ -32,6 +34,8 @@ describe('GET /api/cron/sync', () => {
     delete process.env['OPENSPELL_EVO_REPORT_LANE_READY'];
     delete process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
     delete process.env['OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST'];
+    delete process.env['OPENSPELL_RECOMMENDATION_LANE_READY'];
+    delete process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'];
   });
 
   afterEach(() => {
@@ -50,6 +54,16 @@ describe('GET /api/cron/sync', () => {
       delete process.env['OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST'];
     } else {
       process.env['OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST'] = savedCreativeAllowlist;
+    }
+    if (savedRecommendationLane === undefined) {
+      delete process.env['OPENSPELL_RECOMMENDATION_LANE_READY'];
+    } else {
+      process.env['OPENSPELL_RECOMMENDATION_LANE_READY'] = savedRecommendationLane;
+    }
+    if (savedRecommendationRevision === undefined) {
+      delete process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'];
+    } else {
+      process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'] = savedRecommendationRevision;
     }
   });
 
@@ -84,6 +98,16 @@ describe('GET /api/cron/sync', () => {
   it('fails closed before the database or Amazon wiring for a malformed lane handoff', async () => {
     process.env['CRON_SECRET'] = SECRET;
     process.env['OPENSPELL_EVO_REPORT_LANE_READY'] = 'true';
+    const response = await GET(request(`Bearer ${SECRET}`));
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: 'cron queue ownership is not configured safely',
+    });
+  });
+
+  it('fails closed before database or Amazon wiring for malformed recommendation intent', async () => {
+    process.env['CRON_SECRET'] = SECRET;
+    process.env['OPENSPELL_RECOMMENDATION_LANE_READY'] = '1';
     const response = await GET(request(`Bearer ${SECRET}`));
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toEqual({

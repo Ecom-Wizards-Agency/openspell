@@ -1431,7 +1431,10 @@ export class ScheduleProvisioner extends PeriodicPass {
     private readonly store: WorkerStore,
     intervalMs = 15 * MINUTE_MS,
     private readonly provisionLogger: WorkerLogger = consoleLogger,
-    private readonly recommendationSchedules?: RecommendationScheduleStore,
+    private readonly recommendationSchedules?: Pick<
+      RecommendationScheduleStore,
+      'enqueueDueRecommendationRuns'
+    >,
     private readonly sqpSchedules?: WeeklySqpScheduleProducer,
   ) {
     super(intervalMs, provisionLogger);

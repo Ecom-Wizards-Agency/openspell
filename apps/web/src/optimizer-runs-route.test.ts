@@ -4,12 +4,14 @@ import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import { POST } from '../app/api/optimizer/runs/route.js';
 import { GET } from '../app/api/optimizer/runs/[batchId]/route.js';
+import { POST as POST_GROUP } from '../app/api/optimizer/groups/run/route.js';
 
 const available = await databaseAvailable();
 const OWNER_A = '71717171-7171-4717-8171-717171717171';
 const VIEWER_A = '72727272-7272-4727-8272-727272727272';
 const OWNER_B = '73737373-7373-4737-8373-737373737373';
 const BRIDGE_SECRET = 'synthetic-optimizer-route-bridge-secret';
+const RECOMMENDATION_REVISION = 'c'.repeat(40);
 
 describe.skipIf(!available)('optimizer preview routes', () => {
   let database: TestDatabase;
@@ -23,6 +25,8 @@ describe.skipIf(!available)('optimizer preview routes', () => {
     databaseUrl: process.env['DATABASE_URL'],
     bridgeSecret: process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET'],
     bridgeEnabled: process.env['WIZARD_ADS_E2E_AUTH_BRIDGE'],
+    recommendationReady: process.env['OPENSPELL_RECOMMENDATION_LANE_READY'],
+    recommendationRevision: process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'],
   };
 
   const headers = (userId: string, orgId: string, bridge = BRIDGE_SECRET) => ({
@@ -75,9 +79,21 @@ describe.skipIf(!available)('optimizer preview routes', () => {
     // Keep c-1 eligible and unassigned, so group-specific safety state is irrelevant.
     await database.sql`delete from public.campaign_optimization_assignments where org_id = ${orgA}`;
 
+    // This suite exercises the web boundary, not the separately proven cutover
+    // transition. Put its disposable authority fixture directly in the exact
+    // compatible state so every happy-path POST must still read fresh evidence.
+    await database.sql`
+      update app.recommendation_claim_authority
+         set protocol = 'fenced', admission = 'scoped', epoch = 3,
+             authorized_revision = ${RECOMMENDATION_REVISION}, updated_at = now()
+       where singleton
+    `;
+
     process.env['DATABASE_URL'] = database.connectionString;
     process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET'] = BRIDGE_SECRET;
     process.env['WIZARD_ADS_E2E_AUTH_BRIDGE'] = '1';
+    process.env['OPENSPELL_RECOMMENDATION_LANE_READY'] = '1';
+    process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'] = RECOMMENDATION_REVISION;
   }, 60_000);
 
   afterAll(async () => {
@@ -87,6 +103,16 @@ describe.skipIf(!available)('optimizer preview routes', () => {
     else process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET'] = previous.bridgeSecret;
     if (previous.bridgeEnabled === undefined) delete process.env['WIZARD_ADS_E2E_AUTH_BRIDGE'];
     else process.env['WIZARD_ADS_E2E_AUTH_BRIDGE'] = previous.bridgeEnabled;
+    if (previous.recommendationReady === undefined) {
+      delete process.env['OPENSPELL_RECOMMENDATION_LANE_READY'];
+    } else {
+      process.env['OPENSPELL_RECOMMENDATION_LANE_READY'] = previous.recommendationReady;
+    }
+    if (previous.recommendationRevision === undefined) {
+      delete process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'];
+    } else {
+      process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'] = previous.recommendationRevision;
+    }
     await database?.drop();
   });
 
@@ -112,6 +138,52 @@ describe.skipIf(!available)('optimizer preview routes', () => {
         from public.recommendation_preview_batches where org_id = ${orgA}
     `;
     expect(after?.count).toBe(before?.count);
+  });
+
+  it('returns controlled unavailability with zero artifacts when deployment intent is disabled', async () => {
+    const [before] = await database.sql<{
+      batches: number;
+      runs: number;
+      scopes: number;
+      jobs: number;
+    }[]>`
+      select
+        (select count(*)::integer from public.recommendation_preview_batches where org_id = ${orgA}) as batches,
+        (select count(*)::integer from public.recommendation_runs where org_id = ${orgA}) as runs,
+        (select count(*)::integer
+           from public.recommendation_run_campaigns scope
+           join public.recommendation_runs run on run.id = scope.run_id
+          where run.org_id = ${orgA}) as scopes,
+        (select count(*)::integer from public.sync_jobs
+          where org_id = ${orgA} and job_type = 'recommendations.run') as jobs
+    `;
+    process.env['OPENSPELL_RECOMMENDATION_LANE_READY'] = '0';
+    try {
+      const response = await POST(previewRequest(OWNER_A, orgA, profileA));
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({
+        error: 'Recommendation previews are temporarily unavailable.',
+      });
+    } finally {
+      process.env['OPENSPELL_RECOMMENDATION_LANE_READY'] = '1';
+    }
+    const [after] = await database.sql<{
+      batches: number;
+      runs: number;
+      scopes: number;
+      jobs: number;
+    }[]>`
+      select
+        (select count(*)::integer from public.recommendation_preview_batches where org_id = ${orgA}) as batches,
+        (select count(*)::integer from public.recommendation_runs where org_id = ${orgA}) as runs,
+        (select count(*)::integer
+           from public.recommendation_run_campaigns scope
+           join public.recommendation_runs run on run.id = scope.run_id
+          where run.org_id = ${orgA}) as scopes,
+        (select count(*)::integer from public.sync_jobs
+          where org_id = ${orgA} and job_type = 'recommendations.run') as jobs
+    `;
+    expect(after).toEqual(before);
   });
 
   it('queues for an authorized owner and returns its truthful scoped status', async () => {
@@ -142,6 +214,36 @@ describe.skipIf(!available)('optimizer preview routes', () => {
       campaignCount: 1,
       children: [{ campaignCount: 1, status: 'queued' }],
     });
+  });
+
+  it('guards the group producer with the same fresh readiness evidence', async () => {
+    const [group] = await database.sql<{ id: string }[]>`
+      select id from public.optimization_groups where org_id = ${orgA} order by created_at limit 1
+    `;
+    if (!group) throw new Error('optimizer route group fixture is incomplete');
+    const request = () => new Request('http://localhost/api/optimizer/groups/run', {
+      method: 'POST',
+      headers: headers(OWNER_A, orgA),
+      body: JSON.stringify({ profileId: profileA, groupId: group.id }),
+    });
+
+    process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'] = 'd'.repeat(40);
+    const before = await database.sql<{ count: number }[]>`
+      select count(*)::integer as count from public.recommendation_runs where org_id = ${orgA}
+    `;
+    try {
+      const unavailable = await POST_GROUP(request());
+      expect(unavailable.status).toBe(503);
+      await expect(unavailable.json()).resolves.toEqual({
+        error: 'Recommendation previews are temporarily unavailable.',
+      });
+    } finally {
+      process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'] = RECOMMENDATION_REVISION;
+    }
+    const after = await database.sql<{ count: number }[]>`
+      select count(*)::integer as count from public.recommendation_runs where org_id = ${orgA}
+    `;
+    expect(after).toEqual(before);
   });
 
   it('returns the same 404 for foreign batch and profile combinations', async () => {

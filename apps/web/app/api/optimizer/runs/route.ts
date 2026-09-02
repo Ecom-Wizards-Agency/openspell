@@ -12,6 +12,10 @@ import {
   OptimizerPreviewHttpError,
   readOptimizerPreviewRequest,
 } from '../../../../src/optimizer/preview-http';
+import {
+  OPTIMIZER_PREVIEW_UNAVAILABLE_MESSAGE,
+  resolveOptimizerPreviewReadiness,
+} from '../../../../src/optimizer/readiness';
 
 export const runtime = 'nodejs';
 
@@ -24,6 +28,13 @@ export async function POST(request: Request): Promise<Response> {
     const actor = await requestActor(request.headers);
     await requireCapability(database, actor, 'editTargets');
     const body = await readOptimizerPreviewRequest(request);
+    const readiness = await resolveOptimizerPreviewReadiness(database);
+    if (!readiness.ready) {
+      return Response.json(
+        { error: OPTIMIZER_PREVIEW_UNAVAILABLE_MESSAGE },
+        { status: 503 },
+      );
+    }
     const accepted = await new PostgresRecommendationRunStore(database)
       .enqueueRecommendationPreviewBatch({
         orgId: actor.orgId,

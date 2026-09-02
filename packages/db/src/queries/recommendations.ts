@@ -912,11 +912,11 @@ export async function createNegativeProposals(
     const [run] = await sql<{ id: string }[]>`
       insert into public.recommendation_runs
         (org_id, profile_id, status, lookback_days, window_start, window_end, engine_version,
-         proposals_count, started_at, finished_at)
+         proposals_count, started_at, finished_at, execution_lineage)
       values (${options.orgId}, ${options.profileId}, 'succeeded', ${options.lookbackDays},
               ${options.window.start}::date, ${options.window.end}::date,
               ${options.engineVersion ?? 'ngram-explorer'}, ${options.proposals.length},
-              now(), now())
+              now(), now(), 'human')
       returning id
     `;
     const runId = run?.id;

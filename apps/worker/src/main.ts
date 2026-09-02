@@ -15,6 +15,7 @@ import {
   createRecommendationsRunner,
 } from './recommendations-run.js';
 import { RecommendationObservationPass } from './recommendation-observer.js';
+import { createReadinessGatedRecommendationSchedules } from './recommendation-schedule-readiness.js';
 import { PostgresWorkerStore } from './store.js';
 import { WorkerUnifiedDualRun } from './unified-reporting.js';
 import { PostgresUnifiedDualRunStore } from './unified-reporting-store.js';
@@ -81,6 +82,10 @@ const unifiedReporting = adsApi && config.unifiedReporting.enabled
     })
   : undefined;
 const recommendationRuns = new PostgresRecommendationRunStore(handle);
+const gatedRecommendationSchedules = createReadinessGatedRecommendationSchedules(
+  handle,
+  recommendationRuns,
+);
 const sbVideo = adsApi
   ? new ObservedSbVideoIngestion(
       adsApi,
@@ -140,7 +145,7 @@ const provisioner = config.startsBackgroundPasses
       store,
       undefined,
       undefined,
-      recommendationRuns,
+      gatedRecommendationSchedules,
       sqpSchedules,
     )
   : undefined;

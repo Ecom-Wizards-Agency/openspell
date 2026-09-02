@@ -205,7 +205,7 @@ describe.skipIf(!available)('sync job queue', () => {
     it('deduplicates a slot that is enqueued twice', async () => {
       const [schedule] = await database.sql<{ id: string }[]>`
         insert into public.sync_schedules (org_id, profile_id, job_type, cadence, next_run_at)
-        values (${orgId}, ${profileId}, 'recommendations.run', interval '1 day', now() - interval '1 minute')
+        values (${orgId}, ${profileId}, 'rank.sync', interval '1 day', now() - interval '1 minute')
         returning id
       `;
 

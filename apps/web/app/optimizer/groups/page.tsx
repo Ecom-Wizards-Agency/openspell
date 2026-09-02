@@ -7,6 +7,7 @@ import { canonicalProfilePath } from '../../../src/data/active-profile';
 import { gateMessage } from '../../../src/ui/gate-message';
 import { EmptyState, PageHeader } from '../../../src/ui/primitives';
 import { page } from '../../../src/ui/tokens';
+import { resolveOptimizerPreviewReadiness } from '../../../src/optimizer/readiness';
 import { listProfiles, requestedProfileId, selectProfile } from '../../_lib/profiles';
 import { OptimizationGroupsManager } from './groups-manager';
 
@@ -49,7 +50,10 @@ export default async function OptimizationGroupsPage({ searchParams }: PageProps
   const canonical = canonicalProfilePath('/optimizer/groups', { ...params }, profile.id);
   if (canonical !== null) redirect(canonical);
 
-  const workspace = await readOptimizationWorkspace(handle, { orgId, profileId: profile.id });
+  const [workspace, previewReadiness] = await Promise.all([
+    readOptimizationWorkspace(handle, { orgId, profileId: profile.id }),
+    resolveOptimizerPreviewReadiness(handle),
+  ]);
 
   return (
     <main style={page}>
@@ -62,6 +66,7 @@ export default async function OptimizationGroupsPage({ searchParams }: PageProps
         profileId={profile.id}
         initial={workspace}
         canManage={can(context.active?.role, 'editTargets')}
+        previewReady={previewReadiness.ready}
       />
     </main>
   );

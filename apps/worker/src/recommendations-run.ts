@@ -16,7 +16,8 @@
  * for an account-wide note would turn narrative into an exportable fake action.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import type { DbHandle, QuerySql } from '@wizard-ads/db';
+import type { ClaimRef, DbHandle, QuerySql } from '@wizard-ads/db';
+import type { RecommendationWorkerDatabase } from '@wizard-ads/db/recommendation-worker';
 import {
   buildRecommendations,
   CATEGORY_UNKNOWN,
@@ -55,14 +56,14 @@ import {
   targetAcosFor,
   type StrategyDocument,
 } from '@wizard-ads/strategy';
-import { profileToday } from './bid-series.js';
-import { DEFAULT_CADENCES } from './schedules.js';
+import { profileToday } from './profile-calendar.js';
+import { RECOMMENDATION_CADENCE } from './recommendation-cadence.js';
 
-export const DEFAULT_RECOMMENDATION_LOOKBACK_DAYS = DEFAULT_CADENCES.recommendations.lookbackDays;
+export const DEFAULT_RECOMMENDATION_LOOKBACK_DAYS = RECOMMENDATION_CADENCE.lookbackDays;
 export const RECOMMENDATIONS_ENGINE_VERSION = 'white-box-v1';
-export const RECOMMENDATION_SCHEDULE_CADENCE = DEFAULT_CADENCES.recommendations.cadence;
-export const RECOMMENDATION_SCHEDULE_DELAY = DEFAULT_CADENCES.recommendations.delay;
-export const RECOMMENDATION_SCHEDULE_PRIORITY = DEFAULT_CADENCES.recommendations.priority;
+export const RECOMMENDATION_SCHEDULE_CADENCE = RECOMMENDATION_CADENCE.cadence;
+export const RECOMMENDATION_SCHEDULE_DELAY = RECOMMENDATION_CADENCE.delay;
+export const RECOMMENDATION_SCHEDULE_PRIORITY = RECOMMENDATION_CADENCE.priority;
 export const RECOMMENDATION_SCOPE_VERSION = 1;
 export const MAX_RECOMMENDATION_PREVIEW_CAMPAIGNS = 10_000;
 export const MAX_RECOMMENDATION_PREVIEW_REQUEST_BYTES = 512 * 1024;
@@ -103,6 +104,15 @@ export class RecommendationExecutionCustodyError extends RecommendationPreviewEr
 
   constructor(message = 'Recommendation execution does not own the linked queue job.') {
     super('integrity_failure', 500, message);
+  }
+}
+
+/** Exact-claim failure/readback did not prove whether the run transition committed. */
+export class RecommendationExecutionSettlementAmbiguousError extends Error {
+  override readonly name = 'RecommendationExecutionSettlementAmbiguousError';
+
+  constructor() {
+    super('Recommendation execution settlement requires attended reconciliation.');
   }
 }
 
@@ -303,20 +313,36 @@ export interface RecommendationRunStore {
   startRun(
     scope: RunScope,
     expectedGroupId: string | undefined,
-    expectedJobId: string,
+    execution: RecommendationRunExecutionContext,
   ): Promise<StartRunResult>;
-  loadProfile(scope: ProfileScope): Promise<RecommendationProfile>;
+  loadProfile(
+    scope: ProfileScope,
+    execution: RecommendationRunExecutionContext,
+  ): Promise<RecommendationProfile>;
   loadInputs(
     scope: RunScope,
     window: DateWindow,
+    execution: RecommendationRunExecutionContext,
   ): Promise<RecommendationRunInputs>;
   loadGroupRecommendationSafety(
     scope: ProfileScope,
     groupId: string,
+    execution: RecommendationRunExecutionContext,
   ): Promise<GroupRecommendationSafety>;
-  succeedRun(completion: RunCompletion): Promise<number>;
-  failRun(scope: RunScope, error: string): Promise<void>;
+  succeedRun(
+    completion: RunCompletion,
+    execution: RecommendationRunExecutionContext,
+  ): Promise<number>;
+  failRun(
+    scope: RunScope,
+    error: string,
+    execution: RecommendationRunExecutionContext,
+  ): Promise<RecommendationRunFailureResult>;
 }
+
+export type RecommendationRunFailureResult =
+  | Readonly<{ decision: 'failed' }>
+  | Readonly<{ decision: 'already_succeeded'; proposalsCount: number }>;
 
 export interface QueueRecommendationRunInput extends ProfileScope {
   lookbackDays?: number;
@@ -348,9 +374,18 @@ export interface RecommendationRunResult {
   alreadySucceeded: boolean;
 }
 
-export interface RecommendationRunExecutionContext {
-  /** The exact fenced queue row currently executing this immutable run. */
-  jobId: string;
+export type RecommendationRunExecutionContext =
+  | Readonly<{
+      /** Compatibility-only custody before recommendation fencing activates. */
+      jobId: string;
+    }>
+  | Readonly<{
+      /** Exact opaque, non-expiring fenced custody for the narrow lane. */
+      claim: ClaimRef;
+    }>;
+
+function executionJobId(execution: RecommendationRunExecutionContext): string {
+  return 'claim' in execution ? execution.claim.jobId : execution.jobId;
 }
 
 export type RecommendationsRun = (
@@ -397,10 +432,19 @@ export async function runRecommendations(
   };
   let started: StartRunResult;
   try {
-    started = await store.startRun(scope, payload.groupId, execution.jobId);
+    started = await store.startRun(scope, payload.groupId, execution);
   } catch (error) {
-    if (error instanceof RecommendationScopeIntegrityError) {
-      await store.failRun(scope, error.message.slice(0, 4_000));
+    if (error instanceof RecommendationExecutionCustodyError) throw error;
+    const failure = await reconcileRunFailure(
+      store, scope, errorMessage(error).slice(0, 4_000), execution,
+    );
+    if (failure.decision === 'already_succeeded') {
+      return {
+        runId: payload.runId,
+        proposals: failure.proposalsCount,
+        window: null,
+        alreadySucceeded: true,
+      };
     }
     throw error;
   }
@@ -413,14 +457,16 @@ export async function runRecommendations(
     };
   }
 
+  let window: DateWindow | null = null;
+  let successWriteAmbiguous = false;
   try {
     const lookbackDays = payload.lookbackDays ?? DEFAULT_RECOMMENDATION_LOOKBACK_DAYS;
-    const profile = await store.loadProfile(scope);
-    const window = recommendationWindow(profile.timezone, lookbackDays, now);
-    const inputs = await store.loadInputs(scope, window);
+    const profile = await store.loadProfile(scope, execution);
+    window = recommendationWindow(profile.timezone, lookbackDays, now);
+    const inputs = await store.loadInputs(scope, window, execution);
     const groupSafety = started.groupRun === null || started.groupRun === undefined
       ? null
-      : await store.loadGroupRecommendationSafety(scope, started.groupRun.group.id);
+      : await store.loadGroupRecommendationSafety(scope, started.groupRun.group.id, execution);
     const resolved = {
       value: started.strategySnapshot,
       goal: started.strategyGoal,
@@ -463,21 +509,53 @@ export async function runRecommendations(
       diagnostics,
       groupSafety,
     };
-    const written = await store.succeedRun({
-      ...scope,
-      lookbackDays,
-      window,
-      strategySnapshot: resolved.value,
-      proposals,
-      narrative,
-    });
+    let written: number;
+    try {
+      written = await store.succeedRun({
+        ...scope,
+        lookbackDays,
+        window,
+        strategySnapshot: resolved.value,
+        proposals,
+        narrative,
+      }, execution);
+    } catch (error) {
+      // The database transaction may have committed even if its response was
+      // lost. The exact-claim failure RPC is also the authoritative readback.
+      successWriteAmbiguous = true;
+      throw error;
+    }
     if (written !== proposals.length) {
       throw new Error(`Composed ${proposals.length} recommendations, store wrote ${written}`);
     }
     return { runId: payload.runId, proposals: written, window, alreadySucceeded: false };
   } catch (error) {
-    await store.failRun(scope, errorMessage(error).slice(0, 4_000));
+    const failure = await reconcileRunFailure(
+      store, scope, errorMessage(error).slice(0, 4_000), execution,
+    );
+    if (successWriteAmbiguous && failure.decision === 'already_succeeded') {
+      return {
+        runId: payload.runId,
+        proposals: failure.proposalsCount,
+        window,
+        alreadySucceeded: true,
+      };
+    }
     throw error;
+  }
+}
+
+async function reconcileRunFailure(
+  store: RecommendationRunStore,
+  scope: RunScope,
+  error: string,
+  execution: RecommendationRunExecutionContext,
+): Promise<RecommendationRunFailureResult> {
+  try {
+    return await store.failRun(scope, error, execution);
+  } catch (failure) {
+    if (failure instanceof RecommendationExecutionCustodyError) throw failure;
+    throw new RecommendationExecutionSettlementAmbiguousError();
   }
 }
 
@@ -931,25 +1009,25 @@ function requestFingerprint(
 ): string {
   return canonicalFingerprint(
     'openspell.recommendation-preview.request.v1',
-    [profileId, mode, ...bytewiseSorted(campaignIds)],
+    [profileId.toLowerCase(), mode, ...bytewiseSorted(campaignIds)],
   );
 }
 
-function batchScopeFingerprint(profileId: string, campaignIds: readonly string[]): string {
+export function batchScopeFingerprint(profileId: string, campaignIds: readonly string[]): string {
   return canonicalFingerprint(
     'openspell.recommendation-preview.batch-scope.v1',
-    [profileId, ...bytewiseSorted(campaignIds)],
+    [profileId.toLowerCase(), ...bytewiseSorted(campaignIds)],
   );
 }
 
-function runScopeFingerprint(
+export function runScopeFingerprint(
   profileId: string,
   groupId: string | null,
   campaignIds: readonly string[],
 ): string {
   return canonicalFingerprint(
     'openspell.recommendation-preview.run-scope.v1',
-    [profileId, groupId ?? 'unassigned', ...bytewiseSorted(campaignIds)],
+    [profileId.toLowerCase(), groupId?.toLowerCase() ?? 'unassigned', ...bytewiseSorted(campaignIds)],
   );
 }
 
@@ -1082,6 +1160,97 @@ interface ProfileFactWireRow {
   cost: string | number;
   orders: string | number;
   sales: string | number;
+}
+
+function recommendationInputsFromWire(
+  scope: RunScope,
+  targetRows: readonly TargetWireRow[],
+  campaignRows: readonly CampaignWireRow[],
+  profileRows: readonly ProfileFactWireRow[],
+): RecommendationRunInputs {
+  return {
+    // Scoped execution consumes the resolved enqueue-time snapshot returned
+    // by startRun. Live strategy documents are intentionally not queried.
+    tenantStrategy: null,
+    profileStrategy: null,
+    targets: targetRows.map((row) => {
+      const entityType = row.target_kind;
+      const entityRef: EntityRef = {
+        profileId: scope.profileId,
+        entityType,
+        entityId: row.target_id,
+        adProduct: row.ad_product,
+        campaignId: row.campaign_id,
+        adGroupId: row.ad_group_id,
+        name: row.entity_name,
+      };
+      return {
+        entityRef,
+        campaignName: row.campaign_name,
+        adGroupName: row.ad_group_name,
+        category: classifyCampaignCategory(row.campaign_name),
+        matchType: row.match_type,
+        entityState: row.entity_state,
+        campaignState: row.campaign_state,
+        adGroupState: row.ad_group_state,
+        currentBid: numberOrNull(row.current_bid),
+        dailyBudget: numberOrNull(row.daily_budget),
+        stock: {
+          status: 'unknown',
+          asins: row.advertised_asins,
+          reason: 'No validated inventory field is synced for this profile.',
+        },
+        organicRank: entityType !== 'keyword'
+          ? { status: 'not_applicable' }
+          : row.rank_now === null
+            ? { status: 'unknown', reason: 'No matching Rank Radar observation was found.' }
+            : {
+                status: 'known',
+                currentRank: Number(row.rank_now),
+                previousRank: numberOrNull(row.rank_prev),
+                ...(row.rank_asin === null ? {} : { asin: row.rank_asin }),
+                ...(row.rank_observed_on === null ? {} : { observedOn: row.rank_observed_on }),
+              },
+        metrics: {
+          impressions: Number(row.impressions),
+          clicks: Number(row.clicks),
+          cost: Number(row.cost),
+          orders: Number(row.orders),
+          sales: Number(row.sales),
+        },
+        corridor: row.corridor_date === null ? null : {
+          date: row.corridor_date,
+          low: numberOrNull(row.suggested_bid_low),
+          median: numberOrNull(row.suggested_bid_median),
+          high: numberOrNull(row.suggested_bid_high),
+          bid: numberOrNull(row.corridor_bid),
+          cpc: numberOrNull(row.corridor_cpc),
+        },
+      };
+    }),
+    campaigns: campaignRows.map((row) => ({
+      adProduct: row.ad_product,
+      campaignId: row.campaign_id,
+      campaignName: row.campaign_name,
+      state: row.state,
+      dailyBudget: numberOrNull(row.daily_budget),
+      metrics: {
+        impressions: Number(row.impressions),
+        clicks: Number(row.clicks),
+        cost: Number(row.cost),
+        orders: Number(row.orders),
+        sales: Number(row.sales),
+      },
+    })),
+    profileFacts: profileRows.map((row) => ({
+      date: row.date,
+      impressions: Number(row.impressions),
+      clicks: Number(row.clicks),
+      cost: Number(row.cost),
+      orders: Number(row.orders),
+      sales: Number(row.sales),
+    })),
+  };
 }
 
 interface OptimizationGroupWireRow {
@@ -1236,7 +1405,7 @@ async function insertScopedRecommendationRun(
       (id, org_id, profile_id, status, lookback_days, engine_version,
        strategy_snapshot, strategy_goal, group_id, group_role, group_snapshot,
        due_at, schedule_context, batch_id, scope_version, scope_count,
-       scope_fingerprint, job_id)
+       scope_fingerprint, job_id, execution_lineage)
     values (${runId}, ${input.orgId}, ${input.profileId}, 'queued', ${input.lookbackDays},
             ${RECOMMENDATIONS_ENGINE_VERSION},
             ${serializeJson(input.strategy.strategy)}::text::jsonb, ${input.strategy.goal},
@@ -1246,7 +1415,7 @@ async function insertScopedRecommendationRun(
             ${input.dueAt}::timestamptz,
             ${input.scheduleContext === null ? null : serializeJson(input.scheduleContext)}::text::jsonb,
             ${input.batchId}::uuid, ${RECOMMENDATION_SCOPE_VERSION}, ${campaignIds.length},
-            ${fingerprint}, ${jobId})
+            ${fingerprint}, ${jobId}, 'queue')
     returning id
   `;
   if (runs.length !== 1 || runs[0]?.id !== runId) {
@@ -1285,8 +1454,9 @@ implements RecommendationRunStore, RecommendationScheduleStore {
   async startRun(
     scope: RunScope,
     expectedGroupId: string | undefined,
-    expectedJobId: string,
+    execution: RecommendationRunExecutionContext,
   ): Promise<StartRunResult> {
+    const expectedJobId = executionJobId(execution);
     return this.handle.sql.begin(async (sql) => {
       const rows = await sql<{
         status: string;
@@ -1434,7 +1604,10 @@ implements RecommendationRunStore, RecommendationScheduleStore {
     });
   }
 
-  async loadProfile(scope: ProfileScope): Promise<RecommendationProfile> {
+  async loadProfile(
+    scope: ProfileScope,
+    _execution: RecommendationRunExecutionContext,
+  ): Promise<RecommendationProfile> {
     const rows = await this.handle.sql<{
       timezone: string;
       goal_lens: string | null;
@@ -1457,6 +1630,7 @@ implements RecommendationRunStore, RecommendationScheduleStore {
   async loadInputs(
     scope: RunScope,
     window: DateWindow,
+    _execution: RecommendationRunExecutionContext,
   ): Promise<RecommendationRunInputs> {
     const profileFactsFrom = firstOfMonth(window.end) < window.start
       ? firstOfMonth(window.end)
@@ -1680,99 +1854,21 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       `,
     ]);
 
-    return {
-      // Scoped execution consumes the resolved enqueue-time snapshot returned
-      // by startRun. Live strategy documents are intentionally not queried.
-      tenantStrategy: null,
-      profileStrategy: null,
-      targets: targetRows.map((row) => {
-        const entityType = row.target_kind;
-        const entityRef: EntityRef = {
-          profileId: scope.profileId,
-          entityType,
-          entityId: row.target_id,
-          adProduct: row.ad_product,
-          campaignId: row.campaign_id,
-          adGroupId: row.ad_group_id,
-          name: row.entity_name,
-        };
-        return {
-          entityRef,
-          campaignName: row.campaign_name,
-          adGroupName: row.ad_group_name,
-          category: classifyCampaignCategory(row.campaign_name),
-          matchType: row.match_type,
-          entityState: row.entity_state,
-          campaignState: row.campaign_state,
-          adGroupState: row.ad_group_state,
-          currentBid: numberOrNull(row.current_bid),
-          dailyBudget: numberOrNull(row.daily_budget),
-          stock: {
-            status: 'unknown',
-            asins: row.advertised_asins,
-            reason: 'No validated inventory field is synced for this profile.',
-          },
-          organicRank: entityType !== 'keyword'
-            ? { status: 'not_applicable' }
-            : row.rank_now === null
-              ? { status: 'unknown', reason: 'No matching Rank Radar observation was found.' }
-              : {
-                  status: 'known',
-                  currentRank: Number(row.rank_now),
-                  previousRank: numberOrNull(row.rank_prev),
-                  ...(row.rank_asin === null ? {} : { asin: row.rank_asin }),
-                  ...(row.rank_observed_on === null ? {} : { observedOn: row.rank_observed_on }),
-                },
-          metrics: {
-            impressions: Number(row.impressions),
-            clicks: Number(row.clicks),
-            cost: Number(row.cost),
-            orders: Number(row.orders),
-            sales: Number(row.sales),
-          },
-          corridor: row.corridor_date === null ? null : {
-            date: row.corridor_date,
-            low: numberOrNull(row.suggested_bid_low),
-            median: numberOrNull(row.suggested_bid_median),
-            high: numberOrNull(row.suggested_bid_high),
-            bid: numberOrNull(row.corridor_bid),
-            cpc: numberOrNull(row.corridor_cpc),
-          },
-        };
-      }),
-      campaigns: campaignRows.map((row) => ({
-        adProduct: row.ad_product,
-        campaignId: row.campaign_id,
-        campaignName: row.campaign_name,
-        state: row.state,
-        dailyBudget: numberOrNull(row.daily_budget),
-        metrics: {
-          impressions: Number(row.impressions),
-          clicks: Number(row.clicks),
-          cost: Number(row.cost),
-          orders: Number(row.orders),
-          sales: Number(row.sales),
-        },
-      })),
-      profileFacts: profileRows.map((row) => ({
-        date: row.date,
-        impressions: Number(row.impressions),
-        clicks: Number(row.clicks),
-        cost: Number(row.cost),
-        orders: Number(row.orders),
-        sales: Number(row.sales),
-      })),
-    };
+    return recommendationInputsFromWire(scope, targetRows, campaignRows, profileRows);
   }
 
   async loadGroupRecommendationSafety(
     scope: ProfileScope,
     groupId: string,
+    _execution: RecommendationRunExecutionContext,
   ): Promise<GroupRecommendationSafety> {
     return readGroupRecommendationSafety(this.handle.sql, scope, groupId);
   }
 
-  async succeedRun(completion: RunCompletion): Promise<number> {
+  async succeedRun(
+    completion: RunCompletion,
+    _execution: RecommendationRunExecutionContext,
+  ): Promise<number> {
     return this.handle.sql.begin(async (sql) => {
       const runs = await sql<{ status: string; proposals_count: number }[]>`
         select status::text as status, proposals_count
@@ -1912,8 +2008,12 @@ implements RecommendationRunStore, RecommendationScheduleStore {
     });
   }
 
-  async failRun(scope: RunScope, error: string): Promise<void> {
-    await this.handle.sql.begin(async (sql) => {
+  async failRun(
+    scope: RunScope,
+    error: string,
+    _execution: RecommendationRunExecutionContext,
+  ): Promise<RecommendationRunFailureResult> {
+    return this.handle.sql.begin(async (sql): Promise<RecommendationRunFailureResult> => {
       const updated = await sql<{ id: string }[]>`
         update public.recommendation_runs
            set status = 'failed', finished_at = now(), error = ${error}
@@ -1924,14 +2024,16 @@ implements RecommendationRunStore, RecommendationScheduleStore {
         returning id
       `;
       if (updated.length !== 1) {
-        const [existing] = await sql<{ status: string }[]>`
-          select status::text as status
+        const [existing] = await sql<{ status: string; proposals_count: number }[]>`
+          select status::text as status, proposals_count
             from public.recommendation_runs
            where id = ${scope.runId}
              and org_id = ${scope.orgId}
              and profile_id = ${scope.profileId}
         `;
-        if (existing?.status === 'succeeded') return;
+        if (existing?.status === 'succeeded') {
+          return { decision: 'already_succeeded', proposalsCount: existing.proposals_count };
+        }
         throw new Error('Failed 0 of 1 recommendation runs');
       }
       await sql`
@@ -1941,6 +2043,7 @@ implements RecommendationRunStore, RecommendationScheduleStore {
                 'recommendation_run', ${scope.runId},
                 ${serializeJson({ error })}::text::jsonb, 'worker')
       `;
+      return { decision: 'failed' };
     });
   }
 
@@ -2569,6 +2672,365 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       return enqueued;
     });
   }
+}
+
+interface FencedRunCache {
+  claim: ClaimRef;
+  groupId: string | undefined;
+  profile?: RecommendationProfile;
+  groupSafety?: GroupRecommendationSafety | null;
+}
+
+/**
+ * Claim-bound execution store for the recommendation-only database role.
+ * Every method crosses only the narrow RPC facade and presents the same opaque
+ * capability that the claimant received for this attempt.
+ */
+export class FencedRecommendationRunStore implements RecommendationRunStore {
+  private readonly runs = new Map<string, FencedRunCache>();
+
+  constructor(readonly database: RecommendationWorkerDatabase) {}
+
+  async startRun(
+    scope: RunScope,
+    expectedGroupId: string | undefined,
+    execution: RecommendationRunExecutionContext,
+  ): Promise<StartRunResult> {
+    const claim = requireFencedExecution(execution);
+    this.runs.set(scope.runId, { claim, groupId: expectedGroupId });
+    try {
+      const wire = await this.database.start(claim, { ...scope, groupId: expectedGroupId });
+      const parsed = parseFencedStart(scope, expectedGroupId, wire);
+      this.runs.set(scope.runId, {
+        claim,
+        groupId: expectedGroupId,
+        profile: parsed.profile,
+      });
+      return parsed.start;
+    } catch (error) {
+      throw fencedDatabaseError(error);
+    }
+  }
+
+  async loadProfile(
+    scope: ProfileScope,
+    execution: RecommendationRunExecutionContext,
+  ): Promise<RecommendationProfile> {
+    const cached = this.cacheForProfile(scope, execution);
+    if (cached.profile === undefined) throw new RecommendationExecutionCustodyError();
+    return cached.profile;
+  }
+
+  async loadInputs(
+    scope: RunScope,
+    window: DateWindow,
+    execution: RecommendationRunExecutionContext,
+  ): Promise<RecommendationRunInputs> {
+    const cached = this.cache(scope.runId, execution);
+    try {
+      const wire = await this.database.readInputs(
+        cached.claim,
+        { ...scope, groupId: cached.groupId },
+        window,
+      );
+      const parsed = parseFencedInputs(scope, wire.inputs);
+      cached.groupSafety = cached.groupId === undefined
+        ? null
+        : parseGroupSafety(wire.groupSafety);
+      return parsed;
+    } catch (error) {
+      throw fencedDatabaseError(error);
+    }
+  }
+
+  async loadGroupRecommendationSafety(
+    scope: ProfileScope,
+    groupId: string,
+    execution: RecommendationRunExecutionContext,
+  ): Promise<GroupRecommendationSafety> {
+    const cached = this.cacheForProfile(scope, execution);
+    if (cached.groupId !== groupId || cached.groupSafety === undefined || cached.groupSafety === null) {
+      throw new RecommendationScopeIntegrityError();
+    }
+    return cached.groupSafety;
+  }
+
+  async succeedRun(
+    completion: RunCompletion,
+    execution: RecommendationRunExecutionContext,
+  ): Promise<number> {
+    const cached = this.cache(completion.runId, execution);
+    try {
+      const result = await this.database.succeed(
+        cached.claim,
+        {
+          orgId: completion.orgId,
+          profileId: completion.profileId,
+          runId: completion.runId,
+          groupId: cached.groupId,
+        },
+        completion,
+      );
+      if (result.proposalsCount !== completion.proposals.length) {
+        throw new RecommendationScopeIntegrityError();
+      }
+      this.runs.delete(completion.runId);
+      return result.proposalsCount;
+    } catch (error) {
+      throw fencedDatabaseError(error);
+    }
+  }
+
+  async failRun(
+    scope: RunScope,
+    error: string,
+    execution: RecommendationRunExecutionContext,
+  ): Promise<RecommendationRunFailureResult> {
+    const cached = this.cache(scope.runId, execution);
+    try {
+      const result = await this.database.fail(
+        cached.claim,
+        { ...scope, groupId: cached.groupId },
+        error,
+      );
+      this.runs.delete(scope.runId);
+      return result.decision === 'already_succeeded'
+        ? { decision: 'already_succeeded', proposalsCount: result.proposalsCount }
+        : { decision: 'failed' };
+    } catch (failure) {
+      throw fencedDatabaseError(failure);
+    }
+  }
+
+  private cache(runId: string, execution: RecommendationRunExecutionContext): FencedRunCache {
+    const claim = requireFencedExecution(execution);
+    const cached = this.runs.get(runId);
+    if (cached === undefined || !sameClaim(cached.claim, claim)) {
+      throw new RecommendationExecutionCustodyError();
+    }
+    return cached;
+  }
+
+  private cacheForProfile(
+    scope: ProfileScope,
+    execution: RecommendationRunExecutionContext,
+  ): FencedRunCache {
+    const claim = requireFencedExecution(execution);
+    const matches = [...this.runs.values()].filter((candidate) =>
+      sameClaim(candidate.claim, claim) && candidate.profile?.profileId === scope.profileId
+      && candidate.profile.orgId === scope.orgId,
+    );
+    if (matches.length !== 1) throw new RecommendationExecutionCustodyError();
+    return matches[0]!;
+  }
+}
+
+function requireFencedExecution(execution: RecommendationRunExecutionContext): ClaimRef {
+  if (!('claim' in execution)) throw new RecommendationExecutionCustodyError();
+  return execution.claim;
+}
+
+function sameClaim(left: ClaimRef, right: ClaimRef): boolean {
+  return left.jobId === right.jobId && left.workerId === right.workerId && left.token === right.token;
+}
+
+function parseFencedStart(
+  scope: RunScope,
+  expectedGroupId: string | undefined,
+  wire: { decision: 'started' | 'already_succeeded'; runData: unknown; profileData: unknown },
+): { start: StartRunResult; profile: RecommendationProfile } {
+  const run = record(wire.runData);
+  const profile = record(wire.profileData);
+  const strategySnapshot = TenantStrategy.parse(run['strategySnapshot']);
+  const strategyGoal = requiredString(run['strategyGoal']);
+  const groupId = nullableString(run['groupId']);
+  if ((groupId ?? undefined) !== expectedGroupId) throw new RecommendationScopeIntegrityError();
+  let groupRun: RecommendationGroupRun | null = null;
+  if (groupId !== null) {
+    const snapshot = normalizeOptimizationGroupSnapshot(run['groupSnapshot']);
+    const scheduleContext = OptimizationRunScheduleContext.parse(run['scheduleContext']);
+    if (
+      snapshot.version !== 2 || snapshot.group.id !== groupId
+      || snapshot.group.orgId !== scope.orgId || snapshot.group.profileId !== scope.profileId
+      || snapshot.group.role !== requiredString(run['groupRole'])
+    ) throw new RecommendationScopeIntegrityError();
+    groupRun = {
+      group: snapshot.group,
+      dueAt: requiredString(run['dueAt']),
+      scheduleContext,
+    };
+  }
+  if (profile['orgId'] !== scope.orgId || profile['profileId'] !== scope.profileId) {
+    throw new RecommendationScopeIntegrityError();
+  }
+  const proposalsCount = nonnegativeInteger(run['proposalsCount']);
+  return {
+    start: {
+      alreadySucceeded: wire.decision === 'already_succeeded',
+      proposalsCount,
+      groupRun,
+      strategySnapshot,
+      strategyGoal,
+    },
+    profile: {
+      orgId: scope.orgId,
+      profileId: scope.profileId,
+      timezone: requiredString(profile['timezone']),
+      goal: nullableString(profile['goal']),
+      monthlyBudget: numberOrNull(numericWire(profile['monthlyBudget'])),
+    },
+  };
+}
+
+function parseFencedInputs(scope: RunScope, value: unknown): RecommendationRunInputs {
+  const input = record(value);
+  const targets = array(input['targets']).map(parseTargetWire);
+  const campaigns = array(input['campaigns']).map(parseCampaignWire);
+  const profileFacts = array(input['profileFacts']).map(parseProfileFactWire);
+  if (targets.length > 100_000 || campaigns.length > 10_000 || profileFacts.length > 400) {
+    throw new RecommendationScopeIntegrityError();
+  }
+  return recommendationInputsFromWire(scope, targets, campaigns, profileFacts);
+}
+
+function parseTargetWire(value: unknown): TargetWireRow {
+  const row = record(value);
+  const targetKind = row['target_kind'];
+  const adProduct = row['ad_product'];
+  if ((targetKind !== 'keyword' && targetKind !== 'target')
+      || (adProduct !== 'SP' && adProduct !== 'SB' && adProduct !== 'SD')) {
+    throw new RecommendationScopeIntegrityError();
+  }
+  return {
+    target_id: requiredString(row['target_id']),
+    target_kind: targetKind,
+    ad_product: adProduct,
+    campaign_id: requiredString(row['campaign_id']),
+    ad_group_id: requiredString(row['ad_group_id']),
+    entity_name: requiredString(row['entity_name']),
+    campaign_name: requiredString(row['campaign_name']),
+    ad_group_name: nullableString(row['ad_group_name']),
+    match_type: nullableString(row['match_type']),
+    entity_state: nullableString(row['entity_state']),
+    campaign_state: nullableString(row['campaign_state']),
+    ad_group_state: nullableString(row['ad_group_state']),
+    current_bid: numericWire(row['current_bid']),
+    daily_budget: numericWire(row['daily_budget']),
+    advertised_asins: array(row['advertised_asins']).map(requiredString),
+    rank_now: numericWire(row['rank_now']),
+    rank_prev: numericWire(row['rank_prev']),
+    rank_asin: nullableString(row['rank_asin']),
+    rank_observed_on: nullableString(row['rank_observed_on']),
+    impressions: requiredNumericWire(row['impressions']),
+    clicks: requiredNumericWire(row['clicks']),
+    cost: requiredNumericWire(row['cost']),
+    orders: requiredNumericWire(row['orders']),
+    sales: requiredNumericWire(row['sales']),
+    corridor_date: nullableString(row['corridor_date']),
+    suggested_bid_low: numericWire(row['suggested_bid_low']),
+    suggested_bid_median: numericWire(row['suggested_bid_median']),
+    suggested_bid_high: numericWire(row['suggested_bid_high']),
+    corridor_bid: numericWire(row['corridor_bid']),
+    corridor_cpc: numericWire(row['corridor_cpc']),
+  };
+}
+
+function parseCampaignWire(value: unknown): CampaignWireRow {
+  const row = record(value);
+  const adProduct = row['ad_product'];
+  if (adProduct !== 'SP' && adProduct !== 'SB' && adProduct !== 'SD') {
+    throw new RecommendationScopeIntegrityError();
+  }
+  return {
+    ad_product: adProduct,
+    campaign_id: requiredString(row['campaign_id']),
+    campaign_name: requiredString(row['campaign_name']),
+    state: nullableString(row['state']),
+    daily_budget: numericWire(row['daily_budget']),
+    impressions: requiredNumericWire(row['impressions']),
+    clicks: requiredNumericWire(row['clicks']),
+    cost: requiredNumericWire(row['cost']),
+    orders: requiredNumericWire(row['orders']),
+    sales: requiredNumericWire(row['sales']),
+  };
+}
+
+function parseProfileFactWire(value: unknown): ProfileFactWireRow {
+  const row = record(value);
+  return {
+    date: requiredString(row['date']),
+    impressions: requiredNumericWire(row['impressions']),
+    clicks: requiredNumericWire(row['clicks']),
+    cost: requiredNumericWire(row['cost']),
+    orders: requiredNumericWire(row['orders']),
+    sales: requiredNumericWire(row['sales']),
+  };
+}
+
+function parseGroupSafety(value: unknown): GroupRecommendationSafety {
+  const row = record(value);
+  if (typeof row['mayPropose'] !== 'boolean') throw new RecommendationScopeIntegrityError();
+  return {
+    mayPropose: row['mayPropose'],
+    exportedRecommendations: nonnegativeInteger(row['exportedRecommendations']),
+    incompleteObservations: nonnegativeInteger(row['incompleteObservations']),
+    holdDecisions: nonnegativeInteger(row['holdDecisions']),
+    revertDecisions: nonnegativeInteger(row['revertDecisions']),
+    reason: requiredString(row['reason']),
+  };
+}
+
+function fencedDatabaseError(error: unknown): unknown {
+  if (error instanceof RecommendationPreviewError) return error;
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? String(error.code)
+    : null;
+  if (code === '55000' || code === '42501') return new RecommendationExecutionCustodyError();
+  if (code === '23514' || code === '22023' || code === '54000') {
+    return new RecommendationScopeIntegrityError();
+  }
+  return error;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new RecommendationScopeIntegrityError();
+  }
+  return value as Record<string, unknown>;
+}
+
+function array(value: unknown): unknown[] {
+  if (!Array.isArray(value)) throw new RecommendationScopeIntegrityError();
+  return value;
+}
+
+function requiredString(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0) throw new RecommendationScopeIntegrityError();
+  return value;
+}
+
+function nullableString(value: unknown): string | null {
+  if (value === null) return null;
+  return requiredString(value);
+}
+
+function numericWire(value: unknown): string | number | null {
+  if (value === null) return null;
+  return requiredNumericWire(value);
+}
+
+function requiredNumericWire(value: unknown): string | number {
+  if ((typeof value !== 'number' || !Number.isFinite(value))
+      && (typeof value !== 'string' || value.trim() === '' || !Number.isFinite(Number(value)))) {
+    throw new RecommendationScopeIntegrityError();
+  }
+  return value as string | number;
+}
+
+function nonnegativeInteger(value: unknown): number {
+  const parsed = typeof value === 'string' || typeof value === 'number' ? Number(value) : NaN;
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new RecommendationScopeIntegrityError();
+  return parsed;
 }
 
 async function advanceOptimizationSchedule(

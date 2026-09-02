@@ -37,6 +37,9 @@ import {
 import type { AdsProfileContext, SuggestedBidClient } from './ads-api.js';
 import { defaultRegionTokenBuckets, type RegionTokenBuckets } from './region-token-buckets.js';
 import type { WorkerLogger } from './worker.js';
+import { profileToday } from './profile-calendar.js';
+
+export { profileToday } from './profile-calendar.js';
 
 /** One target the sync will read a corridor for, with the day's context. */
 export interface BidSeriesTargetInput {
@@ -97,17 +100,6 @@ export interface BidSeriesSyncCounts {
   failed: number;
   /** Profiles the pass never reached because its time budget ran out. */
   unvisited: number;
-}
-
-/** The day, in a profile's own timezone, that a corridor row is stamped with. */
-export function profileToday(timezone: string, now: Date): string {
-  try {
-    // `en-CA` renders as YYYY-MM-DD, which is exactly the profile-local calendar
-    // day the facts use.
-    return new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(now);
-  } catch {
-    return now.toISOString().slice(0, 10);
-  }
 }
 
 /** The reference day realized CPC is read from: the profile-local yesterday. */

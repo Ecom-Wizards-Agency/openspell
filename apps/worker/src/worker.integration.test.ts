@@ -60,7 +60,6 @@ import {
   PostgresRecommendationRunStore,
   RECOMMENDATION_SCHEDULE_PRIORITY,
   RECOMMENDATIONS_ENGINE_VERSION,
-  RecommendationExecutionCustodyError,
   RecommendationScopeIntegrityError,
   createRecommendationsRunner,
 } from './recommendations-run.js';
@@ -1174,7 +1173,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     }
   });
 
-  it('allows only the exact linked queue job to start a recommendation run', async () => {
+  it('rejects a second queue identity and allows only the exact linked job to start a run', async () => {
     const [group] = await database.sql<{ id: string }[]>`
       select id from public.optimization_groups
        where org_id = ${orgId} and profile_id = ${profileId}
@@ -1198,23 +1197,20 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     await database.sql`
       update public.sync_jobs set status = 'running', started_at = now() where id = ${queued.jobId}
     `;
-    await database.sql`
+    await expect(database.sql`
       insert into public.sync_jobs
         (id, org_id, profile_id, job_type, payload, status, started_at, dedupe_key)
       values (${duplicateJobId}, ${orgId}, ${profileId}, 'recommendations.run',
               ${JSON.stringify(duplicatePayload)}::text::jsonb, 'running', now(),
               ${`synthetic-duplicate:${queued.runId}`})
-    `;
+    `).rejects.toThrow(/admission evidence does not close/i);
 
     const scope = { orgId, profileId, runId: queued.runId };
-    const runner = createRecommendationsRunner(store);
-    await expect(runner(duplicatePayload, { jobId: duplicateJobId }))
-      .rejects.toBeInstanceOf(RecommendationExecutionCustodyError);
     const [unchanged] = await database.sql<{ status: string }[]>`
       select status::text as status from public.recommendation_runs where id = ${queued.runId}
     `;
     expect(unchanged?.status).toBe('queued');
-    await expect(store.startRun(scope, group.id, queued.jobId)).resolves.toMatchObject({
+    await expect(store.startRun(scope, group.id, { jobId: queued.jobId })).resolves.toMatchObject({
       alreadySucceeded: false,
       proposalsCount: 0,
     });
@@ -1223,7 +1219,8 @@ describe.skipIf(!available)('worker + real Postgres', () => {
          set status = 'succeeded', finished_at = now()
        where id = ${queued.runId}
     `;
-    await expect(store.failRun(scope, 'late synthetic integrity failure')).resolves.toBeUndefined();
+    await expect(store.failRun(scope, 'late synthetic integrity failure', { jobId: queued.jobId }))
+      .resolves.toEqual({ decision: 'already_succeeded', proposalsCount: 0 });
     const [preserved] = await database.sql<{ status: string; error: string | null }[]>`
       select status::text as status, error
         from public.recommendation_runs
@@ -1979,10 +1976,20 @@ describe.skipIf(!available)('worker + real Postgres', () => {
 
   it('gives the reduced Vercel and Evo report claimers disjoint queued rows', async () => {
     const reportRequestId = '88888888-8888-4888-8888-888888888888';
-    const runId = '99999999-9999-4999-8999-999999999999';
+    const [group] = await database.sql<{ id: string }[]>`
+      select id from public.optimization_groups
+       where org_id = ${orgId} and profile_id = ${profileId}
+       order by id limit 1
+    `;
+    if (group === undefined) throw new Error('seeded optimization group missing');
+    await new PostgresRecommendationRunStore(database).enqueueRecommendationRun({
+      orgId,
+      profileId,
+      groupId: group.id,
+      source: 'web',
+    });
     const payloads = [
       { type: 'entity.sync', orgId, profileId },
-      { type: 'recommendations.run', orgId, profileId, runId, lookbackDays: 7 },
       { type: 'creative.sync', orgId, profileId, startDate: today, endDate: today, adProduct: 'SB' },
       { type: 'report.request', orgId, profileId, reportType: 'sbAds', startDate: today, endDate: today },
       { type: 'report.poll', orgId, profileId, reportRequestId, amazonReportId: 'report-1', attempt: 0 },
@@ -2023,7 +2030,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     const [foreign] = await database.sql<{ status: string; claimed_by: string | null }[]>`
       select status, claimed_by
         from public.sync_jobs
-       where dedupe_key = 'lane-ownership:6'
+       where dedupe_key = 'lane-ownership:5'
     `;
     expect(foreign).toEqual({ status: 'queued', claimed_by: null });
   });

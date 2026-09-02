@@ -58,8 +58,10 @@ legacy / legacy admission
     -> fenced / scoped admission
 ```
 
-The first state preserves current behavior when the source migration is merely applied. Blocking
-admission lets existing legacy work drain without accepting another old job. The fenced transition
+The first state preserves current valid claim and admission behavior when the source migration is
+merely applied. The invalid generic SQL recommendation scheduler is excluded in every state because
+it cannot mint a run id or immutable scope; the readiness-gated TypeScript producer owns that job
+type. Blocking admission lets existing legacy work drain without accepting another old job. The fenced transition
 atomically prevents both legacy claim overloads and the generic stale reaper from acquiring
 recommendation jobs. Scoped admission then permits only complete WP-195 scope-version-1 work.
 
@@ -209,6 +211,12 @@ create table app.recommendation_claim_authority (
 The one initial row is `legacy`, `legacy`, epoch zero and no revision. The table has no direct grant,
 including to `service_role`.
 
+For rollout compatibility, the same exact human shape is recognized when an older web revision
+omits the new lineage marker. The marker is descriptive, never authority: a null-lineage run is
+exempt only when its engine is `ngram-explorer`, its jobless, unscoped, same-instant succeeded
+shape closes, and its negative-only proposal set and single web/user N-gram audit close at deferred
+validation. A null-lineage white-box run remains queue lineage.
+
 The migration also creates two non-login, non-inheriting, non-superuser, non-bypass-RLS roles:
 
 ```text
@@ -316,11 +324,16 @@ id, org_id, profile_id, job_type, payload` trigger on `sync_jobs` takes the auth
 before the queue row is inserted or identity is changed and refuses blocked admission. A deferred
 constraint trigger then validates the transaction-complete job/run/scope evidence at commit:
 
-- `legacy` admission permits only historical unscoped behavior;
+- `legacy` admission permits historical unscoped behavior and structurally complete WP-195 scoped
+  work, including a producer revision that predates the lineage marker;
 - `blocked` admission permits no new recommendation job;
 - `scoped` admission requires exactly one tenant/profile-matching `recommendation_runs` row with
-  `execution_lineage = queue`, `scope_version = 1`, the exact `job_id`, valid scope
+  explicit `execution_lineage = queue`, `scope_version = 1`, the exact `job_id`, valid scope
   count/fingerprint, strategy evidence and the complete WP-195 scope membership.
+
+The distinction is deliberate: pre-marker WP-195 work remains valid while authority is legacy, but
+the scoped gate accepts only the compatible producer revision. A still-running old web or mixed
+worker therefore cannot create work after cutover even if its legacy weekly flag is enabled.
 
 The trigger is deferred because WP-195 inserts the queue job before its run inside one transaction.
 The immediate trigger retains the authority lock for the transaction, so the deferred validator
@@ -431,6 +444,8 @@ The server-rendered optimizer uses the same resolver for the button state. Both 
 The web cron's scheduled recommendation producer uses the same decision before
 `enqueueDueRecommendationRuns`; the dedicated claimant starts no producer. Presentation is not
 treated as authorization, and each disabled entry point creates zero batch/run/scope/job artifacts.
+The still-active mixed worker wraps its optional weekly producer in that same shared DB readiness
+resolver; absent/malformed intent or non-matching fresh authority invokes no enqueue method.
 
 The report and recommendation gates are independent. Tests cover all four combinations, including
 `entity.sync` remaining on Vercel and the report lane remaining exactly four types. The environment
@@ -447,7 +462,9 @@ barrier against delayed old invocations.
 - optimizer POST/UI readiness guard and focused tests
 - dedicated `docs/deploy/` recommendation-worker contract, immutable installer, activator,
   verifier, rollback, readiness and fake-systemd tests
-- a read-only cutover evidence query covering authority, admission and exact queue/scope closure
+- `public.get_recommendation_cutover_evidence()`, a narrow read-only pre/postflight RPC covering
+  authority, active queue counts and exact scope closure, plus the separate guarded scoped-admission
+  script
 
 No `packages/shared`, Ads API, SP-API, Amazon write, report authority or earlier migration file is
 owned by this package.
@@ -477,7 +494,8 @@ Initial activation is:
 8. under web-promotion authorization, deploy and verify the compatible web revision and set Vercel's
    claim intent while database admission remains blocked; the UI and POST must still be unavailable;
 9. under scoped-admission authorization, compare-and-set admission to scoped only after exact web,
-   worker and database evidence agrees;
+   worker and database evidence agrees, using
+   `authorize-recommendation-scoped-admission-evo.sh --revision <full-live-revision>`;
 10. under bounded-QA authorization, run one preview-only check and reconcile batch, child, scope,
     queue and proposal counts.
 
@@ -528,7 +546,8 @@ Disposable PostgreSQL proofs cover:
 - unscoped human-requested negative proposals remaining writable and unchanged after fencing;
 - incomplete, mixed or job-linked `human` lineage failing atomically at deferred validation;
 - crash injection after claim, run start, proposal commit and lost settlement response preserving
-  exact run/job/proposal counts;
+  exact run/job/proposal counts; ambiguous start and success responses reconcile through an
+  exact-claim failure/readback before queue settlement;
 - same-revision resume settling the original token while a different identity or revision refuses;
 - fenced-to-fenced rebind preserving queued work, refusing live claims and leaving the old revision
   authoritative on failure;

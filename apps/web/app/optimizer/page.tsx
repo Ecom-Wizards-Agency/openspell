@@ -37,6 +37,7 @@ import {
   totalsOf,
 } from '../../src/optimizer/view';
 import { buildOptimizerCampaignRows } from '../../src/optimizer/campaigns';
+import { resolveOptimizerPreviewReadiness } from '../../src/optimizer/readiness';
 import { loadOptimizerPageData } from '../_lib/optimizer-page-data';
 import { periodFromParams, settledComparisonWindows, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
@@ -97,6 +98,17 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
   const canonical = canonicalProfilePath('/optimizer', { ...params }, profile.id);
   if (canonical !== null) redirect(canonical);
 
+  const [pageData, previewReadiness] = await Promise.all([
+    loadOptimizerPageData({
+      handle,
+      orgId,
+      profile,
+      period,
+      settledComparison: settled.comparison,
+      ...(params.run === undefined ? {} : { requestedRunId: params.run }),
+    }),
+    resolveOptimizerPreviewReadiness(handle),
+  ]);
   const {
     runs,
     run,
@@ -106,14 +118,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
     comparisonRows,
     ledger,
     campaignFacts,
-  } = await loadOptimizerPageData({
-    handle,
-    orgId,
-    profile,
-    period,
-    settledComparison: settled.comparison,
-    ...(params.run === undefined ? {} : { requestedRunId: params.run }),
-  });
+  } = pageData;
   const proposals = records.map((record) =>
     toProposalView(record, { strategySnapshot: run?.strategySnapshot ?? null }),
   );
@@ -237,6 +242,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
           period={period}
           run={run === null ? null : { id: run.id, status: run.status }}
           mayRunOptimizer={mayRunOptimizer}
+          previewReady={previewReadiness.ready}
           initialBatchId={params.batch ?? null}
         />
 

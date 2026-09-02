@@ -32,8 +32,10 @@ merge, exact-main CI and external-state reconciliation.
 
 ## Required behavior
 
-1. Add a private recommendation authority whose initial legacy state preserves current claim and
-   admission behavior when the migration is applied.
+1. Add a private recommendation authority whose initial legacy state preserves current valid claim
+   and admission behavior when the migration is applied. The generic SQL scheduler must skip
+   `recommendations.run`: it cannot mint the required run id or immutable scope, and one rejected
+   poison row must not roll back unrelated due schedules.
 2. Separate admission blocking, exact-revision fenced activation, fenced-to-fenced revision rebind
    and scope-version-1 admission into compare-and-set transitions. Lost transition responses are
    unknown until exact authority readback proves the old or new tuple; never retry or restore blind.
@@ -55,18 +57,22 @@ merge, exact-main CI and external-state reconciliation.
 8. Resume unresolved work only for the same stable worker identity and authorized exact revision.
    Lost-host recovery remains attended; no timer or lease expires a live claim.
 9. Add an immediate authority-locking admission gate plus deferred transaction-complete validator:
-   legacy admits legacy work, blocked admits none, and scoped admits only exact WP-195 scope-version-1
-   evidence recomputed by a Node-equivalent private SQL fingerprint canonicalizer.
+   legacy admits historical work plus structurally exact WP-195 scoped work from either pre-marker
+   or current producers, blocked admits none, and scoped admits only explicitly queue-marked exact
+   WP-195 scope-version-1 evidence recomputed by a Node-equivalent private SQL fingerprint
+   canonicalizer.
 10. Add a dedicated single-flight DB-only worker role with exactly `recommendations.run`, no periodic
    producer/reaper/observer pass and no Amazon/provider dependency or credential.
 11. Add a capability-free loopback health response binding exact revision, role, protocol, job set,
    authority epoch/admission and claimant readiness.
 12. Make web readiness the conjunction of strict deployment intent and fresh DB evidence for fenced
     protocol, scoped admission and the exact expected worker revision. Stale intent or DB failure is
-    controlled unavailability with zero artifacts from either optimizer POST or scheduled enqueue.
+    controlled unavailability with zero artifacts from optimizer POST, the web cron, or the still-
+    active mixed worker's optional weekly producer.
 13. Stage immutable artifacts without changing `current`, units, enablement or service state. Keep
-    hosted apply, credential provisioning, stage, activation, web promotion, scoped admission and QA
-    as separate exact authorizations.
+   hosted apply, credential provisioning, stage, activation, web promotion, scoped admission and QA
+   as separate exact authorizations. Scoped admission has its own guarded broker operation,
+   exact-tuple response-loss reconciliation, and narrow read-only pre/postflight evidence.
 14. Preserve v1 read-only behavior. No runtime path may import or call Ads API, SP-API, export/apply
     or Amazon write code.
 
@@ -88,7 +94,8 @@ merge, exact-main CI and external-state reconciliation.
 - claim token, worker, tenant, profile, run, group, payload, scope and fingerprint mismatches write
   zero recommendation/audit rows;
 - crash injection at claim, start, success and settlement-response-loss boundaries preserves exact
-  run/job/proposal counts and same-revision resume settles the original claim;
+  run/job/proposal counts; start/success response loss reconciles under the exact claim before queue
+  settlement, and same-revision resume settles the original claim;
 - runtime tests prove single flight, retry/dead classification, shutdown drain and sanitized health;
 - principal catalog proofs deny direct DML, Vault, Ads/SP-API/integration secrets, general/report
   queue and SP-write/outbox authority; static dependency/environment proofs find no provider or

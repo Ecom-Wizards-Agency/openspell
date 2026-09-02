@@ -11,6 +11,7 @@
   },
   "scripts": {
     "start": "tsx src/main.ts",
+    "recommendation:start": "tsx src/recommendation-lane/main.ts",
     "creative:preflight": "tsx src/creative-pilot-preflight-cli.ts",
     "stream:recover": "tsx src/marketing-stream-recovery-cli.ts",
     "typecheck": "tsc --noEmit",
