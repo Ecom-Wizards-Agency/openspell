@@ -45,17 +45,17 @@ current hosted database schema.
 
 ## Acceptance
 
-- [ ] A clean checkout installs frozen dependencies before executing the deployment harness.
-- [ ] The deployment harness fails if installer lock, temporary-root, install, harness,
+- [x] A clean checkout installs frozen dependencies before executing the deployment harness.
+- [x] The deployment harness fails if installer lock, temporary-root, install, harness,
   post-harness cleanliness, or packaging order regresses.
-- [ ] The installer refuses packaging if install or harness execution changes the clean checkout,
+- [x] The installer refuses packaging if install or harness execution changes the clean checkout,
   and the harness proves cleanliness is rechecked before packaging.
-- [ ] Hosted pull-request and main CI execute the deployment harness from a frozen install.
-- [ ] The runbook never permits Vercel and Evo report claims to overlap during activation or full
+- [x] Hosted pull-request and main CI execute the deployment harness from a frozen install.
+- [x] The runbook never permits Vercel and Evo report claims to overlap during activation or full
   failback.
-- [ ] The runbook states the continuous-consumer authority and Creative-backlog implications.
-- [ ] Release rollback requires a separate exact-revision schema compatibility decision.
-- [ ] Focused harness, shell syntax, repository checks, and exact-head hosted CI pass.
+- [x] The runbook states the continuous-consumer authority and Creative-backlog implications.
+- [x] Release rollback requires a separate exact-revision schema compatibility decision.
+- [x] Focused harness, shell syntax, repository checks, and exact-head hosted CI pass.
 
 ## External gates
 

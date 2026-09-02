@@ -37,18 +37,17 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- `origin/main` is `dbc788acb6cae83d550aaf5ec8bdeedfe1af2b51`. PR #115 merged WP-192's
-  source-only token-fenced SP outbox delivery implementation. Exact-head run `33590334260` passed
-  both jobs at `d1e09a9`; exact-main run `33591051237` passed both jobs at the merge revision.
-  High correctness and Extra-High adversarial reviews reported no blocker, high or medium finding.
-  The new migration's SHA-256 is
-  `c34fc0a1902abe27f0c33d66c1a083fb32f0fd5df30974baecace674a2219a2c`; it was not hosted, and
-  the package added no app, job, provider reachability, deployment or activation.
+- WP-193 source is merged at `89967060ab40ed20a165435a9c4299cbc6f369e6`. PR #117 made clean
+  report-worker staging reproducible and made activation, full failback and release rollback
+  fail closed. Corrected exact-head run `33595023515` passed both jobs at `36cfbfe`; exact-main run
+  `33596330244` passed both jobs at the merge revision. High correctness and Extra-High adversarial
+  reviews ended with no finding. The package staged no release, changed no service or queue
+  ownership, and made no hosted schema, production-data or provider change.
 - Production web health returns `ok` at
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 79 commits behind current main. No later package
-  deployed or promoted a candidate, so its newer source artifacts are not live evidence.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 219 commits behind
-  current main, and still returns the legacy `wizard-ads` service shape.
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 84 commits behind the WP-193 source merge. No later
+  package deployed or promoted a candidate, so its newer source artifacts are not live evidence.
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 224 commits behind
+  the WP-193 source merge, and still returns the legacy `wizard-ads` service shape.
 - The new Evo report-worker unit is not installed and its loopback health is unavailable. The
   legacy integration worker is active, but exposes no revision stamp. Earlier in this continuation
   it restarted after an uncaught `claimSyncJobs` statement timeout. The operator then completed an
@@ -60,7 +59,7 @@ At the time this handover was reconciled:
 - Current source, deployed web, deployed MCP, and the active worker are not one proven release. Do
   not describe post-deployment main features as live until a revision-stamped candidate is promoted
   and checked.
-- `docs/STATUS.md` now records WP-179 through WP-192, but the implementation-wave table remains
+- `docs/STATUS.md` now records WP-179 through WP-193, but the implementation-wave table remains
   incomplete between WP-149 and WP-178. Use Git, CI, code, the migration ledger, and live health as
   evidence; then update status prose.
 
