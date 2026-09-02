@@ -50,6 +50,14 @@ exact-main CI and external state reconciliation.
 9. Readiness proves the exact hosted queue contract. Activation and rollback stop before switching
    unless current ownership is drained and the destination advertises the fenced protocol.
 10. Preserve report row accounting, tenant boundaries, public-repo hygiene and v1 read-only behavior.
+11. Serialize both legacy and fenced report claims against a private one-way database authority. The
+    activation transition flips only with zero unresolved report custody, and no reverse RPC exists.
+12. Persist an accepted provider report id through tenant scope, immutable-id CAS and the exact queue
+    claim; recover commit-before-reply by exact readback and quarantine every unconfirmed outcome.
+13. Keep `claim_token` outside authenticated/anonymous table reads through explicit safe-column
+    privileges, and reject readiness when any trusted function body or catalog property drifts.
+14. Cancel and await the download source on every limit, parse JSON in a terminable bounded worker,
+    and make unresolved fenced custody a dedicated non-restarting process outcome.
 
 ## Proof requirements
 
@@ -62,8 +70,14 @@ exact-main CI and external state reconciliation.
 - graceful shutdown settles completed fenced work and strands rather than releases unfinished work;
 - report-create crash cuts classify known refusal versus possible dispatch without provider replay;
 - bounded download tests cover compressed, decompressed, idle, total and abort limits;
+- provider-id persistence tests cover failure before commit, commit before reply, conflicting ids,
+  replacement claims and queue-row lock serialization;
+- authority tests race activation against both legacy claim overloads and prove that neither legacy
+  claiming nor stale recovery can reacquire the report lane after the one-way flip;
+- privilege tests prove authenticated callers retain every safe queue column but never the token;
 - deployment harness covers first activation, failed pre-claim restoration, post-claim refusal,
-  quiescent rollback and incompatible destination refusal;
+  quiescent rollback, incompatible destination refusal, SQL/catalog spoofing and exit-78 restart
+  prevention;
 - static blast-radius scan proves no shared contract, Amazon mutation, hosted apply or runtime activation.
 
 ## Acceptance checks
