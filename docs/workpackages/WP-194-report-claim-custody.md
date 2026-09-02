@@ -89,6 +89,8 @@ exact-main CI and external state reconciliation.
 - quarantined completed handlers remain unresolved in shutdown evidence, including a signal race;
 - rejected, synchronously thrown, non-completing and non-terminal cancellation cannot reach fenced
   retry settlement and instead retain unresolved custody;
+- a child process with a deliberately retained event-loop handle completes bounded shutdown and exits
+  promptly with code 78 after fatal custody;
 - static blast-radius scan proves no shared contract, Amazon mutation, hosted apply or runtime activation.
 
 ## Acceptance checks
