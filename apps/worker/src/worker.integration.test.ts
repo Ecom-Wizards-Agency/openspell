@@ -27,6 +27,7 @@ import {
   revokeIntegrationSecret,
   saveOptimizationGroup,
   storeIntegrationSecret,
+  type ClaimToken,
   type DbHandle,
   type OptimizationGroupRecord,
   type ReportDatePromotionResult,
@@ -1319,6 +1320,63 @@ describe.skipIf(!available)('worker + real Postgres', () => {
        where dedupe_key = 'lane-ownership:6'
     `;
     expect(foreign).toEqual({ status: 'queued', claimed_by: null });
+  });
+
+  it('persists a created provider id through one exact fenced claim only', async () => {
+    const [job] = await database.sql<{ id: string }[]>`
+      insert into public.sync_jobs (org_id, profile_id, job_type, payload, dedupe_key)
+      values (
+        ${orgId}, ${profileId}, 'report.request',
+        ${JSON.stringify({
+          type: 'report.request', orgId, profileId, reportType: 'spCampaigns',
+          startDate: today, endDate: today,
+        })}::jsonb,
+        'fenced-provider-id'
+      )
+      returning id
+    `;
+    const id = job?.id;
+    if (!id) throw new Error('provider-id fixture job missing');
+    const token = '55555555-5555-4555-8555-555555555555' as ClaimToken;
+    const staleToken = '66666666-6666-4666-8666-666666666666' as ClaimToken;
+    await database.sql`
+      insert into public.report_requests (
+        id, org_id, profile_id, report_type, start_date, end_date
+      ) values (${id}, ${orgId}, ${profileId}, 'spCampaigns', ${today}, ${today})
+    `;
+    await database.sql`
+      update public.sync_jobs
+         set status = 'running',
+             claimed_by = 'evo-report:provider-id',
+             claimed_at = now(),
+             claim_token = ${token}::uuid
+       where id = ${id}
+    `;
+    const store = new PostgresWorkerStore(database);
+    const current = {
+      reportRequestId: id,
+      orgId,
+      profileId,
+      amazonReportId: 'provider-report-1',
+      nextPollAt: new Date(),
+      claim: { jobId: id, workerId: 'evo-report:provider-id', token },
+    };
+
+    await expect(store.setReportCreated(current)).resolves.toBe(true);
+    await expect(store.confirmReportCreated(current)).resolves.toBe(true);
+    await expect(store.setReportCreated({
+      ...current,
+      amazonReportId: 'conflicting-provider-report',
+    })).resolves.toBe(false);
+    await expect(store.confirmReportCreated({
+      ...current,
+      claim: { ...current.claim, token: staleToken },
+    })).resolves.toBe(false);
+
+    const [persisted] = await database.sql<{ amazon_report_id: string | null }[]>`
+      select amazon_report_id from public.report_requests where id = ${id}
+    `;
+    expect(persisted?.amazon_report_id).toBe('provider-report-1');
   });
 
   it('blocks a Creative snapshot when report fetch exhausts its retry budget', async () => {
