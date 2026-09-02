@@ -84,8 +84,11 @@ exact-main CI and external state reconciliation.
 - privilege tests prove authenticated callers retain every safe queue column but never the token;
 - deployment harness covers first activation, failed pre-claim restoration, post-claim refusal,
   quiescent rollback, incompatible destination refusal, SQL/catalog and count-preserving authority
-  constraint spoofing, and exit-78 restart prevention;
+  constraint spoofing, clean stale-helper rejection before any rollback probe, and exit-78 restart
+  prevention;
 - quarantined completed handlers remain unresolved in shutdown evidence, including a signal race;
+- rejected, synchronously thrown, non-completing and non-terminal cancellation cannot reach fenced
+  retry settlement and instead retain unresolved custody;
 - static blast-radius scan proves no shared contract, Amazon mutation, hosted apply or runtime activation.
 
 ## Acceptance checks

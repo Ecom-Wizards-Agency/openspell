@@ -265,7 +265,9 @@ automatically adopted or changed.
 8. Candidate failure first proves the process inactive. It restores exact absence or a prior fenced
    release only when custody snapshots are unchanged. Ambiguous custody keeps the service stopped.
 9. Rollback destinations must advertise the fenced protocol. Stop the source, prove it owns zero
-   token-bearing claims, then switch. A pre-WP-194 release is not a compatible automatic destination.
+   token-bearing claims, then switch. The invoking transition helper must be a clean checkout pinned
+   to the exact live source revision before it may probe the database or custody; a clean stale helper
+   is not authority. A pre-WP-194 release is not a compatible automatic destination.
 
 The command-line confirmation flag is only an attended assertion. It never substitutes for database,
 process and exact-deployment evidence gathered by the activator.
@@ -292,10 +294,14 @@ process and exact-deployment evidence gathered by the activator.
   incompatible revisions before switching.
 - Readiness rejects count-preserving authority-constraint changes to a name, type, column, order or
   normalized definition before activation.
+- Rollback rejects a clean transition-helper checkout whose revision differs from the exact live
+  source revision before readiness, custody inspection or a release switch.
 - First-activation failure restores exact service absence only while no fenced claim exists.
 - Launcher restart refuses non-fenced authority or stranded custody with the systemd non-restart exit.
 - Configuration and preflight reject any fenced claim set other than the exact four-type report lane.
 - Quarantined completed handlers remain visible as unresolved shutdown evidence and force exit 78.
+- Rejected, synchronously thrown, non-completing and non-terminal source cancellation all become the
+  closed `source_cancellation` outcome; none can fall through to ordinary fenced retry settlement.
 - Migration replay preserves every existing queue and report row and creates no automatic recovery work.
 - ACL tests prove only `service_role` can call the fenced functions and authenticated callers cannot
   select `claim_token` while retaining the complete safe queue view.
