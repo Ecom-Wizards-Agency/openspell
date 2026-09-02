@@ -190,6 +190,7 @@ export async function gunzipJson(
     const value = await parseJsonInWorker(
       Buffer.concat(chunks, decompressedBytes),
       controller.signal,
+      limits.maxDecompressedBytes,
     );
     if (controller.signal.aborted || Date.now() - startedAt >= limits.totalTimeoutMs) {
       throw totalError;
@@ -213,7 +214,11 @@ export async function gunzipJson(
  * heap ceiling and is terminated before this promise settles, so both the
  * total deadline and a memory-hostile document have a real kill boundary.
  */
-function parseJsonInWorker(bytes: Buffer, signal: AbortSignal): Promise<unknown> {
+function parseJsonInWorker(
+  bytes: Buffer,
+  signal: AbortSignal,
+  memoryLimit: number,
+): Promise<unknown> {
   if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./report-json-parser-worker.mjs', import.meta.url), {
@@ -247,10 +252,12 @@ function parseJsonInWorker(bytes: Buffer, signal: AbortSignal): Promise<unknown>
       finish(() => reject(new Error('report payload is not valid JSON')));
     });
     worker.once('error', () => {
-      finish(() => reject(new Error('report JSON parse worker failed')));
+      finish(() => reject(new ReportDownloadLimitError('decompressed_bytes', memoryLimit)));
     });
     worker.once('exit', (code) => {
-      if (code !== 0) finish(() => reject(new Error('report JSON parse worker stopped')));
+      if (code !== 0) {
+        finish(() => reject(new ReportDownloadLimitError('decompressed_bytes', memoryLimit)));
+      }
     });
     const transferable = new Uint8Array(bytes.byteLength);
     transferable.set(bytes);
