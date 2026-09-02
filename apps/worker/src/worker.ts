@@ -38,6 +38,7 @@ import type {
 import {
   DEFAULT_REPORT_DOWNLOAD_LIMITS,
   ReportDownloadLimitError,
+  type ReportDownloadLimits,
   SKIP_FAILURE_RATIO,
   gunzipJson,
   parseReportRows,
@@ -100,8 +101,17 @@ export class RetryableJobError extends Error {
 export class QueueSettlementError extends Error {
   override readonly name = 'QueueSettlementError';
 
-  constructor(readonly kind: 'ownership_lost' | 'unavailable') {
+  constructor(readonly kind: 'ownership_lost' | 'unavailable' | 'custody_quarantined') {
     super(`sync job queue settlement ${kind}`);
+  }
+}
+
+/** A fenced effect is unsafe to replay and therefore remains in DB custody. */
+class FencedClaimQuarantined extends Error {
+  override readonly name = 'FencedClaimQuarantined';
+
+  constructor(readonly category: 'report_create' | 'report_download_limit') {
+    super(`fenced claim quarantined after ${category}`);
   }
 }
 
@@ -159,6 +169,8 @@ export interface SyncWorkerOptions {
   pollIntervalMs?: number;
   now?: () => Date;
   logger?: WorkerLogger;
+  /** Injectable only to prove worker-level cancellation and quarantine paths. */
+  reportDownloadLimits?: Readonly<ReportDownloadLimits>;
 }
 
 export class SyncWorker {
@@ -177,6 +189,7 @@ export class SyncWorker {
   private readonly pollIntervalMs: number;
   private readonly now: () => Date;
   private readonly logger: WorkerLogger;
+  private readonly reportDownloadLimits: Readonly<ReportDownloadLimits>;
   private readonly claimLoop: ClaimLoopController;
   private readonly running = new Map<string, { job: ClaimedJob; promise: Promise<void> }>();
   private activeClaimPass: Promise<LongLivedClaimPass> | null = null;
@@ -200,6 +213,7 @@ export class SyncWorker {
     this.pollIntervalMs = options.pollIntervalMs ?? 1_000;
     this.now = options.now ?? (() => new Date());
     this.logger = options.logger ?? consoleLogger;
+    this.reportDownloadLimits = options.reportDownloadLimits ?? DEFAULT_REPORT_DOWNLOAD_LIMITS;
     this.claimLoop = new ClaimLoopController(this.pollIntervalMs, this.now);
   }
 
@@ -367,7 +381,11 @@ export class SyncWorker {
       const task = this.runClaimed(job)
         .catch((error: unknown) => {
           const failure = new QueueSettlementError(
-            error instanceof ClaimOwnershipLost ? 'ownership_lost' : 'unavailable',
+            error instanceof ClaimOwnershipLost
+              ? 'ownership_lost'
+              : error instanceof FencedClaimQuarantined
+                ? 'custody_quarantined'
+                : 'unavailable',
           );
           this.settlementFailure ??= failure;
           throw failure;
@@ -407,6 +425,23 @@ export class SyncWorker {
   }
 
   private async handleClaimedFailure(job: ClaimedJob, error: unknown): Promise<void> {
+    if (
+      job.claim !== null
+      && (
+        error instanceof ReportCreateOutcomeUnknownError
+        || error instanceof ReportDownloadLimitError
+      )
+    ) {
+      const category = error instanceof ReportCreateOutcomeUnknownError
+        ? 'report_create'
+        : 'report_download_limit';
+      this.logger.error('fenced sync job retained for attended reconciliation', {
+        jobId: job.id,
+        type: job.jobType,
+        category,
+      });
+      throw new FencedClaimQuarantined(category);
+    }
     if (error instanceof SqpWorkflowPendingError) {
       const retryIn = `${error.retryAfterSeconds} seconds`;
       if (job.claim !== null) {
@@ -529,7 +564,7 @@ export class SyncWorker {
       case 'entity.sync':
         return this.syncEntities(profile, payload);
       case 'report.request':
-        return this.requestReport(job.id, profile, payload);
+        return this.requestReport(job, profile, payload);
       case 'report.poll':
         return this.pollReport(profile, payload);
       case 'report.fetch':
@@ -713,7 +748,7 @@ export class SyncWorker {
   }
 
   private async requestReport(
-    jobId: string,
+    job: ClaimedJob,
     profile: AdsProfileContext,
     payload: Extract<JobPayload, { type: 'report.request' }>,
   ): Promise<Record<string, unknown>> {
@@ -724,7 +759,7 @@ export class SyncWorker {
     if (payload.reportType !== 'sbAds' && payload.creativeSyncSnapshotId != null) {
       throw new PermanentJobError('base report request must not carry creative snapshot provenance');
     }
-    const ledger = await this.store.ensureReportRequest(jobId, payload);
+    const ledger = await this.store.ensureReportRequest(job.id, payload);
     let amazonReportId = ledger.amazonReportId;
     if (!amazonReportId) {
       const created = await this.buckets.run(profile.region, () => adsApi.createReport({
@@ -734,7 +769,29 @@ export class SyncWorker {
         endDate: payload.endDate,
       }));
       amazonReportId = created.reportId;
-      await this.store.setReportCreated(ledger.id, amazonReportId, addMinutes(this.now(), 5));
+      const persistence = {
+        reportRequestId: ledger.id,
+        orgId: payload.orgId,
+        profileId: payload.profileId,
+        amazonReportId,
+        nextPollAt: addMinutes(this.now(), 5),
+        claim: job.claim,
+      };
+      try {
+        await this.store.setReportCreated(persistence);
+      } catch {
+        // A commit followed by a lost database reply is recoverable only by an
+        // exact tenant/provider-id/claim readback below.
+      }
+      let confirmed = false;
+      try {
+        confirmed = await this.store.confirmReportCreated(persistence);
+      } catch {
+        // Readback unavailability is an unknown provider-effect outcome too.
+      }
+      if (!confirmed) {
+        throw new ReportCreateOutcomeUnknownError('provider-id-persistence', null);
+      }
     }
     const pollPayload: Extract<JobPayload, { type: 'report.poll' }> = {
       type: 'report.poll', orgId: payload.orgId, profileId: payload.profileId,
@@ -826,18 +883,22 @@ export class SyncWorker {
     const downloadTimer = setTimeout(
       () => downloadController.abort(new ReportDownloadLimitError(
         'total_timeout',
-        DEFAULT_REPORT_DOWNLOAD_LIMITS.totalTimeoutMs,
+        this.reportDownloadLimits.totalTimeoutMs,
       )),
-      DEFAULT_REPORT_DOWNLOAD_LIMITS.totalTimeoutMs,
+      this.reportDownloadLimits.totalTimeoutMs,
     );
     try {
       const source = await adsApi.downloadReport(payload.downloadUrl, downloadController.signal);
       downloaded = await gunzipJson(
         source,
-        DEFAULT_REPORT_DOWNLOAD_LIMITS,
+        this.reportDownloadLimits,
         downloadController.signal,
       );
     } catch (error) {
+      if (error instanceof ReportDownloadLimitError) {
+        downloadController.abort(error);
+        throw error;
+      }
       if (!(error instanceof DownloadUrlExpiredError)) throw error;
       if (this.now().getTime() - ledger.requestedAt.getTime() >= FOUR_HOURS_MS) {
         const detail = 'report download URL remained expired beyond the 4-hour request horizon';

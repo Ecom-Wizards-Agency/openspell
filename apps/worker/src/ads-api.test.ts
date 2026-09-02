@@ -551,6 +551,26 @@ describe('DbAdsApiClient.downloadReport', () => {
 
     await expect(result).rejects.toBe(reason);
   });
+
+  it('cancels an opened response body when the outer download signal aborts', async () => {
+    const controller = new AbortController();
+    const reason = new Error('bounded parser stopped');
+    let cancelledWith: unknown;
+    const body = new ReadableStream<Uint8Array>({
+      cancel: (cancelReason) => { cancelledWith = cancelReason; },
+    });
+    const fetchLike = async () => new Response(body, { status: 200 });
+    const { adapter } = makeAdapter(underlying(), { fetch: fetchLike });
+    const stream = await adapter.downloadReport('https://s3/hanging-body', controller.signal);
+    const iterator = stream[Symbol.asyncIterator]();
+    const pending = iterator.next();
+
+    controller.abort(reason);
+
+    await expect(pending).resolves.toMatchObject({ done: true });
+    await iterator.return?.();
+    expect(cancelledWith).toBe(reason);
+  });
 });
 
 describe('DbAdsApiClient.listProfiles', () => {

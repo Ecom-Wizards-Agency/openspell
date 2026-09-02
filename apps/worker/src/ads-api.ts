@@ -193,7 +193,12 @@ export class ReportCreateOutcomeUnknownError extends Error {
   override readonly name = 'ReportCreateOutcomeUnknownError';
 
   constructor(
-    readonly phase: 'transport' | 'server-response' | 'response-decoding' | 'duplicate-without-id',
+    readonly phase:
+      | 'transport'
+      | 'server-response'
+      | 'response-decoding'
+      | 'duplicate-without-id'
+      | 'provider-id-persistence',
     readonly status: number | null,
   ) {
     super(`Reporting v3 create outcome is unknown after ${phase}`);
@@ -433,7 +438,7 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
     if (!response.ok) throw new Error(`report download failed with ${response.status}`);
     const body = response.body;
     if (!body) return emptyStream();
-    return toByteStream(body);
+    return toByteStream(body, signal);
   }
 
   /**
@@ -615,21 +620,46 @@ async function* emptyStream(): AsyncGenerator<Uint8Array> {
   // nothing
 }
 
-/** Normalise a web `ReadableStream` or an already-async-iterable body to bytes. */
-function toByteStream(body: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
-  if (Symbol.asyncIterator in body) return body as AsyncIterable<Uint8Array>;
-  return readWebStream(body);
+/**
+ * Normalise a response body to bytes. Prefer the reader API even on runtimes
+ * that also expose `Symbol.asyncIterator`: only the reader gives us an
+ * explicit, awaitable transport cancellation boundary.
+ */
+function toByteStream(
+  body: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>,
+  signal?: AbortSignal,
+): AsyncIterable<Uint8Array> {
+  if ('getReader' in body && typeof body.getReader === 'function') {
+    return readWebStream(body, signal);
+  }
+  return body as AsyncIterable<Uint8Array>;
 }
 
-async function* readWebStream(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
+async function* readWebStream(
+  stream: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+): AsyncGenerator<Uint8Array> {
   const reader = stream.getReader();
+  let completed = false;
+  let cancellation: Promise<void> | null = null;
+  const cancel = (): void => {
+    cancellation ??= reader.cancel(signal?.reason).catch(() => undefined);
+  };
+  if (signal?.aborted === true) cancel();
+  else signal?.addEventListener('abort', cancel, { once: true });
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        completed = true;
+        break;
+      }
       if (value) yield value;
     }
   } finally {
+    signal?.removeEventListener('abort', cancel);
+    if (!completed) cancel();
+    if (cancellation) await cancellation;
     reader.releaseLock();
   }
 }

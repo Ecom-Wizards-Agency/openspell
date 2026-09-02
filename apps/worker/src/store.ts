@@ -159,7 +159,22 @@ export interface WorkerStore {
     options?: EntitySyncOptions,
   ): Promise<EntitySyncCounts>;
   ensureReportRequest(jobId: string, payload: Extract<JobPayload, { type: 'report.request' }>): Promise<ReportRequestState>;
-  setReportCreated(reportRequestId: string, amazonReportId: string, nextPollAt: Date): Promise<void>;
+  setReportCreated(input: {
+    reportRequestId: string;
+    orgId: string;
+    profileId: string;
+    amazonReportId: string;
+    nextPollAt: Date;
+    claim: ClaimRef | null;
+  }): Promise<boolean>;
+  /** Exact readback used when the provider-id persistence reply is ambiguous. */
+  confirmReportCreated(input: {
+    reportRequestId: string;
+    orgId: string;
+    profileId: string;
+    amazonReportId: string;
+    claim: ClaimRef | null;
+  }): Promise<boolean>;
   getReportRequest(reportRequestId: string, orgId: string, profileId: string): Promise<ReportRequestState>;
   updateReportPoll(
     reportRequestId: string,
@@ -474,12 +489,82 @@ export class PostgresWorkerStore implements WorkerStore {
     return this.getReportRequest(jobId, payload.orgId, payload.profileId);
   }
 
-  async setReportCreated(reportRequestId: string, amazonReportId: string, nextPollAt: Date): Promise<void> {
-    await this.handle.sql`
-      update public.report_requests
-         set amazon_report_id = ${amazonReportId}, status = 'pending', next_poll_at = ${iso(nextPollAt)}
-       where id = ${reportRequestId}
-    `;
+  async setReportCreated(input: {
+    reportRequestId: string;
+    orgId: string;
+    profileId: string;
+    amazonReportId: string;
+    nextPollAt: Date;
+    claim: ClaimRef | null;
+  }): Promise<boolean> {
+    const rows = input.claim === null
+      ? await this.handle.sql<{ id: string }[]>`
+          update public.report_requests
+             set amazon_report_id = ${input.amazonReportId},
+                 status = 'pending',
+                 next_poll_at = ${iso(input.nextPollAt)}
+           where id = ${input.reportRequestId}
+             and org_id = ${input.orgId}
+             and profile_id = ${input.profileId}
+             and (amazon_report_id is null or amazon_report_id = ${input.amazonReportId})
+          returning id
+        `
+      : await this.handle.sql<{ id: string }[]>`
+          update public.report_requests as r
+             set amazon_report_id = ${input.amazonReportId},
+                 status = 'pending',
+                 next_poll_at = ${iso(input.nextPollAt)}
+            from public.sync_jobs as j
+           where r.id = ${input.reportRequestId}
+             and r.org_id = ${input.orgId}
+             and r.profile_id = ${input.profileId}
+             and (r.amazon_report_id is null or r.amazon_report_id = ${input.amazonReportId})
+             and j.id = ${input.claim.jobId}
+             and j.id = r.id
+             and j.org_id = r.org_id
+             and j.profile_id = r.profile_id
+             and j.status = 'running'
+             and j.claimed_by = ${input.claim.workerId}
+             and j.claim_token = ${input.claim.token}::uuid
+          returning r.id
+        `;
+    if (rows.length > 1) throw new Error('report create persistence updated multiple rows');
+    return rows.length === 1;
+  }
+
+  async confirmReportCreated(input: {
+    reportRequestId: string;
+    orgId: string;
+    profileId: string;
+    amazonReportId: string;
+    claim: ClaimRef | null;
+  }): Promise<boolean> {
+    const rows = input.claim === null
+      ? await this.handle.sql<{ id: string }[]>`
+          select id
+            from public.report_requests
+           where id = ${input.reportRequestId}
+             and org_id = ${input.orgId}
+             and profile_id = ${input.profileId}
+             and amazon_report_id = ${input.amazonReportId}
+        `
+      : await this.handle.sql<{ id: string }[]>`
+          select r.id
+            from public.report_requests as r
+            join public.sync_jobs as j
+              on j.id = r.id
+             and j.org_id = r.org_id
+             and j.profile_id = r.profile_id
+           where r.id = ${input.reportRequestId}
+             and r.org_id = ${input.orgId}
+             and r.profile_id = ${input.profileId}
+             and r.amazon_report_id = ${input.amazonReportId}
+             and j.status = 'running'
+             and j.claimed_by = ${input.claim.workerId}
+             and j.claim_token = ${input.claim.token}::uuid
+        `;
+    if (rows.length > 1) throw new Error('report create readback returned multiple rows');
+    return rows.length === 1;
   }
 
   async getReportRequest(

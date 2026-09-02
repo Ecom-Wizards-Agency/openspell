@@ -19,7 +19,7 @@ import {
   type CreateReportInput,
 } from './ads-api.js';
 import { resolveSourcePath } from './crosscheck.js';
-import type { ParsedFactBatch } from './parsers.js';
+import type { ParsedFactBatch, ReportDownloadLimits } from './parsers.js';
 import { RegionTokenBuckets } from './region-token-buckets.js';
 import {
   ClaimOwnershipLost,
@@ -265,6 +265,67 @@ describe('fenced worker store', () => {
     await expect(store.deadLetterClaim(claim, 'fixed category')).rejects.toBeInstanceOf(
       ClaimOwnershipLost,
     );
+  });
+
+  it('persists and confirms the provider id only through the exact tenant claim fence', async () => {
+    const token = '55555555-5555-4555-8555-555555555555' as ClaimToken;
+    const statements: Array<{ text: string; values: unknown[] }> = [];
+    const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      statements.push({ text: strings.join(' '), values });
+      return [{ id: jobId }];
+    }) as unknown as DbHandle['sql'];
+    const store = new PostgresWorkerStore({
+      sql,
+      db: {} as DbHandle['db'],
+      close: async () => {},
+    });
+    const input = {
+      reportRequestId: jobId,
+      orgId,
+      profileId,
+      amazonReportId: 'provider-report',
+      nextPollAt: new Date('2026-09-02T12:00:00.000Z'),
+      claim: { jobId, workerId: 'evo-report:test', token },
+    };
+
+    await expect(store.setReportCreated(input)).resolves.toBe(true);
+    await expect(store.confirmReportCreated(input)).resolves.toBe(true);
+
+    expect(statements).toHaveLength(2);
+    for (const statement of statements) {
+      expect(statement.text).toContain('public.sync_jobs');
+      expect(statement.text).toContain('j.status = \'running\'');
+      expect(statement.text).toContain('j.claimed_by');
+      expect(statement.text).toContain('j.claim_token');
+      expect(statement.values).toEqual(expect.arrayContaining([
+        jobId, orgId, profileId, 'provider-report', 'evo-report:test', token,
+      ]));
+    }
+    expect(statements[0]?.text).toContain('amazon_report_id is null or');
+  });
+
+  it('returns a closed refusal when a conflicting or stale claim changes no row', async () => {
+    const sql = (async () => []) as unknown as DbHandle['sql'];
+    const store = new PostgresWorkerStore({
+      sql,
+      db: {} as DbHandle['db'],
+      close: async () => {},
+    });
+    const input = {
+      reportRequestId: jobId,
+      orgId,
+      profileId,
+      amazonReportId: 'provider-report',
+      nextPollAt: new Date('2026-09-02T12:00:00.000Z'),
+      claim: {
+        jobId,
+        workerId: 'evo-report:stale',
+        token: '55555555-5555-4555-8555-555555555555' as ClaimToken,
+      },
+    };
+
+    await expect(store.setReportCreated(input)).resolves.toBe(false);
+    await expect(store.confirmReportCreated(input)).resolves.toBe(false);
   });
 });
 
@@ -992,6 +1053,148 @@ describe('Reporting v3 create ambiguity', () => {
     expect(terminal).toEqual(['report create outcome unknown; attended reconciliation required']);
     expect(pollAdmissions).toBe(0);
   });
+
+  it('continues after a committed provider id loses its database reply', async () => {
+    const payload: Extract<JobPayload, { type: 'report.request' }> = {
+      type: 'report.request', orgId, profileId, reportType: 'spCampaigns',
+      startDate: '2026-08-29', endDate: '2026-08-29',
+    };
+    const token = '55555555-5555-4555-8555-555555555555' as ClaimToken;
+    const job: ClaimedJob = {
+      id: jobId, orgId, profileId, jobType: payload.type, payload,
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'evo-report:test',
+      claim: { jobId, workerId: 'evo-report:test', token },
+    };
+    let claimed = false;
+    let persisted = false;
+    let pollAdmissions = 0;
+    const settled: JobOutcome[] = [];
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      ensureReportRequest: async () => ({
+        id: jobId, orgId, profileId, reportType: payload.reportType,
+        startDate: payload.startDate, endDate: payload.endDate, source: 'amazon_api',
+        amazonReportId: null, requestedAt: new Date(), pollAttempts: 0,
+      }),
+      setReportCreated: async (input) => {
+        expect(input.claim).toEqual(job.claim);
+        persisted = true;
+        throw new Error('synthetic reply loss after commit');
+      },
+      confirmReportCreated: async (input) => persisted
+        && input.amazonReportId === 'unused'
+        && input.claim?.token === token,
+      enqueue: async () => (pollAdmissions += 1, true),
+      finishClaim: async (_claim, outcome) => { settled.push(outcome); },
+    };
+    const worker = new SyncWorker({
+      workerId: 'evo-report:test', store, adsApi: new OneRowApi(),
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    await expect(worker.drainOnce()).resolves.toBe(1);
+    expect(pollAdmissions).toBe(1);
+    expect(settled).toEqual(['succeeded']);
+  });
+
+  it.each([
+    ['write-refused', false],
+    ['readback-unavailable', true],
+  ] as const)('quarantines fenced custody when provider-id persistence is %s', async (_case, readbackThrows) => {
+    const payload: Extract<JobPayload, { type: 'report.request' }> = {
+      type: 'report.request', orgId, profileId, reportType: 'spCampaigns',
+      startDate: '2026-08-29', endDate: '2026-08-29',
+    };
+    const token = '55555555-5555-4555-8555-555555555555' as ClaimToken;
+    const job: ClaimedJob = {
+      id: jobId, orgId, profileId, jobType: payload.type, payload,
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'evo-report:test',
+      claim: { jobId, workerId: 'evo-report:test', token },
+    };
+    let claimed = false;
+    const mutations: string[] = [];
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      ensureReportRequest: async () => ({
+        id: jobId, orgId, profileId, reportType: payload.reportType,
+        startDate: payload.startDate, endDate: payload.endDate, source: 'amazon_api',
+        amazonReportId: null, requestedAt: new Date(), pollAttempts: 0,
+      }),
+      setReportCreated: async () => false,
+      confirmReportCreated: async () => {
+        if (readbackThrows) throw new Error('synthetic readback outage');
+        return false;
+      },
+      enqueue: async () => (mutations.push('enqueue'), true),
+      finishClaim: async () => { mutations.push('finish'); },
+      deadLetterClaim: async () => { mutations.push('dead'); },
+      deferClaim: async () => { mutations.push('defer'); },
+      failTerminalReport: async () => (mutations.push('terminal'), true),
+    };
+    const worker = new SyncWorker({
+      workerId: 'evo-report:test', store, adsApi: new OneRowApi(),
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    await expect(worker.drainOnce()).rejects.toMatchObject({
+      name: 'QueueSettlementError', kind: 'custody_quarantined',
+    });
+    expect(worker.status().settlementFailure).toBe('custody_quarantined');
+    expect(mutations).toEqual([]);
+  });
+});
+
+describe('fenced report download limits', () => {
+  const cases = [
+    { kind: 'compressed_bytes' as const, limits: { maxCompressedBytes: 1, maxDecompressedBytes: 4_096, idleTimeoutMs: 1_000, totalTimeoutMs: 5_000 } },
+    { kind: 'decompressed_bytes' as const, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 2, idleTimeoutMs: 1_000, totalTimeoutMs: 5_000 } },
+    { kind: 'idle_timeout' as const, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 4_096, idleTimeoutMs: 10, totalTimeoutMs: 1_000 } },
+    { kind: 'total_timeout' as const, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 4_096, idleTimeoutMs: 1_000, totalTimeoutMs: 10 } },
+  ] satisfies readonly { kind: string; limits: ReportDownloadLimits }[];
+
+  it.each(cases)('cancels the source and retains custody after $kind', async ({ kind, limits }) => {
+    const payload: Extract<JobPayload, { type: 'report.fetch' }> = {
+      type: 'report.fetch', orgId, profileId, reportRequestId,
+      amazonReportId: 'amazon-report', downloadUrl: 'https://reports.invalid/bounded',
+    };
+    const token = '55555555-5555-4555-8555-555555555555' as ClaimToken;
+    const job: ClaimedJob = {
+      id: jobId, orgId, profileId, jobType: payload.type, payload,
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'evo-report:test',
+      claim: { jobId, workerId: 'evo-report:test', token },
+    };
+    let claimed = false;
+    const mutations: string[] = [];
+    const api = new LimitDownloadApi(kind);
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      getReportRequest: async () => ({
+        id: reportRequestId, orgId, profileId, reportType: 'spCampaigns',
+        startDate: '2026-08-29', endDate: '2026-08-29', source: 'amazon_api',
+        amazonReportId: 'amazon-report', requestedAt: new Date(), pollAttempts: 0,
+      }),
+      finishClaim: async () => { mutations.push('finish'); },
+      deadLetterClaim: async () => { mutations.push('dead'); },
+      deferClaim: async () => { mutations.push('defer'); },
+      failReport: async () => { mutations.push('fail-report'); },
+      failTerminalReport: async () => (mutations.push('terminal'), true),
+    };
+    const worker = new SyncWorker({
+      workerId: 'evo-report:test', store, adsApi: api,
+      reportDownloadLimits: limits,
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    await expect(worker.drainOnce()).rejects.toMatchObject({
+      name: 'QueueSettlementError', kind: 'custody_quarantined',
+    });
+    expect(api.signal?.aborted).toBe(true);
+    expect(api.returnCalls).toBe(1);
+    expect(mutations).toEqual([]);
+  });
 });
 
 describe('Unified Reporting worker isolation', () => {
@@ -1516,7 +1719,8 @@ function stubStore(): WorkerStore {
     repairOverlongLookbacks: async () => 0,
     ensureIntegrationSchedules: async () => 0,
     ensureReportRequest: async () => { throw new Error('unused'); },
-    setReportCreated: async () => {},
+    setReportCreated: async () => true,
+    confirmReportCreated: async () => true,
     getReportRequest: async () => { throw new Error('unused'); },
     updateReportPoll: async () => {},
     enqueue: async () => true,
@@ -1556,7 +1760,7 @@ class OneRowApi implements AdsApiClient {
   async listEntities() { return { rows: [], succeeded: ['SP', 'SB', 'SD'] as const, failures: [] }; }
   async createReport(_input: CreateReportInput) { return { reportId: 'unused' }; }
   async getReport(_profile: AdsProfileContext, _reportId: string): Promise<AdsReportStatus> { return { status: 'PENDING' }; }
-  async downloadReport(): Promise<AsyncIterable<Uint8Array>> {
+  async downloadReport(_url?: string, _signal?: AbortSignal): Promise<AsyncIterable<Uint8Array>> {
     const bytes = gzipSync(JSON.stringify([{ date: '2026-08-14', campaignId: 'c-1', impressions: 1, clicks: 1, cost: 1 }]));
     return (async function* stream() { yield bytes; })();
   }
@@ -1575,6 +1779,44 @@ class AmbiguousCreateApi extends OneRowApi {
 class ExpiredDownloadApi extends OneRowApi {
   override async downloadReport(): Promise<AsyncIterable<Uint8Array>> {
     throw new DownloadUrlExpiredError('synthetic expired URL');
+  }
+}
+
+class LimitDownloadApi extends OneRowApi {
+  signal: AbortSignal | undefined;
+  returnCalls = 0;
+
+  constructor(private readonly limitKind:
+    | 'compressed_bytes'
+    | 'decompressed_bytes'
+    | 'idle_timeout'
+    | 'total_timeout') {
+    super();
+  }
+
+  override async downloadReport(
+    _url?: string,
+    signal?: AbortSignal,
+  ): Promise<AsyncIterable<Uint8Array>> {
+    this.signal = signal;
+    const compressed = gzipSync(JSON.stringify([{ row: 'bounded-source' }]));
+    let delivered = false;
+    return {
+      [Symbol.asyncIterator]: () => ({
+        next: () => {
+          if (this.limitKind === 'idle_timeout' || this.limitKind === 'total_timeout') {
+            return new Promise<IteratorResult<Uint8Array>>(() => undefined);
+          }
+          if (delivered) return Promise.resolve({ done: true, value: undefined });
+          delivered = true;
+          return Promise.resolve({ done: false, value: compressed });
+        },
+        return: () => {
+          this.returnCalls += 1;
+          return Promise.resolve({ done: true, value: undefined });
+        },
+      }),
+    };
   }
 }
 

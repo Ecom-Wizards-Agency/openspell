@@ -1,5 +1,6 @@
 import { createGunzip } from 'node:zlib';
 import { Readable } from 'node:stream';
+import { Worker } from 'node:worker_threads';
 import {
   parseSpCampaignReport,
   parseSpPlacementReport,
@@ -89,7 +90,7 @@ export interface ReportDownloadLimits {
  */
 export const DEFAULT_REPORT_DOWNLOAD_LIMITS: Readonly<ReportDownloadLimits> = Object.freeze({
   maxCompressedBytes: 32 * 1024 * 1024,
-  maxDecompressedBytes: 256 * 1024 * 1024,
+  maxDecompressedBytes: 64 * 1024 * 1024,
   idleTimeoutMs: 60_000,
   totalTimeoutMs: 15 * 60_000,
 });
@@ -128,6 +129,13 @@ export async function gunzipJson(
   else signal?.addEventListener('abort', abortFromCaller, { once: true });
   const totalTimer = setTimeout(() => controller.abort(totalError), limits.totalTimeoutMs);
   let iterator: AsyncIterator<Uint8Array> | undefined;
+  let iteratorClosed = false;
+
+  const closeIterator = async (): Promise<void> => {
+    if (iteratorClosed || iterator?.return === undefined) return;
+    iteratorClosed = true;
+    await iterator.return().catch(() => undefined);
+  };
 
   async function* measured(): AsyncGenerator<Uint8Array> {
     iterator = source[Symbol.asyncIterator]();
@@ -143,7 +151,7 @@ export async function gunzipJson(
         yield item.value;
       }
     } finally {
-      if (iterator.return) void iterator.return().catch(() => undefined);
+      await closeIterator();
     }
   }
 
@@ -179,11 +187,10 @@ export async function gunzipJson(
     if (controller.signal.aborted || Date.now() - startedAt >= limits.totalTimeoutMs) {
       throw totalError;
     }
-    const value = JSON.parse(
-      Buffer.concat(chunks, decompressedBytes).toString('utf8'),
-    ) as unknown;
-    // JSON.parse is synchronous, so a timer cannot interrupt it. Check elapsed
-    // time again before allowing an over-budget document into the workflow.
+    const value = await parseJsonInWorker(
+      Buffer.concat(chunks, decompressedBytes),
+      controller.signal,
+    );
     if (controller.signal.aborted || Date.now() - startedAt >= limits.totalTimeoutMs) {
       throw totalError;
     }
@@ -197,8 +204,58 @@ export async function gunzipJson(
     controller.signal.removeEventListener('abort', abort);
     compressed.destroy();
     unzipped.destroy();
-    if (iterator?.return) void iterator.return().catch(() => undefined);
+    await closeIterator();
   }
+}
+
+/**
+ * Parse away from the queue-custody event loop. The worker has an explicit
+ * heap ceiling and is terminated before this promise settles, so both the
+ * total deadline and a memory-hostile document have a real kill boundary.
+ */
+function parseJsonInWorker(bytes: Buffer, signal: AbortSignal): Promise<unknown> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./report-json-parser-worker.mjs', import.meta.url), {
+      resourceLimits: {
+        maxOldGenerationSizeMb: 192,
+        maxYoungGenerationSizeMb: 32,
+      },
+    });
+    let settled = false;
+
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      void worker.terminate().then(callback, callback);
+    };
+    const onAbort = (): void => finish(() => reject(signal.reason));
+
+    signal.addEventListener('abort', onAbort, { once: true });
+    worker.once('message', (message: unknown) => {
+      if (
+        typeof message === 'object'
+        && message !== null
+        && 'ok' in message
+        && message.ok === true
+        && 'value' in message
+      ) {
+        finish(() => resolve(message.value));
+        return;
+      }
+      finish(() => reject(new Error('report payload is not valid JSON')));
+    });
+    worker.once('error', () => {
+      finish(() => reject(new Error('report JSON parse worker failed')));
+    });
+    worker.once('exit', (code) => {
+      if (code !== 0) finish(() => reject(new Error('report JSON parse worker stopped')));
+    });
+    const transferable = new Uint8Array(bytes.byteLength);
+    transferable.set(bytes);
+    worker.postMessage(transferable.buffer, [transferable.buffer]);
+  });
 }
 
 function assertDownloadLimits(limits: Readonly<ReportDownloadLimits>): void {
