@@ -2,7 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated` · `superseded`.
 
-Source and deployment headers reconciled 2026-09-02 against `origin/main` at `882a229`. The
+Source and deployment headers reconciled 2026-09-02 against `origin/main` at `1231342`. The
 implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
 the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
 the implementation is reachable from the recorded main revision. It does not by itself mean
@@ -119,7 +119,7 @@ implementation brief in `docs/workpackages/`.
 | 90 | Weekday preview schedule | superseded | PR #40 was closed; WP-171 is the merged replacement |
 | 91 | Live route performance | in-progress | Grid and Time Machine remain above the live targets recorded below |
 | 93 | Guarded Amazon write policy | merged; runtime gated | manually approved writes are authorized only through immutable worker plans, allowlists, audit and resync; no general live mutation path exists |
-| 96 | Guarded Sponsored Products write gateway | review; all but token-fenced outbox boundary superseded | sole open PR #24 at `78e718b` is 161 current-main commits behind, conflicting and failing; WP-179, WP-180, WP-187 and WP-188 replace its contracts, adapter, persistence and DB facade, while WP-189 replaces the reusable generic worker lifecycle; a separately numbered current outbox successor must accept or merge the remaining token-fenced ownership/recovery boundary before the stale PR closes, and every runtime gate remains closed |
+| 96 | Guarded Sponsored Products write gateway | review; all but token-fenced outbox boundary superseded | sole open PR #24 at `78e718b` is 168 current-main commits behind, conflicting and failing; WP-179, WP-180, WP-187 and WP-188 replace its contracts, adapter, persistence and DB facade, while WP-189 replaces the reusable generic worker lifecycle; a separately numbered current outbox successor must accept or merge the remaining token-fenced ownership/recovery boundary before the stale PR closes, and every runtime gate remains closed |
 | 110 | Focused operator navigation | merged and deployed | task-oriented groups and quiet utility footer |
 | 112 | Release-artifact checks | superseded | stale PR #35 was closed after WP-184 preserved and strengthened its distinct requirements |
 | 113 | OpenSpell MCP connection name | merged and deployed in web | setup snippets use `openspell`; stable environment-variable and package identifiers remain unchanged |
@@ -154,6 +154,7 @@ implementation brief in `docs/workpackages/`.
 | 187 | Guarded SP write persistence ledger | merged; source-only | default-empty immutable evidence, exact authority/version snapshots, single-winner reservation, result/recovery closure, derived accounting and tenant-safe purge proofs merged through PR #104 at `be2b7bd`; exact-head and exact-main CI passed, while the migration was not hosted and no job, worker, provider call, deployment or live mutation was activated |
 | 188 | Guarded SP write query facade | merged; source-only | explicit staging/runtime database capabilities, committed single-winner dispatch tickets, controlled refusal/error mapping and exact evidence/accounting verification merged through PR #106 at `5fc9471`; exact-head and exact-main CI passed, while no migration, job, worker/provider reachability, deployment setting or live mutation was activated |
 | 189 | Worker claim-loop resilience | merged; deployment gated | direct claim-RPC `57014` containment, capped equal-jitter backoff, single-flight one-shot lifecycle, active-claim shutdown draining and sanitized health merged through PR #108 at `882a229`; real PostgreSQL proves canceled-claim rollback and exactly-once later completion, while no migration, job type, queue owner, provider call, deployment or SP-write activation changed and the active legacy worker revision remains unproven |
+| 190 | Auth guard process isolation | merged; test-only | the unchanged 69 browser tests run as 11 fresh serial processes with exact route-manifest conservation, crash-safe setup/cleanup, the explicit 4 GB heap cap, one worker and zero retries; merged through PR #110 at `1231342` after first-attempt exact-head and exact-main CI, with no application, authentication, migration, deployment or runtime change |
 
 ## Milestone gates
 
@@ -167,6 +168,18 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-09-02 PR #111 merged a one-line, test-only database timeout budget at `2ea10e1` after
+  exact-head run `33576253788` passed both jobs at `9330305`; exact-main run `33576320746` then
+  passed both jobs on its first attempt. The change preserved every assertion, SQL statement,
+  cleanup path and retry policy while giving the existing second disposable-database setup the
+  same 60-second budget already used by neighboring database lifecycle tests.
+- On 2026-09-02 PR #110 merged WP-190 auth-guard process isolation at `1231342` after exact-head
+  run `33577280436` passed both jobs at `adf410b`; exact-main run `33578277240` then passed both
+  jobs on its first attempt. All 69 browser tests remain conserved across 11 named fresh serial
+  processes with the explicit 4 GB cap, one worker and zero retries. High correctness and
+  Extra-High lifecycle/adversarial reviews found no blocker, high or medium defect. No application
+  behavior, authentication rule, migration, deployment, restart, provider call or runtime
+  activation changed.
 - On 2026-09-02 PR #108 merged WP-189 worker claim-loop resilience at `882a229` after exact-head
   run `33565270705` passed both jobs at `7e6aec6`. In exact-main run `33566330881`, the repository
   job passed on attempt 1 and Playwright passed all 69 tests on a clean full-job rerun at the merge
@@ -178,8 +191,8 @@ implementation brief in `docs/workpackages/`.
   blocker, high or medium implementation defect. Focused
   worker tests passed 35 tests; full worker and database suites each passed 396 tests on disposable
   PostgreSQL; production build and all nine local Playwright partitions passed. No migration,
-  deployment, restart, provider call, queue-ownership transfer or SP write was performed. The
-  separate medium-risk CI heap margin now precedes the token-fenced outbox successor.
+  deployment, restart, provider call, queue-ownership transfer or SP write was performed. WP-190
+  subsequently resolved the browser heap-margin follow-up without changing this implementation.
 - On 2026-09-02 PR #106 merged the inert WP-188 Sponsored Products write query facade at
   `5fc9471` after exact-head run `33555304056` passed both jobs at `20fe1ab`; exact-main run
   `33556738961` then passed both jobs on the merge. Focused facade proofs passed 21 tests, the
@@ -194,9 +207,11 @@ implementation brief in `docs/workpackages/`.
   its installed state is default-empty, and no job type, queue claimant, worker consumer, provider
   call, deployment variable or live mutation path was activated.
 - During the same 2026-09-02 reconciliation, the legacy integration worker exited once on an
-  uncaught `claimSyncJobs` statement timeout. Systemd restarted it after 30 seconds and it is active
-  with `NRestarts=1`. WP-189 now contains direct claim-RPC `57014` failures in source, but the
-  active service revision remains unproven, so its protection is not yet live evidence.
+  uncaught `claimSyncJobs` statement timeout. The operator then completed an attended stop/start
+  and observed `NRestarts=0`; final read-only reconciliation found the service active/running with
+  a new process and `NRestarts=1` again. The unprivileged journal exposed no cause for that latest
+  restart. WP-189 contains direct claim-RPC `57014` failures in source, but the active service
+  revision remains unproven, so its protection is not yet live evidence.
 - On 2026-09-01 PR #81 merged WP-171 at `8a4bd0a` after exact-head run `33500087803`; exact-main
   run `33501292698` passed both jobs. Corrected WP-186 then merged through PR #102 at `85e9a1d`
   after exact-head run `33509780625`; exact-main run `33511203991` passed both jobs. The attended
@@ -409,12 +424,6 @@ implementation brief in `docs/workpackages/`.
   batch exists.
 - Optimization-group free-text exclusions are explicitly reference metadata. Typed, enforceable
   exclusion rules remain a separate contract/work package rather than silently matching names.
-- The broad authenticated guard E2E shard can approach the explicit 4 GB Next.js heap limit. One
-  exact-main attempt reached 3,937 MB and aborted after the signed-in route sweep. Split anonymous
-  and signed-in sweeps into fresh server processes while preserving the cap, one worker, zero
-  retries and exact route-count assertions before relying on first-pass CI for the next correctness
-  slice.
-
 ## Release gates
 
 - [x] GitHub CI succeeded for the first exact deployed main revision `bfce504`.
@@ -471,11 +480,18 @@ implementation brief in `docs/workpackages/`.
       `33566330881` passed the repository job on attempt 1 and Playwright on a clean full-job rerun
       at merged revision `882a229` after the first browser attempt exhausted the unchanged auth
       shard's Next.js heap.
+- [x] PR #111 exact-head CI run `33576253788` and exact-main run `33576320746` passed both jobs at
+      `9330305` and merged revision `2ea10e1`, respectively, on their first attempts.
+- [x] PR #110 exact-head CI run `33577280436` and exact-main run `33578277240` passed both jobs at
+      `adf410b` and merged revision `1231342`, respectively, on their first attempts; both browser
+      jobs passed all 69 tests across 11 fresh serial processes.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
-      `b5c210d` (64 and 204 current-main commits behind, respectively), the new report worker is
-      absent, and the active legacy worker revision is unproven. The legacy worker has one automatic
-      restart after an uncaught claim timeout. Claim-failure containment is merged source only;
-      revision-matched deployment, activation and live-data parity gates remain open.
+      `b5c210d` (71 and 211 current-main commits behind, respectively), the new report worker is
+      absent, and the active legacy worker revision is unproven. The attended stop/start reset its
+      restart counter to zero; the worker is active/running and now reports one later automatic
+      restart whose cause the unprivileged journal does not expose. Claim-failure containment is
+      merged source only; revision-matched deployment, activation and live-data parity gates remain
+      open.
 - [x] Hosted ledger verified for 41 migration versions through `20260901010000`, including the
       feature, SP-API, SB Video, Marketing Stream, WP-171, Unified Reporting,
       contextual-negative and WP-186 schema files. WP-186's exact 27-statement ledger, privilege,
