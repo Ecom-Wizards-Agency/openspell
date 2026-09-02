@@ -157,6 +157,7 @@ implementation brief in `docs/workpackages/`.
 | 190 | Auth guard process isolation | merged; test-only | the unchanged 69 browser tests run as 11 fresh serial processes with exact route-manifest conservation, crash-safe setup/cleanup, the explicit 4 GB heap cap, one worker and zero retries; merged through PR #110 at `1231342` after first-attempt exact-head and exact-main CI, with no application, authentication, migration, deployment or runtime change |
 | 191 | Token-fenced SP outbox protocol architecture | merged; architecture only | private mutable custody heads plus immutable journals, typed non-JSON claim tokens, database-clock transitions, claim-bound dispatch-lease/reservation wrappers, exact closure/error outcomes and separate source/coordinator/activation packages were accepted through PR #113 at `8291158`; no migration, facade code, job, provider reachability, hosted schema, deployment or activation changed |
 | 192 | Token-fenced SP outbox delivery | merged; source-only | private delivery heads and journals, opaque claim custody, exact renew/defer/complete transitions, claim-bound dispatch-lease/provider-reservation wrappers, tokenless grant revocation and purge/lock-order proofs merged through PR #115 at `dbc788a`; exact-head and exact-main CI passed, while both SP migrations remain unhosted and no app, job, provider reachability, deployment or activation changed |
+| 193 | Report-worker stage readiness | merged; staging gated | clean-checkout frozen installation, CI deployment-harness enforcement, no-overlap report ownership transfer, unknown-outcome quarantine and schema-compatible rollback merged through PR #117 at `8996706`; corrected exact-head and exact-main CI passed, while no release was staged, no service or queue ownership changed and no provider, database or production action ran |
 
 ## Milestone gates
 
@@ -170,6 +171,13 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-09-02 PR #117 merged WP-193 report-worker stage readiness at `8996706` after corrected
+  exact-head run `33595023515` passed both jobs at `36cfbfe`; exact-main run `33596330244` then
+  passed both jobs at the merge revision. The first exact-head run `33594716502` made the new
+  clean-runner deployment gate fail because `ripgrep` was absent; the corrected head installs that
+  prerequisite explicitly. High correctness and Extra-High adversarial reviews ended with no
+  finding. The package staged no release, changed no service, consumer, queue, hosted schema,
+  deployment or production data, and made no provider call.
 - On 2026-09-02 PR #115 merged the inert WP-192 token-fenced SP outbox delivery implementation at
   `dbc788a` after exact-head run `33590334260` passed both jobs at `d1e09a9`; exact-main run
   `33591051237` then passed both jobs at the merge revision. High correctness and Extra-High
@@ -508,8 +516,11 @@ implementation brief in `docs/workpackages/`.
 - [x] PR #115 exact-head CI run `33590334260` and exact-main run `33591051237` passed both jobs at
       `d1e09a9` and merged revision `dbc788a`, respectively. High and Extra-High reviews found no
       blocker, high or medium implementation defect.
+- [x] PR #117 corrected exact-head CI run `33595023515` and exact-main run `33596330244` passed both
+      jobs at `36cfbfe` and merged revision `8996706`, respectively. High and Extra-High reviews
+      ended with no finding.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
-      `b5c210d` (79 and 219 current-main commits behind, respectively), the new report worker is
+      `b5c210d` (84 and 224 WP-193-source commits behind, respectively), the new report worker is
       absent, and the active legacy worker revision is unproven. The attended stop/start reset its
       restart counter to zero; the worker is active/running and now reports one later automatic
       restart whose cause the unprivileged journal does not expose. Claim-failure containment is
