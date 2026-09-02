@@ -30,12 +30,34 @@ import {
 } from './store.js';
 import { SqpWorkflowPendingError } from './sqp.js';
 import type { UnifiedDualRun } from './unified-reporting.js';
-import { RetryableJobError, SyncWorker } from './worker.js';
+import {
+  RetryableJobError,
+  SyncWorker,
+  accountParentParsedBytes,
+  shutdownExitCode,
+} from './worker.js';
 
 const orgId = '11111111-1111-4111-8111-111111111111';
 const profileId = '22222222-2222-4222-8222-222222222222';
 const reportRequestId = '33333333-3333-4333-8333-333333333333';
 const jobId = '44444444-4444-4444-8444-444444444444';
+
+describe('shutdown exit classification', () => {
+  it('returns 78 when a signal races with fatal custody even if evidence is momentarily empty', () => {
+    expect(shutdownExitCode(
+      { released: 0, unresolved: 0 },
+      'custody_quarantined',
+    )).toBe(78);
+    expect(shutdownExitCode({ released: 0, unresolved: 0 }, null)).toBe(0);
+  });
+});
+
+describe('parent parsed-report heap bound', () => {
+  it('fails closed before accumulated normalized rows exceed 16 MiB serialized', () => {
+    expect(() => accountParentParsedBytes(16 * 1024 * 1024 - 8, { row: 'too-large' }))
+      .toThrowError(expect.objectContaining({ kind: 'parsed_bytes' }));
+  });
+});
 
 describe('fetch handler count assertion', () => {
   it('fails and requeues when the fact sink reports fewer loaded rows than parsed rows', async () => {
@@ -1143,18 +1165,21 @@ describe('Reporting v3 create ambiguity', () => {
     });
     expect(worker.status().settlementFailure).toBe('custody_quarantined');
     expect(mutations).toEqual([]);
+    const evidence = await worker.shutdown();
+    expect(evidence).toEqual({ released: 0, unresolved: 1 });
+    expect(shutdownExitCode(evidence, worker.status().settlementFailure)).toBe(78);
   });
 });
 
 describe('fenced report download limits', () => {
   const cases = [
-    { kind: 'compressed_bytes' as const, limits: { maxCompressedBytes: 1, maxDecompressedBytes: 4_096, idleTimeoutMs: 1_000, totalTimeoutMs: 5_000 } },
-    { kind: 'decompressed_bytes' as const, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 2, idleTimeoutMs: 1_000, totalTimeoutMs: 5_000 } },
-    { kind: 'idle_timeout' as const, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 4_096, idleTimeoutMs: 10, totalTimeoutMs: 1_000 } },
-    { kind: 'total_timeout' as const, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 4_096, idleTimeoutMs: 1_000, totalTimeoutMs: 10 } },
-  ] satisfies readonly { kind: string; limits: ReportDownloadLimits }[];
+    { kind: 'compressed_bytes' as const, returnCalls: 1, limits: { maxCompressedBytes: 1, maxDecompressedBytes: 4_096, idleTimeoutMs: 1_000, totalTimeoutMs: 5_000 } },
+    { kind: 'decompressed_bytes' as const, returnCalls: 0, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 2, idleTimeoutMs: 1_000, totalTimeoutMs: 5_000 } },
+    { kind: 'idle_timeout' as const, returnCalls: 1, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 4_096, idleTimeoutMs: 10, totalTimeoutMs: 1_000 } },
+    { kind: 'total_timeout' as const, returnCalls: 1, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 4_096, idleTimeoutMs: 1_000, totalTimeoutMs: 10 } },
+  ] satisfies readonly { kind: string; returnCalls: number; limits: ReportDownloadLimits }[];
 
-  it.each(cases)('cancels the source and retains custody after $kind', async ({ kind, limits }) => {
+  it.each(cases)('cancels the source and retains custody after $kind', async ({ kind, limits, returnCalls }) => {
     const payload: Extract<JobPayload, { type: 'report.fetch' }> = {
       type: 'report.fetch', orgId, profileId, reportRequestId,
       amazonReportId: 'amazon-report', downloadUrl: 'https://reports.invalid/bounded',
@@ -1192,7 +1217,7 @@ describe('fenced report download limits', () => {
       name: 'QueueSettlementError', kind: 'custody_quarantined',
     });
     expect(api.signal?.aborted).toBe(true);
-    expect(api.returnCalls).toBe(1);
+    expect(api.returnCalls).toBe(returnCalls);
     expect(mutations).toEqual([]);
   });
 });

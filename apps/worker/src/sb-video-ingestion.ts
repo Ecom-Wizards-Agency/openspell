@@ -10,6 +10,7 @@ import {
   type CreativeAssetProbePage,
   type SbAdProbePage,
   type SbAdProbeRow,
+  type SbAdsReportProbeParseResult,
 } from '@wizard-ads/ads-api';
 import {
   persistCreativePerformanceBatch,
@@ -123,8 +124,10 @@ export interface SbVideoIngestionRuntime {
   ingestReport(input: {
     profile: AdsProfileContext;
     ledger: WorkerLedgerWithDate;
-    rawRows: readonly unknown[];
-  }): Promise<SbVideoReportResult>;
+  } & (
+    | { rawRows: readonly unknown[]; parsedReport?: never }
+    | { parsedReport: SbAdsReportProbeParseResult; rawRows?: never }
+  )): Promise<SbVideoReportResult>;
 }
 
 export class ObservedSbVideoIngestion implements SbVideoIngestionRuntime {
@@ -229,8 +232,10 @@ export class ObservedSbVideoIngestion implements SbVideoIngestionRuntime {
   async ingestReport(input: {
     profile: AdsProfileContext;
     ledger: WorkerLedgerWithDate;
-    rawRows: readonly unknown[];
-  }): Promise<SbVideoReportResult> {
+  } & (
+    | { rawRows: readonly unknown[]; parsedReport?: never }
+    | { parsedReport: SbAdsReportProbeParseResult; rawRows?: never }
+  )): Promise<SbVideoReportResult> {
     if (input.ledger.reportType !== 'sbAds' || input.ledger.creativeSyncSnapshotId === null) {
       throw new Error('sbAds report is missing its creative snapshot provenance');
     }
@@ -280,7 +285,7 @@ export class ObservedSbVideoIngestion implements SbVideoIngestionRuntime {
       throw new Error(`sbAds snapshot status ${evidence.snapshot.status} cannot promote facts`);
     }
 
-    const report = parseSbAdsReportProbe(input.rawRows);
+    const report = input.parsedReport ?? parseSbAdsReportProbe(input.rawRows);
     const reasons: string[] = [];
     const duplicateGrains = duplicateReportGrains(report.rows);
     if (report.refusals.length > 0) reasons.push('report_rows_refused');

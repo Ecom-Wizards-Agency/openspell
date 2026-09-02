@@ -1,4 +1,9 @@
-import type { SkippedReportRow } from '@wizard-ads/ads-api';
+import { Buffer } from 'node:buffer';
+import {
+  parseSbAdsReportProbe,
+  type SbAdsReportProbeParseResult,
+  type SkippedReportRow,
+} from '@wizard-ads/ads-api';
 import {
   DuplicateFactGrain,
   InvalidReportDatePromotion,
@@ -37,7 +42,10 @@ import type {
 } from './recommendations-run.js';
 import {
   DEFAULT_REPORT_DOWNLOAD_LIMITS,
+  mergeParsedFactBatches,
   ReportDownloadLimitError,
+  ReportPayloadShapeError,
+  type ParsedFactBatch,
   type ReportDownloadLimits,
   SKIP_FAILURE_RATIO,
   gunzipJson,
@@ -45,7 +53,10 @@ import {
 } from './parsers.js';
 import {
   UnsafeSponsoredProductsReport,
-  prepareSponsoredProductsReportDates,
+  prepareSponsoredProductsReportDatesFromCounts,
+  sponsoredProductsSourceRowDate,
+  type prepareSponsoredProductsReportDates,
+  type ReportDateSourceCounts,
 } from './report-promotion.js';
 import {
   defaultRegionTokenBuckets,
@@ -74,6 +85,9 @@ const MINUTE_MS = 60_000;
 const FOUR_HOURS_MS = 4 * 60 * MINUTE_MS;
 const POLL_DELAYS_MINUTES = [5, 10, 20, 30] as const;
 const SP_REPORT_TYPES = new Set(['spCampaigns', 'spTargeting', 'spSearchTerm', 'spPlacement']);
+// The parser worker also caps source rows at 100k. Together these bounds keep
+// normalized object overhead finite without cloning the raw document here.
+const MAX_PARENT_PARSED_BYTES = 16 * 1024 * 1024;
 type BaseReportRequestState = Omit<ReportRequestState, 'reportType'> & { reportType: ReportType };
 
 type LongLivedClaimPass =
@@ -119,6 +133,13 @@ export interface WorkerShutdownEvidence {
   released: number;
   /** Claims deliberately left fenced at the shutdown deadline. No identities are exposed. */
   unresolved: number;
+}
+
+export function shutdownExitCode(
+  evidence: WorkerShutdownEvidence,
+  settlementFailure: QueueSettlementError['kind'] | null,
+): 0 | 78 {
+  return evidence.unresolved === 0 && settlementFailure === null ? 0 : 78;
 }
 
 export interface WorkerLogger {
@@ -192,6 +213,7 @@ export class SyncWorker {
   private readonly reportDownloadLimits: Readonly<ReportDownloadLimits>;
   private readonly claimLoop: ClaimLoopController;
   private readonly running = new Map<string, { job: ClaimedJob; promise: Promise<void> }>();
+  private readonly quarantined = new Map<string, ClaimedJob>();
   private activeClaimPass: Promise<LongLivedClaimPass> | null = null;
   private shutdownPromise: Promise<WorkerShutdownEvidence> | null = null;
   private settlementFailure: QueueSettlementError | null = null;
@@ -319,7 +341,9 @@ export class SyncWorker {
     try {
       const activeClaimPass = this.activeClaimPass;
       if (activeClaimPass) await Promise.allSettled([activeClaimPass]);
-      if (this.running.size === 0) return { released: 0, unresolved: 0 };
+      if (this.running.size === 0) {
+        return { released: 0, unresolved: this.unresolvedCustodyCount() };
+      }
 
       let timedOut = false;
       let timeout: NodeJS.Timeout | undefined;
@@ -330,13 +354,13 @@ export class SyncWorker {
         }),
       ]);
       if (timeout) clearTimeout(timeout);
-      if (!timedOut) return { released: 0, unresolved: 0 };
+      if (!timedOut) return { released: 0, unresolved: this.unresolvedCustodyCount() };
       // A fenced provider claim is deliberately not a lease. Elapsed shutdown
       // time cannot prove the handler or its Amazon request stopped, so it is
       // left running for attended reconciliation. Evo claims only fenced work;
       // refusing a mixed release is safer than speculating about part of it.
       if ([...this.running.values()].some(({ job }) => job.claim !== null)) {
-        return { released: 0, unresolved: this.running.size };
+        return { released: 0, unresolved: this.unresolvedCustodyCount() };
       }
       return { released: await this.store.release(this.workerId), unresolved: 0 };
     } finally {
@@ -380,6 +404,7 @@ export class SyncWorker {
       }
       const task = this.runClaimed(job)
         .catch((error: unknown) => {
+          if (error instanceof FencedClaimQuarantined) this.quarantined.set(key, job);
           const failure = new QueueSettlementError(
             error instanceof ClaimOwnershipLost
               ? 'ownership_lost'
@@ -393,6 +418,14 @@ export class SyncWorker {
         .finally(() => this.running.delete(key));
       this.running.set(key, { job, promise: task });
     }
+  }
+
+  private unresolvedCustodyCount(): number {
+    const keys = new Set(this.quarantined.keys());
+    for (const [key, { job }] of this.running) {
+      if (job.claim !== null) keys.add(key);
+    }
+    return keys.size;
   }
 
   private async runLongLivedClaimPass(): Promise<LongLivedClaimPass> {
@@ -878,7 +911,10 @@ export class SyncWorker {
       payload.profileId,
     );
     assertAmazonReportId(ledger, payload.amazonReportId);
-    let downloaded;
+    let parsedBatch: ParsedFactBatch | undefined;
+    let sbReport: SbAdsReportProbeParseResult | undefined;
+    let parentParsedBytes = 0;
+    const sourceDateCounts = new Map<string, ReportDateSourceCounts>();
     const downloadController = new AbortController();
     const downloadTimer = setTimeout(
       () => downloadController.abort(new ReportDownloadLimitError(
@@ -889,15 +925,60 @@ export class SyncWorker {
     );
     try {
       const source = await adsApi.downloadReport(payload.downloadUrl, downloadController.signal);
-      downloaded = await gunzipJson(
+      const downloaded = await gunzipJson(
         source,
         this.reportDownloadLimits,
-        downloadController.signal,
+        {
+          signal: downloadController.signal,
+          abortSource: (reason) => downloadController.abort(reason),
+          consumeRows: (rows, offset) => {
+            if (ledger.reportType === 'sbAds') {
+              const chunk = parseSbAdsReportProbe(rows);
+              parentParsedBytes = accountParentParsedBytes(parentParsedBytes, chunk);
+              sbReport = mergeSbAdsReportChunks(
+                sbReport,
+                chunk,
+                offset,
+              );
+              return;
+            }
+            const chunk = parseReportRows(ledger.reportType, rows, profile, ledger.id);
+            parentParsedBytes = accountParentParsedBytes(parentParsedBytes, chunk);
+            if (SP_REPORT_TYPES.has(ledger.reportType)) {
+              accountSponsoredProductsSourceChunk(rows, chunk.skipped, sourceDateCounts);
+            }
+            parsedBatch = mergeParsedFactBatches(parsedBatch, chunk, offset);
+          },
+        },
+      );
+      if (ledger.reportType === 'sbAds') {
+        sbReport ??= parseSbAdsReportProbe([]);
+        if (sbReport.sourceRows !== downloaded.rowsParsed) {
+          throw new Error('sbAds parser chunk accounting did not match the downloaded rows');
+        }
+      } else {
+        parsedBatch ??= parseReportRows(ledger.reportType, [], profile, ledger.id);
+        if (parsedBatch.sourceRows !== downloaded.rowsParsed) {
+          throw new Error('report parser chunk accounting did not match the downloaded rows');
+        }
+      }
+      return await this.finishFetchedReport(
+        profile,
+        ledger,
+        downloaded.bytesDownloaded,
+        parsedBatch,
+        sbReport,
+        [...sourceDateCounts.values()],
       );
     } catch (error) {
       if (error instanceof ReportDownloadLimitError) {
         downloadController.abort(error);
         throw error;
+      }
+      if (error instanceof ReportPayloadShapeError) {
+        const detail = error.message;
+        await this.store.failReport(ledger.id, detail);
+        throw new PermanentJobError(detail);
       }
       if (!(error instanceof DownloadUrlExpiredError)) throw error;
       if (this.now().getTime() - ledger.requestedAt.getTime() >= FOUR_HOURS_MS) {
@@ -919,11 +1000,16 @@ export class SyncWorker {
     } finally {
       clearTimeout(downloadTimer);
     }
-    if (!Array.isArray(downloaded.value)) {
-      const detail = 'report payload must be a JSON array';
-      await this.store.failReport(ledger.id, detail);
-      throw new PermanentJobError(detail);
-    }
+  }
+
+  private async finishFetchedReport(
+    profile: AdsProfileContext,
+    ledger: ReportRequestState,
+    bytesDownloaded: number,
+    parsedBatch: ParsedFactBatch | undefined,
+    sbReport: SbAdsReportProbeParseResult | undefined,
+    sourceDateCounts: readonly ReportDateSourceCounts[],
+  ): Promise<Record<string, unknown>> {
     if (ledger.reportType === 'sbAds') {
       if (!this.sbVideo) {
         const detail = 'sbAds ingestion runtime is not configured on this worker';
@@ -939,7 +1025,7 @@ export class SyncWorker {
       const result = await this.sbVideo.ingestReport({
         profile,
         ledger: { ...ledger, creativeSyncSnapshotId },
-        rawRows: downloaded.value,
+        parsedReport: sbReport ?? parseSbAdsReportProbe([]),
       });
       const accounting = {
         sourceRows: result.reportSourceRows,
@@ -953,30 +1039,30 @@ export class SyncWorker {
         const detail = `sbAds promotion blocked: ${result.reasons.join(', ') || 'contract incomplete'}`;
         await this.store.finishAttributedReport(ledger.id, accounting, {
           status: 'failed',
-          bytesDownloaded: downloaded.bytesDownloaded,
+          bytesDownloaded,
           error: detail,
         });
         throw new PermanentJobError(detail);
       }
       await this.store.finishAttributedReport(ledger.id, accounting, {
         status: 'completed',
-        bytesDownloaded: downloaded.bytesDownloaded,
+        bytesDownloaded,
       });
       this.logger.info('Sponsored Brands Video report ingested', {
         reportRequestId: ledger.id,
         reportType: ledger.reportType,
         ...result,
       });
-      return { ...result, bytesDownloaded: downloaded.bytesDownloaded };
+      return { ...result, bytesDownloaded };
     }
     const baseLedger: BaseReportRequestState = { ...ledger, reportType: ledger.reportType };
-    const batch = parseReportRows(baseLedger.reportType, downloaded.value, profile, ledger.id);
+    const batch = parsedBatch ?? parseReportRows(baseLedger.reportType, [], profile, ledger.id);
     if (SP_REPORT_TYPES.has(baseLedger.reportType)) {
       return this.promoteSponsoredProductsReport(
         profile,
         baseLedger,
-        downloaded.value,
-        downloaded.bytesDownloaded,
+        sourceDateCounts,
+        bytesDownloaded,
         batch,
       );
     }
@@ -1005,31 +1091,26 @@ export class SyncWorker {
     const loaded = await this.store.loadFacts(batch);
     // Program rule 4 again: `completeReport` throws on a mismatch, so a fetch
     // that silently dropped rows fails the job instead of reporting success.
-    await this.store.completeReport(ledger.id, { parsed, loaded, bytesDownloaded: downloaded.bytesDownloaded });
+    await this.store.completeReport(ledger.id, { parsed, loaded, bytesDownloaded });
     this.logger.info('report fetched', {
       reportRequestId: ledger.id, reportType: ledger.reportType,
       reportRows: batch.sourceRows, parsed, loaded, skipped, skipReasons: reasons,
     });
     return {
       reportRows: batch.sourceRows, parsed, loaded, skipped, skipReasons: reasons,
-      bytesDownloaded: downloaded.bytesDownloaded,
+      bytesDownloaded,
     };
   }
 
   private async promoteSponsoredProductsReport(
     profile: AdsProfileContext,
     ledger: BaseReportRequestState,
-    rawRows: readonly unknown[],
+    sourceDateCounts: readonly ReportDateSourceCounts[],
     bytesDownloaded: number,
     batch: ReturnType<typeof parseReportRows>,
   ): Promise<Record<string, unknown>> {
     const skipped = batch.skipped.length;
     const reasons = skipReasons(batch.skipped);
-    if (batch.sourceRows !== rawRows.length) {
-      const detail = `${batch.sourceRows} parser source rows do not match ${rawRows.length} payload rows`;
-      await this.store.failReport(ledger.id, detail);
-      throw new PermanentJobError(`${ledger.reportType} ${detail}`);
-    }
     if (skipped > 0) {
       const detail = `replacement parser refused ${skipped} of ${batch.sourceRows} rows: ${formatReasons(reasons)}`;
       await this.store.failReport(ledger.id, detail);
@@ -1039,7 +1120,7 @@ export class SyncWorker {
     const observedAt = this.now();
     let staged;
     try {
-      staged = prepareSponsoredProductsReportDates({
+      staged = prepareSponsoredProductsReportDatesFromCounts({
         orgId: profile.orgId,
         profileId: profile.id,
         reportType: ledger.reportType,
@@ -1049,7 +1130,7 @@ export class SyncWorker {
         observedAt,
         attributionWindowDays: 7,
         batch,
-        rawRows,
+        sourceDateCounts,
         startDate: ledger.startDate,
         endDate: ledger.endDate,
         profileTimeZone: profile.timezone,
@@ -1166,6 +1247,62 @@ export class SyncWorker {
     if (!this.adsApi) throw new PermanentJobError('Amazon Ads API not deployed in this runtime');
     return this.adsApi;
   }
+}
+
+function mergeSbAdsReportChunks(
+  current: SbAdsReportProbeParseResult | undefined,
+  next: SbAdsReportProbeParseResult,
+  sourceOffset: number,
+): SbAdsReportProbeParseResult {
+  const refusals = next.refusals.map((refusal) => ({
+    ...refusal,
+    index: refusal.index + sourceOffset,
+  }));
+  if (!current) return { ...next, refusals };
+  current.sourceRows += next.sourceRows;
+  current.parsedRows += next.parsedRows;
+  current.rows.push(...next.rows);
+  current.refusals.push(...refusals);
+  return current;
+}
+
+export function accountParentParsedBytes(current: number, value: unknown): number {
+  const serialized = JSON.stringify(value);
+  const next = current + Buffer.byteLength(serialized, 'utf8');
+  if (next > MAX_PARENT_PARSED_BYTES) {
+    throw new ReportDownloadLimitError('parsed_bytes', MAX_PARENT_PARSED_BYTES);
+  }
+  return next;
+}
+
+function accountSponsoredProductsSourceChunk(
+  rows: readonly unknown[],
+  skippedRows: readonly SkippedReportRow[],
+  counts: Map<string, ReportDateSourceCounts>,
+): void {
+  const skipped = new Set<number>();
+  for (const refusal of skippedRows) {
+    if (!Number.isSafeInteger(refusal.index) || refusal.index < 0 || refusal.index >= rows.length) {
+      throw new UnsafeSponsoredProductsReport(`parser returned invalid skipped index ${refusal.index}`);
+    }
+    if (skipped.has(refusal.index)) {
+      throw new UnsafeSponsoredProductsReport(`parser returned duplicate skipped index ${refusal.index}`);
+    }
+    skipped.add(refusal.index);
+  }
+  rows.forEach((row, index) => {
+    const reportDate = sponsoredProductsSourceRowDate(row, index);
+    const date = counts.get(reportDate) ?? {
+      reportDate,
+      sourceRows: 0,
+      parsedRows: 0,
+      refusedRows: 0,
+    };
+    date.sourceRows += 1;
+    if (skipped.has(index)) date.refusedRows += 1;
+    else date.parsedRows += 1;
+    counts.set(reportDate, date);
+  });
 }
 
 function assertAmazonReportId(ledger: ReportRequestState, amazonReportId: string): void {

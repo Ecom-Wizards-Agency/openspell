@@ -262,7 +262,7 @@ not:
   `DownloadUrlExpiredError` so `report.fetch` re-polls for a fresh one. Reporting v3 create adopts
   a 425 only when Amazon supplies the in-flight report id; transport loss, server failure,
   undecodable success, or a duplicate without an id is quarantined and never automatically sent
-  again. Report downloads are bounded to 32 MiB compressed, 256 MiB inflated, 60 seconds idle and
+  again. Report downloads are bounded to 32 MiB compressed, 64 MiB inflated, 60 seconds idle and
   15 minutes total.
 
 `recommendations.run` still returns a stub result pending WP-05's engine.

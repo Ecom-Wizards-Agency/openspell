@@ -28,6 +28,7 @@ import {
   BidSeriesSyncPass,
   QueueSettlementError,
   ScheduleProvisioner,
+  shutdownExitCode,
   StaleClaimReaper,
   SyncWorker,
   type WorkerShutdownEvidence,
@@ -176,7 +177,7 @@ async function performShutdown(): Promise<WorkerShutdownEvidence> {
 async function shutdownForSignal(): Promise<void> {
   try {
     const evidence = await shutdown();
-    process.exit(evidence.unresolved === 0 ? 0 : CUSTODY_EXIT_CODE);
+    process.exit(shutdownExitCode(evidence, worker.status().settlementFailure));
   } catch {
     console.error('report worker shutdown evidence unavailable');
     process.exit(CUSTODY_EXIT_CODE);

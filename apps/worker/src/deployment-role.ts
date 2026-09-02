@@ -122,9 +122,12 @@ export function resolveWorkerDeploymentPolicy(
   if (roleValue !== 'evo-report-lane') {
     throw new Error('WORKER_DEPLOYMENT_ROLE must be general or evo-report-lane');
   }
-  const expected = unifiedReportingEnabled
-    ? UNIFIED_EVO_REPORT_LANE_JOB_TYPES
-    : EVO_REPORT_LANE_JOB_TYPES;
+  if (unifiedReportingEnabled) {
+    throw new Error(
+      'Unified Reporting five-type lane is incompatible with fenced report custody',
+    );
+  }
+  const expected = EVO_REPORT_LANE_JOB_TYPES;
   if (!sameSet(configuredJobTypes, expected)) {
     throw new Error(
       `WORKER_JOB_TYPES must exactly match the ${expected.length}-type Evo report lane`,
@@ -155,18 +158,8 @@ export function resolveUnifiedReportingDualRunPolicy(
   if (env['OPENSPELL_EVO_REPORT_LANE_READY'] !== '1') {
     throw new Error('Unified Reporting dual run requires the exclusive Evo report lane');
   }
-  if (
-    deployment.role !== 'evo-report-lane' ||
-    !sameSet(deployment.jobTypes, UNIFIED_EVO_REPORT_LANE_JOB_TYPES)
-  ) {
-    throw new Error('Unified Reporting dual run requires the exact expanded Evo claim set');
-  }
-  return {
-    enabled: true,
-    profileIds: parseUnifiedReportingProfileAllowlist(
-      env[UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV],
-    ),
-  };
+  void deployment;
+  throw new Error('Unified Reporting five-type lane is incompatible with fenced report custody');
 }
 
 /**

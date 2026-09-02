@@ -130,12 +130,6 @@ describe('bounded Creative producer cohort', () => {
 });
 
 describe('bounded Unified Reporting dual run', () => {
-  const expanded = resolveWorkerDeploymentPolicy(
-    'evo-report-lane',
-    UNIFIED_EVO_REPORT_LANE_JOB_TYPES,
-    true,
-  );
-
   it('keeps absent and zero gates inert without inspecting deployment values', () => {
     expect(resolveUnifiedReportingDualRunPolicy({}, {
       role: 'general', claimProtocol: 'legacy', jobTypes: undefined, startsBackgroundPasses: true,
@@ -148,40 +142,38 @@ describe('bounded Unified Reporting dual run', () => {
     })).toEqual({ enabled: false, profileIds: [] });
   });
 
-  it('requires the exclusive handoff, expanded claim set, and canonical cohort', () => {
-    expect(resolveUnifiedReportingDualRunPolicy({
-      OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY: '1',
-      OPENSPELL_EVO_REPORT_LANE_READY: '1',
-      [UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV]: ` ${PROFILE_ONE.toUpperCase()},${PROFILE_TWO} `,
-    }, expanded)).toEqual({ enabled: true, profileIds: [PROFILE_ONE, PROFILE_TWO] });
-
+  it('fails the five-type lane closed under fenced custody', () => {
     expect(() => resolveUnifiedReportingDualRunPolicy({
       OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY: '1',
       OPENSPELL_EVO_REPORT_LANE_READY: '0',
       [UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV]: PROFILE_ONE,
-    }, expanded)).toThrow(/exclusive Evo report lane/);
+    }, resolveWorkerDeploymentPolicy(
+      'evo-report-lane', EVO_REPORT_LANE_JOB_TYPES,
+    ))).toThrow(/exclusive Evo report lane/);
 
     expect(() => resolveUnifiedReportingDualRunPolicy({
       OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY: '1',
       OPENSPELL_EVO_REPORT_LANE_READY: '1',
       [UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV]: PROFILE_ONE,
-    }, {
-      role: 'evo-report-lane', claimProtocol: 'fenced',
-      jobTypes: EVO_REPORT_LANE_JOB_TYPES, startsBackgroundPasses: false,
-    })).toThrow(/expanded Evo claim set/);
+    }, resolveWorkerDeploymentPolicy(
+      'evo-report-lane', EVO_REPORT_LANE_JOB_TYPES,
+    ))).toThrow(/incompatible with fenced report custody/);
   });
 
-  it('accepts the expanded claim set only when the feature gate selects it', () => {
-    expect(expanded.jobTypes).toBe(UNIFIED_EVO_REPORT_LANE_JOB_TYPES);
+  it('accepts no fenced policy beyond the exact four-type database lane', () => {
+    const accepted = resolveWorkerDeploymentPolicy(
+      'evo-report-lane', EVO_REPORT_LANE_JOB_TYPES,
+    );
+    expect(accepted.jobTypes).toBe(EVO_REPORT_LANE_JOB_TYPES);
     expect(() => resolveWorkerDeploymentPolicy(
       'evo-report-lane', UNIFIED_EVO_REPORT_LANE_JOB_TYPES,
     )).toThrow(/4-type Evo report lane/);
     expect(() => resolveWorkerDeploymentPolicy(
       'evo-report-lane', EVO_REPORT_LANE_JOB_TYPES, true,
-    )).toThrow(/5-type Evo report lane/);
+    )).toThrow(/incompatible with fenced report custody/);
   });
 
-  it('caps the enabled Unified cohort without echoing roster values', () => {
+  it('does not inspect or echo a cohort when the fenced lane is incompatible', () => {
     const oversized = Array.from(
       { length: MAX_UNIFIED_REPORTING_PROFILE_IDS + 1 },
       (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
@@ -190,13 +182,17 @@ describe('bounded Unified Reporting dual run', () => {
       OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY: '1',
       OPENSPELL_EVO_REPORT_LANE_READY: '1',
       [UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV]: oversized,
-    }, expanded)).toThrow(`at most ${MAX_UNIFIED_REPORTING_PROFILE_IDS}`);
+    }, resolveWorkerDeploymentPolicy(
+      'evo-report-lane', EVO_REPORT_LANE_JOB_TYPES,
+    ))).toThrow(/incompatible with fenced report custody/);
     try {
       resolveUnifiedReportingDualRunPolicy({
         OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY: '1',
         OPENSPELL_EVO_REPORT_LANE_READY: '1',
         [UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV]: oversized,
-      }, expanded);
+      }, resolveWorkerDeploymentPolicy(
+        'evo-report-lane', EVO_REPORT_LANE_JOB_TYPES,
+      ));
     } catch (error) {
       expect(error instanceof Error ? error.message : String(error)).not.toContain(
         '00000000-0000-4000-8000-000000000011',

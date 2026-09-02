@@ -76,7 +76,7 @@ describe('Creative pilot readiness', () => {
     });
   });
 
-  it('accepts the source-defined expanded report lane without weakening exact matching', () => {
+  it('rejects the five-type lane as incompatible with fenced database custody', () => {
     const result = evaluateCreativePilotPreflight(databaseEvidence(), {
       status: 'ok',
       worker: { stopping: false, running: 0 },
@@ -87,8 +87,8 @@ describe('Creative pilot readiness', () => {
         jobTypes: UNIFIED_CLAIMS,
       },
     }, REVISION);
-    expect(result.ready).toBe(true);
-    expect(result.worker.claimSetMatches).toBe(true);
+    expect(result.ready).toBe(false);
+    expect(result.worker.claimSetMatches).toBe(false);
   });
 
   it.each([
