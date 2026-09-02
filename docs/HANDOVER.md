@@ -37,16 +37,17 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- `origin/main` is `82911581a3e91556c93f12d973509f0acaa94b35`. PR #113 merged WP-191's
-  architecture-only token-fenced SP outbox protocol. Exact-head run `33582983015` passed both jobs
-  at `fd47827` on its first attempt; exact-main run `33583810523` passed both jobs at the merge
-  revision on its first attempt. High correctness and Extra-High adversarial reviews reported no
-  blocker, high or medium finding. The package changed no migration, app, job, provider path,
-  hosted schema, deployment or activation.
+- `origin/main` is `dbc788acb6cae83d550aaf5ec8bdeedfe1af2b51`. PR #115 merged WP-192's
+  source-only token-fenced SP outbox delivery implementation. Exact-head run `33590334260` passed
+  both jobs at `d1e09a9`; exact-main run `33591051237` passed both jobs at the merge revision.
+  High correctness and Extra-High adversarial reviews reported no blocker, high or medium finding.
+  The new migration's SHA-256 is
+  `c34fc0a1902abe27f0c33d66c1a083fb32f0fd5df30974baecace674a2219a2c`; it was not hosted, and
+  the package added no app, job, provider reachability, deployment or activation.
 - Production web health returns `ok` at
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 75 commits behind current main. No later package
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 79 commits behind current main. No later package
   deployed or promoted a candidate, so its newer source artifacts are not live evidence.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 215 commits behind
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 219 commits behind
   current main, and still returns the legacy `wizard-ads` service shape.
 - The new Evo report-worker unit is not installed and its loopback health is unavailable. The
   legacy integration worker is active, but exposes no revision stamp. Earlier in this continuation
@@ -59,7 +60,7 @@ At the time this handover was reconciled:
 - Current source, deployed web, deployed MCP, and the active worker are not one proven release. Do
   not describe post-deployment main features as live until a revision-stamped candidate is promoted
   and checked.
-- `docs/STATUS.md` now records WP-179 through WP-191, but the implementation-wave table remains
+- `docs/STATUS.md` now records WP-179 through WP-192, but the implementation-wave table remains
   incomplete between WP-149 and WP-178. Use Git, CI, code, the migration ledger, and live health as
   evidence; then update status prose.
 
@@ -124,12 +125,11 @@ Recent verified source work includes:
   suites in fresh serial processes. Exact route-manifest conservation, crash-safe setup/cleanup,
   one worker, zero retries and the explicit 4 GB heap cap are enforced; no application behavior,
   authentication rule, migration, deployment or runtime activation changed;
-- an accepted architecture for token-fenced SP outbox delivery using private mutable custody heads,
-  immutable transition journals, typed non-JSON claim credentials, database-clock ownership,
-  claim-bound dispatch-lease and reservation wrappers, exact completion/error semantics and
-  separately gated source, coordinator and activation packages. It is documentation only; no
-  schema, facade implementation, worker consumer, provider reachability or runtime activation was
-  added;
+- source-only token-fenced SP outbox delivery using private mutable custody heads, immutable
+  transition journals, typed non-JSON claim credentials, database-clock ownership, claim-bound
+  dispatch-lease and reservation wrappers, exact completion/error semantics, tokenless grant
+  revocation and purge/lock-order proofs. It remains inert: neither SP migration is hosted and no
+  app, worker consumer, provider reachability or runtime activation was added;
 - bounded five-second transactional lock waits on every migration that was pending before the
   attended four-file hosted push, plus a source guard that prevents later lock-sensitive migrations
   from silently removing or moving that boundary;
@@ -190,16 +190,12 @@ Keep optimizer-group edits and manual or scheduled recommendation-job creation f
 weekday-aware worker and web revisions are deployed and verified. The automatic scheduled-run gate
 remains off; schema presence did not activate it.
 
-WP-187's `20260901020000_sp_write_persistence_ledger.sql` is merged source only and was not added to
-the hosted ledger. WP-188 added only a source facade and did not apply or assume that migration. Do
-not apply it as part of a worker or outbox slice; a future hosted apply requires a separately
-reconciled ledger-compatible artifact, exact action authorization and pre/postflight. Its absence
-keeps every new persistence relation and capability unavailable live.
-
-WP-191 added architecture documents only. Its database/facade successor may add one inert forward
-migration after rechecking the exact last source migration, but must not host WP-187 or that new
-migration, import the facade from an app, register a consumer, reach the provider or activate a
-write gate in the same package.
+WP-187's `20260901020000_sp_write_persistence_ledger.sql` and WP-192's
+`20260901030000_sp_write_outbox_delivery.sql` are merged source only and were not added to the
+hosted ledger. WP-188 and WP-192 expose source facades but no app imports them. Do not apply either
+migration as part of a worker/coordinator slice; a future hosted apply requires a separately
+reconciled ledger-compatible artifact, exact action authorization and pre/postflight. Their
+absence keeps every new SP persistence and delivery relation and capability unavailable live.
 
 WP-186 was applied from the isolated 41-file artifact at SHA-256
 `db3def960f433c1e221c0257aacd3551e8c7b023fd178a078831ba2a038b7e2c`. The attended window stopped
@@ -307,30 +303,24 @@ exact current-task authorization.
 
 ## Recommended continuation order
 
-1. Implement the separately numbered inert WP-191 database/facade successor from exact current
-   main. Add only the private delivery head/journal, controlled claim transitions, claim-bound
-   dispatch-lease/reservation wrappers, tokenless grant revocations, explicit DB facade and focused
-   proofs. Keep both SP migrations unhosted, add no app/job/provider reachability and leave every
-   runtime gate closed. Use High for implementation correctness and Extra High for migration,
-   stale-token, lock-order, purge and no-redispatch review.
-2. Stage the weekday-aware Evo report worker from an exact clean main revision. Transfer Vercel
+1. Stage the weekday-aware Evo report worker from an exact clean main revision. Transfer Vercel
    report claims first, prove the legacy unit retired, then perform the attended activation and
    exact health/queue checks. Never allow overlapping consumers, and keep the optimizer freeze.
-3. Deploy a revision-stamped web candidate from the same clean main, complete authenticated QA, and
+2. Deploy a revision-stamped web candidate from the same clean main, complete authenticated QA, and
    promote only after the candidate revision and route artifacts match. Release the optimizer-edit
    and recommendation-job freeze only after every job-claiming worker and the web are both proven
    weekday-aware.
-4. Replace or revision-stamp the MCP deployment from the same proven release and repeat its
+3. Replace or revision-stamp the MCP deployment from the same proven release and repeat its
    read-only health, tool and audit verification before claiming runtime coherence.
-5. Implement the sidebar-scroll regression now that WP-171 no longer overlaps its web files.
-6. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
-7. Keep the merged Unified Reporting dual-run off until its binding, deployment revision, consumer
+4. Implement the sidebar-scroll regression now that WP-171 no longer overlaps its web files.
+5. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
+6. Keep the merged Unified Reporting dual-run off until its binding, deployment revision, consumer
    ownership, bounded deployment allowlist, exact five-type Evo health contract, and separately
    authorized read-only provider probe are proven. Do not add download or promotion behavior from
    request-status parity alone.
-8. Keep WP-184's distinctive release evidence and the contextual-negative rescue separate from
+7. Keep WP-184's distinctive release evidence and the contextual-negative rescue separate from
    their remaining deployment and live-verification gates.
-9. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again.
+8. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again.
 
 If an external gate blocks one lane, continue with the next independent source-only package. Do
 not reinterpret waiting as authorization to mutate production.

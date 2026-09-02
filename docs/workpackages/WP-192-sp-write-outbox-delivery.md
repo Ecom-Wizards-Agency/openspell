@@ -228,11 +228,11 @@ The canonical WP-187 suite remains pinned through
 
 ## Acceptance checks
 
-- [ ] Focused DB typecheck, lint and pure facade tests pass.
-- [ ] Fresh and populated PostgreSQL migration/protocol tests pass serially.
-- [ ] The canonical WP-187 suite still passes unchanged in behavior at its exact migration.
-- [ ] `pnpm typecheck`, `pnpm lint`, `pnpm test` and `pnpm hygiene` pass.
-- [ ] High correctness and Extra-High adversarial reviews find no blocker, high or medium defect.
-- [ ] Blast-radius scans prove no runtime or hosted activation.
-- [ ] Exact-head PR CI and exact-main CI pass both jobs.
-- [ ] Handover and status are updated only after reviewed merge and exact-main CI.
+- [x] Focused DB typecheck, lint and pure facade tests pass.
+- [x] Fresh and populated PostgreSQL migration/protocol tests pass serially.
+- [x] The canonical WP-187 suite still passes unchanged in behavior at its exact migration.
+- [x] `pnpm typecheck`, `pnpm lint`, `pnpm test` and `pnpm hygiene` pass.
+- [x] High correctness and Extra-High adversarial reviews find no blocker, high or medium defect.
+- [x] Blast-radius scans prove no runtime or hosted activation.
+- [x] Exact-head PR CI and exact-main CI pass both jobs.
+- [x] Handover and status are updated only after reviewed merge and exact-main CI.
