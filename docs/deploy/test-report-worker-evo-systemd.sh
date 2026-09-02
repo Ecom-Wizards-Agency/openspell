@@ -88,12 +88,34 @@ if rg -F 'verify_report_worker_credentials' "$installer" >/dev/null; then
   echo "staging depends on live credentials" >&2
   exit 1
 fi
-trap_line="$(rg -n -F 'trap cleanup EXIT' "$installer" | head -n 1 | cut -d: -f1)"
-lock_line="$(rg -n -F 'acquire_report_worker_deployment_lock' "$installer" | head -n 1 | cut -d: -f1)"
-mktemp_line="$(rg -n -F 'build_root="$(mktemp -d' "$installer" | head -n 1 | cut -d: -f1)"
-if [[ -z "$trap_line" || -z "$lock_line" || -z "$mktemp_line" \
-  || "$trap_line" -ge "$lock_line" || "$lock_line" -ge "$mktemp_line" ]]; then
-  echo "installer cleanup trap, lock, and temporary allocation are ordered unsafely" >&2
+unique_installer_line() {
+  local needle="$1"
+  local label="$2"
+  local -a matches
+  local source_line
+  mapfile -t matches < <(rg -n -F -- "$needle" "$installer" | cut -d: -f1)
+  if ((${#matches[@]} != 1)); then
+    echo "installer must contain exactly one executable $label boundary" >&2
+    exit 1
+  fi
+  source_line="$(sed -n "${matches[0]}p" "$installer")"
+  if [[ "$source_line" =~ ^[[:space:]]*# ]]; then
+    echo "installer $label boundary cannot be a comment" >&2
+    exit 1
+  fi
+  printf '%s\n' "${matches[0]}"
+}
+trap_line="$(unique_installer_line 'trap cleanup EXIT' 'cleanup')"
+lock_line="$(unique_installer_line 'acquire_report_worker_deployment_lock' 'lock')"
+mktemp_line="$(unique_installer_line 'build_root="$(mktemp -d' 'temporary allocation')"
+install_line="$(unique_installer_line 'pnpm --dir "$repo_root" install --frozen-lockfile' 'dependency install')"
+harness_line="$(unique_installer_line 'bash "$script_dir/test-report-worker-evo-systemd.sh"' 'harness')"
+clean_line="$(unique_installer_line 'post_harness_status="$(git -C "$repo_root" status' 'post-harness cleanliness')"
+package_line="$(unique_installer_line '--filter @wizard-ads/worker deploy "$release_stage"' 'release packaging')"
+if [[ "$trap_line" -ge "$lock_line" || "$lock_line" -ge "$mktemp_line" \
+  || "$mktemp_line" -ge "$install_line" || "$install_line" -ge "$harness_line" \
+  || "$harness_line" -ge "$clean_line" || "$clean_line" -ge "$package_line" ]]; then
+  echo "installer cleanup, lock, install, harness, cleanliness, and packaging are ordered unsafely" >&2
   exit 1
 fi
 if ! rg -F -- '--vercel-report-claims-relinquished' "$activator" >/dev/null \

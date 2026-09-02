@@ -77,11 +77,17 @@ done
 
 acquire_report_worker_deployment_lock
 
-bash "$script_dir/test-report-worker-evo-systemd.sh"
-
 build_root="$(mktemp -d /tmp/openspell-report-worker-install.XXXXXX)"
 
 pnpm --dir "$repo_root" install --frozen-lockfile >"$build_root/install.log" 2>&1
+bash "$script_dir/test-report-worker-evo-systemd.sh"
+
+post_harness_status="$(git -C "$repo_root" status --porcelain --untracked-files=normal)"
+if [[ -n "$post_harness_status" ]]; then
+  echo "refusing deployment: dependency install or deployment harness changed the checkout" >&2
+  exit 1
+fi
+
 release_stage="$build_root/release"
 if ! pnpm --dir "$repo_root" --config.inject-workspace-packages=true \
   --filter @wizard-ads/worker deploy "$release_stage" \

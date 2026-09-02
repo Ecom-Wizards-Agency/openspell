@@ -11,8 +11,8 @@ checkout paths, secrets, profile selectors, tests, or deployment state into the 
 
 ## Usage (operator view)
 
-An unattended build may stage one exact release. It cannot change systemd or a running
-process:
+After exact host-and-revision staging authorization, an unattended build may stage one exact
+release. It cannot change systemd or a running process:
 
 ```bash
 git fetch origin --prune
@@ -116,11 +116,22 @@ between them. Neither interface exposes packaging internals or shares mutable ch
 - We accept attended Vercel claim evidence in this package because the current public web health
   contract exposes revision, not effective queue ownership; the activation flag is an assertion,
   not a machine probe.
+- We accept a no-consumer handoff gap while prior Vercel invocations drain because avoiding two
+  report consumers is more important than uninterrupted claiming.
 
 ## Open questions and risks
 
 - Has the attended operator verified the compatible Vercel revision, set the report-lane handoff,
-  redeployed, and observed reduced Vercel ownership before invoking activation?
+  recorded the new immutable Vercel deployment identity and alias cutover, observed reduced Vercel
+  ownership, and proved every pre-cutover invocation and running claim is finished before invoking
+  activation?
+- Is every prior claim terminal or safely resumable with a known provider outcome, with any
+  possibly dispatched request that lacks a durable report ID quarantined while both consumers stay
+  stopped?
+- Is activation authorized for the exact eligible backlog and for jobs that may arrive while the
+  continuous four-type consumer runs, including already-queued Creative work?
+- Has the exact rollback destination been proven compatible with the current hosted schema and
+  queue contract independently of its retained artifact?
 - Should a future web package expose a signed, short-lived effective-claim receipt so activation
   can replace its attended assertion with machine evidence?
 - Are both encrypted credentials sealed on this Evo host under the exact runtime IDs in the
@@ -139,6 +150,11 @@ between them. Neither interface exposes packaging internals or shares mutable ch
   before worker import and emits no connection or data detail.
 - [ ] Activation refuses until Vercel relinquishment is explicitly acknowledged and the legacy
   worker is absent or exactly inactive and disabled.
+- [ ] The activation runbook requires prior Vercel invocations and report operations to drain and
+  makes continuous-consumer authority explicit before Evo starts.
+- [ ] Full lane failback stops and drains Evo before restoring Vercel report ownership.
+- [ ] Release rollback requires an external compatibility decision for the exact destination and
+  current hosted schema.
 - [ ] Live health proves the full revision, exclusive role, and exact four-claim set.
 - [ ] Activation and rollback retain and atomically restore release, unit, and public config.
 - [ ] Concurrent stage, activation, or rollback operations allow one mutator and refuse the rest.
@@ -150,6 +166,8 @@ between them. Neither interface exposes packaging internals or shares mutable ch
 This package is deployment code only. It does not deploy, start, stop, enable, or restart a
 production service. Attended activation requires the exact staged revision, both encrypted
 credential files, verified Vercel relinquishment before Evo starts, a
-retired legacy worker, and exact worker health. Current web health cannot prove effective Vercel
-claims, so `--vercel-report-claims-relinquished` records attended evidence rather than automated
-evidence. No Amazon write is part of activation.
+retired legacy worker, explicit authority for continuous consumption, and exact worker health.
+Current web health cannot prove effective Vercel claims or the absence of a prior invocation, so
+`--vercel-report-claims-relinquished` records attended evidence rather than automated evidence.
+Activation authorizes queue and report-ledger writes plus Amazon read/report calls for the exact
+four-type claim set; it does not authorize an Amazon advertising mutation.
