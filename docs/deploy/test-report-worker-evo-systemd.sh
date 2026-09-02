@@ -635,7 +635,11 @@ node -e '
     const jobTypes = ["creative.sync", "report.request", "report.poll", "report.fetch"];
     const body = {
       status: "ok",
-      worker: { stopping: false, running: 0 },
+      worker: {
+        stopping: false,
+        running: 0,
+        settlementFailure: mode === "settlement" ? "ownership_lost" : null,
+      },
       deployment: {
         revision,
         role: mode === "role" ? "general" : "evo-report-lane",
@@ -660,7 +664,7 @@ if [[ ! "$port" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 node "$health" "http://127.0.0.1:$port/healthz" "$fixture_revision" 1 >/dev/null
-for mode in role claims protocol; do
+for mode in role claims protocol settlement; do
   if node "$health" "http://127.0.0.1:$port/healthz?mode=$mode" \
     "$fixture_revision" 1 >/dev/null 2>&1; then
     echo "health verifier accepted a wrong $mode" >&2

@@ -41,9 +41,11 @@ export const UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV =
 export const MAX_UNIFIED_REPORTING_PROFILE_IDS = 10;
 
 export type WorkerDeploymentRole = 'general' | 'evo-report-lane';
+export type WorkerClaimProtocol = 'legacy' | 'fenced';
 
 export interface WorkerDeploymentPolicy {
   role: WorkerDeploymentRole;
+  claimProtocol: WorkerClaimProtocol;
   /** The effective claim policy. Undefined retains the general all-queue mode. */
   jobTypes: readonly JobType[] | undefined;
   /** The exclusive report runtime is a queue consumer, not a timer host. */
@@ -110,7 +112,12 @@ export function resolveWorkerDeploymentPolicy(
   unifiedReportingEnabled = false,
 ): WorkerDeploymentPolicy {
   if (roleValue === undefined || roleValue === 'general') {
-    return { role: 'general', jobTypes: configuredJobTypes, startsBackgroundPasses: true };
+    return {
+      role: 'general',
+      claimProtocol: 'legacy',
+      jobTypes: configuredJobTypes,
+      startsBackgroundPasses: true,
+    };
   }
   if (roleValue !== 'evo-report-lane') {
     throw new Error('WORKER_DEPLOYMENT_ROLE must be general or evo-report-lane');
@@ -125,6 +132,7 @@ export function resolveWorkerDeploymentPolicy(
   }
   return {
     role: 'evo-report-lane',
+    claimProtocol: 'fenced',
     jobTypes: expected,
     startsBackgroundPasses: false,
   };

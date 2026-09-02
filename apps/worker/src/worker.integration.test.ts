@@ -1157,7 +1157,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
         return job?.status === 'succeeded';
       }, 10_000);
 
-      await expect(worker.shutdown()).resolves.toEqual({ released: 0 });
+      await expect(worker.shutdown()).resolves.toEqual({ released: 0, unresolved: 0 });
       await expect(started).resolves.toBeUndefined();
       const [completed] = await database.sql<{
         status: string;

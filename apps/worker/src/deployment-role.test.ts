@@ -52,10 +52,10 @@ describe('queue deployment ownership', () => {
 
   it('keeps the general worker compatible with an absent or narrow allowlist', () => {
     expect(resolveWorkerDeploymentPolicy(undefined, undefined)).toEqual({
-      role: 'general', jobTypes: undefined, startsBackgroundPasses: true,
+      role: 'general', claimProtocol: 'legacy', jobTypes: undefined, startsBackgroundPasses: true,
     });
     expect(resolveWorkerDeploymentPolicy('general', ['rank.sync'])).toEqual({
-      role: 'general', jobTypes: ['rank.sync'], startsBackgroundPasses: true,
+      role: 'general', claimProtocol: 'legacy', jobTypes: ['rank.sync'], startsBackgroundPasses: true,
     });
   });
 
@@ -64,6 +64,7 @@ describe('queue deployment ownership', () => {
       'report.fetch', 'creative.sync', 'report.poll', 'report.request',
     ])).toEqual({
       role: 'evo-report-lane',
+      claimProtocol: 'fenced',
       jobTypes: EVO_REPORT_LANE_JOB_TYPES,
       startsBackgroundPasses: false,
     });
@@ -137,13 +138,13 @@ describe('bounded Unified Reporting dual run', () => {
 
   it('keeps absent and zero gates inert without inspecting deployment values', () => {
     expect(resolveUnifiedReportingDualRunPolicy({}, {
-      role: 'general', jobTypes: undefined, startsBackgroundPasses: true,
+      role: 'general', claimProtocol: 'legacy', jobTypes: undefined, startsBackgroundPasses: true,
     })).toEqual({ enabled: false, profileIds: [] });
     expect(resolveUnifiedReportingDualRunPolicy({
       OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY: '0',
       [UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV]: 'not-a-uuid',
     }, {
-      role: 'general', jobTypes: undefined, startsBackgroundPasses: true,
+      role: 'general', claimProtocol: 'legacy', jobTypes: undefined, startsBackgroundPasses: true,
     })).toEqual({ enabled: false, profileIds: [] });
   });
 
@@ -165,7 +166,8 @@ describe('bounded Unified Reporting dual run', () => {
       OPENSPELL_EVO_REPORT_LANE_READY: '1',
       [UNIFIED_REPORTING_PROFILE_ALLOWLIST_ENV]: PROFILE_ONE,
     }, {
-      role: 'evo-report-lane', jobTypes: EVO_REPORT_LANE_JOB_TYPES, startsBackgroundPasses: false,
+      role: 'evo-report-lane', claimProtocol: 'fenced',
+      jobTypes: EVO_REPORT_LANE_JOB_TYPES, startsBackgroundPasses: false,
     })).toThrow(/expanded Evo claim set/);
   });
 

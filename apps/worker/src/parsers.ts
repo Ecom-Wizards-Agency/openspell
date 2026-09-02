@@ -71,23 +71,170 @@ export interface DownloadedJson {
   bytesDownloaded: number;
 }
 
-/** Stream compressed bytes through gunzip. Only the parsed JSON is retained. */
-export async function gunzipJson(source: AsyncIterable<Uint8Array>): Promise<DownloadedJson> {
+export interface ReportDownloadLimits {
+  /** Compressed wire bytes accepted from the pre-signed report URL. */
+  maxCompressedBytes: number;
+  /** Inflated JSON bytes retained before parsing. */
+  maxDecompressedBytes: number;
+  /** Longest permitted wait between compressed chunks. */
+  idleTimeoutMs: number;
+  /** Complete download, inflation and JSON parsing budget. */
+  totalTimeoutMs: number;
+}
+
+/**
+ * Production aggregates currently remain below 300 KiB compressed. These
+ * limits preserve over 100x compressed headroom and a separate decompression
+ * ceiling while making the process memory bound explicit.
+ */
+export const DEFAULT_REPORT_DOWNLOAD_LIMITS: Readonly<ReportDownloadLimits> = Object.freeze({
+  maxCompressedBytes: 32 * 1024 * 1024,
+  maxDecompressedBytes: 256 * 1024 * 1024,
+  idleTimeoutMs: 60_000,
+  totalTimeoutMs: 15 * 60_000,
+});
+
+export type ReportDownloadLimitKind =
+  | 'compressed_bytes'
+  | 'decompressed_bytes'
+  | 'idle_timeout'
+  | 'total_timeout';
+
+/** Fixed-category limit failure. Source chunks and provider details are never retained. */
+export class ReportDownloadLimitError extends Error {
+  override readonly name = 'ReportDownloadLimitError';
+
+  constructor(readonly kind: ReportDownloadLimitKind, readonly limit: number) {
+    super(`report download exceeded ${kind} limit`);
+  }
+}
+
+/**
+ * Stream compressed bytes through gunzip under explicit byte and time bounds.
+ * Only the bounded inflated JSON document is retained.
+ */
+export async function gunzipJson(
+  source: AsyncIterable<Uint8Array>,
+  limits: Readonly<ReportDownloadLimits> = DEFAULT_REPORT_DOWNLOAD_LIMITS,
+  signal?: AbortSignal,
+): Promise<DownloadedJson> {
+  assertDownloadLimits(limits);
+  const startedAt = Date.now();
   let bytesDownloaded = 0;
+  const controller = new AbortController();
+  const totalError = new ReportDownloadLimitError('total_timeout', limits.totalTimeoutMs);
+  const abortFromCaller = (): void => controller.abort(signal?.reason);
+  if (signal?.aborted === true) controller.abort(signal.reason);
+  else signal?.addEventListener('abort', abortFromCaller, { once: true });
+  const totalTimer = setTimeout(() => controller.abort(totalError), limits.totalTimeoutMs);
+  let iterator: AsyncIterator<Uint8Array> | undefined;
+
   async function* measured(): AsyncGenerator<Uint8Array> {
-    for await (const chunk of source) {
-      bytesDownloaded += chunk.byteLength;
-      yield chunk;
+    iterator = source[Symbol.asyncIterator]();
+    try {
+      for (;;) {
+        const item = await nextDownloadChunk(iterator, controller.signal, limits.idleTimeoutMs);
+        if (item.done) return;
+        const nextBytes = bytesDownloaded + item.value.byteLength;
+        if (nextBytes > limits.maxCompressedBytes) {
+          throw new ReportDownloadLimitError('compressed_bytes', limits.maxCompressedBytes);
+        }
+        bytesDownloaded = nextBytes;
+        yield item.value;
+      }
+    } finally {
+      if (iterator.return) void iterator.return().catch(() => undefined);
     }
   }
 
   const chunks: Buffer[] = [];
-  const unzipped = Readable.from(measured()).pipe(createGunzip());
-  for await (const chunk of unzipped) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
-  }
+  let decompressedBytes = 0;
+  const compressed = Readable.from(measured());
+  const unzipped = createGunzip();
+  compressed.once('error', (error) => unzipped.destroy(error));
+  compressed.pipe(unzipped);
 
-  return { value: JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown, bytesDownloaded };
+  const abort = (): void => {
+    const reason = controller.signal.reason instanceof Error
+      ? controller.signal.reason
+      : totalError;
+    compressed.destroy(reason);
+    unzipped.destroy(reason);
+  };
+  controller.signal.addEventListener('abort', abort, { once: true });
+
+  try {
+    for await (const chunk of unzipped) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      const nextBytes = decompressedBytes + buffer.byteLength;
+      if (nextBytes > limits.maxDecompressedBytes) {
+        throw new ReportDownloadLimitError(
+          'decompressed_bytes',
+          limits.maxDecompressedBytes,
+        );
+      }
+      decompressedBytes = nextBytes;
+      chunks.push(buffer);
+    }
+    if (controller.signal.aborted || Date.now() - startedAt >= limits.totalTimeoutMs) {
+      throw totalError;
+    }
+    const value = JSON.parse(
+      Buffer.concat(chunks, decompressedBytes).toString('utf8'),
+    ) as unknown;
+    // JSON.parse is synchronous, so a timer cannot interrupt it. Check elapsed
+    // time again before allowing an over-budget document into the workflow.
+    if (controller.signal.aborted || Date.now() - startedAt >= limits.totalTimeoutMs) {
+      throw totalError;
+    }
+    return {
+      value,
+      bytesDownloaded,
+    };
+  } finally {
+    clearTimeout(totalTimer);
+    signal?.removeEventListener('abort', abortFromCaller);
+    controller.signal.removeEventListener('abort', abort);
+    compressed.destroy();
+    unzipped.destroy();
+    if (iterator?.return) void iterator.return().catch(() => undefined);
+  }
+}
+
+function assertDownloadLimits(limits: Readonly<ReportDownloadLimits>): void {
+  for (const [name, value] of Object.entries(limits)) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new RangeError(`${name} must be a positive safe integer`);
+    }
+  }
+}
+
+function nextDownloadChunk(
+  iterator: AsyncIterator<Uint8Array>,
+  signal: AbortSignal,
+  idleTimeoutMs: number,
+): Promise<IteratorResult<Uint8Array>> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(idleTimer);
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = (): void => finish(() => reject(signal.reason));
+    const idleTimer = setTimeout(
+      () => finish(() => reject(new ReportDownloadLimitError('idle_timeout', idleTimeoutMs))),
+      idleTimeoutMs,
+    );
+    signal.addEventListener('abort', onAbort, { once: true });
+    void iterator.next().then(
+      (item) => finish(() => resolve(item)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
 }
 
 function record(value: unknown): Record<string, unknown> {

@@ -36,6 +36,7 @@ describe('worker deployment role', () => {
   it('preserves the general all-queue startup defaults', () => {
     expect(configFromEnv(base)).toMatchObject({
       deploymentRole: 'general',
+      claimProtocol: 'legacy',
       revision: 'unknown',
       jobTypes: undefined,
       startsBackgroundPasses: true,
@@ -52,6 +53,7 @@ describe('worker deployment role', () => {
       OPENSPELL_WORKER_REVISION: 'ABCDEF1234567',
     })).toMatchObject({
       deploymentRole: 'evo-report-lane',
+      claimProtocol: 'fenced',
       revision: 'abcdef1234567',
       jobTypes: ['creative.sync', 'report.request', 'report.poll', 'report.fetch'],
       startsBackgroundPasses: false,

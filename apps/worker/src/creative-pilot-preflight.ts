@@ -6,6 +6,7 @@ import {
   EVO_REPORT_LANE_JOB_TYPES,
   UNIFIED_EVO_REPORT_LANE_JOB_TYPES,
   type WorkerDeploymentRole,
+  type WorkerClaimProtocol,
 } from './deployment-role.js';
 
 export interface CreativePilotWorkerHealth {
@@ -14,6 +15,7 @@ export interface CreativePilotWorkerHealth {
   deployment: {
     revision: string;
     role: WorkerDeploymentRole;
+    claimProtocol: WorkerClaimProtocol;
     jobTypes: readonly JobType[] | 'all';
   };
 }
@@ -28,6 +30,8 @@ export interface CreativePilotPreflightResult {
     revisionMatches: boolean;
     role: WorkerDeploymentRole;
     roleMatches: boolean;
+    claimProtocol: WorkerClaimProtocol;
+    protocolMatches: boolean;
     jobTypes: readonly JobType[] | 'all';
     claimSetMatches: boolean;
     stopping: boolean;
@@ -60,11 +64,12 @@ export function evaluateCreativePilotPreflight(
 ): CreativePilotPreflightResult {
   const revisionMatches = health.deployment.revision === expectedRevision;
   const roleMatches = health.deployment.role === 'evo-report-lane';
+  const protocolMatches = health.deployment.claimProtocol === 'fenced';
   const claimSetMatches =
     sameClaimSet(health.deployment.jobTypes, EVO_REPORT_LANE_JOB_TYPES) ||
     sameClaimSet(health.deployment.jobTypes, UNIFIED_EVO_REPORT_LANE_JOB_TYPES);
   const healthy = health.status === 'ok' && !health.worker.stopping;
-  const workerPassed = healthy && revisionMatches && roleMatches && claimSetMatches;
+  const workerPassed = healthy && revisionMatches && roleMatches && protocolMatches && claimSetMatches;
   const cohortPassed =
     database.cohort.requestedProfiles > 0 &&
     database.cohort.existingProfiles === database.cohort.requestedProfiles &&
@@ -80,6 +85,8 @@ export function evaluateCreativePilotPreflight(
       revisionMatches,
       role: health.deployment.role,
       roleMatches,
+      claimProtocol: health.deployment.claimProtocol,
+      protocolMatches,
       jobTypes: health.deployment.jobTypes,
       claimSetMatches,
       stopping: health.worker.stopping,
@@ -105,6 +112,7 @@ export function parseCreativePilotWorkerHealth(value: unknown): CreativePilotWor
   const deploymentBody = deployment as Record<string, unknown>;
   const revision = deploymentBody['revision'];
   const role = deploymentBody['role'];
+  const claimProtocol = deploymentBody['claimProtocol'];
   const rawJobTypes = deploymentBody['jobTypes'];
   if (
     typeof workerBody['stopping'] !== 'boolean' ||
@@ -112,7 +120,8 @@ export function parseCreativePilotWorkerHealth(value: unknown): CreativePilotWor
     Number(workerBody['running']) < 0 ||
     typeof revision !== 'string' ||
     !/^[0-9a-f]{7,64}$/.test(revision) ||
-    (role !== 'general' && role !== 'evo-report-lane')
+    (role !== 'general' && role !== 'evo-report-lane') ||
+    (claimProtocol !== 'legacy' && claimProtocol !== 'fenced')
   ) throw new Error('worker health is malformed');
   let jobTypes: readonly JobType[] | 'all';
   if (rawJobTypes === 'all') {
@@ -136,7 +145,7 @@ export function parseCreativePilotWorkerHealth(value: unknown): CreativePilotWor
       stopping: workerBody['stopping'],
       running: Number(workerBody['running']),
     },
-    deployment: { revision, role, jobTypes },
+    deployment: { revision, role, claimProtocol, jobTypes },
   };
 }
 

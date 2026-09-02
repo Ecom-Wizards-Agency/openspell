@@ -3,9 +3,12 @@ import {
   adGroups,
   campaigns,
   claimSyncJobs,
+  claimSyncJobsFenced,
+  deferSyncJobFenced,
   factSbDaily,
   factSdDaily,
   finishSyncJob,
+  finishSyncJobFenced,
   ensureFactPartitions,
   keywords,
   negatives,
@@ -23,6 +26,7 @@ import {
   upsertSearchTermFacts,
   upsertSpTargetFacts,
   type ClaimedJob,
+  type ClaimRef,
   type DbHandle,
   type JobOutcome,
   type NewEntityChange,
@@ -119,18 +123,28 @@ export interface WorkerStore {
     outcome: JobOutcome,
     options?: { error?: string; result?: unknown; retryIn?: string },
   ): Promise<void>;
+  /** Settle exactly one opaque fenced claim. Required for every fenced job. */
+  finishClaim?(
+    claim: ClaimRef,
+    outcome: JobOutcome,
+    options?: { error?: string; result?: unknown; retryIn?: string },
+  ): Promise<void>;
   /**
    * Return a healthy, unfinished provider job to the queue without consuming
    * its failure budget. Optional for test/adaptor stores; the Postgres runtime
    * implements it. A provider poll is waiting, not a failed attempt.
    */
   defer?(jobId: string, retryIn: string): Promise<void>;
+  /** Defer exactly one opaque fenced claim without spending its attempt. */
+  deferClaim?(claim: ClaimRef, retryIn: string): Promise<void>;
   /**
    * Finish a job as `dead` without spending its remaining attempts. For
    * failures no retry can fix — a malformed export, a payload naming a profile
    * that does not exist — retrying five times only delays the human.
    */
   deadLetter(jobId: string, error: string): Promise<void>;
+  /** Permanently finish exactly one opaque fenced claim. */
+  deadLetterClaim?(claim: ClaimRef, error: string): Promise<void>;
   release(workerId: string): Promise<number>;
   /**
    * Requeue jobs still `running` on a worker that died without releasing them.
@@ -212,18 +226,39 @@ export class ParsedLoadedMismatch extends Error {
   }
 }
 
+/** A stale process presented a capability which no longer owns the queue row. */
+export class ClaimOwnershipLost extends Error {
+  override readonly name = 'ClaimOwnershipLost';
+
+  constructor() {
+    super('sync job claim ownership was lost');
+  }
+}
+
+export interface PostgresWorkerStoreOptions {
+  claimProtocol?: 'legacy' | 'fenced';
+}
+
 /** `deletedAt` arrives as the wire string, not a `Date` — see the note on `asDate`. */
 type ExistingEntity = { amazonId: string; deletedAt: Date | string | null; snapshot: Record<string, unknown> };
 
 export class PostgresWorkerStore implements WorkerStore {
   private readonly logger: StoreLogger;
+  private readonly claimProtocol: 'legacy' | 'fenced';
 
-  constructor(readonly handle: DbHandle, logger?: StoreLogger) {
+  constructor(
+    readonly handle: DbHandle,
+    logger?: StoreLogger,
+    options: PostgresWorkerStoreOptions = {},
+  ) {
     this.logger = logger ?? { info: (message, details) => console.info(message, details ?? {}) };
+    this.claimProtocol = options.claimProtocol ?? 'legacy';
   }
 
   claim(workerId: string, limit: number, jobTypes?: readonly JobType[]): Promise<ClaimedJob[]> {
-    return claimSyncJobs(this.handle, workerId, limit, jobTypes);
+    return this.claimProtocol === 'fenced'
+      ? claimSyncJobsFenced(this.handle, workerId, limit, jobTypes)
+      : claimSyncJobs(this.handle, workerId, limit, jobTypes);
   }
 
   async finish(
@@ -232,6 +267,15 @@ export class PostgresWorkerStore implements WorkerStore {
     options: { error?: string; result?: unknown; retryIn?: string } = {},
   ): Promise<void> {
     await finishSyncJob(this.handle, jobId, outcome, options);
+  }
+
+  async finishClaim(
+    claim: ClaimRef,
+    outcome: JobOutcome,
+    options: { error?: string; result?: unknown; retryIn?: string } = {},
+  ): Promise<void> {
+    const decision = await finishSyncJobFenced(this.handle, claim, outcome, options);
+    if (decision.decision === 'stale_claim') throw new ClaimOwnershipLost();
   }
 
   async defer(jobId: string, retryIn: string): Promise<void> {
@@ -245,11 +289,17 @@ export class PostgresWorkerStore implements WorkerStore {
              run_after = now() + ${retryIn}::interval
        where id = ${jobId}
          and status = 'running'::public.sync_job_status
+         and claim_token is null
       returning id
     `;
     if (rows.length !== 1 || rows[0]?.id !== jobId) {
       throw new Error(`could not defer running sync job ${jobId}`);
     }
+  }
+
+  async deferClaim(claim: ClaimRef, retryIn: string): Promise<void> {
+    const decision = await deferSyncJobFenced(this.handle, claim, retryIn);
+    if (decision.decision === 'stale_claim') throw new ClaimOwnershipLost();
   }
 
   async deadLetter(jobId: string, error: string): Promise<void> {
@@ -263,12 +313,18 @@ export class PostgresWorkerStore implements WorkerStore {
     `;
   }
 
+  async deadLetterClaim(claim: ClaimRef, error: string): Promise<void> {
+    const decision = await finishSyncJobFenced(this.handle, claim, 'dead', { error });
+    if (decision.decision === 'stale_claim') throw new ClaimOwnershipLost();
+  }
+
   async release(workerId: string): Promise<number> {
     const rows = await this.handle.sql<{ id: string }[]>`
       update public.sync_jobs
          set status = 'queued', claimed_by = null, claimed_at = null,
              run_after = now(), last_error = coalesce(last_error, 'released during graceful shutdown')
        where status = 'running' and claimed_by = ${workerId}
+         and claim_token is null
       returning id
     `;
     return rows.length;

@@ -18,6 +18,7 @@ describe('worker health readiness', () => {
   const deployment = {
     revision: 'abcdef1234567',
     role: 'evo-report-lane' as const,
+    claimProtocol: 'fenced' as const,
     jobTypes: ['creative.sync', 'report.request', 'report.poll', 'report.fetch'] as const,
   };
   afterEach(async () => Promise.all(servers.splice(0).map(closeServer)));
@@ -57,6 +58,27 @@ describe('worker health readiness', () => {
     }
   });
 
+  it('degrades on a sanitized queue-settlement failure', async () => {
+    const worker = {
+      status: () => ({
+        workerId: 'synthetic',
+        stopping: false,
+        running: 0,
+        settlementFailure: 'ownership_lost',
+        claimLoop: readyClaimLoop,
+      }),
+    } as SyncWorker;
+    const server = await startHealthServer(worker, 0, { deployment });
+    servers.push(server);
+    const { port } = server.address() as AddressInfo;
+    const response = await fetch(`http://127.0.0.1:${port}/healthz`);
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      status: 'degraded',
+      worker: { settlementFailure: 'ownership_lost' },
+    });
+  });
+
   it('reports only the sanitized role and queue allowlist for deployment ownership', async () => {
     const worker = {
       status: () => ({ workerId: 'synthetic', stopping: false, running: 0, claimLoop: readyClaimLoop }),
@@ -72,6 +94,7 @@ describe('worker health readiness', () => {
       deployment: {
         revision: 'abcdef1234567',
         role: 'evo-report-lane',
+        claimProtocol: 'fenced',
         jobTypes: ['creative.sync', 'report.request', 'report.poll', 'report.fetch'],
       },
     });

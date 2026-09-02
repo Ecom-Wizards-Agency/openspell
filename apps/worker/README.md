@@ -61,13 +61,16 @@ job result reports `reportRows` (what Amazon sent) alongside `parsed`/`loaded` (
 | Any handler throws | `attempts++`, requeued with exponential backoff, `dead` after `max_attempts` |
 | `AdsApiRetryableError` with `Retry-After` | requeued with exactly that delay |
 | `PermanentJobError`, `ExportContractError`, `ProfileNotFound` | straight to `dead`, attempts unspent |
-| Worker SIGKILLed mid-job | the job sits in `running` until a sweep requeues it |
+| Reporting v3 create may have reached Amazon without returning an id | quarantined in `dead`; attended reconciliation only |
+| General worker SIGKILLed mid-job | the tokenless job sits in `running` until a sweep requeues it |
+| Evo report worker SIGKILLed mid-job | the fenced job remains `running`; elapsed time never authorizes replay |
 
-That last row is why `StaleClaimReaper` exists. `claim_sync_jobs` only ever sees `queued`, so
-without a sweep a killed worker's job is lost. pg_cron runs `requeue_stale_sync_jobs()` every 15
-minutes on Supabase; the reaper runs the same function in-process so a deployment against a plain
-Postgres — or one where the cron extension is unavailable — is not silently missing it. Both are
-idempotent, so running both costs nothing.
+The general worker still needs `StaleClaimReaper`: legacy `claim_sync_jobs` only sees `queued`, so
+without a sweep a killed tokenless worker's job is lost. pg_cron runs
+`requeue_stale_sync_jobs()` every 15 minutes on Supabase; the reaper runs the same function
+in-process for plain Postgres. Both paths ignore token-bearing claims. The Evo role uses
+`claim_sync_jobs_fenced`; every transition presents its fresh opaque token, and no timer requeues
+it. Recovery is deliberately attended because a timeout cannot prove provider work stopped.
 
 ## The auth healthcheck is not a queue job — deliberately
 
@@ -154,8 +157,10 @@ failure evidence even when the queue is empty; a pass skipped because local capa
 not.
 
 Shutdown interrupts idle and backoff waits. If an atomic claim was already in progress, shutdown
-waits for it, registers any returned jobs once, and then uses the existing handler drain and timed
-release behavior. A stopped worker instance cannot be started again.
+waits for it and registers any returned jobs once. Tokenless work retains the timed release path.
+Fenced Evo work never releases on elapsed shutdown time and remains quarantined if its handler does
+not drain. A stopped worker instance cannot be started again. Any unprovable fenced settlement is a
+fatal fixed-category queue error, so the process cannot continue claiming after custody is lost.
 
 ### Bounded Creative pilot preflight
 
@@ -252,11 +257,13 @@ not:
 - **`listEntities` lists every ad product** (SP campaigns/ad groups/keywords/targets/product
   ads/negatives, SB and SD campaigns/ad groups), sequentially so one profile does not blow the
   region concurrency cap, and stamps our profile uuid back onto each mapped row.
-- **Errors are narrowed to what the retry policy can act on.** A 429 (with any `Retry-After`), a 5xx
-  or a timeout becomes `AdsApiRetryableError`; a stale S3 download URL (403/410) becomes
-  `DownloadUrlExpiredError` so `report.fetch` re-polls for a fresh one; a 425 on create adopts the
-  in-flight report id. Everything else ages out through the generic attempt counter into the
-  dead-letter.
+- **Errors are narrowed to what the retry policy can act on.** Idempotent reads retry throttles,
+  5xx and transport failures. A stale S3 download URL (403/410) becomes
+  `DownloadUrlExpiredError` so `report.fetch` re-polls for a fresh one. Reporting v3 create adopts
+  a 425 only when Amazon supplies the in-flight report id; transport loss, server failure,
+  undecodable success, or a duplicate without an id is quarantined and never automatically sent
+  again. Report downloads are bounded to 32 MiB compressed, 256 MiB inflated, 60 seconds idle and
+  15 minutes total.
 
 `recommendations.run` still returns a stub result pending WP-05's engine.
 

@@ -24,6 +24,7 @@ import { isPermanentCrosscheckError, type CrosscheckIngest } from './crosscheck.
 import {
   AdsApiRetryableError,
   DownloadUrlExpiredError,
+  ReportCreateOutcomeUnknownError,
   type AdProductCode,
   type AdsApiClient,
   type AdsProfileContext,
@@ -34,7 +35,13 @@ import type {
   RecommendationScheduleStore,
   RecommendationsRun,
 } from './recommendations-run.js';
-import { SKIP_FAILURE_RATIO, gunzipJson, parseReportRows } from './parsers.js';
+import {
+  DEFAULT_REPORT_DOWNLOAD_LIMITS,
+  ReportDownloadLimitError,
+  SKIP_FAILURE_RATIO,
+  gunzipJson,
+  parseReportRows,
+} from './parsers.js';
 import {
   UnsafeSponsoredProductsReport,
   prepareSponsoredProductsReportDates,
@@ -43,7 +50,11 @@ import {
   defaultRegionTokenBuckets,
   type RegionTokenBuckets,
 } from './region-token-buckets.js';
-import type { ReportRequestState, WorkerStore } from './store.js';
+import {
+  ClaimOwnershipLost,
+  type ReportRequestState,
+  type WorkerStore,
+} from './store.js';
 import type { SbVideoIngestionRuntime } from './sb-video-ingestion.js';
 import {
   SqpWorkflowPendingError,
@@ -83,6 +94,21 @@ export class RetryableJobError extends Error {
     super(message);
     this.name = 'RetryableJobError';
   }
+}
+
+/** Fixed-category failure when durable queue settlement cannot be proven. */
+export class QueueSettlementError extends Error {
+  override readonly name = 'QueueSettlementError';
+
+  constructor(readonly kind: 'ownership_lost' | 'unavailable') {
+    super(`sync job queue settlement ${kind}`);
+  }
+}
+
+export interface WorkerShutdownEvidence {
+  released: number;
+  /** Claims deliberately left fenced at the shutdown deadline. No identities are exposed. */
+  unresolved: number;
 }
 
 export interface WorkerLogger {
@@ -152,9 +178,10 @@ export class SyncWorker {
   private readonly now: () => Date;
   private readonly logger: WorkerLogger;
   private readonly claimLoop: ClaimLoopController;
-  private readonly running = new Map<string, Promise<void>>();
+  private readonly running = new Map<string, { job: ClaimedJob; promise: Promise<void> }>();
   private activeClaimPass: Promise<LongLivedClaimPass> | null = null;
-  private shutdownPromise: Promise<{ released: number }> | null = null;
+  private shutdownPromise: Promise<WorkerShutdownEvidence> | null = null;
+  private settlementFailure: QueueSettlementError | null = null;
   private stopping = false;
 
   constructor(options: SyncWorkerOptions) {
@@ -176,11 +203,18 @@ export class SyncWorker {
     this.claimLoop = new ClaimLoopController(this.pollIntervalMs, this.now);
   }
 
-  status(): { workerId: string; stopping: boolean; running: number; claimLoop: ClaimLoopState } {
+  status(): {
+    workerId: string;
+    stopping: boolean;
+    running: number;
+    settlementFailure: QueueSettlementError['kind'] | null;
+    claimLoop: ClaimLoopState;
+  } {
     return {
       workerId: this.workerId,
       stopping: this.stopping,
       running: this.running.size,
+      settlementFailure: this.settlementFailure?.kind ?? null,
       claimLoop: this.claimLoop.status(),
     };
   }
@@ -189,6 +223,7 @@ export class SyncWorker {
     this.claimLoop.beginStart();
     try {
       while (!this.stopping && this.claimLoop.beginClaim()) {
+        if (this.settlementFailure) throw this.settlementFailure;
         const pass = this.runLongLivedClaimPass();
         this.activeClaimPass = pass;
         let outcome: LongLivedClaimPass;
@@ -228,7 +263,8 @@ export class SyncWorker {
       this.claimLoop.recordFatalFailure();
       throw error;
     }
-    await Promise.allSettled(this.running.values());
+    await Promise.allSettled([...this.running.values()].map(({ promise }) => promise));
+    if (this.settlementFailure) throw this.settlementFailure;
   }
 
   /**
@@ -243,6 +279,7 @@ export class SyncWorker {
    * through before the platform kills the request.
    */
   async drainOnce(maxJobs?: number, deadlineMs?: number): Promise<number> {
+    if (this.settlementFailure) throw this.settlementFailure;
     if (deadlineMs !== undefined && Date.now() >= deadlineMs) return 0;
     const before = new Set(this.running.keys());
     const batchSize = this.availableClaimBatchSize(maxJobs);
@@ -250,35 +287,44 @@ export class SyncWorker {
     const jobs = await this.fetchClaimBatch(batchSize);
     this.startClaimedJobs(jobs);
     const batch = [...this.running.entries()]
-      .filter(([id]) => !before.has(id))
-      .map(([, promise]) => promise);
+      .filter(([claimKey]) => !before.has(claimKey))
+      .map(([, active]) => active.promise);
     await Promise.allSettled(batch);
+    if (this.settlementFailure) throw this.settlementFailure;
     return jobs.length;
   }
 
-  shutdown(releaseAfterMs = 25_000): Promise<{ released: number }> {
+  shutdown(releaseAfterMs = 25_000): Promise<WorkerShutdownEvidence> {
     this.shutdownPromise ??= this.performShutdown(releaseAfterMs);
     return this.shutdownPromise;
   }
 
-  private async performShutdown(releaseAfterMs: number): Promise<{ released: number }> {
+  private async performShutdown(releaseAfterMs: number): Promise<WorkerShutdownEvidence> {
     this.stopping = true;
     this.claimLoop.beginShutdown();
     try {
       const activeClaimPass = this.activeClaimPass;
       if (activeClaimPass) await Promise.allSettled([activeClaimPass]);
-      if (this.running.size === 0) return { released: 0 };
+      if (this.running.size === 0) return { released: 0, unresolved: 0 };
 
       let timedOut = false;
       let timeout: NodeJS.Timeout | undefined;
       await Promise.race([
-        Promise.allSettled(this.running.values()),
+        Promise.allSettled([...this.running.values()].map(({ promise }) => promise)),
         new Promise<void>((resolve) => {
           timeout = setTimeout(() => { timedOut = true; resolve(); }, releaseAfterMs);
         }),
       ]);
       if (timeout) clearTimeout(timeout);
-      return { released: timedOut ? await this.store.release(this.workerId) : 0 };
+      if (!timedOut) return { released: 0, unresolved: 0 };
+      // A fenced provider claim is deliberately not a lease. Elapsed shutdown
+      // time cannot prove the handler or its Amazon request stopped, so it is
+      // left running for attended reconciliation. Evo claims only fenced work;
+      // refusing a mixed release is safer than speculating about part of it.
+      if ([...this.running.values()].some(({ job }) => job.claim !== null)) {
+        return { released: 0, unresolved: this.running.size };
+      }
+      return { released: await this.store.release(this.workerId), unresolved: 0 };
     } finally {
       this.claimLoop.finishShutdown();
     }
@@ -314,8 +360,20 @@ export class SyncWorker {
 
   private startClaimedJobs(jobs: readonly ClaimedJob[]): void {
     for (const job of jobs) {
-      const task = this.runClaimed(job).finally(() => this.running.delete(job.id));
-      this.running.set(job.id, task);
+      const key = job.claim?.token ?? job.id;
+      if (this.running.has(key)) {
+        throw new Error('claim function returned duplicate active custody');
+      }
+      const task = this.runClaimed(job)
+        .catch((error: unknown) => {
+          const failure = new QueueSettlementError(
+            error instanceof ClaimOwnershipLost ? 'ownership_lost' : 'unavailable',
+          );
+          this.settlementFailure ??= failure;
+          throw failure;
+        })
+        .finally(() => this.running.delete(key));
+      this.running.set(key, { job, promise: task });
     }
   }
 
@@ -341,21 +399,27 @@ export class SyncWorker {
       return;
     }
     // Queue finalization is deliberately outside the execution catch. If this
-    // write fails after the provider/loader succeeded, stale-claim recovery may
-    // replay the idempotent job; it must not misclassify the successful report
-    // execution as terminal and block its Creative snapshot.
-    await this.store.finish(job.id, 'succeeded', { result });
+    // write fails after the provider/loader succeeded, legacy recovery or a
+    // separately attended fenced recovery may replay the idempotent job; it
+    // must not misclassify successful execution as terminal and block its
+    // Creative snapshot.
+    await this.finishClaimed(job, 'succeeded', { result });
   }
 
   private async handleClaimedFailure(job: ClaimedJob, error: unknown): Promise<void> {
     if (error instanceof SqpWorkflowPendingError) {
       const retryIn = `${error.retryAfterSeconds} seconds`;
-      if (this.store.defer) {
+      if (job.claim !== null) {
+        if (!this.store.deferClaim) {
+          throw new Error('worker store cannot defer fenced custody');
+        }
+        await this.store.deferClaim(job.claim, retryIn);
+      } else if (this.store.defer) {
         await this.store.defer(job.id, retryIn);
       } else {
         // Adapter/test stores predating queue deferral retain the safe legacy
         // behavior. The production Postgres store never takes this branch.
-        await this.store.finish(job.id, 'failed', {
+        await this.finishClaimed(job, 'failed', {
           error: errorMessage(error).slice(0, 4_000),
           retryIn,
         });
@@ -368,11 +432,22 @@ export class SyncWorker {
       return;
     }
     if (isPermanentJobFailure(error)) {
+      const terminalDetail = error instanceof ReportCreateOutcomeUnknownError
+        ? 'report create outcome unknown; attended reconciliation required'
+        : 'report lifecycle stopped after a non-retryable failure';
       await this.failTerminalReportIfPresent(
         job,
-        'report lifecycle stopped after a non-retryable failure',
+        terminalDetail,
       );
-      await this.store.deadLetter(job.id, errorMessage(error).slice(0, 4_000));
+      const detail = errorMessage(error).slice(0, 4_000);
+      if (job.claim !== null) {
+        if (!this.store.deadLetterClaim) {
+          throw new Error('worker store cannot dead-letter fenced custody');
+        }
+        await this.store.deadLetterClaim(job.claim, detail);
+      } else {
+        await this.store.deadLetter(job.id, detail);
+      }
       this.logger.error('sync job dead-lettered', {
         jobId: job.id, type: job.jobType, error: errorMessage(error),
       });
@@ -390,7 +465,7 @@ export class SyncWorker {
         'report lifecycle stopped after exhausting its retry budget',
       );
     }
-    await this.store.finish(job.id, 'failed', {
+    await this.finishClaimed(job, 'failed', {
       error: errorMessage(error).slice(0, 4_000),
       retryIn: `${retrySeconds} seconds`,
     });
@@ -399,6 +474,21 @@ export class SyncWorker {
       type: job.jobType,
       error: errorMessage(error),
     });
+  }
+
+  private async finishClaimed(
+    job: ClaimedJob,
+    outcome: 'succeeded' | 'failed',
+    options: { error?: string; result?: unknown; retryIn?: string } = {},
+  ): Promise<void> {
+    if (job.claim === null) {
+      await this.store.finish(job.id, outcome, options);
+      return;
+    }
+    if (!this.store.finishClaim) {
+      throw new Error('worker store cannot finish fenced custody');
+    }
+    await this.store.finishClaim(job.claim, outcome, options);
   }
 
   private async failTerminalReportIfPresent(job: ClaimedJob, error: string): Promise<void> {
@@ -732,9 +822,21 @@ export class SyncWorker {
     );
     assertAmazonReportId(ledger, payload.amazonReportId);
     let downloaded;
+    const downloadController = new AbortController();
+    const downloadTimer = setTimeout(
+      () => downloadController.abort(new ReportDownloadLimitError(
+        'total_timeout',
+        DEFAULT_REPORT_DOWNLOAD_LIMITS.totalTimeoutMs,
+      )),
+      DEFAULT_REPORT_DOWNLOAD_LIMITS.totalTimeoutMs,
+    );
     try {
-      const source = await adsApi.downloadReport(payload.downloadUrl);
-      downloaded = await gunzipJson(source);
+      const source = await adsApi.downloadReport(payload.downloadUrl, downloadController.signal);
+      downloaded = await gunzipJson(
+        source,
+        DEFAULT_REPORT_DOWNLOAD_LIMITS,
+        downloadController.signal,
+      );
     } catch (error) {
       if (!(error instanceof DownloadUrlExpiredError)) throw error;
       if (this.now().getTime() - ledger.requestedAt.getTime() >= FOUR_HOURS_MS) {
@@ -753,6 +855,8 @@ export class SyncWorker {
         `report.repoll:${ledger.id}:${attempt}`,
       );
       return { downloadExpired: true, repollEnqueued: enqueued };
+    } finally {
+      clearTimeout(downloadTimer);
     }
     if (!Array.isArray(downloaded.value)) {
       const detail = 'report payload must be a JSON array';
@@ -1288,6 +1392,9 @@ function errorMessage(error: unknown): string {
 
 function isPermanentJobFailure(error: unknown): boolean {
   return error instanceof PermanentJobError ||
+    error instanceof ReportCreateOutcomeUnknownError ||
+    (error instanceof ReportDownloadLimitError &&
+      (error.kind === 'compressed_bytes' || error.kind === 'decompressed_bytes')) ||
     error instanceof SqpWorkflowPermanentError ||
     error instanceof SpApiParseError ||
     (error instanceof SpApiAuthError && !error.retryable) ||

@@ -43,7 +43,9 @@ const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
 
 const config = configFromEnv();
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
-const store = new PostgresWorkerStore(handle);
+const store = new PostgresWorkerStore(handle, undefined, {
+  claimProtocol: config.claimProtocol,
+});
 const marketingStream = config.startsBackgroundPasses && config.marketingStreamQueueUrl
   ? createMarketingStreamSqsConsumer({
       handle,
@@ -115,6 +117,7 @@ const health = await startHealthServer(worker, config.port, {
   deployment: {
     revision: config.revision,
     role: config.deploymentRole,
+    claimProtocol: config.claimProtocol,
     jobTypes: config.jobTypes ?? 'all',
   },
   marketingStream,

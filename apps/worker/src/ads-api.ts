@@ -80,7 +80,7 @@ export interface AdsApiClient {
   listEntities(profile: AdsProfileContext, full: boolean): Promise<EntityListing>;
   createReport(input: CreateReportInput): Promise<{ reportId: string }>;
   getReport(profile: AdsProfileContext, reportId: string): Promise<AdsReportStatus>;
-  downloadReport(url: string): Promise<AsyncIterable<Uint8Array>>;
+  downloadReport(url: string, signal?: AbortSignal): Promise<AsyncIterable<Uint8Array>>;
   listProfiles(region: Region): Promise<readonly string[]>;
 }
 
@@ -180,6 +180,23 @@ export class DownloadUrlExpiredError extends AdsApiRetryableError {
   constructor(message = 'report download URL expired') {
     super(message);
     this.name = 'DownloadUrlExpiredError';
+  }
+}
+
+/**
+ * Reporting v3 create may have reached Amazon without returning an id we can
+ * persist. Retrying that request is not recovery: it is a possible duplicate
+ * provider effect. The original error is intentionally not retained because a
+ * provider response can echo account-scoped request data.
+ */
+export class ReportCreateOutcomeUnknownError extends Error {
+  override readonly name = 'ReportCreateOutcomeUnknownError';
+
+  constructor(
+    readonly phase: 'transport' | 'server-response' | 'response-decoding' | 'duplicate-without-id',
+    readonly status: number | null,
+  ) {
+    super(`Reporting v3 create outcome is unknown after ${phase}`);
   }
 }
 
@@ -332,7 +349,30 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
       // right move is to adopt that report id, not mint a second copy.
       if (error instanceof DuplicateReportError) {
         if (error.existingReportId) return { reportId: error.existingReportId };
-        throw new AdsApiRetryableError('duplicate report in flight with no id to adopt; retrying');
+        throw new ReportCreateOutcomeUnknownError('duplicate-without-id', 425);
+      }
+
+      // Once the non-idempotent request begins, transport loss, a provider 5xx,
+      // a truncated body, or an undecodable success response cannot prove that
+      // Amazon refused it. Quarantine instead of converting these into the
+      // worker's ordinary retry path.
+      if (error instanceof AdsApiParseError) {
+        throw new ReportCreateOutcomeUnknownError('response-decoding', null);
+      }
+      if (error instanceof AdsApiTimeoutError) {
+        throw new ReportCreateOutcomeUnknownError('transport', null);
+      }
+      if (error instanceof AdsApiHttpError && error.status === 0) {
+        throw new ReportCreateOutcomeUnknownError('transport', null);
+      }
+      if (error instanceof AdsApiHttpError && (error.status === 408 || error.status === 425)) {
+        throw new ReportCreateOutcomeUnknownError('server-response', error.status);
+      }
+      if (error instanceof AdsApiHttpError && error.status >= 500) {
+        throw new ReportCreateOutcomeUnknownError('server-response', error.status);
+      }
+      if (!(error instanceof AdsApiHttpError) && !(error instanceof AdsThrottleError)) {
+        throw new ReportCreateOutcomeUnknownError('response-decoding', null);
       }
       throw this.mapError(error);
     }
@@ -374,11 +414,12 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
     return { kind: 'observed', metadata: workerUnifiedMetadata(outcome.report) };
   }
 
-  async downloadReport(url: string): Promise<AsyncIterable<Uint8Array>> {
+  async downloadReport(url: string, signal?: AbortSignal): Promise<AsyncIterable<Uint8Array>> {
     let response: Response;
     try {
-      response = await this.fetch(url);
+      response = await this.fetch(url, signal === undefined ? undefined : { signal });
     } catch (error) {
+      if (signal?.aborted === true) throw signal.reason;
       // A dropped connection mid-download is worth retrying.
       throw new AdsApiRetryableError(errorText(error));
     }

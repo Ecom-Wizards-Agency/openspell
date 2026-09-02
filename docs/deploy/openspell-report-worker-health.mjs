@@ -46,6 +46,7 @@ async function probe() {
     || payload?.worker?.stopping !== false
     || typeof payload?.worker?.running !== 'number'
     || payload.worker.running < 0
+    || payload?.worker?.settlementFailure !== null
     || payload?.deployment?.revision !== expectedRevision
     || payload?.deployment?.role !== 'evo-report-lane'
     || payload?.deployment?.claimProtocol !== 'fenced'
