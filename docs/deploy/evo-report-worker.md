@@ -39,8 +39,9 @@ the worker imports.
 
 ## Stage an immutable release
 
-Use a clean checkout at the exact current `origin/main` revision. Staging neither requires nor
-reads live credential metadata.
+Staging writes a privileged release under `/opt`, so obtain separate authorization for the exact
+host and revision first. After that authorization, use a clean checkout at the exact current
+`origin/main` revision. Staging neither requires nor reads live credential metadata.
 
 ```bash
 git fetch origin --prune
@@ -48,15 +49,16 @@ APPROVED_REVISION="$(git rev-parse origin/main)"
 git checkout --detach "$APPROVED_REVISION"
 test "$APPROVED_REVISION" = "$(git rev-parse HEAD)"
 test -z "$(git status --porcelain --untracked-files=normal)"
-bash docs/deploy/test-report-worker-evo-systemd.sh
 bash docs/deploy/install-report-worker-evo-systemd.sh \
   --revision "$APPROVED_REVISION"
 ```
 
 The installer creates `/opt/openspell-report-worker/releases/<revision>` as a root-owned,
-read-only artifact. It packages the worker with all injected workspace dependencies, normalizes
-checkout-derived metadata, counts all ten workspace inputs and outputs, verifies every symlink,
-hashes every regular file, and reconciles the staged and installed trees.
+read-only artifact. Under the deployment lock, it installs the frozen dependency graph and runs
+the complete deployment harness before packaging the worker with all injected workspace
+dependencies. It normalizes checkout-derived metadata, counts all ten workspace inputs and
+outputs, verifies every symlink, hashes every regular file, and reconciles the staged and installed
+trees.
 
 Staging does **not** write `/etc/systemd/system`, switch `current`, inspect credentials, call
 `systemctl`, or change any
@@ -69,9 +71,26 @@ First verify `wizard-ads-worker.service` is either absent or exactly inactive an
 activation script checks this state and never stops or disables the legacy unit. The immutable
 launcher binds OpenSpell health to `127.0.0.1:3000`.
 
-Follow WP-158's no-overlap order: set `OPENSPELL_EVO_REPORT_LANE_READY=1` on Vercel, redeploy, and
-verify that Vercel retains only entity sync and recommendations. Report jobs may remain queued in
-this bounded gap. Only then activate the already staged release and record that attended check:
+Follow WP-158's no-overlap order while Evo remains stopped: set
+`OPENSPELL_EVO_REPORT_LANE_READY=1` on Vercel and redeploy the exact compatible source. Record the
+new immutable Vercel deployment identity and alias-cutover timestamp; a flag-only redeploy may have
+the same Git revision as the deployment it replaces. Verify that the new deployment retains only
+entity sync and recommendations. The flag is an assertion about new claimers; it does not stop an
+invocation from the pre-cutover deployment. Use Vercel execution history and the queue/provider
+ledgers to prove that no invocation from the old deployment, running `vercel-cron-*` report claim,
+or in-flight provider HTTP call remains before starting Evo.
+
+Every prior claim must also be terminal or safely resumable with a known provider outcome. A
+`report.request` that might have reached Amazon but lacks a durably stored report ID has an unknown
+create outcome: quarantine it and keep both report consumers stopped until it is resolved.
+Provider-side asynchronous reports may remain only when their durable report IDs and follow-up jobs
+are completely accounted. Other report jobs may remain queued in this no-consumer gap.
+
+The Evo service is a continuous four-type consumer, not a one-cycle command. Before activation,
+either quiesce every producer and record the exact eligible backlog or explicitly authorize the
+complete observed backlog plus jobs that may arrive while the service runs. Include already-queued
+`creative.sync` jobs in that scope even when the Creative producer gate is off. Only after those
+checks may the operator activate the staged release and record the attended handoff:
 
 ```bash
 sudo bash docs/deploy/activate-report-worker-evo-systemd.sh \
@@ -90,8 +109,17 @@ retained and live unit, enabled/active state, and exact health all pass; otherwi
 remains stopped for attended recovery.
 
 The flag is an attended assertion, not an independent remote probe: current public web health
-exposes revision but not effective claims. Never provide it before completing the Vercel check.
-Revert the Vercel flag before stopping Evo during a planned failback.
+exposes revision but not effective claims. Never provide it before completing the Vercel and
+in-flight-work checks.
+
+For a full lane failback, first disable or quiesce report and Creative producers. Let every Evo
+claim become terminal or safely resumable with a known provider outcome, and quarantine any
+possibly dispatched request without a durable report ID. Stop Evo and prove that no Evo claim or
+provider HTTP call remains in flight. Only then remove or zero the Vercel flag, redeploy the exact
+compatible Vercel source, record its immutable deployment identity and alias cutover, and prove
+that its original five-type ownership is live. Provider-side asynchronous reports may remain only
+when their durable IDs and follow-up jobs are accounted. If any proof is ambiguous, keep Vercel
+reduced and Evo stopped; do not create a second report consumer.
 
 ## Live verification
 
@@ -103,15 +131,20 @@ The verifier requires an active service and checks the complete retained artifac
 report `status: "ok"`, the full revision, role `evo-report-lane`, and exactly the four ordered claim
 types above. It also requires background Marketing Stream to remain disabled in this role.
 
-Health proves process identity and claim configuration, not report correctness. Complete the live
-read-only release gate with one bounded queue cycle and reconcile requested, claimed, provider,
-parsed, refused, promoted, and canonical counts in the existing report ledger. Confirm no Amazon
-mutation job was claimed or API write invoked.
+Health proves process identity and claim configuration, not report correctness. Define an attended
+observation window before the service starts, then reconcile its eligible backlog and arrivals
+against requested, claimed, provider, parsed, refused, promoted, and canonical counts in the
+existing report ledger. Record the start and end watermarks and explain every unfinished row. This
+is an observation of a continuous consumer, not a promise that activation claims only one batch.
+Confirm no Amazon mutation job was claimed or API write invoked.
 
 ## Rollback
 
-Resolve one retained prior revision while Vercel remains on its reduced claim set. A release
-rollback keeps report ownership on Evo; it is not the WP-158 lane failback. Then run:
+Resolve one retained prior revision while Vercel remains on its reduced claim set. Independently
+prove that the exact destination revision is compatible with the current hosted migration ledger,
+queue enum and claim function, report schema, and any persisted scheduling contract it imports;
+artifact retention and health do not prove database compatibility. A release rollback keeps report
+ownership on Evo; it is not the WP-158 lane failback. Then run:
 
 ```bash
 bash docs/deploy/rollback-report-worker-evo-systemd.sh \
@@ -126,5 +159,8 @@ enabled/active state, and exact health pass; otherwise it stops the service for 
 All four deployment operations serialize through one root-owned `flock` file. A concurrent
 operation fails closed instead of observing or creating a partial transition.
 
-This service has no migration step. Staging, activation, verification, and rollback do not modify
-application data or invoke Amazon.
+This service has no migration step. Staging and passive verification do not modify application
+data or invoke Amazon. Activation and release rollback start or restart the continuous consumer;
+they therefore authorize queue and report-ledger writes plus the Amazon read/report operations of
+the approved four job types. They do not authorize an Amazon advertising mutation. Full lane
+failback changes both service and Vercel deployment state and remains a separate attended action.

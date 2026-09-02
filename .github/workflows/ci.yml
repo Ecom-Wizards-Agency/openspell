@@ -45,6 +45,9 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      - name: Verify Evo report-worker deployment
+        run: bash docs/deploy/test-report-worker-evo-systemd.sh
+
       - name: Typecheck
         run: pnpm run typecheck
 
