@@ -48,10 +48,11 @@ async function probe() {
     || payload.worker.running < 0
     || payload?.deployment?.revision !== expectedRevision
     || payload?.deployment?.role !== 'evo-report-lane'
+    || payload?.deployment?.claimProtocol !== 'fenced'
     || JSON.stringify(payload?.deployment?.jobTypes) !== JSON.stringify(expectedJobTypes)
     || payload?.components?.marketingStream?.enabled !== false
   ) {
-    throw new Error('health revision, role, claim set, or readiness did not match');
+    throw new Error('health revision, role, protocol, claim set, or readiness did not match');
   }
 }
 

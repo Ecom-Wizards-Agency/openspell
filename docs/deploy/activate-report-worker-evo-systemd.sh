@@ -37,7 +37,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in cmp flock readlink sudo systemctl systemd-analyze; do
+for command in cmp flock readlink sudo systemctl systemd-analyze systemd-creds; do
   command -v "$command" >/dev/null || {
     echo "refusing activation: required command is unavailable: $command" >&2
     exit 1
@@ -54,8 +54,12 @@ verify_report_worker_credentials
 assert_legacy_report_worker_retired
 
 release="$report_worker_release_root/releases/$expected_revision"
-if ! verify_report_worker_release "$release" "$expected_revision"; then
-  echo "refusing activation: staged release provenance or unit is invalid" >&2
+if ! verify_report_worker_fenced_protocol "$release" "$expected_revision"; then
+  echo "refusing activation: staged release does not advertise the exact fenced protocol" >&2
+  exit 1
+fi
+if ! verify_report_worker_database_contract "$release"; then
+  echo "refusing activation: hosted database does not expose the exact fenced contract" >&2
   exit 1
 fi
 
@@ -72,8 +76,13 @@ if [[ -n "$prior_target" ]]; then
     echo "refusing activation: prior live deployment is not fully recoverable" >&2
     exit 1
   fi
-elif report_worker_run_privileged test -e "/etc/systemd/system/$report_worker_service"; then
-  echo "refusing activation: an unversioned report worker unit already exists" >&2
+  if ! verify_report_worker_fenced_protocol \
+    "$report_worker_release_root/releases/$prior_revision" "$prior_revision"; then
+    echo "refusing activation: prior deployment is not a fenced recovery destination" >&2
+    exit 1
+  fi
+elif ! assert_report_worker_exact_absence; then
+  echo "refusing activation: first activation did not start from exact service absence" >&2
   exit 1
 fi
 
@@ -82,22 +91,41 @@ if [[ "$prior_revision" == "$expected_revision" ]]; then
   exit 0
 fi
 
+if [[ -n "$prior_revision" ]] && ! stop_report_worker_and_prove_inactive; then
+  echo "refusing activation: prior report worker did not become inactive" >&2
+  exit 1
+fi
+if ! custody_before="$(capture_report_worker_custody_snapshot "$release")" \
+  || ! assert_report_worker_custody_drained "$custody_before"; then
+  leave_report_worker_stopped
+  echo "refusing activation: report-lane custody is unresolved after the consumer stopped" >&2
+  exit 1
+fi
+
 activation_ok=false
 if switch_report_worker_link "releases/$expected_revision" activation \
   && install_report_worker_unit "$release" "$expected_revision" \
   && report_worker_run_privileged systemctl daemon-reload \
   && report_worker_run_privileged systemctl enable "$report_worker_service" >/dev/null \
-  && report_worker_run_privileged systemctl restart "$report_worker_service" \
+  && report_worker_run_privileged systemctl start "$report_worker_service" \
   && verify_report_worker_live "$expected_revision"; then
   activation_ok=true
 fi
 
 if [[ "$activation_ok" != true ]]; then
-  if [[ -n "$prior_revision" ]] && restore_report_worker_live "$prior_revision"; then
-    echo "OpenSpell report worker activation failed; the prior deployment was fully restored" >&2
+  leave_report_worker_stopped
+  custody_after=
+  if custody_after="$(capture_report_worker_custody_snapshot "$release")" \
+    && restore_report_worker_state_if_unchanged \
+      "$custody_before" "$custody_after" "$prior_revision"; then
+    if [[ -n "$prior_revision" ]]; then
+      echo "OpenSpell report worker activation failed before a claim; the prior deployment was fully restored" >&2
+    else
+      echo "OpenSpell report worker activation failed before a claim; exact service absence was restored" >&2
+    fi
   else
     leave_report_worker_stopped
-    echo "OpenSpell report worker activation failed; service remains stopped for attended recovery" >&2
+    echo "OpenSpell report worker activation failed with ambiguous custody; service remains stopped for attended recovery" >&2
   fi
   exit 1
 fi

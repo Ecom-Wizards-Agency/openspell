@@ -5,7 +5,7 @@ import process from 'node:process';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export function assertLegacyReportWorkerRetired(text) {
+function parseServiceState(text) {
   const entries = new Map();
   for (const line of text.trimEnd().split('\n')) {
     if (line === '') continue;
@@ -19,6 +19,20 @@ export function assertLegacyReportWorkerRetired(text) {
   if (JSON.stringify(keys) !== JSON.stringify(['ActiveState', 'LoadState', 'UnitFileState'])) {
     throw new Error('legacy worker state is unavailable');
   }
+  return entries;
+}
+
+export function assertReportWorkerAbsent(text) {
+  const entries = parseServiceState(text);
+  if (
+    entries.get('LoadState') !== 'not-found'
+    || entries.get('ActiveState') !== 'inactive'
+    || entries.get('UnitFileState') !== ''
+  ) throw new Error('report worker service is not absent');
+}
+
+export function assertLegacyReportWorkerRetired(text) {
+  const entries = parseServiceState(text);
   const absent = entries.get('LoadState') === 'not-found'
     && entries.get('ActiveState') === 'inactive'
     && entries.get('UnitFileState') === '';
@@ -32,9 +46,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const chunks = [];
   for await (const chunk of process.stdin) chunks.push(chunk);
   try {
-    assertLegacyReportWorkerRetired(Buffer.concat(chunks).toString('utf8'));
+    const text = Buffer.concat(chunks).toString('utf8');
+    if (process.argv[2] === '--absent') assertReportWorkerAbsent(text);
+    else if (process.argv[2] === undefined) assertLegacyReportWorkerRetired(text);
+    else throw new Error('unknown service-state mode');
   } catch {
-    process.stderr.write('legacy report worker retirement could not be proven\n');
+    process.stderr.write(process.argv[2] === '--absent'
+      ? 'report worker service absence could not be proven\n'
+      : 'legacy report worker retirement could not be proven\n');
     process.exit(1);
   }
 }

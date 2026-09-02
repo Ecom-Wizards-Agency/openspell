@@ -163,6 +163,7 @@ cat >"$release_stage/public.conf" <<EOF
 OPENSPELL_WORKER_REVISION=$expected_revision
 WORKER_DEPLOYMENT_ROLE=evo-report-lane
 WORKER_JOB_TYPES=$claim_set
+WORKER_CLAIM_PROTOCOL=fenced
 EOF
 install -d -m 0755 "$release_stage/bin" "$release_stage/systemd"
 install -m 0644 "$script_dir/openspell-report-worker-contract.mjs" \

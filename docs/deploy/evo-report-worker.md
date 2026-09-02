@@ -32,10 +32,12 @@ The release public configuration contains exactly:
 OPENSPELL_WORKER_REVISION=<full Git object ID>
 WORKER_DEPLOYMENT_ROLE=evo-report-lane
 WORKER_JOB_TYPES=creative.sync,report.request,report.poll,report.fetch
+WORKER_CLAIM_PROTOCOL=fenced
 ```
 
 Any additional key, abbreviated revision, other role, missing claim, or extra claim fails before
-the worker imports.
+the worker imports. The exact `WORKER_CLAIM_PROTOCOL=fenced` marker is also required of every
+automatic activation or rollback destination; a retained pre-WP-194 artifact is not compatible.
 
 ## Stage an immutable release
 
@@ -99,18 +101,27 @@ sudo bash docs/deploy/activate-report-worker-evo-systemd.sh \
 bash docs/deploy/verify-report-worker-evo-systemd.sh "$APPROVED_REVISION"
 ```
 
-Activation verifies the retained artifact and unit, atomically switches `current`, installs the
-release-owned unit, reloads systemd, restarts only `openspell-report-worker.service`, and requires
-exact local health. Before importing the worker or its health module, the launcher runs one bounded
-read-only transaction that proves service-role access and the queue table, enum, claim function,
-and permissions without claiming a job. A silent accepted TCP connection fails within the hard
-deadline and emits only a sanitized error. Failure is called restored only after the prior artifact,
-retained and live unit, enabled/active state, and exact health all pass; otherwise the service
-remains stopped for attended recovery.
+Activation verifies the retained artifact, exact fenced protocol marker, credential metadata, and
+hosted database contract before touching service state. Database readiness requires the nullable
+UUID `claim_token` column without a default and its valid unique partial index; the exact fenced claim, finish, and defer signatures,
+returns, security-definer search path, and grants; and token guards in both legacy claim overloads,
+legacy finish, and the stale reaper. The probe is one bounded read-only transaction and emits only a
+sanitized error.
 
-The flag is an attended assertion, not an independent remote probe: current public web health
-exposes revision but not effective claims. Never provide it before completing the Vercel and
-in-flight-work checks.
+For an upgrade, activation proves the current revision live and fenced, stops it, and proves it
+inactive. For a first activation, it instead proves that both `current` and the unit are exactly
+absent. It then captures a read-only SHA-256 custody snapshot over every four-lane queue row and
+refuses to switch while any lane row is running or token-bearing. Only after this proof does it
+atomically switch `current`, install the release-owned unit, and start the service. A failed start is
+recoverable only when a second snapshot is byte-identical and still drained. Then activation may
+restart the exact prior fenced revision, or restore exact service absence for a first activation.
+Any snapshot change, unresolved claim, database failure, or uncertain service state leaves the
+service stopped for attended recovery.
+
+The flag is an attended assertion, not an independent remote probe. The activator additionally
+proves local process state, exact database schema and grants, and queue custody; it cannot prove that
+a pre-cutover serverless invocation or provider HTTP request has ended. Never provide the flag before
+completing the Vercel execution-history and in-flight-provider checks above.
 
 For a full lane failback, first disable or quiesce report and Creative producers. Let every Evo
 claim become terminal or safely resumable with a known provider outcome, and quarantine any
@@ -128,8 +139,9 @@ bash docs/deploy/verify-report-worker-evo-systemd.sh "$APPROVED_REVISION"
 ```
 
 The verifier requires an active service and checks the complete retained artifact. `/healthz` must
-report `status: "ok"`, the full revision, role `evo-report-lane`, and exactly the four ordered claim
-types above. It also requires background Marketing Stream to remain disabled in this role.
+report `status: "ok"`, the full revision, role `evo-report-lane`, claim protocol `fenced`, and exactly
+the four ordered claim types above. It also requires background Marketing Stream to remain disabled
+in this role.
 
 Health proves process identity and claim configuration, not report correctness. Define an attended
 observation window before the service starts, then reconcile its eligible backlog and arrivals
@@ -152,15 +164,17 @@ bash docs/deploy/rollback-report-worker-evo-systemd.sh \
 ```
 
 Rollback refuses stale `current`, incomplete artifacts, a mismatched live unit, an unretired legacy
-service, or an invalid destination. It first proves the complete current live deployment and the
-destination release. On failure it reports restoration only after the original artifact, live unit,
-enabled/active state, and exact health pass; otherwise it stops the service for attended recovery.
+service, a destination without the exact fenced marker, or a database that fails fenced readiness.
+It stops and proves the source inactive, then requires a drained custody snapshot before changing the
+link. If the destination fails to start, the original revision is restarted only when the post-failure
+snapshot exactly matches the drained pre-switch snapshot. Otherwise both revisions remain stopped.
 
 All four deployment operations serialize through one root-owned `flock` file. A concurrent
 operation fails closed instead of observing or creating a partial transition.
 
-This service has no migration step. Staging and passive verification do not modify application
-data or invoke Amazon. Activation and release rollback start or restart the continuous consumer;
+This service has no migration step. Applying WP-194's separately reviewed ordered migration set is
+a distinct authorization; no deployment helper applies it. Staging and passive verification do not
+modify application data or invoke Amazon. Activation and release rollback start the continuous consumer;
 they therefore authorize queue and report-ledger writes plus the Amazon read/report operations of
 the approved four job types. They do not authorize an Amazon advertising mutation. Full lane
 failback changes both service and Vercel deployment state and remains a separate attended action.

@@ -61,8 +61,9 @@ if ! rg -F 'test -L "$credential_path"' "$deployment_lib" >/dev/null \
   || ! rg -F 'OPENSPELL_WORKER_REVISION=$expected_revision' "$installer" >/dev/null \
   || ! rg -F 'WORKER_DEPLOYMENT_ROLE=evo-report-lane' "$installer" >/dev/null \
   || ! rg -F 'WORKER_JOB_TYPES=$claim_set' \
-    "$installer" >/dev/null; then
-  echo "revision, credential, role, or claim invariant is missing" >&2
+    "$installer" >/dev/null \
+  || ! rg -F 'WORKER_CLAIM_PROTOCOL=fenced' "$installer" >/dev/null; then
+  echo "revision, credential, role, claim, or protocol invariant is missing" >&2
   exit 1
 fi
 if ! rg -F 'install_report_worker_unit "$release"' "$activator" >/dev/null \
@@ -120,11 +121,30 @@ if [[ "$trap_line" -ge "$lock_line" || "$lock_line" -ge "$mktemp_line" \
 fi
 if ! rg -F -- '--vercel-report-claims-relinquished' "$activator" >/dev/null \
   || ! rg -F 'assert_legacy_report_worker_retired' "$activator" "$rollback" "$verifier" >/dev/null \
-  || ! rg -F 'restore_report_worker_live' "$activator" "$rollback" >/dev/null \
+  || ! rg -F 'restore_report_worker_state_if_unchanged' "$activator" "$rollback" >/dev/null \
+  || ! rg -F 'verify_report_worker_fenced_protocol' "$activator" "$rollback" >/dev/null \
+  || ! rg -F 'verify_report_worker_database_contract' "$activator" "$rollback" >/dev/null \
+  || ! rg -F 'capture_report_worker_custody_snapshot' "$activator" "$rollback" >/dev/null \
+  || ! rg -F 'assert_report_worker_exact_absence' "$activator" >/dev/null \
   || ! rg -F 'verify_report_worker_live' "$deployment_lib" "$activator" "$rollback" "$verifier" >/dev/null; then
-  echo "claim handoff, legacy retirement, or full recovery proof is missing" >&2
+  echo "claim handoff, fenced destination, custody, or recovery proof is missing" >&2
   exit 1
 fi
+if rg -n -F 'systemctl restart "$report_worker_service"' \
+  "$activator" "$rollback" "$deployment_lib"; then
+  echo "report worker transition may restart without a custody proof" >&2
+  exit 1
+fi
+for transition in "$activator" "$rollback"; do
+  stop_line="$(rg -n -F 'stop_report_worker_and_prove_inactive' "$transition" | tail -1 | cut -d: -f1)"
+  custody_line="$(rg -n -F 'custody_before="$(capture_report_worker_custody_snapshot' "$transition" | cut -d: -f1)"
+  switch_line="$(rg -n -F 'switch_report_worker_link' "$transition" | cut -d: -f1)"
+  if [[ -z "$stop_line" || -z "$custody_line" || -z "$switch_line" \
+    || "$stop_line" -ge "$custody_line" || "$custody_line" -ge "$switch_line" ]]; then
+    echo "$(basename "$transition") does not stop and drain before switching" >&2
+    exit 1
+  fi
+done
 if rg -n -- 'openspell-mcp|wizard-ads-mcp|cloudflared|docker' \
   "$unit" "$installer" "$activator" "$rollback" "$launcher" "$contract" "$health" \
   "$readiness" "$deployment_lib" "$verifier" "$normalizer"; then
@@ -162,12 +182,15 @@ fixture_revision=0000000000000000000000000000000000000000
 node --input-type=module - "$service_state" <<'NODE'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
-const { assertLegacyReportWorkerRetired } = await import(pathToFileURL(process.argv[2]));
+const { assertLegacyReportWorkerRetired, assertReportWorkerAbsent } =
+  await import(pathToFileURL(process.argv[2]));
 const accepted = [
   'LoadState=not-found\nActiveState=inactive\nUnitFileState=\n',
   'UnitFileState=disabled\nLoadState=loaded\nActiveState=inactive\n',
 ];
 for (const state of accepted) assert.doesNotThrow(() => assertLegacyReportWorkerRetired(state));
+assert.doesNotThrow(() => assertReportWorkerAbsent(accepted[0]));
+assert.throws(() => assertReportWorkerAbsent(accepted[1]));
 const refused = [
   'LoadState=loaded\nActiveState=active\nUnitFileState=disabled\n',
   'LoadState=loaded\nActiveState=inactive\nUnitFileState=enabled\n',
@@ -221,18 +244,62 @@ NODE
   expected_recovery="$test_tmp/recovery.expected"
   cat >"$expected_recovery" <<EOF
 verify-release:$fixture_revision
-privileged:systemctl stop openspell-report-worker.service
 switch:releases/$fixture_revision
 install-unit:recovery
 privileged:systemctl daemon-reload
 privileged:systemctl enable openspell-report-worker.service
-privileged:systemctl restart openspell-report-worker.service
+privileged:systemctl start openspell-report-worker.service
 verify-live:$fixture_revision
 EOF
   diff -u "$expected_recovery" "$recovery_log"
   verify_report_worker_live() { return 1; }
   if restore_report_worker_live "$fixture_revision" >/dev/null 2>&1; then
     echo "recovery accepted an unverified restored live deployment" >&2
+    exit 1
+  fi
+)
+
+(
+  # shellcheck source=docs/deploy/report-worker-evo-systemd-lib.sh
+  source "$deployment_lib"
+  recovery_log="$test_tmp/custody-recovery.log"
+  restore_report_worker_live() { printf '%s\n' "restore-live:$1" >>"$recovery_log"; }
+  restore_report_worker_absence() { printf '%s\n' 'restore-absence' >>"$recovery_log"; }
+  drained='{"schemaVersion":1,"unresolved":0,"fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+  changed='{"schemaVersion":1,"unresolved":0,"fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
+  unresolved='{"schemaVersion":1,"unresolved":1,"fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+  restore_report_worker_state_if_unchanged "$drained" "$drained" "$fixture_revision"
+  restore_report_worker_state_if_unchanged "$drained" "$drained"
+  if restore_report_worker_state_if_unchanged "$drained" "$changed" "$fixture_revision"; then
+    echo "recovery accepted changed post-start custody" >&2
+    exit 1
+  fi
+  if restore_report_worker_state_if_unchanged "$unresolved" "$unresolved"; then
+    echo "first activation restored absence after an unresolved claim" >&2
+    exit 1
+  fi
+  printf '%s\n' "restore-live:$fixture_revision" 'restore-absence' >"$test_tmp/custody.expected"
+  diff -u "$test_tmp/custody.expected" "$recovery_log"
+)
+
+(
+  # A rollback destination must independently advertise fenced custody.
+  # shellcheck source=docs/deploy/report-worker-evo-systemd-lib.sh
+  source "$deployment_lib"
+  protocol_fixture="$test_tmp/protocol-destination"
+  install -d "$protocol_fixture"
+  cat >"$protocol_fixture/public.conf" <<EOF
+OPENSPELL_WORKER_REVISION=$fixture_revision
+WORKER_DEPLOYMENT_ROLE=evo-report-lane
+WORKER_JOB_TYPES=creative.sync,report.request,report.poll,report.fetch
+WORKER_CLAIM_PROTOCOL=fenced
+EOF
+  verify_report_worker_release() { return 0; }
+  verify_report_worker_fenced_protocol "$protocol_fixture" "$fixture_revision"
+  sed -i 's/WORKER_CLAIM_PROTOCOL=fenced/WORKER_CLAIM_PROTOCOL=legacy/' \
+    "$protocol_fixture/public.conf"
+  if verify_report_worker_fenced_protocol "$protocol_fixture" "$fixture_revision"; then
+    echo "rollback compatibility accepted a destination without fenced custody" >&2
     exit 1
   fi
 )
@@ -245,6 +312,7 @@ cat >"$runtime_fixture/public.conf" <<EOF
 OPENSPELL_WORKER_REVISION=$fixture_revision
 WORKER_DEPLOYMENT_ROLE=evo-report-lane
 WORKER_JOB_TYPES=creative.sync,report.request,report.poll,report.fetch
+WORKER_CLAIM_PROTOCOL=fenced
 EOF
 printf '%s\n' 'postgres://synthetic.invalid/runtime' \
   >"$credential_fixture/openspell-report-worker-database-url"
@@ -263,6 +331,7 @@ const environment = {
   OPENSPELL_WORKER_REVISION: revision,
   WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
   WORKER_JOB_TYPES: 'creative.sync,report.request,report.poll,report.fetch',
+  WORKER_CLAIM_PROTOCOL: 'fenced',
 };
 const runtime = await resolveReportWorkerRuntime({ releaseRoot, credentialDirectory, environment });
 if (runtime.releaseRevision !== revision || !runtime.databaseUrl || !runtime.lwaClientId
@@ -270,13 +339,14 @@ if (runtime.releaseRevision !== revision || !runtime.databaseUrl || !runtime.lwa
 NODE
 
 cp "$runtime_fixture/public.conf" "$test_tmp/public.good"
-for mode in extra role claims revision; do
+for mode in extra role claims revision protocol; do
   cp "$test_tmp/public.good" "$runtime_fixture/public.conf"
   case "$mode" in
     extra) printf '%s\n' 'PORT=3000' >>"$runtime_fixture/public.conf" ;;
     role) sed -i 's/evo-report-lane/general/' "$runtime_fixture/public.conf" ;;
     claims) sed -i 's/,report.fetch//' "$runtime_fixture/public.conf" ;;
     revision) sed -i "s/$fixture_revision/0000000/" "$runtime_fixture/public.conf" ;;
+    protocol) sed -i 's/WORKER_CLAIM_PROTOCOL=fenced/WORKER_CLAIM_PROTOCOL=legacy/' "$runtime_fixture/public.conf" ;;
   esac
   if node --input-type=module - \
     "$contract" "$runtime_fixture" "$credential_fixture" "$fixture_revision" \
@@ -290,6 +360,7 @@ await resolveReportWorkerRuntime({
     OPENSPELL_WORKER_REVISION: revision,
     WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
     WORKER_JOB_TYPES: 'creative.sync,report.request,report.poll,report.fetch',
+    WORKER_CLAIM_PROTOCOL: 'fenced',
   },
 });
 NODE
@@ -313,6 +384,7 @@ await resolveReportWorkerRuntime({
     OPENSPELL_WORKER_REVISION: revision,
     WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
     WORKER_JOB_TYPES: 'creative.sync,report.request,report.poll,report.fetch',
+    WORKER_CLAIM_PROTOCOL: 'fenced',
   },
 });
 NODE
@@ -335,6 +407,7 @@ await resolveReportWorkerRuntime({
     OPENSPELL_WORKER_REVISION: revision,
     WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
     WORKER_JOB_TYPES: 'creative.sync,report.request,report.poll,report.fetch',
+    WORKER_CLAIM_PROTOCOL: 'fenced',
   },
 });
 NODE
@@ -364,6 +437,7 @@ await resolveReportWorkerRuntime({
     OPENSPELL_WORKER_REVISION: revision,
     WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
     WORKER_JOB_TYPES: 'creative.sync,report.request,report.poll,report.fetch',
+    WORKER_CLAIM_PROTOCOL: 'fenced',
   },
 });
 NODE
@@ -565,6 +639,7 @@ node -e '
       deployment: {
         revision,
         role: mode === "role" ? "general" : "evo-report-lane",
+        claimProtocol: mode === "protocol" ? "legacy" : "fenced",
         jobTypes: mode === "claims" ? jobTypes.slice(1) : jobTypes,
       },
       components: { marketingStream: { enabled: false, running: false, stopping: false } },
@@ -585,7 +660,7 @@ if [[ ! "$port" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 node "$health" "http://127.0.0.1:$port/healthz" "$fixture_revision" 1 >/dev/null
-for mode in role claims; do
+for mode in role claims protocol; do
   if node "$health" "http://127.0.0.1:$port/healthz?mode=$mode" \
     "$fixture_revision" 1 >/dev/null 2>&1; then
     echo "health verifier accepted a wrong $mode" >&2

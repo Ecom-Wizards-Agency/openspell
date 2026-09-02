@@ -5,6 +5,7 @@ export const REPORT_WORKER_CLAIM_SET =
   'creative.sync,report.request,report.poll,report.fetch';
 export const REPORT_WORKER_PUBLIC_KEYS = [
   'OPENSPELL_WORKER_REVISION',
+  'WORKER_CLAIM_PROTOCOL',
   'WORKER_DEPLOYMENT_ROLE',
   'WORKER_JOB_TYPES',
 ].sort();
@@ -24,6 +25,7 @@ export async function resolveReportWorkerRuntime({
   );
   if (
     publicConfig.OPENSPELL_WORKER_REVISION !== releaseRevision
+    || publicConfig.WORKER_CLAIM_PROTOCOL !== 'fenced'
     || publicConfig.WORKER_DEPLOYMENT_ROLE !== 'evo-report-lane'
     || publicConfig.WORKER_JOB_TYPES !== REPORT_WORKER_CLAIM_SET
   ) {
