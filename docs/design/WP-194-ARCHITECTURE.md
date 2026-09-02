@@ -305,7 +305,9 @@ process and exact-deployment evidence gathered by the activator.
 - After bounded health, database and worker shutdown completes, fatal and signal paths await one
   fixed-schema sanitized final audit write, including stream drain under backpressure, with its own
   deadline. Fatal custody then explicitly terminates with exit 78 even when an unproved transport or
-  output stream leaves a referenced event-loop handle.
+  output stream leaves a referenced event-loop handle. A one-shot defensive stream-error observer
+  remains installed through forced termination so a callback failure followed by an emitted error
+  cannot replace custody exit 78 with an uncaught exit 1.
 - Migration replay preserves every existing queue and report row and creates no automatic recovery work.
 - ACL tests prove only `service_role` can call the fenced functions and authenticated callers cannot
   select `claim_token` while retaining the complete safe queue view.

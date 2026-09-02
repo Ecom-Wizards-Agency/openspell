@@ -93,6 +93,8 @@ exact-main CI and external state reconciliation.
   promptly with code 78 after fatal custody;
 - paused-pipe and never-drained-pipe child proofs show the fixed-schema final audit is flushed before
   exit when possible and the exit-78 deadline remains bounded when output cannot drain;
+- a failing-audit child proves callback and later-emitted stream errors remain contained until the
+  explicit custody exit, without leaking error details;
 - static blast-radius scan proves no shared contract, Amazon mutation, hosted apply or runtime activation.
 
 ## Acceptance checks
