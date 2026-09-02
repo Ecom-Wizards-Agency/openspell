@@ -510,22 +510,26 @@ export class PostgresWorkerStore implements WorkerStore {
           returning id
         `
       : await this.handle.sql<{ id: string }[]>`
+          with custody as materialized (
+            select j.id
+              from public.sync_jobs as j
+             where j.id = ${input.claim.jobId}
+               and j.org_id = ${input.orgId}
+               and j.profile_id = ${input.profileId}
+               and j.status = 'running'
+               and j.claimed_by = ${input.claim.workerId}
+               and j.claim_token = ${input.claim.token}::uuid
+             for update
+          )
           update public.report_requests as r
              set amazon_report_id = ${input.amazonReportId},
                  status = 'pending',
                  next_poll_at = ${iso(input.nextPollAt)}
-            from public.sync_jobs as j
            where r.id = ${input.reportRequestId}
              and r.org_id = ${input.orgId}
              and r.profile_id = ${input.profileId}
              and (r.amazon_report_id is null or r.amazon_report_id = ${input.amazonReportId})
-             and j.id = ${input.claim.jobId}
-             and j.id = r.id
-             and j.org_id = r.org_id
-             and j.profile_id = r.profile_id
-             and j.status = 'running'
-             and j.claimed_by = ${input.claim.workerId}
-             and j.claim_token = ${input.claim.token}::uuid
+             and exists (select 1 from custody where custody.id = r.id)
           returning r.id
         `;
     if (rows.length > 1) throw new Error('report create persistence updated multiple rows');
@@ -562,6 +566,7 @@ export class PostgresWorkerStore implements WorkerStore {
              and j.status = 'running'
              and j.claimed_by = ${input.claim.workerId}
              and j.claim_token = ${input.claim.token}::uuid
+           for share of j
         `;
     if (rows.length > 1) throw new Error('report create readback returned multiple rows');
     return rows.length === 1;
