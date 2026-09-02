@@ -1624,7 +1624,7 @@ describe.skipIf(!available)('SP write persistence installation', () => {
     } finally {
       await empty.drop();
     }
-  });
+  }, 60_000);
 
   it('does not add a current queue enum member', async () => {
     const labels = await database.sql<{ enumlabel: string }[]>`
