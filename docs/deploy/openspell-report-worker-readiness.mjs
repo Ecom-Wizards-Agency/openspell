@@ -42,6 +42,37 @@ export const REPORT_WORKER_FUNCTION_CONTRACTS = Object.freeze([
   ['authority_activate', 'v', 'a242fde73dc9627a0e4d0ef6ff58a97e89cc78f00136862e89e9efcab67b00c9'],
 ].map(([key, volatility, sourceHash]) => Object.freeze({ key, volatility, sourceHash })));
 
+export const REPORT_WORKER_AUTHORITY_CONSTRAINTS = Object.freeze([
+  Object.freeze({
+    name: 'report_worker_claim_authority_epoch_check',
+    type: 'c',
+    columnNumbers: Object.freeze([3]),
+    columnNames: Object.freeze(['epoch']),
+    definition: 'CHECK (epoch >= 0)',
+  }),
+  Object.freeze({
+    name: 'report_worker_claim_authority_pkey',
+    type: 'p',
+    columnNumbers: Object.freeze([1]),
+    columnNames: Object.freeze(['singleton']),
+    definition: 'PRIMARY KEY (singleton)',
+  }),
+  Object.freeze({
+    name: 'report_worker_claim_authority_protocol_check',
+    type: 'c',
+    columnNumbers: Object.freeze([2]),
+    columnNames: Object.freeze(['protocol']),
+    definition: "CHECK (protocol = ANY (ARRAY['legacy'::text, 'fenced'::text]))",
+  }),
+  Object.freeze({
+    name: 'report_worker_claim_authority_singleton_check',
+    type: 'c',
+    columnNumbers: Object.freeze([1]),
+    columnNames: Object.freeze(['singleton']),
+    definition: 'CHECK (singleton)',
+  }),
+]);
+
 /** Prove the complete fenced queue contract without claiming or changing a row. */
 export async function verifyReportWorkerDatabaseReadiness({
   databaseUrl,
@@ -193,12 +224,6 @@ export async function verifyReportWorkerDatabaseReadiness({
                       and attribute.attnotnull
                       and pg_get_expr(default_row.adbin, default_row.adrelid) = 'now()'
                  )
-                 and (
-                   select count(*) = 4
-                     from pg_catalog.pg_constraint constraint_row
-                    where constraint_row.conrelid = authority.oid
-                      and constraint_row.contype in ('p', 'c')
-                 )
                  and not exists (
                    select 1
                      from aclexplode(coalesce(
@@ -214,6 +239,29 @@ export async function verifyReportWorkerDatabaseReadiness({
                 from pg_catalog.pg_class authority
                where authority.oid = to_regclass('app.report_worker_claim_authority')
             ), false) as authority_relation_ready,
+            coalesce((
+              select jsonb_agg(
+                       jsonb_build_object(
+                         'name', constraint_row.conname,
+                         'type', constraint_row.contype,
+                         'columnNumbers', constraint_row.conkey,
+                         'columnNames', (
+                           select array_agg(attribute.attname::text order by constrained.ordinality)
+                             from unnest(constraint_row.conkey) with ordinality
+                               constrained(attnum, ordinality)
+                             join pg_catalog.pg_attribute attribute
+                               on attribute.attrelid = constraint_row.conrelid
+                              and attribute.attnum = constrained.attnum
+                         ),
+                         'definition', pg_get_constraintdef(constraint_row.oid, true)
+                       )
+                       order by constraint_row.conname
+                     )
+                from pg_catalog.pg_constraint constraint_row
+               where constraint_row.conrelid = to_regclass(
+                 'app.report_worker_claim_authority'
+               )
+            ), '[]'::jsonb) as authority_constraints,
             has_table_privilege(current_user, 'public.sync_jobs', 'SELECT') as queue_read_ready,
             coalesce(
               has_type_privilege(current_user, queue_type, 'USAGE'), false
@@ -229,8 +277,36 @@ export async function verifyReportWorkerDatabaseReadiness({
     if (!READY_FIELDS.every((field) => result?.[field] === true)) {
       throw new Error(SANITIZED_FAILURE);
     }
+    verifyAuthorityConstraintCatalog(result.authority_constraints);
     verifyFunctionCatalog(functions, functionContracts);
   });
+}
+
+export function verifyAuthorityConstraintCatalog(rows) {
+  if (
+    !Array.isArray(rows)
+    || rows.length !== REPORT_WORKER_AUTHORITY_CONSTRAINTS.length
+  ) {
+    throw new Error(SANITIZED_FAILURE);
+  }
+  const expectedKeys = ['columnNames', 'columnNumbers', 'definition', 'name', 'type'];
+  for (let index = 0; index < REPORT_WORKER_AUTHORITY_CONSTRAINTS.length; index += 1) {
+    const row = rows[index];
+    const contract = REPORT_WORKER_AUTHORITY_CONSTRAINTS[index];
+    if (
+      !row
+      || typeof row !== 'object'
+      || Array.isArray(row)
+      || JSON.stringify(Object.keys(row).sort()) !== JSON.stringify(expectedKeys)
+      || row.name !== contract.name
+      || row.type !== contract.type
+      || row.definition !== contract.definition
+      || JSON.stringify(row.columnNumbers) !== JSON.stringify(contract.columnNumbers)
+      || JSON.stringify(row.columnNames) !== JSON.stringify(contract.columnNames)
+    ) {
+      throw new Error(SANITIZED_FAILURE);
+    }
+  }
 }
 
 async function queryFunctionCatalog(sql) {

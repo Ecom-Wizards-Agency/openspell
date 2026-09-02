@@ -7,12 +7,14 @@ import { once } from 'node:events';
 import process from 'node:process';
 import { createDb } from '../../packages/db/src/client.ts';
 import {
+  REPORT_WORKER_AUTHORITY_CONSTRAINTS,
   REPORT_WORKER_FUNCTION_CONTRACTS,
   activateReportWorkerFencedAuthority,
   captureReportWorkerClaimCustody,
   verifyReportWorkerDatabaseReadiness,
   verifyReportWorkerFencedAuthority,
   verifyReportWorkerStartupGate,
+  verifyAuthorityConstraintCatalog,
   verifyFunctionCatalog,
 } from './openspell-report-worker-readiness.mjs';
 
@@ -60,6 +62,11 @@ const ready = {
   claim_token_index_ready: true,
   claim_token_acl_ready: true,
   authority_relation_ready: true,
+  authority_constraints: REPORT_WORKER_AUTHORITY_CONSTRAINTS.map((constraint) => ({
+    ...constraint,
+    columnNumbers: [...constraint.columnNumbers],
+    columnNames: [...constraint.columnNames],
+  })),
   queue_read_ready: true,
   queue_type_access_ready: true,
 };
@@ -93,6 +100,10 @@ assert.equal(statements.length, 3);
 assert.match(statements[0], /claim_token_column_ready/u);
 assert.match(statements[0], /claim_token_acl_ready/u);
 assert.match(statements[0], /report_worker_claim_authority/u);
+assert.match(statements[0], /constraint_row\.conname/u);
+assert.match(statements[0], /constraint_row\.conkey/u);
+assert.match(statements[0], /pg_get_constraintdef\(constraint_row\.oid, true\)/u);
+assert.doesNotMatch(statements[0], /count\(\*\) = 4 from pg_catalog\.pg_constraint/u);
 assert.match(statements[1], /with required_functions/u);
 assert.match(statements[1], /aclexplode/u);
 assert.doesNotMatch(statements[1], /pg_get_functiondef/u);
@@ -108,6 +119,44 @@ for (const key of Object.keys(ready)) {
     verifyReportWorkerDatabaseReadiness({
       databaseUrl: 'synthetic',
       createHandle: () => fakeHandle(refused, []),
+      functionContracts: syntheticContracts,
+    }),
+    (error) => error?.message === expectedFailure,
+  );
+}
+
+verifyAuthorityConstraintCatalog(ready.authority_constraints);
+const spoofedAuthorityConstraints = [
+  ready.authority_constraints.map((constraint, index) => index === 0
+    ? { ...constraint, name: 'report_worker_claim_authority_spoof_check' }
+    : constraint),
+  ready.authority_constraints.map((constraint, index) => index === 0
+    ? { ...constraint, definition: 'CHECK (epoch >= -1)' }
+    : constraint),
+  ready.authority_constraints.map((constraint, index) => index === 0
+    ? { ...constraint, columnNumbers: [4] }
+    : constraint),
+  ready.authority_constraints.map((constraint, index) => index === 0
+    ? { ...constraint, columnNames: ['updated_at'] }
+    : constraint),
+  ready.authority_constraints.map((constraint, index) => index === 0
+    ? { ...constraint, type: 'u' }
+    : constraint),
+  [
+    ready.authority_constraints[1],
+    ready.authority_constraints[0],
+    ...ready.authority_constraints.slice(2),
+  ],
+];
+for (const authorityConstraints of spoofedAuthorityConstraints) {
+  assert.equal(authorityConstraints.length, ready.authority_constraints.length);
+  await assert.rejects(
+    verifyReportWorkerDatabaseReadiness({
+      databaseUrl: 'synthetic',
+      createHandle: () => fakeHandle({
+        ...ready,
+        authority_constraints: authorityConstraints,
+      }, []),
       functionContracts: syntheticContracts,
     }),
     (error) => error?.message === expectedFailure,

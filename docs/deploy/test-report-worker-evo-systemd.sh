@@ -158,14 +158,17 @@ for transition in "$activator" "$rollback"; do
   fi
 done
 activation_authority_line="$(rg -n -F 'activate_report_worker_fenced_authority' "$activator" | cut -d: -f1)"
+activation_contract_line="$(rg -n -F 'verify_report_worker_database_contract' "$activator" | cut -d: -f1)"
 activation_custody_line="$(rg -n -F 'custody_before="$(capture_report_worker_custody_snapshot' \
   "$activator" | head -1 | cut -d: -f1)"
 activation_switch_line="$(rg -n -F 'switch_report_worker_link' "$activator" | cut -d: -f1)"
-if [[ -z "$activation_authority_line" || -z "$activation_custody_line" \
+if [[ -z "$activation_contract_line" || -z "$activation_authority_line" \
+  || -z "$activation_custody_line" \
   || -z "$activation_switch_line" \
+  || "$activation_contract_line" -ge "$activation_custody_line" \
   || "$activation_custody_line" -ge "$activation_authority_line" \
   || "$activation_authority_line" -ge "$activation_switch_line" ]]; then
-  echo "activation does not drain, irreversibly fence authority, and then switch" >&2
+  echo "activation does not verify schema, drain, irreversibly fence authority, and then switch" >&2
   exit 1
 fi
 if rg -ni -- 'restore.*legacy.*authority|legacy.*authority.*restore|activate.*legacy' \
