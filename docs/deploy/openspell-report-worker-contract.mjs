@@ -5,9 +5,11 @@ export const REPORT_WORKER_CLAIM_SET =
   'creative.sync,report.request,report.poll,report.fetch';
 export const REPORT_WORKER_PUBLIC_KEYS = [
   'OPENSPELL_WORKER_REVISION',
+  'WORKER_CLAIM_BATCH_SIZE',
   'WORKER_CLAIM_PROTOCOL',
   'WORKER_DEPLOYMENT_ROLE',
   'WORKER_JOB_TYPES',
+  'WORKER_MAX_CONCURRENT_JOBS',
 ].sort();
 
 export async function resolveReportWorkerRuntime({
@@ -28,6 +30,8 @@ export async function resolveReportWorkerRuntime({
     || publicConfig.WORKER_CLAIM_PROTOCOL !== 'fenced'
     || publicConfig.WORKER_DEPLOYMENT_ROLE !== 'evo-report-lane'
     || publicConfig.WORKER_JOB_TYPES !== REPORT_WORKER_CLAIM_SET
+    || publicConfig.WORKER_CLAIM_BATCH_SIZE !== '1'
+    || publicConfig.WORKER_MAX_CONCURRENT_JOBS !== '1'
   ) {
     throw new Error('OpenSpell report worker public configuration does not match its release');
   }

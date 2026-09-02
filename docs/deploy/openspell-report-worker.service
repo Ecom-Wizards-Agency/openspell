@@ -16,6 +16,7 @@ EnvironmentFile=/opt/openspell-report-worker/current/public.conf
 ExecStart=/usr/local/bin/node /opt/openspell-report-worker/current/node_modules/tsx/dist/cli.mjs /opt/openspell-report-worker/current/bin/openspell-report-worker-launch.mjs
 ExecStartPost=/usr/local/bin/node /opt/openspell-report-worker/current/bin/openspell-report-worker-health.mjs http://127.0.0.1:3000/healthz ${OPENSPELL_WORKER_REVISION} 120
 Restart=on-failure
+RestartPreventExitStatus=78
 RestartSec=15s
 RestartSteps=6
 RestartMaxDelaySec=15min

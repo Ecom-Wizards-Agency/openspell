@@ -32,6 +32,14 @@ command -v systemd-creds >/dev/null || {
   echo "refusing rollback: required command is unavailable: systemd-creds" >&2
   exit 1
 }
+command -v git >/dev/null || {
+  echo "refusing rollback: required command is unavailable: git" >&2
+  exit 1
+}
+if ! assert_report_worker_transition_source; then
+  echo "refusing rollback: transition helper is not from a clean tracked checkout" >&2
+  exit 1
+fi
 
 acquire_report_worker_deployment_lock
 verify_report_worker_credentials
@@ -55,6 +63,10 @@ if ! verify_report_worker_database_contract "$destination"; then
   echo "refusing rollback: hosted database does not expose the exact fenced contract" >&2
   exit 1
 fi
+if ! verify_report_worker_fenced_authority "$destination"; then
+  echo "refusing rollback: database report-lane authority is not fenced" >&2
+  exit 1
+fi
 
 if ! stop_report_worker_and_prove_inactive; then
   echo "refusing rollback: current report worker did not become inactive" >&2
@@ -62,8 +74,11 @@ if ! stop_report_worker_and_prove_inactive; then
 fi
 if ! custody_before="$(capture_report_worker_custody_snapshot "$destination")" \
   || ! assert_report_worker_custody_drained "$custody_before"; then
-  leave_report_worker_stopped
-  echo "refusing rollback: report-lane custody is unresolved after the consumer stopped" >&2
+  if leave_report_worker_stopped; then
+    echo "refusing rollback: report-lane custody is unresolved; the service is inactive and disabled" >&2
+  else
+    echo "refusing rollback: report-lane custody is unresolved and service inactivity could not be proved" >&2
+  fi
   exit 1
 fi
 
@@ -78,15 +93,21 @@ if switch_report_worker_link "releases/$to_revision" rollback \
 fi
 
 if [[ "$rollback_ok" != true ]]; then
-  leave_report_worker_stopped
+  if ! leave_report_worker_stopped; then
+    echo "OpenSpell report worker rollback failed and destination inactivity could not be proved; no automatic restoration was attempted" >&2
+    exit 1
+  fi
   custody_after=
   if custody_after="$(capture_report_worker_custody_snapshot "$destination")" \
     && restore_report_worker_state_if_unchanged \
       "$custody_before" "$custody_after" "$from_revision"; then
     echo "OpenSpell report worker rollback failed before a claim; the original deployment was fully restored" >&2
   else
-    leave_report_worker_stopped
-    echo "OpenSpell report worker rollback failed with ambiguous custody; service remains stopped for attended recovery" >&2
+    if leave_report_worker_stopped; then
+      echo "OpenSpell report worker rollback failed with ambiguous custody; the service is inactive and disabled for attended recovery" >&2
+    else
+      echo "OpenSpell report worker rollback recovery failed and service inactivity could not be proved" >&2
+    fi
   fi
   exit 1
 fi

@@ -37,12 +37,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in cmp flock readlink sudo systemctl systemd-analyze systemd-creds; do
+for command in cmp flock git readlink sudo systemctl systemd-analyze systemd-creds; do
   command -v "$command" >/dev/null || {
     echo "refusing activation: required command is unavailable: $command" >&2
     exit 1
   }
 done
+if ! assert_report_worker_transition_source "$expected_revision"; then
+  echo "refusing activation: transition helper is not from a clean tracked checkout" >&2
+  exit 1
+fi
 if [[ ! -x /usr/local/bin/node ]] \
   || (( $(/usr/local/bin/node -p 'Number(process.versions.node.split(".")[0])') < 22 )); then
   echo "refusing activation: system Node 22 or newer is unavailable" >&2
@@ -87,6 +91,10 @@ elif ! assert_report_worker_exact_absence; then
 fi
 
 if [[ "$prior_revision" == "$expected_revision" ]]; then
+  if ! verify_report_worker_fenced_authority "$release"; then
+    echo "refusing activation: active release does not have fenced database authority" >&2
+    exit 1
+  fi
   echo "OpenSpell report worker release $expected_revision is already active and verified"
   exit 0
 fi
@@ -97,8 +105,40 @@ if [[ -n "$prior_revision" ]] && ! stop_report_worker_and_prove_inactive; then
 fi
 if ! custody_before="$(capture_report_worker_custody_snapshot "$release")" \
   || ! assert_report_worker_custody_drained "$custody_before"; then
-  leave_report_worker_stopped
-  echo "refusing activation: report-lane custody is unresolved after the consumer stopped" >&2
+  if leave_report_worker_stopped; then
+    echo "refusing activation: report-lane custody is unresolved; the service is inactive and disabled" >&2
+  else
+    echo "refusing activation: report-lane custody is unresolved and service inactivity could not be proved" >&2
+  fi
+  exit 1
+fi
+
+authority_result=
+authority_activated=false
+if authority_result="$(activate_report_worker_fenced_authority "$release")" \
+  && assert_report_worker_authority_activated "$authority_result"; then
+  authority_activated=true
+elif verify_report_worker_fenced_authority "$release"; then
+  # The activation RPC may have committed even if its response was lost. The
+  # read-only authority proof below contains that ambiguity without reversing it.
+  authority_activated=true
+fi
+if [[ "$authority_activated" != true ]]; then
+  if leave_report_worker_stopped; then
+    echo "refusing activation: fenced database authority was not established; the service is inactive and disabled" >&2
+  else
+    echo "refusing activation: fenced database authority was not established and service inactivity could not be proved" >&2
+  fi
+  exit 1
+fi
+if ! verify_report_worker_fenced_authority "$release" \
+  || ! custody_before="$(capture_report_worker_custody_snapshot "$release")" \
+  || ! assert_report_worker_custody_drained "$custody_before"; then
+  if leave_report_worker_stopped; then
+    echo "refusing activation: fenced authority and drained custody were not jointly re-proved; authority is not automatically reverted and the service is inactive and disabled" >&2
+  else
+    echo "refusing activation: post-authority safety could not be proved and service inactivity could not be proved; authority is not automatically reverted" >&2
+  fi
   exit 1
 fi
 
@@ -113,7 +153,10 @@ if switch_report_worker_link "releases/$expected_revision" activation \
 fi
 
 if [[ "$activation_ok" != true ]]; then
-  leave_report_worker_stopped
+  if ! leave_report_worker_stopped; then
+    echo "OpenSpell report worker activation failed and candidate inactivity could not be proved; no automatic restoration was attempted" >&2
+    exit 1
+  fi
   custody_after=
   if custody_after="$(capture_report_worker_custody_snapshot "$release")" \
     && restore_report_worker_state_if_unchanged \
@@ -124,8 +167,11 @@ if [[ "$activation_ok" != true ]]; then
       echo "OpenSpell report worker activation failed before a claim; exact service absence was restored" >&2
     fi
   else
-    leave_report_worker_stopped
-    echo "OpenSpell report worker activation failed with ambiguous custody; service remains stopped for attended recovery" >&2
+    if leave_report_worker_stopped; then
+      echo "OpenSpell report worker activation failed with ambiguous custody; the service is inactive and disabled for attended recovery" >&2
+    else
+      echo "OpenSpell report worker activation recovery failed and service inactivity could not be proved" >&2
+    fi
   fi
   exit 1
 fi

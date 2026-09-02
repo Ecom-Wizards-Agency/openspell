@@ -42,17 +42,21 @@ require_line "$unit" "EnvironmentFile=/opt/openspell-report-worker/current/publi
 require_line "$unit" "ExecStart=/usr/local/bin/node /opt/openspell-report-worker/current/node_modules/tsx/dist/cli.mjs /opt/openspell-report-worker/current/bin/openspell-report-worker-launch.mjs"
 require_line "$unit" "ExecStartPost=/usr/local/bin/node /opt/openspell-report-worker/current/bin/openspell-report-worker-health.mjs http://127.0.0.1:3000/healthz \${OPENSPELL_WORKER_REVISION} 120"
 require_line "$unit" "Restart=on-failure"
+require_line "$unit" "RestartPreventExitStatus=78"
 require_line "$unit" "RestartSteps=6"
 require_line "$unit" "ProtectSystem=strict"
 require_line "$unit" "ProtectProc=invisible"
 require_line "$unit" "CapabilityBoundingSet="
 
 readiness_line="$(rg -n -F 'await verifyReportWorkerDatabaseReadiness' "$launcher" | cut -d: -f1)"
+startup_gate_line="$(rg -n -F 'await verifyReportWorkerStartupGate' "$launcher" | cut -d: -f1)"
 worker_import_line="$(rg -n -F "await import(new URL('../src/main.ts'" "$launcher" | cut -d: -f1)"
-if [[ -z "$readiness_line" || -z "$worker_import_line" \
-  || "$readiness_line" -ge "$worker_import_line" ]] \
+if [[ -z "$readiness_line" || -z "$startup_gate_line" || -z "$worker_import_line" \
+  || "$readiness_line" -ge "$startup_gate_line" \
+  || "$startup_gate_line" -ge "$worker_import_line" ]] \
+  || ! rg -F 'process.exit(78)' "$launcher" >/dev/null \
   || ! rg -F "process.env.WORKER_HEALTH_HOST = '127.0.0.1'" "$launcher" >/dev/null; then
-  echo "database readiness or loopback health is not enforced before worker import" >&2
+  echo "database readiness, nonrestart startup gate, or loopback health is not enforced before worker import" >&2
   exit 1
 fi
 
@@ -62,8 +66,10 @@ if ! rg -F 'test -L "$credential_path"' "$deployment_lib" >/dev/null \
   || ! rg -F 'WORKER_DEPLOYMENT_ROLE=evo-report-lane' "$installer" >/dev/null \
   || ! rg -F 'WORKER_JOB_TYPES=$claim_set' \
     "$installer" >/dev/null \
-  || ! rg -F 'WORKER_CLAIM_PROTOCOL=fenced' "$installer" >/dev/null; then
-  echo "revision, credential, role, claim, or protocol invariant is missing" >&2
+  || ! rg -F 'WORKER_CLAIM_PROTOCOL=fenced' "$installer" >/dev/null \
+  || ! rg -F 'WORKER_CLAIM_BATCH_SIZE=1' "$installer" >/dev/null \
+  || ! rg -F 'WORKER_MAX_CONCURRENT_JOBS=1' "$installer" >/dev/null; then
+  echo "revision, credential, role, claim, protocol, or concurrency invariant is missing" >&2
   exit 1
 fi
 if ! rg -F 'install_report_worker_unit "$release"' "$activator" >/dev/null \
@@ -74,7 +80,9 @@ if ! rg -F 'install_report_worker_unit "$release"' "$activator" >/dev/null \
 fi
 if rg -n -U -- 'install_report_worker_unit[^\n]*(\\\n[^\n]*)?\|\| true' \
   "$activator" "$rollback" "$deployment_lib" \
-  || ! rg -F 'service remains stopped for attended recovery' \
+  || rg -n -- 'systemctl (stop|disable).*\|\| true' \
+    "$activator" "$rollback" "$deployment_lib" \
+  || ! rg -F 'inactive and disabled for attended recovery' \
     "$activator" "$rollback" >/dev/null; then
   echo "unit restoration is not fail-closed" >&2
   exit 1
@@ -124,6 +132,9 @@ if ! rg -F -- '--vercel-report-claims-relinquished' "$activator" >/dev/null \
   || ! rg -F 'restore_report_worker_state_if_unchanged' "$activator" "$rollback" >/dev/null \
   || ! rg -F 'verify_report_worker_fenced_protocol' "$activator" "$rollback" >/dev/null \
   || ! rg -F 'verify_report_worker_database_contract' "$activator" "$rollback" >/dev/null \
+  || ! rg -F 'verify_report_worker_fenced_authority' \
+    "$activator" "$rollback" "$verifier" >/dev/null \
+  || ! rg -F 'activate_report_worker_fenced_authority' "$activator" >/dev/null \
   || ! rg -F 'capture_report_worker_custody_snapshot' "$activator" "$rollback" >/dev/null \
   || ! rg -F 'assert_report_worker_exact_absence' "$activator" >/dev/null \
   || ! rg -F 'verify_report_worker_live' "$deployment_lib" "$activator" "$rollback" "$verifier" >/dev/null; then
@@ -137,7 +148,8 @@ if rg -n -F 'systemctl restart "$report_worker_service"' \
 fi
 for transition in "$activator" "$rollback"; do
   stop_line="$(rg -n -F 'stop_report_worker_and_prove_inactive' "$transition" | tail -1 | cut -d: -f1)"
-  custody_line="$(rg -n -F 'custody_before="$(capture_report_worker_custody_snapshot' "$transition" | cut -d: -f1)"
+  custody_line="$(rg -n -F 'custody_before="$(capture_report_worker_custody_snapshot' \
+    "$transition" | head -1 | cut -d: -f1)"
   switch_line="$(rg -n -F 'switch_report_worker_link' "$transition" | cut -d: -f1)"
   if [[ -z "$stop_line" || -z "$custody_line" || -z "$switch_line" \
     || "$stop_line" -ge "$custody_line" || "$custody_line" -ge "$switch_line" ]]; then
@@ -145,6 +157,38 @@ for transition in "$activator" "$rollback"; do
     exit 1
   fi
 done
+activation_authority_line="$(rg -n -F 'activate_report_worker_fenced_authority' "$activator" | cut -d: -f1)"
+activation_custody_line="$(rg -n -F 'custody_before="$(capture_report_worker_custody_snapshot' \
+  "$activator" | head -1 | cut -d: -f1)"
+activation_switch_line="$(rg -n -F 'switch_report_worker_link' "$activator" | cut -d: -f1)"
+if [[ -z "$activation_authority_line" || -z "$activation_custody_line" \
+  || -z "$activation_switch_line" \
+  || "$activation_custody_line" -ge "$activation_authority_line" \
+  || "$activation_authority_line" -ge "$activation_switch_line" ]]; then
+  echo "activation does not drain, irreversibly fence authority, and then switch" >&2
+  exit 1
+fi
+if rg -ni -- 'restore.*legacy.*authority|legacy.*authority.*restore|activate.*legacy' \
+  "$activator" "$rollback" "$deployment_lib"; then
+  echo "deployment code contains a reverse authority transition" >&2
+  exit 1
+fi
+if ! rg -F '"$report_worker_script_dir/openspell-report-worker-readiness.mjs"' \
+  "$deployment_lib" >/dev/null \
+  || ! rg -F '"$report_worker_script_dir/../../node_modules/tsx/dist/cli.mjs"' \
+    "$deployment_lib" >/dev/null \
+  || rg -F '"$release/node_modules/tsx/dist/cli.mjs"' \
+    "$deployment_lib" >/dev/null; then
+  echo "deployment transition trusts the candidate release readiness helper" >&2
+  exit 1
+fi
+if ! rg -F 'assert_report_worker_transition_source' \
+  "$activator" "$rollback" "$verifier" >/dev/null \
+  || ! rg -F 'status --porcelain --untracked-files=normal' "$deployment_lib" >/dev/null \
+  || ! rg -F '[[ "$helper_mode" == 100755\ * ]]' "$deployment_lib" >/dev/null; then
+  echo "deployment transition does not prove a clean executable tracked helper" >&2
+  exit 1
+fi
 if rg -n -- 'openspell-mcp|wizard-ads-mcp|cloudflared|docker' \
   "$unit" "$installer" "$activator" "$rollback" "$launcher" "$contract" "$health" \
   "$readiness" "$deployment_lib" "$verifier" "$normalizer"; then
@@ -179,6 +223,43 @@ trap cleanup EXIT
 repo_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
 fixture_revision=0000000000000000000000000000000000000000
 
+(
+  # The database transition helper must come from a clean tracked checkout and
+  # must retain its executable mode.
+  # shellcheck source=docs/deploy/report-worker-evo-systemd-lib.sh
+  source "$deployment_lib"
+  transition_repo="$test_tmp/transition-repo"
+  report_worker_script_dir="$transition_repo/docs/deploy"
+  install -d "$report_worker_script_dir"
+  install -m 0755 "$readiness" \
+    "$report_worker_script_dir/openspell-report-worker-readiness.mjs"
+  git -C "$transition_repo" init -q
+  git -C "$transition_repo" add docs/deploy/openspell-report-worker-readiness.mjs
+  git -C "$transition_repo" -c user.name=fixture -c user.email=fixture@example.invalid \
+    commit -qm fixture
+  assert_report_worker_transition_source
+  transition_revision="$(git -C "$transition_repo" rev-parse HEAD)"
+  assert_report_worker_transition_source "$transition_revision"
+  if assert_report_worker_transition_source "$fixture_revision"; then
+    echo "transition source accepted a mismatched approved revision" >&2
+    exit 1
+  fi
+  printf '%s\n' dirty >"$transition_repo/untracked"
+  if assert_report_worker_transition_source; then
+    echo "transition source accepted an untracked file" >&2
+    exit 1
+  fi
+  find "$transition_repo/untracked" -delete
+  chmod 0644 "$report_worker_script_dir/openspell-report-worker-readiness.mjs"
+  git -C "$transition_repo" add docs/deploy/openspell-report-worker-readiness.mjs
+  git -C "$transition_repo" -c user.name=fixture -c user.email=fixture@example.invalid \
+    commit -qm mode-drop
+  if assert_report_worker_transition_source; then
+    echo "transition source accepted a non-executable helper" >&2
+    exit 1
+  fi
+)
+
 node --input-type=module - "$service_state" <<'NODE'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
@@ -201,6 +282,75 @@ const refused = [
 ];
 for (const state of refused) assert.throws(() => assertLegacyReportWorkerRetired(state));
 NODE
+
+(
+  # Stopping for recovery must prove both inactivity and disabled state. A failed
+  # stop may not be hidden by a later disable, and exact first-activation absence
+  # requires no service mutation.
+  # shellcheck source=docs/deploy/report-worker-evo-systemd-lib.sh
+  source "$deployment_lib"
+  service_active=active
+  service_enabled=enabled
+  fail_stop=false
+  fail_disable=false
+  exact_absence=false
+  transition_log="$test_tmp/service-transition.log"
+  assert_report_worker_exact_absence() { [[ "$exact_absence" == true ]]; }
+  report_worker_run_privileged() {
+    if [[ "$1 $2" == 'systemctl stop' ]]; then
+      printf '%s\n' stop >>"$transition_log"
+      [[ "$fail_stop" == false ]] || return 1
+      service_active=inactive
+      return 0
+    fi
+    if [[ "$1 $2" == 'systemctl disable' ]]; then
+      printf '%s\n' disable >>"$transition_log"
+      [[ "$fail_disable" == false ]] || return 1
+      service_enabled=disabled
+      return 0
+    fi
+    return 91
+  }
+  systemctl() {
+    case "$1" in
+      is-active) printf '%s\n' "$service_active" ;;
+      is-enabled) printf '%s\n' "$service_enabled" ;;
+      *) return 92 ;;
+    esac
+  }
+
+  exact_absence=true
+  leave_report_worker_stopped
+  [[ ! -e "$transition_log" ]]
+
+  exact_absence=false
+  leave_report_worker_stopped
+  printf '%s\n' stop disable >"$test_tmp/service-transition.expected"
+  diff -u "$test_tmp/service-transition.expected" "$transition_log"
+
+  : >"$transition_log"
+  service_active=active
+  service_enabled=enabled
+  fail_stop=true
+  if leave_report_worker_stopped; then
+    echo "recovery accepted a failed service stop" >&2
+    exit 1
+  fi
+  printf '%s\n' stop >"$test_tmp/service-transition.expected"
+  diff -u "$test_tmp/service-transition.expected" "$transition_log"
+
+  : >"$transition_log"
+  service_active=active
+  service_enabled=enabled
+  fail_stop=false
+  fail_disable=true
+  if leave_report_worker_stopped; then
+    echo "recovery accepted a failed service disable" >&2
+    exit 1
+  fi
+  printf '%s\n' stop disable >"$test_tmp/service-transition.expected"
+  diff -u "$test_tmp/service-transition.expected" "$transition_log"
+)
 
 (
   # shellcheck source=docs/deploy/report-worker-evo-systemd-lib.sh
@@ -283,6 +433,27 @@ EOF
 )
 
 (
+  # Only an exact committed/idempotent authority response permits a switch.
+  # An unresolved decision, zero epoch, type spoof, or extra field fails closed.
+  # shellcheck source=docs/deploy/report-worker-evo-systemd-lib.sh
+  source "$deployment_lib"
+  assert_report_worker_authority_activated \
+    '{"decision":"activated","epoch":"1","unresolved":0}'
+  assert_report_worker_authority_activated \
+    '{"decision":"already_fenced","epoch":"2","unresolved":0}'
+  for invalid in \
+    '{"decision":"unresolved","epoch":"0","unresolved":1}' \
+    '{"decision":"activated","epoch":"0","unresolved":0}' \
+    '{"decision":"activated","epoch":1,"unresolved":0}' \
+    '{"decision":"activated","epoch":"1","unresolved":0,"spoofed":true}'; do
+    if assert_report_worker_authority_activated "$invalid"; then
+      echo "activation accepted an invalid authority result" >&2
+      exit 1
+    fi
+  done
+)
+
+(
   # A rollback destination must independently advertise fenced custody.
   # shellcheck source=docs/deploy/report-worker-evo-systemd-lib.sh
   source "$deployment_lib"
@@ -293,6 +464,8 @@ OPENSPELL_WORKER_REVISION=$fixture_revision
 WORKER_DEPLOYMENT_ROLE=evo-report-lane
 WORKER_JOB_TYPES=creative.sync,report.request,report.poll,report.fetch
 WORKER_CLAIM_PROTOCOL=fenced
+WORKER_CLAIM_BATCH_SIZE=1
+WORKER_MAX_CONCURRENT_JOBS=1
 EOF
   verify_report_worker_release() { return 0; }
   verify_report_worker_fenced_protocol "$protocol_fixture" "$fixture_revision"
@@ -313,6 +486,8 @@ OPENSPELL_WORKER_REVISION=$fixture_revision
 WORKER_DEPLOYMENT_ROLE=evo-report-lane
 WORKER_JOB_TYPES=creative.sync,report.request,report.poll,report.fetch
 WORKER_CLAIM_PROTOCOL=fenced
+WORKER_CLAIM_BATCH_SIZE=1
+WORKER_MAX_CONCURRENT_JOBS=1
 EOF
 printf '%s\n' 'postgres://synthetic.invalid/runtime' \
   >"$credential_fixture/openspell-report-worker-database-url"
@@ -332,6 +507,8 @@ const environment = {
   WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
   WORKER_JOB_TYPES: 'creative.sync,report.request,report.poll,report.fetch',
   WORKER_CLAIM_PROTOCOL: 'fenced',
+  WORKER_CLAIM_BATCH_SIZE: '1',
+  WORKER_MAX_CONCURRENT_JOBS: '1',
 };
 const runtime = await resolveReportWorkerRuntime({ releaseRoot, credentialDirectory, environment });
 if (runtime.releaseRevision !== revision || !runtime.databaseUrl || !runtime.lwaClientId
@@ -339,7 +516,7 @@ if (runtime.releaseRevision !== revision || !runtime.databaseUrl || !runtime.lwa
 NODE
 
 cp "$runtime_fixture/public.conf" "$test_tmp/public.good"
-for mode in extra role claims revision protocol; do
+for mode in extra role claims revision protocol batch concurrency; do
   cp "$test_tmp/public.good" "$runtime_fixture/public.conf"
   case "$mode" in
     extra) printf '%s\n' 'PORT=3000' >>"$runtime_fixture/public.conf" ;;
@@ -347,6 +524,8 @@ for mode in extra role claims revision protocol; do
     claims) sed -i 's/,report.fetch//' "$runtime_fixture/public.conf" ;;
     revision) sed -i "s/$fixture_revision/0000000/" "$runtime_fixture/public.conf" ;;
     protocol) sed -i 's/WORKER_CLAIM_PROTOCOL=fenced/WORKER_CLAIM_PROTOCOL=legacy/' "$runtime_fixture/public.conf" ;;
+    batch) sed -i 's/WORKER_CLAIM_BATCH_SIZE=1/WORKER_CLAIM_BATCH_SIZE=2/' "$runtime_fixture/public.conf" ;;
+    concurrency) sed -i 's/WORKER_MAX_CONCURRENT_JOBS=1/WORKER_MAX_CONCURRENT_JOBS=2/' "$runtime_fixture/public.conf" ;;
   esac
   if node --input-type=module - \
     "$contract" "$runtime_fixture" "$credential_fixture" "$fixture_revision" \
@@ -361,6 +540,8 @@ await resolveReportWorkerRuntime({
     WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
     WORKER_JOB_TYPES: 'creative.sync,report.request,report.poll,report.fetch',
     WORKER_CLAIM_PROTOCOL: 'fenced',
+    WORKER_CLAIM_BATCH_SIZE: '1',
+    WORKER_MAX_CONCURRENT_JOBS: '1',
   },
 });
 NODE
@@ -385,6 +566,8 @@ await resolveReportWorkerRuntime({
     WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
     WORKER_JOB_TYPES: 'creative.sync,report.request,report.poll,report.fetch',
     WORKER_CLAIM_PROTOCOL: 'fenced',
+    WORKER_CLAIM_BATCH_SIZE: '1',
+    WORKER_MAX_CONCURRENT_JOBS: '1',
   },
 });
 NODE
@@ -408,6 +591,8 @@ await resolveReportWorkerRuntime({
     WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
     WORKER_JOB_TYPES: 'creative.sync,report.request,report.poll,report.fetch',
     WORKER_CLAIM_PROTOCOL: 'fenced',
+    WORKER_CLAIM_BATCH_SIZE: '1',
+    WORKER_MAX_CONCURRENT_JOBS: '1',
   },
 });
 NODE
@@ -438,6 +623,8 @@ await resolveReportWorkerRuntime({
     WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
     WORKER_JOB_TYPES: 'creative.sync,report.request,report.poll,report.fetch',
     WORKER_CLAIM_PROTOCOL: 'fenced',
+    WORKER_CLAIM_BATCH_SIZE: '1',
+    WORKER_MAX_CONCURRENT_JOBS: '1',
   },
 });
 NODE
@@ -482,6 +669,7 @@ if (manifest.offered !== 10 || manifest.normalized !== 10
 NODE
 if [[ ! -f "$package_one/node_modules/tsx/dist/cli.mjs" \
   || ! -f "$package_one/node_modules/@wizard-ads/sp-api/src/index.ts" \
+  || ! -f "$package_one/src/report-json-parser-worker.mjs" \
   || ! -f "$package_one/src/main.ts" ]]; then
   echo "normalized report worker packaging is incomplete" >&2
   exit 1
