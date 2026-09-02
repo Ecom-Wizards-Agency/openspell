@@ -440,7 +440,7 @@ export function OptimizationGroupsManager({
             <div>
               <p className="wa-hint">OpenSpell settings only. Saving or running a preview does not update Amazon.</p>
               {canManage && !previewReady ? (
-                <p className="wa-hint" role="status">
+                <p className="wa-hint">
                   Recommendation previews are temporarily unavailable. Group settings can still be saved.
                 </p>
               ) : null}

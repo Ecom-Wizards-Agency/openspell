@@ -467,15 +467,22 @@ async function tagsGoto(
  * here: these specs exercise the real session cookie path.
  */
 async function authenticated(
-  config: AuthenticatedDevSuiteDefinition['config'],
+  definition: AuthenticatedDevSuiteDefinition,
   playwrightArgs: string[],
 ): Promise<number> {
   const env = { ...process.env };
   delete env['WIZARD_ADS_E2E_AUTH_BRIDGE'];
   delete env['WIZARD_ADS_AUTH_BRIDGE_SECRET'];
+  delete env['OPENSPELL_RECOMMENDATION_LANE_READY'];
+  delete env['OPENSPELL_RECOMMENDATION_LANE_REVISION'];
+  env['WIZARD_ADS_E2E_SUITE'] = definition.name;
+  if (definition.name === 'optimization-groups') {
+    env['OPENSPELL_RECOMMENDATION_LANE_READY'] = '1';
+    env['OPENSPELL_RECOMMENDATION_LANE_REVISION'] = '0'.repeat(40);
+  }
   return await run(
     'pnpm',
-    ['exec', 'playwright', 'test', '-c', config, ...playwrightArgs],
+    ['exec', 'playwright', 'test', '-c', definition.config, ...playwrightArgs],
     env,
   );
 }
@@ -486,7 +493,7 @@ async function runSuite(
 ): Promise<number> {
   return definition.kind === 'production-bridge'
     ? await tagsGoto(definition.config, playwrightArgs)
-    : await authenticated(definition.config, playwrightArgs);
+    : await authenticated(definition, playwrightArgs);
 }
 
 async function main(): Promise<number> {

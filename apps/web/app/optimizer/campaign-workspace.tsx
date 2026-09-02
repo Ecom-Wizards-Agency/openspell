@@ -519,7 +519,7 @@ export function CampaignWorkspace({
         {!mayRunOptimizer ? (
           <p className="wa-optimizer-preview__permission">Your role can view previews but cannot queue one.</p>
         ) : !previewReady ? (
-          <p className="wa-optimizer-preview__permission" role="status">
+          <p className="wa-optimizer-preview__permission">
             Recommendation previews are temporarily unavailable.
           </p>
         ) : allModeTooLarge ? (
