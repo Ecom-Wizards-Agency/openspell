@@ -54,11 +54,11 @@ const nextConfig: NextConfig = {
       permanent: false,
     },
   ],
-  // The authenticated Playwright suite intentionally compiles every guarded
-  // route in one synthetic dev process. A Next development-memory restart
-  // would discard its in-process OAuth fixture, so the E2E process keeps the
-  // bounded heap configured by global-setup instead of restarting mid-suite.
-  // Normal development and production retain Next's default behavior.
+  // Each authenticated Playwright partition owns one synthetic dev process.
+  // A Next development-memory restart would discard that process's in-memory
+  // fixture, so each partition keeps the bounded heap configured by global
+  // setup and releases it at teardown. Normal development and production
+  // retain Next's default behavior.
   experimental:
     process.env['WIZARD_ADS_E2E_AUTH'] === '1'
       ? { devMemoryThresholdRestart: false }

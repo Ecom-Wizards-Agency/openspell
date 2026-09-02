@@ -1,9 +1,9 @@
 /**
  * The one entry point for this app's browser tests.
  *
- * ## Why there are nine suites and not one
+ * ## Why there are eleven suites and not one
  *
- * `apps/web` carries nine end-to-end suites that need mutually exclusive
+ * `apps/web` carries eleven end-to-end suites that need mutually exclusive
  * servers, so they run one after the other rather than under a single config:
  *
  *  - **tags-goto** (WP-08, and WP-15's feedback surfaces) serves a
@@ -20,6 +20,10 @@
  *  - **profile-context** compiles every account-scoped operator route while
  *    proving navigation identity. It owns a fresh process so those route
  *    graphs cannot exhaust the broad auth process after unrelated workflows.
+ *  - **auth-guards-anonymous** and **auth-guards-signed-in** split the two
+ *    complete protected-route sweeps across fresh processes. Each sweep keeps
+ *    its anonymous or cookie-backed identity while releasing compiled route
+ *    graphs before the next partition starts.
  *  - **route-acceptance** uses the authenticated boundary in a fresh process.
  *    It compiles the optimizer, creative, strategy, and dashboard routes; doing
  *    that after the complete auth sweep leaves enough development route graphs
@@ -41,19 +45,21 @@
  *    heap after the assertions themselves had passed.
  *
  * Merging them would mean weakening one guard or accepting a suite that cannot
- * hydrate. Sequential is the honest answer: nine named configs, one runner.
+ * hydrate. Sequential is the honest answer: eleven named configs, one runner.
  *
- * Each suite owns its own database, and the nine never overlap: this file
+ * Each suite owns its own database, and the eleven never overlap: this file
  * creates and drops the tags-goto database, while each authenticated suite's
  * `global-setup.ts` creates and drops its own (plus the fake Amazon and the dev
  * server). The admin connection comes from `WIZARD_ADS_TEST_DATABASE_URL` (or
  * `DATABASE_URL`), the same variable the Vitest database suites use.
  *
- *   pnpm --filter @wizard-ads/web test:e2e             # all nine, in order
+ *   pnpm --filter @wizard-ads/web test:e2e             # all eleven, in order
  *   pnpm --filter @wizard-ads/web test:e2e:tags-goto   # just WP-08
  *   pnpm --filter @wizard-ads/web test:e2e:grid-performance
  *   pnpm --filter @wizard-ads/web test:e2e:optimization-groups
  *   pnpm --filter @wizard-ads/web test:e2e:profile-context
+ *   pnpm --filter @wizard-ads/web test:e2e:auth-guards-anonymous
+ *   pnpm --filter @wizard-ads/web test:e2e:auth-guards-signed-in
  *   pnpm --filter @wizard-ads/web test:e2e:auth        # auth/operator routes without members, OAuth, roles, or the isolated Grid load
  *   pnpm --filter @wizard-ads/web test:e2e:auth-members # member and invitation flows in a fresh process
  *   pnpm --filter @wizard-ads/web test:e2e:auth-oauth  # Amazon OAuth in a fresh process
@@ -78,6 +84,13 @@ import type { TestDatabase } from '@wizard-ads/db/testing';
 import { createGotoLink, recordEntityChanges } from '@wizard-ads/db';
 import { ROADMAP_ITEMS, seedRoadmap } from '../../../supabase/seed/seed-roadmap.js';
 import { parseE2EArgs } from '../src/e2e-args.js';
+import {
+  getE2ESuiteDefinition,
+  runE2ESuiteMatrix,
+  type AuthenticatedDevSuiteDefinition,
+  type E2ESuiteDefinition,
+  type ProductionBridgeSuiteDefinition,
+} from '../src/e2e-suite-registry.js';
 
 const USER_A = '8a8a8a8a-8a8a-4a8a-8a8a-8a8a8a8a8a8a';
 const USER_B = '8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b';
@@ -321,7 +334,10 @@ async function seedTimeMachine(
  * from the real Supabase session instead, which is exactly what a deployed
  * instance does — see that file's header for the boundary.
  */
-async function tagsGoto(playwrightArgs: string[]): Promise<number> {
+async function tagsGoto(
+  config: ProductionBridgeSuiteDefinition['config'],
+  playwrightArgs: string[],
+): Promise<number> {
   const database = await createTestDatabase('wp08_e2e');
   try {
     const [a] = await database.sql<{ seed_tenant_fixture: string }[]>`
@@ -411,7 +427,7 @@ async function tagsGoto(playwrightArgs: string[]): Promise<number> {
 
     return await run(
       'pnpm',
-      ['exec', 'playwright', 'test', '-c', 'playwright.tags-goto.config.ts', ...playwrightArgs],
+      ['exec', 'playwright', 'test', '-c', config, ...playwrightArgs],
       {
         ...process.env,
         DATABASE_URL: database.connectionString,
@@ -451,15 +467,7 @@ async function tagsGoto(playwrightArgs: string[]): Promise<number> {
  * here: these specs exercise the real session cookie path.
  */
 async function authenticated(
-  config:
-    | 'playwright.auth.config.ts'
-    | 'playwright.auth-members.config.ts'
-    | 'playwright.auth-oauth.config.ts'
-    | 'playwright.auth-roles.config.ts'
-    | 'playwright.grid-performance.config.ts'
-    | 'playwright.optimization-groups.config.ts'
-    | 'playwright.profile-context.config.ts'
-    | 'playwright.route-acceptance.config.ts',
+  config: AuthenticatedDevSuiteDefinition['config'],
   playwrightArgs: string[],
 ): Promise<number> {
   const env = { ...process.env };
@@ -472,37 +480,15 @@ async function authenticated(
   );
 }
 
-async function auth(playwrightArgs: string[]): Promise<number> {
-  return await authenticated('playwright.auth.config.ts', playwrightArgs);
+async function runSuite(
+  definition: E2ESuiteDefinition,
+  playwrightArgs: string[],
+): Promise<number> {
+  return definition.kind === 'production-bridge'
+    ? await tagsGoto(definition.config, playwrightArgs)
+    : await authenticated(definition.config, playwrightArgs);
 }
 
-async function authMembers(playwrightArgs: string[]): Promise<number> {
-  return await authenticated('playwright.auth-members.config.ts', playwrightArgs);
-}
-
-async function authOauth(playwrightArgs: string[]): Promise<number> {
-  return await authenticated('playwright.auth-oauth.config.ts', playwrightArgs);
-}
-
-async function authRoles(playwrightArgs: string[]): Promise<number> {
-  return await authenticated('playwright.auth-roles.config.ts', playwrightArgs);
-}
-
-async function gridPerformance(playwrightArgs: string[]): Promise<number> {
-  return await authenticated('playwright.grid-performance.config.ts', playwrightArgs);
-}
-
-async function optimizationGroups(playwrightArgs: string[]): Promise<number> {
-  return await authenticated('playwright.optimization-groups.config.ts', playwrightArgs);
-}
-
-async function profileContext(playwrightArgs: string[]): Promise<number> {
-  return await authenticated('playwright.profile-context.config.ts', playwrightArgs);
-}
-
-async function routeAcceptance(playwrightArgs: string[]): Promise<number> {
-  return await authenticated('playwright.route-acceptance.config.ts', playwrightArgs);
-}
 async function main(): Promise<number> {
   const { suites, playwrightArgs } = parseE2EArgs(process.argv.slice(2));
 
@@ -512,32 +498,16 @@ async function main(): Promise<number> {
     );
   }
 
-  let worst = 0;
-  for (const suite of suites) {
-    console.log(`\n=== e2e suite: ${suite} ===\n`);
-    const code =
-      suite === 'tags-goto'
-        ? await tagsGoto(playwrightArgs)
-        : suite === 'grid-performance'
-          ? await gridPerformance(playwrightArgs)
-          : suite === 'optimization-groups'
-            ? await optimizationGroups(playwrightArgs)
-            : suite === 'profile-context'
-              ? await profileContext(playwrightArgs)
-              : suite === 'auth'
-                ? await auth(playwrightArgs)
-                : suite === 'auth-members'
-                  ? await authMembers(playwrightArgs)
-                  : suite === 'auth-oauth'
-                    ? await authOauth(playwrightArgs)
-                    : suite === 'auth-roles'
-                      ? await authRoles(playwrightArgs)
-                      : await routeAcceptance(playwrightArgs);
-    // Every suite runs even when an earlier one fails: a red run should report
-    // the whole picture, not just the first thing that broke.
-    if (code !== 0) worst = code;
-  }
-  return worst;
+  return await runE2ESuiteMatrix(
+    suites.map(getE2ESuiteDefinition),
+    async (definition) => {
+      console.log(`\n=== e2e suite: ${definition.name} ===\n`);
+      return await runSuite(definition, playwrightArgs);
+    },
+    (definition, error) => {
+      console.error(`E2E suite '${definition.name}' threw before returning an exit code:`, error);
+    },
+  );
 }
 
 process.exitCode = await main();

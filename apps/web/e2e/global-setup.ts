@@ -15,8 +15,11 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createDb } from '@wizard-ads/db';
 import { adminConnectionString, applySqlFile, migrationFiles } from '@wizard-ads/db/testing';
+import { createE2EResourceCleanup } from '../src/e2e-resource-cleanup.js';
+import type { E2EResourceCleanupTask } from '../src/e2e-resource-cleanup.js';
 import { startAmazonMock } from './support/amazon-mock';
 import type { AmazonMock } from './support/amazon-mock';
 import {
@@ -40,34 +43,105 @@ const FIXTURE = `${REPO_ROOT}supabase/tests/tenant-fixture.sql`;
 /** Assembled from fragments; nothing in this repository may look like a credential. */
 const RENEWAL_VALUE = ['synthetic', 'e2e', 'renewal', 'value'].join('-');
 
-let mock: AmazonMock | null = null;
-let server: ChildProcess | null = null;
+interface AcquiredE2EResource<T> {
+  resource: T;
+  cleanup: E2EResourceCleanupTask;
+}
+
+/** Injectable boundary used to prove cleanup at each real setup cut. */
+export interface E2EGlobalSetupOperations<Mock, Server> {
+  installTeardown(teardown: () => Promise<void>): void;
+  acquireDatabase(registerDrop: (drop: E2EResourceCleanupTask) => void): Promise<string>;
+  prepareDatabase(connectionString: string): Promise<void>;
+  acquireMock(): Promise<AcquiredE2EResource<Mock>>;
+  acquireServer(
+    connectionString: string,
+    mock: Mock,
+  ): AcquiredE2EResource<Server> | Promise<AcquiredE2EResource<Server>>;
+  waitUntilReady(server: Server): Promise<void>;
+}
+
+export async function runE2EGlobalSetup<Mock, Server>(
+  operations: E2EGlobalSetupOperations<Mock, Server>,
+): Promise<void> {
+  const cleanup = createE2EResourceCleanup();
+
+  // Teardown is attached before acquisition starts. Setup failures use this
+  // same idempotent stack, so Playwright may still invoke global teardown
+  // without running any resource cleanup twice.
+  operations.installTeardown(cleanup.cleanup);
+
+  try {
+    const connectionString = await operations.acquireDatabase((drop) => cleanup.register(drop));
+    await operations.prepareDatabase(connectionString);
+
+    const mock = await operations.acquireMock();
+    cleanup.register(mock.cleanup);
+
+    const server = await operations.acquireServer(connectionString, mock.resource);
+    cleanup.register(server.cleanup);
+    await operations.waitUntilReady(server.resource);
+  } catch (error) {
+    await cleanup.cleanupAfterFailure(error);
+  }
+}
 
 export default async function globalSetup(): Promise<void> {
-  const admin = adminConnectionString();
-  const connectionString = await createDatabase(admin);
-  const state = await seed(connectionString);
-  await writeState({ connectionString, ...state });
-
-  mock = await startAmazonMock({
-    port: MOCK_PORT,
-    perRegion: { na: GRANT.na, eu: GRANT.eu },
-    renewal: RENEWAL_VALUE,
+  await runE2EGlobalSetup({
+    installTeardown: (teardown) => {
+      (globalThis as Record<string, unknown>)['__wizardAdsE2E'] = teardown;
+    },
+    acquireDatabase: async (registerDrop) => {
+      const admin = adminConnectionString();
+      return await createDatabase(admin, () => registerDrop(() => dropDatabase(admin)));
+    },
+    prepareDatabase: async (connectionString) => {
+      await migrateDatabase(connectionString);
+      const state = await seed(connectionString);
+      await writeState({ connectionString, ...state });
+    },
+    acquireMock: async () => {
+      const mock = await startAmazonMock({
+        port: MOCK_PORT,
+        perRegion: { na: GRANT.na, eu: GRANT.eu },
+        renewal: RENEWAL_VALUE,
+      });
+      return { resource: mock, cleanup: () => mock.close() };
+    },
+    acquireServer: (connectionString, mock) => {
+      const server = spawnWebServer(connectionString, mock);
+      return { resource: server, cleanup: () => stopProcess(server.child) };
+    },
+    waitUntilReady: async (server) => {
+      await waitForE2EServerOrFailure(
+        (signal) => waitForServer(`${BASE_URL}/login`, 120_000, signal),
+        server.failedBeforeReady,
+      );
+    },
   });
+}
 
-  server = await startWebServer(connectionString, mock);
-
-  // Teardown is attached here rather than in a second file so the handles it
-  // closes are the ones this function opened.
-  (globalThis as Record<string, unknown>)['__wizardAdsE2E'] = async () => {
-    await stopProcess(server);
-    await mock?.close();
-    await dropDatabase(admin);
-  };
+/** Cancel the losing readiness poll before setup cleanup or another suite starts. */
+export async function waitForE2EServerOrFailure(
+  waitUntilReady: (signal: AbortSignal) => Promise<void>,
+  failedBeforeReady: Promise<never>,
+): Promise<void> {
+  const controller = new AbortController();
+  const readiness = waitUntilReady(controller.signal);
+  try {
+    await Promise.race([readiness, failedBeforeReady]);
+  } finally {
+    controller.abort();
+    // Observe cancellation before returning so no fetch or timer can outlive
+    // this setup process and mistake the next suite's fixed port for success.
+    await readiness.catch(() => undefined);
+  }
 }
 
 async function stopProcess(child: ChildProcess | null): Promise<void> {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  if (!child || child.exitCode !== null || child.signalCode !== null || child.pid === undefined) {
+    return;
+  }
 
   await new Promise<void>((resolveStop, rejectStop) => {
     const timeout = setTimeout(() => {
@@ -82,16 +156,23 @@ async function stopProcess(child: ChildProcess | null): Promise<void> {
       clearTimeout(timeout);
       rejectStop(error);
     });
-    child.kill('SIGTERM');
+    if (!child.kill('SIGTERM')) {
+      clearTimeout(timeout);
+      resolveStop();
+    }
   });
 }
 
-async function createDatabase(admin: string): Promise<string> {
+async function createDatabase(admin: string, ownCreateAttempt: () => void): Promise<string> {
   const adminHandle = createDb({ connectionString: admin, max: 1 });
   try {
     // A fixed name, so an interrupted run leaves one database behind and the
     // next run reclaims it instead of accumulating them.
     await adminHandle.sql.unsafe(`drop database if exists "${DATABASE_NAME}" with (force)`);
+    // The CREATE result can be unknown if the connection fails while the
+    // server commits it. Own the idempotent drop before issuing CREATE so both
+    // that case and a later admin-handle close failure remain recoverable.
+    ownCreateAttempt();
     await adminHandle.sql.unsafe(`create database "${DATABASE_NAME}"`);
   } finally {
     await adminHandle.close();
@@ -99,8 +180,10 @@ async function createDatabase(admin: string): Promise<string> {
 
   const url = new URL(admin);
   url.pathname = `/${DATABASE_NAME}`;
-  const connectionString = url.toString();
+  return url.toString();
+}
 
+async function migrateDatabase(connectionString: string): Promise<void> {
   const handle = createDb({ connectionString, max: 2 });
   try {
     await applySqlFile(handle, SHIM);
@@ -111,7 +194,6 @@ async function createDatabase(admin: string): Promise<string> {
   } finally {
     await handle.close();
   }
-  return connectionString;
 }
 
 async function seed(connectionString: string): Promise<{
@@ -197,7 +279,12 @@ async function seed(connectionString: string): Promise<{
   }
 }
 
-async function startWebServer(connectionString: string, amazon: AmazonMock): Promise<ChildProcess> {
+interface SpawnedWebServer {
+  child: ChildProcess;
+  failedBeforeReady: Promise<never>;
+}
+
+function spawnWebServer(connectionString: string, amazon: AmazonMock): SpawnedWebServer {
   const child = spawn(
     resolve(WEB_ROOT, 'node_modules/.bin/next'),
     // `--webpack` for the reason next.config.ts documents: Turbopack cannot
@@ -208,9 +295,9 @@ async function startWebServer(connectionString: string, amazon: AmazonMock): Pro
       stdio: ['ignore', 'inherit', 'inherit'],
       env: {
         ...process.env,
-        // The authenticated suite compiles every guarded route in one dev
-        // process. Give Next enough headroom to avoid its development-only
-        // memory restart, which would discard the in-process OAuth fixture.
+        // Each authenticated suite owns one bounded dev process. Retain the
+        // existing heap ceiling without allowing a development-memory restart
+        // to discard an in-process fixture.
         NODE_OPTIONS: appendNodeOption(
           process.env['NODE_OPTIONS'],
           '--max-old-space-size=4096',
@@ -231,27 +318,40 @@ async function startWebServer(connectionString: string, amazon: AmazonMock): Pro
       },
     },
   );
-
-  await waitForServer(`${BASE_URL}/login`, 120_000);
-  return child;
+  // Attach before returning: a missing executable or an immediate exit emits
+  // asynchronously and must reject setup rather than become an uncaught event
+  // while the readiness poll waits for its full timeout.
+  const failedBeforeReady = new Promise<never>((_resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      reject(new Error(`Next exited before readiness (code=${String(code)}, signal=${String(signal)})`));
+    });
+  });
+  return { child, failedBeforeReady };
 }
 
 function appendNodeOption(current: string | undefined, option: string): string {
   return [current, option].filter((value): value is string => Boolean(value)).join(' ');
 }
 
-async function waitForServer(url: string, timeoutMs: number): Promise<void> {
+async function waitForServer(
+  url: string,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown = null;
   while (Date.now() < deadline) {
+    signal.throwIfAborted();
     try {
-      const response = await fetch(url, { redirect: 'manual' });
+      const response = await fetch(url, { redirect: 'manual', signal });
       if (response.status < 500) return;
       lastError = new Error(`status ${response.status}`);
     } catch (error) {
+      signal.throwIfAborted();
       lastError = error;
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await delay(500, undefined, { signal });
   }
   throw new Error(`the web server never answered at ${url}: ${String(lastError)}`);
 }
