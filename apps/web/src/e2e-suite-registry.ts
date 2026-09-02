@@ -35,7 +35,7 @@ export const E2E_SUITE_DEFINITIONS = [
     config: 'playwright.optimization-groups.config.ts',
     project: 'optimization-groups',
     expectedSpecFiles: ['optimization-groups.spec.ts'],
-    expectedTests: 1,
+    expectedTests: 2,
   },
   {
     name: 'profile-context',

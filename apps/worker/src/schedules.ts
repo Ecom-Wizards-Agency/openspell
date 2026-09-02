@@ -19,6 +19,7 @@
  */
 import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
 import type { ReportType } from '@wizard-ads/shared';
+import { RECOMMENDATION_CADENCE } from './recommendation-cadence.js';
 
 export type ScheduleVariant = 'default' | 'restatement' | 'comparison';
 
@@ -84,12 +85,7 @@ export const DEFAULT_CADENCES = {
    * minted first. Lower priority plus a five-hour delay lets the report
    * request/poll/fetch pipeline land fresher facts before the preview runs.
    */
-  recommendations: {
-    cadence: '7 days',
-    lookbackDays: 7,
-    delay: '5 hours',
-    priority: 50,
-  },
+  recommendations: RECOMMENDATION_CADENCE,
 } as const;
 
 export function defaultSchedules(

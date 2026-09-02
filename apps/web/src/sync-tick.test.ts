@@ -25,6 +25,7 @@ import type { SyncTickStore, SyncTickWorker } from './server/sync-tick';
 
 const available = await databaseAvailable();
 const PROFILE_ONE = '11111111-2222-4333-8444-555555555555';
+const RECOMMENDATION_REVISION = 'a'.repeat(40);
 
 describe('cron claim filter', () => {
   it('enumerates Amazon jobs and recommendations, excluding integration work', () => {
@@ -44,9 +45,38 @@ describe('cron claim filter', () => {
     ]);
   });
 
+  it('resolves report and recommendation ownership independently', () => {
+    const recommendationReady = {
+      OPENSPELL_RECOMMENDATION_LANE_READY: '1',
+      OPENSPELL_RECOMMENDATION_LANE_REVISION: RECOMMENDATION_REVISION,
+    };
+    expect(cronSyncJobTypesFromEnv(recommendationReady)).toEqual([
+      'entity.sync',
+      'report.request',
+      'report.poll',
+      'report.fetch',
+    ]);
+    expect(cronSyncJobTypesFromEnv({
+      OPENSPELL_EVO_REPORT_LANE_READY: '1',
+      ...recommendationReady,
+    })).toEqual(['entity.sync']);
+    expect(cronSyncJobTypesFromEnv({
+      OPENSPELL_EVO_REPORT_LANE_READY: '1',
+      OPENSPELL_RECOMMENDATION_LANE_READY: '0',
+      OPENSPELL_RECOMMENDATION_LANE_REVISION: 'malformed-but-inert',
+    })).toEqual(['entity.sync', 'recommendations.run']);
+  });
+
   it('fails closed for a malformed deployment handoff', () => {
     expect(() => cronSyncJobTypesFromEnv({ OPENSPELL_EVO_REPORT_LANE_READY: 'true' }))
       .toThrow(/OPENSPELL_EVO_REPORT_LANE_READY/);
+    expect(() => cronSyncJobTypesFromEnv({
+      OPENSPELL_RECOMMENDATION_LANE_READY: 'true',
+      OPENSPELL_RECOMMENDATION_LANE_REVISION: RECOMMENDATION_REVISION,
+    })).toThrow(/OPENSPELL_RECOMMENDATION_LANE_READY/);
+    expect(() => cronSyncJobTypesFromEnv({
+      OPENSPELL_RECOMMENDATION_LANE_READY: '1',
+    })).toThrow(/OPENSPELL_RECOMMENDATION_LANE_REVISION/);
   });
 
   it('keeps the Creative producer inert until both exact activation flags are set', () => {

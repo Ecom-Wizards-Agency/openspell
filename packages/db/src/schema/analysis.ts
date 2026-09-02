@@ -112,6 +112,8 @@ export const recommendationRuns = pgTable(
     scopeFingerprint: text('scope_fingerprint'),
     /** Exact queue ledger row authorized to execute this scoped run. */
     jobId: uuid('job_id'),
+    /** Queue execution is fenced; human lineage is the exact jobless N-gram proposal path. */
+    executionLineage: text('execution_lineage').$type<'queue' | 'human'>(),
     engineVersion: text('engine_version'),
     proposalsCount: integer('proposals_count').notNull().default(0),
     startedAt: ts('started_at'),
@@ -168,6 +170,10 @@ export const recommendationRuns = pgTable(
     check(
       'recommendation_runs_batch_requires_scope_check',
       sql`${t.batchId} is null or ${t.scopeVersion} = 1`,
+    ),
+    check(
+      'recommendation_runs_execution_lineage_check',
+      sql`${t.executionLineage} is null or ${t.executionLineage} in ('queue', 'human')`,
     ),
     index('recommendation_runs_profile_idx').on(t.profileId),
     index('recommendation_runs_batch_idx').on(t.batchId),
@@ -252,6 +258,11 @@ export const recommendations = pgTable(
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
   (t) => [
+    foreignKey({
+      name: 'recommendations_tenant_run_fkey',
+      columns: [t.orgId, t.profileId, t.runId],
+      foreignColumns: [recommendationRuns.orgId, recommendationRuns.profileId, recommendationRuns.id],
+    }).onDelete('cascade'),
     index('recommendations_run_idx').on(t.runId),
     index('recommendations_open_idx').on(t.profileId, t.status),
     uniqueIndex('recommendations_org_profile_id_key').on(t.orgId, t.profileId, t.id),

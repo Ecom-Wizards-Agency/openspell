@@ -74,6 +74,7 @@ function workspaceProps(
     currencyCode: 'USD',
     initialBatchId: null,
     mayRunOptimizer: true,
+    previewReady: true,
     period: { start: '2026-08-01', end: '2026-08-30' },
     profileId: '00000000-0000-4000-8000-000000000001',
     rows,
@@ -161,6 +162,7 @@ describe('campaign optimizer workspace', () => {
       rows: campaignRows,
       run: null,
       mayRunOptimizer: true,
+      previewReady: true,
     });
 
     act(() => root.render(render('profile-a')));
@@ -296,6 +298,22 @@ describe('campaign optimizer workspace', () => {
     expect(host.querySelector<HTMLInputElement>('[data-testid="optimizer-select-filtered"]')?.disabled).toBe(true);
   });
 
+  it('keeps campaign selection available while deployment readiness disables only preview enqueue', () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const { host } = mount([row(1), row(2)], { previewReady: false });
+    const first = host.querySelector<HTMLInputElement>('[data-testid="optimizer-campaign-select"]');
+    expect(first?.disabled).toBe(false);
+    act(() => first?.click());
+    expect(host.textContent).toContain('1 campaign selected');
+
+    const run = host.querySelector<HTMLButtonElement>('[data-testid="optimizer-run-preview"]');
+    expect(run?.disabled).toBe(true);
+    expect(host.textContent).toContain('Recommendation previews are temporarily unavailable.');
+    act(() => run?.click());
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('refuses an all-campaign preview when the eligible roster exceeds the server bound', () => {
     const { host } = mount(
       Array.from({ length: 10_001 }, (_, index) => row(index + 1)),
@@ -378,7 +396,7 @@ describe('campaign optimizer workspace', () => {
     });
     vi.stubGlobal('fetch', fetch);
     const rows = [row(1)];
-    const { host, root } = mount(rows, { initialBatchId: 'batch-resume' });
+    const { host, root } = mount(rows, { initialBatchId: 'batch-resume', previewReady: false });
     expect(host.querySelector<HTMLButtonElement>('[data-testid="optimizer-run-preview"]')?.disabled).toBe(true);
     await act(async () => vi.advanceTimersByTimeAsync(1_000));
     expect(fetch).toHaveBeenCalledTimes(1);

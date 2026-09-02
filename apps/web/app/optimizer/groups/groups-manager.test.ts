@@ -3,7 +3,7 @@ import { createElement } from 'react';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { OptimizationWorkspace } from '@wizard-ads/db';
 import { OptimizationGroupsManager } from './groups-manager';
 
@@ -71,6 +71,7 @@ afterEach(() => {
     for (const root of mounted.splice(0)) root.unmount();
   });
   document.body.replaceChildren();
+  vi.unstubAllGlobals();
 });
 
 describe('optimization groups manager', () => {
@@ -79,6 +80,7 @@ describe('optimization groups manager', () => {
       profileId: workspace.groups[0]?.group.profileId ?? '',
       initial: workspace,
       canManage: true,
+      previewReady: true,
     }));
 
     expect(markup).toContain('Synthetic rank pool');
@@ -101,11 +103,41 @@ describe('optimization groups manager', () => {
       profileId: workspace.groups[0]?.group.profileId ?? '',
       initial: workspace,
       canManage: false,
+      previewReady: true,
     }));
 
     expect(markup).not.toContain('New group');
     expect(markup).toContain('disabled=""');
     expect(markup).toContain('Save group');
+  });
+
+  it('keeps group editing available while readiness disables only preview enqueue', () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    mounted.push(root);
+    act(() => {
+      root.render(createElement(OptimizationGroupsManager, {
+        profileId: workspace.groups[0]?.group.profileId ?? '',
+        initial: workspace,
+        canManage: true,
+        previewReady: false,
+      }));
+    });
+
+    const run = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === 'Run group preview');
+    const save = host.querySelector<HTMLButtonElement>('button[type="submit"]');
+    expect(run?.disabled).toBe(true);
+    expect(save?.disabled).toBe(false);
+    expect(host.querySelector<HTMLInputElement>('.wa-campaign-choice input')?.disabled).toBe(false);
+    expect(host.textContent).toContain(
+      'Recommendation previews are temporarily unavailable. Group settings can still be saved.',
+    );
+    act(() => run?.click());
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('selects and clears only campaigns matching the active filter', () => {
@@ -118,6 +150,7 @@ describe('optimization groups manager', () => {
         profileId: workspace.groups[0]?.group.profileId ?? '',
         initial: workspace,
         canManage: true,
+        previewReady: true,
       }));
     });
 
@@ -168,6 +201,7 @@ describe('optimization groups manager', () => {
         profileId: workspace.groups[0]?.group.profileId ?? '',
         initial: workspace,
         canManage: true,
+        previewReady: true,
       }));
     });
 

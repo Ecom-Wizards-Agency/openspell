@@ -3,22 +3,33 @@
  * packages/core; these cases assert assembly, lifecycle, mapping and writes.
  */
 import { describe, expect, it } from 'vitest';
+import type { ClaimRef, ClaimedJob, ClaimToken } from '@wizard-ads/db';
+import type { RecommendationWorkerDatabase } from '@wizard-ads/db/recommendation-worker';
 import type { ScheduledOptimizationGroup, TenantStrategy } from '@wizard-ads/shared';
 import {
   BID_REASON_TO_DATABASE,
   RecommendationExecutionCustodyError,
   RecommendationScopeIntegrityError,
+  batchScopeFingerprint,
   databaseReason,
+  FencedRecommendationRunStore,
   recommendationWindow,
+  runScopeFingerprint,
   runRecommendations,
   type DateWindow,
   type RecommendationProfile,
+  type RecommendationRunExecutionContext,
   type RecommendationRunInputs,
   type RecommendationRunStore,
   type RunCompletion,
   type RunScope,
   type StartRunResult,
 } from './recommendations-run.js';
+import {
+  RecommendationClaimant,
+  RecommendationClaimantCustodyError,
+  type RecommendationQueuePort,
+} from './recommendation-lane/claimant.js';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const PROFILE_ID = '22222222-2222-4222-8222-222222222222';
@@ -139,11 +150,11 @@ class FakeStore implements RecommendationRunStore {
   async startRun(
     scope: RunScope,
     expectedGroupId: string | undefined,
-    expectedJobId: string,
+    execution: RecommendationRunExecutionContext,
   ): Promise<StartRunResult> {
     this.started.push(scope);
     this.expectedGroupIds.push(expectedGroupId);
-    this.expectedJobIds.push(expectedJobId);
+    this.expectedJobIds.push('claim' in execution ? execution.claim.jobId : execution.jobId);
     if (this.startError !== null) throw this.startError;
     return this.startResult;
   }
@@ -155,14 +166,17 @@ class FakeStore implements RecommendationRunStore {
   async loadInputs(
     _scope: RunScope,
     _window: DateWindow,
-    groupId?: string,
+    _execution: RecommendationRunExecutionContext,
   ): Promise<RecommendationRunInputs> {
-    this.loadedGroupIds.push(groupId);
     if (this.loadError) throw this.loadError;
     return this.inputs;
   }
 
-  async loadGroupRecommendationSafety() {
+  async loadGroupRecommendationSafety(
+    _scope: RunScope,
+    groupId: string,
+  ) {
+    this.loadedGroupIds.push(groupId);
     return this.groupSafety;
   }
 
@@ -171,8 +185,9 @@ class FakeStore implements RecommendationRunStore {
     return completion.proposals.length;
   }
 
-  async failRun(scope: RunScope, error: string): Promise<void> {
+  async failRun(scope: RunScope, error: string) {
     this.failed.push({ scope, error });
+    return { decision: 'failed' as const };
   }
 }
 
@@ -205,6 +220,21 @@ describe('reason enum mapping', () => {
     });
     expect(databaseReason('high_acos')).toBe('high_acos');
     expect(() => databaseReason('flag')).toThrow(/non-bid reason/);
+  });
+});
+
+describe('recommendation scope fingerprints', () => {
+  it('normalizes UUID text and sorts campaign ids by UTF-8 bytes', () => {
+    const upperProfile = PROFILE_ID.toUpperCase();
+    const upperGroup = GROUP_ID.toUpperCase();
+    const campaigns = ['campaign-\u{10000}', 'campaign-\uE000', 'campaign-ä', 'campaign-a'];
+
+    expect(batchScopeFingerprint(upperProfile, campaigns)).toBe(
+      batchScopeFingerprint(PROFILE_ID, [...campaigns].reverse()),
+    );
+    expect(runScopeFingerprint(upperProfile, upperGroup, campaigns)).toBe(
+      runScopeFingerprint(PROFILE_ID, GROUP_ID, [...campaigns].reverse()),
+    );
   });
 });
 
@@ -336,7 +366,7 @@ describe('recommendations runner', () => {
     );
 
     expect(store.expectedGroupIds).toEqual([GROUP_ID]);
-    expect(store.loadedGroupIds).toEqual([undefined]);
+    expect(store.loadedGroupIds).toEqual([GROUP_ID]);
     expect(store.completed[0]?.proposals[0]).toMatchObject({
       currentValue: 1,
       proposedValue: 0.54,
@@ -523,4 +553,314 @@ describe('recommendations runner', () => {
     expect(store.completed).toEqual([]);
     expect(store.failed).toEqual([]);
   });
+});
+
+describe('fenced recommendation run store', () => {
+  const claim: ClaimRef = {
+    jobId: EXECUTION.jobId,
+    workerId: 'recommendation-store-fixture',
+    token: '92929292-9292-4929-8929-929292929292' as ClaimToken,
+  };
+  const scope = { orgId: ORG_ID, profileId: PROFILE_ID, runId: RUN_ID };
+
+  class FakeFencedDatabase {
+    calls: Array<{ operation: string; claim: ClaimRef; scope?: unknown }> = [];
+
+    async start(received: ClaimRef, receivedScope: unknown) {
+      this.calls.push({ operation: 'start', claim: received, scope: receivedScope });
+      return {
+        decision: 'started' as const,
+        runData: {
+          proposalsCount: 0,
+          lookbackDays: 7,
+          groupId: null,
+          groupRole: null,
+          groupSnapshot: null,
+          dueAt: null,
+          scheduleContext: null,
+          strategySnapshot: STRATEGY,
+          strategyGoal: 'profit-maintain',
+        },
+        profileData: {
+          orgId: ORG_ID,
+          profileId: PROFILE_ID,
+          timezone: 'UTC',
+          goal: 'profit-maintain',
+          monthlyBudget: null,
+        },
+      };
+    }
+
+    async readInputs(received: ClaimRef, receivedScope: unknown) {
+      this.calls.push({ operation: 'read', claim: received, scope: receivedScope });
+      return {
+        inputs: { targets: [], campaigns: [], profileFacts: [] },
+        groupSafety: null,
+      };
+    }
+
+    async succeed(received: ClaimRef, receivedScope: unknown) {
+      this.calls.push({ operation: 'succeed', claim: received, scope: receivedScope });
+      return { decision: 'succeeded' as const, proposalsCount: 0 };
+    }
+
+    async fail(received: ClaimRef, receivedScope: unknown): Promise<{
+      decision: 'failed' | 'already_succeeded';
+      proposalsCount: number;
+    }> {
+      this.calls.push({ operation: 'fail', claim: received, scope: receivedScope });
+      return { decision: 'failed' as const, proposalsCount: 0 };
+    }
+  }
+
+  it('presents the exact immutable claim on every start, read, and success RPC', async () => {
+    const database = new FakeFencedDatabase();
+    const store = new FencedRecommendationRunStore(
+      database as unknown as RecommendationWorkerDatabase,
+    );
+    const execution = { claim } as const;
+    await expect(store.startRun(scope, undefined, execution)).resolves.toMatchObject({
+      alreadySucceeded: false,
+      proposalsCount: 0,
+      strategyGoal: 'profit-maintain',
+    });
+    await expect(store.loadProfile(scope, execution)).resolves.toEqual(PROFILE);
+    await expect(store.loadInputs(
+      scope,
+      { start: '2026-08-20', end: '2026-08-26' },
+      execution,
+    )).resolves.toEqual({
+      tenantStrategy: null,
+      profileStrategy: null,
+      targets: [],
+      campaigns: [],
+      profileFacts: [],
+    });
+    const completion: RunCompletion = {
+      ...scope,
+      lookbackDays: 7,
+      window: { start: '2026-08-20', end: '2026-08-26' },
+      strategySnapshot: STRATEGY,
+      proposals: [],
+      narrative: {} as RunCompletion['narrative'],
+    };
+    await expect(store.succeedRun(completion, execution)).resolves.toBe(0);
+    expect(database.calls.map((call) => call.operation)).toEqual(['start', 'read', 'succeed']);
+    expect(database.calls.every((call) => call.claim === claim)).toBe(true);
+    expect(database.calls.map((call) => call.scope)).toEqual([
+      { ...scope, groupId: undefined },
+      { ...scope, groupId: undefined },
+      { ...scope, groupId: undefined },
+    ]);
+    await expect(store.loadProfile(scope, execution))
+      .rejects.toBeInstanceOf(RecommendationExecutionCustodyError);
+  });
+
+  it('rejects a substituted claim locally and maps database custody refusal', async () => {
+    const database = new FakeFencedDatabase();
+    const store = new FencedRecommendationRunStore(
+      database as unknown as RecommendationWorkerDatabase,
+    );
+    const execution = { claim } as const;
+    await store.startRun(scope, undefined, execution);
+    await expect(store.loadProfile(scope, {
+      claim: {
+        ...claim,
+        token: '93939393-9393-4939-8939-939393939393' as ClaimToken,
+      },
+    })).rejects.toBeInstanceOf(RecommendationExecutionCustodyError);
+
+    database.fail = async () => {
+      throw Object.assign(new Error('database detail must not define classification'), { code: '55000' });
+    };
+    await expect(store.failRun(scope, 'synthetic failure', execution))
+      .rejects.toBeInstanceOf(RecommendationExecutionCustodyError);
+  });
+
+  it('settles success when the success commit response is lost but exact-claim readback closes', async () => {
+    const database = new FakeFencedDatabase();
+    database.succeed = async (received: ClaimRef, receivedScope: unknown) => {
+      database.calls.push({ operation: 'succeed', claim: received, scope: receivedScope });
+      throw new Error('synthetic response loss after commit');
+    };
+    database.fail = async (received: ClaimRef, receivedScope: unknown) => {
+      database.calls.push({ operation: 'fail', claim: received, scope: receivedScope });
+      return { decision: 'already_succeeded' as const, proposalsCount: 0 };
+    };
+    const store = new FencedRecommendationRunStore(
+      database as unknown as RecommendationWorkerDatabase,
+    );
+    const job: ClaimedJob = {
+      id: claim.jobId,
+      orgId: ORG_ID,
+      profileId: PROFILE_ID,
+      jobType: 'recommendations.run',
+      payload: JOB,
+      attempts: 5,
+      maxAttempts: 5,
+      dedupeKey: null,
+      claimedBy: claim.workerId,
+      claim,
+    };
+    const settlements: Array<{ outcome: string; result: unknown }> = [];
+    let claimed = false;
+    const queue: RecommendationQueuePort = {
+      async resumeOwned() { return []; },
+      async claim() {
+        if (claimed) return [];
+        claimed = true;
+        return [job];
+      },
+      async finish(_claim, outcome, options) {
+        settlements.push({ outcome, result: options?.result });
+        return { decision: 'settled' };
+      },
+      async defer() { return { decision: 'settled' }; },
+    };
+    const claimant = new RecommendationClaimant({
+      identity: { workerId: claim.workerId, revision: 'a'.repeat(40) },
+      queue,
+      execute: (payload, execution) => runRecommendations(
+        store,
+        payload,
+        execution,
+        new Date('2026-08-27T12:00:00Z'),
+      ),
+      pollIntervalMs: 10,
+      shutdownDrainMs: 10,
+    });
+
+    await expect(claimant.drainOnce()).resolves.toBe(1);
+    expect(database.calls.map((call) => call.operation)).toEqual([
+      'start', 'read', 'succeed', 'fail',
+    ]);
+    expect(settlements).toEqual([{
+      outcome: 'succeeded',
+      result: {
+        runId: RUN_ID,
+        proposals: 0,
+        window: { start: '2026-08-20', end: '2026-08-26' },
+        alreadySucceeded: true,
+      },
+    }]);
+  });
+
+  it('fails the run before a final-attempt dead letter when the start response is lost', async () => {
+    const database = new FakeFencedDatabase();
+    database.start = async (received: ClaimRef, receivedScope: unknown) => {
+      database.calls.push({ operation: 'start', claim: received, scope: receivedScope });
+      throw new Error('synthetic start response loss after commit');
+    };
+    const store = new FencedRecommendationRunStore(
+      database as unknown as RecommendationWorkerDatabase,
+    );
+    const job: ClaimedJob = {
+      id: claim.jobId,
+      orgId: ORG_ID,
+      profileId: PROFILE_ID,
+      jobType: 'recommendations.run',
+      payload: JOB,
+      attempts: 5,
+      maxAttempts: 5,
+      dedupeKey: null,
+      claimedBy: claim.workerId,
+      claim,
+    };
+    const settlements: Array<{ outcome: string; error: string | undefined }> = [];
+    let claimed = false;
+    const queue: RecommendationQueuePort = {
+      async resumeOwned() { return []; },
+      async claim() {
+        if (claimed) return [];
+        claimed = true;
+        return [job];
+      },
+      async finish(_claim, outcome, options) {
+        settlements.push({ outcome, error: options?.error });
+        return { decision: 'settled' };
+      },
+      async defer() { return { decision: 'settled' }; },
+    };
+    const claimant = new RecommendationClaimant({
+      identity: { workerId: claim.workerId, revision: 'a'.repeat(40) },
+      queue,
+      execute: (payload, execution) => runRecommendations(store, payload, execution),
+      pollIntervalMs: 10,
+      shutdownDrainMs: 10,
+    });
+
+    await expect(claimant.drainOnce()).resolves.toBe(1);
+    expect(database.calls.map((call) => call.operation)).toEqual(['start', 'fail']);
+    expect(settlements).toEqual([{
+      outcome: 'dead', error: 'recommendation retry budget exhausted',
+    }]);
+  });
+
+  it.each(['start', 'success'] as const)(
+    'retains final-attempt custody when %s response loss cannot be reconciled',
+    async (stage) => {
+      const database = new FakeFencedDatabase();
+      if (stage === 'start') {
+        database.start = async (received: ClaimRef, receivedScope: unknown) => {
+          database.calls.push({ operation: 'start', claim: received, scope: receivedScope });
+          throw new Error('synthetic start response loss');
+        };
+      } else {
+        database.succeed = async (received: ClaimRef, receivedScope: unknown) => {
+          database.calls.push({ operation: 'succeed', claim: received, scope: receivedScope });
+          throw new Error('synthetic success response loss');
+        };
+      }
+      database.fail = async (received: ClaimRef, receivedScope: unknown) => {
+        database.calls.push({ operation: 'fail', claim: received, scope: receivedScope });
+        throw new Error('synthetic failure readback loss');
+      };
+      const store = new FencedRecommendationRunStore(
+        database as unknown as RecommendationWorkerDatabase,
+      );
+      const job: ClaimedJob = {
+        id: claim.jobId,
+        orgId: ORG_ID,
+        profileId: PROFILE_ID,
+        jobType: 'recommendations.run',
+        payload: JOB,
+        attempts: 5,
+        maxAttempts: 5,
+        dedupeKey: null,
+        claimedBy: claim.workerId,
+        claim,
+      };
+      const settlements: string[] = [];
+      let claimed = false;
+      const queue: RecommendationQueuePort = {
+        async resumeOwned() { return []; },
+        async claim() {
+          if (claimed) return [];
+          claimed = true;
+          return [job];
+        },
+        async finish(_claim, outcome) {
+          settlements.push(outcome);
+          return { decision: 'settled' };
+        },
+        async defer() { return { decision: 'settled' }; },
+      };
+      const claimant = new RecommendationClaimant({
+        identity: { workerId: claim.workerId, revision: 'a'.repeat(40) },
+        queue,
+        execute: (payload, execution) => runRecommendations(store, payload, execution),
+        pollIntervalMs: 10,
+        shutdownDrainMs: 10,
+      });
+
+      const failure = await claimant.drainOnce().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(RecommendationClaimantCustodyError);
+      expect(failure).toMatchObject({ kind: 'settlement_ambiguous' });
+      expect(settlements).toEqual([]);
+      expect(claimant.status()).toMatchObject({
+        phase: 'failed', inFlight: 0, settlementFailure: 'settlement_ambiguous',
+      });
+      await expect(claimant.shutdown()).resolves.toEqual({ released: 0, unresolved: 1 });
+    },
+  );
 });

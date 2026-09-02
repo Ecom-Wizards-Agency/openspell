@@ -256,6 +256,24 @@ async function seed(connectionString: string): Promise<{
     if (dashboardFacts.length !== 1) {
       throw new Error(`Seeded 1 dashboard fact, wrote ${dashboardFacts.length}`);
     }
+
+    if (process.env['WIZARD_ADS_E2E_SUITE'] === 'optimization-groups') {
+      const revision = process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'];
+      if (revision === undefined || !/^[0-9a-f]{40}$/.test(revision)) {
+        throw new Error('The optimization-groups fixture requires an exact recommendation revision');
+      }
+      const authority = await handle.sql<{ authorized_revision: string }[]>`
+        update app.recommendation_claim_authority
+           set protocol = 'fenced', admission = 'scoped', epoch = epoch + 1,
+               authorized_revision = ${revision}, updated_at = now()
+         where singleton
+        returning authorized_revision
+      `;
+      if (authority.length !== 1 || authority[0]?.authorized_revision !== revision) {
+        throw new Error('The optimization-groups fixture did not bind recommendation authority');
+      }
+    }
+
     const gridFacts = await handle.sql<{ target_id: string }[]>`
       insert into public.fact_sp_target_daily
         (org_id, profile_id, date, ad_product, campaign_id, ad_group_id, target_id,

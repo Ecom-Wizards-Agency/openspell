@@ -48,10 +48,9 @@ test('edits a canonical local weekday schedule and still queues a manual preview
     await expect(page.getByRole('status')).toContainText('Preview queued');
     await expect(page.getByRole('status')).toContainText('Amazon is unchanged');
   } finally {
-    // This is one serial suite. The manual-preview assertion above intentionally
-    // creates an active group run; close its fixture rows so the campaign-scope
-    // test cannot pass or fail according to order-dependent queue residue.
-    await settleActiveRecommendationRuns(state);
+    // This is one serial suite. Complete the queued run through the same narrow
+    // fenced RPCs as the worker so the campaign-scope test has no queue residue.
+    await succeedQueuedRecommendationRuns(state, 1);
   }
 });
 
@@ -152,7 +151,7 @@ test('selects filtered campaigns across pages and polls the exact read-only prev
 
   // Emulate worker completion in the queue/run ledgers. The browser must
   // discover this through its bounded polling loop without a manual reload.
-  await succeedPreviewBatch(state, accepted.batchId, accepted.childCount);
+  await succeedQueuedRecommendationRuns(state, accepted.childCount);
   await expect(page.getByText('Preview completed. No changes were recommended.', { exact: true }))
     .toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole('list', { name: 'Preview runs' })
@@ -181,38 +180,89 @@ async function withDatabase<T>(state: E2EState, action: (database: ReturnType<ty
   }
 }
 
-async function settleActiveRecommendationRuns(state: E2EState): Promise<void> {
+async function succeedQueuedRecommendationRuns(
+  state: E2EState,
+  expectedChildren: number,
+): Promise<void> {
   await withDatabase(state, async (database) => {
-    const active = await database.sql<{ id: string }[]>`
-      select id
-        from public.recommendation_runs
-       where org_id = ${state.orgId}
-         and profile_id = ${state.fixtureProfileId}
-         and status in ('queued', 'running')
-       order by id
-    `;
-    const runIds = active.map((row) => row.id);
-    if (runIds.length === 0) return;
-    const jobs = await database.sql<{ id: string }[]>`
-      update public.sync_jobs
-         set status = 'succeeded', finished_at = now(), result = '{}'::jsonb
-       where org_id = ${state.orgId}
-         and profile_id = ${state.fixtureProfileId}
-         and payload ->> 'runId' = any (${runIds}::text[])
-         and status in ('queued', 'running')
-      returning id
-    `;
-    const runs = await database.sql<{ id: string }[]>`
-      update public.recommendation_runs
-         set status = 'succeeded', finished_at = now(), proposals_count = 0, error = null
-       where org_id = ${state.orgId}
-         and profile_id = ${state.fixtureProfileId}
-         and id = any (${runIds}::uuid[])
-         and status in ('queued', 'running')
-      returning id
-    `;
-    expect(jobs).toHaveLength(runIds.length);
-    expect(runs).toHaveLength(runIds.length);
+    const revision = '0'.repeat(40);
+    const workerId = 'e2e-recommendation-worker';
+    const reserved = await database.sql.reserve();
+    let completed = 0;
+    try {
+      await reserved.unsafe('set session authorization openspell_recommendation_worker');
+      while (true) {
+        const claims = await reserved<{
+          id: string;
+          org_id: string;
+          profile_id: string;
+          payload: unknown;
+          claimed_by: string;
+          claim_token: string;
+        }[]>`
+          select id, org_id, profile_id, payload, claimed_by, claim_token
+            from public.claim_recommendation_jobs_fenced(${workerId}, ${revision}, 1)
+        `;
+        const claim = claims[0];
+        if (claim === undefined) break;
+        const payload = claim.payload as { runId?: unknown; groupId?: unknown };
+        if (typeof payload.runId !== 'string'
+            || (payload.groupId !== undefined && typeof payload.groupId !== 'string')) {
+          throw new Error('The E2E recommendation claim returned an invalid scope');
+        }
+        const groupId = payload.groupId ?? null;
+        const starts = await reserved<{ decision: string; run_data: unknown }[]>`
+          select decision, run_data from public.start_recommendation_run_fenced(
+            ${claim.id}::uuid, ${claim.claimed_by}, ${claim.claim_token}::uuid, ${revision},
+            ${claim.org_id}::uuid, ${claim.profile_id}::uuid, ${payload.runId}::uuid,
+            ${groupId}::uuid
+          )
+        `;
+        const start = starts[0];
+        const runData = start?.run_data as {
+          lookbackDays?: unknown;
+          strategySnapshot?: unknown;
+        } | undefined;
+        const lookbackDays = Number(runData?.lookbackDays);
+        if (start?.decision !== 'started' || !Number.isSafeInteger(lookbackDays)
+            || lookbackDays < 1 || runData?.strategySnapshot === undefined) {
+          throw new Error('The E2E recommendation start returned an invalid run');
+        }
+        const windowStart = new Date(Date.UTC(2026, 0, 1));
+        const windowEnd = new Date(windowStart);
+        windowEnd.setUTCDate(windowEnd.getUTCDate() + lookbackDays - 1);
+        const completion = {
+          proposals: [],
+          lookbackDays,
+          window: {
+            start: windowStart.toISOString().slice(0, 10),
+            end: windowEnd.toISOString().slice(0, 10),
+          },
+          strategySnapshot: runData.strategySnapshot,
+          narrative: { qualitative: [], decisions: [] },
+        };
+        const succeeded = await reserved<{ decision: string; proposals_count: number }[]>`
+          select decision, proposals_count from public.succeed_recommendation_run_fenced(
+            ${claim.id}::uuid, ${claim.claimed_by}, ${claim.claim_token}::uuid, ${revision},
+            ${claim.org_id}::uuid, ${claim.profile_id}::uuid, ${payload.runId}::uuid,
+            ${groupId}::uuid, ${JSON.stringify(completion)}::text::jsonb
+          )
+        `;
+        expect(succeeded).toEqual([{ decision: 'succeeded', proposals_count: 0 }]);
+        const settled = await reserved<{ decision: string; status: string }[]>`
+          select decision, status from public.finish_recommendation_job_fenced(
+            ${claim.id}::uuid, ${claim.claimed_by}, ${claim.claim_token}::uuid, ${revision},
+            'succeeded', null, '{}'::jsonb, null
+          )
+        `;
+        expect(settled).toEqual([{ decision: 'settled', status: 'succeeded' }]);
+        completed += 1;
+      }
+    } finally {
+      await reserved.unsafe('reset session authorization').catch(() => {});
+      reserved.release();
+    }
+    expect(completed).toBe(expectedChildren);
   });
 }
 
@@ -343,40 +393,5 @@ async function readStoredScope(state: E2EState, batchId: string): Promise<{
       campaignIds: members.map((row) => row.campaign_id),
       childCounts: children.map((row) => row.scope_count),
     };
-  });
-}
-
-async function succeedPreviewBatch(
-  state: E2EState,
-  batchId: string,
-  expectedChildren: number,
-): Promise<void> {
-  await withDatabase(state, async (database) => {
-    await database.sql.begin(async (sql) => {
-      const jobs = await sql<{ id: string }[]>`
-        update public.sync_jobs job
-           set status = 'succeeded', finished_at = now(), result = '{}'::jsonb
-          from public.recommendation_runs run
-         where run.org_id = ${state.orgId}
-           and run.profile_id = ${state.fixtureProfileId}
-           and run.batch_id = ${batchId}
-           and run.job_id = job.id
-           and job.org_id = run.org_id
-           and job.profile_id = run.profile_id
-           and job.status in ('queued', 'running')
-        returning job.id
-      `;
-      const runs = await sql<{ id: string }[]>`
-        update public.recommendation_runs
-           set status = 'succeeded', finished_at = now(), proposals_count = 0, error = null
-         where org_id = ${state.orgId}
-           and profile_id = ${state.fixtureProfileId}
-           and batch_id = ${batchId}
-           and status in ('queued', 'running')
-        returning id
-      `;
-      expect(jobs).toHaveLength(expectedChildren);
-      expect(runs).toHaveLength(expectedChildren);
-    });
   });
 }

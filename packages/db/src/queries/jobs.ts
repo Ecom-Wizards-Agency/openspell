@@ -7,82 +7,17 @@
  * "helpfully" split that into a select and an update would reintroduce exactly
  * the double-claim this design exists to prevent.
  */
-import type { JobPayload, JobType } from '@wizard-ads/shared';
+import type { JobType } from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
 import type { SyncJob } from '../schema/sync.js';
+import {
+  claimedJobFromRaw,
+  type ClaimRef,
+  type ClaimedJob,
+  type RawClaimedJobRow,
+} from './job-wire.js';
 
-declare const claimTokenBrand: unique symbol;
-
-/** Opaque queue-custody capability issued only by the database. */
-export type ClaimToken = string & { readonly [claimTokenBrand]: true };
-
-/** The complete identity needed to settle one fenced attempt. */
-export type ClaimRef = Readonly<{
-  jobId: string;
-  workerId: string;
-  token: ClaimToken;
-}>;
-
-/** One row of `sync_jobs`, as the SQL functions return it. */
-export interface ClaimedJob {
-  id: string;
-  orgId: string;
-  profileId: string;
-  jobType: SyncJob['jobType'];
-  payload: JobPayload;
-  attempts: number;
-  maxAttempts: number;
-  dedupeKey: string | null;
-  claimedBy: string | null;
-  claim: ClaimRef | null;
-}
-
-interface RawJobRow {
-  id: string;
-  org_id: string;
-  profile_id: string;
-  job_type: SyncJob['jobType'];
-  payload: JobPayload;
-  attempts: number;
-  max_attempts: number;
-  dedupe_key: string | null;
-  claimed_by: string | null;
-  claim_token: string | null;
-}
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function claimToken(value: string): ClaimToken {
-  if (!UUID.test(value)) throw new Error('claim function returned an invalid claim capability');
-  return value as ClaimToken;
-}
-
-function toClaimedJob(row: RawJobRow): ClaimedJob {
-  let claim: ClaimRef | null = null;
-  if (row.claim_token !== null) {
-    if (row.claimed_by === null) {
-      throw new Error('claim function returned incomplete fenced custody');
-    }
-    claim = Object.freeze({
-      jobId: row.id,
-      workerId: row.claimed_by,
-      token: claimToken(row.claim_token),
-    });
-  }
-
-  return {
-    id: row.id,
-    orgId: row.org_id,
-    profileId: row.profile_id,
-    jobType: row.job_type,
-    payload: row.payload,
-    attempts: row.attempts,
-    maxAttempts: row.max_attempts,
-    dedupeKey: row.dedupe_key,
-    claimedBy: row.claimed_by,
-    claim,
-  };
-}
+export type { ClaimRef, ClaimToken, ClaimedJob } from './job-wire.js';
 
 /**
  * Claim up to `limit` queued jobs for this worker. Returns fewer than asked
@@ -96,12 +31,12 @@ export async function claimSyncJobs(
   jobTypes?: readonly JobType[],
 ): Promise<ClaimedJob[]> {
   const allowedTypes = jobTypes === undefined ? null : handle.sql.array([...jobTypes]);
-  const rows = await handle.sql<RawJobRow[]>`
+  const rows = await handle.sql<RawClaimedJobRow[]>`
     select * from public.claim_sync_jobs(
       ${workerId}, ${limit}, ${allowedTypes}::public.sync_job_type[]
     )
   `;
-  return rows.map(toClaimedJob);
+  return rows.map(claimedJobFromRaw);
 }
 
 /**
@@ -115,13 +50,13 @@ export async function claimSyncJobsFenced(
   jobTypes?: readonly JobType[],
 ): Promise<ClaimedJob[]> {
   const allowedTypes = jobTypes === undefined ? null : handle.sql.array([...jobTypes]);
-  const rows = await handle.sql<RawJobRow[]>`
+  const rows = await handle.sql<RawClaimedJobRow[]>`
     select * from public.claim_sync_jobs_fenced(
       ${workerId}, ${limit}, ${allowedTypes}::public.sync_job_type[]
     )
   `;
   return rows.map((row) => {
-    const job = toClaimedJob(row);
+    const job = claimedJobFromRaw(row);
     if (job.claim === null) throw new Error('fenced claim function returned tokenless custody');
     return job;
   });

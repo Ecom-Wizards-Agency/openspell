@@ -68,10 +68,12 @@ export function OptimizationGroupsManager({
   profileId,
   initial,
   canManage,
+  previewReady,
 }: {
   profileId: string;
   initial: OptimizationWorkspace;
   canManage: boolean;
+  previewReady: boolean;
 }): ReactNode {
   const [workspace, setWorkspace] = useState(initial);
   const [draft, setDraft] = useState<GroupDraft>(() =>
@@ -208,7 +210,7 @@ export function OptimizationGroupsManager({
   }
 
   async function runNow(): Promise<void> {
-    if (draft.id === null) return;
+    if (draft.id === null || !canManage || !previewReady || pending) return;
     setPending(true);
     setMessage(null);
     setError(null);
@@ -435,14 +437,21 @@ export function OptimizationGroupsManager({
           {message ? <p role="status" className="wa-notice">{message}</p> : null}
 
           <div className="wa-editor-actions">
-            <p className="wa-hint">OpenSpell settings only. Saving or running a preview does not update Amazon.</p>
+            <div>
+              <p className="wa-hint">OpenSpell settings only. Saving or running a preview does not update Amazon.</p>
+              {canManage && !previewReady ? (
+                <p className="wa-hint">
+                  Recommendation previews are temporarily unavailable. Group settings can still be saved.
+                </p>
+              ) : null}
+            </div>
             <div className="wa-row">
               {draft.id !== null ? (
                 <button
                   type="button"
                   className="wa-btn"
                   onClick={runNow}
-                  disabled={!canManage || pending || !draft.enabled || draft.campaignIds.length === 0}
+                  disabled={!canManage || !previewReady || pending || !draft.enabled || draft.campaignIds.length === 0}
                 >
                   Run group preview
                 </button>

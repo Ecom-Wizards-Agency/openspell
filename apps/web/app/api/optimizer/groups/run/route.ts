@@ -2,6 +2,10 @@ import { PostgresRecommendationRunStore } from '@wizard-ads/worker';
 import { createDb } from '@wizard-ads/db';
 import { requestActor, errorResponse } from '../../../../../src/server/request-context';
 import { requireCapability } from '../../../../../src/server/org-role';
+import {
+  OPTIMIZER_PREVIEW_UNAVAILABLE_MESSAGE,
+  resolveOptimizerPreviewReadiness,
+} from '../../../../../src/optimizer/readiness';
 
 export const runtime = 'nodejs';
 
@@ -19,6 +23,13 @@ export async function POST(request: Request): Promise<Response> {
     }
     if (typeof body.groupId !== 'string' || body.groupId.length === 0) {
       throw new Error('groupId is required');
+    }
+    const readiness = await resolveOptimizerPreviewReadiness(database);
+    if (!readiness.ready) {
+      return Response.json(
+        { error: OPTIMIZER_PREVIEW_UNAVAILABLE_MESSAGE },
+        { status: 503 },
+      );
     }
     const queued = await new PostgresRecommendationRunStore(database).enqueueRecommendationRun({
       orgId: actor.orgId,
