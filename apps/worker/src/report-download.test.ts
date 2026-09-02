@@ -209,6 +209,59 @@ describe('bounded report download', () => {
     expect(cancelCalls).toBe(1);
   });
 
+  it('preserves a real ReadableStream cancellation rejection as source failure', async () => {
+    let cancelCalls = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelCalls += 1;
+        return Promise.reject(new Error('synthetic transport cancellation rejection'));
+      },
+    });
+    const api = downloadClient(stream);
+    const outer = new AbortController();
+    const source = await api.downloadReport('https://reports.invalid/rejecting-cancel', outer.signal);
+
+    await expect(gunzipJson(source, {
+      ...generous,
+      idleTimeoutMs: 20,
+      totalTimeoutMs: 500,
+    }, {
+      signal: outer.signal,
+      abortSource: (reason) => outer.abort(reason),
+      consumeRows: () => undefined,
+      cancellationTimeoutMs: 100,
+    })).rejects.toMatchObject({
+      name: 'ReportDownloadLimitError',
+      kind: 'source_cancellation',
+    });
+    expect(cancelCalls).toBe(1);
+  });
+
+  it.each([
+    ['throws synchronously', () => { throw new Error('synthetic return throw'); }],
+    ['returns a rejected promise', () => Promise.reject(new Error('synthetic return rejection'))],
+    ['returns a non-done result', () => Promise.resolve({ done: false, value: new Uint8Array() })],
+  ] as const)('normalizes an iterator that %s', async (_case, close) => {
+    const source: AsyncIterable<Uint8Array> = {
+      [Symbol.asyncIterator]: () => ({
+        next: () => new Promise<IteratorResult<Uint8Array>>(() => undefined),
+        return: close,
+      }),
+    };
+
+    await expect(gunzipJson(source, {
+      ...generous,
+      idleTimeoutMs: 20,
+      totalTimeoutMs: 500,
+    }, {
+      consumeRows: () => undefined,
+      cancellationTimeoutMs: 100,
+    })).rejects.toMatchObject({
+      name: 'ReportDownloadLimitError',
+      kind: 'source_cancellation',
+    });
+  });
+
   it('lets a concurrent bounded download finish while another is cancelling', async () => {
     const blocked = gunzipJson(never(), {
       ...generous,

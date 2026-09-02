@@ -1177,6 +1177,7 @@ describe('fenced report download limits', () => {
     { kind: 'decompressed_bytes' as const, returnCalls: 0, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 2, idleTimeoutMs: 1_000, totalTimeoutMs: 5_000 } },
     { kind: 'idle_timeout' as const, returnCalls: 1, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 4_096, idleTimeoutMs: 10, totalTimeoutMs: 1_000 } },
     { kind: 'total_timeout' as const, returnCalls: 1, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 4_096, idleTimeoutMs: 1_000, totalTimeoutMs: 10 } },
+    { kind: 'sync_cancel_throw' as const, returnCalls: 1, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 4_096, idleTimeoutMs: 10, totalTimeoutMs: 1_000 } },
   ] satisfies readonly { kind: string; returnCalls: number; limits: ReportDownloadLimits }[];
 
   it.each(cases)('cancels the source and retains custody after $kind', async ({ kind, limits, returnCalls }) => {
@@ -1219,6 +1220,10 @@ describe('fenced report download limits', () => {
     expect(api.signal?.aborted).toBe(true);
     expect(api.returnCalls).toBe(returnCalls);
     expect(mutations).toEqual([]);
+    expect(worker.status().settlementFailure).toBe('custody_quarantined');
+    const evidence = await worker.shutdown();
+    expect(evidence).toEqual({ released: 0, unresolved: 1 });
+    expect(shutdownExitCode(evidence, worker.status().settlementFailure)).toBe(78);
   });
 });
 
@@ -1815,7 +1820,8 @@ class LimitDownloadApi extends OneRowApi {
     | 'compressed_bytes'
     | 'decompressed_bytes'
     | 'idle_timeout'
-    | 'total_timeout') {
+    | 'total_timeout'
+    | 'sync_cancel_throw') {
     super();
   }
 
@@ -1829,7 +1835,11 @@ class LimitDownloadApi extends OneRowApi {
     return {
       [Symbol.asyncIterator]: () => ({
         next: () => {
-          if (this.limitKind === 'idle_timeout' || this.limitKind === 'total_timeout') {
+          if (
+            this.limitKind === 'idle_timeout'
+            || this.limitKind === 'total_timeout'
+            || this.limitKind === 'sync_cancel_throw'
+          ) {
             return new Promise<IteratorResult<Uint8Array>>(() => undefined);
           }
           if (delivered) return Promise.resolve({ done: true, value: undefined });
@@ -1838,6 +1848,9 @@ class LimitDownloadApi extends OneRowApi {
         },
         return: () => {
           this.returnCalls += 1;
+          if (this.limitKind === 'sync_cancel_throw') {
+            throw new Error('synthetic synchronous source cancellation failure');
+          }
           return Promise.resolve({ done: true, value: undefined });
         },
       }),

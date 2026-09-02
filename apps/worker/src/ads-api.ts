@@ -635,33 +635,63 @@ function toByteStream(
   return body as AsyncIterable<Uint8Array>;
 }
 
-async function* readWebStream(
+function readWebStream(
   stream: ReadableStream<Uint8Array>,
   signal?: AbortSignal,
-): AsyncGenerator<Uint8Array> {
-  const reader = stream.getReader();
-  let completed = false;
-  let cancellation: Promise<void> | null = null;
-  const cancel = (): void => {
-    cancellation ??= reader.cancel(signal?.reason).catch(() => undefined);
+): AsyncIterable<Uint8Array> {
+  let consumed = false;
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+      if (consumed) throw new Error('report response body can only be consumed once');
+      consumed = true;
+      const reader = stream.getReader();
+      let completed = false;
+      let closed = false;
+      let cancellation: Promise<void> | null = null;
+      const cancel = (): void => {
+        if (cancellation) return;
+        try {
+          cancellation = reader.cancel(signal?.reason);
+        } catch (error) {
+          cancellation = Promise.reject(error);
+        }
+        // Abort listeners cannot await. Attach a handler immediately so a
+        // prompt transport rejection is observed, while retaining the original
+        // rejected promise for `return()` to propagate.
+        void cancellation.catch(() => undefined);
+      };
+      const cleanup = (): void => {
+        signal?.removeEventListener('abort', cancel);
+        reader.releaseLock();
+      };
+      if (signal?.aborted === true) cancel();
+      else signal?.addEventListener('abort', cancel, { once: true });
+      return {
+        async next(): Promise<IteratorResult<Uint8Array>> {
+          if (closed) return { done: true, value: undefined };
+          const result = await reader.read();
+          if (result.done) {
+            completed = true;
+            closed = true;
+            cleanup();
+            return { done: true, value: undefined };
+          }
+          return { done: false, value: result.value };
+        },
+        async return(): Promise<IteratorResult<Uint8Array>> {
+          if (closed) return { done: true, value: undefined };
+          closed = true;
+          if (!completed) cancel();
+          try {
+            if (cancellation) await cancellation;
+          } finally {
+            cleanup();
+          }
+          return { done: true, value: undefined };
+        },
+      };
+    },
   };
-  if (signal?.aborted === true) cancel();
-  else signal?.addEventListener('abort', cancel, { once: true });
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        completed = true;
-        break;
-      }
-      if (value) yield value;
-    }
-  } finally {
-    signal?.removeEventListener('abort', cancel);
-    if (!completed) cancel();
-    if (cancellation) await cancellation;
-    reader.releaseLock();
-  }
 }
 
 /**

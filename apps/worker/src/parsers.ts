@@ -187,10 +187,20 @@ export async function gunzipJson(
         cancellationTimeoutMs,
       );
     }
-    iteratorClose ??= Promise.resolve(iterator.return()).then((result) => {
-      if (!result.done) throw new Error('source iterator did not close');
-    });
     try {
+      if (!iteratorClose) {
+        try {
+          iteratorClose = Promise.resolve(iterator.return()).then((result) => {
+            if (!result.done) throw new Error('source iterator did not close');
+          });
+        } catch (error) {
+          iteratorClose = Promise.reject(error);
+        }
+        // A return implementation may hand back an already-rejected promise.
+        // Observe it immediately and still await the original below so the
+        // cancellation failure remains authoritative.
+        void iteratorClose.catch(() => undefined);
+      }
       await withCancellationDeadline(iteratorClose, cancellationTimeoutMs);
     } catch (error) {
       if (error instanceof ReportDownloadLimitError) throw error;
