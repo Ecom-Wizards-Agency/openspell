@@ -112,22 +112,22 @@ merge, exact-main CI and external-state reconciliation.
 
 ## Acceptance checks
 
-- [ ] Architecture and work-package contract committed separately before implementation.
-- [ ] Focused migration, DB, worker, web and deployment tests pass.
-- [ ] Disposable PostgreSQL migration, concurrency, admission and stale-claim proofs pass serially.
-- [ ] High correctness and Extra-High adversarial reviews find no blocker, high or medium defect.
-- [ ] Blast-radius proof confirms no shared edit, provider dependency, Amazon action or external
+- [x] Architecture and work-package contract committed separately before implementation.
+- [x] Focused migration, DB, worker, web and deployment tests pass.
+- [x] Disposable PostgreSQL migration, concurrency, admission and stale-claim proofs pass serially.
+- [x] High correctness and Extra-High reviews find no blocker, high or medium defect.
+- [x] Blast-radius proof confirms no shared edit, provider dependency, Amazon action or external
       state change.
-- [ ] `pnpm typecheck`, `pnpm lint`, `pnpm test` and `pnpm hygiene` pass.
-- [ ] Exact-head pull-request CI and exact-main CI pass both jobs.
-- [ ] The source package performs no hosted migration, staging, activation, deployment, provider or
+- [x] `pnpm typecheck`, `pnpm lint`, `pnpm test` and `pnpm hygiene` pass.
+- [x] Exact-head pull-request CI and exact-main CI pass both jobs.
+- [x] The source package performs no hosted migration, staging, activation, deployment, provider or
       Amazon action.
 - [ ] Hosted apply, runtime credential provisioning, artifact staging, service activation, web
       promotion, scoped admission and QA each receive separate exact action-specific authorization
       and pre/postflight evidence.
 - [ ] Live bounded QA proves campaign checkbox selection, one observable preview and exact immutable
       proposal counts before the feature is described as testable.
-- [ ] Handover and status update only after reviewed merge and exact-main CI.
+- [x] Handover and status update only after reviewed merge and exact-main CI.
 
 ## External gates
 

@@ -37,22 +37,24 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- WP-195 source is merged at `857ce0c6f2d925448c7823d2437a79456497c1e2`. PR #121 added
-  AdLabs-style campaign checkboxes, explicit all-versus-selected preview scope, immutable
-  tenant-closed child runs, queue-job custody and bounded observable polling. Corrected exact-head
-  run `33645864956` passed both jobs at `8f63b95`; exact-main run `33647461569` passed both jobs at
-  the merge revision. The first exact-head browser run exposed and led to correction of a stale
-  one-job fixture assertion. High correctness, Extra-High adversarial and scope-safety reviews ended
-  with no blocker, high or medium defect. The package applied no hosted migration, deployment,
-  service change, provider call or Amazon mutation.
+- WP-196 source is merged at `38db8b22d27a471b9a47ce9730d5132e248adeeb`. PR #123 added
+  exclusive recommendation claim custody, a dedicated single-flight database-only claimant,
+  claim-bound recommendation mutations, narrow worker authority, strict web readiness and
+  revision-pinned Evo staging/activation/rollback artifacts. Corrected exact-head run
+  `33673996873` passed both jobs at `88710dc`; exact-main run `33675418627` passed both jobs at the
+  merge revision. The first exact-head browser run exposed and led to correction of a duplicate
+  status landmark and a stale direct-write E2E fixture. High correctness and Extra-High operational
+  reviews ended with no blocker, high or medium defect. The package applied no hosted migration,
+  credential change, staging, activation, deployment, provider call or Amazon mutation.
 - Production web health returns `ok` at
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 116 commits behind the WP-195 source merge. No later
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 122 commits behind the WP-196 source merge. No later
   package deployed or promoted a candidate, so its newer source artifacts are not live evidence.
 - Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 224 commits behind
-  the WP-193 source merge and 256 commits behind the WP-195 source merge, and still returns the
+  the WP-193 source merge and 262 commits behind the WP-196 source merge, and still returns the
   legacy `wizard-ads` service shape.
-- The new Evo report-worker unit is not installed and its loopback health is unavailable. The
-  legacy integration worker is active, but exposes no revision stamp. Earlier in this continuation
+- The new Evo report-worker and recommendation-worker units are not installed, so their loopback
+  health is unavailable. The legacy integration worker is active, but exposes no revision stamp.
+  Earlier in this continuation
   it restarted after an uncaught `claimSyncJobs` statement timeout. The operator then completed an
   attended stop/start and observed `NRestarts=0`; final read-only reconciliation found the service
   active/running with a new process and `NRestarts=1` again. The unprivileged journal exposed no
@@ -62,7 +64,7 @@ At the time this handover was reconciled:
 - Current source, deployed web, deployed MCP, and the active worker are not one proven release. Do
   not describe post-deployment main features as live until a revision-stamped candidate is promoted
   and checked.
-- `docs/STATUS.md` now records WP-179 through WP-195, but the implementation-wave table remains
+- `docs/STATUS.md` now records WP-179 through WP-196, but the implementation-wave table remains
   incomplete between WP-149 and WP-178. Use Git, CI, code, the migration ledger, and live health as
   evidence; then update status prose.
 
@@ -99,6 +101,11 @@ Recent verified source work includes:
   filtered selection, explicit all-versus-selected modes, one idempotent parent batch, immutable
   per-group and unassigned child scopes, exact queue-job custody, bounded polling and honest
   terminal state. The migration is not hosted and no compatible worker or web revision is live;
+- source-only exclusive recommendation claim custody with one private authority, a narrow
+  recommendation-only database principal and RPC facade, claim-bound run mutations, a dedicated
+  single-flight database-only worker, strict web readiness and revision-pinned Evo deployment
+  controls. Its migration is not hosted, its credential is not provisioned, and its worker is not
+  staged or active;
 - strict provider-native Unified Reporting create/retrieve methods with exact indexed accounting,
   ambiguity-safe create behavior, idempotent retrieval, and no download or promotion claim;
 - a default-off Unified Reporting dual-run sidecar for `spCampaigns`, with explicit advertiser
@@ -165,7 +172,7 @@ These are source outcomes, not blanket claims of live behavior.
 
 Reconcile heads and checks again before acting.
 
-There are no open pull requests. PR #121 merged WP-195 at `857ce0c`; PR #24 remains closed unmerged
+There are no open pull requests. PR #123 merged WP-196 at `38db8b2`; PR #24 remains closed unmerged
 at archival head `78e718b` after WP-191 preserved its remaining token-fenced ownership/recovery
 lesson on accepted current main. Its superseded source was not rebased, cherry-picked or merged.
 
@@ -202,10 +209,11 @@ remains off; schema presence did not activate it.
 
 WP-187's `20260901020000_sp_write_persistence_ledger.sql`, WP-192's
 `20260901030000_sp_write_outbox_delivery.sql`, WP-194's
-`20260901040000_fenced_sync_claims.sql`, and WP-195's
-`20260901050000_recommendation_preview_scopes.sql` are merged source only and were not added to the
+`20260901040000_fenced_sync_claims.sql`, WP-195's
+`20260901050000_recommendation_preview_scopes.sql`, and WP-196's
+`20260901060000_recommendation_claim_custody.sql` are merged source only and were not added to the
 hosted ledger. WP-188 and WP-192 expose source facades but no app imports them, and the fenced
-report and scoped-preview runtimes remain absent. Do not apply any of the four as part of a source
+report and recommendation runtimes remain absent. Do not apply any of the five as part of a source
 package; a future hosted apply requires a separately reconciled ledger-compatible artifact, exact
 action authorization and pre/postflight. Their absence keeps the SP delivery, fenced report custody
 and scoped-preview capabilities unavailable live.
@@ -298,9 +306,11 @@ exact current-task authorization.
 WP-195 now supplies the source implementation for a searchable campaign list with native row
 checkboxes, filtered cross-page header selection, global clear, exact selected counts, explicit All
 eligible versus Selected campaigns scope, observable parent/child progress and immutable
-enqueue-time campaign/policy evidence. It remains preview-only and unavailable live until the four
-  pending migrations, an exclusive WP-195-compatible recommendation claimant and a matching web revision are
-  separately authorized, deployed and verified. No Amazon apply path was added.
+enqueue-time campaign/policy evidence. WP-196 supplies the exclusive compatible claimant, exact
+claim-bound run writes and a fail-closed shared readiness gate in source. The complete preview path
+remains unavailable live until all five pending migrations, the narrow worker credential, staged and
+activated recommendation service, scoped admission and a matching web revision are separately
+authorized, deployed and verified. No Amazon apply path was added.
 
 ## Known UX and performance follow-ups
 
@@ -323,15 +333,15 @@ enqueue-time campaign/policy evidence. It remains preview-only and unavailable l
 
 ## Recommended continuation order
 
-1. Build and review the exact ledger-compatible hosted artifact for WP-187, WP-192, WP-194 and
-   WP-195; do not apply it as part of artifact construction or review.
+1. Build and review the exact ledger-compatible hosted artifact for WP-187, WP-192, WP-194, WP-195
+   and WP-196; do not apply it as part of artifact construction or review.
 2. Only with authorization for that exact database action, apply only the reviewed artifact and
    prove the ledger, schema, privileges, preserved state and queue postflight. Database approval
    does not authorize staging, service, queue-ownership or deployment changes.
-3. In a separate source package, design and revision-prove the WP-195-compatible recommendation
-   claimant and its exclusive handoff. The four-type Evo report worker refuses
-   `recommendations.run`; it cannot be treated as the optimizer consumer or as proof that the
-   optimizer lane is ready.
+3. With separate exact authorization, provision or rotate only the narrow recommendation-worker
+   database credential through an allowlisted Writer operation. Do not expose a broad
+   service-account token or reuse `service_role`; credential custody does not authorize staging or
+   activation.
 4. With separate action-specific staging authorization for each exact target, stage the clean-main
    Evo report worker and the independently proven recommendation claimant. Staging must leave
    current service enablement, claim authority and web enqueue unchanged.
@@ -340,24 +350,32 @@ enqueue-time campaign/policy evidence. It remains preview-only and unavailable l
    each old claimant retired, each new claimant exclusively healthy, and zero incompatible active
    work; then retain the exact rollback/custody evidence. Never allow overlapping consumers or
    strand `recommendations.run` jobs.
-6. With separate web-deployment authorization, deploy a revision-stamped candidate from the same
-   proven main only after the recommendation claimant is exclusively healthy. Complete authenticated
-   QA of Run preview, cross-page campaign selection, reload/resume, refusal and terminal states;
-   promote only after candidate revision and route artifacts match. Release the
-   optimizer-edit/job-creation freeze only after every consumer and the web are revision-matched and
-   weekday-aware.
-7. Replace or revision-stamp the MCP deployment from the same proven release and repeat its
+6. With separate candidate-deployment authorization, deploy a revision-stamped candidate from the
+   same proven main only after the recommendation claimant is exclusively healthy. Prove its exact
+   revision and route artifacts while admission remains blocked; do not create a preview or promote
+   the candidate under staging or deployment authority alone.
+7. With separate scoped-admission authorization, use only the guarded transition and exact
+   pre/postflight to move the proven authority tuple from blocked to scoped. Reconcile a lost
+   response by exact tuple readback; never retry blind. This gate does not authorize QA job creation
+   or web promotion.
+8. With separate bounded-QA authorization, test the candidate's Run preview, cross-page campaign
+   selection, reload/resume, refusal and terminal states, and reconcile exact immutable proposal
+   counts with zero Amazon action.
+9. Only with separate web-promotion authorization, promote the already verified candidate and
+   confirm its live revision and route artifacts. Release the optimizer-edit/job-creation freeze
+   only after every consumer and the web are revision-matched and weekday-aware.
+10. Replace or revision-stamp the MCP deployment from the same proven release and repeat its
    read-only health, tool and audit verification before claiming runtime coherence.
-8. Implement the sidebar-scroll regression as the next independent source-only UI slice.
-9. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
-10. Keep the merged Unified Reporting dual-run off until its binding, deployment revision, consumer
+11. Implement the sidebar-scroll regression as the next independent source-only UI slice.
+12. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
+13. Keep the merged Unified Reporting dual-run off until its binding, deployment revision, consumer
    ownership, bounded deployment allowlist, exact five-type Evo health contract, and separately
    authorized read-only provider probe are proven. Do not add download or promotion behavior from
    request-status parity alone.
-11. Keep WP-184's distinctive release evidence and the contextual-negative rescue separate from
+14. Keep WP-184's distinctive release evidence and the contextual-negative rescue separate from
    their remaining deployment and live-verification gates.
-12. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again; then
-    remove only clean, merged, obsolete worktrees after proving their branch and dirty state.
+15. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again; then
+   remove only clean, merged, obsolete worktrees after proving their branch and dirty state.
 
 If an external gate blocks one lane, continue with the next independent source-only package. Do
 not reinterpret waiting as authorization to mutate production.
