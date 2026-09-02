@@ -302,8 +302,10 @@ process and exact-deployment evidence gathered by the activator.
 - Quarantined completed handlers remain visible as unresolved shutdown evidence and force exit 78.
 - Rejected, synchronously thrown, non-completing and non-terminal source cancellation all become the
   closed `source_cancellation` outcome; none can fall through to ordinary fenced retry settlement.
-- After bounded health, database and worker shutdown completes, fatal custody explicitly terminates
-  the process with exit 78 even when an unproved transport leaves a referenced event-loop handle.
+- After bounded health, database and worker shutdown completes, fatal and signal paths await one
+  fixed-schema sanitized final audit write, including stream drain under backpressure, with its own
+  deadline. Fatal custody then explicitly terminates with exit 78 even when an unproved transport or
+  output stream leaves a referenced event-loop handle.
 - Migration replay preserves every existing queue and report row and creates no automatic recovery work.
 - ACL tests prove only `service_role` can call the fenced functions and authenticated callers cannot
   select `claim_token` while retaining the complete safe queue view.
