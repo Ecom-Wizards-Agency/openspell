@@ -158,6 +158,7 @@ implementation brief in `docs/workpackages/`.
 | 191 | Token-fenced SP outbox protocol architecture | merged; architecture only | private mutable custody heads plus immutable journals, typed non-JSON claim tokens, database-clock transitions, claim-bound dispatch-lease/reservation wrappers, exact closure/error outcomes and separate source/coordinator/activation packages were accepted through PR #113 at `8291158`; no migration, facade code, job, provider reachability, hosted schema, deployment or activation changed |
 | 192 | Token-fenced SP outbox delivery | merged; source-only | private delivery heads and journals, opaque claim custody, exact renew/defer/complete transitions, claim-bound dispatch-lease/provider-reservation wrappers, tokenless grant revocation and purge/lock-order proofs merged through PR #115 at `dbc788a`; exact-head and exact-main CI passed, while both SP migrations remain unhosted and no app, job, provider reachability, deployment or activation changed |
 | 193 | Report-worker stage readiness | merged; staging gated | clean-checkout frozen installation, CI deployment-harness enforcement, no-overlap report ownership transfer, unknown-outcome quarantine and schema-compatible rollback merged through PR #117 at `8996706`; corrected exact-head and exact-main CI passed, while no release was staged, no service or queue ownership changed and no provider, database or production action ran |
+| 194 | Fail-closed report claim custody | merged; source-only | one-way legacy-to-fenced report authority, opaque claim transitions, ambiguity quarantine, bounded report parsing/final audit and revision-pinned deployment rollback merged through PR #119 at `3e1f391`; exact-head and exact-main CI passed, while its migration remains unhosted and no service, queue owner, provider or production state changed |
 
 ## Milestone gates
 
@@ -171,6 +172,13 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-09-02 PR #119 merged WP-194 fail-closed report custody at `3e1f391` after exact-head run
+  `33626943610` passed both jobs at `3e61a42`; exact-main run `33628287979` then passed both jobs at
+  the merge revision. High correctness and Extra-High adversarial reviews found no blocker, high or
+  medium defect. Serialized local verification passed database 431, worker 439 and web 615 tests;
+  the UI passed 163 functional and 10 CI-threshold performance tests. The hosted ledger remained at
+  41 versions, the report-worker unit remained absent, the legacy worker remained active, and no
+  migration, deployment, queue-owner transfer, provider call or production mutation occurred.
 - On 2026-09-02 PR #117 merged WP-193 report-worker stage readiness at `8996706` after corrected
   exact-head run `33595023515` passed both jobs at `36cfbfe`; exact-main run `33596330244` then
   passed both jobs at the merge revision. The first exact-head run `33594716502` made the new
@@ -519,8 +527,11 @@ implementation brief in `docs/workpackages/`.
 - [x] PR #117 corrected exact-head CI run `33595023515` and exact-main run `33596330244` passed both
       jobs at `36cfbfe` and merged revision `8996706`, respectively. High and Extra-High reviews
       ended with no finding.
+- [x] PR #119 exact-head CI run `33626943610` and exact-main run `33628287979` passed both jobs at
+      `3e61a42` and merged revision `3e1f391`, respectively. High and Extra-High reviews found no
+      blocker, high or medium defect.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
-      `b5c210d` (84 and 224 WP-193-source commits behind, respectively), the new report worker is
+      `b5c210d` (110 and 250 WP-194-source commits behind, respectively), the new report worker is
       absent, and the active legacy worker revision is unproven. The attended stop/start reset its
       restart counter to zero; the worker is active/running and now reports one later automatic
       restart whose cause the unprivileged journal does not expose. Claim-failure containment is
@@ -530,9 +541,9 @@ implementation brief in `docs/workpackages/`.
       feature, SP-API, SB Video, Marketing Stream, WP-171, Unified Reporting,
       contextual-negative and WP-186 schema files. WP-186's exact 27-statement ledger, privilege,
       count, lock, queue and recovery postflight passed; schema presence does not complete the
-      other features' separate runtime gates. WP-187's `20260901020000` migration is merged source
-      only and WP-192's `20260901030000` migration is merged source only; neither is part of that
-      hosted ledger.
+      other features' separate runtime gates. WP-187's `20260901020000`, WP-192's
+      `20260901030000`, and WP-194's `20260901040000` migrations are merged source only; none is
+      part of that hosted ledger.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [x] Full authenticated Wizard Ads route/state click-through at `bfce504`.
 - [x] Authenticated click-through at `b5c210d`: 21 of 21 production routes returned HTTP 200 with
