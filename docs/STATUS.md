@@ -2,7 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated` · `superseded`.
 
-Source and deployment headers reconciled 2026-09-02 against `origin/main` at `dbc788a`. The
+Source and deployment headers reconciled 2026-09-02 against `origin/main` at `857ce0c`. The
 implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
 the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
 the implementation is reachable from the recorded main revision. It does not by itself mean
@@ -159,6 +159,7 @@ implementation brief in `docs/workpackages/`.
 | 192 | Token-fenced SP outbox delivery | merged; source-only | private delivery heads and journals, opaque claim custody, exact renew/defer/complete transitions, claim-bound dispatch-lease/provider-reservation wrappers, tokenless grant revocation and purge/lock-order proofs merged through PR #115 at `dbc788a`; exact-head and exact-main CI passed, while both SP migrations remain unhosted and no app, job, provider reachability, deployment or activation changed |
 | 193 | Report-worker stage readiness | merged; staging gated | clean-checkout frozen installation, CI deployment-harness enforcement, no-overlap report ownership transfer, unknown-outcome quarantine and schema-compatible rollback merged through PR #117 at `8996706`; corrected exact-head and exact-main CI passed, while no release was staged, no service or queue ownership changed and no provider, database or production action ran |
 | 194 | Fail-closed report claim custody | merged; source-only | one-way legacy-to-fenced report authority, opaque claim transitions, ambiguity quarantine, bounded report parsing/final audit and revision-pinned deployment rollback merged through PR #119 at `3e1f391`; exact-head and exact-main CI passed, while its migration remains unhosted and no service, queue owner, provider or production state changed |
+| 195 | Campaign-scoped optimizer previews | merged; deployment gated | AdLabs-style campaign checkboxes, explicit all-versus-selected scope, immutable per-group/unassigned child runs, exact queue custody and bounded parent polling merged through PR #121 at `857ce0c`; corrected exact-head and exact-main CI passed, while its migration is unhosted and no compatible worker/web revision, provider call or Amazon mutation is live |
 
 ## Milestone gates
 
@@ -172,6 +173,18 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-09-02 PR #121 merged WP-195 campaign-scoped optimizer previews at `857ce0c` after
+  corrected exact-head run `33645864956` passed both jobs at `8f63b95`; exact-main run
+  `33647461569` then passed both jobs at the merge revision. The first exact-head browser run
+  `33643931073` exposed a stale one-job fixture assertion after WP-195 correctly added inert preview
+  custody evidence; the corrected test proves the exact fixture-profile and job-type columns. High
+  correctness, Extra-High adversarial and scope-safety reviews ended with no blocker, high or
+  medium defect. Serialized local verification passed database 434, worker 451 and web 643 tests;
+  UI functional and CI-threshold performance tests passed 163 and 10, and focused optimizer
+  Playwright passed. The hosted ledger remained at 41 versions through `20260901010000`; production
+  web remained `44da7ac`, MCP remained `b5c210d`, the legacy worker remained active and the new
+  report-worker unit remained absent. No migration, deployment, provider call or Amazon mutation
+  occurred.
 - On 2026-09-02 PR #119 merged WP-194 fail-closed report custody at `3e1f391` after exact-head run
   `33626943610` passed both jobs at `3e61a42`; exact-main run `33628287979` then passed both jobs at
   the merge revision. High correctness and Extra-High adversarial reviews found no blocker, high or
@@ -421,6 +434,12 @@ implementation brief in `docs/workpackages/`.
   profile-local day. Group scheduling and persistence refuse overlapping previews and hold after
   export until the latest observation is complete with a `continue` decision. Tenant strategy
   supplies the evidence policy without source defaults; `hold` and `revert` remain review gates.
+- WP-195 adds source-only native campaign checkboxes, filtered cross-page selection, exact
+  all-versus-selected counts, immutable eligible-campaign scope and policy snapshots, one parent
+  preview with per-group/unassigned children, exact queue-job custody and bounded non-overlapping
+  polling. The hosted schema, exclusive WP-195-compatible recommendation claimant and
+  revision-matched web remain gated, so the live optimizer still does not expose this behavior and
+  no Amazon action path exists.
 - Creative Performance, Query Intelligence, Dayparting and Strategy Overview are now guarded,
   task-navigation-accessible operator surfaces. Empty or incomplete sources remain visible as
   source gates instead of demo performance.
@@ -530,8 +549,12 @@ implementation brief in `docs/workpackages/`.
 - [x] PR #119 exact-head CI run `33626943610` and exact-main run `33628287979` passed both jobs at
       `3e61a42` and merged revision `3e1f391`, respectively. High and Extra-High reviews found no
       blocker, high or medium defect.
+- [x] PR #121 corrected exact-head CI run `33645864956` and exact-main run `33647461569` passed both
+      jobs at `8f63b95` and merged revision `857ce0c`, respectively. The first exact-head browser
+      run exposed and led to correction of a stale fixture cardinality assertion; High,
+      Extra-High and scope-safety reviews ended with no blocker, high or medium defect.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
-      `b5c210d` (110 and 250 WP-194-source commits behind, respectively), the new report worker is
+      `b5c210d` (116 and 256 WP-195-source commits behind, respectively), the new report worker is
       absent, and the active legacy worker revision is unproven. The attended stop/start reset its
       restart counter to zero; the worker is active/running and now reports one later automatic
       restart whose cause the unprivileged journal does not expose. Claim-failure containment is
@@ -542,8 +565,8 @@ implementation brief in `docs/workpackages/`.
       contextual-negative and WP-186 schema files. WP-186's exact 27-statement ledger, privilege,
       count, lock, queue and recovery postflight passed; schema presence does not complete the
       other features' separate runtime gates. WP-187's `20260901020000`, WP-192's
-      `20260901030000`, and WP-194's `20260901040000` migrations are merged source only; none is
-      part of that hosted ledger.
+      `20260901030000`, WP-194's `20260901040000`, and WP-195's `20260901050000` migrations are
+      merged source only; none is part of that hosted ledger.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [x] Full authenticated Wizard Ads route/state click-through at `bfce504`.
 - [x] Authenticated click-through at `b5c210d`: 21 of 21 production routes returned HTTP 200 with
@@ -561,9 +584,10 @@ implementation brief in `docs/workpackages/`.
 - [x] Release-candidate Playwright: 27 production-build workflows and 27 authenticated-dev
       workflows passed, including every new intelligence route and anonymous redirects.
 - [x] WP-171 source is on main after fresh integration and exact-main CI.
-- [ ] Keep optimizer edits and recommendation-job creation frozen until WP-171's worker and web
-      consumers are revision-matched, deployed and verified. Keep every newly hosted feature
-      disabled until its remaining binding, consumer, provider and counted parity gates pass.
+- [ ] Keep optimizer edits and recommendation-job creation frozen until the exclusive recommendation
+      claimant and web are revision-matched, WP-171-weekday-aware, WP-195-scope-compatible, deployed
+      and verified. Keep every newly hosted feature disabled until its remaining binding, consumer,
+      provider and counted parity gates pass.
 - [x] Applied only `20260901010000_authenticated_relation_privilege_hardening.sql` from the
       ledger-compatible 41-file artifact after exact authorization and an exclusive DDL window;
       exact privilege, preserved-state, ledger, lock, queue, cron and worker-recovery postflight
