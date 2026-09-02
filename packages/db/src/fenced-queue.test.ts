@@ -1,10 +1,14 @@
 import { fileURLToPath } from 'node:url';
+import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  activateReportWorkerFencedClaims,
   claimSyncJobs,
   claimSyncJobsFenced,
   deferSyncJobFenced,
   finishSyncJobFenced,
+  finishSyncJob,
+  getReportWorkerClaimAuthority,
   requeueStaleSyncJobs,
 } from './queries/jobs.js';
 import { expectRejection } from './testing/errors.js';
@@ -21,6 +25,13 @@ const PREVIOUS_MIGRATION = '20260901030000_sp_write_outbox_delivery.sql';
 const FENCED_MIGRATION = fileURLToPath(
   new URL('../../../supabase/migrations/20260901040000_fenced_sync_claims.sql', import.meta.url),
 );
+const REPORT_LANE = [
+  'creative.sync',
+  'report.request',
+  'report.poll',
+  'report.fetch',
+] as const;
+const REPORT_LANE_SET = new Set<string>(REPORT_LANE);
 
 describe.skipIf(!available)('fenced sync job custody', () => {
   let database: TestDatabase;
@@ -69,6 +80,10 @@ describe.skipIf(!available)('fenced sync job custody', () => {
     reportCountBefore = Number(counts?.report_count);
 
     await applySqlFile(database, FENCED_MIGRATION);
+    const activation = await activateReportWorkerFencedClaims(database);
+    if (activation.decision !== 'activated') {
+      throw new Error(`fenced queue fixture activation failed: ${activation.decision}`);
+    }
   }, 60_000);
 
   afterAll(async () => {
@@ -113,8 +128,8 @@ describe.skipIf(!available)('fenced sync job custody', () => {
   it('hands concurrent fenced claimers disjoint jobs with unique capabilities', async () => {
     await queueReportJobs(40, 'concurrent');
     const [first, second] = await Promise.all([
-      claimSyncJobsFenced(database, 'fenced-worker-a', 25, ['report.request']),
-      claimSyncJobsFenced(database, 'fenced-worker-b', 25, ['report.request']),
+      claimSyncJobsFenced(database, 'fenced-worker-a', 25, REPORT_LANE),
+      claimSyncJobsFenced(database, 'fenced-worker-b', 25, REPORT_LANE),
     ]);
 
     const jobs = [...first, ...second];
@@ -126,9 +141,23 @@ describe.skipIf(!available)('fenced sync job custody', () => {
     expect(new Set(tokens).size).toBe(40);
   });
 
+  it('refuses a fenced caller that does not present the exact report lane', async () => {
+    await expectRejection(
+      claimSyncJobsFenced(database, 'misconfigured-fenced-worker', 1, ['report.request']),
+      /fenced claim requires the complete report lane/i,
+    );
+    await expectRejection(
+      claimSyncJobsFenced(database, 'expanded-fenced-worker', 1, [
+        ...REPORT_LANE,
+        'entity.sync',
+      ]),
+      /fenced claim requires the complete report lane/i,
+    );
+  });
+
   it('returns a closed stale decision for a wrong capability without changing the row', async () => {
     await queueReportJobs(1, 'wrong-token');
-    const [job] = await claimSyncJobsFenced(database, 'fenced-worker-c', 1, ['report.request']);
+    const [job] = await claimSyncJobsFenced(database, 'fenced-worker-c', 1, REPORT_LANE);
     expect(job?.claim).not.toBeNull();
     if (job?.claim === null || job === undefined) return;
 
@@ -159,7 +188,7 @@ describe.skipIf(!available)('fenced sync job custody', () => {
 
   it('invalidates the old capability after attended requeue and same-worker reclaim', async () => {
     await queueReportJobs(1, 'replacement');
-    const [first] = await claimSyncJobsFenced(database, 'same-worker', 1, ['report.request']);
+    const [first] = await claimSyncJobsFenced(database, 'same-worker', 1, REPORT_LANE);
     expect(first?.claim).not.toBeNull();
     if (first?.claim === null || first === undefined) return;
 
@@ -169,7 +198,7 @@ describe.skipIf(!available)('fenced sync job custody', () => {
              run_after = now()
        where id = ${first.id}
     `;
-    const [replacement] = await claimSyncJobsFenced(database, 'same-worker', 1, ['report.request']);
+    const [replacement] = await claimSyncJobsFenced(database, 'same-worker', 1, REPORT_LANE);
     expect(replacement?.id).toBe(first.id);
     expect(replacement?.claim).not.toBeNull();
     if (replacement?.claim === null || replacement === undefined) return;
@@ -187,7 +216,7 @@ describe.skipIf(!available)('fenced sync job custody', () => {
 
   it('defers only the exact attempt, clears custody, and does not consume an attempt', async () => {
     await queueReportJobs(1, 'defer');
-    const [job] = await claimSyncJobsFenced(database, 'fenced-worker-d', 1, ['report.request']);
+    const [job] = await claimSyncJobsFenced(database, 'fenced-worker-d', 1, REPORT_LANE);
     expect(job?.attempts).toBe(1);
     expect(job?.claim).not.toBeNull();
     if (job?.claim === null || job === undefined) return;
@@ -211,7 +240,7 @@ describe.skipIf(!available)('fenced sync job custody', () => {
       database,
       'fenced-worker-d',
       1,
-      ['report.request'],
+      REPORT_LANE,
     );
     expect(replacement?.id).toBe(job.id);
     if (replacement?.claim !== null && replacement !== undefined) {
@@ -222,7 +251,7 @@ describe.skipIf(!available)('fenced sync job custody', () => {
 
   it('keeps token-bearing work outside legacy finish, claim, and stale recovery', async () => {
     await queueReportJobs(1, 'legacy-guards');
-    const [job] = await claimSyncJobsFenced(database, 'fenced-worker-e', 1, ['report.request']);
+    const [job] = await claimSyncJobsFenced(database, 'fenced-worker-e', 1, REPORT_LANE);
     expect(job?.claim).not.toBeNull();
     if (job?.claim === null || job === undefined) return;
 
@@ -235,7 +264,7 @@ describe.skipIf(!available)('fenced sync job custody', () => {
           ${job.id}, 'succeeded'::public.sync_job_status, null, null, null
         )
       `,
-      /fenced job requires a fenced transition/i,
+      /legacy finish requires running tokenless custody/i,
     );
     expect(await requeueStaleSyncJobs(database, '30 minutes')).toBe(0);
 
@@ -251,7 +280,78 @@ describe.skipIf(!available)('fenced sync job custody', () => {
     expect(row?.claim_token).toBe(job.claim.token);
   });
 
-  it('grants every fenced primitive only to service_role', async () => {
+  it('keeps the claim capability outside tenant relation privileges', async () => {
+    const [privileges] = await database.sql<{
+      auth_table_select: boolean;
+      anon_table_select: boolean;
+      auth_safe_select: boolean;
+      auth_token_select: boolean;
+      anon_token_select: boolean;
+      service_private_select: boolean;
+    }[]>`
+      select
+        has_table_privilege('authenticated', 'public.sync_jobs', 'select') as auth_table_select,
+        has_table_privilege('anon', 'public.sync_jobs', 'select') as anon_table_select,
+        has_column_privilege(
+          'authenticated', 'public.sync_jobs', 'updated_at', 'select'
+        ) as auth_safe_select,
+        has_column_privilege(
+          'authenticated', 'public.sync_jobs', 'claim_token', 'select'
+        ) as auth_token_select,
+        has_column_privilege(
+          'anon', 'public.sync_jobs', 'claim_token', 'select'
+        ) as anon_token_select,
+        has_table_privilege(
+          'service_role', 'app.report_worker_claim_authority', 'select'
+        ) as service_private_select
+    `;
+    expect(privileges).toEqual({
+      auth_table_select: false,
+      anon_table_select: false,
+      auth_safe_select: true,
+      auth_token_select: false,
+      anon_token_select: false,
+      service_private_select: false,
+    });
+
+    const rolePool = postgres(database.connectionString, {
+      max: 1,
+      prepare: false,
+      onnotice: () => {},
+    });
+    try {
+      await expect(rolePool.begin(async (sql) => {
+        await sql.unsafe('set local role authenticated');
+        return sql.unsafe(`
+          select
+            id, org_id, profile_id, schedule_id, job_type, payload, status,
+            priority, run_after, attempts, max_attempts, dedupe_key,
+            claimed_by, claimed_at, started_at, finished_at, last_error,
+            result, created_at, updated_at
+          from public.sync_jobs
+          limit 0
+        `);
+      })).resolves.toEqual([]);
+      await expectRejection(
+        rolePool.begin(async (sql) => {
+          await sql.unsafe('set local role authenticated');
+          return sql`select claim_token from public.sync_jobs limit 0`;
+        }),
+        /permission denied/i,
+      );
+      await expectRejection(
+        rolePool.begin(async (sql) => {
+          await sql.unsafe('set local role anon');
+          return sql`select claim_token from public.sync_jobs limit 0`;
+        }),
+        /permission denied/i,
+      );
+    } finally {
+      await rolePool.end({ timeout: 5 });
+    }
+  });
+
+  it('grants every fenced and authority primitive only to service_role', async () => {
     const rows = await database.sql<{
       function_name: string;
       anon_execute: boolean;
@@ -267,12 +367,211 @@ describe.skipIf(!available)('fenced sync job custody', () => {
       join pg_namespace n on n.oid = p.pronamespace
       where n.nspname = 'public'
         and p.proname in (
-          'claim_sync_jobs_fenced', 'finish_sync_job_fenced', 'defer_sync_job_fenced'
+          'claim_sync_jobs_fenced', 'finish_sync_job_fenced', 'defer_sync_job_fenced',
+          'get_report_worker_claim_authority', 'activate_report_worker_fenced_claims'
         )
       order by p.proname
     `;
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(5);
     expect(rows.every((row) => !row.anon_execute && !row.authenticated_execute)).toBe(true);
     expect(rows.every((row) => row.service_execute)).toBe(true);
   });
+});
+
+describe.skipIf(!available)('report-lane claim authority cutover', () => {
+  let database: TestDatabase;
+  let orgId: string;
+  let profileId: string;
+  let sequence = 0;
+
+  beforeAll(async () => {
+    database = await createTestDatabase('report_claim_authority', {
+      throughMigration: PREVIOUS_MIGRATION,
+    });
+    const [org] = await database.sql<{ seed_tenant_fixture: string }[]>`
+      select app.seed_tenant_fixture('report-claim-authority', ${USER}, 'owner')
+    `;
+    orgId = org?.seed_tenant_fixture ?? '';
+    const [profile] = await database.sql<{ id: string }[]>`
+      select id from public.ad_profiles where org_id = ${orgId} limit 1
+    `;
+    profileId = profile?.id ?? '';
+    await applySqlFile(database, FENCED_MIGRATION);
+  }, 60_000);
+
+  afterAll(async () => {
+    await database?.drop();
+  });
+
+  async function queueJob(jobType: 'entity.sync' | 'report.request'): Promise<string> {
+    sequence += 1;
+    const [row] = await database.sql<{ id: string }[]>`
+      insert into public.sync_jobs (
+        org_id, profile_id, job_type, payload, dedupe_key
+      ) values (
+        ${orgId}::uuid,
+        ${profileId}::uuid,
+        ${jobType}::public.sync_job_type,
+        jsonb_build_object(
+          'type', ${jobType}::text,
+          'orgId', ${orgId}::uuid,
+          'profileId', ${profileId}::uuid
+        ),
+        ${`authority:${sequence}`}::text
+      )
+      returning id
+    `;
+    if (!row) throw new Error('authority fixture failed to queue a job');
+    return row.id;
+  }
+
+  it('orders an in-flight legacy claim before activation and excludes late legacy report claims', async () => {
+    await expect(getReportWorkerClaimAuthority(database)).resolves.toEqual({
+      protocol: 'legacy',
+      epoch: 0,
+    });
+    await expectRejection(
+      claimSyncJobsFenced(database, 'too-early-fenced', 1, REPORT_LANE),
+      /fenced report claims are not authoritative/i,
+    );
+
+    const firstReportId = await queueJob('report.request');
+    const legacyPool = postgres(database.connectionString, {
+      max: 1,
+      prepare: false,
+      onnotice: () => {},
+    });
+    const activationPool = postgres(database.connectionString, {
+      max: 1,
+      prepare: false,
+      onnotice: () => {},
+    });
+    let releaseLegacy!: () => void;
+    const holdLegacy = new Promise<void>((resolve) => { releaseLegacy = resolve; });
+    let legacyClaimedResolve!: (jobId: string) => void;
+    const legacyClaimed = new Promise<string>((resolve) => { legacyClaimedResolve = resolve; });
+    let activationPidResolve!: (pid: number) => void;
+    const activationPid = new Promise<number>((resolve) => { activationPidResolve = resolve; });
+
+    try {
+      const legacyTransaction = legacyPool.begin(async (sql) => {
+        await sql.unsafe('set local role service_role');
+        const [claimed] = await sql<{ id: string }[]>`
+          select id from public.claim_sync_jobs(
+            'legacy-before-cutover', 1, ${sql.array([...REPORT_LANE])}::public.sync_job_type[]
+          )
+        `;
+        if (!claimed) throw new Error('legacy pre-cutover claim returned no report job');
+        legacyClaimedResolve(claimed.id);
+        await holdLegacy;
+        return claimed.id;
+      });
+      expect(await legacyClaimed).toBe(firstReportId);
+
+      const activationTransaction = activationPool.begin(async (sql) => {
+        await sql.unsafe('set local role service_role');
+        const [backend] = await sql<{ pid: number }[]>`select pg_backend_pid() as pid`;
+        if (!backend) throw new Error('activation backend PID is unavailable');
+        activationPidResolve(backend.pid);
+        return sql<{ decision: string; epoch: string; unresolved: number }[]>`
+          select decision, epoch, unresolved
+            from public.activate_report_worker_fenced_claims()
+        `;
+      });
+
+      const pid = await activationPid;
+      let activationWaited = false;
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const [activity] = await database.sql<{
+          query: string;
+          wait_event_type: string | null;
+        }[]>`
+          select query, wait_event_type from pg_stat_activity where pid = ${pid}
+        `;
+        if (
+          activity?.query.includes('activate_report_worker_fenced_claims')
+          && activity.wait_event_type === 'Lock'
+        ) {
+          activationWaited = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(activationWaited).toBe(true);
+
+      releaseLegacy();
+      await expect(legacyTransaction).resolves.toBe(firstReportId);
+      await expect(activationTransaction).resolves.toEqual([{
+        decision: 'unresolved',
+        epoch: '0',
+        unresolved: 1,
+      }]);
+    } finally {
+      releaseLegacy();
+      await Promise.all([
+        legacyPool.end({ timeout: 5 }),
+        activationPool.end({ timeout: 5 }),
+      ]);
+    }
+
+    await expect(finishSyncJob(database, firstReportId, 'succeeded')).resolves.toMatchObject({
+      status: 'succeeded',
+    });
+    await expect(activateReportWorkerFencedClaims(database)).resolves.toEqual({
+      decision: 'activated',
+      epoch: 1,
+      unresolved: 0,
+    });
+    await expect(getReportWorkerClaimAuthority(database)).resolves.toEqual({
+      protocol: 'fenced',
+      epoch: 1,
+    });
+    await expect(activateReportWorkerFencedClaims(database)).resolves.toEqual({
+      decision: 'already_fenced',
+      epoch: 1,
+      unresolved: 0,
+    });
+
+    const filteredReportId = await queueJob('report.request');
+    const filteredEntityId = await queueJob('entity.sync');
+    const filtered = await claimSyncJobs(database, 'legacy-filtered-after-cutover', 10, [
+      ...REPORT_LANE,
+      'entity.sync',
+    ]);
+    expect(filtered.map((job) => job.id)).toEqual([filteredEntityId]);
+
+    const unfilteredReportId = await queueJob('report.request');
+    const unfilteredEntityId = await queueJob('entity.sync');
+    const unfiltered = await database.sql<{ id: string; job_type: string }[]>`
+      select id, job_type from public.claim_sync_jobs('legacy-unfiltered-after-cutover', 10)
+    `;
+    expect(unfiltered).toContainEqual({ id: unfilteredEntityId, job_type: 'entity.sync' });
+    expect(unfiltered.every((job) => !REPORT_LANE_SET.has(job.job_type))).toBe(true);
+
+    const queuedReports = await database.sql<{ id: string }[]>`
+      select id from public.sync_jobs
+       where id in (${filteredReportId}, ${unfilteredReportId})
+         and status = 'queued'
+         and claim_token is null
+       order by id
+    `;
+    expect(queuedReports.map((row) => row.id).sort()).toEqual(
+      [filteredReportId, unfilteredReportId].sort(),
+    );
+
+    await expectRejection(
+      database.sql`
+        select public.finish_sync_job(
+          ${filteredReportId}, 'succeeded'::public.sync_job_status, null, null, null
+        )
+      `,
+      /legacy finish requires running tokenless custody/i,
+    );
+
+    const fenced = await claimSyncJobsFenced(database, 'fenced-after-cutover', 10, REPORT_LANE);
+    const fencedIds = new Set(fenced.map((job) => job.id));
+    expect(fencedIds.has(filteredReportId)).toBe(true);
+    expect(fencedIds.has(unfilteredReportId)).toBe(true);
+    expect(fenced.every((job) => REPORT_LANE_SET.has(job.jobType))).toBe(true);
+  }, 20_000);
 });

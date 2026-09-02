@@ -120,9 +120,13 @@ describe.skipIf(!available)('sync job queue', () => {
 
   it('requeues a failure with attempts left and buries one without', async () => {
     await queueJobs(1, 'retry');
-    const [job] = await claimSyncJobs(database, 'worker-d', 1);
+    await database.sql`
+      update public.sync_jobs set priority = 10000 where dedupe_key = 'retry:1'
+    `;
+    const [job] = await claimSyncJobs(database, 'worker-d', 1, ['entity.sync']);
     expect(job).toBeDefined();
     if (!job) return;
+    expect(job.dedupeKey).toBe('retry:1');
 
     const requeued = await finishSyncJob(database, job.id, 'failed', {
       error: 'throttled',
@@ -131,17 +135,28 @@ describe.skipIf(!available)('sync job queue', () => {
     expect(requeued.status).toBe('queued');
 
     await database.sql`
-      update public.sync_jobs set attempts = max_attempts, run_after = now() where id = ${job.id}
+      update public.sync_jobs
+         set attempts = max_attempts, run_after = now(), priority = 10000
+       where id = ${job.id}
     `;
-    const buried = await finishSyncJob(database, job.id, 'failed', { error: 'still throttled' });
+    const [reclaimed] = await claimSyncJobs(database, 'worker-d-retry', 1, ['entity.sync']);
+    expect(reclaimed?.id).toBe(job.id);
+    if (!reclaimed) return;
+    const buried = await finishSyncJob(database, reclaimed.id, 'failed', {
+      error: 'still throttled',
+    });
     expect(buried.status).toBe('dead');
   });
 
   it('reclaims a job whose worker went away', async () => {
     await queueJobs(1, 'stale');
-    const [job] = await claimSyncJobs(database, 'worker-e', 1);
+    await database.sql`
+      update public.sync_jobs set priority = 20000 where dedupe_key = 'stale:1'
+    `;
+    const [job] = await claimSyncJobs(database, 'worker-e', 1, ['entity.sync']);
     expect(job).toBeDefined();
     if (!job) return;
+    expect(job.dedupeKey).toBe('stale:1');
 
     await database.sql`
       update public.sync_jobs set claimed_at = now() - interval '2 hours' where id = ${job.id}

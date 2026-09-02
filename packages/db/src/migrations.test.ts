@@ -743,6 +743,26 @@ describe.skipIf(!available)('migrations', () => {
            0::oid,
            (select oid from pg_catalog.pg_roles where rolname = 'authenticated')
          )
+        union all
+        select 'sync_jobs'::name as table_name, 'SELECT'::text as privilege
+         where (
+           select bool_and(
+             case
+               when attribute.attname = 'claim_token' then
+                 not has_column_privilege(
+                   'authenticated', 'public.sync_jobs', attribute.attname, 'SELECT'
+                 )
+               else
+                 has_column_privilege(
+                   'authenticated', 'public.sync_jobs', attribute.attname, 'SELECT'
+                 )
+             end
+           )
+             from pg_catalog.pg_attribute attribute
+            where attribute.attrelid = 'public.sync_jobs'::regclass
+              and attribute.attnum > 0
+              and not attribute.attisdropped
+         )
       ),
       missing as (
         select table_name, privilege from expected

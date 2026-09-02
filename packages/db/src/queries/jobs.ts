@@ -138,6 +138,90 @@ export type FencedDeferDecision =
   | Readonly<{ decision: 'deferred'; status: 'queued'; attempts: number }>
   | Readonly<{ decision: 'stale_claim'; status: null; attempts: null }>;
 
+export type ReportWorkerClaimProtocol = 'legacy' | 'fenced';
+
+/** Sanitized, capability-free report-lane authority evidence. */
+export type ReportWorkerClaimAuthority = Readonly<{
+  protocol: ReportWorkerClaimProtocol;
+  epoch: number;
+}>;
+
+/** Closed result of the one-way report-lane authority transition. */
+export type ReportWorkerClaimActivationDecision = Readonly<{
+  decision: 'activated' | 'already_fenced' | 'unresolved';
+  epoch: number;
+  unresolved: number;
+}>;
+
+interface RawReportWorkerClaimAuthority {
+  protocol: string;
+  epoch: string | number;
+}
+
+interface RawReportWorkerClaimActivation {
+  decision: string;
+  epoch: string | number;
+  unresolved: string | number;
+}
+
+function nonnegativeSafeInteger(value: string | number, field: string): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`report worker claim authority returned an invalid ${field}`);
+  }
+  return parsed;
+}
+
+/** Read the capability-free protocol authority used by deployment readiness. */
+export async function getReportWorkerClaimAuthority(
+  handle: DbHandle,
+): Promise<ReportWorkerClaimAuthority> {
+  const rows = await handle.sql<RawReportWorkerClaimAuthority[]>`
+    select protocol, epoch from public.get_report_worker_claim_authority()
+  `;
+  const row = rows[0];
+  if (rows.length !== 1 || row === undefined) {
+    throw new Error('report worker claim authority returned an invalid row count');
+  }
+  if (row.protocol !== 'legacy' && row.protocol !== 'fenced') {
+    throw new Error('report worker claim authority returned an invalid protocol');
+  }
+  return {
+    protocol: row.protocol,
+    epoch: nonnegativeSafeInteger(row.epoch, 'epoch'),
+  };
+}
+
+/** Atomically and irreversibly authorize fenced report-lane claims. */
+export async function activateReportWorkerFencedClaims(
+  handle: DbHandle,
+): Promise<ReportWorkerClaimActivationDecision> {
+  const rows = await handle.sql<RawReportWorkerClaimActivation[]>`
+    select decision, epoch, unresolved
+      from public.activate_report_worker_fenced_claims()
+  `;
+  const row = rows[0];
+  if (rows.length !== 1 || row === undefined) {
+    throw new Error('report worker claim activation returned an invalid row count');
+  }
+  if (
+    row.decision !== 'activated'
+    && row.decision !== 'already_fenced'
+    && row.decision !== 'unresolved'
+  ) {
+    throw new Error('report worker claim activation returned an invalid decision');
+  }
+  const epoch = nonnegativeSafeInteger(row.epoch, 'epoch');
+  const unresolved = nonnegativeSafeInteger(row.unresolved, 'unresolved count');
+  if (row.decision === 'activated' && unresolved !== 0) {
+    throw new Error('report worker claim activation returned unresolved activated custody');
+  }
+  if (row.decision === 'unresolved' && unresolved === 0) {
+    throw new Error('report worker claim activation returned an empty unresolved decision');
+  }
+  return { decision: row.decision, epoch, unresolved };
+}
+
 /**
  * Report a job's outcome. A failure with attempts left is requeued with a
  * delay; out of attempts it becomes `dead`, which is a different word from
