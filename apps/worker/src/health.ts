@@ -1,13 +1,14 @@
 import { createServer, type Server } from 'node:http';
 import type { SyncWorker } from './worker.js';
 import { MARKETING_STREAM_SUSTAINED_FAILURE_THRESHOLD } from './marketing-stream-sqs.js';
-import type { WorkerDeploymentRole } from './deployment-role.js';
+import type { WorkerClaimProtocol, WorkerDeploymentRole } from './deployment-role.js';
 import type { JobType } from '@wizard-ads/shared';
 
 export interface WorkerHealthComponents {
   deployment: {
     revision: string;
     role: WorkerDeploymentRole;
+    claimProtocol: WorkerClaimProtocol;
     jobTypes: readonly JobType[] | 'all';
   };
   marketingStream?: { status(): {
@@ -40,13 +41,15 @@ export function startHealthServer(
       || (marketingStream.consecutiveFailures ?? 0) >= MARKETING_STREAM_SUSTAINED_FAILURE_THRESHOLD
     );
     const workerStatus = worker.status();
-    const workerDead = !workerStatus.claimLoop.ready;
+    const workerDead = !workerStatus.claimLoop.ready
+      || (workerStatus.settlementFailure ?? null) !== null;
     const degraded = streamDead || workerDead;
     const body = JSON.stringify({
       status: degraded ? 'degraded' : 'ok',
       worker: {
         stopping: workerStatus.stopping,
         running: workerStatus.running,
+        settlementFailure: workerStatus.settlementFailure ?? null,
         claimLoop: workerStatus.claimLoop,
       },
       deployment: {

@@ -6,6 +6,7 @@
 import { gzipSync } from 'node:zlib';
 import {
   AdsApiHttpError,
+  AdsApiParseError,
   AdsThrottleError,
   DuplicateReportError,
   UnifiedReportCreateAmbiguousError,
@@ -22,6 +23,7 @@ import {
   AdsApiRetryableError,
   DbAdsApiClient,
   DownloadUrlExpiredError,
+  ReportCreateOutcomeUnknownError,
   createAdsApiClientFromEnv,
   type AdsApiAdapterDeps,
   type AdsProfileContext,
@@ -286,14 +288,18 @@ describe('DbAdsApiClient.createReport', () => {
     expect(await adapter.createReport(input)).toEqual({ reportId: 'existing-99' });
   });
 
-  it('retries a 425 that carries no id to adopt', async () => {
+  it('quarantines a 425 that carries no id to adopt', async () => {
     const client = underlying({
       createReport: async () => {
         throw new DuplicateReportError('in flight', 425, '', 1, null);
       },
     });
     const { adapter } = makeAdapter(client);
-    await expect(adapter.createReport(input)).rejects.toBeInstanceOf(AdsApiRetryableError);
+    await expect(adapter.createReport(input)).rejects.toMatchObject({
+      name: 'ReportCreateOutcomeUnknownError',
+      phase: 'duplicate-without-id',
+      status: 425,
+    });
   });
 
   it('maps a throttle to a retryable error carrying the Retry-After seconds', async () => {
@@ -309,14 +315,53 @@ describe('DbAdsApiClient.createReport', () => {
     });
   });
 
-  it('maps a 500 to a retryable error', async () => {
+  it('quarantines a 500 because the create may have been accepted', async () => {
     const client = underlying({
       createReport: async () => {
         throw new AdsApiHttpError('boom', 500, '', 4);
       },
     });
     const { adapter } = makeAdapter(client);
-    await expect(adapter.createReport(input)).rejects.toBeInstanceOf(AdsApiRetryableError);
+    await expect(adapter.createReport(input)).rejects.toMatchObject({
+      name: 'ReportCreateOutcomeUnknownError',
+      phase: 'server-response',
+      status: 500,
+    });
+  });
+
+  it('quarantines transport loss without retaining the provider error', async () => {
+    const providerDetail = 'private provider transport detail';
+    const client = underlying({
+      createReport: async () => {
+        throw new AdsApiHttpError(providerDetail, 0, providerDetail, 1);
+      },
+    });
+    const { adapter } = makeAdapter(client);
+
+    const error = await adapter.createReport(input).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      name: 'ReportCreateOutcomeUnknownError',
+      phase: 'transport',
+      status: null,
+    });
+    expect(error).toBeInstanceOf(ReportCreateOutcomeUnknownError);
+    expect(JSON.stringify(error)).not.toContain(providerDetail);
+  });
+
+  it('quarantines an undecodable accepted response', async () => {
+    const client = underlying({
+      createReport: async () => {
+        throw new AdsApiParseError('provider response carried private detail');
+      },
+    });
+    const { adapter } = makeAdapter(client);
+
+    await expect(adapter.createReport(input)).rejects.toMatchObject({
+      name: 'ReportCreateOutcomeUnknownError',
+      phase: 'response-decoding',
+      status: null,
+    });
   });
 
   it('leaves a 400 as a non-retryable error', async () => {
@@ -490,6 +535,41 @@ describe('DbAdsApiClient.downloadReport', () => {
     const fetchLike = async () => new Response('busy', { status: 503 });
     const { adapter } = makeAdapter(underlying(), { fetch: fetchLike });
     await expect(adapter.downloadReport('https://s3/busy')).rejects.toBeInstanceOf(AdsApiRetryableError);
+  });
+
+  it('preserves attended cancellation instead of converting it into a retry', async () => {
+    const controller = new AbortController();
+    const reason = new Error('fixed download deadline');
+    const fetchLike = async (_input: string, init?: RequestInit): Promise<Response> =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      });
+    const { adapter } = makeAdapter(underlying(), { fetch: fetchLike });
+    const result = adapter.downloadReport('https://s3/hanging', controller.signal);
+
+    controller.abort(reason);
+
+    await expect(result).rejects.toBe(reason);
+  });
+
+  it('cancels an opened response body when the outer download signal aborts', async () => {
+    const controller = new AbortController();
+    const reason = new Error('bounded parser stopped');
+    let cancelledWith: unknown;
+    const body = new ReadableStream<Uint8Array>({
+      cancel: (cancelReason) => { cancelledWith = cancelReason; },
+    });
+    const fetchLike = async () => new Response(body, { status: 200 });
+    const { adapter } = makeAdapter(underlying(), { fetch: fetchLike });
+    const stream = await adapter.downloadReport('https://s3/hanging-body', controller.signal);
+    const iterator = stream[Symbol.asyncIterator]();
+    const pending = iterator.next();
+
+    controller.abort(reason);
+
+    await expect(pending).resolves.toMatchObject({ done: true });
+    await iterator.return?.();
+    expect(cancelledWith).toBe(reason);
   });
 });
 

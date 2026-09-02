@@ -28,6 +28,18 @@ if [[ ! -x /usr/local/bin/node ]] \
   echo "refusing rollback: system Node 22 or newer is unavailable" >&2
   exit 1
 fi
+command -v systemd-creds >/dev/null || {
+  echo "refusing rollback: required command is unavailable: systemd-creds" >&2
+  exit 1
+}
+command -v git >/dev/null || {
+  echo "refusing rollback: required command is unavailable: git" >&2
+  exit 1
+}
+if ! assert_report_worker_transition_source "$from_revision"; then
+  echo "refusing rollback: transition helper does not match the current live revision" >&2
+  exit 1
+fi
 
 acquire_report_worker_deployment_lock
 verify_report_worker_credentials
@@ -38,8 +50,35 @@ if ! verify_report_worker_live "$from_revision"; then
 fi
 
 destination="$report_worker_release_root/releases/$to_revision"
-if ! verify_report_worker_release "$destination" "$to_revision"; then
-  echo "refusing rollback: retained destination provenance or unit is invalid" >&2
+if ! verify_report_worker_fenced_protocol "$destination" "$to_revision"; then
+  echo "refusing rollback: retained destination does not advertise the exact fenced protocol" >&2
+  exit 1
+fi
+if ! verify_report_worker_fenced_protocol \
+  "$report_worker_release_root/releases/$from_revision" "$from_revision"; then
+  echo "refusing rollback: current release does not advertise the fenced protocol" >&2
+  exit 1
+fi
+if ! verify_report_worker_database_contract "$from_revision"; then
+  echo "refusing rollback: hosted database does not expose the exact fenced contract" >&2
+  exit 1
+fi
+if ! verify_report_worker_fenced_authority "$from_revision"; then
+  echo "refusing rollback: database report-lane authority is not fenced" >&2
+  exit 1
+fi
+
+if ! stop_report_worker_and_prove_inactive; then
+  echo "refusing rollback: current report worker did not become inactive" >&2
+  exit 1
+fi
+if ! custody_before="$(capture_report_worker_custody_snapshot "$from_revision")" \
+  || ! assert_report_worker_custody_drained "$custody_before"; then
+  if leave_report_worker_stopped; then
+    echo "refusing rollback: report-lane custody is unresolved; the service is inactive and disabled" >&2
+  else
+    echo "refusing rollback: report-lane custody is unresolved and service inactivity could not be proved" >&2
+  fi
   exit 1
 fi
 
@@ -48,17 +87,27 @@ if switch_report_worker_link "releases/$to_revision" rollback \
   && install_report_worker_unit "$destination" "$to_revision" \
   && report_worker_run_privileged systemctl daemon-reload \
   && report_worker_run_privileged systemctl enable "$report_worker_service" >/dev/null \
-  && report_worker_run_privileged systemctl restart "$report_worker_service" \
+  && report_worker_run_privileged systemctl start "$report_worker_service" \
   && verify_report_worker_live "$to_revision"; then
   rollback_ok=true
 fi
 
 if [[ "$rollback_ok" != true ]]; then
-  if restore_report_worker_live "$from_revision"; then
-    echo "OpenSpell report worker rollback failed; the original deployment was fully restored" >&2
+  if ! leave_report_worker_stopped; then
+    echo "OpenSpell report worker rollback failed and destination inactivity could not be proved; no automatic restoration was attempted" >&2
+    exit 1
+  fi
+  custody_after=
+  if custody_after="$(capture_report_worker_custody_snapshot "$from_revision")" \
+    && restore_report_worker_state_if_unchanged \
+      "$custody_before" "$custody_after" "$from_revision"; then
+    echo "OpenSpell report worker rollback failed before a claim; the original deployment was fully restored" >&2
   else
-    leave_report_worker_stopped
-    echo "OpenSpell report worker rollback failed; service remains stopped for attended recovery" >&2
+    if leave_report_worker_stopped; then
+      echo "OpenSpell report worker rollback failed with ambiguous custody; the service is inactive and disabled for attended recovery" >&2
+    else
+      echo "OpenSpell report worker rollback recovery failed and service inactivity could not be proved" >&2
+    fi
   fi
   exit 1
 fi

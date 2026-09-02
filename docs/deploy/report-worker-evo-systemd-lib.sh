@@ -10,6 +10,9 @@ report_worker_claim_set='creative.sync,report.request'
 report_worker_claim_set+=',report.poll,report.fetch'
 report_worker_job_types_key='WORKER_JOB'
 report_worker_job_types_key+='_TYPES'
+report_worker_claim_protocol_key='WORKER_CLAIM_PROTOCOL'
+report_worker_claim_batch_key='WORKER_CLAIM_BATCH_SIZE'
+report_worker_concurrency_key='WORKER_MAX_CONCURRENT_JOBS'
 report_worker_deployment_lock=/run/lock/openspell-report-worker-deployment.lock
 report_worker_lock_held=false
 report_worker_lock_pid=
@@ -18,6 +21,24 @@ report_worker_script_dir="${report_worker_script_dir:-$(cd "$(dirname "${BASH_SO
 
 report_worker_run_privileged() {
   sudo "$@"
+}
+
+assert_report_worker_transition_source() {
+  local expected_revision="${1:-}"
+  local repo_root helper_relative helper_mode
+  repo_root="$(git -C "$report_worker_script_dir" rev-parse --show-toplevel 2>/dev/null)" \
+    || return 1
+  [[ "$report_worker_script_dir" == "$repo_root/docs/deploy" ]] || return 1
+  [[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=normal)" ]] || return 1
+  if [[ -n "$expected_revision" ]] \
+    && [[ "$(git -C "$repo_root" rev-parse HEAD)" != "$expected_revision" ]]; then
+    return 1
+  fi
+  helper_relative=docs/deploy/openspell-report-worker-readiness.mjs
+  git -C "$repo_root" ls-files --error-unmatch "$helper_relative" >/dev/null 2>&1 \
+    || return 1
+  helper_mode="$(git -C "$repo_root" ls-files -s -- "$helper_relative")"
+  [[ "$helper_mode" == 100755\ * ]]
 }
 
 acquire_report_worker_deployment_lock() {
@@ -74,7 +95,7 @@ verify_report_worker_artifact() {
   [[ -d "$target" ]] || return 1
   [[ "$(cat "$target/REVISION" 2>/dev/null || true)" == "$expected" ]] || return 1
   [[ "$(cat "$target/public.conf" 2>/dev/null || true)" == \
-    "OPENSPELL_WORKER_REVISION=$expected"$'\n'"WORKER_DEPLOYMENT_ROLE=evo-report-lane"$'\n'"$report_worker_job_types_key=$report_worker_claim_set" ]] \
+    "OPENSPELL_WORKER_REVISION=$expected"$'\n'"WORKER_DEPLOYMENT_ROLE=evo-report-lane"$'\n'"$report_worker_job_types_key=$report_worker_claim_set"$'\n'"$report_worker_claim_protocol_key=fenced"$'\n'"$report_worker_claim_batch_key=1"$'\n'"$report_worker_concurrency_key=1" ]] \
     || return 1
   (cd "$target" && sha256sum -c ARTIFACT_SHA256 >/dev/null) || return 1
   counts="$(cat "$target/ARTIFACT_COUNTS" 2>/dev/null || true)"
@@ -112,6 +133,18 @@ verify_report_worker_release() {
       "$target/systemd/openspell-report-worker.service" >/dev/null
 }
 
+verify_report_worker_fenced_protocol() {
+  local release="$1"
+  local revision="$2"
+  verify_report_worker_release "$release" "$revision" \
+    && [[ "$(sed -n '4p' "$release/public.conf" 2>/dev/null || true)" \
+      == "$report_worker_claim_protocol_key=fenced" ]] \
+    && [[ "$(sed -n '5p' "$release/public.conf" 2>/dev/null || true)" \
+      == "$report_worker_claim_batch_key=1" ]] \
+    && [[ "$(sed -n '6p' "$release/public.conf" 2>/dev/null || true)" \
+      == "$report_worker_concurrency_key=1" ]]
+}
+
 verify_report_worker_credentials() {
   local credential_store=/etc/credstore.encrypted
   local credential_ids=(
@@ -135,6 +168,58 @@ verify_report_worker_credentials() {
         ;;
     esac
   done
+}
+
+report_worker_database_probe() {
+  local expected_transition_revision="$1"
+  local mode="$2"
+  local database_credential=/etc/credstore.encrypted/openspell-report-worker-database-url
+  if ! assert_report_worker_transition_source "$expected_transition_revision"; then
+    echo "refusing database probe: transition helper does not match the approved revision" >&2
+    return 1
+  fi
+  report_worker_run_privileged systemd-creds decrypt "$database_credential" - \
+    | /usr/local/bin/node "$report_worker_script_dir/../../node_modules/tsx/dist/cli.mjs" \
+      "$report_worker_script_dir/openspell-report-worker-readiness.mjs" "$mode"
+}
+
+verify_report_worker_database_contract() {
+  report_worker_database_probe "$1" --database-contract >/dev/null
+}
+
+verify_report_worker_fenced_authority() {
+  report_worker_database_probe "$1" --fenced-authority >/dev/null
+}
+
+activate_report_worker_fenced_authority() {
+  report_worker_database_probe "$1" --activate-fenced-authority
+}
+
+assert_report_worker_authority_activated() {
+  local result="$1"
+  /usr/local/bin/node -e '
+    const value = JSON.parse(process.argv[1]);
+    if (Object.keys(value).sort().join(",") !== "decision,epoch,unresolved"
+      || !["activated", "already_fenced"].includes(value.decision)
+      || typeof value.epoch !== "string"
+      || !/^[1-9][0-9]*$/u.test(value.epoch)
+      || value.unresolved !== 0) process.exit(1);
+  ' "$result"
+}
+
+capture_report_worker_custody_snapshot() {
+  report_worker_database_probe "$1" --custody-snapshot
+}
+
+assert_report_worker_custody_drained() {
+  local snapshot="$1"
+  /usr/local/bin/node -e '
+    const value = JSON.parse(process.argv[1]);
+    if (Object.keys(value).sort().join(",") !== "fingerprint,schemaVersion,unresolved"
+      || value.schemaVersion !== 1
+      || value.unresolved !== 0
+      || !/^[0-9a-f]{64}$/u.test(value.fingerprint)) process.exit(1);
+  ' "$snapshot"
 }
 
 report_worker_service_state() {
@@ -199,21 +284,67 @@ verify_report_worker_live() {
     && report_worker_health "$revision" 1
 }
 
+stop_report_worker_and_prove_inactive() {
+  report_worker_run_privileged systemctl stop "$report_worker_service" >/dev/null \
+    && [[ "$(systemctl is-active "$report_worker_service" 2>/dev/null || true)" == inactive ]]
+}
+
+disable_report_worker_and_prove_disabled() {
+  report_worker_run_privileged systemctl disable "$report_worker_service" >/dev/null \
+    && [[ "$(systemctl is-enabled "$report_worker_service" 2>/dev/null || true)" == disabled ]]
+}
+
+assert_report_worker_exact_absence() {
+  local state
+  ! report_worker_run_privileged test -e "$report_worker_release_root/current" \
+    && ! report_worker_run_privileged test -L "$report_worker_release_root/current" \
+    && ! report_worker_run_privileged test -e "/etc/systemd/system/$report_worker_service" \
+    && ! report_worker_run_privileged test -L "/etc/systemd/system/$report_worker_service" \
+    && state="$(report_worker_service_state "$report_worker_service")" \
+    && printf '%s\n' "$state" \
+      | /usr/local/bin/node \
+        "$report_worker_script_dir/openspell-report-worker-service-state.mjs" --absent
+}
+
 restore_report_worker_live() {
   local revision="$1"
   local release="$report_worker_release_root/releases/$revision"
   verify_report_worker_release "$release" "$revision" || return 1
-  report_worker_run_privileged systemctl stop "$report_worker_service" >/dev/null 2>&1 \
-    || return 1
   switch_report_worker_link "releases/$revision" recovery || return 1
   install_report_worker_unit "$release" recovery || return 1
   report_worker_run_privileged systemctl daemon-reload || return 1
   report_worker_run_privileged systemctl enable "$report_worker_service" >/dev/null || return 1
-  report_worker_run_privileged systemctl restart "$report_worker_service" || return 1
+  report_worker_run_privileged systemctl start "$report_worker_service" || return 1
   verify_report_worker_live "$revision"
 }
 
+restore_report_worker_absence() {
+  leave_report_worker_stopped || return 1
+  report_worker_run_privileged rm -f "/etc/systemd/system/$report_worker_service" || return 1
+  report_worker_run_privileged rm -f "$report_worker_release_root/current" || return 1
+  report_worker_run_privileged systemctl daemon-reload || return 1
+  assert_report_worker_exact_absence
+}
+
+restore_report_worker_state_if_unchanged() {
+  local before="$1"
+  local after="$2"
+  local prior_revision="${3:-}"
+  [[ "$before" == "$after" ]] || return 1
+  assert_report_worker_custody_drained "$after" || return 1
+  if [[ -n "$prior_revision" ]]; then
+    restore_report_worker_live "$prior_revision"
+  else
+    restore_report_worker_absence
+  fi
+}
+
 leave_report_worker_stopped() {
-  report_worker_run_privileged systemctl stop "$report_worker_service" >/dev/null 2>&1 || true
-  report_worker_run_privileged systemctl disable "$report_worker_service" >/dev/null 2>&1 || true
+  if assert_report_worker_exact_absence >/dev/null 2>&1; then
+    return 0
+  fi
+  stop_report_worker_and_prove_inactive \
+    && disable_report_worker_and_prove_disabled \
+    && [[ "$(systemctl is-active "$report_worker_service" 2>/dev/null || true)" == inactive ]] \
+    && [[ "$(systemctl is-enabled "$report_worker_service" 2>/dev/null || true)" == disabled ]]
 }

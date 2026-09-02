@@ -24,11 +24,18 @@ import {
 } from './sb-video-ingestion.js';
 import { createMrpEconomicsSync } from './mrp.js';
 import {
+  terminateAfterFatalWorkerFailure,
+  terminateAfterFinalShutdown,
+} from './fatal-exit.js';
+import {
   AuthHealthMonitor,
   BidSeriesSyncPass,
+  QueueSettlementError,
   ScheduleProvisioner,
+  shutdownExitCode,
   StaleClaimReaper,
   SyncWorker,
+  type WorkerShutdownEvidence,
 } from './worker.js';
 import type { JobType } from '@wizard-ads/shared';
 
@@ -43,7 +50,9 @@ const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
 
 const config = configFromEnv();
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
-const store = new PostgresWorkerStore(handle);
+const store = new PostgresWorkerStore(handle, undefined, {
+  claimProtocol: config.claimProtocol,
+});
 const marketingStream = config.startsBackgroundPasses && config.marketingStreamQueueUrl
   ? createMarketingStreamSqsConsumer({
       handle,
@@ -115,6 +124,7 @@ const health = await startHealthServer(worker, config.port, {
   deployment: {
     revision: config.revision,
     role: config.deploymentRole,
+    claimProtocol: config.claimProtocol,
     jobTypes: config.jobTypes ?? 'all',
   },
   marketingStream,
@@ -146,21 +156,60 @@ provisioner?.start();
 bidSeries?.start();
 recommendationObserver?.start();
 
-let shuttingDown = false;
-async function shutdown(): Promise<void> {
-  if (shuttingDown) return;
-  shuttingDown = true;
+const CUSTODY_EXIT_CODE = 78;
+let shutdownPromise: Promise<WorkerShutdownEvidence> | null = null;
+
+function shutdown(): Promise<WorkerShutdownEvidence> {
+  shutdownPromise ??= performShutdown();
+  return shutdownPromise;
+}
+
+async function performShutdown(): Promise<WorkerShutdownEvidence> {
   authHealth?.stop();
   reaper?.stop();
   provisioner?.stop();
   bidSeries?.stop();
   recommendationObserver?.stop();
   await marketingStream?.stop();
-  await worker.shutdown();
+  const evidence = await worker.shutdown();
   await closeServer(health);
   await handle.close();
+  return evidence;
 }
 
-process.once('SIGTERM', () => void shutdown().then(() => process.exit(0)));
-process.once('SIGINT', () => void shutdown().then(() => process.exit(0)));
-await worker.start();
+async function shutdownForSignal(): Promise<void> {
+  let evidence: WorkerShutdownEvidence = { released: 0, unresolved: 1 };
+  let evidenceAvailable = false;
+  try {
+    evidence = await shutdown();
+    evidenceAvailable = true;
+  } catch {
+    console.error('report worker shutdown evidence unavailable');
+  }
+  const settlementFailure = worker.status().settlementFailure;
+  const exitCode = evidenceAvailable
+    ? shutdownExitCode(evidence, settlementFailure)
+    : CUSTODY_EXIT_CODE;
+  await terminateAfterFinalShutdown({
+    trigger: 'signal',
+    exitCode,
+    evidence,
+    settlementFailure,
+    evidenceAvailable,
+  });
+}
+
+process.once('SIGTERM', () => void shutdownForSignal());
+process.once('SIGINT', () => void shutdownForSignal());
+
+try {
+  await worker.start();
+} catch (error) {
+  const failureKind = error instanceof QueueSettlementError ? error.kind : 'unexpected';
+  await terminateAfterFatalWorkerFailure({
+    failureKind,
+    custodyFailure: error instanceof QueueSettlementError,
+    shutdown,
+    logger: console,
+  });
+}

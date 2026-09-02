@@ -36,6 +36,7 @@ describe('worker deployment role', () => {
   it('preserves the general all-queue startup defaults', () => {
     expect(configFromEnv(base)).toMatchObject({
       deploymentRole: 'general',
+      claimProtocol: 'legacy',
       revision: 'unknown',
       jobTypes: undefined,
       startsBackgroundPasses: true,
@@ -52,6 +53,7 @@ describe('worker deployment role', () => {
       OPENSPELL_WORKER_REVISION: 'ABCDEF1234567',
     })).toMatchObject({
       deploymentRole: 'evo-report-lane',
+      claimProtocol: 'fenced',
       revision: 'abcdef1234567',
       jobTypes: ['creative.sync', 'report.request', 'report.poll', 'report.fetch'],
       startsBackgroundPasses: false,
@@ -59,9 +61,9 @@ describe('worker deployment role', () => {
     });
   });
 
-  it('requires the expanded report lane before enabling Unified Reporting', () => {
+  it('fails startup closed when Unified Reporting would select a five-type fenced lane', () => {
     const profileId = '11111111-2222-4333-8444-555555555555';
-    expect(configFromEnv({
+    expect(() => configFromEnv({
       ...base,
       WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
       WORKER_JOB_TYPES:
@@ -69,14 +71,7 @@ describe('worker deployment role', () => {
       OPENSPELL_EVO_REPORT_LANE_READY: '1',
       OPENSPELL_UNIFIED_REPORTING_DUAL_RUN_READY: '1',
       OPENSPELL_UNIFIED_REPORTING_PROFILE_ALLOWLIST: profileId,
-    })).toMatchObject({
-      deploymentRole: 'evo-report-lane',
-      jobTypes: [
-        'creative.sync', 'report.request', 'report.poll', 'report.fetch',
-        'report.unified.advance',
-      ],
-      unifiedReporting: { enabled: true, profileIds: [profileId] },
-    });
+    })).toThrow(/incompatible with fenced report custody/);
   });
 
   it.each([

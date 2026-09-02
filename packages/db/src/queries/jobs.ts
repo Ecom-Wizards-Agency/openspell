@@ -11,6 +11,18 @@ import type { JobPayload, JobType } from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
 import type { SyncJob } from '../schema/sync.js';
 
+declare const claimTokenBrand: unique symbol;
+
+/** Opaque queue-custody capability issued only by the database. */
+export type ClaimToken = string & { readonly [claimTokenBrand]: true };
+
+/** The complete identity needed to settle one fenced attempt. */
+export type ClaimRef = Readonly<{
+  jobId: string;
+  workerId: string;
+  token: ClaimToken;
+}>;
+
 /** One row of `sync_jobs`, as the SQL functions return it. */
 export interface ClaimedJob {
   id: string;
@@ -22,6 +34,7 @@ export interface ClaimedJob {
   maxAttempts: number;
   dedupeKey: string | null;
   claimedBy: string | null;
+  claim: ClaimRef | null;
 }
 
 interface RawJobRow {
@@ -34,19 +47,42 @@ interface RawJobRow {
   max_attempts: number;
   dedupe_key: string | null;
   claimed_by: string | null;
+  claim_token: string | null;
 }
 
-const toClaimedJob = (row: RawJobRow): ClaimedJob => ({
-  id: row.id,
-  orgId: row.org_id,
-  profileId: row.profile_id,
-  jobType: row.job_type,
-  payload: row.payload,
-  attempts: row.attempts,
-  maxAttempts: row.max_attempts,
-  dedupeKey: row.dedupe_key,
-  claimedBy: row.claimed_by,
-});
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function claimToken(value: string): ClaimToken {
+  if (!UUID.test(value)) throw new Error('claim function returned an invalid claim capability');
+  return value as ClaimToken;
+}
+
+function toClaimedJob(row: RawJobRow): ClaimedJob {
+  let claim: ClaimRef | null = null;
+  if (row.claim_token !== null) {
+    if (row.claimed_by === null) {
+      throw new Error('claim function returned incomplete fenced custody');
+    }
+    claim = Object.freeze({
+      jobId: row.id,
+      workerId: row.claimed_by,
+      token: claimToken(row.claim_token),
+    });
+  }
+
+  return {
+    id: row.id,
+    orgId: row.org_id,
+    profileId: row.profile_id,
+    jobType: row.job_type,
+    payload: row.payload,
+    attempts: row.attempts,
+    maxAttempts: row.max_attempts,
+    dedupeKey: row.dedupe_key,
+    claimedBy: row.claimed_by,
+    claim,
+  };
+}
 
 /**
  * Claim up to `limit` queued jobs for this worker. Returns fewer than asked
@@ -59,15 +95,132 @@ export async function claimSyncJobs(
   limit: number,
   jobTypes?: readonly JobType[],
 ): Promise<ClaimedJob[]> {
+  const allowedTypes = jobTypes === undefined ? null : handle.sql.array([...jobTypes]);
   const rows = await handle.sql<RawJobRow[]>`
     select * from public.claim_sync_jobs(
-      ${workerId}, ${limit}, ${jobTypes === undefined ? null : [...jobTypes]}::public.sync_job_type[]
+      ${workerId}, ${limit}, ${allowedTypes}::public.sync_job_type[]
     )
   `;
   return rows.map(toClaimedJob);
 }
 
+/**
+ * Claim jobs under fenced custody. Every returned job carries a fresh opaque
+ * capability; a malformed or tokenless server response fails closed.
+ */
+export async function claimSyncJobsFenced(
+  handle: DbHandle,
+  workerId: string,
+  limit: number,
+  jobTypes?: readonly JobType[],
+): Promise<ClaimedJob[]> {
+  const allowedTypes = jobTypes === undefined ? null : handle.sql.array([...jobTypes]);
+  const rows = await handle.sql<RawJobRow[]>`
+    select * from public.claim_sync_jobs_fenced(
+      ${workerId}, ${limit}, ${allowedTypes}::public.sync_job_type[]
+    )
+  `;
+  return rows.map((row) => {
+    const job = toClaimedJob(row);
+    if (job.claim === null) throw new Error('fenced claim function returned tokenless custody');
+    return job;
+  });
+}
+
 export type JobOutcome = 'succeeded' | 'failed';
+export type FencedJobOutcome = JobOutcome | 'dead';
+
+export type FencedFinishDecision =
+  | Readonly<{ decision: 'settled'; status: SyncJob['status']; attempts: number }>
+  | Readonly<{ decision: 'stale_claim'; status: null; attempts: null }>;
+
+export type FencedDeferDecision =
+  | Readonly<{ decision: 'deferred'; status: 'queued'; attempts: number }>
+  | Readonly<{ decision: 'stale_claim'; status: null; attempts: null }>;
+
+export type ReportWorkerClaimProtocol = 'legacy' | 'fenced';
+
+/** Sanitized, capability-free report-lane authority evidence. */
+export type ReportWorkerClaimAuthority = Readonly<{
+  protocol: ReportWorkerClaimProtocol;
+  epoch: number;
+}>;
+
+/** Closed result of the one-way report-lane authority transition. */
+export type ReportWorkerClaimActivationDecision = Readonly<{
+  decision: 'activated' | 'already_fenced' | 'unresolved';
+  epoch: number;
+  unresolved: number;
+}>;
+
+interface RawReportWorkerClaimAuthority {
+  protocol: string;
+  epoch: string | number;
+}
+
+interface RawReportWorkerClaimActivation {
+  decision: string;
+  epoch: string | number;
+  unresolved: string | number;
+}
+
+function nonnegativeSafeInteger(value: string | number, field: string): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`report worker claim authority returned an invalid ${field}`);
+  }
+  return parsed;
+}
+
+/** Read the capability-free protocol authority used by deployment readiness. */
+export async function getReportWorkerClaimAuthority(
+  handle: DbHandle,
+): Promise<ReportWorkerClaimAuthority> {
+  const rows = await handle.sql<RawReportWorkerClaimAuthority[]>`
+    select protocol, epoch from public.get_report_worker_claim_authority()
+  `;
+  const row = rows[0];
+  if (rows.length !== 1 || row === undefined) {
+    throw new Error('report worker claim authority returned an invalid row count');
+  }
+  if (row.protocol !== 'legacy' && row.protocol !== 'fenced') {
+    throw new Error('report worker claim authority returned an invalid protocol');
+  }
+  return {
+    protocol: row.protocol,
+    epoch: nonnegativeSafeInteger(row.epoch, 'epoch'),
+  };
+}
+
+/** Atomically and irreversibly authorize fenced report-lane claims. */
+export async function activateReportWorkerFencedClaims(
+  handle: DbHandle,
+): Promise<ReportWorkerClaimActivationDecision> {
+  const rows = await handle.sql<RawReportWorkerClaimActivation[]>`
+    select decision, epoch, unresolved
+      from public.activate_report_worker_fenced_claims()
+  `;
+  const row = rows[0];
+  if (rows.length !== 1 || row === undefined) {
+    throw new Error('report worker claim activation returned an invalid row count');
+  }
+  if (
+    row.decision !== 'activated'
+    && row.decision !== 'already_fenced'
+    && row.decision !== 'unresolved'
+  ) {
+    throw new Error('report worker claim activation returned an invalid decision');
+  }
+  const epoch = nonnegativeSafeInteger(row.epoch, 'epoch');
+  const unresolved = nonnegativeSafeInteger(row.unresolved, 'unresolved count');
+  if (row.decision === 'activated' && unresolved !== 0) {
+    throw new Error('report worker claim activation returned unresolved activated custody');
+  }
+  if (row.decision === 'unresolved' && unresolved === 0) {
+    throw new Error('report worker claim activation returned an empty unresolved decision');
+  }
+  return { decision: row.decision, epoch, unresolved };
+}
 
 /**
  * Report a job's outcome. A failure with attempts left is requeued with a
@@ -92,6 +245,66 @@ export async function finishSyncJob(
   const row = rows[0];
   if (!row) throw new Error(`finish_sync_job returned no row for ${jobId}`);
   return row;
+}
+
+interface RawFencedTransition {
+  decision: string;
+  status: SyncJob['status'] | null;
+  attempts: number | null;
+}
+
+/** Settle, retry, or dead-letter exactly one fenced attempt. */
+export async function finishSyncJobFenced(
+  handle: DbHandle,
+  claim: ClaimRef,
+  outcome: FencedJobOutcome,
+  options: { error?: string; result?: unknown; retryIn?: string } = {},
+): Promise<FencedFinishDecision> {
+  const rows = await handle.sql<RawFencedTransition[]>`
+    select decision, status, attempts from public.finish_sync_job_fenced(
+      ${claim.jobId},
+      ${claim.token}::uuid,
+      ${outcome}::public.sync_job_status,
+      ${options.error ?? null},
+      ${options.result === undefined ? null : JSON.stringify(options.result)}::jsonb,
+      ${options.retryIn ?? null}::interval
+    )
+  `;
+  const row = rows[0];
+  if (rows.length !== 1 || row === undefined) {
+    throw new Error('fenced finish returned an invalid decision count');
+  }
+  if (row.decision === 'stale_claim' && row.status === null && row.attempts === null) {
+    return { decision: 'stale_claim', status: null, attempts: null };
+  }
+  if (row.decision !== 'settled' || row.status === null || row.attempts === null) {
+    throw new Error('fenced finish returned an invalid decision');
+  }
+  return { decision: 'settled', status: row.status, attempts: row.attempts };
+}
+
+/** Defer exactly one fenced attempt without consuming its attempt count. */
+export async function deferSyncJobFenced(
+  handle: DbHandle,
+  claim: ClaimRef,
+  retryIn: string,
+): Promise<FencedDeferDecision> {
+  const rows = await handle.sql<RawFencedTransition[]>`
+    select decision, status, attempts from public.defer_sync_job_fenced(
+      ${claim.jobId}, ${claim.token}::uuid, ${retryIn}::interval
+    )
+  `;
+  const row = rows[0];
+  if (rows.length !== 1 || row === undefined) {
+    throw new Error('fenced defer returned an invalid decision count');
+  }
+  if (row.decision === 'stale_claim' && row.status === null && row.attempts === null) {
+    return { decision: 'stale_claim', status: null, attempts: null };
+  }
+  if (row.decision !== 'deferred' || row.status !== 'queued' || row.attempts === null) {
+    throw new Error('fenced defer returned an invalid decision');
+  }
+  return { decision: 'deferred', status: 'queued', attempts: row.attempts };
 }
 
 /** Reclaim jobs whose worker went away. Returns how many were revived. */

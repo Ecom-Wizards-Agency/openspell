@@ -1,5 +1,6 @@
 import { createGunzip } from 'node:zlib';
 import { Readable } from 'node:stream';
+import { Worker } from 'node:worker_threads';
 import {
   parseSpCampaignReport,
   parseSpPlacementReport,
@@ -67,27 +68,375 @@ export type ParsedFactBatch = { sourceRows: number; skipped: SkippedReportRow[] 
 );
 
 export interface DownloadedJson {
-  value: unknown;
+  rowsParsed: number;
   bytesDownloaded: number;
 }
 
-/** Stream compressed bytes through gunzip. Only the parsed JSON is retained. */
-export async function gunzipJson(source: AsyncIterable<Uint8Array>): Promise<DownloadedJson> {
+export type ReportRowChunkConsumer = (
+  rows: readonly unknown[],
+  offset: number,
+) => void | Promise<void>;
+
+export interface ReportDownloadControl {
+  signal?: AbortSignal;
+  /** Abort the HTTP transport synchronously when a local bound fires. */
+  abortSource?: (reason: Error) => void;
+  /** Consume one structurally-cloned, byte-and-row-bounded chunk at a time. */
+  consumeRows: ReportRowChunkConsumer;
+  /** Testable fail-closed deadline for proving iterator/transport cancellation. */
+  cancellationTimeoutMs?: number;
+}
+
+export interface ReportDownloadLimits {
+  /** Compressed wire bytes accepted from the pre-signed report URL. */
+  maxCompressedBytes: number;
+  /** Inflated JSON bytes retained before parsing. */
+  maxDecompressedBytes: number;
+  /** Longest permitted wait between compressed chunks. */
+  idleTimeoutMs: number;
+  /** Complete download, inflation and JSON parsing budget. */
+  totalTimeoutMs: number;
+}
+
+/**
+ * Production aggregates currently remain below 300 KiB compressed. These
+ * limits preserve over 100x compressed headroom and a separate decompression
+ * ceiling while making the process memory bound explicit.
+ */
+export const DEFAULT_REPORT_DOWNLOAD_LIMITS: Readonly<ReportDownloadLimits> = Object.freeze({
+  maxCompressedBytes: 32 * 1024 * 1024,
+  maxDecompressedBytes: 64 * 1024 * 1024,
+  idleTimeoutMs: 60_000,
+  totalTimeoutMs: 15 * 60_000,
+});
+
+export type ReportDownloadLimitKind =
+  | 'compressed_bytes'
+  | 'decompressed_bytes'
+  | 'parsed_row_bytes'
+  | 'parsed_bytes'
+  | 'parsed_rows'
+  | 'idle_timeout'
+  | 'total_timeout'
+  | 'source_cancellation';
+
+/** Fixed-category limit failure. Source chunks and provider details are never retained. */
+export class ReportDownloadLimitError extends Error {
+  override readonly name = 'ReportDownloadLimitError';
+
+  constructor(readonly kind: ReportDownloadLimitKind, readonly limit: number) {
+    super(`report download exceeded ${kind} limit`);
+  }
+}
+
+/** The bounded parser accepted JSON, but the top-level report shape is unusable. */
+export class ReportPayloadShapeError extends Error {
+  override readonly name = 'ReportPayloadShapeError';
+
+  constructor() {
+    super('report payload must be a JSON array');
+  }
+}
+
+const PARSED_CHUNK_MAX_ROWS = 128;
+const PARSED_CHUNK_MAX_BYTES = 256 * 1024;
+const PARSED_DOCUMENT_MAX_ROWS = 100_000;
+const SOURCE_CANCELLATION_TIMEOUT_MS = 5_000;
+
+/**
+ * Stream compressed bytes through gunzip under explicit byte and time bounds.
+ * Only the bounded inflated JSON document is retained.
+ */
+export async function gunzipJson(
+  source: AsyncIterable<Uint8Array>,
+  limits: Readonly<ReportDownloadLimits> = DEFAULT_REPORT_DOWNLOAD_LIMITS,
+  control: ReportDownloadControl,
+): Promise<DownloadedJson> {
+  assertDownloadLimits(limits);
+  const cancellationTimeoutMs = control.cancellationTimeoutMs
+    ?? SOURCE_CANCELLATION_TIMEOUT_MS;
+  if (!Number.isSafeInteger(cancellationTimeoutMs) || cancellationTimeoutMs <= 0) {
+    throw new RangeError('cancellationTimeoutMs must be a positive safe integer');
+  }
+  const startedAt = Date.now();
   let bytesDownloaded = 0;
+  const controller = new AbortController();
+  const totalError = new ReportDownloadLimitError('total_timeout', limits.totalTimeoutMs);
+  const abortSource = (reason: Error): void => {
+    control.abortSource?.(reason);
+    controller.abort(reason);
+  };
+  const abortFromCaller = (): void => {
+    const reason = control.signal?.reason instanceof Error
+      ? control.signal.reason
+      : totalError;
+    controller.abort(reason);
+  };
+  if (control.signal?.aborted === true) abortFromCaller();
+  else control.signal?.addEventListener('abort', abortFromCaller, { once: true });
+  const totalTimer = setTimeout(() => abortSource(totalError), limits.totalTimeoutMs);
+  let iterator: AsyncIterator<Uint8Array> | undefined;
+  let iteratorClose: Promise<void> | undefined;
+  let sourceCompleted = false;
+
+  const closeIterator = async (): Promise<void> => {
+    if (sourceCompleted) return;
+    if (iterator?.return === undefined) {
+      throw new ReportDownloadLimitError(
+        'source_cancellation',
+        cancellationTimeoutMs,
+      );
+    }
+    try {
+      if (!iteratorClose) {
+        try {
+          iteratorClose = Promise.resolve(iterator.return()).then((result) => {
+            if (!result.done) throw new Error('source iterator did not close');
+          });
+        } catch (error) {
+          iteratorClose = Promise.reject(error);
+        }
+        // A return implementation may hand back an already-rejected promise.
+        // Observe it immediately and still await the original below so the
+        // cancellation failure remains authoritative.
+        void iteratorClose.catch(() => undefined);
+      }
+      await withCancellationDeadline(iteratorClose, cancellationTimeoutMs);
+    } catch (error) {
+      if (error instanceof ReportDownloadLimitError) throw error;
+      throw new ReportDownloadLimitError('source_cancellation', cancellationTimeoutMs);
+    }
+  };
+
   async function* measured(): AsyncGenerator<Uint8Array> {
-    for await (const chunk of source) {
-      bytesDownloaded += chunk.byteLength;
-      yield chunk;
+    iterator = source[Symbol.asyncIterator]();
+    try {
+      for (;;) {
+        const item = await nextDownloadChunk(
+          iterator,
+          controller.signal,
+          limits.idleTimeoutMs,
+          abortSource,
+        );
+        if (item.done) {
+          sourceCompleted = true;
+          return;
+        }
+        const nextBytes = bytesDownloaded + item.value.byteLength;
+        if (nextBytes > limits.maxCompressedBytes) {
+          const error = new ReportDownloadLimitError(
+            'compressed_bytes',
+            limits.maxCompressedBytes,
+          );
+          abortSource(error);
+          throw error;
+        }
+        bytesDownloaded = nextBytes;
+        yield item.value;
+      }
+    } finally {
+      await closeIterator();
     }
   }
 
   const chunks: Buffer[] = [];
-  const unzipped = Readable.from(measured()).pipe(createGunzip());
-  for await (const chunk of unzipped) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
-  }
+  let decompressedBytes = 0;
+  const compressed = Readable.from(measured());
+  const unzipped = createGunzip();
+  compressed.once('error', (error) => unzipped.destroy(error));
+  compressed.pipe(unzipped);
 
-  return { value: JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown, bytesDownloaded };
+  const abort = (): void => {
+    const reason = controller.signal.reason instanceof Error
+      ? controller.signal.reason
+      : totalError;
+    compressed.destroy(reason);
+    unzipped.destroy(reason);
+  };
+  controller.signal.addEventListener('abort', abort, { once: true });
+
+  try {
+    for await (const chunk of unzipped) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      const nextBytes = decompressedBytes + buffer.byteLength;
+      if (nextBytes > limits.maxDecompressedBytes) {
+        const error = new ReportDownloadLimitError(
+          'decompressed_bytes',
+          limits.maxDecompressedBytes,
+        );
+        abortSource(error);
+        throw error;
+      }
+      decompressedBytes = nextBytes;
+      chunks.push(buffer);
+    }
+    if (controller.signal.aborted || Date.now() - startedAt >= limits.totalTimeoutMs) {
+      throw totalError;
+    }
+    const rowsParsed = await parseJsonInWorker(
+      Buffer.concat(chunks, decompressedBytes),
+      controller.signal,
+      limits.maxDecompressedBytes,
+      control.consumeRows,
+    );
+    if (controller.signal.aborted || Date.now() - startedAt >= limits.totalTimeoutMs) {
+      throw totalError;
+    }
+    return {
+      rowsParsed,
+      bytesDownloaded,
+    };
+  } finally {
+    clearTimeout(totalTimer);
+    control.signal?.removeEventListener('abort', abortFromCaller);
+    controller.signal.removeEventListener('abort', abort);
+    compressed.destroy();
+    unzipped.destroy();
+    await closeIterator();
+  }
+}
+
+/**
+ * Parse away from the queue-custody event loop. The worker has an explicit
+ * heap ceiling and is terminated before this promise settles, so both the
+ * total deadline and a memory-hostile document have a real kill boundary.
+ */
+function parseJsonInWorker(
+  bytes: Buffer,
+  signal: AbortSignal,
+  memoryLimit: number,
+  consumeRows: ReportRowChunkConsumer,
+): Promise<number> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./report-json-parser-worker.mjs', import.meta.url), {
+      resourceLimits: {
+        maxOldGenerationSizeMb: 192,
+        maxYoungGenerationSizeMb: 32,
+      },
+    });
+    let settled = false;
+
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      void worker.terminate().then(callback, callback);
+    };
+    const onAbort = (): void => finish(() => reject(signal.reason));
+
+    signal.addEventListener('abort', onAbort, { once: true });
+    worker.on('message', (message: unknown) => {
+      if (settled || typeof message !== 'object' || message === null || !('kind' in message)) {
+        finish(() => reject(new Error('report payload is not valid JSON')));
+        return;
+      }
+      if (message.kind === 'rows' && 'rows' in message && 'offset' in message
+        && Array.isArray(message.rows) && Number.isSafeInteger(message.offset)) {
+        void Promise.resolve(consumeRows(message.rows, Number(message.offset))).then(
+          () => {
+            if (!settled) worker.postMessage({ kind: 'next' });
+          },
+          (error: unknown) => finish(() => reject(error)),
+        );
+        return;
+      }
+      if (message.kind === 'done' && 'rowCount' in message
+        && Number.isSafeInteger(message.rowCount) && Number(message.rowCount) >= 0) {
+        finish(() => resolve(Number(message.rowCount)));
+        return;
+      }
+      if (message.kind === 'not_array') {
+        finish(() => reject(new ReportPayloadShapeError()));
+        return;
+      }
+      if (message.kind === 'row_limit') {
+        finish(() => reject(new ReportDownloadLimitError(
+          'parsed_row_bytes',
+          PARSED_CHUNK_MAX_BYTES,
+        )));
+        return;
+      }
+      if (message.kind === 'row_count_limit') {
+        finish(() => reject(new ReportDownloadLimitError(
+          'parsed_rows',
+          PARSED_DOCUMENT_MAX_ROWS,
+        )));
+        return;
+      }
+      finish(() => reject(new Error('report payload is not valid JSON')));
+    });
+    worker.once('error', () => {
+      finish(() => reject(new ReportDownloadLimitError('decompressed_bytes', memoryLimit)));
+    });
+    worker.once('exit', (code) => {
+      if (code !== 0) {
+        finish(() => reject(new ReportDownloadLimitError('decompressed_bytes', memoryLimit)));
+      }
+    });
+    const transferable = new Uint8Array(bytes.byteLength);
+    transferable.set(bytes);
+    worker.postMessage({
+      kind: 'start',
+      bytes: transferable.buffer,
+      maxRows: PARSED_CHUNK_MAX_ROWS,
+      maxBytes: PARSED_CHUNK_MAX_BYTES,
+      maxTotalRows: PARSED_DOCUMENT_MAX_ROWS,
+    }, [transferable.buffer]);
+  });
+}
+
+function assertDownloadLimits(limits: Readonly<ReportDownloadLimits>): void {
+  for (const [name, value] of Object.entries(limits)) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new RangeError(`${name} must be a positive safe integer`);
+    }
+  }
+}
+
+function nextDownloadChunk(
+  iterator: AsyncIterator<Uint8Array>,
+  signal: AbortSignal,
+  idleTimeoutMs: number,
+  abortSource: (reason: Error) => void,
+): Promise<IteratorResult<Uint8Array>> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(idleTimer);
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = (): void => finish(() => reject(signal.reason));
+    const idleTimer = setTimeout(() => {
+      const error = new ReportDownloadLimitError('idle_timeout', idleTimeoutMs);
+      abortSource(error);
+      finish(() => reject(error));
+    }, idleTimeoutMs);
+    signal.addEventListener('abort', onAbort, { once: true });
+    void iterator.next().then(
+      (item) => finish(() => resolve(item)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
+}
+
+function withCancellationDeadline(operation: Promise<void>, timeoutMs: number): Promise<void> {
+  let timeout: NodeJS.Timeout | undefined;
+  return Promise.race([
+    operation,
+    new Promise<void>((_resolve, reject) => {
+      timeout = setTimeout(() => reject(new ReportDownloadLimitError(
+        'source_cancellation',
+        timeoutMs,
+      )), timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -236,6 +585,70 @@ export function parseReportRows(
         };
       });
       return { sourceRows: raw.length, skipped: [], kind: reportType === 'sbCampaigns' ? 'sb' : 'sd', rows };
+    }
+  }
+}
+
+/**
+ * Merge one bounded parser chunk into report-wide normalized facts. Raw provider
+ * rows are never retained in the parent process. Refusal indexes are shifted to
+ * their report-wide positions so accounting remains exact.
+ */
+export function mergeParsedFactBatches(
+  current: ParsedFactBatch | undefined,
+  next: ParsedFactBatch,
+  sourceOffset: number,
+): ParsedFactBatch {
+  const skipped = next.skipped.map((row) => ({ ...row, index: row.index + sourceOffset }));
+  if (current === undefined) return { ...next, skipped };
+  if (current.kind !== next.kind) throw new Error('report parser chunk kind changed');
+  current.sourceRows += next.sourceRows;
+  current.skipped.push(...skipped);
+
+  switch (current.kind) {
+    case 'sp_target': {
+      if (next.kind !== 'sp_target') throw new Error('report parser chunk kind changed');
+      current.rows.push(...next.rows);
+      return current;
+    }
+    case 'search_term': {
+      if (next.kind !== 'search_term') throw new Error('report parser chunk kind changed');
+      current.rows.push(...next.rows);
+      return current;
+    }
+    case 'placement': {
+      if (next.kind !== 'placement') throw new Error('report parser chunk kind changed');
+      current.rows.push(...next.rows);
+      return current;
+    }
+    case 'profile': {
+      if (next.kind !== 'profile') throw new Error('report parser chunk kind changed');
+      const byDate = new Map(current.rows.map((row) => [row.date, { ...row }]));
+      for (const row of next.rows) {
+        const existing = byDate.get(row.date);
+        if (!existing) {
+          byDate.set(row.date, { ...row });
+          continue;
+        }
+        existing.impressions = (existing.impressions ?? 0) + (row.impressions ?? 0);
+        existing.clicks = (existing.clicks ?? 0) + (row.clicks ?? 0);
+        existing.cost = (existing.cost ?? 0) + (row.cost ?? 0);
+        existing.purchases7d = (existing.purchases7d ?? 0) + (row.purchases7d ?? 0);
+        existing.sales7d = (existing.sales7d ?? 0) + (row.sales7d ?? 0);
+        existing.unitsSold7d = (existing.unitsSold7d ?? 0) + (row.unitsSold7d ?? 0);
+      }
+      current.rows.splice(0, current.rows.length, ...byDate.values());
+      return current;
+    }
+    case 'sb': {
+      if (next.kind !== 'sb') throw new Error('report parser chunk kind changed');
+      current.rows.push(...next.rows);
+      return current;
+    }
+    case 'sd': {
+      if (next.kind !== 'sd') throw new Error('report parser chunk kind changed');
+      current.rows.push(...next.rows);
+      return current;
     }
   }
 }

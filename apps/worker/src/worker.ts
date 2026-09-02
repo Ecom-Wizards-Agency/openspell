@@ -1,4 +1,9 @@
-import type { SkippedReportRow } from '@wizard-ads/ads-api';
+import { Buffer } from 'node:buffer';
+import {
+  parseSbAdsReportProbe,
+  type SbAdsReportProbeParseResult,
+  type SkippedReportRow,
+} from '@wizard-ads/ads-api';
 import {
   DuplicateFactGrain,
   InvalidReportDatePromotion,
@@ -24,6 +29,7 @@ import { isPermanentCrosscheckError, type CrosscheckIngest } from './crosscheck.
 import {
   AdsApiRetryableError,
   DownloadUrlExpiredError,
+  ReportCreateOutcomeUnknownError,
   type AdProductCode,
   type AdsApiClient,
   type AdsProfileContext,
@@ -34,16 +40,33 @@ import type {
   RecommendationScheduleStore,
   RecommendationsRun,
 } from './recommendations-run.js';
-import { SKIP_FAILURE_RATIO, gunzipJson, parseReportRows } from './parsers.js';
+import {
+  DEFAULT_REPORT_DOWNLOAD_LIMITS,
+  mergeParsedFactBatches,
+  ReportDownloadLimitError,
+  ReportPayloadShapeError,
+  type ParsedFactBatch,
+  type ReportDownloadLimits,
+  SKIP_FAILURE_RATIO,
+  gunzipJson,
+  parseReportRows,
+} from './parsers.js';
 import {
   UnsafeSponsoredProductsReport,
-  prepareSponsoredProductsReportDates,
+  prepareSponsoredProductsReportDatesFromCounts,
+  sponsoredProductsSourceRowDate,
+  type prepareSponsoredProductsReportDates,
+  type ReportDateSourceCounts,
 } from './report-promotion.js';
 import {
   defaultRegionTokenBuckets,
   type RegionTokenBuckets,
 } from './region-token-buckets.js';
-import type { ReportRequestState, WorkerStore } from './store.js';
+import {
+  ClaimOwnershipLost,
+  type ReportRequestState,
+  type WorkerStore,
+} from './store.js';
 import type { SbVideoIngestionRuntime } from './sb-video-ingestion.js';
 import {
   SqpWorkflowPendingError,
@@ -62,6 +85,9 @@ const MINUTE_MS = 60_000;
 const FOUR_HOURS_MS = 4 * 60 * MINUTE_MS;
 const POLL_DELAYS_MINUTES = [5, 10, 20, 30] as const;
 const SP_REPORT_TYPES = new Set(['spCampaigns', 'spTargeting', 'spSearchTerm', 'spPlacement']);
+// The parser worker also caps source rows at 100k. Together these bounds keep
+// normalized object overhead finite without cloning the raw document here.
+const MAX_PARENT_PARSED_BYTES = 16 * 1024 * 1024;
 type BaseReportRequestState = Omit<ReportRequestState, 'reportType'> & { reportType: ReportType };
 
 type LongLivedClaimPass =
@@ -83,6 +109,37 @@ export class RetryableJobError extends Error {
     super(message);
     this.name = 'RetryableJobError';
   }
+}
+
+/** Fixed-category failure when durable queue settlement cannot be proven. */
+export class QueueSettlementError extends Error {
+  override readonly name = 'QueueSettlementError';
+
+  constructor(readonly kind: 'ownership_lost' | 'unavailable' | 'custody_quarantined') {
+    super(`sync job queue settlement ${kind}`);
+  }
+}
+
+/** A fenced effect is unsafe to replay and therefore remains in DB custody. */
+class FencedClaimQuarantined extends Error {
+  override readonly name = 'FencedClaimQuarantined';
+
+  constructor(readonly category: 'report_create' | 'report_download_limit') {
+    super(`fenced claim quarantined after ${category}`);
+  }
+}
+
+export interface WorkerShutdownEvidence {
+  released: number;
+  /** Claims deliberately left fenced at the shutdown deadline. No identities are exposed. */
+  unresolved: number;
+}
+
+export function shutdownExitCode(
+  evidence: WorkerShutdownEvidence,
+  settlementFailure: QueueSettlementError['kind'] | null,
+): 0 | 78 {
+  return evidence.unresolved === 0 && settlementFailure === null ? 0 : 78;
 }
 
 export interface WorkerLogger {
@@ -133,6 +190,8 @@ export interface SyncWorkerOptions {
   pollIntervalMs?: number;
   now?: () => Date;
   logger?: WorkerLogger;
+  /** Injectable only to prove worker-level cancellation and quarantine paths. */
+  reportDownloadLimits?: Readonly<ReportDownloadLimits>;
 }
 
 export class SyncWorker {
@@ -151,10 +210,13 @@ export class SyncWorker {
   private readonly pollIntervalMs: number;
   private readonly now: () => Date;
   private readonly logger: WorkerLogger;
+  private readonly reportDownloadLimits: Readonly<ReportDownloadLimits>;
   private readonly claimLoop: ClaimLoopController;
-  private readonly running = new Map<string, Promise<void>>();
+  private readonly running = new Map<string, { job: ClaimedJob; promise: Promise<void> }>();
+  private readonly quarantined = new Map<string, ClaimedJob>();
   private activeClaimPass: Promise<LongLivedClaimPass> | null = null;
-  private shutdownPromise: Promise<{ released: number }> | null = null;
+  private shutdownPromise: Promise<WorkerShutdownEvidence> | null = null;
+  private settlementFailure: QueueSettlementError | null = null;
   private stopping = false;
 
   constructor(options: SyncWorkerOptions) {
@@ -173,14 +235,22 @@ export class SyncWorker {
     this.pollIntervalMs = options.pollIntervalMs ?? 1_000;
     this.now = options.now ?? (() => new Date());
     this.logger = options.logger ?? consoleLogger;
+    this.reportDownloadLimits = options.reportDownloadLimits ?? DEFAULT_REPORT_DOWNLOAD_LIMITS;
     this.claimLoop = new ClaimLoopController(this.pollIntervalMs, this.now);
   }
 
-  status(): { workerId: string; stopping: boolean; running: number; claimLoop: ClaimLoopState } {
+  status(): {
+    workerId: string;
+    stopping: boolean;
+    running: number;
+    settlementFailure: QueueSettlementError['kind'] | null;
+    claimLoop: ClaimLoopState;
+  } {
     return {
       workerId: this.workerId,
       stopping: this.stopping,
       running: this.running.size,
+      settlementFailure: this.settlementFailure?.kind ?? null,
       claimLoop: this.claimLoop.status(),
     };
   }
@@ -189,6 +259,7 @@ export class SyncWorker {
     this.claimLoop.beginStart();
     try {
       while (!this.stopping && this.claimLoop.beginClaim()) {
+        if (this.settlementFailure) throw this.settlementFailure;
         const pass = this.runLongLivedClaimPass();
         this.activeClaimPass = pass;
         let outcome: LongLivedClaimPass;
@@ -228,7 +299,8 @@ export class SyncWorker {
       this.claimLoop.recordFatalFailure();
       throw error;
     }
-    await Promise.allSettled(this.running.values());
+    await Promise.allSettled([...this.running.values()].map(({ promise }) => promise));
+    if (this.settlementFailure) throw this.settlementFailure;
   }
 
   /**
@@ -243,6 +315,7 @@ export class SyncWorker {
    * through before the platform kills the request.
    */
   async drainOnce(maxJobs?: number, deadlineMs?: number): Promise<number> {
+    if (this.settlementFailure) throw this.settlementFailure;
     if (deadlineMs !== undefined && Date.now() >= deadlineMs) return 0;
     const before = new Set(this.running.keys());
     const batchSize = this.availableClaimBatchSize(maxJobs);
@@ -250,35 +323,46 @@ export class SyncWorker {
     const jobs = await this.fetchClaimBatch(batchSize);
     this.startClaimedJobs(jobs);
     const batch = [...this.running.entries()]
-      .filter(([id]) => !before.has(id))
-      .map(([, promise]) => promise);
+      .filter(([claimKey]) => !before.has(claimKey))
+      .map(([, active]) => active.promise);
     await Promise.allSettled(batch);
+    if (this.settlementFailure) throw this.settlementFailure;
     return jobs.length;
   }
 
-  shutdown(releaseAfterMs = 25_000): Promise<{ released: number }> {
+  shutdown(releaseAfterMs = 25_000): Promise<WorkerShutdownEvidence> {
     this.shutdownPromise ??= this.performShutdown(releaseAfterMs);
     return this.shutdownPromise;
   }
 
-  private async performShutdown(releaseAfterMs: number): Promise<{ released: number }> {
+  private async performShutdown(releaseAfterMs: number): Promise<WorkerShutdownEvidence> {
     this.stopping = true;
     this.claimLoop.beginShutdown();
     try {
       const activeClaimPass = this.activeClaimPass;
       if (activeClaimPass) await Promise.allSettled([activeClaimPass]);
-      if (this.running.size === 0) return { released: 0 };
+      if (this.running.size === 0) {
+        return { released: 0, unresolved: this.unresolvedCustodyCount() };
+      }
 
       let timedOut = false;
       let timeout: NodeJS.Timeout | undefined;
       await Promise.race([
-        Promise.allSettled(this.running.values()),
+        Promise.allSettled([...this.running.values()].map(({ promise }) => promise)),
         new Promise<void>((resolve) => {
           timeout = setTimeout(() => { timedOut = true; resolve(); }, releaseAfterMs);
         }),
       ]);
       if (timeout) clearTimeout(timeout);
-      return { released: timedOut ? await this.store.release(this.workerId) : 0 };
+      if (!timedOut) return { released: 0, unresolved: this.unresolvedCustodyCount() };
+      // A fenced provider claim is deliberately not a lease. Elapsed shutdown
+      // time cannot prove the handler or its Amazon request stopped, so it is
+      // left running for attended reconciliation. Evo claims only fenced work;
+      // refusing a mixed release is safer than speculating about part of it.
+      if ([...this.running.values()].some(({ job }) => job.claim !== null)) {
+        return { released: 0, unresolved: this.unresolvedCustodyCount() };
+      }
+      return { released: await this.store.release(this.workerId), unresolved: 0 };
     } finally {
       this.claimLoop.finishShutdown();
     }
@@ -314,9 +398,34 @@ export class SyncWorker {
 
   private startClaimedJobs(jobs: readonly ClaimedJob[]): void {
     for (const job of jobs) {
-      const task = this.runClaimed(job).finally(() => this.running.delete(job.id));
-      this.running.set(job.id, task);
+      const key = job.claim?.token ?? job.id;
+      if (this.running.has(key)) {
+        throw new Error('claim function returned duplicate active custody');
+      }
+      const task = this.runClaimed(job)
+        .catch((error: unknown) => {
+          if (error instanceof FencedClaimQuarantined) this.quarantined.set(key, job);
+          const failure = new QueueSettlementError(
+            error instanceof ClaimOwnershipLost
+              ? 'ownership_lost'
+              : error instanceof FencedClaimQuarantined
+                ? 'custody_quarantined'
+                : 'unavailable',
+          );
+          this.settlementFailure ??= failure;
+          throw failure;
+        })
+        .finally(() => this.running.delete(key));
+      this.running.set(key, { job, promise: task });
     }
+  }
+
+  private unresolvedCustodyCount(): number {
+    const keys = new Set(this.quarantined.keys());
+    for (const [key, { job }] of this.running) {
+      if (job.claim !== null) keys.add(key);
+    }
+    return keys.size;
   }
 
   private async runLongLivedClaimPass(): Promise<LongLivedClaimPass> {
@@ -341,21 +450,44 @@ export class SyncWorker {
       return;
     }
     // Queue finalization is deliberately outside the execution catch. If this
-    // write fails after the provider/loader succeeded, stale-claim recovery may
-    // replay the idempotent job; it must not misclassify the successful report
-    // execution as terminal and block its Creative snapshot.
-    await this.store.finish(job.id, 'succeeded', { result });
+    // write fails after the provider/loader succeeded, legacy recovery or a
+    // separately attended fenced recovery may replay the idempotent job; it
+    // must not misclassify successful execution as terminal and block its
+    // Creative snapshot.
+    await this.finishClaimed(job, 'succeeded', { result });
   }
 
   private async handleClaimedFailure(job: ClaimedJob, error: unknown): Promise<void> {
+    if (
+      job.claim !== null
+      && (
+        error instanceof ReportCreateOutcomeUnknownError
+        || error instanceof ReportDownloadLimitError
+      )
+    ) {
+      const category = error instanceof ReportCreateOutcomeUnknownError
+        ? 'report_create'
+        : 'report_download_limit';
+      this.logger.error('fenced sync job retained for attended reconciliation', {
+        jobId: job.id,
+        type: job.jobType,
+        category,
+      });
+      throw new FencedClaimQuarantined(category);
+    }
     if (error instanceof SqpWorkflowPendingError) {
       const retryIn = `${error.retryAfterSeconds} seconds`;
-      if (this.store.defer) {
+      if (job.claim !== null) {
+        if (!this.store.deferClaim) {
+          throw new Error('worker store cannot defer fenced custody');
+        }
+        await this.store.deferClaim(job.claim, retryIn);
+      } else if (this.store.defer) {
         await this.store.defer(job.id, retryIn);
       } else {
         // Adapter/test stores predating queue deferral retain the safe legacy
         // behavior. The production Postgres store never takes this branch.
-        await this.store.finish(job.id, 'failed', {
+        await this.finishClaimed(job, 'failed', {
           error: errorMessage(error).slice(0, 4_000),
           retryIn,
         });
@@ -368,11 +500,22 @@ export class SyncWorker {
       return;
     }
     if (isPermanentJobFailure(error)) {
+      const terminalDetail = error instanceof ReportCreateOutcomeUnknownError
+        ? 'report create outcome unknown; attended reconciliation required'
+        : 'report lifecycle stopped after a non-retryable failure';
       await this.failTerminalReportIfPresent(
         job,
-        'report lifecycle stopped after a non-retryable failure',
+        terminalDetail,
       );
-      await this.store.deadLetter(job.id, errorMessage(error).slice(0, 4_000));
+      const detail = errorMessage(error).slice(0, 4_000);
+      if (job.claim !== null) {
+        if (!this.store.deadLetterClaim) {
+          throw new Error('worker store cannot dead-letter fenced custody');
+        }
+        await this.store.deadLetterClaim(job.claim, detail);
+      } else {
+        await this.store.deadLetter(job.id, detail);
+      }
       this.logger.error('sync job dead-lettered', {
         jobId: job.id, type: job.jobType, error: errorMessage(error),
       });
@@ -390,7 +533,7 @@ export class SyncWorker {
         'report lifecycle stopped after exhausting its retry budget',
       );
     }
-    await this.store.finish(job.id, 'failed', {
+    await this.finishClaimed(job, 'failed', {
       error: errorMessage(error).slice(0, 4_000),
       retryIn: `${retrySeconds} seconds`,
     });
@@ -399,6 +542,21 @@ export class SyncWorker {
       type: job.jobType,
       error: errorMessage(error),
     });
+  }
+
+  private async finishClaimed(
+    job: ClaimedJob,
+    outcome: 'succeeded' | 'failed',
+    options: { error?: string; result?: unknown; retryIn?: string } = {},
+  ): Promise<void> {
+    if (job.claim === null) {
+      await this.store.finish(job.id, outcome, options);
+      return;
+    }
+    if (!this.store.finishClaim) {
+      throw new Error('worker store cannot finish fenced custody');
+    }
+    await this.store.finishClaim(job.claim, outcome, options);
   }
 
   private async failTerminalReportIfPresent(job: ClaimedJob, error: string): Promise<void> {
@@ -439,7 +597,7 @@ export class SyncWorker {
       case 'entity.sync':
         return this.syncEntities(profile, payload);
       case 'report.request':
-        return this.requestReport(job.id, profile, payload);
+        return this.requestReport(job, profile, payload);
       case 'report.poll':
         return this.pollReport(profile, payload);
       case 'report.fetch':
@@ -623,7 +781,7 @@ export class SyncWorker {
   }
 
   private async requestReport(
-    jobId: string,
+    job: ClaimedJob,
     profile: AdsProfileContext,
     payload: Extract<JobPayload, { type: 'report.request' }>,
   ): Promise<Record<string, unknown>> {
@@ -634,7 +792,7 @@ export class SyncWorker {
     if (payload.reportType !== 'sbAds' && payload.creativeSyncSnapshotId != null) {
       throw new PermanentJobError('base report request must not carry creative snapshot provenance');
     }
-    const ledger = await this.store.ensureReportRequest(jobId, payload);
+    const ledger = await this.store.ensureReportRequest(job.id, payload);
     let amazonReportId = ledger.amazonReportId;
     if (!amazonReportId) {
       const created = await this.buckets.run(profile.region, () => adsApi.createReport({
@@ -644,7 +802,29 @@ export class SyncWorker {
         endDate: payload.endDate,
       }));
       amazonReportId = created.reportId;
-      await this.store.setReportCreated(ledger.id, amazonReportId, addMinutes(this.now(), 5));
+      const persistence = {
+        reportRequestId: ledger.id,
+        orgId: payload.orgId,
+        profileId: payload.profileId,
+        amazonReportId,
+        nextPollAt: addMinutes(this.now(), 5),
+        claim: job.claim,
+      };
+      try {
+        await this.store.setReportCreated(persistence);
+      } catch {
+        // A commit followed by a lost database reply is recoverable only by an
+        // exact tenant/provider-id/claim readback below.
+      }
+      let confirmed = false;
+      try {
+        confirmed = await this.store.confirmReportCreated(persistence);
+      } catch {
+        // Readback unavailability is an unknown provider-effect outcome too.
+      }
+      if (!confirmed) {
+        throw new ReportCreateOutcomeUnknownError('provider-id-persistence', null);
+      }
     }
     const pollPayload: Extract<JobPayload, { type: 'report.poll' }> = {
       type: 'report.poll', orgId: payload.orgId, profileId: payload.profileId,
@@ -731,11 +911,75 @@ export class SyncWorker {
       payload.profileId,
     );
     assertAmazonReportId(ledger, payload.amazonReportId);
-    let downloaded;
+    let parsedBatch: ParsedFactBatch | undefined;
+    let sbReport: SbAdsReportProbeParseResult | undefined;
+    let parentParsedBytes = 0;
+    const sourceDateCounts = new Map<string, ReportDateSourceCounts>();
+    const downloadController = new AbortController();
+    const downloadTimer = setTimeout(
+      () => downloadController.abort(new ReportDownloadLimitError(
+        'total_timeout',
+        this.reportDownloadLimits.totalTimeoutMs,
+      )),
+      this.reportDownloadLimits.totalTimeoutMs,
+    );
     try {
-      const source = await adsApi.downloadReport(payload.downloadUrl);
-      downloaded = await gunzipJson(source);
+      const source = await adsApi.downloadReport(payload.downloadUrl, downloadController.signal);
+      const downloaded = await gunzipJson(
+        source,
+        this.reportDownloadLimits,
+        {
+          signal: downloadController.signal,
+          abortSource: (reason) => downloadController.abort(reason),
+          consumeRows: (rows, offset) => {
+            if (ledger.reportType === 'sbAds') {
+              const chunk = parseSbAdsReportProbe(rows);
+              parentParsedBytes = accountParentParsedBytes(parentParsedBytes, chunk);
+              sbReport = mergeSbAdsReportChunks(
+                sbReport,
+                chunk,
+                offset,
+              );
+              return;
+            }
+            const chunk = parseReportRows(ledger.reportType, rows, profile, ledger.id);
+            parentParsedBytes = accountParentParsedBytes(parentParsedBytes, chunk);
+            if (SP_REPORT_TYPES.has(ledger.reportType)) {
+              accountSponsoredProductsSourceChunk(rows, chunk.skipped, sourceDateCounts);
+            }
+            parsedBatch = mergeParsedFactBatches(parsedBatch, chunk, offset);
+          },
+        },
+      );
+      if (ledger.reportType === 'sbAds') {
+        sbReport ??= parseSbAdsReportProbe([]);
+        if (sbReport.sourceRows !== downloaded.rowsParsed) {
+          throw new Error('sbAds parser chunk accounting did not match the downloaded rows');
+        }
+      } else {
+        parsedBatch ??= parseReportRows(ledger.reportType, [], profile, ledger.id);
+        if (parsedBatch.sourceRows !== downloaded.rowsParsed) {
+          throw new Error('report parser chunk accounting did not match the downloaded rows');
+        }
+      }
+      return await this.finishFetchedReport(
+        profile,
+        ledger,
+        downloaded.bytesDownloaded,
+        parsedBatch,
+        sbReport,
+        [...sourceDateCounts.values()],
+      );
     } catch (error) {
+      if (error instanceof ReportDownloadLimitError) {
+        downloadController.abort(error);
+        throw error;
+      }
+      if (error instanceof ReportPayloadShapeError) {
+        const detail = error.message;
+        await this.store.failReport(ledger.id, detail);
+        throw new PermanentJobError(detail);
+      }
       if (!(error instanceof DownloadUrlExpiredError)) throw error;
       if (this.now().getTime() - ledger.requestedAt.getTime() >= FOUR_HOURS_MS) {
         const detail = 'report download URL remained expired beyond the 4-hour request horizon';
@@ -753,12 +997,19 @@ export class SyncWorker {
         `report.repoll:${ledger.id}:${attempt}`,
       );
       return { downloadExpired: true, repollEnqueued: enqueued };
+    } finally {
+      clearTimeout(downloadTimer);
     }
-    if (!Array.isArray(downloaded.value)) {
-      const detail = 'report payload must be a JSON array';
-      await this.store.failReport(ledger.id, detail);
-      throw new PermanentJobError(detail);
-    }
+  }
+
+  private async finishFetchedReport(
+    profile: AdsProfileContext,
+    ledger: ReportRequestState,
+    bytesDownloaded: number,
+    parsedBatch: ParsedFactBatch | undefined,
+    sbReport: SbAdsReportProbeParseResult | undefined,
+    sourceDateCounts: readonly ReportDateSourceCounts[],
+  ): Promise<Record<string, unknown>> {
     if (ledger.reportType === 'sbAds') {
       if (!this.sbVideo) {
         const detail = 'sbAds ingestion runtime is not configured on this worker';
@@ -774,7 +1025,7 @@ export class SyncWorker {
       const result = await this.sbVideo.ingestReport({
         profile,
         ledger: { ...ledger, creativeSyncSnapshotId },
-        rawRows: downloaded.value,
+        parsedReport: sbReport ?? parseSbAdsReportProbe([]),
       });
       const accounting = {
         sourceRows: result.reportSourceRows,
@@ -788,30 +1039,30 @@ export class SyncWorker {
         const detail = `sbAds promotion blocked: ${result.reasons.join(', ') || 'contract incomplete'}`;
         await this.store.finishAttributedReport(ledger.id, accounting, {
           status: 'failed',
-          bytesDownloaded: downloaded.bytesDownloaded,
+          bytesDownloaded,
           error: detail,
         });
         throw new PermanentJobError(detail);
       }
       await this.store.finishAttributedReport(ledger.id, accounting, {
         status: 'completed',
-        bytesDownloaded: downloaded.bytesDownloaded,
+        bytesDownloaded,
       });
       this.logger.info('Sponsored Brands Video report ingested', {
         reportRequestId: ledger.id,
         reportType: ledger.reportType,
         ...result,
       });
-      return { ...result, bytesDownloaded: downloaded.bytesDownloaded };
+      return { ...result, bytesDownloaded };
     }
     const baseLedger: BaseReportRequestState = { ...ledger, reportType: ledger.reportType };
-    const batch = parseReportRows(baseLedger.reportType, downloaded.value, profile, ledger.id);
+    const batch = parsedBatch ?? parseReportRows(baseLedger.reportType, [], profile, ledger.id);
     if (SP_REPORT_TYPES.has(baseLedger.reportType)) {
       return this.promoteSponsoredProductsReport(
         profile,
         baseLedger,
-        downloaded.value,
-        downloaded.bytesDownloaded,
+        sourceDateCounts,
+        bytesDownloaded,
         batch,
       );
     }
@@ -840,31 +1091,26 @@ export class SyncWorker {
     const loaded = await this.store.loadFacts(batch);
     // Program rule 4 again: `completeReport` throws on a mismatch, so a fetch
     // that silently dropped rows fails the job instead of reporting success.
-    await this.store.completeReport(ledger.id, { parsed, loaded, bytesDownloaded: downloaded.bytesDownloaded });
+    await this.store.completeReport(ledger.id, { parsed, loaded, bytesDownloaded });
     this.logger.info('report fetched', {
       reportRequestId: ledger.id, reportType: ledger.reportType,
       reportRows: batch.sourceRows, parsed, loaded, skipped, skipReasons: reasons,
     });
     return {
       reportRows: batch.sourceRows, parsed, loaded, skipped, skipReasons: reasons,
-      bytesDownloaded: downloaded.bytesDownloaded,
+      bytesDownloaded,
     };
   }
 
   private async promoteSponsoredProductsReport(
     profile: AdsProfileContext,
     ledger: BaseReportRequestState,
-    rawRows: readonly unknown[],
+    sourceDateCounts: readonly ReportDateSourceCounts[],
     bytesDownloaded: number,
     batch: ReturnType<typeof parseReportRows>,
   ): Promise<Record<string, unknown>> {
     const skipped = batch.skipped.length;
     const reasons = skipReasons(batch.skipped);
-    if (batch.sourceRows !== rawRows.length) {
-      const detail = `${batch.sourceRows} parser source rows do not match ${rawRows.length} payload rows`;
-      await this.store.failReport(ledger.id, detail);
-      throw new PermanentJobError(`${ledger.reportType} ${detail}`);
-    }
     if (skipped > 0) {
       const detail = `replacement parser refused ${skipped} of ${batch.sourceRows} rows: ${formatReasons(reasons)}`;
       await this.store.failReport(ledger.id, detail);
@@ -874,7 +1120,7 @@ export class SyncWorker {
     const observedAt = this.now();
     let staged;
     try {
-      staged = prepareSponsoredProductsReportDates({
+      staged = prepareSponsoredProductsReportDatesFromCounts({
         orgId: profile.orgId,
         profileId: profile.id,
         reportType: ledger.reportType,
@@ -884,7 +1130,7 @@ export class SyncWorker {
         observedAt,
         attributionWindowDays: 7,
         batch,
-        rawRows,
+        sourceDateCounts,
         startDate: ledger.startDate,
         endDate: ledger.endDate,
         profileTimeZone: profile.timezone,
@@ -1001,6 +1247,62 @@ export class SyncWorker {
     if (!this.adsApi) throw new PermanentJobError('Amazon Ads API not deployed in this runtime');
     return this.adsApi;
   }
+}
+
+function mergeSbAdsReportChunks(
+  current: SbAdsReportProbeParseResult | undefined,
+  next: SbAdsReportProbeParseResult,
+  sourceOffset: number,
+): SbAdsReportProbeParseResult {
+  const refusals = next.refusals.map((refusal) => ({
+    ...refusal,
+    index: refusal.index + sourceOffset,
+  }));
+  if (!current) return { ...next, refusals };
+  current.sourceRows += next.sourceRows;
+  current.parsedRows += next.parsedRows;
+  current.rows.push(...next.rows);
+  current.refusals.push(...refusals);
+  return current;
+}
+
+export function accountParentParsedBytes(current: number, value: unknown): number {
+  const serialized = JSON.stringify(value);
+  const next = current + Buffer.byteLength(serialized, 'utf8');
+  if (next > MAX_PARENT_PARSED_BYTES) {
+    throw new ReportDownloadLimitError('parsed_bytes', MAX_PARENT_PARSED_BYTES);
+  }
+  return next;
+}
+
+function accountSponsoredProductsSourceChunk(
+  rows: readonly unknown[],
+  skippedRows: readonly SkippedReportRow[],
+  counts: Map<string, ReportDateSourceCounts>,
+): void {
+  const skipped = new Set<number>();
+  for (const refusal of skippedRows) {
+    if (!Number.isSafeInteger(refusal.index) || refusal.index < 0 || refusal.index >= rows.length) {
+      throw new UnsafeSponsoredProductsReport(`parser returned invalid skipped index ${refusal.index}`);
+    }
+    if (skipped.has(refusal.index)) {
+      throw new UnsafeSponsoredProductsReport(`parser returned duplicate skipped index ${refusal.index}`);
+    }
+    skipped.add(refusal.index);
+  }
+  rows.forEach((row, index) => {
+    const reportDate = sponsoredProductsSourceRowDate(row, index);
+    const date = counts.get(reportDate) ?? {
+      reportDate,
+      sourceRows: 0,
+      parsedRows: 0,
+      refusedRows: 0,
+    };
+    date.sourceRows += 1;
+    if (skipped.has(index)) date.refusedRows += 1;
+    else date.parsedRows += 1;
+    counts.set(reportDate, date);
+  });
 }
 
 function assertAmazonReportId(ledger: ReportRequestState, amazonReportId: string): void {
@@ -1288,6 +1590,9 @@ function errorMessage(error: unknown): string {
 
 function isPermanentJobFailure(error: unknown): boolean {
   return error instanceof PermanentJobError ||
+    error instanceof ReportCreateOutcomeUnknownError ||
+    (error instanceof ReportDownloadLimitError &&
+      (error.kind === 'compressed_bytes' || error.kind === 'decompressed_bytes')) ||
     error instanceof SqpWorkflowPermanentError ||
     error instanceof SpApiParseError ||
     (error instanceof SpApiAuthError && !error.retryable) ||

@@ -80,7 +80,7 @@ export interface AdsApiClient {
   listEntities(profile: AdsProfileContext, full: boolean): Promise<EntityListing>;
   createReport(input: CreateReportInput): Promise<{ reportId: string }>;
   getReport(profile: AdsProfileContext, reportId: string): Promise<AdsReportStatus>;
-  downloadReport(url: string): Promise<AsyncIterable<Uint8Array>>;
+  downloadReport(url: string, signal?: AbortSignal): Promise<AsyncIterable<Uint8Array>>;
   listProfiles(region: Region): Promise<readonly string[]>;
 }
 
@@ -180,6 +180,28 @@ export class DownloadUrlExpiredError extends AdsApiRetryableError {
   constructor(message = 'report download URL expired') {
     super(message);
     this.name = 'DownloadUrlExpiredError';
+  }
+}
+
+/**
+ * Reporting v3 create may have reached Amazon without returning an id we can
+ * persist. Retrying that request is not recovery: it is a possible duplicate
+ * provider effect. The original error is intentionally not retained because a
+ * provider response can echo account-scoped request data.
+ */
+export class ReportCreateOutcomeUnknownError extends Error {
+  override readonly name = 'ReportCreateOutcomeUnknownError';
+
+  constructor(
+    readonly phase:
+      | 'transport'
+      | 'server-response'
+      | 'response-decoding'
+      | 'duplicate-without-id'
+      | 'provider-id-persistence',
+    readonly status: number | null,
+  ) {
+    super(`Reporting v3 create outcome is unknown after ${phase}`);
   }
 }
 
@@ -332,7 +354,30 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
       // right move is to adopt that report id, not mint a second copy.
       if (error instanceof DuplicateReportError) {
         if (error.existingReportId) return { reportId: error.existingReportId };
-        throw new AdsApiRetryableError('duplicate report in flight with no id to adopt; retrying');
+        throw new ReportCreateOutcomeUnknownError('duplicate-without-id', 425);
+      }
+
+      // Once the non-idempotent request begins, transport loss, a provider 5xx,
+      // a truncated body, or an undecodable success response cannot prove that
+      // Amazon refused it. Quarantine instead of converting these into the
+      // worker's ordinary retry path.
+      if (error instanceof AdsApiParseError) {
+        throw new ReportCreateOutcomeUnknownError('response-decoding', null);
+      }
+      if (error instanceof AdsApiTimeoutError) {
+        throw new ReportCreateOutcomeUnknownError('transport', null);
+      }
+      if (error instanceof AdsApiHttpError && error.status === 0) {
+        throw new ReportCreateOutcomeUnknownError('transport', null);
+      }
+      if (error instanceof AdsApiHttpError && (error.status === 408 || error.status === 425)) {
+        throw new ReportCreateOutcomeUnknownError('server-response', error.status);
+      }
+      if (error instanceof AdsApiHttpError && error.status >= 500) {
+        throw new ReportCreateOutcomeUnknownError('server-response', error.status);
+      }
+      if (!(error instanceof AdsApiHttpError) && !(error instanceof AdsThrottleError)) {
+        throw new ReportCreateOutcomeUnknownError('response-decoding', null);
       }
       throw this.mapError(error);
     }
@@ -374,11 +419,12 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
     return { kind: 'observed', metadata: workerUnifiedMetadata(outcome.report) };
   }
 
-  async downloadReport(url: string): Promise<AsyncIterable<Uint8Array>> {
+  async downloadReport(url: string, signal?: AbortSignal): Promise<AsyncIterable<Uint8Array>> {
     let response: Response;
     try {
-      response = await this.fetch(url);
+      response = await this.fetch(url, signal === undefined ? undefined : { signal });
     } catch (error) {
+      if (signal?.aborted === true) throw signal.reason;
       // A dropped connection mid-download is worth retrying.
       throw new AdsApiRetryableError(errorText(error));
     }
@@ -392,7 +438,7 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
     if (!response.ok) throw new Error(`report download failed with ${response.status}`);
     const body = response.body;
     if (!body) return emptyStream();
-    return toByteStream(body);
+    return toByteStream(body, signal);
   }
 
   /**
@@ -574,23 +620,78 @@ async function* emptyStream(): AsyncGenerator<Uint8Array> {
   // nothing
 }
 
-/** Normalise a web `ReadableStream` or an already-async-iterable body to bytes. */
-function toByteStream(body: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
-  if (Symbol.asyncIterator in body) return body as AsyncIterable<Uint8Array>;
-  return readWebStream(body);
+/**
+ * Normalise a response body to bytes. Prefer the reader API even on runtimes
+ * that also expose `Symbol.asyncIterator`: only the reader gives us an
+ * explicit, awaitable transport cancellation boundary.
+ */
+function toByteStream(
+  body: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>,
+  signal?: AbortSignal,
+): AsyncIterable<Uint8Array> {
+  if ('getReader' in body && typeof body.getReader === 'function') {
+    return readWebStream(body, signal);
+  }
+  return body as AsyncIterable<Uint8Array>;
 }
 
-async function* readWebStream(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
-  const reader = stream.getReader();
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) yield value;
-    }
-  } finally {
-    reader.releaseLock();
-  }
+function readWebStream(
+  stream: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+): AsyncIterable<Uint8Array> {
+  let consumed = false;
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+      if (consumed) throw new Error('report response body can only be consumed once');
+      consumed = true;
+      const reader = stream.getReader();
+      let completed = false;
+      let closed = false;
+      let cancellation: Promise<void> | null = null;
+      const cancel = (): void => {
+        if (cancellation) return;
+        try {
+          cancellation = reader.cancel(signal?.reason);
+        } catch (error) {
+          cancellation = Promise.reject(error);
+        }
+        // Abort listeners cannot await. Attach a handler immediately so a
+        // prompt transport rejection is observed, while retaining the original
+        // rejected promise for `return()` to propagate.
+        void cancellation.catch(() => undefined);
+      };
+      const cleanup = (): void => {
+        signal?.removeEventListener('abort', cancel);
+        reader.releaseLock();
+      };
+      if (signal?.aborted === true) cancel();
+      else signal?.addEventListener('abort', cancel, { once: true });
+      return {
+        async next(): Promise<IteratorResult<Uint8Array>> {
+          if (closed) return { done: true, value: undefined };
+          const result = await reader.read();
+          if (result.done) {
+            completed = true;
+            closed = true;
+            cleanup();
+            return { done: true, value: undefined };
+          }
+          return { done: false, value: result.value };
+        },
+        async return(): Promise<IteratorResult<Uint8Array>> {
+          if (closed) return { done: true, value: undefined };
+          closed = true;
+          if (!completed) cancel();
+          try {
+            if (cancellation) await cancellation;
+          } finally {
+            cleanup();
+          }
+          return { done: true, value: undefined };
+        },
+      };
+    },
+  };
 }
 
 /**

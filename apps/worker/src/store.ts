@@ -3,9 +3,12 @@ import {
   adGroups,
   campaigns,
   claimSyncJobs,
+  claimSyncJobsFenced,
+  deferSyncJobFenced,
   factSbDaily,
   factSdDaily,
   finishSyncJob,
+  finishSyncJobFenced,
   ensureFactPartitions,
   keywords,
   negatives,
@@ -23,6 +26,7 @@ import {
   upsertSearchTermFacts,
   upsertSpTargetFacts,
   type ClaimedJob,
+  type ClaimRef,
   type DbHandle,
   type JobOutcome,
   type NewEntityChange,
@@ -119,18 +123,28 @@ export interface WorkerStore {
     outcome: JobOutcome,
     options?: { error?: string; result?: unknown; retryIn?: string },
   ): Promise<void>;
+  /** Settle exactly one opaque fenced claim. Required for every fenced job. */
+  finishClaim?(
+    claim: ClaimRef,
+    outcome: JobOutcome,
+    options?: { error?: string; result?: unknown; retryIn?: string },
+  ): Promise<void>;
   /**
    * Return a healthy, unfinished provider job to the queue without consuming
    * its failure budget. Optional for test/adaptor stores; the Postgres runtime
    * implements it. A provider poll is waiting, not a failed attempt.
    */
   defer?(jobId: string, retryIn: string): Promise<void>;
+  /** Defer exactly one opaque fenced claim without spending its attempt. */
+  deferClaim?(claim: ClaimRef, retryIn: string): Promise<void>;
   /**
    * Finish a job as `dead` without spending its remaining attempts. For
    * failures no retry can fix — a malformed export, a payload naming a profile
    * that does not exist — retrying five times only delays the human.
    */
   deadLetter(jobId: string, error: string): Promise<void>;
+  /** Permanently finish exactly one opaque fenced claim. */
+  deadLetterClaim?(claim: ClaimRef, error: string): Promise<void>;
   release(workerId: string): Promise<number>;
   /**
    * Requeue jobs still `running` on a worker that died without releasing them.
@@ -145,7 +159,22 @@ export interface WorkerStore {
     options?: EntitySyncOptions,
   ): Promise<EntitySyncCounts>;
   ensureReportRequest(jobId: string, payload: Extract<JobPayload, { type: 'report.request' }>): Promise<ReportRequestState>;
-  setReportCreated(reportRequestId: string, amazonReportId: string, nextPollAt: Date): Promise<void>;
+  setReportCreated(input: {
+    reportRequestId: string;
+    orgId: string;
+    profileId: string;
+    amazonReportId: string;
+    nextPollAt: Date;
+    claim: ClaimRef | null;
+  }): Promise<boolean>;
+  /** Exact readback used when the provider-id persistence reply is ambiguous. */
+  confirmReportCreated(input: {
+    reportRequestId: string;
+    orgId: string;
+    profileId: string;
+    amazonReportId: string;
+    claim: ClaimRef | null;
+  }): Promise<boolean>;
   getReportRequest(reportRequestId: string, orgId: string, profileId: string): Promise<ReportRequestState>;
   updateReportPoll(
     reportRequestId: string,
@@ -212,18 +241,39 @@ export class ParsedLoadedMismatch extends Error {
   }
 }
 
+/** A stale process presented a capability which no longer owns the queue row. */
+export class ClaimOwnershipLost extends Error {
+  override readonly name = 'ClaimOwnershipLost';
+
+  constructor() {
+    super('sync job claim ownership was lost');
+  }
+}
+
+export interface PostgresWorkerStoreOptions {
+  claimProtocol?: 'legacy' | 'fenced';
+}
+
 /** `deletedAt` arrives as the wire string, not a `Date` — see the note on `asDate`. */
 type ExistingEntity = { amazonId: string; deletedAt: Date | string | null; snapshot: Record<string, unknown> };
 
 export class PostgresWorkerStore implements WorkerStore {
   private readonly logger: StoreLogger;
+  private readonly claimProtocol: 'legacy' | 'fenced';
 
-  constructor(readonly handle: DbHandle, logger?: StoreLogger) {
+  constructor(
+    readonly handle: DbHandle,
+    logger?: StoreLogger,
+    options: PostgresWorkerStoreOptions = {},
+  ) {
     this.logger = logger ?? { info: (message, details) => console.info(message, details ?? {}) };
+    this.claimProtocol = options.claimProtocol ?? 'legacy';
   }
 
   claim(workerId: string, limit: number, jobTypes?: readonly JobType[]): Promise<ClaimedJob[]> {
-    return claimSyncJobs(this.handle, workerId, limit, jobTypes);
+    return this.claimProtocol === 'fenced'
+      ? claimSyncJobsFenced(this.handle, workerId, limit, jobTypes)
+      : claimSyncJobs(this.handle, workerId, limit, jobTypes);
   }
 
   async finish(
@@ -232,6 +282,15 @@ export class PostgresWorkerStore implements WorkerStore {
     options: { error?: string; result?: unknown; retryIn?: string } = {},
   ): Promise<void> {
     await finishSyncJob(this.handle, jobId, outcome, options);
+  }
+
+  async finishClaim(
+    claim: ClaimRef,
+    outcome: JobOutcome,
+    options: { error?: string; result?: unknown; retryIn?: string } = {},
+  ): Promise<void> {
+    const decision = await finishSyncJobFenced(this.handle, claim, outcome, options);
+    if (decision.decision === 'stale_claim') throw new ClaimOwnershipLost();
   }
 
   async defer(jobId: string, retryIn: string): Promise<void> {
@@ -245,11 +304,17 @@ export class PostgresWorkerStore implements WorkerStore {
              run_after = now() + ${retryIn}::interval
        where id = ${jobId}
          and status = 'running'::public.sync_job_status
+         and claim_token is null
       returning id
     `;
     if (rows.length !== 1 || rows[0]?.id !== jobId) {
       throw new Error(`could not defer running sync job ${jobId}`);
     }
+  }
+
+  async deferClaim(claim: ClaimRef, retryIn: string): Promise<void> {
+    const decision = await deferSyncJobFenced(this.handle, claim, retryIn);
+    if (decision.decision === 'stale_claim') throw new ClaimOwnershipLost();
   }
 
   async deadLetter(jobId: string, error: string): Promise<void> {
@@ -263,12 +328,18 @@ export class PostgresWorkerStore implements WorkerStore {
     `;
   }
 
+  async deadLetterClaim(claim: ClaimRef, error: string): Promise<void> {
+    const decision = await finishSyncJobFenced(this.handle, claim, 'dead', { error });
+    if (decision.decision === 'stale_claim') throw new ClaimOwnershipLost();
+  }
+
   async release(workerId: string): Promise<number> {
     const rows = await this.handle.sql<{ id: string }[]>`
       update public.sync_jobs
          set status = 'queued', claimed_by = null, claimed_at = null,
              run_after = now(), last_error = coalesce(last_error, 'released during graceful shutdown')
        where status = 'running' and claimed_by = ${workerId}
+         and claim_token is null
       returning id
     `;
     return rows.length;
@@ -418,12 +489,87 @@ export class PostgresWorkerStore implements WorkerStore {
     return this.getReportRequest(jobId, payload.orgId, payload.profileId);
   }
 
-  async setReportCreated(reportRequestId: string, amazonReportId: string, nextPollAt: Date): Promise<void> {
-    await this.handle.sql`
-      update public.report_requests
-         set amazon_report_id = ${amazonReportId}, status = 'pending', next_poll_at = ${iso(nextPollAt)}
-       where id = ${reportRequestId}
-    `;
+  async setReportCreated(input: {
+    reportRequestId: string;
+    orgId: string;
+    profileId: string;
+    amazonReportId: string;
+    nextPollAt: Date;
+    claim: ClaimRef | null;
+  }): Promise<boolean> {
+    const rows = input.claim === null
+      ? await this.handle.sql<{ id: string }[]>`
+          update public.report_requests
+             set amazon_report_id = ${input.amazonReportId},
+                 status = 'pending',
+                 next_poll_at = ${iso(input.nextPollAt)}
+           where id = ${input.reportRequestId}
+             and org_id = ${input.orgId}
+             and profile_id = ${input.profileId}
+             and (amazon_report_id is null or amazon_report_id = ${input.amazonReportId})
+          returning id
+        `
+      : await this.handle.sql<{ id: string }[]>`
+          with custody as materialized (
+            select j.id
+              from public.sync_jobs as j
+             where j.id = ${input.claim.jobId}
+               and j.org_id = ${input.orgId}
+               and j.profile_id = ${input.profileId}
+               and j.status = 'running'
+               and j.claimed_by = ${input.claim.workerId}
+               and j.claim_token = ${input.claim.token}::uuid
+             for update
+          )
+          update public.report_requests as r
+             set amazon_report_id = ${input.amazonReportId},
+                 status = 'pending',
+                 next_poll_at = ${iso(input.nextPollAt)}
+           where r.id = ${input.reportRequestId}
+             and r.org_id = ${input.orgId}
+             and r.profile_id = ${input.profileId}
+             and (r.amazon_report_id is null or r.amazon_report_id = ${input.amazonReportId})
+             and exists (select 1 from custody where custody.id = r.id)
+          returning r.id
+        `;
+    if (rows.length > 1) throw new Error('report create persistence updated multiple rows');
+    return rows.length === 1;
+  }
+
+  async confirmReportCreated(input: {
+    reportRequestId: string;
+    orgId: string;
+    profileId: string;
+    amazonReportId: string;
+    claim: ClaimRef | null;
+  }): Promise<boolean> {
+    const rows = input.claim === null
+      ? await this.handle.sql<{ id: string }[]>`
+          select id
+            from public.report_requests
+           where id = ${input.reportRequestId}
+             and org_id = ${input.orgId}
+             and profile_id = ${input.profileId}
+             and amazon_report_id = ${input.amazonReportId}
+        `
+      : await this.handle.sql<{ id: string }[]>`
+          select r.id
+            from public.report_requests as r
+            join public.sync_jobs as j
+              on j.id = r.id
+             and j.org_id = r.org_id
+             and j.profile_id = r.profile_id
+           where r.id = ${input.reportRequestId}
+             and r.org_id = ${input.orgId}
+             and r.profile_id = ${input.profileId}
+             and r.amazon_report_id = ${input.amazonReportId}
+             and j.status = 'running'
+             and j.claimed_by = ${input.claim.workerId}
+             and j.claim_token = ${input.claim.token}::uuid
+           for share of j
+        `;
+    if (rows.length > 1) throw new Error('report create readback returned multiple rows');
+    return rows.length === 1;
   }
 
   async getReportRequest(

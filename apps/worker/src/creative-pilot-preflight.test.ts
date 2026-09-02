@@ -18,6 +18,7 @@ describe('Creative pilot worker health', () => {
       deployment: {
         revision: REVISION,
         role: 'evo-report-lane',
+        claimProtocol: 'fenced',
         jobTypes: CLAIMS,
       },
     })).toEqual({
@@ -26,6 +27,7 @@ describe('Creative pilot worker health', () => {
       deployment: {
         revision: REVISION,
         role: 'evo-report-lane',
+        claimProtocol: 'fenced',
         jobTypes: CLAIMS,
       },
     });
@@ -52,7 +54,12 @@ describe('Creative pilot readiness', () => {
     const result = evaluateCreativePilotPreflight(databaseEvidence(), {
       status: 'ok',
       worker: { stopping: false, running: 0 },
-      deployment: { revision: REVISION, role: 'evo-report-lane', jobTypes: CLAIMS },
+      deployment: {
+        revision: REVISION,
+        role: 'evo-report-lane',
+        claimProtocol: 'fenced',
+        jobTypes: CLAIMS,
+      },
     }, REVISION);
     expect(result).toMatchObject({
       ready: true,
@@ -60,6 +67,7 @@ describe('Creative pilot readiness', () => {
         passed: true,
         revisionMatches: true,
         roleMatches: true,
+        protocolMatches: true,
         claimSetMatches: true,
       },
       amazonApiCalls: 0,
@@ -68,25 +76,27 @@ describe('Creative pilot readiness', () => {
     });
   });
 
-  it('accepts the source-defined expanded report lane without weakening exact matching', () => {
+  it('rejects the five-type lane as incompatible with fenced database custody', () => {
     const result = evaluateCreativePilotPreflight(databaseEvidence(), {
       status: 'ok',
       worker: { stopping: false, running: 0 },
       deployment: {
         revision: REVISION,
         role: 'evo-report-lane',
+        claimProtocol: 'fenced',
         jobTypes: UNIFIED_CLAIMS,
       },
     }, REVISION);
-    expect(result.ready).toBe(true);
-    expect(result.worker.claimSetMatches).toBe(true);
+    expect(result.ready).toBe(false);
+    expect(result.worker.claimSetMatches).toBe(false);
   });
 
   it.each([
-    { expectedRevision: '7654321fedcba', role: 'evo-report-lane' as const, claims: CLAIMS, pending: 0 },
-    { expectedRevision: REVISION, role: 'general' as const, claims: CLAIMS, pending: 0 },
-    { expectedRevision: REVISION, role: 'evo-report-lane' as const, claims: ['creative.sync'] as const, pending: 0 },
-    { expectedRevision: REVISION, role: 'evo-report-lane' as const, claims: CLAIMS, pending: 1 },
+    { expectedRevision: '7654321fedcba', role: 'evo-report-lane' as const, protocol: 'fenced' as const, claims: CLAIMS, pending: 0 },
+    { expectedRevision: REVISION, role: 'general' as const, protocol: 'fenced' as const, claims: CLAIMS, pending: 0 },
+    { expectedRevision: REVISION, role: 'evo-report-lane' as const, protocol: 'legacy' as const, claims: CLAIMS, pending: 0 },
+    { expectedRevision: REVISION, role: 'evo-report-lane' as const, protocol: 'fenced' as const, claims: ['creative.sync'] as const, pending: 0 },
+    { expectedRevision: REVISION, role: 'evo-report-lane' as const, protocol: 'fenced' as const, claims: CLAIMS, pending: 1 },
   ])('fails closed for revision, role, claim, or cohort-pending drift', (scenario) => {
     const database = databaseEvidence();
     database.pendingSnapshots.cohort = scenario.pending;
@@ -96,6 +106,7 @@ describe('Creative pilot readiness', () => {
       deployment: {
         revision: REVISION,
         role: scenario.role,
+        claimProtocol: scenario.protocol,
         jobTypes: scenario.claims,
       },
     }, scenario.expectedRevision);

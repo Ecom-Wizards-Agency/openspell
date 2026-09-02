@@ -5,6 +5,7 @@ import {
   resolveWorkerDeploymentPolicy,
   resolveUnifiedReportingDualRunPolicy,
   type UnifiedReportingDualRunPolicy,
+  type WorkerClaimProtocol,
   type WorkerDeploymentRole,
 } from './deployment-role.js';
 
@@ -21,6 +22,8 @@ export interface WorkerConfig {
   jobTypes: readonly JobTypeValue[] | undefined;
   /** Sanitized deployment identity; never derived from a hostname or secret. */
   deploymentRole: WorkerDeploymentRole;
+  /** Queue custody advertised by health and selected by the database store. */
+  claimProtocol: WorkerClaimProtocol;
   /** Sanitized Git object id; public health never echoes arbitrary environment values. */
   revision: string;
   /** Whether this process hosts timers and independent background consumers. */
@@ -110,6 +113,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     maxConcurrentJobs: positiveInteger(env['WORKER_MAX_CONCURRENT_JOBS'], 10, 'WORKER_MAX_CONCURRENT_JOBS'),
     jobTypes: deployment.jobTypes,
     deploymentRole: deployment.role,
+    claimProtocol: deployment.claimProtocol,
     revision: workerRevisionFromEnv(env),
     startsBackgroundPasses: deployment.startsBackgroundPasses,
     unifiedReporting,

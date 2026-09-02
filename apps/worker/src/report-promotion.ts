@@ -22,6 +22,8 @@ export interface ReportDateAccounting {
   eventDateAgeDays: number;
 }
 
+export type ReportDateSourceCounts = Omit<ReportDateAccounting, 'eventDateAgeDays'>;
+
 export interface StageParsedReportInput {
   orgId: string;
   profileId: string;
@@ -41,6 +43,11 @@ export interface PrepareSponsoredProductsReportInput
   startDate: string;
   endDate: string;
   profileTimeZone: string;
+}
+
+export interface PrepareSponsoredProductsReportCountsInput
+  extends Omit<PrepareSponsoredProductsReportInput, 'rawRows'> {
+  sourceDateCounts: readonly ReportDateSourceCounts[];
 }
 
 export class UnsafeSponsoredProductsReport extends Error {
@@ -63,19 +70,6 @@ export function prepareSponsoredProductsReportDates(
     );
   }
 
-  const reportDates = inclusiveDateRange(input.startDate, input.endDate);
-  const accounting = new Map<string, ReportDateAccounting>();
-  const observedDate = profileDate(input.profileTimeZone, input.observedAt);
-  for (const reportDate of reportDates) {
-    accounting.set(reportDate, {
-      reportDate,
-      sourceRows: 0,
-      parsedRows: 0,
-      refusedRows: 0,
-      eventDateAgeDays: daysBetween(reportDate, observedDate),
-    });
-  }
-
   const skipped = new Set<number>();
   for (const refusal of input.batch.skipped) {
     if (!Number.isSafeInteger(refusal.index) || refusal.index < 0 || refusal.index >= input.rawRows.length) {
@@ -87,17 +81,16 @@ export function prepareSponsoredProductsReportDates(
     skipped.add(refusal.index);
   }
 
+  const counts = new Map<string, ReportDateSourceCounts>();
   input.rawRows.forEach((row, index) => {
-    const reportDate = sourceRowDate(row, index);
-    const date = accounting.get(reportDate);
-    if (!date) {
-      throw new UnsafeSponsoredProductsReport(
-        `source row ${index} belongs to ${reportDate}, outside ${input.startDate}..${input.endDate}`,
-      );
-    }
+    const reportDate = sponsoredProductsSourceRowDate(row, index);
+    const date = counts.get(reportDate) ?? {
+      reportDate, sourceRows: 0, parsedRows: 0, refusedRows: 0,
+    };
     date.sourceRows += 1;
     if (skipped.has(index)) date.refusedRows += 1;
     else date.parsedRows += 1;
+    counts.set(reportDate, date);
   });
 
   if (skipped.size > 0) {
@@ -106,6 +99,65 @@ export function prepareSponsoredProductsReportDates(
     );
   }
 
+  return prepareSponsoredProductsReportDatesFromCounts({
+    ...input,
+    sourceDateCounts: [...counts.values()],
+  });
+}
+
+/** Stage a complete SP window from incrementally-accounted source chunks. */
+export function prepareSponsoredProductsReportDatesFromCounts(
+  input: PrepareSponsoredProductsReportCountsInput,
+): StagedReportDate[] {
+  if (input.batch.kind === 'sb' || input.batch.kind === 'sd') {
+    throw new UnsafeSponsoredProductsReport('Sponsored Products promotion cannot stage SB or SD facts');
+  }
+  const reportDates = inclusiveDateRange(input.startDate, input.endDate);
+  const observedDate = profileDate(input.profileTimeZone, input.observedAt);
+  const accounting = new Map<string, ReportDateAccounting>();
+  for (const reportDate of reportDates) {
+    accounting.set(reportDate, {
+      reportDate,
+      sourceRows: 0,
+      parsedRows: 0,
+      refusedRows: 0,
+      eventDateAgeDays: daysBetween(reportDate, observedDate),
+    });
+  }
+  for (const counts of input.sourceDateCounts) {
+    const date = accounting.get(counts.reportDate);
+    if (!date) {
+      throw new UnsafeSponsoredProductsReport(
+        `source rows belong to ${counts.reportDate}, outside ${input.startDate}..${input.endDate}`,
+      );
+    }
+    if (date.sourceRows !== 0 || date.parsedRows !== 0 || date.refusedRows !== 0) {
+      throw new UnsafeSponsoredProductsReport(`duplicate source accounting for ${counts.reportDate}`);
+    }
+    if (
+      !Number.isSafeInteger(counts.sourceRows)
+      || !Number.isSafeInteger(counts.parsedRows)
+      || !Number.isSafeInteger(counts.refusedRows)
+      || counts.sourceRows < 0
+      || counts.parsedRows < 0
+      || counts.refusedRows < 0
+      || counts.sourceRows !== counts.parsedRows + counts.refusedRows
+    ) throw new UnsafeSponsoredProductsReport(`invalid source accounting for ${counts.reportDate}`);
+    date.sourceRows = counts.sourceRows;
+    date.parsedRows = counts.parsedRows;
+    date.refusedRows = counts.refusedRows;
+  }
+  const sourceRows = [...accounting.values()].reduce((sum, date) => sum + date.sourceRows, 0);
+  if (sourceRows !== input.batch.sourceRows) {
+    throw new UnsafeSponsoredProductsReport(
+      `source accounting ${sourceRows} does not match parser total ${input.batch.sourceRows}`,
+    );
+  }
+  if (input.batch.skipped.length > 0) {
+    throw new UnsafeSponsoredProductsReport(
+      `replacement refused: parser rejected ${input.batch.skipped.length} of ${sourceRows} source rows`,
+    );
+  }
   return stageParsedReportDates({
     ...input,
     dates: reportDates.map((date) => accounting.get(date) as ReportDateAccounting),
@@ -241,7 +293,7 @@ function inclusiveDateRange(startDate: string, endDate: string): string[] {
   return dates;
 }
 
-function sourceRowDate(value: unknown, index: number): string {
+export function sponsoredProductsSourceRowDate(value: unknown, index: number): string {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new UnsafeSponsoredProductsReport(`source row ${index} is not an object with a daily date`);
   }

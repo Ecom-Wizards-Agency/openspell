@@ -1,6 +1,7 @@
 import { gzipSync } from 'node:zlib';
 import type {
   ClaimedJob,
+  ClaimToken,
   DbHandle,
   JobOutcome,
   StagedReportDate,
@@ -11,15 +12,17 @@ import type { CrosscheckIngestResult } from '@wizard-ads/crosscheck-cli';
 import { SpApiAuthError } from '@wizard-ads/sp-api';
 import {
   DownloadUrlExpiredError,
+  ReportCreateOutcomeUnknownError,
   type AdsApiClient,
   type AdsProfileContext,
   type AdsReportStatus,
   type CreateReportInput,
 } from './ads-api.js';
 import { resolveSourcePath } from './crosscheck.js';
-import type { ParsedFactBatch } from './parsers.js';
+import type { ParsedFactBatch, ReportDownloadLimits } from './parsers.js';
 import { RegionTokenBuckets } from './region-token-buckets.js';
 import {
+  ClaimOwnershipLost,
   ParsedLoadedMismatch,
   PostgresWorkerStore,
   type ReportRequestState,
@@ -27,12 +30,34 @@ import {
 } from './store.js';
 import { SqpWorkflowPendingError } from './sqp.js';
 import type { UnifiedDualRun } from './unified-reporting.js';
-import { RetryableJobError, SyncWorker } from './worker.js';
+import {
+  RetryableJobError,
+  SyncWorker,
+  accountParentParsedBytes,
+  shutdownExitCode,
+} from './worker.js';
 
 const orgId = '11111111-1111-4111-8111-111111111111';
 const profileId = '22222222-2222-4222-8222-222222222222';
 const reportRequestId = '33333333-3333-4333-8333-333333333333';
 const jobId = '44444444-4444-4444-8444-444444444444';
+
+describe('shutdown exit classification', () => {
+  it('returns 78 when a signal races with fatal custody even if evidence is momentarily empty', () => {
+    expect(shutdownExitCode(
+      { released: 0, unresolved: 0 },
+      'custody_quarantined',
+    )).toBe(78);
+    expect(shutdownExitCode({ released: 0, unresolved: 0 }, null)).toBe(0);
+  });
+});
+
+describe('parent parsed-report heap bound', () => {
+  it('fails closed before accumulated normalized rows exceed 16 MiB serialized', () => {
+    expect(() => accountParentParsedBytes(16 * 1024 * 1024 - 8, { row: 'too-large' }))
+      .toThrowError(expect.objectContaining({ kind: 'parsed_bytes' }));
+  });
+});
 
 describe('fetch handler count assertion', () => {
   it('fails and requeues when the fact sink reports fewer loaded rows than parsed rows', async () => {
@@ -42,7 +67,7 @@ describe('fetch handler count assertion', () => {
     };
     const job: ClaimedJob = {
       id: jobId, orgId, profileId, jobType: payload.type, payload,
-      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker',
     };
     let claimed = false;
     let outcome: JobOutcome | undefined;
@@ -83,7 +108,7 @@ describe('SB attribution-aware report accounting', () => {
     };
     const job: ClaimedJob = {
       id: jobId, orgId, profileId, jobType: payload.type, payload,
-      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker',
     };
     let claimed = false;
     let accounting: Parameters<WorkerStore['finishAttributedReport']>[1] | undefined;
@@ -193,6 +218,136 @@ describe('queue deferral', () => {
     await new PostgresWorkerStore(handle).defer(jobId, '211 seconds');
     expect(statement).toContain('attempts = greatest(attempts - 1, 0)');
     expect(statement).toContain("status = 'running'::public.sync_job_status");
+    expect(statement).toContain('claim_token is null');
+  });
+});
+
+describe('fenced worker store', () => {
+  it('selects fenced claim and settlement capabilities for the Evo protocol', async () => {
+    const token = '55555555-5555-4555-8555-555555555555';
+    const statements: string[] = [];
+    const sql = Object.assign(
+      async (strings: TemplateStringsArray): Promise<unknown[]> => {
+        const statement = strings.join(' ');
+        statements.push(statement);
+        if (statement.includes('claim_sync_jobs_fenced')) {
+          return [{
+            id: jobId,
+            org_id: orgId,
+            profile_id: profileId,
+            job_type: 'report.fetch',
+            payload: {
+              type: 'report.fetch', orgId, profileId, reportRequestId,
+              amazonReportId: 'provider-report', downloadUrl: 'https://reports.invalid/fenced',
+            },
+            attempts: 1,
+            max_attempts: 5,
+            dedupe_key: null,
+            claimed_by: 'evo-report:test',
+            claim_token: token,
+          }];
+        }
+        return [{ decision: 'settled', status: 'succeeded', attempts: 1 }];
+      },
+      { array: (values: readonly unknown[]) => values },
+    ) as unknown as DbHandle['sql'];
+    const store = new PostgresWorkerStore({
+      sql,
+      db: {} as DbHandle['db'],
+      close: async () => {},
+    }, undefined, { claimProtocol: 'fenced' });
+
+    const [job] = await store.claim('evo-report:test', 1, ['report.fetch']);
+
+    expect(job?.claim).toEqual({
+      jobId,
+      workerId: 'evo-report:test',
+      token,
+    });
+    await store.finishClaim(job!.claim!, 'succeeded', { result: { loaded: 1 } });
+    expect(statements).toHaveLength(2);
+    expect(statements[0]).toContain('claim_sync_jobs_fenced');
+    expect(statements[1]).toContain('finish_sync_job_fenced');
+  });
+
+  it('turns a stale fenced decision into a sanitized ownership failure', async () => {
+    const sql = (async () => [{ decision: 'stale_claim', status: null, attempts: null }]) as unknown as DbHandle['sql'];
+    const store = new PostgresWorkerStore({
+      sql,
+      db: {} as DbHandle['db'],
+      close: async () => {},
+    });
+    const claim = {
+      jobId,
+      workerId: 'evo-report:test',
+      token: '55555555-5555-4555-8555-555555555555' as ClaimToken,
+    };
+
+    await expect(store.deferClaim(claim, '5 minutes')).rejects.toBeInstanceOf(ClaimOwnershipLost);
+    await expect(store.deadLetterClaim(claim, 'fixed category')).rejects.toBeInstanceOf(
+      ClaimOwnershipLost,
+    );
+  });
+
+  it('persists and confirms the provider id only through the exact tenant claim fence', async () => {
+    const token = '55555555-5555-4555-8555-555555555555' as ClaimToken;
+    const statements: Array<{ text: string; values: unknown[] }> = [];
+    const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      statements.push({ text: strings.join(' '), values });
+      return [{ id: jobId }];
+    }) as unknown as DbHandle['sql'];
+    const store = new PostgresWorkerStore({
+      sql,
+      db: {} as DbHandle['db'],
+      close: async () => {},
+    });
+    const input = {
+      reportRequestId: jobId,
+      orgId,
+      profileId,
+      amazonReportId: 'provider-report',
+      nextPollAt: new Date('2026-09-02T12:00:00.000Z'),
+      claim: { jobId, workerId: 'evo-report:test', token },
+    };
+
+    await expect(store.setReportCreated(input)).resolves.toBe(true);
+    await expect(store.confirmReportCreated(input)).resolves.toBe(true);
+
+    expect(statements).toHaveLength(2);
+    for (const statement of statements) {
+      expect(statement.text).toContain('public.sync_jobs');
+      expect(statement.text).toContain('j.status = \'running\'');
+      expect(statement.text).toContain('j.claimed_by');
+      expect(statement.text).toContain('j.claim_token');
+      expect(statement.values).toEqual(expect.arrayContaining([
+        jobId, orgId, profileId, 'provider-report', 'evo-report:test', token,
+      ]));
+    }
+    expect(statements[0]?.text).toContain('amazon_report_id is null or');
+  });
+
+  it('returns a closed refusal when a conflicting or stale claim changes no row', async () => {
+    const sql = (async () => []) as unknown as DbHandle['sql'];
+    const store = new PostgresWorkerStore({
+      sql,
+      db: {} as DbHandle['db'],
+      close: async () => {},
+    });
+    const input = {
+      reportRequestId: jobId,
+      orgId,
+      profileId,
+      amazonReportId: 'provider-report',
+      nextPollAt: new Date('2026-09-02T12:00:00.000Z'),
+      claim: {
+        jobId,
+        workerId: 'evo-report:stale',
+        token: '55555555-5555-4555-8555-555555555555' as ClaimToken,
+      },
+    };
+
+    await expect(store.setReportCreated(input)).resolves.toBe(false);
+    await expect(store.confirmReportCreated(input)).resolves.toBe(false);
   });
 });
 
@@ -252,7 +407,7 @@ describe('fetch handler skip accounting', () => {
   function run(reportRows: unknown[]) {
     const job: ClaimedJob = {
       id: jobId, orgId, profileId, jobType: payload.type, payload,
-      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker',
     };
     const report: ReportRequestState = {
       id: reportRequestId, orgId, profileId, reportType: 'spTargeting',
@@ -345,7 +500,7 @@ describe('Sponsored Products report promotion', () => {
   it('promotes every complete date, including an empty day, with exact counts', async () => {
     const job: ClaimedJob = {
       id: jobId, orgId, profileId, jobType: payload.type, payload,
-      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker',
     };
     const report: ReportRequestState = {
       id: reportRequestId, orgId, profileId, reportType: 'spTargeting',
@@ -436,7 +591,7 @@ describe('Sponsored Products report promotion', () => {
       ...stubStore(),
       claim: async () => claimed ? [] : (claimed = true, [{
         id: jobId, orgId, profileId, jobType: payload.type, payload,
-        attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+        attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker',
       }]),
       finish: async (_id: string, outcome: JobOutcome, options?: { result?: unknown }) => {
         outcomes.push({ outcome, result: options?.result });
@@ -479,7 +634,7 @@ describe('Sponsored Products report promotion', () => {
       ...stubStore(),
       claim: async () => claimed ? [] : (claimed = true, [{
         id: jobId, orgId, profileId, jobType: payload.type, payload,
-        attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+        attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker',
       }]),
       getReportRequest: async () => report,
       failReport: async (_id: string, error: string) => { failed.push(error); },
@@ -504,7 +659,7 @@ describe('crosscheck.ingest retry policy', () => {
   function run(thrown?: Error) {
     const job: ClaimedJob = {
       id: jobId, orgId, profileId, jobType: payload.type, payload,
-      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker',
     };
     const calls: { finish: JobOutcome[]; dead: string[] } = { finish: [], dead: [] };
     let claimed = false;
@@ -547,7 +702,7 @@ describe('crosscheck.ingest retry policy', () => {
   it('dead-letters rather than retrying when no ingest is wired', async () => {
     const job: ClaimedJob = {
       id: jobId, orgId, profileId, jobType: payload.type, payload,
-      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker',
     };
     let claimed = false;
     const dead: string[] = [];
@@ -578,7 +733,7 @@ describe('recommendations.run wiring', () => {
   it('delegates to the injected runner and stores its result', async () => {
     const job: ClaimedJob = {
       id: jobId, orgId, profileId, jobType: payload.type, payload,
-      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker',
     };
     let claimed = false;
     const results: unknown[] = [];
@@ -610,7 +765,7 @@ describe('recommendations.run wiring', () => {
   it('dead-letters when no recommendations runner is configured', async () => {
     const job: ClaimedJob = {
       id: jobId, orgId, profileId, jobType: payload.type, payload,
-      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unit-worker',
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker',
     };
     let claimed = false;
     const dead: string[] = [];
@@ -668,7 +823,7 @@ describe('integration handler wiring', () => {
       attempts: 1,
       maxAttempts: 5,
       dedupeKey: null,
-      claimedBy: 'integration-worker',
+      claim: null, claimedBy: 'integration-worker',
     }));
     const worker = new SyncWorker({
       workerId: 'integration-worker',
@@ -717,7 +872,7 @@ describe('integration handler wiring', () => {
         ...stubStore(),
         claim: async () => claimed ? [] : (claimed = true, [{
           id: jobId, orgId, profileId, jobType: payload.type, payload,
-          attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'integration-worker',
+          attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'integration-worker',
         }]),
         deadLetter: async (_id, error) => { dead.push(error); },
       },
@@ -739,7 +894,7 @@ describe('integration handler wiring', () => {
         ...stubStore(),
         claim: async () => claimed ? [] : (claimed = true, [{
           id: jobId, orgId, profileId, jobType: payload.type, payload,
-          attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'integration-worker',
+          attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'integration-worker',
         }]),
         deadLetter: async (_id, error) => { dead.push(error); },
       },
@@ -761,7 +916,7 @@ describe('integration handler wiring', () => {
         ...stubStore(),
         claim: async () => claimed ? [] : (claimed = true, [{
           id: jobId, orgId, profileId, jobType: payload.type, payload,
-          attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'integration-worker',
+          attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'integration-worker',
         }]),
         finish: async (_id, outcome, options) => {
           finishes.push({ outcome, retryIn: options?.retryIn });
@@ -789,7 +944,7 @@ describe('integration handler wiring', () => {
         ...stubStore(),
         claim: async () => claimed ? [] : (claimed = true, [{
           id: jobId, orgId, profileId, jobType: payload.type, payload,
-          attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'integration-worker',
+          attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'integration-worker',
         }]),
         finish: async (_id, outcome, options) => {
           finishes.push({ outcome, retryIn: options?.retryIn });
@@ -824,7 +979,7 @@ describe('integration handler wiring', () => {
         ...stubStore(),
         claim: async () => claimed ? [] : (claimed = true, [{
           id: jobId, orgId, profileId, jobType: payload.type, payload,
-          attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'integration-worker',
+          attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'integration-worker',
         }]),
         finish: async (_id, outcome) => { outcomes.push(outcome); },
         deadLetter: async (_id, error) => { dead.push(error); },
@@ -858,6 +1013,220 @@ describe('integration handler wiring', () => {
   });
 });
 
+describe('Reporting v3 create ambiguity', () => {
+  it('quarantines the request without a retry or poll admission', async () => {
+    const payload: Extract<JobPayload, { type: 'report.request' }> = {
+      type: 'report.request',
+      orgId,
+      profileId,
+      reportType: 'spCampaigns',
+      startDate: '2026-08-29',
+      endDate: '2026-08-29',
+    };
+    const job: ClaimedJob = {
+      id: jobId,
+      orgId,
+      profileId,
+      jobType: payload.type,
+      payload,
+      attempts: 1,
+      maxAttempts: 5,
+      dedupeKey: null,
+      claim: null, claimedBy: 'ambiguous-create-worker',
+    };
+    let claimed = false;
+    const finishes: JobOutcome[] = [];
+    const dead: string[] = [];
+    const terminal: string[] = [];
+    let pollAdmissions = 0;
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      ensureReportRequest: async () => ({
+        id: jobId,
+        orgId,
+        profileId,
+        reportType: payload.reportType,
+        startDate: payload.startDate,
+        endDate: payload.endDate,
+        source: 'amazon_api',
+        amazonReportId: null,
+        requestedAt: new Date('2026-08-29T00:00:00.000Z'),
+        pollAttempts: 0,
+      }),
+      finish: async (_id, outcome) => { finishes.push(outcome); },
+      deadLetter: async (_id, error) => { dead.push(error); },
+      failTerminalReport: async (_scope, error) => (terminal.push(error), true),
+      enqueue: async () => { pollAdmissions += 1; return true; },
+    };
+    const api = new AmbiguousCreateApi();
+    const worker = new SyncWorker({
+      workerId: 'ambiguous-create-worker',
+      store,
+      adsApi: api,
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+
+    expect(api.createCalls).toBe(1);
+    expect(finishes).toEqual([]);
+    expect(dead).toEqual(['Reporting v3 create outcome is unknown after transport']);
+    expect(terminal).toEqual(['report create outcome unknown; attended reconciliation required']);
+    expect(pollAdmissions).toBe(0);
+  });
+
+  it('continues after a committed provider id loses its database reply', async () => {
+    const payload: Extract<JobPayload, { type: 'report.request' }> = {
+      type: 'report.request', orgId, profileId, reportType: 'spCampaigns',
+      startDate: '2026-08-29', endDate: '2026-08-29',
+    };
+    const token = '55555555-5555-4555-8555-555555555555' as ClaimToken;
+    const job: ClaimedJob = {
+      id: jobId, orgId, profileId, jobType: payload.type, payload,
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'evo-report:test',
+      claim: { jobId, workerId: 'evo-report:test', token },
+    };
+    let claimed = false;
+    let persisted = false;
+    let pollAdmissions = 0;
+    const settled: JobOutcome[] = [];
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      ensureReportRequest: async () => ({
+        id: jobId, orgId, profileId, reportType: payload.reportType,
+        startDate: payload.startDate, endDate: payload.endDate, source: 'amazon_api',
+        amazonReportId: null, requestedAt: new Date(), pollAttempts: 0,
+      }),
+      setReportCreated: async (input) => {
+        expect(input.claim).toEqual(job.claim);
+        persisted = true;
+        throw new Error('synthetic reply loss after commit');
+      },
+      confirmReportCreated: async (input) => persisted
+        && input.amazonReportId === 'unused'
+        && input.claim?.token === token,
+      enqueue: async () => (pollAdmissions += 1, true),
+      finishClaim: async (_claim, outcome) => { settled.push(outcome); },
+    };
+    const worker = new SyncWorker({
+      workerId: 'evo-report:test', store, adsApi: new OneRowApi(),
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    await expect(worker.drainOnce()).resolves.toBe(1);
+    expect(pollAdmissions).toBe(1);
+    expect(settled).toEqual(['succeeded']);
+  });
+
+  it.each([
+    ['write-refused', false],
+    ['readback-unavailable', true],
+  ] as const)('quarantines fenced custody when provider-id persistence is %s', async (_case, readbackThrows) => {
+    const payload: Extract<JobPayload, { type: 'report.request' }> = {
+      type: 'report.request', orgId, profileId, reportType: 'spCampaigns',
+      startDate: '2026-08-29', endDate: '2026-08-29',
+    };
+    const token = '55555555-5555-4555-8555-555555555555' as ClaimToken;
+    const job: ClaimedJob = {
+      id: jobId, orgId, profileId, jobType: payload.type, payload,
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'evo-report:test',
+      claim: { jobId, workerId: 'evo-report:test', token },
+    };
+    let claimed = false;
+    const mutations: string[] = [];
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      ensureReportRequest: async () => ({
+        id: jobId, orgId, profileId, reportType: payload.reportType,
+        startDate: payload.startDate, endDate: payload.endDate, source: 'amazon_api',
+        amazonReportId: null, requestedAt: new Date(), pollAttempts: 0,
+      }),
+      setReportCreated: async () => false,
+      confirmReportCreated: async () => {
+        if (readbackThrows) throw new Error('synthetic readback outage');
+        return false;
+      },
+      enqueue: async () => (mutations.push('enqueue'), true),
+      finishClaim: async () => { mutations.push('finish'); },
+      deadLetterClaim: async () => { mutations.push('dead'); },
+      deferClaim: async () => { mutations.push('defer'); },
+      failTerminalReport: async () => (mutations.push('terminal'), true),
+    };
+    const worker = new SyncWorker({
+      workerId: 'evo-report:test', store, adsApi: new OneRowApi(),
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    await expect(worker.drainOnce()).rejects.toMatchObject({
+      name: 'QueueSettlementError', kind: 'custody_quarantined',
+    });
+    expect(worker.status().settlementFailure).toBe('custody_quarantined');
+    expect(mutations).toEqual([]);
+    const evidence = await worker.shutdown();
+    expect(evidence).toEqual({ released: 0, unresolved: 1 });
+    expect(shutdownExitCode(evidence, worker.status().settlementFailure)).toBe(78);
+  });
+});
+
+describe('fenced report download limits', () => {
+  const cases = [
+    { kind: 'compressed_bytes' as const, returnCalls: 1, limits: { maxCompressedBytes: 1, maxDecompressedBytes: 4_096, idleTimeoutMs: 1_000, totalTimeoutMs: 5_000 } },
+    { kind: 'decompressed_bytes' as const, returnCalls: 0, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 2, idleTimeoutMs: 1_000, totalTimeoutMs: 5_000 } },
+    { kind: 'idle_timeout' as const, returnCalls: 1, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 4_096, idleTimeoutMs: 10, totalTimeoutMs: 1_000 } },
+    { kind: 'total_timeout' as const, returnCalls: 1, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 4_096, idleTimeoutMs: 1_000, totalTimeoutMs: 10 } },
+    { kind: 'sync_cancel_throw' as const, returnCalls: 1, limits: { maxCompressedBytes: 4_096, maxDecompressedBytes: 4_096, idleTimeoutMs: 10, totalTimeoutMs: 1_000 } },
+  ] satisfies readonly { kind: string; returnCalls: number; limits: ReportDownloadLimits }[];
+
+  it.each(cases)('cancels the source and retains custody after $kind', async ({ kind, limits, returnCalls }) => {
+    const payload: Extract<JobPayload, { type: 'report.fetch' }> = {
+      type: 'report.fetch', orgId, profileId, reportRequestId,
+      amazonReportId: 'amazon-report', downloadUrl: 'https://reports.invalid/bounded',
+    };
+    const token = '55555555-5555-4555-8555-555555555555' as ClaimToken;
+    const job: ClaimedJob = {
+      id: jobId, orgId, profileId, jobType: payload.type, payload,
+      attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'evo-report:test',
+      claim: { jobId, workerId: 'evo-report:test', token },
+    };
+    let claimed = false;
+    const mutations: string[] = [];
+    const api = new LimitDownloadApi(kind);
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      getReportRequest: async () => ({
+        id: reportRequestId, orgId, profileId, reportType: 'spCampaigns',
+        startDate: '2026-08-29', endDate: '2026-08-29', source: 'amazon_api',
+        amazonReportId: 'amazon-report', requestedAt: new Date(), pollAttempts: 0,
+      }),
+      finishClaim: async () => { mutations.push('finish'); },
+      deadLetterClaim: async () => { mutations.push('dead'); },
+      deferClaim: async () => { mutations.push('defer'); },
+      failReport: async () => { mutations.push('fail-report'); },
+      failTerminalReport: async () => (mutations.push('terminal'), true),
+    };
+    const worker = new SyncWorker({
+      workerId: 'evo-report:test', store, adsApi: api,
+      reportDownloadLimits: limits,
+      logger: { info: () => {}, error: () => {} },
+    });
+
+    await expect(worker.drainOnce()).rejects.toMatchObject({
+      name: 'QueueSettlementError', kind: 'custody_quarantined',
+    });
+    expect(api.signal?.aborted).toBe(true);
+    expect(api.returnCalls).toBe(returnCalls);
+    expect(mutations).toEqual([]);
+    expect(worker.status().settlementFailure).toBe('custody_quarantined');
+    const evidence = await worker.shutdown();
+    expect(evidence).toEqual({ released: 0, unresolved: 1 });
+    expect(shutdownExitCode(evidence, worker.status().settlementFailure)).toBe(78);
+  });
+});
+
 describe('Unified Reporting worker isolation', () => {
   it('keeps a successful v3 request successful when sidecar admission fails', async () => {
     const payload: Extract<JobPayload, { type: 'report.request' }> = {
@@ -877,7 +1246,7 @@ describe('Unified Reporting worker isolation', () => {
       attempts: 1,
       maxAttempts: 5,
       dedupeKey: null,
-      claimedBy: 'unified-isolation-worker',
+      claim: null, claimedBy: 'unified-isolation-worker',
     };
     let claimed = false;
     let outcome: JobOutcome | undefined;
@@ -955,11 +1324,11 @@ describe('Unified Reporting worker isolation', () => {
     const jobs: ClaimedJob[] = [
       {
         id: jobId, orgId, profileId, jobType: v3Payload.type, payload: v3Payload,
-        attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unified-matrix-worker',
+        attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unified-matrix-worker',
       },
       {
         id: sidecarJobId, orgId, profileId, jobType: sidecarPayload.type, payload: sidecarPayload,
-        attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unified-matrix-worker',
+        attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unified-matrix-worker',
       },
     ];
     const finishes = new Map<string, Array<{ outcome: JobOutcome; result: unknown }>>();
@@ -1040,11 +1409,11 @@ describe('Unified Reporting worker isolation', () => {
     const jobs: ClaimedJob[] = [
       {
         id: jobId, orgId, profileId, jobType: v3Payload.type, payload: v3Payload,
-        attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unified-failure-worker',
+        attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unified-failure-worker',
       },
       {
         id: sidecarJobId, orgId, profileId, jobType: sidecarPayload.type, payload: sidecarPayload,
-        attempts: 1, maxAttempts: 5, dedupeKey: null, claimedBy: 'unified-failure-worker',
+        attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unified-failure-worker',
       },
     ];
     const outcomes = new Map<string, JobOutcome[]>();
@@ -1099,7 +1468,7 @@ describe('Unified Reporting worker isolation', () => {
       attempts: 5,
       maxAttempts: 5,
       dedupeKey: null,
-      claimedBy: 'unified-terminal-worker',
+      claim: null, claimedBy: 'unified-terminal-worker',
     };
     let claimed = false;
     const terminal: Array<{ payload: typeof payload; reason: string }> = [];
@@ -1178,7 +1547,7 @@ describe('terminal report lifecycle invariant', () => {
       attempts: 5,
       maxAttempts: 5,
       dedupeKey: null,
-      claimedBy: 'terminal-worker',
+      claim: null, claimedBy: 'terminal-worker',
     };
     let claimed = false;
     const terminalCalls: Array<{
@@ -1240,7 +1609,7 @@ describe('terminal report lifecycle invariant', () => {
       attempts: 1,
       maxAttempts: 5,
       dedupeKey: null,
-      claimedBy: 'retry-worker',
+      claim: null, claimedBy: 'retry-worker',
     };
     let claimed = false;
     let terminalCalls = 0;
@@ -1273,7 +1642,7 @@ describe('terminal report lifecycle invariant', () => {
     expect(terminalCalls).toBe(0);
   });
 
-  it('does not block a successful report when only queue finalization fails', async () => {
+  it('does not block a successful report ledger and stops on queue finalization failure', async () => {
     const payload: Extract<JobPayload, { type: 'report.poll' }> = {
       type: 'report.poll',
       orgId,
@@ -1291,7 +1660,7 @@ describe('terminal report lifecycle invariant', () => {
       attempts: 5,
       maxAttempts: 5,
       dedupeKey: null,
-      claimedBy: 'finalization-worker',
+      claim: null, claimedBy: 'finalization-worker',
     };
     let claimed = false;
     let terminalCalls = 0;
@@ -1325,7 +1694,10 @@ describe('terminal report lifecycle invariant', () => {
       logger: { info: () => {}, error: () => {} },
     });
 
-    expect(await worker.drainOnce()).toBe(1);
+    await expect(worker.drainOnce()).rejects.toMatchObject({
+      name: 'QueueSettlementError',
+      kind: 'unavailable',
+    });
     expect(finishCalls).toBe(1);
     expect(terminalCalls).toBe(0);
   });
@@ -1377,7 +1749,8 @@ function stubStore(): WorkerStore {
     repairOverlongLookbacks: async () => 0,
     ensureIntegrationSchedules: async () => 0,
     ensureReportRequest: async () => { throw new Error('unused'); },
-    setReportCreated: async () => {},
+    setReportCreated: async () => true,
+    confirmReportCreated: async () => true,
     getReportRequest: async () => { throw new Error('unused'); },
     updateReportPoll: async () => {},
     enqueue: async () => true,
@@ -1417,16 +1790,71 @@ class OneRowApi implements AdsApiClient {
   async listEntities() { return { rows: [], succeeded: ['SP', 'SB', 'SD'] as const, failures: [] }; }
   async createReport(_input: CreateReportInput) { return { reportId: 'unused' }; }
   async getReport(_profile: AdsProfileContext, _reportId: string): Promise<AdsReportStatus> { return { status: 'PENDING' }; }
-  async downloadReport(): Promise<AsyncIterable<Uint8Array>> {
+  async downloadReport(_url?: string, _signal?: AbortSignal): Promise<AsyncIterable<Uint8Array>> {
     const bytes = gzipSync(JSON.stringify([{ date: '2026-08-14', campaignId: 'c-1', impressions: 1, clicks: 1, cost: 1 }]));
     return (async function* stream() { yield bytes; })();
   }
   async listProfiles(_region: Region) { return []; }
 }
 
+class AmbiguousCreateApi extends OneRowApi {
+  createCalls = 0;
+
+  override async createReport(): Promise<{ reportId: string }> {
+    this.createCalls += 1;
+    throw new ReportCreateOutcomeUnknownError('transport', null);
+  }
+}
+
 class ExpiredDownloadApi extends OneRowApi {
   override async downloadReport(): Promise<AsyncIterable<Uint8Array>> {
     throw new DownloadUrlExpiredError('synthetic expired URL');
+  }
+}
+
+class LimitDownloadApi extends OneRowApi {
+  signal: AbortSignal | undefined;
+  returnCalls = 0;
+
+  constructor(private readonly limitKind:
+    | 'compressed_bytes'
+    | 'decompressed_bytes'
+    | 'idle_timeout'
+    | 'total_timeout'
+    | 'sync_cancel_throw') {
+    super();
+  }
+
+  override async downloadReport(
+    _url?: string,
+    signal?: AbortSignal,
+  ): Promise<AsyncIterable<Uint8Array>> {
+    this.signal = signal;
+    const compressed = gzipSync(JSON.stringify([{ row: 'bounded-source' }]));
+    let delivered = false;
+    return {
+      [Symbol.asyncIterator]: () => ({
+        next: () => {
+          if (
+            this.limitKind === 'idle_timeout'
+            || this.limitKind === 'total_timeout'
+            || this.limitKind === 'sync_cancel_throw'
+          ) {
+            return new Promise<IteratorResult<Uint8Array>>(() => undefined);
+          }
+          if (delivered) return Promise.resolve({ done: true, value: undefined });
+          delivered = true;
+          return Promise.resolve({ done: false, value: compressed });
+        },
+        return: () => {
+          this.returnCalls += 1;
+          if (this.limitKind === 'sync_cancel_throw') {
+            throw new Error('synthetic synchronous source cancellation failure');
+          }
+          return Promise.resolve({ done: true, value: undefined });
+        },
+      }),
+    };
   }
 }
 

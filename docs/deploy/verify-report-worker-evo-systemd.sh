@@ -21,11 +21,27 @@ if [[ ! -x /usr/local/bin/node ]] \
   echo "OpenSpell report worker system Node 22 or newer is unavailable" >&2
   exit 1
 fi
+command -v systemd-creds >/dev/null || {
+  echo "OpenSpell report worker systemd-creds is unavailable" >&2
+  exit 1
+}
+command -v git >/dev/null || {
+  echo "OpenSpell report worker Git is unavailable" >&2
+  exit 1
+}
+if ! assert_report_worker_transition_source "$expected_revision"; then
+  echo "OpenSpell report worker transition helper does not match the live revision" >&2
+  exit 1
+fi
 
 acquire_report_worker_deployment_lock
 verify_report_worker_credentials
 assert_legacy_report_worker_retired
-if ! verify_report_worker_live "$expected_revision"; then
+release="$report_worker_release_root/releases/$expected_revision"
+if ! verify_report_worker_fenced_protocol "$release" "$expected_revision" \
+  || ! verify_report_worker_database_contract "$expected_revision" \
+  || ! verify_report_worker_fenced_authority "$expected_revision" \
+  || ! verify_report_worker_live "$expected_revision"; then
   echo "OpenSpell report worker live deployment is incomplete or mismatched" >&2
   exit 1
 fi
