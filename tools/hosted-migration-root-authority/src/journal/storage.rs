@@ -87,25 +87,38 @@ mod test_fault {
 
     use super::{TestFaultPoint, TestPublicationBoundary};
 
+    pub(super) enum Action {
+        ReturnError,
+        ParkAt(Box<dyn FnOnce()>),
+    }
+
+    struct Fault {
+        point: TestFaultPoint,
+        action: Action,
+    }
+
     std::thread_local! {
-        static POINT: RefCell<Option<TestFaultPoint>> = const { RefCell::new(None) };
+        static FAULT: RefCell<Option<Fault>> = const { RefCell::new(None) };
         static PUBLICATION_ORDINAL: Cell<usize> = const { Cell::new(0) };
     }
 
-    pub(super) fn set(point: TestFaultPoint) {
-        POINT.with_borrow_mut(|slot| {
-            assert!(slot.replace(point).is_none(), "single test fault");
+    pub(super) fn set(point: TestFaultPoint, action: Action) {
+        FAULT.with_borrow_mut(|slot| {
+            assert!(
+                slot.replace(Fault { point, action }).is_none(),
+                "single test fault"
+            );
         });
         PUBLICATION_ORDINAL.set(0);
     }
 
     pub(super) fn clear() {
-        POINT.with_borrow_mut(|slot| *slot = None);
+        FAULT.with_borrow_mut(|slot| *slot = None);
         PUBLICATION_ORDINAL.set(0);
     }
 
     pub(super) fn armed() -> bool {
-        POINT.with_borrow(Option::is_some)
+        FAULT.with_borrow(Option::is_some)
     }
 
     pub(super) fn next_publication() -> usize {
@@ -117,14 +130,20 @@ mod test_fault {
     }
 
     pub(super) fn check(point: TestFaultPoint) -> Result<(), ()> {
-        POINT.with_borrow_mut(|slot| {
-            if slot.as_ref() == Some(&point) {
-                *slot = None;
-                Err(())
-            } else {
-                Ok(())
+        let action = FAULT.with_borrow_mut(|slot| {
+            (slot.as_ref().map(|fault| fault.point) == Some(point))
+                .then(|| slot.take().expect("matched test fault").action)
+        });
+        match action {
+            None => Ok(()),
+            Some(Action::ReturnError) => Err(()),
+            Some(Action::ParkAt(signal)) => {
+                signal();
+                loop {
+                    std::thread::park();
+                }
             }
-        })
+        }
     }
 
     pub(super) fn check_publication(
@@ -137,7 +156,12 @@ mod test_fault {
 
 #[cfg(test)]
 pub(crate) fn test_fail_at(point: TestFaultPoint) {
-    test_fault::set(point);
+    test_fault::set(point, test_fault::Action::ReturnError);
+}
+
+#[cfg(test)]
+pub(crate) fn test_park_at(point: TestFaultPoint, signal: impl FnOnce() + 'static) {
+    test_fault::set(point, test_fault::Action::ParkAt(Box::new(signal)));
 }
 
 #[cfg(test)]
@@ -1194,7 +1218,7 @@ impl JournalStore {
     fn publish_successor<F>(
         &self,
         guard: &mut MutexGuard<'_, Health>,
-        complete: &CompleteInventory,
+        complete: CompleteInventory,
         artifact: ArtifactPublication,
         transition_plan: TransitionPlan,
         expected_transition_bytes: usize,
@@ -1205,8 +1229,8 @@ impl JournalStore {
         F: FnOnce(&VerifiedSnapshot) -> bool,
     {
         let footprint = artifact.footprint(expected_transition_bytes)?;
-        validate_projection(complete, &footprint)?;
-        validate_artifact_names(complete, &artifact)?;
+        validate_projection(&complete, &footprint)?;
+        validate_artifact_names(&complete, &artifact)?;
 
         let mut transition_plan = Some(transition_plan);
         let pre_publication_transition = if matches!(artifact, ArtifactPublication::None) {
@@ -1215,7 +1239,7 @@ impl JournalStore {
                 expected_transition_bytes,
                 signer,
                 &self.pinned_public_key,
-                complete,
+                &complete,
                 &artifact,
             )?)
         } else {
@@ -1260,7 +1284,7 @@ impl JournalStore {
                 expected_transition_bytes,
                 signer,
                 &self.pinned_public_key,
-                complete,
+                &complete,
                 &artifact,
             )
             .map_err(|_| CommitError::Unavailable)?,
@@ -1281,10 +1305,16 @@ impl JournalStore {
         )
         .map_err(|()| CommitError::Unavailable)?;
 
+        let committed_generation = complete
+            .snapshot
+            .generation
+            .checked_add(1)
+            .ok_or(CommitError::Capacity)?;
+        drop(complete);
         let committed = self
             .scan_complete()
             .map_err(|()| CommitError::Unavailable)?;
-        if committed.snapshot.generation != complete.snapshot.generation + 1
+        if committed.snapshot.generation != committed_generation
             || committed.snapshot.transition_sha256 != transition.sha256
             || !expected_successor(&committed.snapshot)
         {
@@ -1580,9 +1610,6 @@ where
             ) {
                 return Err(CommitError::InvalidState);
             }
-            self.verify_signer_pin()?;
-            let trusted_at = self.clock.sample().map_err(|()| CommitError::Clock)?;
-            require_monotonic_clock(&complete.snapshot, &trusted_at)?;
             let mut candidate = command.candidate;
             candidate.operation_authority_incarnation_sha256 = self.incarnation_sha256.clone();
             candidate.candidate_binding_sha256.clear();
@@ -1594,7 +1621,10 @@ where
             {
                 return Err(CommitError::Collision);
             }
+            let trusted_at = self.clock.sample().map_err(|()| CommitError::Clock)?;
+            require_monotonic_clock(&complete.snapshot, &trusted_at)?;
             seal_candidate(&mut candidate, &trusted_at).map_err(map_state_error)?;
+            self.verify_signer_pin()?;
             let candidate_bytes = candidate.encode().map_err(|_| CommitError::Build)?;
             let candidate_sha256 = sha256_hex(&candidate_bytes);
             let next_generation = next_generation(&complete.snapshot)?;
@@ -1616,7 +1646,7 @@ where
             let expected_digest = candidate_sha256.clone();
             let (snapshot, proof) = self.store.publish_successor(
             &mut guard,
-            &complete,
+            complete,
             artifact,
             transition_plan,
             expected_transition_bytes,
@@ -1683,10 +1713,15 @@ where
             {
                 return Err(CommitError::Stale);
             }
+            if !verified
+                .matches_candidate(&candidate)
+                .map_err(map_state_error)?
+            {
+                return Err(CommitError::Policy);
+            }
             if authentication_session_used(&complete, authentication.session_sha256()) {
                 return Err(CommitError::Collision);
             }
-            self.verify_signer_pin()?;
             let trusted_at = self.clock.sample().map_err(|()| CommitError::Clock)?;
             require_monotonic_clock(&complete.snapshot, &trusted_at)?;
             let approval_plan = plan_approval(
@@ -1697,6 +1732,7 @@ where
                 &self.store.pinned_public_key,
             )
             .map_err(map_state_error)?;
+            self.verify_signer_pin()?;
             let projected_grant = approval_plan.projected_signed();
             let projected_grant_bytes = projected_grant.encode().map_err(|_| CommitError::Build)?;
             let projected_transition = plan_approved_transition(
@@ -1761,7 +1797,7 @@ where
             let expected_signature_digest = grant_signature_sha256.clone();
             let (snapshot, proof) = self.store.publish_successor(
                 &mut guard,
-                &complete,
+                complete,
                 ArtifactPublication::Signed(signed_grant),
                 transition_plan,
                 expected_transition_bytes,
@@ -1843,7 +1879,6 @@ where
             {
                 return Err(CommitError::Stale);
             }
-            self.verify_signer_pin()?;
             let trusted_at = self.clock.sample().map_err(|()| CommitError::Clock)?;
             require_monotonic_clock(&complete.snapshot, &trusted_at)?;
 
@@ -1899,6 +1934,7 @@ where
             if ticket_nonce_used(&complete.snapshot, &hex::encode(ticket_nonce)) {
                 return Err(CommitError::Collision);
             }
+            self.verify_signer_pin()?;
             let ticket_plan = plan_ticket(
                 &candidate,
                 &grant,
@@ -1945,7 +1981,7 @@ where
             let expected_signature_digest = ticket_signature_sha256.clone();
             let (snapshot, proof) = self.store.publish_successor(
                 &mut guard,
-                &complete,
+                complete,
                 ArtifactPublication::Signed(signed_ticket),
                 transition_plan,
                 expected_transition_bytes,
@@ -2009,11 +2045,12 @@ where
                 || command.authorization_nonce != candidate.authorization_nonce
                 || command.envelope_sha256 != candidate.envelope_sha256
                 || command.action_challenge_sha256 != authentication.action_challenge_sha256()
-                || authentication_session_used(&complete, authentication.session_sha256())
             {
                 return Err(CommitError::Stale);
             }
-            self.verify_signer_pin()?;
+            if authentication_session_used(&complete, authentication.session_sha256()) {
+                return Err(CommitError::Collision);
+            }
             let trusted_at = self.clock.sample().map_err(|()| CommitError::Clock)?;
             require_monotonic_clock(&complete.snapshot, &trusted_at)?;
             let transition_plan = plan_close_candidate_transition(
@@ -2028,13 +2065,14 @@ where
                 self.store.pinned_public_key,
             )
             .map_err(map_state_error)?;
+            self.verify_signer_pin()?;
             let expected_transition_bytes = transition_plan
                 .expected_signed_bytes()
                 .map_err(map_state_error)?;
             let expected_candidate_digest = candidate_sha256;
             let (snapshot, proof) = self.store.publish_successor(
                 &mut guard,
-                &complete,
+                complete,
                 ArtifactPublication::None,
                 transition_plan,
                 expected_transition_bytes,
@@ -2110,11 +2148,12 @@ where
                 || command.grant_sha256 != grant_sha256
                 || command.grant_signature_sha256 != grant_signature_sha256
                 || command.action_challenge_sha256 != authentication.action_challenge_sha256()
-                || authentication_session_used(&complete, authentication.session_sha256())
             {
                 return Err(CommitError::Stale);
             }
-            self.verify_signer_pin()?;
+            if authentication_session_used(&complete, authentication.session_sha256()) {
+                return Err(CommitError::Collision);
+            }
             let trusted_at = self.clock.sample().map_err(|()| CommitError::Clock)?;
             require_monotonic_clock(&complete.snapshot, &trusted_at)?;
             let transition_plan = plan_close_approval_transition(
@@ -2133,6 +2172,7 @@ where
                 self.store.pinned_public_key,
             )
             .map_err(map_state_error)?;
+            self.verify_signer_pin()?;
             let expected_transition_bytes = transition_plan
                 .expected_signed_bytes()
                 .map_err(map_state_error)?;
@@ -2140,7 +2180,7 @@ where
             let expected_signature_digest = grant_signature_sha256;
             let (snapshot, proof) = self.store.publish_successor(
                 &mut guard,
-                &complete,
+                complete,
                 ArtifactPublication::None,
                 transition_plan,
                 expected_transition_bytes,

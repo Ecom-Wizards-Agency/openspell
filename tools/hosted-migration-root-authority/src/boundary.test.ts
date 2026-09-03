@@ -193,6 +193,12 @@ describe("private root-authority package boundary", () => {
     expect(arguments_.join("\n")).not.toMatch(/credential|password|secret|token/iu);
   });
 
+  it("keeps rustdoc warnings fatal in the ordinary package check", () => {
+    expect(read("scripts/cargo.mjs")).toContain(
+      "cargo rustdoc --locked --lib --all-features -- -D warnings",
+    );
+  });
+
   it("forbids unsafe and exposes no public Rust API", () => {
     const sources = readdirSync(sourceDirectory, { recursive: true })
       .filter((name): name is string => typeof name === "string" && name.endsWith(".rs"))
@@ -267,6 +273,45 @@ describe("private root-authority package boundary", () => {
     ]) {
       expect(processCapabilityPatterns.some((pattern) => pattern.test(processUse))).toBe(true);
     }
+  });
+
+  it("keeps production composition pathless, passive, non-destructive, and silent", () => {
+    const productionSources = readdirSync(sourceDirectory, { recursive: true })
+      .filter(
+        (name): name is string =>
+          typeof name === "string" &&
+          name.endsWith(".rs") &&
+          name !== "tests.rs" &&
+          !name.endsWith("_tests.rs"),
+      )
+      .map((name) => {
+        const source = readFileSync(join(sourceDirectory, name), "utf8");
+        if (name === "ipc.rs") return source.split("#[cfg(test)]\nmod tests")[0] ?? "";
+        if (name === "crypto.rs") {
+          return source.split("#[cfg(test)]\npub(crate) struct SyntheticRecordSigner")[0] ?? "";
+        }
+        return source;
+      })
+      .join("\n");
+
+    for (const forbidden of [
+      /\bstd\s*::\s*(?:env|fs|path|process)\b/u,
+      /\b(?:Path|PathBuf|Command|SigningKey)\b/u,
+      /\b(?:socket|socketpair|bind|listen|connect|accept)\s*\(/u,
+      /\bFile\s*::/u,
+      /\b(?:remove_file|remove_dir|rename|unlink|ftruncate|set_len)\s*\(/u,
+      /\b(?:print|println|eprint|eprintln|dbg)!\s*\(/u,
+      /\b(?:tracing|log)\s*::/u,
+    ]) {
+      expect(productionSources).not.toMatch(forbidden);
+    }
+
+    const signer = /pub\(crate\) trait RecordSigner \{(?<body>[\s\S]*?)\n\}/u.exec(
+      read("src/crypto.rs"),
+    )?.groups?.body;
+    expect(signer).toBeDefined();
+    expect(signer).not.toMatch(/\bfn\s+sign\s*\(/u);
+    expect(signer?.match(/\bfn\s+sign_[a-z_]+\s*\(/gu)).toHaveLength(7);
   });
 
   it("rejects every forwarded test argument except the repository worker cap", () => {

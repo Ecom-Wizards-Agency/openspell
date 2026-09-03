@@ -16,9 +16,10 @@ use rustix::net::{
 };
 
 use crate::protocol::{
-    MAX_FRAME_BYTES, OperatorDecode, OperatorRequest, OperatorRequestFamily, OperatorResponseFrame,
-    SupervisorDecode, SupervisorRequest, SupervisorRequestFamily, SupervisorResponseFrame,
-    decode_operator, decode_supervisor,
+    MAX_FRAME_BYTES, OperatorDecode, OperatorRefusal, OperatorRequest, OperatorRequestFamily,
+    OperatorResponse, OperatorResponseFrame, RefusalCode, SupervisorDecode, SupervisorRefusal,
+    SupervisorRequest, SupervisorRequestFamily, SupervisorResponse, SupervisorResponseFrame,
+    decode_operator, decode_supervisor, encode_operator_response, encode_supervisor_response,
 };
 
 const CREDENTIAL_CONTROL_BYTES: usize = rustix::cmsg_space!(ScmCredentials(1));
@@ -162,10 +163,7 @@ pub(crate) enum SupervisorIngress {
         request: SupervisorRequest,
         reply: SupervisorReply,
     },
-    Malformed {
-        family: SupervisorRequestFamily,
-        reply: SupervisorReply,
-    },
+    Malformed(MalformedSupervisor),
     Unclassified,
 }
 
@@ -174,11 +172,40 @@ pub(crate) enum OperatorIngress {
         request: OperatorRequest,
         reply: OperatorReply,
     },
-    Malformed {
-        family: OperatorRequestFamily,
-        reply: OperatorReply,
-    },
+    Malformed(MalformedOperator),
     Unclassified,
+}
+
+pub(crate) struct MalformedSupervisor {
+    family: SupervisorRequestFamily,
+    reply: SupervisorReply,
+}
+
+impl MalformedSupervisor {
+    pub(crate) fn attempt(self) -> Result<(), IpcError> {
+        let frame = encode_supervisor_response(SupervisorResponse::Refusal(SupervisorRefusal {
+            family: self.family,
+            code: RefusalCode::InvalidRequest,
+        }))
+        .map_err(|_| IpcError::Send)?;
+        self.reply.send(frame)
+    }
+}
+
+pub(crate) struct MalformedOperator {
+    family: OperatorRequestFamily,
+    reply: OperatorReply,
+}
+
+impl MalformedOperator {
+    pub(crate) fn attempt(self) -> Result<(), IpcError> {
+        let frame = encode_operator_response(OperatorResponse::Refusal(OperatorRefusal {
+            family: self.family,
+            code: RefusalCode::InvalidRequest,
+        }))
+        .map_err(|_| IpcError::Send)?;
+        self.reply.send(frame)
+    }
 }
 
 struct PreparedTransport {
@@ -197,10 +224,12 @@ impl PreparedSupervisor {
                 request,
                 reply: SupervisorReply(reply),
             },
-            SupervisorDecode::Malformed(family) => SupervisorIngress::Malformed {
-                family,
-                reply: SupervisorReply(reply),
-            },
+            SupervisorDecode::Malformed(family) => {
+                SupervisorIngress::Malformed(MalformedSupervisor {
+                    family,
+                    reply: SupervisorReply(reply),
+                })
+            }
             SupervisorDecode::Unclassified => SupervisorIngress::Unclassified,
         })
     }
@@ -216,10 +245,10 @@ impl PreparedOperator {
                 request,
                 reply: OperatorReply(reply),
             },
-            OperatorDecode::Malformed(family) => OperatorIngress::Malformed {
+            OperatorDecode::Malformed(family) => OperatorIngress::Malformed(MalformedOperator {
                 family,
                 reply: OperatorReply(reply),
-            },
+            }),
             OperatorDecode::Unclassified => OperatorIngress::Unclassified,
         })
     }
@@ -474,6 +503,65 @@ mod tests {
             &response[..prefix_len]
         );
         assert_read_eof(&client);
+    }
+
+    #[test]
+    fn authenticated_malformed_known_opcodes_receive_fixed_invalid_request_refusals() {
+        use crate::protocol::{
+            FRAME_HEADER_BYTES, OPERATOR_APPROVE, OPERATOR_REFUSAL, SUPERVISOR_REFUSAL,
+            SUPERVISOR_STATUS, encode_frame,
+        };
+
+        const PRIVACY_CANARY: &str = "PRIVATE_TARGET_CREDENTIAL_SQL_PATH_CANARY";
+        let malformed_payload = format!("{{\n  \"privacyCanary\": \"{PRIVACY_CANARY}\"\n}}\n");
+
+        let (supervisor_client, supervisor_server) = connected_pair(SocketType::SEQPACKET);
+        let supervisor_policy = expected_policy(&supervisor_server);
+        let supervisor = super::prepare_supervisor(supervisor_server, &supervisor_policy)
+            .expect("prepared supervisor");
+        let malformed = encode_frame(SUPERVISOR_STATUS, malformed_payload.as_bytes())
+            .expect("supervisor frame");
+        send_record_and_eof(&supervisor_client, &malformed);
+        match supervisor.receive().expect("supervisor ingress") {
+            super::SupervisorIngress::Malformed(refusal) => {
+                refusal.attempt().expect("supervisor refusal")
+            }
+            _ => panic!("malformed supervisor opcode"),
+        }
+        let response = receive_record(&supervisor_client, MAX_FRAME_BYTES);
+        assert_eq!(
+            u16::from_be_bytes([response[10], response[11]]),
+            SUPERVISOR_REFUSAL
+        );
+        let payload = std::str::from_utf8(&response[FRAME_HEADER_BYTES..]).expect("payload");
+        assert!(payload.contains("\"requestFamily\": \"status\""));
+        assert!(payload.contains("\"code\": \"invalid_request\""));
+        assert!(!payload.contains(PRIVACY_CANARY));
+        assert_read_eof(&supervisor_client);
+
+        let (operator_client, operator_server) = connected_pair(SocketType::SEQPACKET);
+        let operator_policy = expected_policy(&operator_server);
+        let operator =
+            super::prepare_operator(operator_server, &operator_policy).expect("prepared operator");
+        let malformed =
+            encode_frame(OPERATOR_APPROVE, malformed_payload.as_bytes()).expect("operator frame");
+        send_record_and_eof(&operator_client, &malformed);
+        match operator.receive().expect("operator ingress") {
+            super::OperatorIngress::Malformed(refusal) => {
+                refusal.attempt().expect("operator refusal")
+            }
+            _ => panic!("malformed operator opcode"),
+        }
+        let response = receive_record(&operator_client, MAX_FRAME_BYTES);
+        assert_eq!(
+            u16::from_be_bytes([response[10], response[11]]),
+            OPERATOR_REFUSAL
+        );
+        let payload = std::str::from_utf8(&response[FRAME_HEADER_BYTES..]).expect("payload");
+        assert!(payload.contains("\"requestFamily\": \"approve_candidate\""));
+        assert!(payload.contains("\"code\": \"invalid_request\""));
+        assert!(!payload.contains(PRIVACY_CANARY));
+        assert_read_eof(&operator_client);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use crate::journal::storage::{
     ApproveCommand, CloseApprovalCommand, CloseCandidateCommand, CommitError, ConsumeCommand,
     HeadCas, Health, JournalStore, OpenError, RegisterCommand, RootAuthority, StatusCommand,
     StorageError, TestFaultPoint, TestPublicationBoundary, TicketEntropy, TrustedClock,
-    test_clear_fault, test_fail_at,
+    test_clear_fault, test_fail_at, test_park_at,
 };
 use crate::journal::{
     DurableSuccess, InventoryFiles, JournalError, TransitionFile, VerifiedState, VerifiedStatus,
@@ -58,6 +58,20 @@ struct SequenceClock(std::sync::Mutex<std::collections::VecDeque<&'static str>>)
 impl SequenceClock {
     fn new(values: impl IntoIterator<Item = &'static str>) -> Self {
         Self(std::sync::Mutex::new(values.into_iter().collect()))
+    }
+}
+
+struct SequenceEntropy(std::sync::Mutex<std::collections::VecDeque<Result<[u8; 32], ()>>>);
+
+impl SequenceEntropy {
+    fn new(values: impl IntoIterator<Item = Result<[u8; 32], ()>>) -> Self {
+        Self(std::sync::Mutex::new(values.into_iter().collect()))
+    }
+}
+
+impl TicketEntropy for SequenceEntropy {
+    fn draw_once(&self) -> Result<[u8; 32], ()> {
+        self.0.lock().map_err(|_| ())?.pop_front().ok_or(())?
     }
 }
 
@@ -266,6 +280,75 @@ impl RecordSigner for FailingTransitionSigner {
         } else {
             self.inner.sign_approval_expired_transition(transition)
         }
+    }
+}
+
+struct ToggleKeySigner {
+    inner: SyntheticRecordSigner,
+    alternate_public_key: [u8; 32],
+    wrong: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ToggleKeySigner {
+    fn new(wrong: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self {
+            inner: SyntheticRecordSigner::from_seed([7; 32]),
+            alternate_public_key: SyntheticRecordSigner::from_seed([8; 32]).public_key_bytes(),
+            wrong,
+        }
+    }
+}
+
+impl RecordSigner for ToggleKeySigner {
+    fn public_key_bytes(&self) -> [u8; 32] {
+        if self.wrong.load(std::sync::atomic::Ordering::SeqCst) {
+            self.alternate_public_key
+        } else {
+            self.inner.public_key_bytes()
+        }
+    }
+
+    fn sign_approval_grant(&self, grant: &ApprovalGrant) -> Result<[u8; 64], CryptoError> {
+        self.inner.sign_approval_grant(grant)
+    }
+
+    fn sign_execution_ticket(&self, ticket: &ExecutionTicket) -> Result<[u8; 64], CryptoError> {
+        self.inner.sign_execution_ticket(ticket)
+    }
+
+    fn sign_candidate_registered_transition(
+        &self,
+        transition: &CandidateRegisteredTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        self.inner.sign_candidate_registered_transition(transition)
+    }
+
+    fn sign_approved_transition(
+        &self,
+        transition: &ApprovedTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        self.inner.sign_approved_transition(transition)
+    }
+
+    fn sign_consumed_transition(
+        &self,
+        transition: &ConsumedTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        self.inner.sign_consumed_transition(transition)
+    }
+
+    fn sign_candidate_expired_transition(
+        &self,
+        transition: &CandidateExpiredTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        self.inner.sign_candidate_expired_transition(transition)
+    }
+
+    fn sign_approval_expired_transition(
+        &self,
+        transition: &ApprovalExpiredTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        self.inner.sign_approval_expired_transition(transition)
     }
 }
 
@@ -626,6 +709,24 @@ fn empty_test_store(pinned_public_key: [u8; 32]) -> (tempfile::TempDir, JournalS
 }
 
 fn reopen_test_store(root: &std::path::Path, pinned_public_key: [u8; 32]) -> JournalStore {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match open_test_store(root, pinned_public_key) {
+            Ok(store) => return store,
+            Err(OpenError::Lock) if std::time::Instant::now() < deadline => {
+                // A concurrently spawned libtest child can briefly inherit another test's
+                // close-on-exec OFD. The descriptor is gone as soon as exec completes.
+                std::thread::yield_now();
+            }
+            Err(error) => panic!("reopened journal: {error:?}"),
+        }
+    }
+}
+
+fn open_test_store(
+    root: &std::path::Path,
+    pinned_public_key: [u8; 32],
+) -> Result<JournalStore, OpenError> {
     use std::fs::File;
     use std::os::fd::OwnedFd;
     use std::os::unix::fs::MetadataExt;
@@ -633,7 +734,6 @@ fn reopen_test_store(root: &std::path::Path, pinned_public_key: [u8; 32]) -> Jou
     let metadata = root.metadata().expect("root metadata");
     let root_fd: OwnedFd = File::open(root).expect("root fd").into();
     JournalStore::open_from_fd(root_fd, metadata.uid(), metadata.gid(), pinned_public_key)
-        .expect("reopened journal")
 }
 
 fn journal_entry_count(root: &std::path::Path) -> usize {
@@ -681,6 +781,137 @@ fn fault_has_complete_transition(point: TestFaultPoint, transition_ordinal: usiz
                 )
         }
         TestFaultPoint::BeforeFirstPublication => false,
+    }
+}
+
+const PROCESS_CHILD_ROLE: &str = "OPENSP_TEST_ROOT_AUTHORITY_CHILD_ROLE";
+const PROCESS_CHILD_ROOT: &str = "OPENSP_TEST_ROOT_AUTHORITY_CHILD_ROOT";
+const PROCESS_CHILD_COORDINATION: &str = "OPENSP_TEST_ROOT_AUTHORITY_CHILD_COORDINATION";
+const PROCESS_CHILD_ID: &str = "OPENSP_TEST_ROOT_AUTHORITY_CHILD_ID";
+const PROCESS_CHILD_EXPECTED: &str = "OPENSP_TEST_ROOT_AUTHORITY_CHILD_EXPECTED";
+
+fn process_marker(directory: &std::path::Path, kind: &str, id: &str) -> std::path::PathBuf {
+    directory.join(format!("{kind}-{id}"))
+}
+
+fn write_process_marker(path: &std::path::Path, value: &str) {
+    use std::io::Write;
+
+    let pending = path.with_extension("pending");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&pending)
+        .expect("create process marker");
+    file.write_all(value.as_bytes())
+        .expect("write process marker");
+    file.sync_all().expect("sync process marker");
+    drop(file);
+    std::fs::rename(pending, path).expect("publish process marker");
+}
+
+fn wait_for_process_marker(path: &std::path::Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for process marker {}",
+            path.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+fn park_process_until_release(directory: &std::path::Path, id: &str) {
+    wait_for_process_marker(&process_marker(directory, "release", id));
+}
+
+fn spawn_process_child(
+    root: &std::path::Path,
+    coordination: &std::path::Path,
+    role: &str,
+    id: &str,
+    expected: Option<&str>,
+) -> std::process::Child {
+    use std::process::{Command, Stdio};
+
+    let mut command = Command::new(std::env::current_exe().expect("current Rust test binary"));
+    command
+        .arg("--exact")
+        .arg("tests::wp199_independent_process_child")
+        .arg("--nocapture")
+        .env(PROCESS_CHILD_ROLE, role)
+        .env(PROCESS_CHILD_ROOT, root)
+        .env(PROCESS_CHILD_COORDINATION, coordination)
+        .env(PROCESS_CHILD_ID, id)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(expected) = expected {
+        command.env(PROCESS_CHILD_EXPECTED, expected);
+    }
+    command.spawn().expect("spawn independent test process")
+}
+
+fn assert_process_success(child: std::process::Child) {
+    let output = child.wait_with_output().expect("wait for test process");
+    assert!(
+        output.status.success(),
+        "independent process failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn kill_and_reap_process(mut child: std::process::Child) {
+    child.kill().expect("abruptly kill test process");
+    let output = child.wait_with_output().expect("reap killed test process");
+    assert!(
+        !output.status.success(),
+        "killed process unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn spawn_ready_children(
+    root: &std::path::Path,
+    coordination: &std::path::Path,
+    role: &str,
+    count: usize,
+) -> Vec<(String, std::process::Child)> {
+    let children: Vec<_> = (0..count)
+        .map(|index| {
+            let id = index.to_string();
+            let child = spawn_process_child(root, coordination, role, &id, None);
+            (id, child)
+        })
+        .collect();
+    for (id, _) in &children {
+        wait_for_process_marker(&process_marker(coordination, "ready", id));
+    }
+    children
+}
+
+fn assert_lock_probe_wave<F>(root: &std::path::Path, commit: F)
+where
+    F: FnOnce(),
+{
+    const CONTENDERS: usize = 6;
+    let coordination = tempfile::tempdir().expect("lock coordination");
+    let children = spawn_ready_children(root, coordination.path(), "expect-lock", CONTENDERS);
+    write_process_marker(&coordination.path().join("gate"), "go");
+    commit();
+    for (id, _) in &children {
+        let result = process_marker(coordination.path(), "result", id);
+        wait_for_process_marker(&result);
+        assert_eq!(
+            std::fs::read_to_string(result).expect("lock result"),
+            "lock"
+        );
+    }
+    for (_, child) in children {
+        assert_process_success(child);
     }
 }
 
@@ -814,6 +1045,437 @@ fn approval_close_inputs(
         ),
         authentication,
     )
+}
+
+fn observed_process_store_state(store: &JournalStore) -> &'static str {
+    match store.inspect() {
+        Ok((Health::Available, snapshot)) if matches!(snapshot.state, VerifiedState::Empty) => {
+            "available-empty"
+        }
+        Ok((Health::RecoveredNonterminal, snapshot))
+            if matches!(snapshot.state, VerifiedState::CandidateRegistered { .. }) =>
+        {
+            "recovered-candidate"
+        }
+        Ok((Health::RecoveredNonterminal, snapshot))
+            if matches!(snapshot.state, VerifiedState::Approved { .. }) =>
+        {
+            "recovered-approved"
+        }
+        Ok((Health::RecoveredNonterminal, snapshot))
+            if matches!(snapshot.state, VerifiedState::Consumed { .. }) =>
+        {
+            "recovered-consumed"
+        }
+        Err(StorageError::Sealed) => "sealed",
+        other => panic!("unexpected process store state: {other:?}"),
+    }
+}
+
+#[test]
+fn wp199_independent_process_child() {
+    let Ok(role) = std::env::var(PROCESS_CHILD_ROLE) else {
+        return;
+    };
+    if role == "inherited-sender" {
+        use rustix::net::{SendFlags, Shutdown, send, shutdown};
+
+        let frame = register_request_frame(0, GENESIS_SHA256, &candidate("2026-09-03T12:15:00Z"));
+        let stdin = std::io::stdin();
+        assert_eq!(
+            send(&stdin, &frame, SendFlags::NOSIGNAL).expect("child request send"),
+            frame.len()
+        );
+        shutdown(&stdin, Shutdown::Write).expect("child write shutdown");
+        return;
+    }
+    let root =
+        std::path::PathBuf::from(std::env::var_os(PROCESS_CHILD_ROOT).expect("child journal root"));
+    let coordination = std::path::PathBuf::from(
+        std::env::var_os(PROCESS_CHILD_COORDINATION).expect("child coordination root"),
+    );
+    let id = std::env::var(PROCESS_CHILD_ID).expect("child id");
+    let public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
+
+    match role.as_str() {
+        "race-register" => {
+            write_process_marker(&process_marker(&coordination, "ready", &id), "ready");
+            wait_for_process_marker(&coordination.join("gate"));
+            match open_test_store(&root, public_key) {
+                Ok(store) => {
+                    let authority = RootAuthority::synthetic(
+                        store,
+                        SyntheticRecordSigner::from_seed([7; 32]),
+                        FixedClock(NOW),
+                        FixedEntropy([3; 32]),
+                    )
+                    .expect("winning child authority");
+                    drop(
+                        authority
+                            .register(RegisterCommand::new(
+                                HeadCas::new(0, GENESIS_SHA256.to_owned()),
+                                candidate("2026-09-03T12:15:00Z"),
+                            ))
+                            .expect("winning child registration"),
+                    );
+                    write_process_marker(&process_marker(&coordination, "result", &id), "winner");
+                    park_process_until_release(&coordination, &id);
+                }
+                Err(OpenError::Lock) => {
+                    write_process_marker(&process_marker(&coordination, "result", &id), "lock")
+                }
+                Err(error) => panic!("unexpected child open error: {error:?}"),
+            }
+        }
+        "expect-lock" => {
+            write_process_marker(&process_marker(&coordination, "ready", &id), "ready");
+            wait_for_process_marker(&coordination.join("gate"));
+            assert_eq!(
+                open_test_store(&root, public_key).err(),
+                Some(OpenError::Lock)
+            );
+            write_process_marker(&process_marker(&coordination, "result", &id), "lock");
+        }
+        "hold-state" => {
+            let store = open_test_store(&root, public_key).expect("child store open");
+            let expected = std::env::var(PROCESS_CHILD_EXPECTED).expect("expected state");
+            assert_eq!(observed_process_store_state(&store), expected);
+            write_process_marker(&process_marker(&coordination, "ready", &id), "ready");
+            park_process_until_release(&coordination, &id);
+        }
+        "fault-register" => {
+            let store = open_test_store(&root, public_key).expect("fault child store open");
+            let authority = RootAuthority::synthetic(
+                store,
+                SyntheticRecordSigner::from_seed([7; 32]),
+                FixedClock(NOW),
+                FixedEntropy([3; 32]),
+            )
+            .expect("fault child authority");
+            let cut = std::env::var(PROCESS_CHILD_EXPECTED).expect("fault cut");
+            let point = match cut.as_str() {
+                "prepublication" => TestFaultPoint::BeforeFirstPublication,
+                "partial-artifact" => TestFaultPoint::Publication {
+                    ordinal: 1,
+                    boundary: TestPublicationBoundary::PartialWrite,
+                },
+                "complete-transition" => TestFaultPoint::Publication {
+                    ordinal: 3,
+                    boundary: TestPublicationBoundary::CompleteWrite,
+                },
+                "postcommit" => TestFaultPoint::PostCommitVerified,
+                _ => panic!("unknown fault cut"),
+            };
+            let ready_coordination = coordination.clone();
+            let ready_id = id.clone();
+            test_park_at(point, move || {
+                write_process_marker(
+                    &process_marker(&ready_coordination, "result", &ready_id),
+                    "parked",
+                );
+                write_process_marker(
+                    &process_marker(&ready_coordination, "ready", &ready_id),
+                    "ready",
+                );
+            });
+            let outcome = authority.register(RegisterCommand::new(
+                HeadCas::new(0, GENESIS_SHA256.to_owned()),
+                candidate("2026-09-03T12:15:00Z"),
+            ));
+            panic!(
+                "parked publication fault unexpectedly returned: {:?}",
+                outcome.test_error()
+            );
+        }
+        _ => panic!("unknown child role"),
+    }
+}
+
+#[test]
+fn inherited_connected_sender_is_rejected_by_per_message_process_identity() {
+    use std::process::{Command, Stdio};
+
+    use rustix::net::sockopt::socket_peercred;
+    use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
+
+    use crate::ipc::{IpcError, PeerPolicy, prepare_supervisor};
+
+    let signer = SyntheticRecordSigner::from_seed([7; 32]);
+    let (directory, store) = empty_test_store(signer.public_key_bytes());
+    let authority = RootAuthority::synthetic(store, signer, FixedClock(NOW), FixedEntropy([3; 32]))
+        .expect("authority");
+    let before = journal_entry_count(directory.path());
+    let (client, server) = socketpair(
+        AddressFamily::UNIX,
+        SocketType::SEQPACKET,
+        SocketFlags::CLOEXEC,
+        None,
+    )
+    .expect("socket pair");
+    let policy = PeerPolicy::synthetic(socket_peercred(&server).expect("original peer identity"));
+    let prepared = prepare_supervisor(server, &policy).expect("prepared supervisor ingress");
+    let child = Command::new(std::env::current_exe().expect("current Rust test binary"))
+        .arg("--exact")
+        .arg("tests::wp199_independent_process_child")
+        .arg("--nocapture")
+        .env(PROCESS_CHILD_ROLE, "inherited-sender")
+        .stdin(Stdio::from(client))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn inherited sender");
+
+    assert_process_success(child);
+    assert_eq!(prepared.receive().err(), Some(IpcError::Peer));
+    assert_eq!(journal_entry_count(directory.path()), before);
+    assert!(matches!(
+        authority
+            .inspect()
+            .expect("unchanged empty journal")
+            .1
+            .state,
+        VerifiedState::Empty
+    ));
+}
+
+#[test]
+fn independent_processes_cannot_share_or_replace_the_live_authority() {
+    const CONTENDERS: usize = 6;
+    let public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
+
+    let (race_directory, race_store) = empty_test_store(public_key);
+    drop(race_store);
+    let coordination = tempfile::tempdir().expect("registration coordination");
+    let children = spawn_ready_children(
+        race_directory.path(),
+        coordination.path(),
+        "race-register",
+        CONTENDERS,
+    );
+    write_process_marker(&coordination.path().join("gate"), "go");
+    let mut winner = None;
+    let mut locked = 0;
+    for (id, _) in &children {
+        let result = process_marker(coordination.path(), "result", id);
+        wait_for_process_marker(&result);
+        match std::fs::read_to_string(result)
+            .expect("registration result")
+            .as_str()
+        {
+            "winner" => {
+                assert!(winner.replace(id.clone()).is_none(), "one process winner");
+            }
+            "lock" => locked += 1,
+            result => panic!("unexpected registration result: {result}"),
+        }
+    }
+    assert_eq!(locked, CONTENDERS - 1);
+    write_process_marker(
+        &process_marker(
+            coordination.path(),
+            "release",
+            winner.as_deref().expect("registration winner"),
+        ),
+        "release",
+    );
+    for (_, child) in children {
+        assert_process_success(child);
+    }
+    let raced_store = reopen_test_store(race_directory.path(), public_key);
+    assert_eq!(
+        observed_process_store_state(&raced_store),
+        "recovered-candidate"
+    );
+    drop(raced_store);
+
+    let (directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        SyntheticRecordSigner::from_seed([7; 32]),
+        SequenceClock::new([NOW, NOW, NOW]),
+        FixedEntropy([3; 32]),
+    )
+    .expect("live parent authority");
+    let (registered, value) = commit_test_registration(&authority);
+    let verified =
+        RootVerifiedPreparedEnvelope::synthetic(&value, observations()).expect("verified envelope");
+    let attended = authentication(&value);
+    assert_lock_probe_wave(directory.path(), || {
+        drop(
+            authority
+                .approve(
+                    ApproveCommand::new(
+                        HeadCas::new(registered.generation, registered.transition_sha256.clone()),
+                        value.operation_id.clone(),
+                        value.authorization_nonce.clone(),
+                        value.envelope_sha256.clone(),
+                        value.approval_challenge_sha256.clone(),
+                    ),
+                    &verified,
+                    &attended,
+                )
+                .expect("parent-only approval"),
+        );
+    });
+    let (_, approved) = authority.inspect().expect("approved state");
+    let (grant_sha256, grant_signature_sha256) = match &approved.state {
+        VerifiedState::Approved {
+            grant_sha256,
+            grant_signature_sha256,
+            ..
+        } => (grant_sha256.clone(), grant_signature_sha256.clone()),
+        _ => panic!("approved state"),
+    };
+    assert_lock_probe_wave(directory.path(), || {
+        drop(
+            authority
+                .consume(ConsumeCommand::new(
+                    HeadCas::new(approved.generation, approved.transition_sha256.clone()),
+                    value.operation_id.clone(),
+                    value.authorization_nonce.clone(),
+                    grant_sha256,
+                    grant_signature_sha256,
+                ))
+                .expect("parent-only consume"),
+        );
+    });
+    let (_, consumed) = authority.inspect().expect("consumed state");
+    assert!(matches!(consumed.state, VerifiedState::Consumed { .. }));
+    let ticket_count = std::fs::read_dir(directory.path().join("objects/leaves"))
+        .expect("leaf inventory")
+        .map(|entry| std::fs::read(entry.expect("leaf entry").path()).expect("leaf bytes"))
+        .filter(|bytes| ExecutionTicket::decode(bytes).is_ok())
+        .count();
+    assert_eq!(ticket_count, 1, "one execution ticket was minted");
+}
+
+fn assert_killed_holder_reopens_as(root: &std::path::Path, public_key: [u8; 32], expected: &str) {
+    let coordination = tempfile::tempdir().expect("kill coordination");
+    let child = spawn_process_child(root, coordination.path(), "hold-state", "0", Some(expected));
+    wait_for_process_marker(&process_marker(coordination.path(), "ready", "0"));
+    kill_and_reap_process(child);
+    let reopened = reopen_test_store(root, public_key);
+    assert_eq!(observed_process_store_state(&reopened), expected);
+}
+
+#[test]
+fn abrupt_process_death_reopens_clean_candidate_approved_consumed_and_corrupt_states() {
+    use std::fs::Permissions;
+    use std::os::unix::fs::PermissionsExt;
+
+    let public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
+
+    let (clean_directory, clean_store) = empty_test_store(public_key);
+    drop(clean_store);
+    assert_killed_holder_reopens_as(clean_directory.path(), public_key, "available-empty");
+
+    let (candidate_directory, candidate_store) = empty_test_store(public_key);
+    let candidate_authority = RootAuthority::synthetic(
+        candidate_store,
+        SyntheticRecordSigner::from_seed([7; 32]),
+        FixedClock(NOW),
+        FixedEntropy([3; 32]),
+    )
+    .expect("candidate authority");
+    let (candidate_snapshot, _candidate_value) = commit_test_registration(&candidate_authority);
+    drop(candidate_authority);
+    assert_killed_holder_reopens_as(
+        candidate_directory.path(),
+        public_key,
+        "recovered-candidate",
+    );
+
+    let (approved_directory, approved_store) = empty_test_store(public_key);
+    let approved_authority = RootAuthority::synthetic(
+        approved_store,
+        SyntheticRecordSigner::from_seed([7; 32]),
+        SequenceClock::new([NOW, NOW]),
+        FixedEntropy([3; 32]),
+    )
+    .expect("approved authority");
+    let (registered, approved_value) = commit_test_registration(&approved_authority);
+    let _approved = commit_test_approval(&approved_authority, &registered, &approved_value);
+    drop(approved_authority);
+    assert_killed_holder_reopens_as(approved_directory.path(), public_key, "recovered-approved");
+
+    let (consumed_directory, consumed_store) = empty_test_store(public_key);
+    let consumed_authority = RootAuthority::synthetic(
+        consumed_store,
+        SyntheticRecordSigner::from_seed([7; 32]),
+        SequenceClock::new([NOW, NOW, NOW]),
+        FixedEntropy([3; 32]),
+    )
+    .expect("consumed authority");
+    let (registered, consumed_value) = commit_test_registration(&consumed_authority);
+    let approved = commit_test_approval(&consumed_authority, &registered, &consumed_value);
+    let (grant_sha256, grant_signature_sha256) = match &approved.state {
+        VerifiedState::Approved {
+            grant_sha256,
+            grant_signature_sha256,
+            ..
+        } => (grant_sha256.clone(), grant_signature_sha256.clone()),
+        _ => panic!("approved state"),
+    };
+    drop(
+        consumed_authority
+            .consume(ConsumeCommand::new(
+                HeadCas::new(approved.generation, approved.transition_sha256),
+                consumed_value.operation_id,
+                consumed_value.authorization_nonce,
+                grant_sha256,
+                grant_signature_sha256,
+            ))
+            .expect("consume"),
+    );
+    drop(consumed_authority);
+    assert_killed_holder_reopens_as(consumed_directory.path(), public_key, "recovered-consumed");
+
+    let candidate_sha256 = match &candidate_snapshot.state {
+        VerifiedState::CandidateRegistered {
+            candidate_sha256, ..
+        } => candidate_sha256,
+        _ => panic!("candidate state"),
+    };
+    std::fs::set_permissions(
+        candidate_directory
+            .path()
+            .join("objects/leaves")
+            .join(candidate_sha256),
+        Permissions::from_mode(0o640),
+    )
+    .expect("corrupt retained object mode");
+    assert_killed_holder_reopens_as(candidate_directory.path(), public_key, "sealed");
+}
+
+#[test]
+fn abrupt_process_death_at_publication_cuts_reopens_conservatively() {
+    let public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
+    for (cut, expected) in [
+        ("prepublication", "available-empty"),
+        ("partial-artifact", "sealed"),
+        ("complete-transition", "recovered-candidate"),
+        ("postcommit", "recovered-candidate"),
+    ] {
+        let (directory, store) = empty_test_store(public_key);
+        drop(store);
+        let coordination = tempfile::tempdir().expect("fault coordination");
+        let child = spawn_process_child(
+            directory.path(),
+            coordination.path(),
+            "fault-register",
+            "0",
+            Some(cut),
+        );
+        wait_for_process_marker(&process_marker(coordination.path(), "ready", "0"));
+        assert_eq!(
+            std::fs::read_to_string(process_marker(coordination.path(), "result", "0"))
+                .expect("fault result"),
+            "parked"
+        );
+        kill_and_reap_process(child);
+        let reopened = reopen_test_store(directory.path(), public_key);
+        assert_eq!(observed_process_store_state(&reopened), expected, "{cut}");
+    }
 }
 
 #[test]
@@ -976,6 +1638,236 @@ fn transition_signer_failures_before_closure_publication_leave_predecessor_reada
             .state,
         VerifiedState::Approved { .. }
     ));
+}
+
+#[test]
+fn failure_precedence_is_policy_uniqueness_then_time_entropy_and_signer() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
+
+    let wrong = Arc::new(AtomicBool::new(true));
+    let (_directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        ToggleKeySigner::new(Arc::clone(&wrong)),
+        FixedClock("invalid-clock"),
+        FixedEntropy([3; 32]),
+    )
+    .expect("register authority");
+    let register = authority.register(RegisterCommand::new(
+        HeadCas::new(0, GENESIS_SHA256.to_owned()),
+        candidate("2026-09-03T12:15:00Z"),
+    ));
+    assert_eq!(register.test_error(), Some(CommitError::Clock));
+
+    let wrong = Arc::new(AtomicBool::new(false));
+    let (_directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        ToggleKeySigner::new(Arc::clone(&wrong)),
+        SequenceClock::new([NOW, "2026-09-03T12:04:59Z"]),
+        FixedEntropy([3; 32]),
+    )
+    .expect("approve authority");
+    let (registered, value) = commit_test_registration(&authority);
+    wrong.store(true, Ordering::SeqCst);
+    let verified =
+        RootVerifiedPreparedEnvelope::synthetic(&value, observations()).expect("verified");
+    let approve = authority.approve(
+        ApproveCommand::new(
+            HeadCas::new(registered.generation, registered.transition_sha256),
+            value.operation_id.clone(),
+            value.authorization_nonce.clone(),
+            value.envelope_sha256.clone(),
+            value.approval_challenge_sha256.clone(),
+        ),
+        &verified,
+        &authentication(&value),
+    );
+    assert_eq!(approve.test_error(), Some(CommitError::Clock));
+
+    let wrong = Arc::new(AtomicBool::new(false));
+    let (_directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        ToggleKeySigner::new(Arc::clone(&wrong)),
+        SequenceClock::new([NOW, NOW, "2026-09-03T12:04:59Z"]),
+        FixedEntropy([3; 32]),
+    )
+    .expect("consume authority");
+    let (registered, value) = commit_test_registration(&authority);
+    let approved = commit_test_approval(&authority, &registered, &value);
+    let (grant_sha256, grant_signature_sha256) = match &approved.state {
+        VerifiedState::Approved {
+            grant_sha256,
+            grant_signature_sha256,
+            ..
+        } => (grant_sha256.clone(), grant_signature_sha256.clone()),
+        _ => panic!("approved state"),
+    };
+    wrong.store(true, Ordering::SeqCst);
+    let consume = authority.consume(ConsumeCommand::new(
+        HeadCas::new(approved.generation, approved.transition_sha256),
+        value.operation_id,
+        value.authorization_nonce,
+        grant_sha256,
+        grant_signature_sha256,
+    ));
+    assert_eq!(consume.test_error(), Some(CommitError::Clock));
+
+    let wrong = Arc::new(AtomicBool::new(false));
+    let (_directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        ToggleKeySigner::new(Arc::clone(&wrong)),
+        SequenceClock::new([NOW, "2026-09-03T12:04:59Z"]),
+        FixedEntropy([3; 32]),
+    )
+    .expect("candidate closure authority");
+    let (registered, value) = commit_test_registration(&authority);
+    let (command, attended) =
+        candidate_close_inputs(&registered, &value, '0', "2026-09-03T12:04:30Z");
+    wrong.store(true, Ordering::SeqCst);
+    let close = authority.close_candidate(command, &attended);
+    assert_eq!(close.test_error(), Some(CommitError::Clock));
+
+    let wrong = Arc::new(AtomicBool::new(false));
+    let (_directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        ToggleKeySigner::new(Arc::clone(&wrong)),
+        SequenceClock::new([NOW, NOW, "2026-09-03T12:04:59Z"]),
+        FixedEntropy([3; 32]),
+    )
+    .expect("approval closure authority");
+    let (registered, value) = commit_test_registration(&authority);
+    let approved = commit_test_approval(&authority, &registered, &value);
+    let (command, attended) = approval_close_inputs(&approved, &value, '0', "2026-09-03T12:04:30Z");
+    wrong.store(true, Ordering::SeqCst);
+    let close = authority.close_approval(command, &attended);
+    assert_eq!(close.test_error(), Some(CommitError::Clock));
+
+    let wrong = Arc::new(AtomicBool::new(false));
+    let (_directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        ToggleKeySigner::new(Arc::clone(&wrong)),
+        FixedClock(NOW),
+        SequenceEntropy::new([Ok([3; 32]), Err(())]),
+    )
+    .expect("entropy authority");
+    let (registered, value) = commit_test_registration(&authority);
+    let approved = commit_test_approval(&authority, &registered, &value);
+    let (grant_sha256, grant_signature_sha256) = match &approved.state {
+        VerifiedState::Approved {
+            grant_sha256,
+            grant_signature_sha256,
+            ..
+        } => (grant_sha256.clone(), grant_signature_sha256.clone()),
+        _ => panic!("approved state"),
+    };
+    wrong.store(true, Ordering::SeqCst);
+    let consume = authority.consume(ConsumeCommand::new(
+        HeadCas::new(approved.generation, approved.transition_sha256),
+        value.operation_id,
+        value.authorization_nonce,
+        grant_sha256,
+        grant_signature_sha256,
+    ));
+    assert_eq!(consume.test_error(), Some(CommitError::Entropy));
+}
+
+#[test]
+fn verified_envelope_and_session_replays_refuse_before_clock_or_signer_capabilities() {
+    let public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
+
+    let (_directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        SyntheticRecordSigner::from_seed([7; 32]),
+        SequenceClock::new([NOW]),
+        FixedEntropy([3; 32]),
+    )
+    .expect("authority");
+    let (registered, value) = commit_test_registration(&authority);
+    let mut different = value.clone();
+    different.target_selection_sha256 = digest('0');
+    let mismatched = RootVerifiedPreparedEnvelope::synthetic(&different, observations())
+        .expect("mismatched envelope");
+    let approve = authority.approve(
+        ApproveCommand::new(
+            HeadCas::new(registered.generation, registered.transition_sha256),
+            value.operation_id.clone(),
+            value.authorization_nonce.clone(),
+            value.envelope_sha256.clone(),
+            value.approval_challenge_sha256.clone(),
+        ),
+        &mismatched,
+        &authentication(&value),
+    );
+    assert_eq!(approve.test_error(), Some(CommitError::Policy));
+
+    let (_directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        SyntheticRecordSigner::from_seed([7; 32]),
+        SequenceClock::new([NOW, NOW]),
+        FixedEntropy([3; 32]),
+    )
+    .expect("approval replay authority");
+    let (registered, value) = commit_test_registration(&authority);
+    let approved = commit_test_approval(&authority, &registered, &value);
+    let (command, attended) = approval_close_inputs(&approved, &value, 'f', "2026-09-03T12:09:00Z");
+    let close = authority.close_approval(command, &attended);
+    assert_eq!(close.test_error(), Some(CommitError::Collision));
+
+    let (directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        SyntheticRecordSigner::from_seed([7; 32]),
+        SequenceClock::new([NOW, NOW, "2026-09-03T12:09:30Z"]),
+        FixedEntropy([3; 32]),
+    )
+    .expect("historical session authority");
+    let (registered, value) = commit_test_registration(&authority);
+    let approved = commit_test_approval(&authority, &registered, &value);
+    let (command, attended) = approval_close_inputs(&approved, &value, '0', "2026-09-03T12:09:00Z");
+    drop(
+        authority
+            .close_approval(command, &attended)
+            .expect("terminal approval closure"),
+    );
+    drop(authority);
+
+    let recovered = RootAuthority::synthetic(
+        reopen_test_store(directory.path(), public_key),
+        SyntheticRecordSigner::from_seed([7; 32]),
+        SequenceClock::new(["2026-09-03T12:09:31Z"]),
+        FixedEntropy([4; 32]),
+    )
+    .expect("new terminal authority");
+    let terminal = recovered.inspect().expect("terminal state").1;
+    let mut next = candidate("2026-09-03T12:15:00Z");
+    next.operation_id = digest('6');
+    next.authorization_nonce = digest('7');
+    next.envelope_sha256 = digest('8');
+    let registered = recovered
+        .register(RegisterCommand::new(
+            HeadCas::new(terminal.generation, terminal.transition_sha256),
+            next,
+        ))
+        .expect("second registration");
+    drop(registered);
+    let snapshot = recovered.inspect().expect("second candidate").1;
+    let next = match &snapshot.state {
+        VerifiedState::CandidateRegistered { candidate, .. } => candidate.as_ref().clone(),
+        _ => panic!("candidate state"),
+    };
+    let (command, attended) = candidate_close_inputs(&snapshot, &next, 'f', "2026-09-03T12:14:30Z");
+    let close = recovered.close_candidate(command, &attended);
+    assert_eq!(close.test_error(), Some(CommitError::Collision));
 }
 
 fn register_request_frame(
@@ -1468,6 +2360,10 @@ fn clock_rollback_refuses_before_publication_for_all_five_mutation_paths() {
     )
     .expect("reopened terminal authority");
     let before = journal_entry_count(register_directory.path());
+    let mut next_candidate = candidate("2026-09-03T12:30:00Z");
+    next_candidate.operation_id = digest('6');
+    next_candidate.authorization_nonce = digest('7');
+    next_candidate.envelope_sha256 = digest('8');
     let register = reopened.register(RegisterCommand::new(
         HeadCas::new(
             2,
@@ -1477,7 +2373,7 @@ fn clock_rollback_refuses_before_publication_for_all_five_mutation_paths() {
                 .1
                 .transition_sha256,
         ),
-        candidate("2026-09-03T12:30:00Z"),
+        next_candidate,
     ));
     assert_eq!(register.test_error(), Some(CommitError::Clock));
     drop(register);
@@ -2306,7 +3202,24 @@ fn authenticated_supervisor_request_commits_and_emits_one_proof_bearing_response
         .expect("one complete response packet");
     response_bytes.truncate(response_len);
     assert_frame_type(&response_bytes, SUPERVISOR_REGISTER_SUCCESS);
-    assert!(frame_text(&response_bytes).contains("\"status\": \"committed\""));
+    let response = frame_text(&response_bytes);
+    assert!(response.contains("\"status\": \"committed\""));
+    for private_canary in [
+        &value.operation_id,
+        &value.authorization_nonce,
+        &value.target_fingerprint,
+        &value.target_selection_sha256,
+        &value.envelope_sha256,
+        &value.external_exclusive_window_evidence_sha256,
+        &value.official_source_evidence_sha256,
+        &value.native_runtime_identity_sha256,
+        &value.child_sandbox_policy_sha256,
+        &value.phase_exec_topology_policy_sha256,
+        &value.child_cgroup_policy_sha256,
+        &value.apply_invocation_evidence_sha256,
+    ] {
+        assert!(!response.contains(private_canary));
+    }
 }
 
 #[test]
@@ -2682,6 +3595,9 @@ fn lost_closed_and_partial_consume_replies_never_remint_the_bearer() {
         assert!(status.contains("executionTicketSignatureSha256"));
         assert!(!status.contains("executionTicketCanonicalHex"));
         assert!(!status.contains("executionTicketRawSignatureHex"));
+        assert!(!status.contains(&value.operation_id));
+        assert!(!status.contains(&value.authorization_nonce));
+        assert!(!status.contains(&value.target_fingerprint));
         assert_eof(&status_client);
 
         drop(authority);

@@ -15,7 +15,7 @@ const image = [
 
 const commands = Object.freeze({
   check:
-    "cargo fmt --all -- --check && cargo check --locked --all-targets --all-features && cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo fmt --all -- --check && cargo check --locked --all-targets --all-features && cargo clippy --locked --all-targets --all-features -- -D warnings && cargo rustdoc --locked --lib --all-features -- -D warnings",
   test: "cargo test --locked --all-targets --all-features",
 });
 

@@ -67,6 +67,12 @@ impl FreshAttendedAuthentication {
     }
 }
 
+impl RootVerifiedPreparedEnvelope {
+    pub(crate) fn matches_candidate(&self, candidate: &Candidate) -> Result<bool, StateError> {
+        Ok(self.candidate_sha256 == sha256_hex(&candidate.encode()?))
+    }
+}
+
 #[cfg(test)]
 impl RootVerifiedPreparedEnvelope {
     pub(crate) fn synthetic(
@@ -179,7 +185,7 @@ pub(crate) fn plan_approval(
 ) -> Result<ApprovalPlan, StateError> {
     candidate.validate()?;
     let now = validate_whole_timestamp(trusted_now_text)?;
-    if verified.candidate_sha256 != sha256_hex(&candidate.encode()?)
+    if !verified.matches_candidate(candidate)?
         || authentication.action_challenge_sha256 != candidate.approval_challenge_sha256
     {
         return Err(StateError::PolicyMismatch);
