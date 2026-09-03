@@ -102,6 +102,22 @@ pid/uid/gid must equal both the immutable synthetic peer policy and the connecti
 `SCM_RIGHTS` or extra control record refuses before journal access. This rejects a child that sends
 through an inherited connection whose original peer pid differs.
 
+Handle admission is explicitly two phase. The authority first consumes and validates the connected
+descriptor, enables and reads back `SO_PASSCRED`, and returns an opaque surface-specific prepared
+endpoint. Only after that preparation succeeds may the composition release the peer to send its one
+request. Linux does not retroactively attach the real sender credentials to a record queued before
+`SO_PASSCRED` was enabled; such an early record therefore refuses. Production composition must
+preserve this ordering at endpoint acceptance or through an external readiness handoff. WP-199
+provides only the injected-handle seam and synthetic proof, not that production handoff.
+
+The receive ancillary buffer has exactly the rustix space for one credentials record. It remains
+large enough after rustix aligns the caller buffer, but smaller than one credentials record plus the
+smallest second control header. Any extra control record must therefore set `MSG_CTRUNC`, which is a
+refusal; recognized rights are also drained and closed defensively. A connected named Unix peer may
+populate `msg_name`; when present, it must be `AF_UNIX` and equal the already checked `getpeername`
+address. It is consistency evidence only—`SO_PEERCRED` plus `SCM_CREDENTIALS` remains the identity
+check.
+
 These checks prove only the implementation seam. They do not prove production caller identity or
 fresh attended authentication. PID reuse, process start identity, cgroup/executable binding,
 pidfds, PAM/TTY/audit binding and real socket ownership remain later deployment gates.
@@ -144,7 +160,10 @@ accepted. The payload hash detects framing corruption only; it is not authentica
 The decoder refuses before state access on a wrong magic/version/type/length/hash, unknown key,
 duplicate key, reordered key, noncanonical whitespace or escaping, invalid UTF-8, oversize packet,
 truncation, trailing bytes, second packet, descriptor passing or other ancillary data. Unauthorized
-peers receive no response bytes.
+peers receive no response bytes. An authenticated request with framing or opcode bytes that do not
+identify one known family on that surface also receives no response: it cannot truthfully populate
+the closed `requestFamily` field. `invalid_request` is emitted only after a valid known opcode has
+selected its family and that family's payload is malformed.
 
 Authorized refusals contain only a fixed request-family label and one nonsensitive code. No
 operator, status or refusal response and no log echoes an operation value, target fact, canonical
@@ -168,8 +187,8 @@ Only the listed request types are valid on each surface.
 
 Supervisor refusals use `0x9fff`; operator refusals use `0xafff`. An unauthorized peer, wrong
 socket kind/domain/state, missing or mismatched kernel credential, extra control record or descriptor
-passing receives no response bytes. An authorized malformed request receives the surface-specific
-refusal.
+passing receives no response bytes. An authorized malformed payload under a valid known opcode
+receives the surface-specific refusal; unclassifiable framing or opcode input receives no bytes.
 
 ### Exact request payloads
 
@@ -257,6 +276,9 @@ Refusals are exactly `schemaVersion`, `requestFamily`, `status` = `refused`, `co
 `policy_mismatch`, `expired`, `not_expired`, `recovery_only`, `journal_unavailable`,
 `signer_unavailable`, `clock_invalid`, `entropy_unavailable` or `nonce_collision`. A failed or
 partial response send never changes the durable result and never permits a bearer response replay.
+When failures overlap, precedence is integrity/recovery, compare-and-set, state, policy/uniqueness,
+time, entropy, signer, then storage. Any signer or storage failure after the first final object is
+created seals the authority and externally maps only to `journal_unavailable`.
 
 ## Untrusted candidate and private verification capabilities
 
@@ -381,6 +403,11 @@ edge. That narrow signing exception binds both the original operation-authority 
 current closing-authority incarnation; it does not change or revive the operation. In a same-process
 closure those digests are equal; after recovery they differ.
 
+Because one live authority incarnation is permanently unique, one authority open may register at
+most one operation. Even after a same-process attended closure, registering another operation
+requires dropping the authority and reopening the same locked journal with a newly drawn
+incarnation.
+
 There is at most one nonterminal operation per supplied, locked journal. Operation ids,
 authorization nonces, OS-authentication-session digests, envelope digests, authority-incarnation
 digests and ticket nonces are permanently unique across the retained journal. A collision refuses;
@@ -412,10 +439,13 @@ previous-transition digest is
 The root directory and fixed child directories must be one local filesystem, owned by the expected
 authority identity from the opaque root policy, non-writable by group/other and opened fd-relative
 without following symlinks or crossing a mount. Regular files are mode `0600`, owned by the
-authority and have link count one. Directories are `0700` with link counts appropriate to the exact
-tree.
+authority and have link count one. Format v1 accepts only ext-family (`0xef53`) and XFS
+(`0x58465342`) filesystem magic values in production; `tmpfs` is accepted only by the compiled test
+harness. Directories are exactly mode `0700`; link counts are root = 4, `objects` = 4 and
+`leaves`/`signatures`/`transitions` = 2 for the exact fixed tree.
 
-`LOCK` is one fixed regular inode, opened fd-relative with `O_RDWR|O_CLOEXEC|O_NOFOLLOW`, verified by
+`LOCK` is one fixed empty regular inode, opened fd-relative with
+`O_RDWR|O_CLOEXEC|O_NOFOLLOW`, verified by
 both descriptor and directory-entry metadata, and held with nonblocking Linux `F_OFD_SETLK` write
 locking for the authority lifetime. Lock contention refuses startup. The descriptor is never
 returned, cloned or duplicated; the library contains no fork/exec path; closing it seals that
@@ -530,7 +560,9 @@ signature objects and 64 MiB of total regular-file content across the fixed tree
 and seals recovery-only as soon as any bound is exceeded. Files are streamed through bounded buffers;
 only verified typed summaries and bytes needed for predecessor revalidation remain resident. These
 are format-v1 availability constants, not caller policy; raising them requires a reviewed format
-revision.
+revision. Before creating anything, a mutation projects every count and byte total; a successor that
+would cross a cap refuses `journal_unavailable` without mutation while the still-valid current
+status remains readable.
 
 ## Commit and response ordering
 
@@ -540,8 +572,9 @@ Every mutation holds the singleton lock and follows this order:
 2. revalidate every predecessor object byte-for-byte; construct the state-specific candidate, grant,
    ticket or closure evidence; draw at most the one required ticket nonce; sign signed records only
    through a narrow record-specific signer;
-3. for registration publish the candidate object; for approval publish the grant leaf/signature;
-   for consumption publish the ticket leaf/signature; for either closure publish no leaf. Publish
+3. for registration publish the candidate object; for approval publish the raw grant signature and
+   then the grant leaf; for consumption publish the raw ticket signature and then the ticket leaf;
+   for either closure publish no leaf. Publish
    each new object directly at its content-addressed final name using
    `O_CREAT|O_EXCL|O_NOFOLLOW`, complete write, metadata verification, file sync and the relevant
    object-directory sync;

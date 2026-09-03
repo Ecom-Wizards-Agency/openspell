@@ -10,8 +10,9 @@ use crate::crypto::{
     CryptoError, RecordSigner, sha256, sha256_hex, verify_grant, verify_ticket, verify_transition,
 };
 use crate::records::{
-    APPROVED_SCHEMA, ApprovalGrant, ApprovedTransition, CANDIDATE_REGISTERED_SCHEMA,
-    CANDIDATE_SCHEMA, CONSUMED_SCHEMA, Candidate, CandidateRegisteredTransition,
+    APPROVAL_EXPIRED_SCHEMA, APPROVED_SCHEMA, ApprovalExpiredTransition, ApprovalGrant,
+    ApprovedTransition, CANDIDATE_EXPIRED_SCHEMA, CANDIDATE_REGISTERED_SCHEMA, CANDIDATE_SCHEMA,
+    CONSUMED_SCHEMA, Candidate, CandidateExpiredTransition, CandidateRegisteredTransition,
     ConsumedTransition, ExecutionTicket, GRANT_SCHEMA, TICKET_SCHEMA, Transition,
 };
 
@@ -264,7 +265,7 @@ pub(crate) fn consume_grant(
     Ok((ticket, signature))
 }
 
-fn grant_matches_candidate(grant: &ApprovalGrant, candidate: &Candidate) -> bool {
+pub(crate) fn grant_matches_candidate(grant: &ApprovalGrant, candidate: &Candidate) -> bool {
     grant.operation_id == candidate.operation_id
         && grant.authorization_nonce == candidate.authorization_nonce
         && grant.target_fingerprint == candidate.target_fingerprint
@@ -280,6 +281,28 @@ fn grant_matches_candidate(grant: &ApprovalGrant, candidate: &Candidate) -> bool
         && grant.phase_exec_topology_policy_sha256 == candidate.phase_exec_topology_policy_sha256
         && grant.child_cgroup_policy_sha256 == candidate.child_cgroup_policy_sha256
         && grant.apply_invocation_evidence_sha256 == candidate.apply_invocation_evidence_sha256
+}
+
+pub(crate) fn ticket_matches_grant(ticket: &ExecutionTicket, grant: &ApprovalGrant) -> bool {
+    ticket.approval_grant_sha256
+        == grant
+            .encode()
+            .map_or(String::new(), |bytes| sha256_hex(&bytes))
+        && ticket.operation_id == grant.operation_id
+        && ticket.authorization_nonce == grant.authorization_nonce
+        && ticket.target_fingerprint == grant.target_fingerprint
+        && ticket.target_selection_sha256 == grant.target_selection_sha256
+        && ticket.envelope_sha256 == grant.envelope_sha256
+        && ticket.external_exclusive_window_generation == grant.external_exclusive_window_generation
+        && ticket.external_exclusive_window_evidence_sha256
+            == grant.external_exclusive_window_evidence_sha256
+        && ticket.official_source_evidence_sha256 == grant.official_source_evidence_sha256
+        && ticket.native_runtime_identity_sha256 == grant.native_runtime_identity_sha256
+        && ticket.child_sandbox_policy_sha256 == grant.child_sandbox_policy_sha256
+        && ticket.phase_exec_topology_policy_sha256 == grant.phase_exec_topology_policy_sha256
+        && ticket.child_cgroup_policy_sha256 == grant.child_cgroup_policy_sha256
+        && ticket.apply_invocation_evidence_sha256 == grant.apply_invocation_evidence_sha256
+        && ticket.expires_at == grant.expires_at
 }
 
 pub(crate) fn sign_candidate_registered_transition(
@@ -408,4 +431,207 @@ pub(crate) fn sign_consumed_transition(
     let transition = Transition::Consumed(record);
     verify_transition(&transition, &signature, &public_key)?;
     Ok((transition, signature))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn close_candidate(
+    candidate: &Candidate,
+    candidate_sha256: String,
+    generation: u64,
+    previous_transition_sha256: String,
+    closing_authority_incarnation_sha256: String,
+    action_challenge_sha256: String,
+    authentication: &FreshAttendedAuthentication,
+    trusted_at: String,
+    signer: &impl RecordSigner,
+) -> Result<(Transition, [u8; 64]), StateError> {
+    candidate.validate()?;
+    let expected_challenge = derive_candidate_close_challenge(
+        &previous_transition_sha256,
+        &candidate_sha256,
+        &candidate.approval_challenge_sha256,
+    )?;
+    verify_closure_authentication(
+        authentication,
+        &action_challenge_sha256,
+        &expected_challenge,
+        &trusted_at,
+        &candidate.cutoff_at,
+    )?;
+    let public_key = signer.public_key_bytes();
+    let mut record = CandidateExpiredTransition {
+        schema_version: CANDIDATE_EXPIRED_SCHEMA.to_owned(),
+        generation,
+        previous_transition_sha256,
+        transition_kind: "candidate_expired".to_owned(),
+        prior_state: "candidate_registered".to_owned(),
+        resulting_state: "candidate_expired".to_owned(),
+        candidate_sha256,
+        operation_id: candidate.operation_id.clone(),
+        authorization_nonce: candidate.authorization_nonce.clone(),
+        envelope_sha256: candidate.envelope_sha256.clone(),
+        operation_authority_incarnation_sha256: candidate
+            .operation_authority_incarnation_sha256
+            .clone(),
+        closing_authority_incarnation_sha256,
+        action_challenge_sha256,
+        authenticated_operator_identity_sha256: authentication.operator_identity_sha256.clone(),
+        os_authentication_session_sha256: authentication.session_sha256.clone(),
+        authenticated_at: authentication.authenticated_at.clone(),
+        cutoff_at: candidate.cutoff_at.clone(),
+        trusted_at,
+        issuer_public_key_sha256: sha256_hex(&public_key),
+        detached_signature_sha256: String::new(),
+    };
+    let signature = signer.sign_candidate_expired_transition(&record)?;
+    record.detached_signature_sha256 = sha256_hex(&signature);
+    let transition = Transition::CandidateExpired(record);
+    verify_transition(&transition, &signature, &public_key)?;
+    Ok((transition, signature))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn close_approval(
+    candidate: &Candidate,
+    candidate_sha256: String,
+    grant: &ApprovalGrant,
+    grant_signature: &[u8; 64],
+    grant_sha256: String,
+    grant_signature_sha256: String,
+    generation: u64,
+    previous_transition_sha256: String,
+    closing_authority_incarnation_sha256: String,
+    action_challenge_sha256: String,
+    authentication: &FreshAttendedAuthentication,
+    trusted_at: String,
+    signer: &impl RecordSigner,
+) -> Result<(Transition, [u8; 64]), StateError> {
+    let public_key = signer.public_key_bytes();
+    verify_grant(grant, grant_signature, &public_key)?;
+    if !grant_matches_candidate(grant, candidate)
+        || grant_sha256 != sha256_hex(&grant.encode()?)
+        || grant_signature_sha256 != sha256_hex(grant_signature)
+    {
+        return Err(StateError::PolicyMismatch);
+    }
+    let expected_challenge = derive_approval_close_challenge(
+        &previous_transition_sha256,
+        &candidate_sha256,
+        &candidate.approval_challenge_sha256,
+        &grant_sha256,
+        &grant_signature_sha256,
+    )?;
+    verify_closure_authentication(
+        authentication,
+        &action_challenge_sha256,
+        &expected_challenge,
+        &trusted_at,
+        &grant.expires_at,
+    )?;
+    let mut record = ApprovalExpiredTransition {
+        schema_version: APPROVAL_EXPIRED_SCHEMA.to_owned(),
+        generation,
+        previous_transition_sha256,
+        transition_kind: "approval_expired".to_owned(),
+        prior_state: "approved".to_owned(),
+        resulting_state: "approval_expired".to_owned(),
+        candidate_sha256,
+        approval_grant_sha256: grant_sha256,
+        approval_grant_signature_sha256: grant_signature_sha256,
+        operation_id: candidate.operation_id.clone(),
+        authorization_nonce: candidate.authorization_nonce.clone(),
+        envelope_sha256: candidate.envelope_sha256.clone(),
+        operation_authority_incarnation_sha256: candidate
+            .operation_authority_incarnation_sha256
+            .clone(),
+        closing_authority_incarnation_sha256,
+        action_challenge_sha256,
+        authenticated_operator_identity_sha256: authentication.operator_identity_sha256.clone(),
+        os_authentication_session_sha256: authentication.session_sha256.clone(),
+        authenticated_at: authentication.authenticated_at.clone(),
+        cutoff_at: grant.expires_at.clone(),
+        trusted_at,
+        issuer_public_key_sha256: sha256_hex(&public_key),
+        detached_signature_sha256: String::new(),
+    };
+    let signature = signer.sign_approval_expired_transition(&record)?;
+    record.detached_signature_sha256 = sha256_hex(&signature);
+    let transition = Transition::ApprovalExpired(record);
+    verify_transition(&transition, &signature, &public_key)?;
+    Ok((transition, signature))
+}
+
+fn verify_closure_authentication(
+    authentication: &FreshAttendedAuthentication,
+    request_challenge: &str,
+    expected_challenge: &str,
+    trusted_at: &str,
+    cutoff_at: &str,
+) -> Result<(), StateError> {
+    if request_challenge != expected_challenge
+        || authentication.action_challenge_sha256 != expected_challenge
+    {
+        return Err(StateError::PolicyMismatch);
+    }
+    let trusted = validate_whole_timestamp(trusted_at)?;
+    let authenticated = validate_whole_timestamp(&authentication.authenticated_at)?;
+    let cutoff = validate_derived_timestamp(cutoff_at)?;
+    if trusted < cutoff {
+        return Err(StateError::Expired);
+    }
+    let age = trusted - authenticated;
+    if age.is_negative() {
+        return Err(StateError::Future);
+    }
+    if age.whole_seconds() > 300 {
+        return Err(StateError::Stale);
+    }
+    Ok(())
+}
+
+pub(crate) fn derive_candidate_close_challenge(
+    previous_transition_sha256: &str,
+    candidate_sha256: &str,
+    approval_challenge_sha256: &str,
+) -> Result<String, StateError> {
+    derive_challenge(
+        b"openspell.hosted-migration-close-candidate-challenge.v1\n",
+        &[
+            previous_transition_sha256,
+            candidate_sha256,
+            approval_challenge_sha256,
+        ],
+    )
+}
+
+pub(crate) fn derive_approval_close_challenge(
+    previous_transition_sha256: &str,
+    candidate_sha256: &str,
+    approval_challenge_sha256: &str,
+    grant_sha256: &str,
+    grant_signature_sha256: &str,
+) -> Result<String, StateError> {
+    derive_challenge(
+        b"openspell.hosted-migration-close-approval-challenge.v1\n",
+        &[
+            previous_transition_sha256,
+            candidate_sha256,
+            approval_challenge_sha256,
+            grant_sha256,
+            grant_signature_sha256,
+        ],
+    )
+}
+
+fn derive_challenge(domain: &[u8], digests: &[&str]) -> Result<String, StateError> {
+    let mut preimage = Vec::with_capacity(domain.len() + digests.len() * 32);
+    preimage.extend_from_slice(domain);
+    for digest in digests {
+        let decoded: [u8; 32] = hex::decode(digest)
+            .map_err(|_| StateError::Canonical)?
+            .try_into()
+            .map_err(|_| StateError::Canonical)?;
+        preimage.extend_from_slice(&decoded);
+    }
+    Ok(sha256_hex(&preimage))
 }
