@@ -1,0 +1,26 @@
+[package]
+name = "openspell-hosted-migration-root-authority"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+autobins = false
+autoexamples = false
+autobenches = false
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "zeroize"] }
+hex = "=0.4.3"
+nix = { version = "=0.31.3", features = ["fs"] }
+rustix = { version = "=1.1.4", default-features = false, features = ["fs", "net", "std"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "=0.10.9"
+time = { version = "=0.3.55", features = ["formatting", "parsing"] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"

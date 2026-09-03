@@ -344,6 +344,15 @@ importers:
         specifier: ^22.20.1
         version: 22.20.1
 
+  tools/hosted-migration-root-authority:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
+      '@wizard-ads/hosted-migration-conformance':
+        specifier: workspace:*
+        version: link:../hosted-migration-conformance
+
   tools/hygiene-lint: {}
 
 packages:
