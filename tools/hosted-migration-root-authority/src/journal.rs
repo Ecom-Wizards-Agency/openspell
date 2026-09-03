@@ -203,6 +203,8 @@ pub(crate) struct VerifiedSnapshot {
     pub(crate) trusted_at: Option<String>,
     pub(crate) state: VerifiedState,
     pub(crate) operations: BTreeMap<String, OperationSummary>,
+    pub(crate) authority_incarnations: BTreeSet<String>,
+    pub(crate) authentication_sessions: BTreeSet<String>,
 }
 
 #[derive(Default)]
@@ -223,6 +225,56 @@ pub(crate) fn verify_inventory(
     verify_content_addresses(&inventory.leaves, false)?;
     verify_content_addresses(&inventory.signatures, true)?;
 
+    verify_inventory_source(inventory, pinned_public_key)
+}
+
+pub(crate) trait InventorySource {
+    fn leaf_names(&self) -> BTreeSet<String>;
+    fn signature_names(&self) -> BTreeSet<String>;
+    fn transition_generations(&self) -> Vec<u64>;
+    fn load_leaf(&self, digest: &str) -> Result<Vec<u8>, JournalError>;
+    fn load_signature(&self, digest: &str) -> Result<[u8; 64], JournalError>;
+    fn load_transition(&self, generation: u64) -> Result<TransitionFile, JournalError>;
+}
+
+impl InventorySource for InventoryFiles {
+    fn leaf_names(&self) -> BTreeSet<String> {
+        self.leaves.keys().cloned().collect()
+    }
+
+    fn signature_names(&self) -> BTreeSet<String> {
+        self.signatures.keys().cloned().collect()
+    }
+
+    fn transition_generations(&self) -> Vec<u64> {
+        self.transitions.keys().copied().collect()
+    }
+
+    fn load_leaf(&self, digest: &str) -> Result<Vec<u8>, JournalError> {
+        self.leaves.get(digest).cloned().ok_or(JournalError::Shape)
+    }
+
+    fn load_signature(&self, digest: &str) -> Result<[u8; 64], JournalError> {
+        self.signatures
+            .get(digest)
+            .ok_or(JournalError::Shape)?
+            .as_slice()
+            .try_into()
+            .map_err(|_| JournalError::Shape)
+    }
+
+    fn load_transition(&self, generation: u64) -> Result<TransitionFile, JournalError> {
+        self.transitions
+            .get(&generation)
+            .cloned()
+            .ok_or(JournalError::Shape)
+    }
+}
+
+pub(crate) fn verify_inventory_source(
+    inventory: &impl InventorySource,
+    pinned_public_key: &[u8; 32],
+) -> Result<VerifiedSnapshot, JournalError> {
     let mut referenced_leaves = BTreeSet::new();
     let mut referenced_signatures = BTreeSet::new();
     let mut facts = UniqueFacts::default();
@@ -232,9 +284,12 @@ pub(crate) fn verify_inventory(
         trusted_at: None,
         state: VerifiedState::Empty,
         operations: BTreeMap::new(),
+        authority_incarnations: BTreeSet::new(),
+        authentication_sessions: BTreeSet::new(),
     };
 
-    for (&generation, file) in &inventory.transitions {
+    for generation in inventory.transition_generations() {
+        let file = inventory.load_transition(generation)?;
         if generation != snapshot.generation + 1
             || file.digest != sha256_hex(&file.bytes)
             || file.bytes.len() > MAX_CANONICAL_BYTES
@@ -254,7 +309,7 @@ pub(crate) fn verify_inventory(
             return Err(JournalError::State);
         }
         let transition_signature = load_signature(
-            &inventory.signatures,
+            inventory,
             transition.detached_signature_sha256(),
             &mut referenced_signatures,
         )?;
@@ -284,11 +339,13 @@ pub(crate) fn verify_inventory(
         snapshot.state = next_state;
     }
 
-    if referenced_leaves != inventory.leaves.keys().cloned().collect()
-        || referenced_signatures != inventory.signatures.keys().cloned().collect()
+    if referenced_leaves != inventory.leaf_names()
+        || referenced_signatures != inventory.signature_names()
     {
         return Err(JournalError::Unreferenced);
     }
+    snapshot.authority_incarnations = facts.authority_incarnations;
+    snapshot.authentication_sessions = facts.authentication_sessions;
     Ok(snapshot)
 }
 
@@ -337,7 +394,7 @@ fn verify_content_addresses(
 fn reduce_transition(
     snapshot: &VerifiedSnapshot,
     transition: &Transition,
-    inventory: &InventoryFiles,
+    inventory: &impl InventorySource,
     pinned_public_key: &[u8; 32],
     referenced_leaves: &mut BTreeSet<String>,
     referenced_signatures: &mut BTreeSet<String>,
@@ -354,11 +411,7 @@ fn reduce_transition(
             {
                 return Err(JournalError::State);
             }
-            let candidate = load_candidate(
-                &inventory.leaves,
-                &record.candidate_sha256,
-                referenced_leaves,
-            )?;
+            let candidate = load_candidate(inventory, &record.candidate_sha256, referenced_leaves)?;
             verify_candidate_against_registration(&candidate, record)?;
             if !facts.operation_ids.insert(candidate.operation_id.clone())
                 || !facts
@@ -392,13 +445,9 @@ fn reduce_transition(
             {
                 return Err(JournalError::State);
             }
-            let grant = load_grant(
-                &inventory.leaves,
-                &record.approval_grant_sha256,
-                referenced_leaves,
-            )?;
+            let grant = load_grant(inventory, &record.approval_grant_sha256, referenced_leaves)?;
             let grant_signature = load_signature(
-                &inventory.signatures,
+                inventory,
                 &record.approval_grant_signature_sha256,
                 referenced_signatures,
             )?;
@@ -457,12 +506,12 @@ fn reduce_transition(
                 return Err(JournalError::State);
             }
             let ticket = load_ticket(
-                &inventory.leaves,
+                inventory,
                 &record.execution_ticket_sha256,
                 referenced_leaves,
             )?;
             let ticket_signature = load_signature(
-                &inventory.signatures,
+                inventory,
                 &record.execution_ticket_signature_sha256,
                 referenced_signatures,
             )?;
@@ -575,46 +624,39 @@ fn reduce_transition(
 }
 
 fn load_candidate(
-    leaves: &BTreeMap<String, Vec<u8>>,
+    inventory: &impl InventorySource,
     digest: &str,
     referenced: &mut BTreeSet<String>,
 ) -> Result<Candidate, JournalError> {
     referenced.insert(digest.to_owned());
-    Candidate::decode(leaves.get(digest).ok_or(JournalError::Shape)?).map_err(JournalError::from)
+    Candidate::decode(&inventory.load_leaf(digest)?).map_err(JournalError::from)
 }
 
 fn load_grant(
-    leaves: &BTreeMap<String, Vec<u8>>,
+    inventory: &impl InventorySource,
     digest: &str,
     referenced: &mut BTreeSet<String>,
 ) -> Result<ApprovalGrant, JournalError> {
     referenced.insert(digest.to_owned());
-    ApprovalGrant::decode(leaves.get(digest).ok_or(JournalError::Shape)?)
-        .map_err(JournalError::from)
+    ApprovalGrant::decode(&inventory.load_leaf(digest)?).map_err(JournalError::from)
 }
 
 fn load_ticket(
-    leaves: &BTreeMap<String, Vec<u8>>,
+    inventory: &impl InventorySource,
     digest: &str,
     referenced: &mut BTreeSet<String>,
 ) -> Result<ExecutionTicket, JournalError> {
     referenced.insert(digest.to_owned());
-    ExecutionTicket::decode(leaves.get(digest).ok_or(JournalError::Shape)?)
-        .map_err(JournalError::from)
+    ExecutionTicket::decode(&inventory.load_leaf(digest)?).map_err(JournalError::from)
 }
 
 fn load_signature(
-    signatures: &BTreeMap<String, Vec<u8>>,
+    inventory: &impl InventorySource,
     digest: &str,
     referenced: &mut BTreeSet<String>,
 ) -> Result<[u8; 64], JournalError> {
     referenced.insert(digest.to_owned());
-    signatures
-        .get(digest)
-        .ok_or(JournalError::Shape)?
-        .as_slice()
-        .try_into()
-        .map_err(|_| JournalError::Shape)
+    inventory.load_signature(digest)
 }
 
 fn verify_candidate_against_registration(

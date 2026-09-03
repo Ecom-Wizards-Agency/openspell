@@ -1,14 +1,18 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File, Permissions};
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
+
+use nix::sys::stat::Mode as NixMode;
+use nix::unistd::mkfifo;
+use rustix::fs::{AtFlags, Mode, OFlags, ResolveFlags, fstat, fstatfs, openat2, statat};
 
 use crate::canonical::MAX_CANONICAL_BYTES;
 use crate::crypto::{RecordSigner, SyntheticRecordSigner, sha256_hex};
 use crate::journal::storage::{
     HeadCas, JournalStore, OpenError, RegisterCommand, RootAuthority, StorageError, TicketEntropy,
-    TrustedClock,
+    TrustedClock, guarded_open_directory_for_test, verify_local_filesystem_for_test,
 };
 use crate::journal::{
     FORMAT_BYTES, InventoryFiles, JournalError, MAX_LEAVES, MAX_SIGNATURES, MAX_TOTAL_BYTES,
@@ -135,6 +139,20 @@ fn sole_file(directory: impl AsRef<Path>) -> PathBuf {
     entries.sort();
     assert_eq!(entries.len(), 1, "one registration artifact expected");
     entries.pop().expect("single artifact")
+}
+
+fn replace_with_fifo(path: &Path) {
+    if path.exists() {
+        fs::remove_file(path).expect("remove replaced file");
+    }
+    mkfifo(path, NixMode::from_bits_truncate(0o600)).expect("create FIFO");
+    fs::set_permissions(path, Permissions::from_mode(0o600)).expect("FIFO mode");
+    assert!(
+        fs::symlink_metadata(path)
+            .expect("FIFO metadata")
+            .file_type()
+            .is_fifo()
+    );
 }
 
 fn snapshot_tree(root: &Path) -> Vec<TreeEntry> {
@@ -289,6 +307,116 @@ fn bad_format_lock_and_expected_owner_fail_before_state_is_available() {
         Err(OpenError::Root)
     ));
     assert_eq!(snapshot_tree(root), before);
+}
+
+#[test]
+fn special_files_fail_closed_without_blocking_in_every_initial_read_namespace() {
+    let public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
+    for artifact in ["format", "lock", "leaf", "signature", "transition"] {
+        let directory = new_tree();
+        let root = directory.path();
+        let path = match artifact {
+            "format" => root.join("FORMAT"),
+            "lock" => root.join("LOCK"),
+            "leaf" => root.join("objects/leaves").join(digest('0')),
+            "signature" => root.join("objects/signatures").join(digest('0')),
+            "transition" => {
+                root.join("transitions")
+                    .join(format!("{:020}-{}.json", 1, digest('0')))
+            }
+            _ => unreachable!(),
+        };
+        replace_with_fifo(&path);
+        let started = std::time::Instant::now();
+        assert_fails_closed_without_repair(root, public_key);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{artifact} special file blocked the initial scanner"
+        );
+    }
+}
+
+#[test]
+fn special_files_fail_revalidation_without_blocking() {
+    for artifact in ["format", "lock", "leaf", "signature", "transition"] {
+        let (directory, public_key) = registered_tree();
+        let root = directory.path();
+        let metadata = fs::metadata(root).expect("root metadata");
+        let store =
+            open_store(root, public_key, metadata.uid(), metadata.gid()).expect("registered store");
+        let path = match artifact {
+            "format" => root.join("FORMAT"),
+            "lock" => root.join("LOCK"),
+            "leaf" => sole_file(root.join("objects/leaves")),
+            "signature" => sole_file(root.join("objects/signatures")),
+            "transition" => sole_file(root.join("transitions")),
+            _ => unreachable!(),
+        };
+        replace_with_fifo(&path);
+        let before = snapshot_tree(root);
+        let started = std::time::Instant::now();
+        assert!(store.revalidate_for_test().is_err());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{artifact} special file blocked revalidation"
+        );
+        assert_eq!(
+            snapshot_tree(root),
+            before,
+            "{artifact} revalidation must not repair or rewrite corruption"
+        );
+    }
+}
+
+#[test]
+fn every_regular_artifact_executes_the_owner_mismatch_guard() {
+    let (directory, public_key) = registered_tree();
+    let root = directory.path();
+    let metadata = fs::metadata(root).expect("root metadata");
+    let store =
+        open_store(root, public_key, metadata.uid(), metadata.gid()).expect("registered store");
+    for artifact in ["format", "lock", "leaf", "signature", "transition"] {
+        store
+            .owner_mismatch_rejected_for_test(artifact)
+            .unwrap_or_else(|()| panic!("{artifact} accepted the wrong owner"));
+    }
+}
+
+#[test]
+fn production_open_guard_rejects_a_real_mount_crossing() {
+    let parent: OwnedFd = File::open("/dev").expect("open /dev").into();
+    let parent_stat = fstat(&parent).expect("/dev stat");
+    let child_stat = statat(&parent, c"shm", AtFlags::SYMLINK_NOFOLLOW).expect("/dev/shm stat");
+    if parent_stat.st_dev == child_stat.st_dev {
+        eprintln!("skipped: /dev/shm is not a distinct mount on this platform");
+        return;
+    }
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let resolve_without_no_xdev =
+        ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS;
+    let control = openat2(
+        &parent,
+        c"shm",
+        flags,
+        Mode::empty(),
+        resolve_without_no_xdev,
+    )
+    .expect("control open across demonstrated mount boundary");
+    assert_ne!(
+        fstat(&control).expect("control stat").st_dev,
+        parent_stat.st_dev
+    );
+    assert!(guarded_open_directory_for_test(&parent, c"shm").is_err());
+}
+
+#[test]
+fn production_filesystem_guard_rejects_procfs() {
+    let proc_fd: OwnedFd = File::open("/proc").expect("open /proc").into();
+    assert_eq!(
+        fstatfs(&proc_fd).expect("procfs statfs").f_type as u64,
+        0x0000_9fa0
+    );
+    assert!(verify_local_filesystem_for_test(&proc_fd).is_err());
 }
 
 #[test]
@@ -485,31 +613,53 @@ fn permission_hard_link_and_symlink_matrix_fails_closed() {
         assert_fails_closed_without_repair(root, public_key);
     }
 
-    let (directory, public_key) = registered_tree();
-    let link_holder = tempfile::tempdir().expect("hard-link holder");
-    fs::hard_link(
-        directory.path().join("LOCK"),
-        link_holder.path().join("lock-link"),
-    )
-    .expect("external hard link");
-    assert_fails_closed_without_repair(directory.path(), public_key);
+    for artifact in ["format", "lock", "leaf", "signature", "transition"] {
+        let (directory, public_key) = registered_tree();
+        let root = directory.path();
+        let source = match artifact {
+            "format" => root.join("FORMAT"),
+            "lock" => root.join("LOCK"),
+            "leaf" => sole_file(root.join("objects/leaves")),
+            "signature" => sole_file(root.join("objects/signatures")),
+            "transition" => sole_file(root.join("transitions")),
+            _ => unreachable!(),
+        };
+        let link_holder = tempfile::tempdir().expect("hard-link holder");
+        fs::hard_link(&source, link_holder.path().join(artifact)).expect("external hard link");
+        assert_fails_closed_without_repair(root, public_key);
+    }
 
-    let (directory, public_key) = registered_tree();
-    let link_holder = tempfile::tempdir().expect("leaf hard-link holder");
-    fs::hard_link(
-        sole_file(directory.path().join("objects/leaves")),
-        link_holder.path().join("leaf-link"),
-    )
-    .expect("external leaf hard link");
-    assert_fails_closed_without_repair(directory.path(), public_key);
-
-    let (directory, public_key) = registered_tree();
-    let leaf = sole_file(directory.path().join("objects/leaves"));
-    let target_holder = tempfile::tempdir().expect("symlink target holder");
-    let target = target_holder.path().join("candidate");
-    fs::rename(&leaf, &target).expect("move leaf outside fixed tree");
-    symlink(&target, &leaf).expect("replace leaf with symlink");
-    assert_fails_closed_without_repair(directory.path(), public_key);
+    for artifact in [
+        "objects",
+        "leaves-directory",
+        "signatures-directory",
+        "transitions-directory",
+        "format",
+        "lock",
+        "leaf",
+        "signature",
+        "transition",
+    ] {
+        let (directory, public_key) = registered_tree();
+        let root = directory.path();
+        let source = match artifact {
+            "objects" => root.join("objects"),
+            "leaves-directory" => root.join("objects/leaves"),
+            "signatures-directory" => root.join("objects/signatures"),
+            "transitions-directory" => root.join("transitions"),
+            "format" => root.join("FORMAT"),
+            "lock" => root.join("LOCK"),
+            "leaf" => sole_file(root.join("objects/leaves")),
+            "signature" => sole_file(root.join("objects/signatures")),
+            "transition" => sole_file(root.join("transitions")),
+            _ => unreachable!(),
+        };
+        let target_holder = tempfile::tempdir().expect("symlink target holder");
+        let target = target_holder.path().join(artifact);
+        fs::rename(&source, &target).expect("move entry outside fixed tree");
+        symlink(&target, &source).expect("replace entry with symlink");
+        assert_fails_closed_without_repair(root, public_key);
+    }
 }
 
 #[test]

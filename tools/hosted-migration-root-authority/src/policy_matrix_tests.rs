@@ -2,15 +2,17 @@ use std::collections::VecDeque;
 use std::fs::{self, File, Permissions};
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::crypto::{CryptoError, RecordSigner, SyntheticRecordSigner, sha256_hex, verify_grant};
 use crate::journal::storage::{
-    ApproveCommand, CommitError, ConsumeCommand, HeadCas, JournalStore, RegisterCommand,
-    RootAuthority, StatusCommand, TicketEntropy, TrustedClock,
+    ApproveCommand, CloseApprovalCommand, CloseCandidateCommand, CommitError, ConsumeCommand,
+    HeadCas, JournalStore, RegisterCommand, RootAuthority, StatusCommand, TicketEntropy,
+    TrustedClock, plan_approval_closure_before_signing, plan_consumption_before_entropy,
 };
 use crate::journal::{
-    InventoryFiles, JournalError, TransitionFile, VerifiedState, verify_inventory,
+    InventoryFiles, JournalError, MAX_TRANSITIONS, TransitionFile, VerifiedState, verify_inventory,
 };
 use crate::records::{
     ApprovalGrant, CANDIDATE_SCHEMA, Candidate, ExecutionTicket, GENESIS_SHA256, Transition,
@@ -746,13 +748,13 @@ impl TrustedClock for MutableClock {
 
 struct SequenceEntropy {
     values: Mutex<VecDeque<Result<[u8; 32], ()>>>,
-    calls: Arc<std::sync::atomic::AtomicUsize>,
+    calls: Arc<AtomicUsize>,
 }
 
 impl SequenceEntropy {
     fn new(
         values: impl IntoIterator<Item = Result<[u8; 32], ()>>,
-        calls: Arc<std::sync::atomic::AtomicUsize>,
+        calls: Arc<AtomicUsize>,
     ) -> Self {
         Self {
             values: Mutex::new(values.into_iter().collect()),
@@ -763,8 +765,82 @@ impl SequenceEntropy {
 
 impl TicketEntropy for SequenceEntropy {
     fn draw_once(&self) -> Result<[u8; 32], ()> {
-        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.calls.fetch_add(1, Ordering::SeqCst);
         self.values.lock().map_err(|_| ())?.pop_front().ok_or(())?
+    }
+}
+
+struct CountingSigner {
+    inner: SyntheticRecordSigner,
+    calls: Arc<AtomicUsize>,
+}
+
+impl CountingSigner {
+    fn new(seed: [u8; 32], calls: Arc<AtomicUsize>) -> Self {
+        Self {
+            inner: SyntheticRecordSigner::from_seed(seed),
+            calls,
+        }
+    }
+
+    fn record_call(&self) {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl RecordSigner for CountingSigner {
+    fn public_key_bytes(&self) -> [u8; 32] {
+        self.inner.public_key_bytes()
+    }
+
+    fn sign_approval_grant(&self, grant: &ApprovalGrant) -> Result<[u8; 64], CryptoError> {
+        self.record_call();
+        self.inner.sign_approval_grant(grant)
+    }
+
+    fn sign_execution_ticket(&self, ticket: &ExecutionTicket) -> Result<[u8; 64], CryptoError> {
+        self.record_call();
+        self.inner.sign_execution_ticket(ticket)
+    }
+
+    fn sign_candidate_registered_transition(
+        &self,
+        transition: &crate::records::CandidateRegisteredTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        self.record_call();
+        self.inner.sign_candidate_registered_transition(transition)
+    }
+
+    fn sign_approved_transition(
+        &self,
+        transition: &crate::records::ApprovedTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        self.record_call();
+        self.inner.sign_approved_transition(transition)
+    }
+
+    fn sign_consumed_transition(
+        &self,
+        transition: &crate::records::ConsumedTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        self.record_call();
+        self.inner.sign_consumed_transition(transition)
+    }
+
+    fn sign_candidate_expired_transition(
+        &self,
+        transition: &crate::records::CandidateExpiredTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        self.record_call();
+        self.inner.sign_candidate_expired_transition(transition)
+    }
+
+    fn sign_approval_expired_transition(
+        &self,
+        transition: &crate::records::ApprovalExpiredTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        self.record_call();
+        self.inner.sign_approval_expired_transition(transition)
     }
 }
 
@@ -958,4 +1034,739 @@ fn persisted_incarnation_entropy_collision_refuses_after_exactly_one_draw() {
     );
     assert!(matches!(collision, Err(CommitError::Collision)));
     assert_eq!(collision_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn full_cas_precedes_state_and_capability_policy_across_live_states() {
+    let signer = SyntheticRecordSigner::from_seed([7; 32]);
+    let public_key = signer.public_key_bytes();
+    let clock_value = Arc::new(Mutex::new(NOW.to_owned()));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (_directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        signer,
+        MutableClock(Arc::clone(&clock_value)),
+        SequenceEntropy::new([Ok([9; 32]), Ok([3; 32])], calls),
+    )
+    .expect("authority");
+    let register = authority.register(RegisterCommand::new(
+        HeadCas::new(0, GENESIS_SHA256.to_owned()),
+        candidate(),
+    ));
+    assert!(register.is_ok());
+    drop(register);
+
+    let registered = authority.inspect().expect("registered").1;
+    let (candidate_sha256, value) = match &registered.state {
+        VerifiedState::CandidateRegistered {
+            candidate_sha256,
+            candidate,
+        } => (candidate_sha256.clone(), candidate.as_ref().clone()),
+        _ => panic!("candidate state"),
+    };
+    let approval_auth = approval_authentication(&value, 'f', "2026-09-03T12:04:30Z");
+    let bad_auth = FreshAttendedAuthentication::synthetic(
+        digest('0'),
+        digest('e'),
+        digest('1'),
+        "2026-09-03T12:04:30Z".to_owned(),
+    );
+    let candidate_close_challenge = derive_candidate_close_challenge(
+        &registered.transition_sha256,
+        &candidate_sha256,
+        &value.approval_challenge_sha256,
+    )
+    .expect("candidate close challenge");
+
+    *clock_value.lock().expect("clock") = "invalid-clock".to_owned();
+    let close = authority.close_candidate(
+        CloseCandidateCommand::new(
+            HeadCas::new(registered.generation, registered.transition_sha256.clone()),
+            value.operation_id.clone(),
+            value.authorization_nonce.clone(),
+            value.envelope_sha256.clone(),
+            candidate_close_challenge,
+        ),
+        &bad_auth,
+    );
+    assert_eq!(close.test_error(), Some(CommitError::Policy));
+    drop(close);
+    let stale = authority.approve(
+        ApproveCommand::new(
+            HeadCas::new(registered.generation, registered.transition_sha256.clone()),
+            digest('0'),
+            value.authorization_nonce.clone(),
+            value.envelope_sha256.clone(),
+            value.approval_challenge_sha256.clone(),
+        ),
+        &verified(&value),
+        &approval_auth,
+    );
+    assert_eq!(stale.test_error(), Some(CommitError::Stale));
+    drop(stale);
+    let policy = authority.approve(
+        ApproveCommand::new(
+            HeadCas::new(registered.generation, registered.transition_sha256.clone()),
+            value.operation_id.clone(),
+            value.authorization_nonce.clone(),
+            value.envelope_sha256.clone(),
+            value.approval_challenge_sha256.clone(),
+        ),
+        &verified(&value),
+        &bad_auth,
+    );
+    assert_eq!(policy.test_error(), Some(CommitError::Policy));
+    drop(policy);
+
+    *clock_value.lock().expect("clock") = NOW.to_owned();
+    let approve = authority.approve(
+        ApproveCommand::new(
+            HeadCas::new(registered.generation, registered.transition_sha256),
+            value.operation_id.clone(),
+            value.authorization_nonce.clone(),
+            value.envelope_sha256.clone(),
+            value.approval_challenge_sha256.clone(),
+        ),
+        &verified(&value),
+        &approval_auth,
+    );
+    assert!(approve.is_ok());
+    drop(approve);
+
+    let approved = authority.inspect().expect("approved").1;
+    let (grant_sha256, grant_signature_sha256) = match &approved.state {
+        VerifiedState::Approved {
+            grant_sha256,
+            grant_signature_sha256,
+            ..
+        } => (grant_sha256.clone(), grant_signature_sha256.clone()),
+        _ => panic!("approved state"),
+    };
+    let approval_close_challenge = derive_approval_close_challenge(
+        &approved.transition_sha256,
+        &candidate_sha256,
+        &value.approval_challenge_sha256,
+        &grant_sha256,
+        &grant_signature_sha256,
+    )
+    .expect("approval close challenge");
+    let candidate_close_challenge = derive_candidate_close_challenge(
+        &approved.transition_sha256,
+        &candidate_sha256,
+        &value.approval_challenge_sha256,
+    )
+    .expect("candidate close challenge in approved state");
+
+    let stale = authority.approve(
+        ApproveCommand::new(
+            HeadCas::new(approved.generation, approved.transition_sha256.clone()),
+            digest('0'),
+            value.authorization_nonce.clone(),
+            value.envelope_sha256.clone(),
+            value.approval_challenge_sha256.clone(),
+        ),
+        &verified(&value),
+        &approval_auth,
+    );
+    assert_eq!(stale.test_error(), Some(CommitError::Stale));
+    drop(stale);
+    let invalid = authority.approve(
+        ApproveCommand::new(
+            HeadCas::new(approved.generation, approved.transition_sha256.clone()),
+            value.operation_id.clone(),
+            value.authorization_nonce.clone(),
+            value.envelope_sha256.clone(),
+            value.approval_challenge_sha256.clone(),
+        ),
+        &verified(&value),
+        &bad_auth,
+    );
+    assert_eq!(invalid.test_error(), Some(CommitError::InvalidState));
+    drop(invalid);
+
+    let stale = authority.close_candidate(
+        CloseCandidateCommand::new(
+            HeadCas::new(approved.generation, approved.transition_sha256.clone()),
+            digest('0'),
+            value.authorization_nonce.clone(),
+            value.envelope_sha256.clone(),
+            candidate_close_challenge.clone(),
+        ),
+        &bad_auth,
+    );
+    assert_eq!(stale.test_error(), Some(CommitError::Stale));
+    drop(stale);
+    let invalid = authority.close_candidate(
+        CloseCandidateCommand::new(
+            HeadCas::new(approved.generation, approved.transition_sha256.clone()),
+            value.operation_id.clone(),
+            value.authorization_nonce.clone(),
+            value.envelope_sha256.clone(),
+            candidate_close_challenge,
+        ),
+        &bad_auth,
+    );
+    assert_eq!(invalid.test_error(), Some(CommitError::InvalidState));
+    drop(invalid);
+
+    *clock_value.lock().expect("clock") = "invalid-clock".to_owned();
+    let stale = authority.close_approval(
+        CloseApprovalCommand::new(
+            HeadCas::new(approved.generation, approved.transition_sha256.clone()),
+            value.operation_id.clone(),
+            value.authorization_nonce.clone(),
+            value.envelope_sha256.clone(),
+            digest('0'),
+            grant_signature_sha256.clone(),
+            approval_close_challenge.clone(),
+        ),
+        &bad_auth,
+    );
+    assert_eq!(stale.test_error(), Some(CommitError::Stale));
+    drop(stale);
+    let policy = authority.close_approval(
+        CloseApprovalCommand::new(
+            HeadCas::new(approved.generation, approved.transition_sha256.clone()),
+            value.operation_id.clone(),
+            value.authorization_nonce.clone(),
+            value.envelope_sha256.clone(),
+            grant_sha256.clone(),
+            grant_signature_sha256.clone(),
+            approval_close_challenge,
+        ),
+        &bad_auth,
+    );
+    assert_eq!(policy.test_error(), Some(CommitError::Policy));
+    drop(policy);
+    let stale = authority.consume(ConsumeCommand::new(
+        HeadCas::new(approved.generation, approved.transition_sha256.clone()),
+        value.operation_id.clone(),
+        value.authorization_nonce.clone(),
+        digest('0'),
+        grant_signature_sha256.clone(),
+    ));
+    assert_eq!(stale.test_error(), Some(CommitError::Stale));
+    drop(stale);
+
+    *clock_value.lock().expect("clock") = "2026-09-03T12:06:00Z".to_owned();
+    let consume = authority.consume(ConsumeCommand::new(
+        HeadCas::new(approved.generation, approved.transition_sha256),
+        value.operation_id.clone(),
+        value.authorization_nonce.clone(),
+        grant_sha256.clone(),
+        grant_signature_sha256.clone(),
+    ));
+    assert!(consume.is_ok());
+    drop(consume);
+
+    let consumed = authority.inspect().expect("consumed").1;
+    let stale = authority.consume(ConsumeCommand::new(
+        HeadCas::new(consumed.generation, consumed.transition_sha256.clone()),
+        value.operation_id.clone(),
+        value.authorization_nonce.clone(),
+        digest('0'),
+        grant_signature_sha256.clone(),
+    ));
+    assert_eq!(stale.test_error(), Some(CommitError::Stale));
+    drop(stale);
+    let invalid = authority.consume(ConsumeCommand::new(
+        HeadCas::new(consumed.generation, consumed.transition_sha256.clone()),
+        value.operation_id.clone(),
+        value.authorization_nonce.clone(),
+        grant_sha256.clone(),
+        grant_signature_sha256.clone(),
+    ));
+    assert_eq!(invalid.test_error(), Some(CommitError::InvalidState));
+    drop(invalid);
+
+    let approval_close_challenge = derive_approval_close_challenge(
+        &consumed.transition_sha256,
+        &candidate_sha256,
+        &value.approval_challenge_sha256,
+        &grant_sha256,
+        &grant_signature_sha256,
+    )
+    .expect("approval close challenge in consumed state");
+    let stale = authority.close_approval(
+        CloseApprovalCommand::new(
+            HeadCas::new(consumed.generation, consumed.transition_sha256.clone()),
+            value.operation_id.clone(),
+            value.authorization_nonce.clone(),
+            value.envelope_sha256.clone(),
+            grant_sha256.clone(),
+            grant_signature_sha256.clone(),
+            digest('0'),
+        ),
+        &bad_auth,
+    );
+    assert_eq!(stale.test_error(), Some(CommitError::Stale));
+    drop(stale);
+    let invalid = authority.close_approval(
+        CloseApprovalCommand::new(
+            HeadCas::new(consumed.generation, consumed.transition_sha256),
+            value.operation_id,
+            value.authorization_nonce,
+            value.envelope_sha256,
+            grant_sha256,
+            grant_signature_sha256,
+            approval_close_challenge,
+        ),
+        &bad_auth,
+    );
+    assert_eq!(invalid.test_error(), Some(CommitError::InvalidState));
+}
+
+#[test]
+fn terminal_state_cas_rederives_closure_challenges_without_signing() {
+    let signer_calls = Arc::new(AtomicUsize::new(0));
+    let signer = CountingSigner::new([7; 32], Arc::clone(&signer_calls));
+    let public_key = signer.public_key_bytes();
+    let clock_value = Arc::new(Mutex::new(NOW.to_owned()));
+    let (_directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        signer,
+        MutableClock(Arc::clone(&clock_value)),
+        SequenceEntropy::new([Ok([9; 32])], Arc::new(AtomicUsize::new(0))),
+    )
+    .expect("candidate authority");
+    let register = authority.register(RegisterCommand::new(
+        HeadCas::new(0, GENESIS_SHA256.to_owned()),
+        candidate(),
+    ));
+    assert!(register.is_ok());
+    drop(register);
+    let registered = authority.inspect().expect("registered candidate").1;
+    let (candidate_sha256, candidate) = match &registered.state {
+        VerifiedState::CandidateRegistered {
+            candidate_sha256,
+            candidate,
+        } => (candidate_sha256.clone(), candidate.as_ref().clone()),
+        _ => panic!("candidate state"),
+    };
+    let close_challenge = derive_candidate_close_challenge(
+        &registered.transition_sha256,
+        &candidate_sha256,
+        &candidate.approval_challenge_sha256,
+    )
+    .expect("candidate close challenge");
+    *clock_value.lock().expect("clock") = candidate.cutoff_at.clone();
+    let close = authority.close_candidate(
+        CloseCandidateCommand::new(
+            HeadCas::new(registered.generation, registered.transition_sha256),
+            candidate.operation_id.clone(),
+            candidate.authorization_nonce.clone(),
+            candidate.envelope_sha256.clone(),
+            close_challenge.clone(),
+        ),
+        &FreshAttendedAuthentication::synthetic(
+            close_challenge,
+            digest('e'),
+            digest('a'),
+            candidate.cutoff_at.clone(),
+        ),
+    );
+    assert!(close.is_ok());
+    drop(close);
+    let terminal = authority.inspect().expect("candidate terminal state").1;
+    let current_challenge = derive_candidate_close_challenge(
+        &terminal.transition_sha256,
+        &candidate_sha256,
+        &candidate.approval_challenge_sha256,
+    )
+    .expect("current-head candidate challenge");
+    let terminal_authentication = FreshAttendedAuthentication::synthetic(
+        current_challenge.clone(),
+        digest('e'),
+        digest('b'),
+        candidate.cutoff_at.clone(),
+    );
+    signer_calls.store(0, Ordering::SeqCst);
+    let stale = authority.close_candidate(
+        CloseCandidateCommand::new(
+            HeadCas::new(terminal.generation, terminal.transition_sha256.clone()),
+            candidate.operation_id.clone(),
+            candidate.authorization_nonce.clone(),
+            candidate.envelope_sha256.clone(),
+            digest('0'),
+        ),
+        &terminal_authentication,
+    );
+    assert_eq!(stale.test_error(), Some(CommitError::Stale));
+    drop(stale);
+    let invalid = authority.close_candidate(
+        CloseCandidateCommand::new(
+            HeadCas::new(terminal.generation, terminal.transition_sha256),
+            candidate.operation_id,
+            candidate.authorization_nonce,
+            candidate.envelope_sha256,
+            current_challenge,
+        ),
+        &terminal_authentication,
+    );
+    assert_eq!(invalid.test_error(), Some(CommitError::InvalidState));
+    drop(invalid);
+    assert_eq!(signer_calls.load(Ordering::SeqCst), 0);
+
+    let signer_calls = Arc::new(AtomicUsize::new(0));
+    let signer = CountingSigner::new([7; 32], Arc::clone(&signer_calls));
+    let public_key = signer.public_key_bytes();
+    let clock_value = Arc::new(Mutex::new(NOW.to_owned()));
+    let (_directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        signer,
+        MutableClock(Arc::clone(&clock_value)),
+        SequenceEntropy::new([Ok([9; 32])], Arc::new(AtomicUsize::new(0))),
+    )
+    .expect("approval authority");
+    let register = authority.register(RegisterCommand::new(
+        HeadCas::new(0, GENESIS_SHA256.to_owned()),
+        candidate_at(
+            '1',
+            '2',
+            '5',
+            'd',
+            "2026-09-03T12:15:00Z",
+            "2026-09-03T12:15:00.000Z",
+        ),
+    ));
+    assert!(register.is_ok());
+    drop(register);
+    let registered = authority.inspect().expect("registered approval").1;
+    let (candidate_sha256, candidate) = match &registered.state {
+        VerifiedState::CandidateRegistered {
+            candidate_sha256,
+            candidate,
+        } => (candidate_sha256.clone(), candidate.as_ref().clone()),
+        _ => panic!("candidate state"),
+    };
+    let approve = authority.approve(
+        ApproveCommand::new(
+            HeadCas::new(registered.generation, registered.transition_sha256),
+            candidate.operation_id.clone(),
+            candidate.authorization_nonce.clone(),
+            candidate.envelope_sha256.clone(),
+            candidate.approval_challenge_sha256.clone(),
+        ),
+        &verified(&candidate),
+        &approval_authentication(&candidate, 'f', "2026-09-03T12:04:30Z"),
+    );
+    assert!(approve.is_ok());
+    drop(approve);
+    let approved = authority.inspect().expect("approved state").1;
+    let (grant_sha256, grant_signature_sha256, expires_at) = match &approved.state {
+        VerifiedState::Approved {
+            grant_sha256,
+            grant_signature_sha256,
+            grant,
+            ..
+        } => (
+            grant_sha256.clone(),
+            grant_signature_sha256.clone(),
+            grant.expires_at.clone(),
+        ),
+        _ => panic!("approved state"),
+    };
+    let close_challenge = derive_approval_close_challenge(
+        &approved.transition_sha256,
+        &candidate_sha256,
+        &candidate.approval_challenge_sha256,
+        &grant_sha256,
+        &grant_signature_sha256,
+    )
+    .expect("approval close challenge");
+    *clock_value.lock().expect("clock") = expires_at.clone();
+    let close = authority.close_approval(
+        CloseApprovalCommand::new(
+            HeadCas::new(approved.generation, approved.transition_sha256),
+            candidate.operation_id.clone(),
+            candidate.authorization_nonce.clone(),
+            candidate.envelope_sha256.clone(),
+            grant_sha256.clone(),
+            grant_signature_sha256.clone(),
+            close_challenge.clone(),
+        ),
+        &FreshAttendedAuthentication::synthetic(
+            close_challenge,
+            digest('e'),
+            digest('a'),
+            expires_at.clone(),
+        ),
+    );
+    assert!(close.is_ok());
+    drop(close);
+    let terminal = authority.inspect().expect("approval terminal state").1;
+    let current_challenge = derive_approval_close_challenge(
+        &terminal.transition_sha256,
+        &candidate_sha256,
+        &candidate.approval_challenge_sha256,
+        &grant_sha256,
+        &grant_signature_sha256,
+    )
+    .expect("current-head approval challenge");
+    let terminal_authentication = FreshAttendedAuthentication::synthetic(
+        current_challenge.clone(),
+        digest('e'),
+        digest('b'),
+        expires_at,
+    );
+    signer_calls.store(0, Ordering::SeqCst);
+    let stale = authority.close_approval(
+        CloseApprovalCommand::new(
+            HeadCas::new(terminal.generation, terminal.transition_sha256.clone()),
+            candidate.operation_id.clone(),
+            candidate.authorization_nonce.clone(),
+            candidate.envelope_sha256.clone(),
+            grant_sha256.clone(),
+            grant_signature_sha256.clone(),
+            digest('0'),
+        ),
+        &terminal_authentication,
+    );
+    assert_eq!(stale.test_error(), Some(CommitError::Stale));
+    drop(stale);
+    let invalid = authority.close_approval(
+        CloseApprovalCommand::new(
+            HeadCas::new(terminal.generation, terminal.transition_sha256),
+            candidate.operation_id,
+            candidate.authorization_nonce,
+            candidate.envelope_sha256,
+            grant_sha256,
+            grant_signature_sha256,
+            current_challenge,
+        ),
+        &terminal_authentication,
+    );
+    assert_eq!(invalid.test_error(), Some(CommitError::InvalidState));
+    drop(invalid);
+    assert_eq!(signer_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn deterministic_generation_capacity_precedes_entropy_and_signing_but_follows_time() {
+    let signer_calls = Arc::new(AtomicUsize::new(0));
+    let entropy_calls = Arc::new(AtomicUsize::new(0));
+    let signer = CountingSigner::new([7; 32], Arc::clone(&signer_calls));
+    let public_key = signer.public_key_bytes();
+    let clock_value = Arc::new(Mutex::new(NOW.to_owned()));
+    let (_directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        signer,
+        MutableClock(Arc::clone(&clock_value)),
+        SequenceEntropy::new([Ok([9; 32]), Ok([3; 32])], Arc::clone(&entropy_calls)),
+    )
+    .expect("authority");
+    let register = authority.register(RegisterCommand::new(
+        HeadCas::new(0, GENESIS_SHA256.to_owned()),
+        candidate(),
+    ));
+    assert!(register.is_ok());
+    drop(register);
+
+    let registered = authority.inspect().expect("candidate").1;
+    let (candidate_sha256, candidate) = match &registered.state {
+        VerifiedState::CandidateRegistered {
+            candidate_sha256,
+            candidate,
+        } => (candidate_sha256.clone(), candidate.as_ref().clone()),
+        _ => panic!("candidate state"),
+    };
+    let authentication = approval_authentication(&candidate, 'f', "2026-09-03T12:04:30Z");
+    let approve = authority.approve(
+        ApproveCommand::new(
+            HeadCas::new(registered.generation, registered.transition_sha256),
+            candidate.operation_id.clone(),
+            candidate.authorization_nonce.clone(),
+            candidate.envelope_sha256.clone(),
+            candidate.approval_challenge_sha256.clone(),
+        ),
+        &verified(&candidate),
+        &authentication,
+    );
+    assert!(approve.is_ok());
+    drop(approve);
+
+    let mut approved = authority.inspect().expect("approved").1;
+    let (grant_sha256, grant_signature_sha256, grant, grant_signature) = match &approved.state {
+        VerifiedState::Approved {
+            grant_sha256,
+            grant_signature_sha256,
+            grant,
+            grant_signature,
+            ..
+        } => (
+            grant_sha256.clone(),
+            grant_signature_sha256.clone(),
+            grant.as_ref().clone(),
+            *grant_signature,
+        ),
+        _ => panic!("approved state"),
+    };
+    approved.generation = MAX_TRANSITIONS as u64;
+    signer_calls.store(0, Ordering::SeqCst);
+    entropy_calls.store(0, Ordering::SeqCst);
+
+    // These are the production projections called before the authority can reach its entropy or
+    // signer. Consume covers the bearer-producing family; approval closure covers a
+    // transition-only signed family, and candidate closure uses the same time-before-generation
+    // composition.
+    let invalid_time = plan_consumption_before_entropy(
+        &approved,
+        &candidate,
+        &candidate_sha256,
+        &grant,
+        &grant_signature,
+        &grant_sha256,
+        &grant_signature_sha256,
+        "invalid-clock",
+        public_key,
+    );
+    assert!(matches!(invalid_time, Err(CommitError::Clock)));
+    assert_eq!(entropy_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(signer_calls.load(Ordering::SeqCst), 0);
+
+    let at_capacity = plan_consumption_before_entropy(
+        &approved,
+        &candidate,
+        &candidate_sha256,
+        &grant,
+        &grant_signature,
+        &grant_sha256,
+        &grant_signature_sha256,
+        NOW,
+        public_key,
+    );
+    assert!(matches!(at_capacity, Err(CommitError::Capacity)));
+    assert_eq!(entropy_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(signer_calls.load(Ordering::SeqCst), 0);
+
+    let close_challenge = derive_approval_close_challenge(
+        &approved.transition_sha256,
+        &candidate_sha256,
+        &candidate.approval_challenge_sha256,
+        &grant_sha256,
+        &grant_signature_sha256,
+    )
+    .expect("capacity approval closure challenge");
+    let close_authentication = FreshAttendedAuthentication::synthetic(
+        close_challenge.clone(),
+        digest('e'),
+        digest('a'),
+        NOW.to_owned(),
+    );
+    let premature = plan_approval_closure_before_signing(
+        &approved,
+        &candidate,
+        candidate_sha256.clone(),
+        &grant,
+        &grant_signature,
+        grant_sha256.clone(),
+        grant_signature_sha256.clone(),
+        candidate.operation_authority_incarnation_sha256.clone(),
+        close_challenge.clone(),
+        &close_authentication,
+        NOW.to_owned(),
+        public_key,
+    );
+    assert!(matches!(premature, Err(CommitError::NotExpired)));
+    assert_eq!(entropy_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(signer_calls.load(Ordering::SeqCst), 0);
+
+    let expired_at_capacity = plan_approval_closure_before_signing(
+        &approved,
+        &candidate,
+        candidate_sha256,
+        &grant,
+        &grant_signature,
+        grant_sha256,
+        grant_signature_sha256,
+        candidate.operation_authority_incarnation_sha256.clone(),
+        close_challenge,
+        &close_authentication,
+        grant.expires_at.clone(),
+        public_key,
+    );
+    assert!(matches!(expired_at_capacity, Err(CommitError::Capacity)));
+    assert_eq!(entropy_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(signer_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn integrity_and_recovery_refusals_precede_full_cas_classification() {
+    let signer = SyntheticRecordSigner::from_seed([7; 32]);
+    let public_key = signer.public_key_bytes();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        signer,
+        MutableClock(Arc::new(Mutex::new(NOW.to_owned()))),
+        SequenceEntropy::new([Ok([9; 32])], calls),
+    )
+    .expect("authority");
+    let register = authority.register(RegisterCommand::new(
+        HeadCas::new(0, GENESIS_SHA256.to_owned()),
+        candidate(),
+    ));
+    assert!(register.is_ok());
+    drop(register);
+    let registered = authority.inspect().expect("registered").1;
+    let (candidate_sha256, value) = match &registered.state {
+        VerifiedState::CandidateRegistered {
+            candidate_sha256,
+            candidate,
+        } => (candidate_sha256.clone(), candidate.as_ref().clone()),
+        _ => panic!("candidate state"),
+    };
+    drop(authority);
+
+    let recovered = RootAuthority::synthetic(
+        reopen_test_store(directory.path(), public_key),
+        SyntheticRecordSigner::from_seed([7; 32]),
+        MutableClock(Arc::new(Mutex::new(NOW.to_owned()))),
+        SequenceEntropy::new(
+            [Ok([8; 32])],
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        ),
+    )
+    .expect("recovered authority");
+    let verified = verified(&value);
+    let authentication = approval_authentication(&value, 'f', "2026-09-03T12:04:30Z");
+    let recovery = recovered.approve(
+        ApproveCommand::new(
+            HeadCas::new(0, GENESIS_SHA256.to_owned()),
+            digest('0'),
+            digest('0'),
+            digest('0'),
+            digest('0'),
+        ),
+        &verified,
+        &authentication,
+    );
+    assert_eq!(recovery.test_error(), Some(CommitError::RecoveryOnly));
+    drop(recovery);
+
+    fs::set_permissions(
+        directory
+            .path()
+            .join("objects/leaves")
+            .join(candidate_sha256),
+        Permissions::from_mode(0o644),
+    )
+    .expect("corrupt candidate mode");
+    let integrity = recovered.approve(
+        ApproveCommand::new(
+            HeadCas::new(0, GENESIS_SHA256.to_owned()),
+            digest('0'),
+            digest('0'),
+            digest('0'),
+            digest('0'),
+        ),
+        &verified,
+        &authentication,
+    );
+    assert_eq!(integrity.test_error(), Some(CommitError::Unavailable));
 }

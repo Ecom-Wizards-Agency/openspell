@@ -15,8 +15,9 @@ use rustix::io::{Errno, read, write};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    FORMAT_BYTES, InventoryFiles, MAX_CANONICAL_BYTES, MAX_LEAVES, MAX_SIGNATURES, MAX_TOTAL_BYTES,
-    MAX_TRANSITIONS, TransitionFile, VerifiedSnapshot, VerifiedState, verify_inventory,
+    FORMAT_BYTES, InventorySource, JournalError, MAX_CANONICAL_BYTES, MAX_LEAVES, MAX_SIGNATURES,
+    MAX_TOTAL_BYTES, MAX_TRANSITIONS, TransitionFile, VerifiedSnapshot, VerifiedState,
+    verify_inventory_source,
 };
 use crate::canonical::validate_whole_timestamp;
 use crate::crypto::{RecordSigner, sha256_hex, verify_transition};
@@ -28,12 +29,13 @@ use crate::protocol::{
     SupervisorResponse, SupervisorResponseFrame, encode_operator_response,
     encode_supervisor_response,
 };
-use crate::records::{Candidate, Transition};
+use crate::records::Candidate;
 use crate::state::{
     FreshAttendedAuthentication, RootVerifiedPreparedEnvelope, StateError, TransitionPlan,
-    plan_approval, plan_approved_transition, plan_candidate_registered_transition,
-    plan_close_approval_transition, plan_close_candidate_transition, plan_consumed_transition,
-    plan_ticket, seal_candidate,
+    derive_approval_close_challenge, derive_candidate_close_challenge, plan_approval,
+    plan_approved_transition, plan_candidate_registered_transition, plan_close_approval_transition,
+    plan_close_candidate_transition, plan_consumed_transition, plan_ticket, seal_candidate,
+    validate_closure_time,
 };
 
 const RESOLVE: ResolveFlags = ResolveFlags::BENEATH
@@ -46,7 +48,8 @@ const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::NOFOLLOW);
 const READ_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::CLOEXEC)
-    .union(OFlags::NOFOLLOW);
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::NONBLOCK);
 const CREATE_FLAGS: OFlags = OFlags::WRONLY
     .union(OFlags::CLOEXEC)
     .union(OFlags::NOFOLLOW)
@@ -439,11 +442,28 @@ struct PreparedTransition {
 }
 
 struct CompleteInventory {
-    inventory: InventoryFiles,
+    index: InventoryIndex,
     snapshot: VerifiedSnapshot,
     total_bytes: usize,
     identities: BTreeMap<String, FileIdentity>,
     digest: [u8; 32],
+}
+
+struct InventoryIndex {
+    leaves: BTreeMap<String, IndexedFile>,
+    signatures: BTreeMap<String, IndexedFile>,
+    transitions: BTreeMap<u64, IndexedTransition>,
+}
+
+struct IndexedFile {
+    size: usize,
+    identity: FileIdentity,
+}
+
+struct IndexedTransition {
+    name: String,
+    digest: String,
+    file: IndexedFile,
 }
 
 struct InventoryRevalidation {
@@ -452,7 +472,7 @@ struct InventoryRevalidation {
     digest: [u8; 32],
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 struct FileIdentity {
     dev: u64,
     ino: u64,
@@ -1173,6 +1193,52 @@ impl JournalStore {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn revalidate_for_test(&self) -> Result<(), ()> {
+        self.scan_revalidation().map(|_| ())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owner_mismatch_rejected_for_test(&self, artifact: &str) -> Result<(), ()> {
+        let wrong_owner = Owner {
+            uid: if self.owner.uid == u32::MAX {
+                self.owner.uid - 1
+            } else {
+                self.owner.uid + 1
+            },
+            ..self.owner
+        };
+        let result = match artifact {
+            "format" => verify_entry_matches_fd(
+                &self.fds.root,
+                c"FORMAT",
+                &self.fds.format,
+                wrong_owner,
+                FileType::RegularFile,
+                0o600,
+                1,
+            ),
+            "lock" => verify_entry_matches_fd(
+                &self.fds.root,
+                c"LOCK",
+                &self.fds.lock,
+                wrong_owner,
+                FileType::RegularFile,
+                0o600,
+                1,
+            ),
+            "leaf" => verify_one_dynamic_owner_mismatch(&self.fds.leaves, self.owner, wrong_owner),
+            "signature" => {
+                verify_one_dynamic_owner_mismatch(&self.fds.signatures, self.owner, wrong_owner)
+            }
+            "transition" => {
+                verify_one_dynamic_owner_mismatch(&self.fds.transitions, self.owner, wrong_owner)
+            }
+            _ => return Err(()),
+        };
+        if result.is_err() { Ok(()) } else { Err(()) }
+    }
+
     fn begin(
         &self,
         guard: &mut MutexGuard<'_, Health>,
@@ -1334,10 +1400,9 @@ impl JournalStore {
 
     fn scan_complete(&self) -> Result<CompleteInventory, ()> {
         self.verify_tree_shape()?;
-        let mut digest = inventory_digest();
         let mut total_bytes = FORMAT_BYTES.len();
         let mut identities = BTreeMap::new();
-        let leaves = scan_objects(
+        let leaves = index_objects(
             &self.fds.leaves,
             self.owner,
             MAX_LEAVES,
@@ -1345,9 +1410,8 @@ impl JournalStore {
             "leaves",
             &mut total_bytes,
             &mut identities,
-            &mut digest,
         )?;
-        let signatures = scan_objects(
+        let signatures = index_objects(
             &self.fds.signatures,
             self.owner,
             MAX_SIGNATURES,
@@ -1355,27 +1419,31 @@ impl JournalStore {
             "signatures",
             &mut total_bytes,
             &mut identities,
-            &mut digest,
         )?;
-        let transitions = scan_transitions(
+        let transitions = index_transitions(
             &self.fds.transitions,
             self.owner,
             &mut total_bytes,
             &mut identities,
-            &mut digest,
         )?;
-        let inventory = InventoryFiles {
+        let index = InventoryIndex {
             leaves,
             signatures,
             transitions,
         };
-        let snapshot = verify_inventory(&inventory, &self.pinned_public_key).map_err(|_| ())?;
+        let digest = verify_index_content(&self.fds, self.owner, &index)?;
+        let source = StorageInventorySource {
+            fds: &self.fds,
+            owner: self.owner,
+            index: &index,
+        };
+        let snapshot = verify_inventory_source(&source, &self.pinned_public_key).map_err(|_| ())?;
         Ok(CompleteInventory {
-            inventory,
+            index,
             snapshot,
             total_bytes,
             identities,
-            digest: digest.finalize().into(),
+            digest,
         })
     }
 
@@ -1689,6 +1757,14 @@ where
         let mut guard = self.store.lock_health();
         let outcome = (|| -> Result<OperatorReceipt, CommitError> {
             let complete = self.store.begin(&mut guard, &command.head, false)?;
+            if let Some((_, candidate)) = retained_candidate(&complete.snapshot)
+                && (command.operation_id != candidate.operation_id
+                    || command.authorization_nonce != candidate.authorization_nonce
+                    || command.envelope_sha256 != candidate.envelope_sha256
+                    || command.action_challenge_sha256 != candidate.approval_challenge_sha256)
+            {
+                return Err(CommitError::Stale);
+            }
             let (candidate_sha256, candidate) = match &complete.snapshot.state {
                 VerifiedState::CandidateRegistered {
                     candidate_sha256,
@@ -1705,13 +1781,8 @@ where
             {
                 return Err(CommitError::Policy);
             }
-            if command.operation_id != candidate.operation_id
-                || command.authorization_nonce != candidate.authorization_nonce
-                || command.envelope_sha256 != candidate.envelope_sha256
-                || command.action_challenge_sha256 != candidate.approval_challenge_sha256
-                || authentication.action_challenge_sha256() != command.action_challenge_sha256
-            {
-                return Err(CommitError::Stale);
+            if authentication.action_challenge_sha256() != command.action_challenge_sha256 {
+                return Err(CommitError::Policy);
             }
             if !verified
                 .matches_candidate(&candidate)
@@ -1838,6 +1909,19 @@ where
         let mut guard = self.store.lock_health();
         let outcome = (|| -> Result<SupervisorReceipt, CommitError> {
             let complete = self.store.begin(&mut guard, &command.head, false)?;
+            if let Some((_, candidate)) = retained_candidate(&complete.snapshot)
+                && (command.operation_id != candidate.operation_id
+                    || command.authorization_nonce != candidate.authorization_nonce)
+            {
+                return Err(CommitError::Stale);
+            }
+            if let Some((grant_sha256, grant_signature_sha256)) =
+                retained_grant_identity(&complete.snapshot)
+                && (command.grant_sha256 != grant_sha256
+                    || command.grant_signature_sha256 != grant_signature_sha256)
+            {
+                return Err(CommitError::Stale);
+            }
             let (
                 candidate_sha256,
                 candidate,
@@ -1872,47 +1956,19 @@ where
             {
                 return Err(CommitError::Policy);
             }
-            if command.operation_id != candidate.operation_id
-                || command.authorization_nonce != candidate.authorization_nonce
-                || command.grant_sha256 != grant_sha256
-                || command.grant_signature_sha256 != grant_signature_sha256
-            {
-                return Err(CommitError::Stale);
-            }
             let trusted_at = self.clock.sample().map_err(|()| CommitError::Clock)?;
-            require_monotonic_clock(&complete.snapshot, &trusted_at)?;
-
-            let projected_ticket = plan_ticket(
-                &candidate,
-                &grant,
-                &grant_signature,
-                &trusted_at,
-                [0; 32],
-                &self.store.pinned_public_key,
-            )
-            .map_err(map_state_error)?;
-            let projected_ticket_record = projected_ticket.projected_signed();
-            let projected_ticket_bytes = projected_ticket_record
-                .encode()
-                .map_err(|_| CommitError::Build)?;
-            let projected_transition = plan_consumed_transition(
-                &candidate,
-                candidate_sha256.clone(),
-                &grant,
-                grant_sha256.clone(),
-                grant_signature_sha256.clone(),
-                &projected_ticket_record,
-                "0".repeat(64),
-                "0".repeat(64),
-                next_generation(&complete.snapshot)?,
-                complete.snapshot.transition_sha256.clone(),
-                trusted_at.clone(),
-                self.store.pinned_public_key,
-            )
-            .map_err(map_state_error)?;
-            let expected_transition_bytes = projected_transition
-                .expected_signed_bytes()
-                .map_err(map_state_error)?;
+            let (projected_ticket_bytes, expected_transition_bytes) =
+                plan_consumption_before_entropy(
+                    &complete.snapshot,
+                    &candidate,
+                    &candidate_sha256,
+                    &grant,
+                    &grant_signature,
+                    &grant_sha256,
+                    &grant_signature_sha256,
+                    &trusted_at,
+                    self.store.pinned_public_key,
+                )?;
             validate_projection(
                 &complete,
                 &Footprint {
@@ -1920,7 +1976,6 @@ where
                     signatures: 2,
                     transitions: 1,
                     bytes: projected_ticket_bytes
-                        .len()
                         .checked_add(128)
                         .and_then(|value| value.checked_add(expected_transition_bytes))
                         .ok_or(CommitError::Capacity)?,
@@ -1948,7 +2003,7 @@ where
                 .sign(&self.signer, &self.store.pinned_public_key)
                 .map_err(map_state_error)?;
             let ticket_bytes = ticket.encode().map_err(|_| CommitError::Build)?;
-            if ticket_bytes.len() != projected_ticket_bytes.len() {
+            if ticket_bytes.len() != projected_ticket_bytes {
                 return Err(CommitError::Build);
             }
             let signed_ticket = SignedLeaf::new(ticket_bytes.clone(), ticket_signature)?;
@@ -2025,6 +2080,21 @@ where
         let mut guard = self.store.lock_health();
         let outcome = (|| -> Result<OperatorReceipt, CommitError> {
             let complete = self.store.begin(&mut guard, &command.head, true)?;
+            if let Some((candidate_sha256, candidate)) = retained_candidate(&complete.snapshot) {
+                let action_challenge_sha256 = derive_candidate_close_challenge(
+                    &complete.snapshot.transition_sha256,
+                    candidate_sha256,
+                    &candidate.approval_challenge_sha256,
+                )
+                .map_err(|_| CommitError::Unavailable)?;
+                if command.operation_id != candidate.operation_id
+                    || command.authorization_nonce != candidate.authorization_nonce
+                    || command.envelope_sha256 != candidate.envelope_sha256
+                    || command.action_challenge_sha256 != action_challenge_sha256
+                {
+                    return Err(CommitError::Stale);
+                }
+            }
             let (candidate_sha256, candidate) = match &complete.snapshot.state {
                 VerifiedState::CandidateRegistered {
                     candidate_sha256,
@@ -2041,34 +2111,25 @@ where
             {
                 return Err(CommitError::Policy);
             }
-            if command.operation_id != candidate.operation_id
-                || command.authorization_nonce != candidate.authorization_nonce
-                || command.envelope_sha256 != candidate.envelope_sha256
-                || command.action_challenge_sha256 != authentication.action_challenge_sha256()
-            {
-                return Err(CommitError::Stale);
+            if command.action_challenge_sha256 != authentication.action_challenge_sha256() {
+                return Err(CommitError::Policy);
             }
             if authentication_session_used(&complete, authentication.session_sha256()) {
                 return Err(CommitError::Collision);
             }
             let trusted_at = self.clock.sample().map_err(|()| CommitError::Clock)?;
-            require_monotonic_clock(&complete.snapshot, &trusted_at)?;
-            let transition_plan = plan_close_candidate_transition(
-                &candidate,
-                candidate_sha256.clone(),
-                next_generation(&complete.snapshot)?,
-                complete.snapshot.transition_sha256.clone(),
-                self.incarnation_sha256.clone(),
-                command.action_challenge_sha256,
-                authentication,
-                trusted_at,
-                self.store.pinned_public_key,
-            )
-            .map_err(map_state_error)?;
+            let (transition_plan, expected_transition_bytes) =
+                plan_candidate_closure_before_signing(
+                    &complete.snapshot,
+                    &candidate,
+                    candidate_sha256.clone(),
+                    self.incarnation_sha256.clone(),
+                    command.action_challenge_sha256,
+                    authentication,
+                    trusted_at,
+                    self.store.pinned_public_key,
+                )?;
             self.verify_signer_pin()?;
-            let expected_transition_bytes = transition_plan
-                .expected_signed_bytes()
-                .map_err(map_state_error)?;
             let expected_candidate_digest = candidate_sha256;
             let (snapshot, proof) = self.store.publish_successor(
                 &mut guard,
@@ -2108,6 +2169,32 @@ where
         let mut guard = self.store.lock_health();
         let outcome = (|| -> Result<OperatorReceipt, CommitError> {
             let complete = self.store.begin(&mut guard, &command.head, true)?;
+            if let Some((candidate_sha256, candidate)) = retained_candidate(&complete.snapshot) {
+                if command.operation_id != candidate.operation_id
+                    || command.authorization_nonce != candidate.authorization_nonce
+                    || command.envelope_sha256 != candidate.envelope_sha256
+                {
+                    return Err(CommitError::Stale);
+                }
+                if let Some((grant_sha256, grant_signature_sha256)) =
+                    retained_grant_identity(&complete.snapshot)
+                {
+                    let action_challenge_sha256 = derive_approval_close_challenge(
+                        &complete.snapshot.transition_sha256,
+                        candidate_sha256,
+                        &candidate.approval_challenge_sha256,
+                        grant_sha256,
+                        grant_signature_sha256,
+                    )
+                    .map_err(|_| CommitError::Unavailable)?;
+                    if command.grant_sha256 != grant_sha256
+                        || command.grant_signature_sha256 != grant_signature_sha256
+                        || command.action_challenge_sha256 != action_challenge_sha256
+                    {
+                        return Err(CommitError::Stale);
+                    }
+                }
+            }
             let (
                 candidate_sha256,
                 candidate,
@@ -2142,40 +2229,29 @@ where
             {
                 return Err(CommitError::Policy);
             }
-            if command.operation_id != candidate.operation_id
-                || command.authorization_nonce != candidate.authorization_nonce
-                || command.envelope_sha256 != candidate.envelope_sha256
-                || command.grant_sha256 != grant_sha256
-                || command.grant_signature_sha256 != grant_signature_sha256
-                || command.action_challenge_sha256 != authentication.action_challenge_sha256()
-            {
-                return Err(CommitError::Stale);
+            if command.action_challenge_sha256 != authentication.action_challenge_sha256() {
+                return Err(CommitError::Policy);
             }
             if authentication_session_used(&complete, authentication.session_sha256()) {
                 return Err(CommitError::Collision);
             }
             let trusted_at = self.clock.sample().map_err(|()| CommitError::Clock)?;
-            require_monotonic_clock(&complete.snapshot, &trusted_at)?;
-            let transition_plan = plan_close_approval_transition(
-                &candidate,
-                candidate_sha256,
-                &grant,
-                &grant_signature,
-                grant_sha256.clone(),
-                grant_signature_sha256.clone(),
-                next_generation(&complete.snapshot)?,
-                complete.snapshot.transition_sha256.clone(),
-                self.incarnation_sha256.clone(),
-                command.action_challenge_sha256,
-                authentication,
-                trusted_at,
-                self.store.pinned_public_key,
-            )
-            .map_err(map_state_error)?;
+            let (transition_plan, expected_transition_bytes) =
+                plan_approval_closure_before_signing(
+                    &complete.snapshot,
+                    &candidate,
+                    candidate_sha256,
+                    &grant,
+                    &grant_signature,
+                    grant_sha256.clone(),
+                    grant_signature_sha256.clone(),
+                    self.incarnation_sha256.clone(),
+                    command.action_challenge_sha256,
+                    authentication,
+                    trusted_at,
+                    self.store.pinned_public_key,
+                )?;
             self.verify_signer_pin()?;
-            let expected_transition_bytes = transition_plan
-                .expected_signed_bytes()
-                .map_err(map_state_error)?;
             let expected_grant_digest = grant_sha256;
             let expected_signature_digest = grant_signature_sha256;
             let (snapshot, proof) = self.store.publish_successor(
@@ -2221,12 +2297,184 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn plan_consumption_before_entropy(
+    snapshot: &VerifiedSnapshot,
+    candidate: &Candidate,
+    candidate_sha256: &str,
+    grant: &crate::records::ApprovalGrant,
+    grant_signature: &[u8; 64],
+    grant_sha256: &str,
+    grant_signature_sha256: &str,
+    trusted_at: &str,
+    pinned_public_key: [u8; 32],
+) -> Result<(usize, usize), CommitError> {
+    require_monotonic_clock(snapshot, trusted_at)?;
+    let ticket_plan = plan_ticket(
+        candidate,
+        grant,
+        grant_signature,
+        trusted_at,
+        [0; 32],
+        &pinned_public_key,
+    )
+    .map_err(map_state_error)?;
+    let projected_ticket = ticket_plan.projected_signed();
+    let projected_ticket_bytes = projected_ticket
+        .encode()
+        .map_err(|_| CommitError::Build)?
+        .len();
+    let projected_transition = plan_consumed_transition(
+        candidate,
+        candidate_sha256.to_owned(),
+        grant,
+        grant_sha256.to_owned(),
+        grant_signature_sha256.to_owned(),
+        &projected_ticket,
+        "0".repeat(64),
+        "0".repeat(64),
+        next_generation(snapshot)?,
+        snapshot.transition_sha256.clone(),
+        trusted_at.to_owned(),
+        pinned_public_key,
+    )
+    .map_err(map_state_error)?;
+    let expected_transition_bytes = projected_transition
+        .expected_signed_bytes()
+        .map_err(map_state_error)?;
+    Ok((projected_ticket_bytes, expected_transition_bytes))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_candidate_closure_before_signing(
+    snapshot: &VerifiedSnapshot,
+    candidate: &Candidate,
+    candidate_sha256: String,
+    closing_authority_incarnation_sha256: String,
+    action_challenge_sha256: String,
+    authentication: &FreshAttendedAuthentication,
+    trusted_at: String,
+    pinned_public_key: [u8; 32],
+) -> Result<(TransitionPlan, usize), CommitError> {
+    require_monotonic_clock(snapshot, &trusted_at)?;
+    validate_closure_time(authentication, &trusted_at, &candidate.cutoff_at)
+        .map_err(map_state_error)?;
+    let transition_plan = plan_close_candidate_transition(
+        candidate,
+        candidate_sha256,
+        next_generation(snapshot)?,
+        snapshot.transition_sha256.clone(),
+        closing_authority_incarnation_sha256,
+        action_challenge_sha256,
+        authentication,
+        trusted_at,
+        pinned_public_key,
+    )
+    .map_err(map_state_error)?;
+    let expected_transition_bytes = transition_plan
+        .expected_signed_bytes()
+        .map_err(map_state_error)?;
+    Ok((transition_plan, expected_transition_bytes))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn plan_approval_closure_before_signing(
+    snapshot: &VerifiedSnapshot,
+    candidate: &Candidate,
+    candidate_sha256: String,
+    grant: &crate::records::ApprovalGrant,
+    grant_signature: &[u8; 64],
+    grant_sha256: String,
+    grant_signature_sha256: String,
+    closing_authority_incarnation_sha256: String,
+    action_challenge_sha256: String,
+    authentication: &FreshAttendedAuthentication,
+    trusted_at: String,
+    pinned_public_key: [u8; 32],
+) -> Result<(TransitionPlan, usize), CommitError> {
+    require_monotonic_clock(snapshot, &trusted_at)?;
+    validate_closure_time(authentication, &trusted_at, &grant.expires_at)
+        .map_err(map_state_error)?;
+    let transition_plan = plan_close_approval_transition(
+        candidate,
+        candidate_sha256,
+        grant,
+        grant_signature,
+        grant_sha256,
+        grant_signature_sha256,
+        next_generation(snapshot)?,
+        snapshot.transition_sha256.clone(),
+        closing_authority_incarnation_sha256,
+        action_challenge_sha256,
+        authentication,
+        trusted_at,
+        pinned_public_key,
+    )
+    .map_err(map_state_error)?;
+    let expected_transition_bytes = transition_plan
+        .expected_signed_bytes()
+        .map_err(map_state_error)?;
+    Ok((transition_plan, expected_transition_bytes))
+}
+
 fn next_generation(snapshot: &VerifiedSnapshot) -> Result<u64, CommitError> {
     snapshot
         .generation
         .checked_add(1)
         .filter(|generation| *generation <= MAX_TRANSITIONS as u64)
         .ok_or(CommitError::Capacity)
+}
+
+fn retained_candidate(snapshot: &VerifiedSnapshot) -> Option<(&str, &Candidate)> {
+    match &snapshot.state {
+        VerifiedState::Empty => None,
+        VerifiedState::CandidateRegistered {
+            candidate_sha256,
+            candidate,
+        }
+        | VerifiedState::Approved {
+            candidate_sha256,
+            candidate,
+            ..
+        }
+        | VerifiedState::Consumed {
+            candidate_sha256,
+            candidate,
+            ..
+        }
+        | VerifiedState::CandidateExpired {
+            candidate_sha256,
+            candidate,
+        }
+        | VerifiedState::ApprovalExpired {
+            candidate_sha256,
+            candidate,
+            ..
+        } => Some((candidate_sha256, candidate.as_ref())),
+    }
+}
+
+fn retained_grant_identity(snapshot: &VerifiedSnapshot) -> Option<(&str, &str)> {
+    match &snapshot.state {
+        VerifiedState::Approved {
+            grant_sha256,
+            grant_signature_sha256,
+            ..
+        }
+        | VerifiedState::Consumed {
+            grant_sha256,
+            grant_signature_sha256,
+            ..
+        }
+        | VerifiedState::ApprovalExpired {
+            grant_sha256,
+            grant_signature_sha256,
+            ..
+        } => Some((grant_sha256, grant_signature_sha256)),
+        VerifiedState::Empty
+        | VerifiedState::CandidateRegistered { .. }
+        | VerifiedState::CandidateExpired { .. } => None,
+    }
 }
 
 fn require_monotonic_clock(
@@ -2260,59 +2508,14 @@ fn candidate_identity_used(snapshot: &VerifiedSnapshot, candidate: &Candidate) -
 }
 
 fn authority_incarnation_used(complete: &CompleteInventory, incarnation: &str) -> bool {
-    complete.inventory.transitions.values().any(|file| {
-        Transition::decode(&file.bytes).is_ok_and(|transition| match transition {
-            Transition::CandidateRegistered(record) => {
-                record.operation_authority_incarnation_sha256 == incarnation
-            }
-            Transition::Approved(record) => {
-                record.operation_authority_incarnation_sha256 == incarnation
-            }
-            Transition::Consumed(record) => {
-                record.operation_authority_incarnation_sha256 == incarnation
-            }
-            Transition::CandidateExpired(record) => {
-                record.operation_authority_incarnation_sha256 == incarnation
-                    || record.closing_authority_incarnation_sha256 == incarnation
-            }
-            Transition::ApprovalExpired(record) => {
-                record.operation_authority_incarnation_sha256 == incarnation
-                    || record.closing_authority_incarnation_sha256 == incarnation
-            }
-        })
-    })
+    complete
+        .snapshot
+        .authority_incarnations
+        .contains(incarnation)
 }
 
 fn authentication_session_used(complete: &CompleteInventory, session: &str) -> bool {
-    let grant_used =
-        complete
-            .snapshot
-            .operations
-            .values()
-            .any(|operation| match &operation.state {
-                VerifiedState::Approved { grant, .. }
-                | VerifiedState::Consumed { grant, .. }
-                | VerifiedState::ApprovalExpired { grant, .. } => {
-                    grant.os_authentication_session_sha256 == session
-                }
-                VerifiedState::Empty
-                | VerifiedState::CandidateRegistered { .. }
-                | VerifiedState::CandidateExpired { .. } => false,
-            });
-    grant_used
-        || complete.inventory.transitions.values().any(|file| {
-            Transition::decode(&file.bytes).is_ok_and(|transition| match transition {
-                Transition::CandidateExpired(record) => {
-                    record.os_authentication_session_sha256 == session
-                }
-                Transition::ApprovalExpired(record) => {
-                    record.os_authentication_session_sha256 == session
-                }
-                Transition::CandidateRegistered(_)
-                | Transition::Approved(_)
-                | Transition::Consumed(_) => false,
-            })
-        })
+    complete.snapshot.authentication_sessions.contains(session)
 }
 
 fn ticket_nonce_used(snapshot: &VerifiedSnapshot, nonce: &str) -> bool {
@@ -2332,19 +2535,19 @@ fn validate_projection(
         return Err(CommitError::Capacity);
     }
     let projected_leaves = complete
-        .inventory
+        .index
         .leaves
         .len()
         .checked_add(footprint.leaves)
         .ok_or(CommitError::Capacity)?;
     let projected_signatures = complete
-        .inventory
+        .index
         .signatures
         .len()
         .checked_add(footprint.signatures)
         .ok_or(CommitError::Capacity)?;
     let projected_transitions = complete
-        .inventory
+        .index
         .transitions
         .len()
         .checked_add(footprint.transitions)
@@ -2370,16 +2573,16 @@ fn validate_artifact_names(
     match artifact {
         ArtifactPublication::None => Ok(()),
         ArtifactPublication::Candidate(leaf) => {
-            if complete.inventory.leaves.contains_key(&leaf.digest) {
+            if complete.index.leaves.contains_key(&leaf.digest) {
                 Err(CommitError::Collision)
             } else {
                 Ok(())
             }
         }
         ArtifactPublication::Signed(signed) => {
-            if complete.inventory.leaves.contains_key(&signed.leaf.digest)
+            if complete.index.leaves.contains_key(&signed.leaf.digest)
                 || complete
-                    .inventory
+                    .index
                     .signatures
                     .contains_key(&signed.signature_sha256)
             {
@@ -2413,10 +2616,7 @@ fn prepare_transition(
         return Err(CommitError::Build);
     }
     let signature_sha256 = sha256_hex(&signature);
-    if complete
-        .inventory
-        .signatures
-        .contains_key(&signature_sha256)
+    if complete.index.signatures.contains_key(&signature_sha256)
         || match artifact {
             ArtifactPublication::Signed(signed) => signed.signature_sha256 == signature_sha256,
             ArtifactPublication::None | ArtifactPublication::Candidate(_) => false,
@@ -2425,7 +2625,7 @@ fn prepare_transition(
         return Err(CommitError::Collision);
     }
     let generation = transition.generation();
-    if complete.inventory.transitions.contains_key(&generation) {
+    if complete.index.transitions.contains_key(&generation) {
         return Err(CommitError::Collision);
     }
     let sha256 = sha256_hex(&bytes);
@@ -2478,8 +2678,13 @@ fn verify_local_filesystem(fd: &OwnedFd) -> Result<(), ()> {
     Ok(())
 }
 
+#[cfg(test)]
+pub(crate) fn verify_local_filesystem_for_test(fd: &OwnedFd) -> Result<(), ()> {
+    verify_local_filesystem(fd)
+}
+
 fn open_directory(parent: &OwnedFd, name: &CStr, owner: Owner, nlink: u64) -> Result<OwnedFd, ()> {
-    let fd = openat2(parent, name, DIRECTORY_FLAGS, Mode::empty(), RESOLVE).map_err(|_| ())?;
+    let fd = open_existing(parent, name, DIRECTORY_FLAGS)?;
     verify_entry_matches_fd(parent, name, &fd, owner, FileType::Directory, 0o700, nlink)?;
     Ok(fd)
 }
@@ -2491,17 +2696,50 @@ fn open_regular(
     size: usize,
     writable: bool,
 ) -> Result<OwnedFd, ()> {
-    let flags = if writable {
-        OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW
-    } else {
-        READ_FLAGS
-    };
-    let fd = openat2(parent, name, flags, Mode::empty(), RESOLVE).map_err(|_| ())?;
-    verify_entry_matches_fd(parent, name, &fd, owner, FileType::RegularFile, 0o600, 1)?;
-    if fstat(&fd).map_err(|_| ())?.st_size != size as i64 {
+    if !writable {
+        let (fd, stat) = open_regular_read(parent, name, owner)?;
+        if stat.st_size != size as i64 {
+            return Err(());
+        }
+        return Ok(fd);
+    }
+    let before = statat(parent, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|_| ())?;
+    verify_metadata(&before, owner, FileType::RegularFile, 0o600, 1)?;
+    if before.st_size != size as i64 {
+        return Err(());
+    }
+    let flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
+    let fd = open_existing(parent, name, flags)?;
+    let opened =
+        verify_entry_matches_fd(parent, name, &fd, owner, FileType::RegularFile, 0o600, 1)?;
+    if !same_stat(&before, &opened) {
         return Err(());
     }
     Ok(fd)
+}
+
+fn open_regular_read(parent: &OwnedFd, name: &CStr, owner: Owner) -> Result<(OwnedFd, Stat), ()> {
+    let before = statat(parent, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|_| ())?;
+    verify_metadata(&before, owner, FileType::RegularFile, 0o600, 1)?;
+    let fd = open_existing(parent, name, READ_FLAGS)?;
+    let opened =
+        verify_entry_matches_fd(parent, name, &fd, owner, FileType::RegularFile, 0o600, 1)?;
+    if !same_stat(&before, &opened) {
+        return Err(());
+    }
+    Ok((fd, opened))
+}
+
+fn open_existing(parent: &OwnedFd, name: &CStr, flags: OFlags) -> Result<OwnedFd, ()> {
+    openat2(parent, name, flags, Mode::empty(), RESOLVE).map_err(|_| ())
+}
+
+#[cfg(test)]
+pub(crate) fn guarded_open_directory_for_test(
+    parent: &OwnedFd,
+    name: &CStr,
+) -> Result<OwnedFd, ()> {
+    open_existing(parent, name, DIRECTORY_FLAGS)
 }
 
 fn verify_entry_matches_fd(
@@ -2581,8 +2819,29 @@ fn read_names(directory: &OwnedFd, limit: usize) -> Result<Vec<String>, ()> {
     Ok(names)
 }
 
+#[cfg(test)]
+fn verify_one_dynamic_owner_mismatch(
+    directory: &OwnedFd,
+    owner: Owner,
+    wrong_owner: Owner,
+) -> Result<Stat, ()> {
+    let names = read_names(directory, 1)?;
+    let name = names.first().ok_or(())?;
+    let c_name = std::ffi::CString::new(name.as_bytes()).map_err(|_| ())?;
+    let (fd, _) = open_regular_read(directory, &c_name, owner)?;
+    verify_entry_matches_fd(
+        directory,
+        &c_name,
+        &fd,
+        wrong_owner,
+        FileType::RegularFile,
+        0o600,
+        1,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
-fn scan_objects(
+fn index_objects(
     directory: &OwnedFd,
     owner: Owner,
     limit: usize,
@@ -2590,8 +2849,7 @@ fn scan_objects(
     namespace: &str,
     total: &mut usize,
     identities: &mut BTreeMap<String, FileIdentity>,
-    inventory_digest: &mut Sha256,
-) -> Result<BTreeMap<String, Vec<u8>>, ()> {
+) -> Result<BTreeMap<String, IndexedFile>, ()> {
     let mut names = read_names(directory, limit)?;
     names.sort_unstable();
     let mut objects = BTreeMap::new();
@@ -2600,118 +2858,229 @@ fn scan_objects(
             return Err(());
         }
         let c_name = std::ffi::CString::new(name.as_bytes()).map_err(|_| ())?;
-        let fd = openat2(directory, &c_name, READ_FLAGS, Mode::empty(), RESOLVE).map_err(|_| ())?;
-        let stat = verify_entry_matches_fd(
-            directory,
-            &c_name,
-            &fd,
-            owner,
-            FileType::RegularFile,
-            0o600,
-            1,
-        )?;
+        let (_fd, stat) = open_regular_read(directory, &c_name, owner)?;
         let size = usize::try_from(stat.st_size).map_err(|_| ())?;
         if (signatures && size != 64) || (!signatures && (size == 0 || size > MAX_CANONICAL_BYTES))
         {
             return Err(());
         }
-        *total = total.checked_add(size).ok_or(())?;
-        if *total > MAX_TOTAL_BYTES {
-            return Err(());
-        }
-        let bytes = read_exact_file(&fd, size)?;
-        let final_stat = verify_entry_matches_fd(
-            directory,
-            &c_name,
-            &fd,
-            owner,
-            FileType::RegularFile,
-            0o600,
-            1,
-        )?;
-        if !same_stat(&stat, &final_stat) {
-            return Err(());
-        }
+        add_inventory_bytes(total, size)?;
+        let identity = FileIdentity::from(&stat);
         if identities
-            .insert(
-                format!("{namespace}/{name}"),
-                FileIdentity::from(&final_stat),
-            )
+            .insert(format!("{namespace}/{name}"), identity.clone())
             .is_some()
         {
             return Err(());
         }
-        update_inventory_digest(inventory_digest, namespace, &name, &bytes)?;
-        if name != crate::crypto::sha256_hex(&bytes) || objects.insert(name, bytes).is_some() {
+        if objects
+            .insert(name, IndexedFile { size, identity })
+            .is_some()
+        {
             return Err(());
         }
     }
     Ok(objects)
 }
 
-fn scan_transitions(
+fn index_transitions(
     directory: &OwnedFd,
     owner: Owner,
     total: &mut usize,
     identities: &mut BTreeMap<String, FileIdentity>,
-    inventory_digest: &mut Sha256,
-) -> Result<BTreeMap<u64, TransitionFile>, ()> {
+) -> Result<BTreeMap<u64, IndexedTransition>, ()> {
     let mut names = read_names(directory, MAX_TRANSITIONS)?;
     names.sort_unstable();
     let mut transitions = BTreeMap::new();
     for name in names {
         let (generation, digest) = parse_transition_name(&name)?;
         let c_name = std::ffi::CString::new(name.as_bytes()).map_err(|_| ())?;
-        let fd = openat2(directory, &c_name, READ_FLAGS, Mode::empty(), RESOLVE).map_err(|_| ())?;
-        let stat = verify_entry_matches_fd(
-            directory,
-            &c_name,
-            &fd,
-            owner,
-            FileType::RegularFile,
-            0o600,
-            1,
-        )?;
+        let (_fd, stat) = open_regular_read(directory, &c_name, owner)?;
         let size = usize::try_from(stat.st_size).map_err(|_| ())?;
         if size == 0 || size > MAX_CANONICAL_BYTES {
             return Err(());
         }
-        *total = total.checked_add(size).ok_or(())?;
-        if *total > MAX_TOTAL_BYTES {
-            return Err(());
-        }
-        let bytes = read_exact_file(&fd, size)?;
-        let final_stat = verify_entry_matches_fd(
-            directory,
-            &c_name,
-            &fd,
-            owner,
-            FileType::RegularFile,
-            0o600,
-            1,
-        )?;
-        if !same_stat(&stat, &final_stat) {
-            return Err(());
-        }
+        add_inventory_bytes(total, size)?;
+        let identity = FileIdentity::from(&stat);
         if identities
-            .insert(
-                format!("transitions/{name}"),
-                FileIdentity::from(&final_stat),
-            )
+            .insert(format!("transitions/{name}"), identity.clone())
             .is_some()
         {
             return Err(());
         }
-        update_inventory_digest(inventory_digest, "transitions", &name, &bytes)?;
-        if digest != crate::crypto::sha256_hex(&bytes)
-            || transitions
-                .insert(generation, TransitionFile { digest, bytes })
-                .is_some()
-        {
+        let indexed = IndexedTransition {
+            name,
+            digest,
+            file: IndexedFile { size, identity },
+        };
+        if transitions.insert(generation, indexed).is_some() {
             return Err(());
         }
     }
     Ok(transitions)
+}
+
+fn verify_index_content(
+    fds: &JournalFds,
+    owner: Owner,
+    index: &InventoryIndex,
+) -> Result<[u8; 32], ()> {
+    let mut inventory_digest = inventory_digest();
+    for (name, file) in &index.leaves {
+        verify_indexed_content(
+            &fds.leaves,
+            owner,
+            "leaves",
+            name,
+            name,
+            file,
+            &mut inventory_digest,
+        )?;
+    }
+    for (name, file) in &index.signatures {
+        verify_indexed_content(
+            &fds.signatures,
+            owner,
+            "signatures",
+            name,
+            name,
+            file,
+            &mut inventory_digest,
+        )?;
+    }
+    for transition in index.transitions.values() {
+        verify_indexed_content(
+            &fds.transitions,
+            owner,
+            "transitions",
+            &transition.name,
+            &transition.digest,
+            &transition.file,
+            &mut inventory_digest,
+        )?;
+    }
+    Ok(inventory_digest.finalize().into())
+}
+
+fn verify_indexed_content(
+    directory: &OwnedFd,
+    owner: Owner,
+    namespace: &str,
+    name: &str,
+    expected_digest: &str,
+    file: &IndexedFile,
+    inventory_digest: &mut Sha256,
+) -> Result<(), ()> {
+    let c_name = std::ffi::CString::new(name.as_bytes()).map_err(|_| ())?;
+    let (fd, stat) = open_regular_read(directory, &c_name, owner)?;
+    if FileIdentity::from(&stat) != file.identity
+        || file.size != usize::try_from(stat.st_size).map_err(|_| ())?
+    {
+        return Err(());
+    }
+    let content_digest = digest_exact_file(inventory_digest, namespace, name, &fd, file.size)?;
+    let final_stat = verify_entry_matches_fd(
+        directory,
+        &c_name,
+        &fd,
+        owner,
+        FileType::RegularFile,
+        0o600,
+        1,
+    )?;
+    if FileIdentity::from(&final_stat) != file.identity
+        || expected_digest != hex::encode(content_digest)
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+struct StorageInventorySource<'a> {
+    fds: &'a JournalFds,
+    owner: Owner,
+    index: &'a InventoryIndex,
+}
+
+impl InventorySource for StorageInventorySource<'_> {
+    fn leaf_names(&self) -> BTreeSet<String> {
+        self.index.leaves.keys().cloned().collect()
+    }
+
+    fn signature_names(&self) -> BTreeSet<String> {
+        self.index.signatures.keys().cloned().collect()
+    }
+
+    fn transition_generations(&self) -> Vec<u64> {
+        self.index.transitions.keys().copied().collect()
+    }
+
+    fn load_leaf(&self, digest: &str) -> Result<Vec<u8>, JournalError> {
+        let file = self.index.leaves.get(digest).ok_or(JournalError::Shape)?;
+        read_indexed_file(&self.fds.leaves, self.owner, digest, digest, file)
+            .map_err(|()| JournalError::Shape)
+    }
+
+    fn load_signature(&self, digest: &str) -> Result<[u8; 64], JournalError> {
+        let file = self
+            .index
+            .signatures
+            .get(digest)
+            .ok_or(JournalError::Shape)?;
+        read_indexed_file(&self.fds.signatures, self.owner, digest, digest, file)
+            .map_err(|()| JournalError::Shape)?
+            .try_into()
+            .map_err(|_| JournalError::Shape)
+    }
+
+    fn load_transition(&self, generation: u64) -> Result<TransitionFile, JournalError> {
+        let transition = self
+            .index
+            .transitions
+            .get(&generation)
+            .ok_or(JournalError::Shape)?;
+        let bytes = read_indexed_file(
+            &self.fds.transitions,
+            self.owner,
+            &transition.name,
+            &transition.digest,
+            &transition.file,
+        )
+        .map_err(|()| JournalError::Shape)?;
+        Ok(TransitionFile {
+            digest: transition.digest.clone(),
+            bytes,
+        })
+    }
+}
+
+fn read_indexed_file(
+    directory: &OwnedFd,
+    owner: Owner,
+    name: &str,
+    expected_digest: &str,
+    file: &IndexedFile,
+) -> Result<Vec<u8>, ()> {
+    let c_name = std::ffi::CString::new(name.as_bytes()).map_err(|_| ())?;
+    let (fd, stat) = open_regular_read(directory, &c_name, owner)?;
+    if FileIdentity::from(&stat) != file.identity {
+        return Err(());
+    }
+    let bytes = read_exact_file(&fd, file.size)?;
+    let final_stat = verify_entry_matches_fd(
+        directory,
+        &c_name,
+        &fd,
+        owner,
+        FileType::RegularFile,
+        0o600,
+        1,
+    )?;
+    if FileIdentity::from(&final_stat) != file.identity
+        || expected_digest != crate::crypto::sha256_hex(&bytes)
+    {
+        return Err(());
+    }
+    Ok(bytes)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2732,16 +3101,7 @@ fn scan_objects_revalidation(
             return Err(());
         }
         let c_name = std::ffi::CString::new(name.as_bytes()).map_err(|_| ())?;
-        let fd = openat2(directory, &c_name, READ_FLAGS, Mode::empty(), RESOLVE).map_err(|_| ())?;
-        let stat = verify_entry_matches_fd(
-            directory,
-            &c_name,
-            &fd,
-            owner,
-            FileType::RegularFile,
-            0o600,
-            1,
-        )?;
+        let (fd, stat) = open_regular_read(directory, &c_name, owner)?;
         let size = usize::try_from(stat.st_size).map_err(|_| ())?;
         if (signatures && size != 64) || (!signatures && (size == 0 || size > MAX_CANONICAL_BYTES))
         {
@@ -2789,16 +3149,7 @@ fn scan_transitions_revalidation(
             return Err(());
         }
         let c_name = std::ffi::CString::new(name.as_bytes()).map_err(|_| ())?;
-        let fd = openat2(directory, &c_name, READ_FLAGS, Mode::empty(), RESOLVE).map_err(|_| ())?;
-        let stat = verify_entry_matches_fd(
-            directory,
-            &c_name,
-            &fd,
-            owner,
-            FileType::RegularFile,
-            0o600,
-            1,
-        )?;
+        let (fd, stat) = open_regular_read(directory, &c_name, owner)?;
         let size = usize::try_from(stat.st_size).map_err(|_| ())?;
         if size == 0 || size > MAX_CANONICAL_BYTES {
             return Err(());

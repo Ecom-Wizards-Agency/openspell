@@ -789,6 +789,8 @@ const PROCESS_CHILD_ROOT: &str = "OPENSP_TEST_ROOT_AUTHORITY_CHILD_ROOT";
 const PROCESS_CHILD_COORDINATION: &str = "OPENSP_TEST_ROOT_AUTHORITY_CHILD_COORDINATION";
 const PROCESS_CHILD_ID: &str = "OPENSP_TEST_ROOT_AUTHORITY_CHILD_ID";
 const PROCESS_CHILD_EXPECTED: &str = "OPENSP_TEST_ROOT_AUTHORITY_CHILD_EXPECTED";
+const PROCESS_EXIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const PROCESS_IPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 fn process_marker(directory: &std::path::Path, kind: &str, id: &str) -> std::path::PathBuf {
     directory.join(format!("{kind}-{id}"))
@@ -853,8 +855,37 @@ fn spawn_process_child(
     command.spawn().expect("spawn independent test process")
 }
 
+fn wait_for_process_output(
+    mut child: std::process::Child,
+    timeout: std::time::Duration,
+) -> std::process::Output {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .expect("collect test process output");
+            }
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::yield_now(),
+            Ok(None) => {
+                let kill_error = child.kill().err();
+                let output = child
+                    .wait_with_output()
+                    .expect("reap timed-out test process");
+                panic!(
+                    "independent process timed out after {timeout:?}; kill error: {kill_error:?}\nstdout:\n{}\nstderr:\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            Err(error) => panic!("inspect test process: {error}"),
+        }
+    }
+}
+
 fn assert_process_success(child: std::process::Child) {
-    let output = child.wait_with_output().expect("wait for test process");
+    let output = wait_for_process_output(child, PROCESS_EXIT_TIMEOUT);
     assert!(
         output.status.success(),
         "independent process failed\nstdout:\n{}\nstderr:\n{}",
@@ -865,7 +896,7 @@ fn assert_process_success(child: std::process::Child) {
 
 fn kill_and_reap_process(mut child: std::process::Child) {
     child.kill().expect("abruptly kill test process");
-    let output = child.wait_with_output().expect("reap killed test process");
+    let output = wait_for_process_output(child, PROCESS_EXIT_TIMEOUT);
     assert!(
         !output.status.success(),
         "killed process unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",
@@ -891,6 +922,130 @@ fn spawn_ready_children(
         wait_for_process_marker(&process_marker(coordination, "ready", id));
     }
     children
+}
+
+#[derive(Clone, Copy)]
+enum ProcessIpcSurface {
+    Supervisor,
+    Operator,
+}
+
+enum PreparedProcessIpc {
+    Supervisor(crate::ipc::PreparedSupervisor),
+    Operator(crate::ipc::PreparedOperator),
+}
+
+enum ProcessIpcIngress {
+    Supervisor(crate::ipc::SupervisorIngress),
+    Operator(crate::ipc::OperatorIngress),
+}
+
+fn run_process_ipc_wave<F>(
+    root: &std::path::Path,
+    surface: ProcessIpcSurface,
+    frame: &[u8],
+    mut handle: F,
+) -> Vec<Vec<u8>>
+where
+    F: FnMut(ProcessIpcIngress),
+{
+    use rustix::net::sockopt::{Timeout, set_socket_timeout, socket_peercred, socket_timeout};
+    use rustix::net::{
+        AddressFamily, SocketAddrUnix, SocketFlags, SocketType, accept_with, bind, listen,
+        socket_with,
+    };
+
+    use crate::ipc::{PeerPolicy, prepare_operator, prepare_supervisor};
+
+    const CONTENDERS: usize = 6;
+    let coordination = tempfile::tempdir().expect("IPC coordination");
+    let socket_path = coordination.path().join("listener.sock");
+    let listener_address = SocketAddrUnix::new(&socket_path).expect("listener address");
+    let listener = socket_with(
+        AddressFamily::UNIX,
+        SocketType::SEQPACKET,
+        SocketFlags::CLOEXEC,
+        None,
+    )
+    .expect("listener socket");
+    bind(&listener, &listener_address).expect("listener bind");
+    listen(&listener, CONTENDERS as i32).expect("listener listen");
+    set_socket_timeout(&listener, Timeout::Recv, Some(PROCESS_IPC_TIMEOUT))
+        .expect("bounded listener accept");
+    assert_eq!(
+        socket_timeout(&listener, Timeout::Recv).expect("listener accept timeout"),
+        Some(PROCESS_IPC_TIMEOUT)
+    );
+    std::fs::write(coordination.path().join("request.bin"), frame).expect("request fixture");
+
+    let children: Vec<_> = (0..CONTENDERS)
+        .map(|index| {
+            let id = index.to_string();
+            let child = spawn_process_child(root, coordination.path(), "ipc-request", &id, None);
+            (id, child)
+        })
+        .collect();
+    let prepared: Vec<_> = (0..CONTENDERS)
+        .map(|_| {
+            let server = accept_with(&listener, SocketFlags::CLOEXEC).expect("accepted client");
+            let policy = PeerPolicy::synthetic(socket_peercred(&server).expect("client identity"));
+            match surface {
+                ProcessIpcSurface::Supervisor => PreparedProcessIpc::Supervisor(
+                    prepare_supervisor(server, &policy).expect("prepared supervisor client"),
+                ),
+                ProcessIpcSurface::Operator => PreparedProcessIpc::Operator(
+                    prepare_operator(server, &policy).expect("prepared operator client"),
+                ),
+            }
+        })
+        .collect();
+    for (id, _) in &children {
+        wait_for_process_marker(&process_marker(coordination.path(), "ready", id));
+    }
+    write_process_marker(&coordination.path().join("gate"), "go");
+    for (id, _) in &children {
+        wait_for_process_marker(&process_marker(coordination.path(), "sent", id));
+    }
+    for endpoint in prepared {
+        handle(match endpoint {
+            PreparedProcessIpc::Supervisor(endpoint) => {
+                ProcessIpcIngress::Supervisor(endpoint.receive().expect("supervisor request"))
+            }
+            PreparedProcessIpc::Operator(endpoint) => {
+                ProcessIpcIngress::Operator(endpoint.receive().expect("operator request"))
+            }
+        });
+    }
+    for (_, child) in children {
+        assert_process_success(child);
+    }
+    (0..CONTENDERS)
+        .map(|index| {
+            std::fs::read(process_marker(
+                coordination.path(),
+                "result",
+                &index.to_string(),
+            ))
+            .expect("child response")
+        })
+        .collect()
+}
+
+fn assert_one_process_commit(responses: &[Vec<u8>], success_type: u16, refusal_type: u16) {
+    let mut successes = 0;
+    let mut stale = 0;
+    for response in responses {
+        let message_type = u16::from_be_bytes([response[10], response[11]]);
+        if message_type == success_type {
+            successes += 1;
+        } else {
+            assert_eq!(message_type, refusal_type);
+            assert!(frame_text(response).contains("\"code\": \"stale_compare_and_set\""));
+            stale += 1;
+        }
+    }
+    assert_eq!(successes, 1, "one process request commits");
+    assert_eq!(stale, responses.len() - 1, "all losing requests are stale");
 }
 
 fn assert_lock_probe_wave<F>(root: &std::path::Path, commit: F)
@@ -1098,6 +1253,52 @@ fn wp199_independent_process_child() {
     let public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
 
     match role.as_str() {
+        "ipc-request" => {
+            use rustix::net::sockopt::{Timeout, set_socket_timeout, socket_timeout};
+            use rustix::net::{
+                AddressFamily, RecvFlags, SendFlags, Shutdown, SocketAddrUnix, SocketFlags,
+                SocketType, connect, recv, send, shutdown, socket_with,
+            };
+
+            let address =
+                SocketAddrUnix::new(coordination.join("listener.sock")).expect("listener address");
+            let client = socket_with(
+                AddressFamily::UNIX,
+                SocketType::SEQPACKET,
+                SocketFlags::CLOEXEC,
+                None,
+            )
+            .expect("client socket");
+            set_socket_timeout(&client, Timeout::Recv, Some(PROCESS_IPC_TIMEOUT))
+                .expect("bounded response receive");
+            assert_eq!(
+                socket_timeout(&client, Timeout::Recv).expect("response receive timeout"),
+                Some(PROCESS_IPC_TIMEOUT)
+            );
+            connect(&client, &address).expect("client connect");
+            write_process_marker(&process_marker(&coordination, "ready", &id), "ready");
+            wait_for_process_marker(&coordination.join("gate"));
+            let frame = std::fs::read(coordination.join("request.bin")).expect("request frame");
+            assert_eq!(
+                send(&client, &frame, SendFlags::NOSIGNAL).expect("request send"),
+                frame.len()
+            );
+            shutdown(&client, Shutdown::Write).expect("request shutdown");
+            write_process_marker(&process_marker(&coordination, "sent", &id), "sent");
+            let mut response = vec![0_u8; crate::protocol::MAX_FRAME_BYTES];
+            let (received, reported) =
+                recv(&client, &mut response, RecvFlags::empty()).expect("response receive");
+            assert_eq!(received, reported);
+            response.truncate(received);
+            assert!(!response.is_empty(), "one response packet");
+            let mut eof = [0_u8; 1];
+            assert_eq!(
+                recv(&client, &mut eof, RecvFlags::empty()).expect("response EOF"),
+                (0, 0)
+            );
+            std::fs::write(process_marker(&coordination, "result", &id), response)
+                .expect("persist response fixture");
+        }
         "race-register" => {
             write_process_marker(&process_marker(&coordination, "ready", &id), "ready");
             wait_for_process_marker(&coordination.join("gate"));
@@ -1347,6 +1548,107 @@ fn independent_processes_cannot_share_or_replace_the_live_authority() {
         .filter(|bytes| ExecutionTicket::decode(bytes).is_ok())
         .count();
     assert_eq!(ticket_count, 1, "one execution ticket was minted");
+}
+
+#[test]
+fn independent_process_clients_race_one_registration_approval_consume_and_ticket() {
+    use crate::ipc::{OperatorIngress, SupervisorIngress};
+
+    let signer = SyntheticRecordSigner::from_seed([7; 32]);
+    let public_key = signer.public_key_bytes();
+    let (directory, store) = empty_test_store(public_key);
+    let authority = RootAuthority::synthetic(
+        store,
+        signer,
+        SequenceClock::new([NOW, NOW, NOW]),
+        SequenceEntropy::new([Ok([3; 32]), Ok([4; 32])]),
+    )
+    .expect("authority");
+
+    let offered = candidate("2026-09-03T12:15:00Z");
+    let registration_responses = run_process_ipc_wave(
+        directory.path(),
+        ProcessIpcSurface::Supervisor,
+        &register_request_frame(0, GENESIS_SHA256, &offered),
+        |ingress| match ingress {
+            ProcessIpcIngress::Supervisor(SupervisorIngress::Request {
+                request: SupervisorRequest::Register(request),
+                reply,
+            }) => authority
+                .register(request.into_command())
+                .attempt(reply)
+                .expect("registration response"),
+            _ => panic!("registration ingress"),
+        },
+    );
+    assert_one_process_commit(
+        &registration_responses,
+        SUPERVISOR_REGISTER_SUCCESS,
+        SUPERVISOR_REFUSAL,
+    );
+    let registered = authority.inspect().expect("registered").1;
+    assert_eq!(registered.generation, 1);
+    let value = match &registered.state {
+        VerifiedState::CandidateRegistered { candidate, .. } => candidate.as_ref().clone(),
+        _ => panic!("registered state"),
+    };
+
+    let verified =
+        RootVerifiedPreparedEnvelope::synthetic(&value, observations()).expect("verified envelope");
+    let attended = authentication(&value);
+    let approval_responses = run_process_ipc_wave(
+        directory.path(),
+        ProcessIpcSurface::Operator,
+        &approve_request_frame(&registered, &value),
+        |ingress| match ingress {
+            ProcessIpcIngress::Operator(OperatorIngress::Request {
+                request: crate::protocol::OperatorRequest::Approve(request),
+                reply,
+            }) => authority
+                .approve(request.into_command(), &verified, &attended)
+                .attempt(reply)
+                .expect("approval response"),
+            _ => panic!("approval ingress"),
+        },
+    );
+    assert_one_process_commit(
+        &approval_responses,
+        OPERATOR_APPROVE_SUCCESS,
+        OPERATOR_REFUSAL,
+    );
+    let approved = authority.inspect().expect("approved").1;
+    assert_eq!(approved.generation, 2);
+
+    let consume_responses = run_process_ipc_wave(
+        directory.path(),
+        ProcessIpcSurface::Supervisor,
+        &consume_request_frame(&approved, &value),
+        |ingress| match ingress {
+            ProcessIpcIngress::Supervisor(SupervisorIngress::Request {
+                request: SupervisorRequest::Consume(request),
+                reply,
+            }) => authority
+                .consume(request.into_command())
+                .attempt(reply)
+                .expect("consume response"),
+            _ => panic!("consume ingress"),
+        },
+    );
+    assert_one_process_commit(
+        &consume_responses,
+        SUPERVISOR_CONSUME_SUCCESS,
+        SUPERVISOR_REFUSAL,
+    );
+    let consumed = authority.inspect().expect("consumed").1;
+    assert_eq!(consumed.generation, 3);
+    assert!(matches!(consumed.state, VerifiedState::Consumed { .. }));
+
+    let ticket_count = std::fs::read_dir(directory.path().join("objects/leaves"))
+        .expect("leaf inventory")
+        .map(|entry| std::fs::read(entry.expect("leaf entry").path()).expect("leaf bytes"))
+        .filter(|bytes| ExecutionTicket::decode(bytes).is_ok())
+        .count();
+    assert_eq!(ticket_count, 1, "exactly one execution ticket was minted");
 }
 
 fn assert_killed_holder_reopens_as(root: &std::path::Path, public_key: [u8; 32], expected: &str) {

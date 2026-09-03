@@ -880,6 +880,14 @@ fn verify_closure_authentication(
     {
         return Err(StateError::PolicyMismatch);
     }
+    validate_closure_time(authentication, trusted_at, cutoff_at)
+}
+
+pub(crate) fn validate_closure_time(
+    authentication: &FreshAttendedAuthentication,
+    trusted_at: &str,
+    cutoff_at: &str,
+) -> Result<(), StateError> {
     let trusted = validate_whole_timestamp(trusted_at)?;
     let authenticated = validate_whole_timestamp(&authentication.authenticated_at)?;
     let cutoff = validate_derived_timestamp(cutoff_at)?;

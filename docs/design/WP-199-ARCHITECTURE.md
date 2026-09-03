@@ -277,8 +277,11 @@ Refusals are exactly `schemaVersion`, `requestFamily`, `status` = `refused`, `co
 `signer_unavailable`, `clock_invalid`, `entropy_unavailable` or `nonce_collision`. A failed or
 partial response send never changes the durable result and never permits a bearer response replay.
 When failures overlap, precedence is integrity/recovery, compare-and-set, state, policy/uniqueness,
-time, entropy, signer, then storage. Any signer or storage failure after the first final object is
-created seals the authority and externally maps only to `journal_unavailable`.
+time, deterministic generation/count/byte successor-capacity eligibility projection, entropy,
+signer, then storage. Capacity projection is preflight, not storage: it refuses
+`journal_unavailable` before drawing a ticket nonce or signing. Storage here means a
+nondeterministic publication or sync failure. Any signer or storage failure after the first final
+object is created seals the authority and externally maps only to `journal_unavailable`.
 
 ## Untrusted candidate and private verification capabilities
 

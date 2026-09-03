@@ -4,11 +4,12 @@ use std::io::IoSliceMut;
 use std::mem::MaybeUninit;
 use std::mem::align_of;
 use std::os::fd::OwnedFd;
+use std::time::Duration;
 
 use rustix::io;
 use rustix::net::sockopt::{
-    set_socket_passcred, socket_acceptconn, socket_domain, socket_error, socket_passcred,
-    socket_peercred, socket_type,
+    Timeout, set_socket_passcred, set_socket_timeout, socket_acceptconn, socket_domain,
+    socket_error, socket_passcred, socket_peercred, socket_timeout, socket_type,
 };
 use rustix::net::{
     AddressFamily, RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendFlags,
@@ -26,9 +27,10 @@ const CREDENTIAL_CONTROL_BYTES: usize = rustix::cmsg_space!(ScmCredentials(1));
 const CREDENTIAL_ALIGNED_BYTES: usize = rustix::cmsg_aligned_space!(ScmCredentials(1));
 const MINIMUM_SECOND_ALIGNED_BYTES: usize = rustix::cmsg_aligned_space!(ScmRights(0));
 const CONTROL_BYTES: usize = CREDENTIAL_CONTROL_BYTES;
-const RECEIVE_FLAGS: RecvFlags = RecvFlags::DONTWAIT.union(RecvFlags::CMSG_CLOEXEC);
+const RECEIVE_FLAGS: RecvFlags = RecvFlags::CMSG_CLOEXEC;
 const ALLOWED_RECORD_FLAGS: ReturnFlags = ReturnFlags::EOR.union(ReturnFlags::CMSG_CLOEXEC);
 const ALLOWED_EOF_FLAGS: ReturnFlags = ReturnFlags::CMSG_CLOEXEC;
+const RECEIVE_READY_TIMEOUT: Duration = Duration::from_secs(1);
 
 const _: () = assert!(CONTROL_BYTES - (align_of::<usize>() - 1) >= CREDENTIAL_ALIGNED_BYTES);
 const _: () = assert!(CONTROL_BYTES < CREDENTIAL_ALIGNED_BYTES + MINIMUM_SECOND_ALIGNED_BYTES);
@@ -277,6 +279,13 @@ impl PreparedTransport {
         let (expected_peer, expected_address) = validate_endpoint(&socket, policy)?;
         set_socket_passcred(&socket, true).map_err(|_| IpcError::Endpoint)?;
         if !socket_passcred(&socket).map_err(|_| IpcError::Endpoint)? {
+            return Err(IpcError::Endpoint);
+        }
+        set_socket_timeout(&socket, Timeout::Recv, Some(RECEIVE_READY_TIMEOUT))
+            .map_err(|_| IpcError::Endpoint)?;
+        if socket_timeout(&socket, Timeout::Recv).map_err(|_| IpcError::Endpoint)?
+            != Some(RECEIVE_READY_TIMEOUT)
+        {
             return Err(IpcError::Endpoint);
         }
         Ok(Self {
@@ -715,6 +724,75 @@ mod tests {
             .receive()
             .expect("transferred authenticated packet");
         assert_eq!(packet.bytes, b"transferred");
+    }
+
+    #[test]
+    fn receive_waits_for_a_sender_released_after_receive_starts() {
+        let (client, server) = connected_pair(SocketType::SEQPACKET);
+        let policy = expected_policy(&server);
+        let prepared = PreparedTransport::prepare(server, &policy).expect("prepared endpoint");
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let receiver = std::thread::spawn(move || {
+            started_tx.send(()).expect("receive start signal");
+            prepared.receive()
+        });
+        started_rx.recv().expect("receive started");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        send_record_and_eof(&client, b"released later");
+
+        let packet = receiver
+            .join()
+            .expect("receiver thread")
+            .expect("authenticated packet");
+        assert_eq!(packet.bytes, b"released later");
+    }
+
+    #[test]
+    fn receive_waits_for_shutdown_after_the_request_record() {
+        let (client, server) = connected_pair(SocketType::SEQPACKET);
+        let policy = expected_policy(&server);
+        let prepared = PreparedTransport::prepare(server, &policy).expect("prepared endpoint");
+        assert_eq!(
+            send(&client, b"request first", SendFlags::NOSIGNAL).expect("request send"),
+            13
+        );
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let receiver = std::thread::spawn(move || {
+            started_tx.send(()).expect("EOF wait start signal");
+            prepared.receive()
+        });
+        started_rx.recv().expect("EOF wait started");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        shutdown(&client, Shutdown::Write).expect("delayed write shutdown");
+
+        let packet = receiver
+            .join()
+            .expect("receiver thread")
+            .expect("authenticated packet");
+        assert_eq!(packet.bytes, b"request first");
+    }
+
+    #[test]
+    fn receive_and_open_write_half_waits_are_bounded() {
+        let (_silent_client, silent_server) = connected_pair(SocketType::SEQPACKET);
+        let silent_policy = expected_policy(&silent_server);
+        let silent_prepared =
+            PreparedTransport::prepare(silent_server, &silent_policy).expect("prepared endpoint");
+        let started = std::time::Instant::now();
+        assert_eq!(silent_prepared.receive().err(), Some(IpcError::Receive));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+
+        let (open_client, open_server) = connected_pair(SocketType::SEQPACKET);
+        let open_policy = expected_policy(&open_server);
+        let open_prepared =
+            PreparedTransport::prepare(open_server, &open_policy).expect("prepared endpoint");
+        assert_eq!(
+            send(&open_client, b"request", SendFlags::NOSIGNAL).expect("request send"),
+            7
+        );
+        let started = std::time::Instant::now();
+        assert_eq!(open_prepared.receive().err(), Some(IpcError::OpenWriteHalf));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
     }
 
     #[test]
