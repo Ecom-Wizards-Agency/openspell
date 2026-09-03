@@ -340,8 +340,9 @@ privilege. A separate `test:kernel` wrapper:
    no success summary until final image cleanup has been proved. A separate real interruption harness
    interposes a fixed test-only Docker client shim that holds successful build-container and
    committed-image responses before returning their immutable IDs. It signals while each response is
-   held, then also exercises a running privileged case and final image deletion, and verifies the
-   captured container, image and anonymous-volume IDs are all absent.
+   held, holds a case-inspection response to prove cancellation before privileged start, then also
+   exercises a running privileged case and final image deletion. Every cut verifies the captured
+   container, image and anonymous-volume IDs are all absent.
 
 The reviewed image is:
 
@@ -352,11 +353,16 @@ docker.io/library/rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe
 The wrapper refuses when Docker, cgroup v2, required namespace/ptrace behavior or exact cleanup is
 unavailable. It never silently skips. The trusted proof workflow never fetches or executes a
 pull-request-controlled revision in its privileged proof container. A separate default-branch
-`workflow_run` workflow runs the proof only after ordinary CI succeeds for a
-trusted `main` push. The trusted workflow has no manual or pull-request trigger, no permissions or
+`workflow_run` workflow runs the proof only after ordinary CI succeeds for a trusted `main` push.
+The trusted workflow has no manual or pull-request trigger, no permissions or
 persisted checkout credential, fetches and verifies the triggering exact SHA, points pnpm setup at
 that checked-out manifest and runs the proof as its final step. A local operator can run the wrapper
 explicitly; ordinary local repository tests do not silently start a privileged container.
+
+This guarantee is scoped to the trusted proof workflow and its container. General pull-request CI
+executes untrusted repository code on GitHub-hosted runners under the repository's existing
+organization policy; WP-200 neither treats that runner as a security sandbox nor changes its
+Docker/sudo policy.
 
 ## WP-199 composition
 
@@ -396,6 +402,7 @@ tools/hosted-migration-runtime-proof/
   scripts/
     cargo.mjs
     test.mjs
+    docker-response-shim.mjs  test-only bounded response hold for deterministic signal cuts
     kernel-proof.mjs
     kernel-proof-interruption.mjs
   Cargo.toml

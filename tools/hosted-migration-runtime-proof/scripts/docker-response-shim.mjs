@@ -13,7 +13,7 @@ const readyFile = process.env["WP200_DOCKER_RESPONSE_READY"];
 const releaseFile = process.env["WP200_DOCKER_RESPONSE_RELEASE"];
 const args = process.argv.slice(2);
 
-function isSelectedMutation() {
+function isCandidateMutation() {
   if (cut === "build-create") {
     const nameAt = args.indexOf("--name");
     return (
@@ -23,7 +23,25 @@ function isSelectedMutation() {
       args[nameAt + 1]?.startsWith("openspell-wp200-build-") === true
     );
   }
-  return cut === "image-commit" && args[0] === "container" && args[1] === "commit";
+  return (
+    (cut === "image-commit" && args[0] === "container" && args[1] === "commit") ||
+    (cut === "case-inspect" && args[0] === "container" && args[1] === "inspect")
+  );
+}
+
+function isSelectedResponse(stdout) {
+  if (cut !== "case-inspect") return true;
+  try {
+    const records = JSON.parse(Buffer.concat(stdout).toString("utf8"));
+    return (
+      Array.isArray(records) &&
+      records.length === 1 &&
+      typeof records[0]?.Name === "string" &&
+      records[0].Name.startsWith("/openspell-wp200-case-")
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function holdSuccessfulResponse() {
@@ -37,7 +55,7 @@ async function holdSuccessfulResponse() {
 }
 
 if (realDocker === undefined || !realDocker.startsWith("/")) process.exit(125);
-const selected = isSelectedMutation();
+const candidate = isCandidateMutation();
 const child = spawn(realDocker, args, {
   stdio: ["pipe", "pipe", "pipe"],
 });
@@ -50,7 +68,7 @@ for (const [stream, destination, held] of [
   [child.stdout, process.stdout, heldStdout],
   [child.stderr, process.stderr, heldStderr],
 ]) {
-  if (!selected) {
+  if (!candidate) {
     stream.pipe(destination);
     continue;
   }
@@ -70,10 +88,11 @@ const result = await new Promise((resolve) => {
   child.once("close", (status, signal) => resolve({ status, signal }));
 });
 if (overflow) process.exit(125);
+const selected = candidate && isSelectedResponse(heldStdout);
 if (selected && result.status === 0 && result.signal === null) {
   await holdSuccessfulResponse();
 }
-if (selected) {
+if (candidate) {
   process.stdout.write(Buffer.concat(heldStdout));
   process.stderr.write(Buffer.concat(heldStderr));
 }

@@ -5,6 +5,7 @@ import {
   constants,
   existsSync,
   mkdtempSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -24,6 +25,7 @@ const maximumOutputBytes = 64 * 1024;
 const observationAttempts = 36_000;
 const observationDelayMilliseconds = 5;
 const exitTimeoutMilliseconds = 180_000;
+const forcedExitTimeoutMilliseconds = 10_000;
 
 function resolveDocker() {
   for (const directory of (process.env["PATH"] ?? "").split(delimiter)) {
@@ -84,7 +86,14 @@ function proveGlobalResidueAbsent() {
     "reference=openspell-wp200-recovery:*",
   ]);
   requireDocker(images);
-  if (containers.length !== 0 || images.stdout.split("\n").filter(Boolean).length !== 0) {
+  const responseCuts = readdirSync(tmpdir()).filter((name) =>
+    name.startsWith("openspell-wp200-docker-cut-"),
+  );
+  if (
+    containers.length !== 0 ||
+    images.stdout.split("\n").filter(Boolean).length !== 0 ||
+    responseCuts.length !== 0
+  ) {
     throw new Error("interruption proof residue present");
   }
 }
@@ -170,34 +179,39 @@ async function observeCommittedImage(record) {
 }
 
 function prepareResponseCut(cut) {
-  if (cut !== "build-create" && cut !== "image-commit") {
+  if (cut !== "build-create" && cut !== "image-commit" && cut !== "case-inspect") {
     throw new Error("interruption proof response cut refused");
   }
   const directory = mkdtempSync(join(tmpdir(), "openspell-wp200-docker-cut-"));
   const launcher = join(directory, "docker");
   const ready = join(directory, "ready");
   const release = join(directory, "release");
-  writeFileSync(
-    launcher,
-    '#!/bin/sh\nexec "$WP200_NODE" "$WP200_DOCKER_SHIM" "$@"\n',
-    { encoding: "utf8", flag: "wx", mode: 0o700 },
-  );
-  chmodSync(launcher, 0o700);
-  return Object.freeze({
-    directory,
-    ready,
-    release,
-    env: {
-      ...process.env,
-      PATH: `${directory}${delimiter}${process.env["PATH"] ?? ""}`,
-      WP200_NODE: process.execPath,
-      WP200_DOCKER_SHIM: dockerResponseShim,
-      WP200_REAL_DOCKER: realDocker,
-      WP200_DOCKER_RESPONSE_CUT: cut,
-      WP200_DOCKER_RESPONSE_READY: ready,
-      WP200_DOCKER_RESPONSE_RELEASE: release,
-    },
-  });
+  try {
+    writeFileSync(
+      launcher,
+      '#!/bin/sh\nexec "$WP200_NODE" "$WP200_DOCKER_SHIM" "$@"\n',
+      { encoding: "utf8", flag: "wx", mode: 0o700 },
+    );
+    chmodSync(launcher, 0o700);
+    return Object.freeze({
+      directory,
+      ready,
+      release,
+      env: {
+        ...process.env,
+        PATH: `${directory}${delimiter}${process.env["PATH"] ?? ""}`,
+        WP200_NODE: process.execPath,
+        WP200_DOCKER_SHIM: dockerResponseShim,
+        WP200_REAL_DOCKER: realDocker,
+        WP200_DOCKER_RESPONSE_CUT: cut,
+        WP200_DOCKER_RESPONSE_READY: ready,
+        WP200_DOCKER_RESPONSE_RELEASE: release,
+      },
+    });
+  } catch (error) {
+    rmSync(directory, { force: true, recursive: true });
+    throw error;
+  }
 }
 
 async function awaitResponseHeld(cut, child) {
@@ -235,19 +249,58 @@ function collectBounded(stream) {
   return () => value;
 }
 
-function waitForExit(child) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("interruption proof exit timeout")),
-      exitTimeoutMilliseconds);
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(new Error("interruption proof child failed", { cause: error }));
+function waitForExit(child, timeoutMilliseconds = exitTimeoutMilliseconds) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({
+      code: child.exitCode,
+      signal: child.signalCode,
+      spawnFailed: false,
+      timedOut: false,
     });
-    child.once("exit", (code, signal) => {
+  }
+  return new Promise((resolve) => {
+    const finish = (result) => {
       clearTimeout(timeout);
-      resolve({ code, signal });
-    });
+      child.off("error", failed);
+      child.off("exit", exited);
+      resolve(result);
+    };
+    const failed = () =>
+      finish({ code: null, signal: null, spawnFailed: true, timedOut: false });
+    const exited = (code, signal) =>
+      finish({ code, signal, spawnFailed: false, timedOut: false });
+    const timeout = setTimeout(
+      () => finish({ code: null, signal: null, spawnFailed: false, timedOut: true }),
+      timeoutMilliseconds,
+    );
+    child.once("error", failed);
+    child.once("exit", exited);
   });
+}
+
+function childIsRunning(child) {
+  return child.exitCode === null && child.signalCode === null;
+}
+
+function signalProcessGroup(child, signal) {
+  if (child.pid === undefined) return false;
+  try {
+    process.kill(-child.pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureChildExit(child, terminal) {
+  if (terminal !== undefined && !terminal.timedOut) return terminal;
+  if (!childIsRunning(child)) return waitForExit(child, forcedExitTimeoutMilliseconds);
+  signalProcessGroup(child, "SIGTERM");
+  let stopped = await waitForExit(child, forcedExitTimeoutMilliseconds);
+  if (!stopped.timedOut || !childIsRunning(child)) return stopped;
+  signalProcessGroup(child, "SIGKILL");
+  stopped = await waitForExit(child, forcedExitTimeoutMilliseconds);
+  return stopped;
 }
 
 function proveCapturedObjectsAbsent(record, imageId) {
@@ -324,37 +377,49 @@ function waitForImageDelete(imageId) {
 
 async function proveSignal(signal, prefix, responseCutName, observeImage = false) {
   proveGlobalResidueAbsent();
-  const responseCut =
-    responseCutName === undefined ? undefined : prepareResponseCut(responseCutName);
-  const child = spawn(process.execPath, [wrapper], {
-    detached: true,
-    env: responseCut?.env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const stdout = collectBounded(child.stdout);
-  const stderr = collectBounded(child.stderr);
-  const exit = waitForExit(child);
+  let responseCut;
+  let child;
+  let stdout;
+  let stderr;
+  let exit;
   let record;
   let imageId;
   let terminal;
   try {
+    responseCut =
+      responseCutName === undefined ? undefined : prepareResponseCut(responseCutName);
+    child = spawn(process.execPath, [wrapper], {
+      detached: true,
+      env: responseCut?.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    stdout = collectBounded(child.stdout);
+    stderr = collectBounded(child.stderr);
+    exit = waitForExit(child);
     if (responseCut !== undefined) await awaitResponseHeld(responseCut, child);
     record = await observeContainer(prefix, responseCut === undefined ? "running" : "created");
     if (observeImage) imageId = await observeCommittedImage(record);
-    process.kill(-child.pid, signal);
+    if (!signalProcessGroup(child, signal)) {
+      throw new Error("interruption proof signal refused");
+    }
     if (responseCut !== undefined) releaseResponse(responseCut);
     terminal = await exit;
   } finally {
-    if (responseCut !== undefined) releaseResponse(responseCut);
-    if (terminal === undefined && child.exitCode === null && child.signalCode === null) {
-      process.kill(-child.pid, "SIGTERM");
-      terminal = await exit;
+    try {
+      if (responseCut !== undefined) releaseResponse(responseCut);
+      if (child !== undefined) terminal = await ensureChildExit(child, terminal);
+    } finally {
+      if (responseCut !== undefined) removeResponseCut(responseCut);
     }
-    if (responseCut !== undefined) removeResponseCut(responseCut);
   }
   if (
+    terminal === undefined ||
+    terminal.timedOut ||
+    terminal.spawnFailed ||
     terminal.code === 0 ||
     terminal.signal !== null ||
+    stdout === undefined ||
+    stderr === undefined ||
     stdout() !== "" ||
     stderr() !== "openspell synthetic kernel proof refused\n"
   ) {
@@ -383,16 +448,17 @@ async function proveFinalCleanupSignal() {
     const deletion = waitForImageDelete(imageId);
     watcher = deletion.watcher;
     await deletion.deleted;
-    process.kill(-child.pid, "SIGINT");
+    if (!signalProcessGroup(child, "SIGINT")) {
+      throw new Error("interruption proof signal refused");
+    }
     terminal = await exit;
   } finally {
     watcher?.kill("SIGTERM");
-    if (terminal === undefined && child.exitCode === null && child.signalCode === null) {
-      process.kill(-child.pid, "SIGTERM");
-      terminal = await exit;
-    }
+    terminal = await ensureChildExit(child, terminal);
   }
   if (
+    terminal.timedOut ||
+    terminal.spawnFailed ||
     terminal.code === 0 ||
     terminal.signal !== null ||
     stdout() !== "" ||
@@ -410,10 +476,11 @@ try {
   }
   await proveSignal("SIGINT", "openspell-wp200-build-", "build-create");
   await proveSignal("SIGTERM", "openspell-wp200-stage-", "image-commit", true);
+  await proveSignal("SIGINT", "openspell-wp200-case-", "case-inspect");
   await proveSignal("SIGTERM", "openspell-wp200-case-");
   await proveFinalCleanupSignal();
   process.stdout.write(
-    "openspell synthetic kernel proof: interruption-cuts=4 signals=2 residue=0\n",
+    "openspell synthetic kernel proof: interruption-cuts=5 signals=2 residue=0\n",
   );
 } catch {
   process.stderr.write("openspell synthetic interruption proof refused\n");

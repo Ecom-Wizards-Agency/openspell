@@ -141,8 +141,8 @@ Handover and status change only after reviewed merge and exact-main CI.
   assertions with no skip;
 - exact no-residue proof after success and every real failure case;
 - real process-group SIGINT/SIGTERM cuts during build-container acquisition, committed-image
-  acquisition, running privileged-case execution and final image deletion, including exact
-  anonymous-volume absence;
+  acquisition, held pre-start case inspection, running privileged-case execution and final image
+  deletion, including exact anonymous-volume absence;
 - privacy-canary proof across results, errors and logs;
 - pinned Cargo format/check/clippy/rustdoc/test plus TypeScript boundary tests;
 - repository typecheck, lint, test and hygiene on exact PR head, plus the permissionless privileged
@@ -157,7 +157,8 @@ WP-200 does not:
 - execute the official CLI, connect to a target or use a credential;
 - query history, dry-run, apply, repair, pull or create a database/project;
 - create a production journal transition, signer, listener, launcher, service or deployment;
-- stage, activate, restart, promote or mutate live infrastructure; or
+- stage, activate, restart, promote or mutate live infrastructure;
+- change or claim to sandbox general pull-request execution on GitHub-hosted runners; or
 - update rolling status/handover before reviewed merge and exact-main CI.
 
 ## Ordered handoff

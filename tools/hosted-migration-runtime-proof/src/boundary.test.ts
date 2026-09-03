@@ -240,6 +240,9 @@ describe("private hosted-migration runtime proof boundary", () => {
       '"openspell-wp200-stage-", "image-commit", true',
     );
     expect(interruptionProof).toContain(
+      'await proveSignal("SIGINT", "openspell-wp200-case-", "case-inspect")',
+    );
+    expect(interruptionProof).toContain(
       'await proveSignal("SIGTERM", "openspell-wp200-case-")',
     );
     expect(interruptionProof).toContain("await proveFinalCleanupSignal()");
@@ -250,8 +253,10 @@ describe("private hosted-migration runtime proof boundary", () => {
     const responseShim = read("scripts/docker-response-shim.mjs");
     expect(responseShim).toContain('cut === "build-create"');
     expect(responseShim).toContain('cut === "image-commit"');
+    expect(responseShim).toContain('cut === "case-inspect"');
     expect(responseShim).toContain("await holdSuccessfulResponse()");
     expect(responseShim).toContain("writeFileSync(readyFile");
+    expect(interruptionProof).toContain("interruption-cuts=5 signals=2 residue=0");
     expect(kernel).toContain('"/usr/bin/setpriv"');
     expect(kernel).toContain('"--bounding-set=-all,+sys_admin,+setfcap"');
     expect(kernel).toContain('"--no-new-privs"');

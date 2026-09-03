@@ -721,6 +721,7 @@ async function verifyImageArtifact(imageId, digest) {
     ) {
       throw new Error("bounded image verification required");
     }
+    await interruptionCheckpoint();
     runCreatedContainer(containerId, `${digest}  /kernel-proof\n`, caseTimeoutMilliseconds);
   } finally {
     proveContainerAbsent(name, containerId, [], false, unresolvedCreation);
@@ -779,6 +780,7 @@ async function runCase(imageId, mode, expected) {
     ) {
       throw new Error("bounded privileged proof container required");
     }
+    await interruptionCheckpoint();
     runCreatedContainer(containerId, `${expected}\n`, caseTimeoutMilliseconds);
   } finally {
     proveContainerAbsent(name, containerId, [], false, unresolvedCreation);
