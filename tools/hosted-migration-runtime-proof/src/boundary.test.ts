@@ -34,6 +34,19 @@ function read(relativePath: string): string {
   return readFileSync(join(packageDirectory, relativePath), "utf8");
 }
 
+function runtimeImageFromWrapper(): string {
+  const wrapper = read("scripts/cargo.mjs");
+  const imageDeclaration = /export const image = \[([\s\S]*?)\]\.join\(""\);/u.exec(wrapper);
+  if (imageDeclaration?.[1] === undefined) throw new Error("exact runtime image declaration required");
+  const fragments = [...imageDeclaration[1].matchAll(/^\s*("[^"]*"),?\s*$/gmu)].map(
+    (match) => JSON.parse(match[1] ?? "null") as unknown,
+  );
+  if (fragments.length === 0 || fragments.some((fragment) => typeof fragment !== "string")) {
+    throw new Error("exact runtime image fragments required");
+  }
+  return fragments.join("");
+}
+
 function workspaceManifests(): readonly string[] {
   const manifests: string[] = [];
   const visit = (directory: string): void => {
@@ -213,8 +226,8 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(kernel).toContain('process.on("SIGINT", recordInterruption)');
     expect(kernel).toContain('process.on("SIGTERM", recordInterruption)');
     expect(kernel).toContain("await interruptionCheckpoint()");
-    expect(kernel).toContain("async function buildArtifact()");
-    expect(kernel).toContain("async function stageProofImage(artifact)");
+    expect(kernel).toContain("async function buildArtifact(baseImageId)");
+    expect(kernel).toContain("async function stageProofImage(artifact, base)");
     expect(kernel).toContain("async function runCase(imageId, mode, expected)");
     expect(kernel).toContain("await runCase(imageId, mode, expected)");
     expect(kernel).toContain("detached: true");
@@ -448,10 +461,66 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(trusted).toContain("TRUSTED_SHA: ${{ github.event.workflow_run.head_sha }}");
     expect(trusted).toContain("permissions: {}");
     expect(trusted).not.toContain("actions/checkout");
+    const actionPins = trusted
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("- uses: "))
+      .map((line) => line.slice("- uses: ".length));
+    expect(actionPins).toEqual([
+      ["pnpm/action-setup@", "b906affcce14559a", "d1aafd4ab0e94277", "9e9f58b1"].join(""),
+      ["actions/setup-node@", "49933ea5288caeca", "8642d1e84afbd3f7", "d6820020"].join(""),
+    ]);
+    expect(actionPins.every((entry) => /@[0-9a-f]{40}$/u.test(entry))).toBe(true);
     expect(trusted).toContain("Fetch exact trusted revision without a credential");
     expect(trusted).toContain('git -C workspace fetch --depth=1 origin "$TRUSTED_SHA"');
     expect(trusted).toContain('test "$(git -C workspace rev-parse HEAD)" = "$TRUSTED_SHA"');
     expect(trusted).toContain("package_json_file: workspace/package.json");
+    expect(trusted).toContain("Acquire exact proof-builder image");
+    const pullPrefix = "run: docker image pull ";
+    const pullLines = trusted
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith(pullPrefix));
+    expect(pullLines).toHaveLength(1);
+    expect(pullLines[0]?.slice(pullPrefix.length)).toBe(runtimeImageFromWrapper());
+    const acquisitionAt = trusted.indexOf("Acquire exact proof-builder image");
+    const proofAt = trusted.indexOf("Verify hosted migration Linux runtime proof");
+    expect(acquisitionAt).toBeGreaterThan(0);
+    expect(acquisitionAt).toBeLessThan(proofAt);
+    const timeoutMinutes = [...trusted.matchAll(/timeout-minutes: (\d+)/gu)].map((match) =>
+      Number(match[1]),
+    );
+    expect(timeoutMinutes).toEqual([230, 5, 5, 10, 10, 5, 180]);
+    const [jobMinutes, ...stepMinutes] = timeoutMinutes;
+    const pullMinutes = stepMinutes.at(-2);
+    const proofMinutes = stepMinutes.at(-1);
+    expect(pullMinutes).toBe(5);
+    expect(proofMinutes).toBeGreaterThanOrEqual(90);
+    expect(jobMinutes).toBeGreaterThanOrEqual(
+      stepMinutes.reduce((sum, minutes) => sum + minutes, 0) + 15,
+    );
+    expect(trusted).not.toContain("continue-on-error");
+    expect(trusted).not.toContain("|| true");
+    const kernelWrapper = read("scripts/kernel-proof.mjs");
+    expect(kernelWrapper).toContain(
+      'spawnSync("docker", ["container", "create", "--pull", "never", ...args]',
+    );
+    expect(kernelWrapper).toContain("const base = inspectImage(image)");
+    expect(kernelWrapper).toContain("buildArtifact(base.Id)");
+    const interruptionWrapper = read("scripts/kernel-proof-interruption.mjs");
+    expect(
+      interruptionWrapper.match(
+        /"container",\s*"create",\s*"--pull",\s*"never"/gu,
+      ),
+    ).toHaveLength(2);
+    expect(interruptionWrapper).toContain("async function resolveBaseImageId(deadline)");
+    expect(interruptionWrapper).toContain(
+      'await runOwnedDocker(["image", "inspect", image], deadline)',
+    );
+    expect(interruptionWrapper).toContain("let realDocker;");
+    expect(interruptionWrapper).toContain("realDocker = resolveDocker();");
+    expect(interruptionWrapper).toContain("let baseImageId;");
+    expect(interruptionWrapper).toContain("baseImageId = await resolveBaseImageId(");
     expect(trusted).toContain(
       "pnpm --filter @wizard-ads/hosted-migration-runtime-proof run test:kernel",
     );

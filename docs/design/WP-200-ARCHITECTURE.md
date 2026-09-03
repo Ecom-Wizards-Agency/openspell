@@ -386,6 +386,19 @@ The wrapper refuses when Docker, cgroup v2, required namespace/ptrace behavior o
 unavailable. It never silently skips. The trusted proof workflow never fetches or executes a
 pull-request-controlled revision in its privileged proof container. A separate default-branch
 `workflow_run` workflow runs the proof only after ordinary CI succeeds for a trusted `main` push.
+That workflow uses commit-pinned setup actions and bounds every fetch, setup, install and image
+acquisition step before invoking the strict wrapper. It explicitly acquires the exact digest-pinned
+builder image, so a fresh runner cannot
+turn Docker's otherwise implicit image-pull output into an ambiguous container-create response.
+Each wrapper resolves that retained reference to one exact local image ID before mutation and every
+container create uses `--pull=never`; the interruption wrapper performs its inspection through the
+same asynchronously owned TERM/KILL-bounded client path as the rest of its deadline-sensitive
+operations, inside its fixed refusal handler. Image acquisition and isolated compilation are separate from
+the privileged proof cases, which remain networkless. The workflow's proof and job ceilings retain
+15 minutes of job-level headroom beyond the sum of every step ceiling, while the proof ceiling
+retains headroom beyond the longest 60-to-65-minute observation/response hold and its
+forced-settlement reserve. The platform therefore cannot preempt the wrapper's cleanup custody
+before one of those independently bounded steps has already failed the proof.
 The trusted workflow has no manual or pull-request trigger, no permissions or
 persisted checkout credential, fetches and verifies the triggering exact SHA, points pnpm setup at
 that checked-out manifest and runs the proof as its final step. A local operator can run the wrapper

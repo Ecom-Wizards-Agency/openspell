@@ -39,6 +39,7 @@ const watcherExitTimeoutMilliseconds = 10_000;
 const watchdogFixtureTimeoutMilliseconds = 100;
 const watchdogFixtureReadyTimeoutMilliseconds = 10_000;
 const ownedClientStopReserveMilliseconds = 1_250;
+const baseImageInspectionDeadlineMilliseconds = 15_000;
 const recoveryImageRepository = ["openspell", "wp200", "recovery"].join("-");
 
 function remainingOperationTime(deadline) {
@@ -61,7 +62,7 @@ function resolveDocker() {
   throw new Error("interruption proof Docker executable unavailable");
 }
 
-const realDocker = resolveDocker();
+let realDocker;
 
 function rawDocker(args, timeoutMilliseconds = 10_000) {
   return spawnSync(realDocker, args, {
@@ -87,6 +88,24 @@ function requireDocker(result) {
     throw new Error("interruption proof Docker operation refused");
   }
 }
+
+async function resolveBaseImageId(deadline) {
+  const inspected = await runOwnedDocker(["image", "inspect", image], deadline);
+  requireDocker(inspected);
+  let records;
+  try {
+    records = JSON.parse(inspected.stdout);
+  } catch {
+    throw new Error("interruption proof base image inspection refused");
+  }
+  const imageId = Array.isArray(records) && records.length === 1 ? records[0]?.Id : undefined;
+  if (!/^sha256:[0-9a-f]{64}$/u.test(imageId ?? "")) {
+    throw new Error("interruption proof content addressed base image required");
+  }
+  return imageId;
+}
+
+let baseImageId;
 
 function inspectContainer(id, timeoutMilliseconds) {
   const inspection = docker(["container", "inspect", id], timeoutMilliseconds);
@@ -775,6 +794,8 @@ async function createWatchdogFixtureContainer() {
     const created = rawDocker([
       "container",
       "create",
+      "--pull",
+      "never",
       "--name",
       name,
       "--network",
@@ -784,7 +805,7 @@ async function createWatchdogFixtureContainer() {
       "type=volume,destination=/target",
       "--entrypoint",
       "/bin/true",
-      image,
+      baseImageId,
     ]);
     containerId = typeof created.stdout === "string" ? created.stdout.trim() : undefined;
     if (!/^[0-9a-f]{64}$/u.test(containerId)) {
@@ -828,6 +849,8 @@ async function proveUninspectedResponseRecovery() {
     const created = rawDocker([
       "container",
       "create",
+      "--pull",
+      "never",
       "--name",
       name,
       "--network",
@@ -837,7 +860,7 @@ async function proveUninspectedResponseRecovery() {
       "type=volume,destination=/target",
       "--entrypoint",
       "/bin/true",
-      image,
+      baseImageId,
     ]);
     const containerId =
       typeof created.stdout === "string" ? created.stdout.trim() : undefined;
@@ -1342,6 +1365,10 @@ try {
   if (process.argv.length !== 2 || process.platform !== "linux" || process.arch !== "x64") {
     throw new Error("fixed Linux interruption proof required");
   }
+  realDocker = resolveDocker();
+  baseImageId = await resolveBaseImageId(
+    performance.now() + baseImageInspectionDeadlineMilliseconds,
+  );
   await proveSignal("SIGINT", "openspell-wp200-build-", "build-create");
   await proveSignal("SIGTERM", "openspell-wp200-stage-", "image-commit", true);
   await proveSignal("SIGINT", "openspell-wp200-case-", "case-inspect");
