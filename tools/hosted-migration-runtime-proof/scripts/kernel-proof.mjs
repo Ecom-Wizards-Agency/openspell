@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
@@ -27,6 +28,7 @@ const adapterLossSummary =
   "openspell synthetic kernel proof: adapter-loss recovery=1 residue=0";
 const tracerDeathSummary =
   "openspell synthetic kernel proof: tracer-death exitkill=1 residue=0";
+const recoveryImageRepository = ["openspell", "wp200", "recovery"].join("-");
 const cases = Object.freeze([
   ["success", "openspell synthetic kernel proof: success complete=1 residue=0"],
   ["refusal", "openspell synthetic kernel proof: refusal recovery=1 residue=0"],
@@ -480,7 +482,7 @@ function verifyImageLineage(base, derived) {
 function stageProofImage(artifact) {
   const stageName = `openspell-wp200-stage-${randomUUID()}`;
   let stageId;
-  recoveryImageTag = `openspell-wp200-recovery:${randomUUID()}`;
+  recoveryImageTag = `${recoveryImageRepository}:${randomUUID()}`;
   const base = inspectImage(image);
   if (!/^sha256:[0-9a-f]{64}$/u.test(base.Id)) {
     throw new Error("content addressed base image required");
@@ -715,7 +717,7 @@ function removeTargetDirectory(directory) {
     lstatSync(resolved);
   } catch (error) {
     if (error?.code === "ENOENT") return;
-    throw new Error("kernel proof build cleanup uncertain");
+    throw new Error("kernel proof build cleanup uncertain", { cause: error });
   }
   throw new Error("kernel proof build residue remained");
 }
