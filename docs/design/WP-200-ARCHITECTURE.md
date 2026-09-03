@@ -312,11 +312,14 @@ membership before killing the tracer, then proves all three pidfds terminal.
 The ordinary package test runs the model, provenance, parsing and static boundary suites without
 privilege. A separate `test:kernel` wrapper:
 
-1. builds the one synthetic kernel-test executable with the pinned Rust toolchain and locked graph;
-2. opens, validates and hashes one exact static-PIE file object, copies that descriptor-owned object
-   into a stopped container and commits it to a content-addressed local image;
-3. independently rehashes the in-image executable, deletes the mutable build tree, and addresses all
-   later executions only by the immutable image ID;
+1. creates an unprivileged build container with an anonymous `/target` volume, captures its immutable
+   container ID, and builds the one synthetic kernel-test executable with the pinned Rust toolchain
+   and locked graph without creating a mutable host build tree;
+2. extracts the compiler-reported object from that stopped container ID as one bounded, strictly
+   parsed archive, validates and hashes the exact static-PIE bytes in memory, copies those bytes into
+   a separate stopped staging container and commits it to a content-addressed local image;
+3. independently rehashes the in-image executable and addresses all later executions only by the
+   immutable image ID;
 4. starts that exact image with a private cgroup namespace, `--network none`, read-only
    root, fresh tmpfs state and no repository, user directory, credential, browser, Docker socket or
    service mount;
@@ -324,7 +327,10 @@ privilege. A separate `test:kernel` wrapper:
    `CAP_SETFCAP` for namespace and identity-map construction before the child proves an empty
    capability set; and
 6. requires the exact executable to report all 19 cases and counts, rehashes the immutable image
-   afterwards, then proves every case container, staging object, local image and build tree absent.
+   afterwards, then proves every case container, staging object, local image and anonymous build
+   volume absent. Container/image deletion uses only captured immutable IDs; names and tags are
+   absence diagnostics, never cleanup authority. SIGINT and SIGTERM are recorded and refused at
+   event-loop checkpoints so graceful cancellation still completes exact cleanup.
 
 The reviewed image is:
 

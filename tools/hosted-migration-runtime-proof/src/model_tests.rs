@@ -25,6 +25,19 @@ struct ModelKernel {
     offered: Vec<EffectKind>,
 }
 
+fn offer_at(machine: &mut SyntheticProofMachine, target: EffectKind) -> Effect {
+    loop {
+        let effect = machine.offer().expect("target effect remains reachable");
+        let kind = effect.kind();
+        if kind == target {
+            return effect;
+        }
+        machine
+            .resolve(effect, EffectReply::Observed(Observation::exact(kind)))
+            .expect("exact prefix advances");
+    }
+}
+
 impl ModelKernel {
     fn offer(&mut self, effect: &Effect) {
         self.actual.effects_offered += 1;
@@ -359,6 +372,29 @@ fn effects_are_bound_to_one_verified_case_identity() {
         assert_eq!(accounting.effects_uncertain, 1);
         assert_eq!(accounting.uncertain_resources.durable_intents, 1);
     }
+}
+
+#[test]
+fn continuation_permits_are_bound_to_the_issuing_machine_before_any_syscall() {
+    let mut first = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture(1));
+    let mut second = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture(2));
+    let first_bootstrap = offer_at(&mut first, EffectKind::BootstrapVerifiedProcesses);
+    let second_bootstrap = offer_at(&mut second, EffectKind::BootstrapVerifiedProcesses);
+
+    assert!(first.authorizes_bootstrap_continue(&first_bootstrap));
+    assert!(second.authorizes_bootstrap_continue(&second_bootstrap));
+    assert!(!first.authorizes_bootstrap_continue(&second_bootstrap));
+    assert!(!second.authorizes_bootstrap_continue(&first_bootstrap));
+
+    let mut first = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture(1));
+    let mut second = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture(2));
+    let first_resume = offer_at(&mut first, EffectKind::ResumeVerifiedProcesses);
+    let second_resume = offer_at(&mut second, EffectKind::ResumeVerifiedProcesses);
+
+    assert!(first.authorizes_resume_continue(&first_resume));
+    assert!(second.authorizes_resume_continue(&second_resume));
+    assert!(!first.authorizes_resume_continue(&second_resume));
+    assert!(!second.authorizes_resume_continue(&first_resume));
 }
 
 #[test]

@@ -1,18 +1,9 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import {
-  closeSync,
-  constants,
-  fstatSync,
-  lstatSync,
-  mkdtempSync,
-  openSync,
-  readSync,
-  realpathSync,
-} from "node:fs";
-import { join, relative, sep } from "node:path";
+import { basename } from "node:path";
 import process from "node:process";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 
 import { image, packageDirectory } from "./cargo.mjs";
 
@@ -57,9 +48,24 @@ const cases = Object.freeze([
   ["tracer-death-resumed", tracerDeathSummary],
 ]);
 
-let targetDirectory;
 let derivedImageId;
 let recoveryImageTag;
+let interrupted = false;
+
+const recordInterruption = () => {
+  interrupted = true;
+};
+process.on("SIGINT", recordInterruption);
+process.on("SIGTERM", recordInterruption);
+
+function refuseInterruption() {
+  if (interrupted) throw new Error("kernel proof interrupted");
+}
+
+async function interruptionCheckpoint() {
+  await yieldToEventLoop();
+  refuseInterruption();
+}
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -75,6 +81,25 @@ function requireSuccessful(result, message) {
   if (result.status !== 0 || result.signal !== null || result.stderr !== "") {
     throw new Error(message);
   }
+}
+
+function requireSuccessfulBinary(result, message) {
+  if (
+    result.status !== 0 ||
+    result.signal !== null ||
+    !Buffer.isBuffer(result.stdout) ||
+    !Buffer.isBuffer(result.stderr) ||
+    result.stderr.length !== 0
+  ) {
+    throw new Error(message);
+  }
+}
+
+function createdContainerId(result) {
+  requireSuccessful(result, "container creation failed");
+  const id = result.stdout.trim();
+  if (!/^[0-9a-f]{64}$/u.test(id)) throw new Error("exact container id required");
+  return id;
 }
 
 function inspectContainer(name) {
@@ -95,34 +120,11 @@ function inspectContainer(name) {
 }
 
 function proveContainerAbsent(name, knownId) {
-  let exactId = knownId;
-  if (exactId !== undefined && !/^[0-9a-f]{64}$/u.test(exactId)) {
+  if (knownId !== undefined && !/^[0-9a-f]{64}$/u.test(knownId)) {
     throw new Error("container cleanup uncertain");
   }
-  if (exactId === undefined) {
-    const inspection = run("docker", ["container", "inspect", name], {
-      timeout: cleanupTimeoutMilliseconds,
-    });
-    if (inspection.status === 0 && inspection.signal === null && inspection.stderr === "") {
-      let records;
-      try {
-        records = JSON.parse(inspection.stdout);
-      } catch {
-        throw new Error("container cleanup uncertain");
-      }
-      if (
-        !Array.isArray(records) ||
-        records.length !== 1 ||
-        !/^[0-9a-f]{64}$/u.test(records[0].Id) ||
-        records[0].Name !== `/${name}`
-      ) {
-        throw new Error("container cleanup uncertain");
-      }
-      exactId = records[0].Id;
-    }
-  }
-  if (exactId !== undefined) {
-    run("docker", ["container", "rm", "--force", "--volumes", exactId], {
+  if (knownId !== undefined) {
+    run("docker", ["container", "rm", "--force", "--volumes", knownId], {
       timeout: cleanupTimeoutMilliseconds,
     });
   }
@@ -148,7 +150,7 @@ function proveContainerAbsent(name, knownId) {
   ) {
     throw new Error("container cleanup uncertain");
   }
-  if (exactId !== undefined) {
+  if (knownId !== undefined) {
     const ids = run(
       "docker",
       ["container", "ls", "--all", "--no-trunc", "--format", "{{.ID}}"],
@@ -158,7 +160,7 @@ function proveContainerAbsent(name, knownId) {
       ids.status !== 0 ||
       ids.signal !== null ||
       ids.stderr !== "" ||
-      ids.stdout.split("\n").includes(exactId)
+      ids.stdout.split("\n").includes(knownId)
     ) {
       throw new Error("container cleanup uncertain");
     }
@@ -207,34 +209,11 @@ function proveTagAbsent(tag) {
 }
 
 function proveImageAbsent(id, tag) {
-  let exactId = id;
-  if (exactId === undefined && tag !== undefined) {
-    const inspection = run("docker", ["image", "inspect", tag], {
-      timeout: cleanupTimeoutMilliseconds,
-    });
-    if (inspection.status === 0 && inspection.signal === null && inspection.stderr === "") {
-      let records;
-      try {
-        records = JSON.parse(inspection.stdout);
-      } catch {
-        throw new Error("image cleanup uncertain");
-      }
-      if (
-        !Array.isArray(records) ||
-        records.length !== 1 ||
-        !/^sha256:[0-9a-f]{64}$/u.test(records[0].Id) ||
-        !records[0].RepoTags?.includes(tag)
-      ) {
-        throw new Error("image cleanup uncertain");
-      }
-      exactId = records[0].Id;
-    } else {
-      proveTagAbsent(tag);
-      return;
-    }
+  if (id !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(id)) {
+    throw new Error("image cleanup uncertain");
   }
-  if (exactId !== undefined) {
-    run("docker", ["image", "rm", "--force", "--no-prune", exactId], {
+  if (id !== undefined) {
+    run("docker", ["image", "rm", "--no-prune", id], {
       timeout: cleanupTimeoutMilliseconds,
     });
   }
@@ -245,39 +224,29 @@ function proveImageAbsent(id, tag) {
     listing.status !== 0 ||
     listing.signal !== null ||
     listing.stderr !== "" ||
-    (exactId !== undefined && listing.stdout.split("\n").includes(exactId))
+    (id !== undefined && listing.stdout.split("\n").includes(id))
   ) {
     throw new Error("image cleanup uncertain");
   }
   if (tag !== undefined) proveTagAbsent(tag);
 }
 
-function isInside(parent, candidate) {
-  const relation = relative(parent, candidate);
-  return relation !== "" && relation !== ".." && !relation.startsWith(`..${sep}`);
-}
-
 function hasNoConfiguredMounts(value) {
   return value === undefined || value === null || (Array.isArray(value) && value.length === 0);
 }
 
-function buildExecutable() {
-  const uid = process.getuid?.();
-  const gid = process.getgid?.();
-  if (uid === undefined || gid === undefined) throw new Error("linux identity required");
+function buildArtifact() {
   const name = `openspell-wp200-build-${randomUUID()}`;
-  let result;
+  let containerId;
   try {
-    result = run(
+    const created = run(
       "docker",
       [
-        "run",
+        "container",
+        "create",
         "--name",
         name,
-        "--rm",
         "--read-only",
-        "--user",
-        `${uid}:${gid}`,
         "--env",
         "CARGO_HOME=/cargo",
         "--env",
@@ -289,11 +258,11 @@ function buildExecutable() {
         "--env",
         "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C target-feature=+crt-static",
         "--tmpfs",
-        `/cargo:rw,uid=${uid},gid=${gid},mode=0700`,
+        "/cargo:rw,mode=0700",
         "--tmpfs",
-        `/usr/local/rustup/tmp:rw,uid=${uid},gid=${gid},mode=0700`,
+        "/usr/local/rustup/tmp:rw,mode=0700",
         "--mount",
-        `type=bind,src=${targetDirectory},dst=/target`,
+        "type=volume,destination=/target,volume-nocopy",
         "--mount",
         `type=bind,src=${packageDirectory},dst=/workspace,readonly`,
         "--workdir",
@@ -313,92 +282,102 @@ function buildExecutable() {
       ],
       { timeout: buildTimeoutMilliseconds },
     );
-  } finally {
-    proveContainerAbsent(name);
-  }
-  if (result.status !== 0 || result.signal !== null) {
-    throw new Error("kernel proof build failed");
-  }
+    containerId = createdContainerId(created);
+    refuseInterruption();
+    const result = startCreatedContainer(containerId, buildTimeoutMilliseconds, true);
+    refuseInterruption();
 
-  let records;
-  try {
-    records = result.stdout
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
-  } catch {
-    throw new Error("kernel proof build record refused");
-  }
-  const artifacts = records.filter(
-    (record) =>
-      record.reason === "compiler-artifact" &&
-      record.target?.name === "linux-kernel-proof" &&
-      typeof record.executable === "string",
-  );
-  if (artifacts.length !== 1) throw new Error("exact kernel executable required");
-  const insideTarget = artifacts[0].executable;
-  if (!insideTarget.startsWith("/target/")) throw new Error("isolated artifact required");
-  const executable = realpathSync(join(targetDirectory, insideTarget.slice("/target/".length)));
-  const metadata = lstatSync(executable);
-  if (
-    !isInside(targetDirectory, executable) ||
-    !metadata.isFile() ||
-    metadata.size <= 0 ||
-    metadata.size > maximumExecutableBytes
-  ) {
-    throw new Error("regular isolated executable required");
-  }
-  return executable;
-}
-
-function sameFile(before, after) {
-  return (
-    before.dev === after.dev &&
-    before.ino === after.ino &&
-    before.mode === after.mode &&
-    before.nlink === after.nlink &&
-    before.uid === after.uid &&
-    before.gid === after.gid &&
-    before.size === after.size
-  );
-}
-
-function readExactArtifact(path) {
-  const pathRecord = lstatSync(path);
-  if (
-    !pathRecord.isFile() ||
-    pathRecord.isSymbolicLink() ||
-    pathRecord.size <= 0 ||
-    pathRecord.size > maximumExecutableBytes
-  ) {
-    throw new Error("regular isolated executable required");
-  }
-  const descriptor = openSync(
-    path,
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
-  );
-  try {
-    const openedBefore = fstatSync(descriptor);
-    if (!openedBefore.isFile() || !sameFile(pathRecord, openedBefore)) {
-      throw new Error("exact executable object required");
+    let records;
+    try {
+      records = result.stdout
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    } catch {
+      throw new Error("kernel proof build record refused");
     }
-    const bytes = Buffer.alloc(openedBefore.size);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const count = readSync(descriptor, bytes, offset, bytes.length - offset, offset);
-      if (count <= 0) throw new Error("exact executable bytes required");
-      offset += count;
+    const artifacts = records.filter(
+      (record) =>
+        record.reason === "compiler-artifact" &&
+        record.target?.name === "linux-kernel-proof" &&
+        typeof record.executable === "string",
+    );
+    if (artifacts.length !== 1) throw new Error("exact kernel executable required");
+    const insideTarget = artifacts[0].executable;
+    if (
+      !insideTarget.startsWith("/target/") ||
+      insideTarget.length > 4096 ||
+      insideTarget
+        .slice("/target/".length)
+        .split("/")
+        .some((part) => part === "" || part === "." || part === "..")
+    ) {
+      throw new Error("isolated artifact required");
     }
-    if (!sameFile(openedBefore, fstatSync(descriptor))) {
-      throw new Error("stable executable object required");
-    }
+    const copied = run(
+      "docker",
+      ["container", "cp", `${containerId}:${insideTarget}`, "-"],
+      {
+        encoding: null,
+        maxBuffer: maximumExecutableBytes + 2048,
+        timeout: cleanupTimeoutMilliseconds,
+      },
+    );
+    requireSuccessfulBinary(copied, "exact executable extraction failed");
+    refuseInterruption();
+    const bytes = extractSingleFileArchive(copied.stdout, basename(insideTarget));
     verifyStaticExecutable(bytes);
     const digest = createHash("sha256").update(bytes).digest("hex");
-    if (!/^[0-9a-f]{64}$/u.test(digest)) throw new Error("executable digest unavailable");
+    if (!/^[0-9a-f]{64}$/u.test(digest)) {
+      throw new Error("executable digest unavailable");
+    }
     return Object.freeze({ bytes, digest });
   } finally {
-    closeSync(descriptor);
+    proveContainerAbsent(name, containerId);
   }
+}
+
+function parseTarOctal(header, offset, length) {
+  const field = header.subarray(offset, offset + length).toString("ascii");
+  if (!/^[0-7]+(?:\0| )+$/u.test(field)) throw new Error("exact artifact archive required");
+  const value = Number.parseInt(field.replace(/[\0 ]+$/u, ""), 8);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error("exact artifact archive required");
+  }
+  return value;
+}
+
+function extractSingleFileArchive(archive, expectedName) {
+  if (
+    !Buffer.isBuffer(archive) ||
+    archive.length < 1536 ||
+    archive.length % 512 !== 0 ||
+    !/^[A-Za-z0-9._-]+$/u.test(expectedName)
+  ) {
+    throw new Error("exact artifact archive required");
+  }
+  const header = archive.subarray(0, 512);
+  const nameEnd = header.indexOf(0, 0);
+  const name = header.subarray(0, nameEnd < 0 ? 100 : nameEnd).toString("ascii");
+  const size = parseTarOctal(header, 124, 12);
+  const storedChecksum = parseTarOctal(header, 148, 8);
+  const checksumHeader = Buffer.from(header);
+  checksumHeader.fill(0x20, 148, 156);
+  const actualChecksum = checksumHeader.reduce((sum, value) => sum + value, 0);
+  const paddedSize = Math.ceil(size / 512) * 512;
+  if (
+    name !== expectedName ||
+    header[156] !== 0x30 ||
+    header.subarray(257, 263).toString("ascii") !== "ustar\0" ||
+    size <= 0 ||
+    size > maximumExecutableBytes ||
+    storedChecksum !== actualChecksum ||
+    archive.length !== 512 + paddedSize + 1024 ||
+    archive.subarray(512 + size).some((value) => value !== 0)
+  ) {
+    throw new Error("exact artifact archive required");
+  }
+  return Buffer.from(archive.subarray(512, 512 + size));
 }
 
 function verifyStaticExecutable(bytes) {
@@ -508,9 +487,9 @@ function stageProofImage(artifact) {
       ],
       { timeout: cleanupTimeoutMilliseconds },
     );
-    requireSuccessful(create, "staging container creation failed");
-    const stage = inspectContainer(stageName);
-    stageId = stage.Id;
+    stageId = createdContainerId(create);
+    refuseInterruption();
+    const stage = inspectContainer(stageId);
     if (
       stage.Image !== base.Id ||
       stage.State?.Status !== "created" ||
@@ -524,20 +503,24 @@ function stageProofImage(artifact) {
     ) {
       throw new Error("isolated staging container required");
     }
-    const copied = run("docker", ["container", "cp", "-", `${stageName}:/`], {
+    const copied = run("docker", ["container", "cp", "-", `${stageId}:/`], {
       input: makeArtifactArchive(artifact.bytes),
       timeout: cleanupTimeoutMilliseconds,
     });
     requireSuccessful(copied, "exact executable staging failed");
 
-    const committed = run("docker", ["container", "commit", stageName, recoveryImageTag], {
+    const committed = run("docker", ["container", "commit", stageId, recoveryImageTag], {
       timeout: cleanupTimeoutMilliseconds,
     });
     requireSuccessful(committed, "content addressed image commit failed");
     const reportedId = committed.stdout.trim();
-    const derived = inspectImage(recoveryImageTag);
+    if (!/^sha256:[0-9a-f]{64}$/u.test(reportedId)) {
+      throw new Error("exact committed image required");
+    }
+    derivedImageId = reportedId;
+    refuseInterruption();
+    const derived = inspectImage(derivedImageId);
     if (
-      !/^sha256:[0-9a-f]{64}$/u.test(reportedId) ||
       derived.Id !== reportedId ||
       derived.RepoTags?.length !== 1 ||
       derived.RepoTags[0] !== recoveryImageTag
@@ -545,7 +528,6 @@ function stageProofImage(artifact) {
       throw new Error("exact committed image required");
     }
     verifyImageLineage(base, derived);
-    derivedImageId = derived.Id;
     return derivedImageId;
   } finally {
     proveContainerAbsent(stageName, stageId);
@@ -571,11 +553,16 @@ function inspectIsolatedContainer(record, imageId, privileged) {
   }
 }
 
-function runCreatedContainer(name, expected, timeout) {
-  const result = run("docker", ["container", "start", "--attach", name], { timeout });
-  requireSuccessful(result, "kernel proof container refused");
-  if (result.stdout !== expected) throw new Error("kernel proof summary mismatch");
-  const terminal = inspectContainer(name);
+function startCreatedContainer(containerId, timeout, allowStderr = false) {
+  const result = run("docker", ["container", "start", "--attach", containerId], { timeout });
+  if (
+    result.status !== 0 ||
+    result.signal !== null ||
+    (!allowStderr && result.stderr !== "")
+  ) {
+    throw new Error("kernel proof container refused");
+  }
+  const terminal = inspectContainer(containerId);
   if (
     terminal.State?.Status !== "exited" ||
     terminal.State?.ExitCode !== 0 ||
@@ -585,6 +572,12 @@ function runCreatedContainer(name, expected, timeout) {
   ) {
     throw new Error("exact terminal container state required");
   }
+  return result;
+}
+
+function runCreatedContainer(containerId, expected, timeout) {
+  const result = startCreatedContainer(containerId, timeout);
+  if (result.stdout !== expected) throw new Error("kernel proof summary mismatch");
 }
 
 function verifyImageArtifact(imageId, digest) {
@@ -620,9 +613,9 @@ function verifyImageArtifact(imageId, digest) {
       ],
       { timeout: cleanupTimeoutMilliseconds },
     );
-    requireSuccessful(create, "image verification container creation failed");
-    const record = inspectContainer(name);
-    containerId = record.Id;
+    containerId = createdContainerId(create);
+    refuseInterruption();
+    const record = inspectContainer(containerId);
     inspectIsolatedContainer(record, imageId, false);
     if (
       record.HostConfig?.PidsLimit !== 8 ||
@@ -632,7 +625,7 @@ function verifyImageArtifact(imageId, digest) {
     ) {
       throw new Error("bounded image verification required");
     }
-    runCreatedContainer(name, `${digest}  /kernel-proof\n`, caseTimeoutMilliseconds);
+    runCreatedContainer(containerId, `${digest}  /kernel-proof\n`, caseTimeoutMilliseconds);
   } finally {
     proveContainerAbsent(name, containerId);
   }
@@ -677,9 +670,9 @@ function runCase(imageId, mode, expected) {
       ],
       { timeout: cleanupTimeoutMilliseconds },
     );
-    requireSuccessful(create, "kernel proof case creation failed");
-    const record = inspectContainer(name);
-    containerId = record.Id;
+    containerId = createdContainerId(create);
+    refuseInterruption();
+    const record = inspectContainer(containerId);
     inspectIsolatedContainer(record, imageId, true);
     if (
       record.HostConfig?.CgroupnsMode !== "private" ||
@@ -690,36 +683,10 @@ function runCase(imageId, mode, expected) {
     ) {
       throw new Error("bounded privileged proof container required");
     }
-    runCreatedContainer(name, `${expected}\n`, caseTimeoutMilliseconds);
+    runCreatedContainer(containerId, `${expected}\n`, caseTimeoutMilliseconds);
   } finally {
     proveContainerAbsent(name, containerId);
   }
-}
-
-function removeTargetDirectory(directory) {
-  const temporaryRoot = realpathSync("/tmp");
-  const resolved = realpathSync(directory);
-  const metadata = lstatSync(resolved);
-  if (
-    resolved !== directory ||
-    !isInside(temporaryRoot, resolved) ||
-    !metadata.isDirectory() ||
-    metadata.isSymbolicLink() ||
-    !resolved.split(sep).at(-1)?.startsWith("openspell-kernel-build-")
-  ) {
-    throw new Error("isolated cleanup target required");
-  }
-  const removal = run("/usr/bin/rm", ["-rf", "--", resolved], {
-    timeout: cleanupTimeoutMilliseconds,
-  });
-  requireSuccessful(removal, "kernel proof build cleanup uncertain");
-  try {
-    lstatSync(resolved);
-  } catch (error) {
-    if (error?.code === "ENOENT") return;
-    throw new Error("kernel proof build cleanup uncertain", { cause: error });
-  }
-  throw new Error("kernel proof build residue remained");
 }
 
 try {
@@ -727,18 +694,19 @@ try {
   if (process.platform !== "linux" || process.arch !== "x64") {
     throw new Error("linux x64 proof host required");
   }
-  const temporaryRoot = realpathSync("/tmp");
-  targetDirectory = mkdtempSync(join(temporaryRoot, "openspell-kernel-build-"));
-  const executable = buildExecutable();
-  const artifact = readExactArtifact(executable);
+  const artifact = buildArtifact();
+  await interruptionCheckpoint();
   const imageId = stageProofImage(artifact);
+  await interruptionCheckpoint();
   verifyImageArtifact(imageId, artifact.digest);
+  await interruptionCheckpoint();
 
-  removeTargetDirectory(targetDirectory);
-  targetDirectory = undefined;
-
-  for (const [mode, expected] of cases) runCase(imageId, mode, expected);
+  for (const [mode, expected] of cases) {
+    runCase(imageId, mode, expected);
+    await interruptionCheckpoint();
+  }
   verifyImageArtifact(imageId, artifact.digest);
+  await interruptionCheckpoint();
   process.stdout.write(
     `openspell synthetic kernel proof: cases=${cases.length} residue=0 sha256=${artifact.digest}\n`,
   );
@@ -756,13 +724,6 @@ try {
       process.exitCode = 1;
     }
   }
-  if (targetDirectory !== undefined) {
-    try {
-      removeTargetDirectory(targetDirectory);
-      targetDirectory = undefined;
-    } catch {
-      process.stderr.write("openspell synthetic kernel proof cleanup uncertain\n");
-      process.exitCode = 1;
-    }
-  }
+  process.off("SIGINT", recordInterruption);
+  process.off("SIGTERM", recordInterruption);
 }

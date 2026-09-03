@@ -17,7 +17,7 @@ use crate::policy::{
     synthetic_checksums_bytes,
 };
 use crate::provenance::{
-    FreshRetainedRoot, ProvenanceRefusal, RootAnchoredPair, TestFaultPoint,
+    FreshRetainedRoot, ProvenanceRefusal, RootAnchoredPair, TestFaultPoint, TestIdentityDrift,
     descriptors_share_mount_for_test, filesystem_root_is_self_parent_for_test,
     read_exact_stable_with_mutation_for_test, seal_release, set_test_fault,
     source_descriptor_owner_matches_for_test,
@@ -239,6 +239,46 @@ fn retained_release_revalidation_refuses_mode_link_and_inventory_drift() {
     fs::set_permissions(&root_lab.destination, fs::Permissions::from_mode(0o750))
         .expect("root drift");
     assert!(root_release.revalidate_for_runtime().is_err());
+
+    let inventory_mode_lab = Lab::new();
+    let inventory_mode_release = seal_release(
+        inventory_mode_lab.pair().expect("inventory mode pair"),
+        inventory_mode_lab.destination(),
+    )
+    .expect("inventory mode release");
+    fs::set_permissions(
+        inventory_mode_lab.destination.join("SEALED-INVENTORY.json"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .expect("inventory mode drift");
+    assert!(inventory_mode_release.revalidate_for_runtime().is_err());
+
+    let inventory_replacement_lab = Lab::new();
+    let inventory_replacement_release = seal_release(
+        inventory_replacement_lab
+            .pair()
+            .expect("inventory replacement pair"),
+        inventory_replacement_lab.destination(),
+    )
+    .expect("inventory replacement release");
+    let inventory_path = inventory_replacement_lab
+        .destination
+        .join("SEALED-INVENTORY.json");
+    fs::rename(
+        &inventory_path,
+        inventory_replacement_lab
+            .destination
+            .join("displaced-inventory"),
+    )
+    .expect("displace inventory");
+    fs::write(&inventory_path, b"{}\n").expect("replace inventory");
+    fs::set_permissions(&inventory_path, fs::Permissions::from_mode(0o444))
+        .expect("replacement inventory mode");
+    assert!(
+        inventory_replacement_release
+            .revalidate_for_runtime()
+            .is_err()
+    );
 }
 
 #[test]
@@ -518,6 +558,54 @@ fn descriptor_replacement_link_mode_and_ancestor_substitution_are_refused() {
             File::open(wrong_ancestor.intake.join("synthetic-runtime.tar.gz")).expect("archive"),
         );
     assert_eq!(result.err(), Some(ProvenanceRefusal::SourceMismatch));
+
+    let mode_after_admission = Lab::new();
+    let mode_pair = mode_after_admission.pair().expect("mode pair before drift");
+    fs::set_permissions(
+        mode_after_admission.intake.join("checksums.txt"),
+        fs::Permissions::from_mode(0o640),
+    )
+    .expect("post-admission mode drift");
+    assert_eq!(
+        seal_release(mode_pair, mode_after_admission.destination()).err(),
+        Some(ProvenanceRefusal::SourceMismatch)
+    );
+
+    let link_after_admission = Lab::new();
+    let link_pair = link_after_admission.pair().expect("link pair before drift");
+    fs::hard_link(
+        link_after_admission.intake.join("checksums.txt"),
+        link_after_admission.intake.join("post-admission-link"),
+    )
+    .expect("post-admission link drift");
+    assert_eq!(
+        seal_release(link_pair, link_after_admission.destination()).err(),
+        Some(ProvenanceRefusal::SourceMismatch)
+    );
+
+    let ancestor_after_admission = Lab::new();
+    let ancestor_pair = ancestor_after_admission
+        .pair()
+        .expect("ancestor pair before drift");
+    fs::set_permissions(
+        &ancestor_after_admission.intake,
+        fs::Permissions::from_mode(0o750),
+    )
+    .expect("post-admission ancestor drift");
+    assert_eq!(
+        seal_release(ancestor_pair, ancestor_after_admission.destination()).err(),
+        Some(ProvenanceRefusal::SourceMismatch)
+    );
+
+    for drift in [TestIdentityDrift::Owner, TestIdentityDrift::Mount] {
+        let drift_lab = Lab::new();
+        let mut drift_pair = drift_lab.pair().expect("pair before identity drift");
+        drift_pair.inject_recorded_identity_drift_for_test(drift);
+        assert_eq!(
+            seal_release(drift_pair, drift_lab.destination()).err(),
+            Some(ProvenanceRefusal::SourceMismatch)
+        );
+    }
 
     let metadata_lab = Lab::new();
     let archive = File::open(metadata_lab.intake.join("synthetic-runtime.tar.gz"))

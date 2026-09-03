@@ -103,12 +103,16 @@ Handover and status change only after reviewed merge and exact-main CI.
     both descendant pidfds before killing the tracer in stopped, mixed-resume and fully resumed
     states, with fixed pipe evidence that the latter two states actually returned from their ready
     stops.
-18. Run the real proof only through an explicit wrapper. Build, verify and hash one opened test ELF,
-    copy that exact descriptor-owned object into a local content-addressed image derived from the
-    pinned Rust image, independently rehash the in-image object, then run only that immutable image
+18. Run the real proof only through an explicit wrapper. Build one test ELF in a stopped
+    container's anonymous target volume, extract and strictly parse its one bounded archive through
+    the captured container ID, verify and hash those exact bytes, copy them into a local
+    content-addressed image derived from the pinned Rust image, independently rehash the in-image
+    object, then run only that immutable image
     ID with private cgroup namespace, no network, read-only root, fresh tmpfs and no repository,
     user-directory, credential, browser, Docker-socket or service mount. Never skip a missing kernel
-    invariant. Never run pull-request-controlled code in the privileged proof container; CI may run
+    invariant. Cleanup may use only captured container/image IDs, never a mutable name or tag, and
+    graceful SIGINT/SIGTERM cancellation must refuse after exact cleanup. Never run
+    pull-request-controlled code in the privileged proof container; CI may run
     it only in a dedicated permissionless job for trusted `main` revisions after ordinary checks
     pass.
 19. Return only bounded summaries or fixed nonsensitive refusals. Do not echo source bytes, paths,

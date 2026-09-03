@@ -141,6 +141,12 @@ enum TracerDeathCut {
     FullResume,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaseProcess {
+    Leader,
+    Delegate,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct FileIdentity {
     device: u64,
@@ -651,7 +657,7 @@ fn prepare_case_inner(
     if !bootstrap.carries_bootstrap_permit() {
         return Err(KernelError::MachineMismatch);
     }
-    bootstrap_continue(&bootstrap, leader_pid)?;
+    bootstrap_continue(machine, &bootstrap, resources, CaseProcess::Leader)?;
     expect_ptrace_event(wait(leader_pid)?, linux_abi::EVENT_FORK)
         .map_err(|_| KernelError::ForkStopMismatch)?;
     let delegate_pid = linux_abi::ptrace_event_pid(leader_pid)?;
@@ -667,8 +673,9 @@ fn prepare_case_inner(
         .map_err(|_| KernelError::DescendantCgroupMismatch)?;
     verify_child_namespaces(&namespaces, leader_pid, delegate_pid)?;
 
-    // The delegate has not executed yet, so this is the sole bootstrap pre-exec continue.
-    linux_abi::ptrace_continue(delegate_pid)?;
+    // The delegate has not executed yet, so this is the sole bootstrap pre-exec continue. The
+    // in-flight bootstrap authority and exact tracked delegate still gate it before the syscall.
+    bootstrap_preexec_continue(machine, &bootstrap, resources)?;
     expect_ptrace_event(wait(delegate_pid)?, linux_abi::EVENT_EXEC)
         .map_err(|_| KernelError::DelegateExecStopMismatch)?;
     resources.delegate()?.verify_identity()?;
@@ -678,10 +685,10 @@ fn prepare_case_inner(
     if leader_exec_maps != delegate_exec_maps {
         return Err(KernelError::MappingMismatch);
     }
-    bootstrap_continue(&bootstrap, delegate_pid)?;
+    bootstrap_continue(machine, &bootstrap, resources, CaseProcess::Delegate)?;
     expect_plain_stop(wait(delegate_pid)?, linux_abi::STOP_SIGNAL)
         .map_err(|_| KernelError::DelegateReadyStopMismatch)?;
-    bootstrap_continue(&bootstrap, leader_pid)?;
+    bootstrap_continue(machine, &bootstrap, resources, CaseProcess::Leader)?;
     expect_plain_stop(wait(leader_pid)?, linux_abi::STOP_SIGNAL)
         .map_err(|_| KernelError::LeaderReadyStopMismatch)?;
     let leader_ready_maps =
@@ -725,8 +732,18 @@ fn resume_both(prepared: &mut PreparedCase) -> Result<(), KernelError> {
     if !resume.carries_resume_permit() {
         return Err(KernelError::MachineMismatch);
     }
-    resume_continue(&resume, prepared.resources.delegate()?.pid)?;
-    resume_continue(&resume, prepared.resources.leader()?.pid)?;
+    resume_continue(
+        &prepared.machine,
+        &resume,
+        &prepared.resources,
+        CaseProcess::Delegate,
+    )?;
+    resume_continue(
+        &prepared.machine,
+        &resume,
+        &prepared.resources,
+        CaseProcess::Leader,
+    )?;
     resolve_exact(&mut prepared.machine, resume)
 }
 
@@ -783,8 +800,18 @@ fn finish_unexpected_event(prepared: &mut PreparedCase) -> Result<(), KernelErro
     if !resume.carries_resume_permit() {
         return Err(KernelError::MachineMismatch);
     }
-    resume_continue(&resume, prepared.resources.delegate()?.pid)?;
-    resume_continue(&resume, prepared.resources.leader()?.pid)?;
+    resume_continue(
+        &prepared.machine,
+        &resume,
+        &prepared.resources,
+        CaseProcess::Delegate,
+    )?;
+    resume_continue(
+        &prepared.machine,
+        &resume,
+        &prepared.resources,
+        CaseProcess::Leader,
+    )?;
     resolve_exact(&mut prepared.machine, resume)?;
 
     let deadline = Instant::now() + WAIT_BOUND;
@@ -832,7 +859,12 @@ fn finish_lost_after_resume_one(prepared: &mut PreparedCase) -> Result<(), Kerne
     if !resume.carries_resume_permit() {
         return Err(KernelError::MachineMismatch);
     }
-    resume_continue(&resume, prepared.resources.delegate()?.pid)?;
+    resume_continue(
+        &prepared.machine,
+        &resume,
+        &prepared.resources,
+        CaseProcess::Delegate,
+    )?;
     let progress = prepared.machine.interrupt()?;
     assert_recovery(progress, prepared.machine.result())?;
     terminate_case(prepared)
@@ -843,8 +875,18 @@ fn finish_lost_after_resume_two(prepared: &mut PreparedCase) -> Result<(), Kerne
     if !resume.carries_resume_permit() {
         return Err(KernelError::MachineMismatch);
     }
-    resume_continue(&resume, prepared.resources.delegate()?.pid)?;
-    resume_continue(&resume, prepared.resources.leader()?.pid)?;
+    resume_continue(
+        &prepared.machine,
+        &resume,
+        &prepared.resources,
+        CaseProcess::Delegate,
+    )?;
+    resume_continue(
+        &prepared.machine,
+        &resume,
+        &prepared.resources,
+        CaseProcess::Leader,
+    )?;
     let progress = prepared
         .machine
         .resolve(resume, EffectReply::LostAfterAcceptance)?;
@@ -965,21 +1007,21 @@ fn run_tracer_death(cut: TracerDeathCut) -> Result<(), KernelError> {
                 let resume =
                     offer_expected(&mut prepared.machine, EffectKind::ResumeVerifiedProcesses)
                         .unwrap_or_else(|_| linux_abi::exit_immediately(111));
-                let delegate_pid = prepared
-                    .resources
-                    .delegate()
-                    .map(|process| process.pid)
-                    .unwrap_or_else(|_| linux_abi::exit_immediately(111));
-                resume_continue(&resume, delegate_pid)
-                    .unwrap_or_else(|_| linux_abi::exit_immediately(111));
+                resume_continue(
+                    &prepared.machine,
+                    &resume,
+                    &prepared.resources,
+                    CaseProcess::Delegate,
+                )
+                .unwrap_or_else(|_| linux_abi::exit_immediately(111));
                 if cut == TracerDeathCut::FullResume {
-                    let leader_pid = prepared
-                        .resources
-                        .leader()
-                        .map(|process| process.pid)
-                        .unwrap_or_else(|_| linux_abi::exit_immediately(111));
-                    resume_continue(&resume, leader_pid)
-                        .unwrap_or_else(|_| linux_abi::exit_immediately(111));
+                    resume_continue(
+                        &prepared.machine,
+                        &resume,
+                        &prepared.resources,
+                        CaseProcess::Leader,
+                    )
+                    .unwrap_or_else(|_| linux_abi::exit_immediately(111));
                 }
                 // Intentionally keep the one-use resume authority in flight until tracer death.
                 std::hint::black_box(&resume);
@@ -1459,18 +1501,55 @@ fn resolve_or_inject(
     }
 }
 
-fn bootstrap_continue(effect: &Effect, pid: i32) -> Result<(), KernelError> {
-    if !effect.carries_bootstrap_permit() {
-        return Err(KernelError::MachineMismatch);
+fn selected_process(
+    resources: &CaseResources,
+    selected: CaseProcess,
+) -> Result<&TrackedProcess, KernelError> {
+    match selected {
+        CaseProcess::Leader => resources.leader(),
+        CaseProcess::Delegate => resources.delegate(),
     }
-    linux_abi::ptrace_continue(pid).map_err(Into::into)
 }
 
-fn resume_continue(effect: &Effect, pid: i32) -> Result<(), KernelError> {
-    if !effect.carries_resume_permit() {
+fn bootstrap_preexec_continue(
+    machine: &SyntheticProofMachine,
+    effect: &Effect,
+    resources: &CaseResources,
+) -> Result<(), KernelError> {
+    if !machine.authorizes_bootstrap_continue(effect) {
         return Err(KernelError::MachineMismatch);
     }
-    linux_abi::ptrace_continue(pid).map_err(Into::into)
+    let process = selected_process(resources, CaseProcess::Delegate)?;
+    process.verify_identity()?;
+    linux_abi::ptrace_continue(process.pid).map_err(Into::into)
+}
+
+fn bootstrap_continue(
+    machine: &SyntheticProofMachine,
+    effect: &Effect,
+    resources: &CaseResources,
+    selected: CaseProcess,
+) -> Result<(), KernelError> {
+    if !machine.authorizes_bootstrap_continue(effect) {
+        return Err(KernelError::MachineMismatch);
+    }
+    let process = selected_process(resources, selected)?;
+    process.verify_identity()?;
+    linux_abi::ptrace_continue(process.pid).map_err(Into::into)
+}
+
+fn resume_continue(
+    machine: &SyntheticProofMachine,
+    effect: &Effect,
+    resources: &CaseResources,
+    selected: CaseProcess,
+) -> Result<(), KernelError> {
+    if !machine.authorizes_resume_continue(effect) {
+        return Err(KernelError::MachineMismatch);
+    }
+    let process = selected_process(resources, selected)?;
+    process.verify_identity()?;
+    linux_abi::ptrace_continue(process.pid).map_err(Into::into)
 }
 
 fn wait(pid: i32) -> Result<WaitEvent, KernelError> {

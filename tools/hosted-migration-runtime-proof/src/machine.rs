@@ -686,6 +686,24 @@ impl SyntheticProofMachine {
         self.accounting
     }
 
+    pub(crate) fn authorizes_bootstrap_continue(&self, effect: &Effect) -> bool {
+        self.authorizes_continue(effect, EffectKind::BootstrapVerifiedProcesses)
+            && effect.has_valid_bootstrap_permit()
+    }
+
+    pub(crate) fn authorizes_resume_continue(&self, effect: &Effect) -> bool {
+        self.authorizes_continue(effect, EffectKind::ResumeVerifiedProcesses)
+            && effect.has_valid_resume_permit()
+    }
+
+    fn authorizes_continue(&self, effect: &Effect, expected_kind: EffectKind) -> bool {
+        matches!(
+            self.state,
+            MachineState::InFlight(expected_header)
+                if expected_header == effect.header() && effect.kind() == expected_kind
+        )
+    }
+
     fn intent_is_durable(&self) -> bool {
         self.accounting.resources.durable_intents == 1
     }

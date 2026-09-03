@@ -65,6 +65,13 @@ struct Identity {
     mtime_nsec: u32,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) enum TestIdentityDrift {
+    Owner,
+    Mount,
+}
+
 impl Identity {
     fn read(file: &File) -> Result<Self, ProvenanceRefusal> {
         let stat = statx(file, c"", AtFlags::EMPTY_PATH, REQUIRED_STATX)
@@ -235,6 +242,18 @@ impl<C: EvidenceClass> RootAnchoredPair<C> {
             self.archive_identity,
         )?;
         verify_intake_inventory(&self.intake_root, &policy)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_recorded_identity_drift_for_test(&mut self, drift: TestIdentityDrift) {
+        match drift {
+            TestIdentityDrift::Owner => {
+                self.checksums_identity.uid = self.checksums_identity.uid.wrapping_add(1);
+            }
+            TestIdentityDrift::Mount => {
+                self.checksums_identity.mount_id = self.checksums_identity.mount_id.wrapping_add(1);
+            }
+        }
     }
 }
 
