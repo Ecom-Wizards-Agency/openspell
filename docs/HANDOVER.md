@@ -37,23 +37,20 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- WP-197 source is merged at `bb3c1cb0c7c22a2de89344c396ed56b2dc0511a4`. PR #125 added an
-  offline exact hosted-migration bundle builder and independent verifier for the 41-file hosted
-  baseline plus the five reviewed source migrations, together with rollback-only prefix evidence.
-  Exact-head run `33710054372` passed both jobs at `e663e9b`; exact-main run `33710817269` passed
-  both jobs at the merge revision. High correctness, Extra-High adversarial safety and Extra-High
-  operational reviews accepted that source-only boundary. A post-merge Extra-High review of the
-  later private runner contract then found and corrected a self-blocking advisory-lock sequence and
-  required independently pinned official-release provenance, root-only payload custody, an
-  unforgeable root-consumed execution ticket, a signed external-operation window and an unprivileged,
-  target-scoped CLI sandbox rather than trusting the installed launcher. The package
-  performed no hosted query or apply, credential change, staging, activation, deployment, provider
-  call or Amazon mutation.
+- WP-198 source is merged at `3c190bac2736169f4c652109546549b58ac0e948`. PR #127 added the
+  pure hosted-migration conformance oracle for the eight WP-197 signed record families, exact phase
+  tags, official Supabase CLI 2.116.0 execution topology, runtime-attestation chains and legal
+  preparation/apply transcript reduction. Exact-head run `33724348201` passed both jobs at
+  `f14b5b4`; exact-main run `33725586955` passed both jobs at the merge revision. High correctness,
+  Extra-High apply-protocol and Extra-High authority/capability reviews accepted the inert boundary
+  with no blocker, high or medium finding. The package has no CLI, signing, randomness, filesystem,
+  process, network, database, credential, deployment or apply capability and performed no hosted or
+  production action.
 - Production web health returns `ok` at
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 127 commits behind the WP-197 source merge. No later
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 133 commits behind the WP-198 source merge. No later
   package deployed or promoted a candidate, so its newer source artifacts are not live evidence.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 267 commits behind
-  the WP-197 source merge, and still returns the
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 273 commits behind
+  the WP-198 source merge, and still returns the
   legacy `wizard-ads` service shape.
 - The new Evo report-worker and recommendation-worker units are not installed, so their loopback
   health is unavailable. The legacy integration worker is active, but exposes no revision stamp.
@@ -67,7 +64,7 @@ At the time this handover was reconciled:
 - Current source, deployed web, deployed MCP, and the active worker are not one proven release. Do
   not describe post-deployment main features as live until a revision-stamped candidate is promoted
   and checked.
-- `docs/STATUS.md` now records WP-179 through WP-197, but the implementation-wave table remains
+- `docs/STATUS.md` now records WP-179 through WP-198, but the implementation-wave table remains
   incomplete between WP-149 and WP-178. Use Git, CI, code, the migration ledger, and live health as
   evidence; then update status prose.
 
@@ -113,6 +110,10 @@ Recent verified source work includes:
   reconstruct the reviewed 41-file hosted baseline plus the five exact Git blobs as a 46-file
   artifact, with rollback-only prefix evidence and no database, network, Supabase or apply
   capability. It authorizes no hosted action;
+- a pure hosted-migration conformance oracle that verifies the eight exact WP-197 signed record
+  families, canonical bytes, detached signatures, operation-private phase tags, pinned official CLI
+  topology, runtime-attestation chains and legal transcript transitions. It has no CLI or external
+  capability and cannot authorize, launch or attest a live operation;
 - strict provider-native Unified Reporting create/retrieve methods with exact indexed accounting,
   ambiguity-safe create behavior, idempotent retrieval, and no download or promotion claim;
 - a default-off Unified Reporting dual-run sidecar for `spCampaigns`, with explicit advertiser
@@ -179,7 +180,7 @@ These are source outcomes, not blanket claims of live behavior.
 
 Reconcile heads and checks again before acting.
 
-There are no open pull requests. PR #125 merged WP-197 at `bb3c1cb`; PR #24 remains closed unmerged
+There are no open pull requests. PR #127 merged WP-198 at `3c190ba`; PR #24 remains closed unmerged
 at archival head `78e718b` after WP-191 preserved its remaining token-fenced ownership/recovery
 lesson on accepted current main. Its superseded source was not rebased, cherry-picked or merged.
 
@@ -209,6 +210,11 @@ baseline digest is `9dd52d5fdee63b6b3c19de850ec72c27f3d8312a5bb5c73c492705e47c18
 final bundle-ledger digest is
 `baef4df400ed7a045395322667e1d3ac61fa27075b2d36bb855071a6bfe20458`. The tool and its SQL
 evidence are offline and inert. They neither establish fresh hosted history nor authorize an apply.
+
+WP-198 now verifies the exact signed evidence vocabulary and legal lifecycle transitions expected
+from the future private supervisor. Its conformance result is deliberately not authorization, live
+evidence or a production spawn gate. The root journal, IPC, launcher, target connection and every
+apply capability remain absent and are split across WP-199 through WP-205.
 
 The push completed in filename order. Schema-only postflight confirms expected objects, columns,
 constraints, indexes, grants and RLS definitions with no blocking locks. Guarded browser postflight
@@ -347,68 +353,66 @@ authorized, deployed and verified. No Amazon apply path was added.
 
 ## Recommended continuation order
 
-1. Implement and review a dedicated, deployment-private hosted-migration supervisor before any
-   production apply; do not add database authority to the agent-accessible general broker. Prove the
-   official Supabase CLI 2.116.0 two-binary execution topology in a disposable target. Pin the
-   official checksum-asset, Linux archive, front-controller and delegate digests; acquire only
-   through a root-owned, non-agent-writable source; and run the CLI as a capability-free, non-
-   dumpable dedicated uid with target-only credentials and egress. The root launcher must trace and
-   sign the actual namespace, cgroup, exec graph, maps and post-exec protections. Require a durable target quarantine, separate phase tags, external
-   enqueue freeze, root-signed external-operation-window generation, operation ledger and a two-stage
-   migration-ledger/advisory-lock handoff. The same bound CLI backend must first wait on the ledger
-   barrier and then on the first migration's advisory lock before the session guard is released.
-   Reconcile only after exact child, cgroup and tagged-session terminality; never retry a lost
-   response. Agent-accessible operations may prepare, report status and reconcile read-only; only a
-   separate root/operator-only helper with a key and journal unavailable to the supervisor may issue
-   and atomically consume the freshly OS-authenticated single-use signed grant. The minimal root
-   launcher must validate the canonical signed grant and ticket and durably mark the ticket executing
-   before it can create a namespace, cgroup or child. A consumed ticket may close without execution
-   only through a root-signed `terminal_no_spawn` proof that execution state was never entered and no
-   resource or apply-tag session existed. History fetch and dry run use separate root-signed, single-
-   use `writeCapability:false` preparation tickets and must close their terminal exec graphs before
-   the later apply envelope; they never depend on or substitute for its attended execution ticket. A
-   refused preparation ticket may close only through its distinct root-signed
-   `terminal_no_spawn` proof with zero execution resources and zero exact-phase sessions.
-2. Only with authorization for that exact database action, apply only the WP-197-reviewed artifact
-   and prove the ledger, schema, privileges, preserved state and queue postflight. Database
-   approval does not authorize staging, service, queue-ownership or deployment changes.
-3. With separate exact authorization, provision or rotate only the narrow recommendation-worker
+This sequence orders source design and disposable proof packages only; it grants no external
+authority. Target or project creation, credential provision or rotation, hosted query, dry run or
+apply, authenticated acquisition, real-host staging, activation or service mutation, and deployment
+each require a fresh exact action-specific authorization before that action occurs.
+
+1. Implement and review WP-199's deployment-private root journal and fixed IPC with separate
+   approval and supervisor sockets plus atomic one-use grant/ticket consumption. Keep the slice
+   offline: no launcher, network, database, credential, Supabase invocation or production action.
+2. Continue with WP-200's attended official CLI acquisition/provenance and synthetic-binary
+   namespace, cgroup, pidfd, exec-map and process-protection proofs, still without network access.
+3. Use WP-201 to implement the disposable target-scoped credential, egress, hosted-history and
+   dry-run preparation boundary with apply absent. Any actual disposable target, credential or
+   hosted preparation requires its own exact disposable-only authorization. WP-202 then proves
+   disposable apply, the two-stage lock handoff, crash/lost-response reconciliation and every valid
+   41-through-46 prefix, again only under a fresh exact disposable-target authorization.
+4. Use WP-203 for the immutable deployment artifact and source or synthetic-harness proof of
+   disabled-unit stage/activate/rollback behavior. That package work does not authorize staging,
+   activating or mutating a real host unit. Then use WP-204 for separately authorized production
+   prerequisites, read-only preparation, operation window and enqueue freeze without apply.
+5. Only through WP-205 and authorization for that exact database action, apply only the
+   WP-197-reviewed artifact and prove ledger, schema, privileges, preserved state and queue
+   postflight. Database approval does not authorize staging, service, queue-ownership or deployment
+   changes.
+6. With separate exact authorization, provision or rotate only the narrow recommendation-worker
    database credential through an allowlisted Writer operation. Do not expose a broad
    service-account token or reuse `service_role`; credential custody does not authorize staging or
    activation.
-4. With separate action-specific staging authorization for each exact target, stage the clean-main
+7. With separate action-specific staging authorization for each exact target, stage the clean-main
    Evo report worker and the independently proven recommendation claimant. Staging must leave
    current service enablement, claim authority and web enqueue unchanged.
-5. With separate action-specific activation authorization for each exact handoff, block new
+8. With separate action-specific activation authorization for each exact handoff, block new
    recommendation enqueue; move report ownership and recommendation ownership independently; prove
    each old claimant retired, each new claimant exclusively healthy, and zero incompatible active
    work; then retain the exact rollback/custody evidence. Never allow overlapping consumers or
    strand `recommendations.run` jobs.
-6. With separate candidate-deployment authorization, deploy a revision-stamped candidate from the
+9. With separate candidate-deployment authorization, deploy a revision-stamped candidate from the
    same proven main only after the recommendation claimant is exclusively healthy. Prove its exact
    revision and route artifacts while admission remains blocked; do not create a preview or promote
    the candidate under staging or deployment authority alone.
-7. With separate scoped-admission authorization, use only the guarded transition and exact
+10. With separate scoped-admission authorization, use only the guarded transition and exact
    pre/postflight to move the proven authority tuple from blocked to scoped. Reconcile a lost
    response by exact tuple readback; never retry blind. This gate does not authorize QA job creation
    or web promotion.
-8. With separate bounded-QA authorization, test the candidate's Run preview, cross-page campaign
+11. With separate bounded-QA authorization, test the candidate's Run preview, cross-page campaign
    selection, reload/resume, refusal and terminal states, and reconcile exact immutable proposal
    counts with zero Amazon action.
-9. Only with separate web-promotion authorization, promote the already verified candidate and
+12. Only with separate web-promotion authorization, promote the already verified candidate and
    confirm its live revision and route artifacts. Release the optimizer-edit/job-creation freeze
    only after every consumer and the web are revision-matched and weekday-aware.
-10. Replace or revision-stamp the MCP deployment from the same proven release and repeat its
+13. Replace or revision-stamp the MCP deployment from the same proven release and repeat its
    read-only health, tool and audit verification before claiming runtime coherence.
-11. Implement the sidebar-scroll regression as the next independent source-only UI slice.
-12. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
-13. Keep the merged Unified Reporting dual-run off until its binding, deployment revision, consumer
+14. Implement the sidebar-scroll regression as the next independent source-only UI slice.
+15. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
+16. Keep the merged Unified Reporting dual-run off until its binding, deployment revision, consumer
    ownership, bounded deployment allowlist, exact five-type Evo health contract, and separately
    authorized read-only provider probe are proven. Do not add download or promotion behavior from
    request-status parity alone.
-14. Keep WP-184's distinctive release evidence and the contextual-negative rescue separate from
+17. Keep WP-184's distinctive release evidence and the contextual-negative rescue separate from
    their remaining deployment and live-verification gates.
-15. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again; then
+18. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again; then
    remove only clean, merged, obsolete worktrees after proving their branch and dirty state.
 
 If an external gate blocks one lane, continue with the next independent source-only package. Do

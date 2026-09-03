@@ -128,6 +128,11 @@ WP-198 does not:
 
 ## Ordered handoff
 
-After merge and exact-main CI, reconcile and update `docs/HANDOVER.md` and `docs/STATUS.md`, then
-continue with WP-199's deployment-private root journal and fixed IPC design. Actual target connection,
-CLI launch and apply remain progressively gated through WP-205 as described in the architecture.
+WP-198 merged through PR #127 at `3c190bac2736169f4c652109546549b58ac0e948` after exact-head
+run `33724348201` and exact-main run `33725586955` passed both jobs. All 54 focused tests, strict
+package checks and the independent High and Extra-High reviews passed with no blocker, high or
+medium finding.
+
+Continue with WP-199's deployment-private root journal and fixed IPC design. Actual target
+connection, CLI launch and apply remain progressively gated through WP-205 as described in the
+architecture.
