@@ -1,13 +1,15 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 
 const maximumHeldBytes = 64 * 1024;
-const releaseAttempts = 36_000;
 const releaseDelayMilliseconds = 5;
+const primaryHoldTimeoutMilliseconds = 15 * 60_000;
+const finalDeleteHoldTimeoutMilliseconds = 65 * 60_000;
 const controlTimeoutMilliseconds = 10_000;
 const realDocker = process.env["WP200_REAL_DOCKER"];
 const cut = process.env["WP200_DOCKER_RESPONSE_CUT"];
@@ -15,6 +17,8 @@ const readyFile = process.env["WP200_DOCKER_RESPONSE_READY"];
 const releaseFile = process.env["WP200_DOCKER_RESPONSE_RELEASE"];
 const startAttemptFile = process.env["WP200_DOCKER_START_ATTEMPT"];
 const identityFile = process.env["WP200_DOCKER_RESPONSE_IDENTITY"];
+const finalDeleteReadyFile = process.env["WP200_DOCKER_FINAL_DELETE_READY"];
+const finalDeleteReleaseFile = process.env["WP200_DOCKER_FINAL_DELETE_RELEASE"];
 const args = process.argv.slice(2);
 
 const heldCuts = new Set([
@@ -106,13 +110,45 @@ function isSelectedResponse(stdout) {
   }
 }
 
-async function holdSuccessfulResponse() {
-  if (releaseFile === undefined) process.exit(125);
-  for (let attempt = 0; attempt < releaseAttempts; attempt += 1) {
-    if (existsSync(releaseFile)) return;
-    await delay(releaseDelayMilliseconds);
+async function holdSuccessfulResponse(selectedReleaseFile, timeoutMilliseconds) {
+  if (selectedReleaseFile === undefined) process.exit(125);
+  const keepHeld = () => {};
+  const deadline = performance.now() + timeoutMilliseconds;
+  process.on("SIGTERM", keepHeld);
+  try {
+    while (performance.now() < deadline) {
+      if (existsSync(selectedReleaseFile)) return;
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) break;
+      await delay(Math.min(releaseDelayMilliseconds, remaining));
+    }
+  } finally {
+    process.off("SIGTERM", keepHeld);
   }
   process.exit(125);
+}
+
+function selectedFinalDeleteImageId() {
+  if (
+    cut !== "final-image-delete" ||
+    identityFile === undefined ||
+    !existsSync(identityFile) ||
+    args.length !== 4 ||
+    args[0] !== "image" ||
+    args[1] !== "rm" ||
+    args[2] !== "--no-prune"
+  ) {
+    return undefined;
+  }
+  try {
+    const identity = JSON.parse(readFileSync(identityFile, "utf8"));
+    return /^sha256:[0-9a-f]{64}$/u.test(identity?.imageId ?? "") &&
+      args[3] === identity.imageId
+      ? identity.imageId
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function selectedIdentity(stdout) {
@@ -160,11 +196,28 @@ async function publishSelectedResponse(stdout) {
     mode: 0o600,
   });
   writeFileSync(readyFile, "ready\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
-  if (cut !== undefined && heldCuts.has(cut)) await holdSuccessfulResponse();
+  if (cut !== undefined && heldCuts.has(cut)) {
+    await holdSuccessfulResponse(releaseFile, primaryHoldTimeoutMilliseconds);
+  }
+}
+
+async function publishFinalDeleteResponse() {
+  if (finalDeleteReadyFile === undefined || finalDeleteReleaseFile === undefined) {
+    process.exit(125);
+  }
+  writeFileSync(finalDeleteReadyFile, "ready\n", {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  await holdSuccessfulResponse(
+    finalDeleteReleaseFile,
+    finalDeleteHoldTimeoutMilliseconds,
+  );
 }
 
 async function killHeldRunningContainer(containerId) {
-  await holdSuccessfulResponse();
+  await holdSuccessfulResponse(releaseFile, primaryHoldTimeoutMilliseconds);
   const control = spawn(realDocker, ["container", "kill", containerId], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"],
@@ -204,7 +257,9 @@ async function killHeldRunningContainer(containerId) {
 
 if (realDocker === undefined || !realDocker.startsWith("/")) process.exit(125);
 refusePostCutCaseStart();
-const candidate = isCandidateMutation();
+const primaryCandidate = isCandidateMutation();
+const finalDeleteImageId = selectedFinalDeleteImageId();
+const candidate = primaryCandidate || finalDeleteImageId !== undefined;
 const runningContainerId = heldRunningContainerId();
 if (
   cut === "case-running" &&
@@ -255,9 +310,10 @@ const result = await new Promise((resolve) => {
   child.once("close", (status, signal) => resolve({ status, signal }));
 });
 if (overflow) process.exit(125);
-const selected = candidate && isSelectedResponse(heldStdout);
-if (selected && result.status === 0 && result.signal === null) {
-  await publishSelectedResponse(heldStdout);
+const selected = primaryCandidate && isSelectedResponse(heldStdout);
+if (result.status === 0 && result.signal === null) {
+  if (finalDeleteImageId !== undefined) await publishFinalDeleteResponse();
+  else if (selected) await publishSelectedResponse(heldStdout);
 }
 if (candidate) {
   process.stdout.write(Buffer.concat(heldStdout));

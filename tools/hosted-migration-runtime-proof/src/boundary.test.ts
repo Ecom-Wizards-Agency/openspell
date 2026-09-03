@@ -258,6 +258,7 @@ describe("private hosted-migration runtime proof boundary", () => {
       'phase() !== "cases-complete\\nsignal-observed\\n"',
     );
     expect(interruptionProof).toContain("function runOwnedDocker(");
+    expect(interruptionProof).toContain("async function provePostRecoveryAbsent(custody)");
     expect(interruptionProof).toContain("async function proveOwnedCommandDeadline()");
     expect(interruptionProof).toContain("async function proveUninspectedResponseRecovery()");
     expect(interruptionProof).toContain("ownedClientStopReserveMilliseconds = 1_250");
@@ -278,7 +279,12 @@ describe("private hosted-migration runtime proof boundary", () => {
     );
     expect(responseShim).toContain("refusePostCutCaseStart()");
     expect(responseShim).toContain('writeFileSync(startAttemptFile, "attempted\\n"');
-    expect(responseShim).toContain("await holdSuccessfulResponse()");
+    expect(responseShim).toContain("primaryHoldTimeoutMilliseconds = 15 * 60_000");
+    expect(responseShim).toContain("finalDeleteHoldTimeoutMilliseconds = 65 * 60_000");
+    expect(responseShim).toContain("const deadline = performance.now() + timeoutMilliseconds");
+    expect(responseShim).toContain("while (performance.now() < deadline)");
+    expect(responseShim).toContain('process.on("SIGTERM", keepHeld)');
+    expect(responseShim).toContain('process.off("SIGTERM", keepHeld)');
     expect(responseShim).toContain("writeFileSync(readyFile");
     expect(interruptionProof).toContain(
       "forbiddenStartObserved = existsSync(responseCut.startAttempt)",
@@ -302,7 +308,10 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(interruptionProof).toContain("async function settleChildCustody(");
     expect(interruptionProof).toContain("const stopped = await settleChildCustody(");
     expect(interruptionProof).toContain("requireWatchdogFixtureImage(imageAcquisition)");
-    expect(interruptionProof).toContain("proveCapturedObjectsAbsent(custody)");
+    expect(interruptionProof).not.toContain("function proveCapturedObjectsAbsent(custody)");
+    expect(interruptionProof).toContain(
+      "await proveCapturedObjectsAbsentBounded(custody, deadline)",
+    );
     expect(interruptionProof).not.toContain('["volume", "rm"');
     expect(interruptionProof).toContain("await stopEventWatcher(watcher, watcherExit)");
     expect(interruptionProof).toContain("watcherTerminal.timedOut ||");
@@ -314,12 +323,41 @@ describe("private hosted-migration runtime proof boundary", () => {
     ).toBeLessThan(
       interruptionProof.indexOf("requireDocker(created)"),
     );
-    expect(interruptionProof).toContain("const volumesBefore = volumeInventory()");
+    expect(interruptionProof).toContain("const volumesBefore = await volumeInventory()");
     expect(interruptionProof).toContain(
       "JSON.stringify(volumes.sort()) !== JSON.stringify(custody.volumesBefore)",
     );
     expect(interruptionProof).toContain(
-      "interruption-cuts=5 watchdog-recovery=1 uninspected-recovery=1 owned-client-deadline=1 signals=2 residue=0",
+      "interruption-cuts=5 watchdog-recovery=1 uninspected-recovery=1 owned-client-deadline=1 owned-output-overflow=1 signals=2 residue=0",
+    );
+    expect(interruptionProof).toContain("async function awaitExactPhase(");
+    expect(interruptionProof).toContain("finalCleanupObservationTimeoutMilliseconds,");
+    expect(interruptionProof).toContain("awaitFinalDeleteHeld(responseCut, child)");
+    expect(interruptionProof).toContain("releaseFinalDeleteResponse(responseCut)");
+    expect(responseShim).toContain("selectedFinalDeleteImageId()");
+    expect(responseShim).toContain('args[0] !== "image"');
+    expect(responseShim).toContain('args[1] !== "rm"');
+    expect(responseShim).toContain('args[2] !== "--no-prune"');
+    expect(responseShim).toContain("args[3] === identity.imageId");
+    expect(responseShim).toContain("await publishFinalDeleteResponse()");
+    expect(interruptionProof).toContain("async function proveOwnedOutputOverflow()");
+    expect(interruptionProof).toContain("stdout.overflowed() ||");
+    expect(interruptionProof).toContain("stderr.overflowed() ||");
+    expect(interruptionProof).toContain("const outcome = new Promise((resolve) =>");
+    expect(interruptionProof).not.toContain("const deleted = new Promise((resolve, reject)");
+    expect(interruptionProof).toContain("const deletionFailure = deletion.outcome.then(");
+    expect(interruptionProof).toContain("const wrapperExit = observedExit.then(");
+    const finalCut = interruptionProof.slice(
+      interruptionProof.indexOf("async function proveFinalCleanupSignal()"),
+    );
+    expect(
+      finalCut.indexOf("awaitExactPhase("),
+    ).toBeLessThan(finalCut.indexOf("awaitFinalDeleteHeld(responseCut, child)"));
+    expect(
+      finalCut.indexOf("awaitFinalDeleteHeld(responseCut, child)"),
+    ).toBeLessThan(finalCut.indexOf("const deletionOutcome = await Promise.race("));
+    expect(finalCut.indexOf("const deletionOutcome = await Promise.race(")).toBeLessThan(
+      finalCut.indexOf('signalProcessGroup(child, "SIGINT")'),
     );
     expect(kernel).toContain('"/usr/bin/setpriv"');
     expect(kernel).toContain('"--bounding-set=-all,+sys_admin,+setfcap"');

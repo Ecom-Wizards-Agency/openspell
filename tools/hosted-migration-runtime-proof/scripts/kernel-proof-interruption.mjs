@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
@@ -87,45 +88,6 @@ function requireDocker(result) {
   }
 }
 
-function listExact(filter, format, timeoutMilliseconds) {
-  const result = docker([
-    "container",
-    "ls",
-    "--all",
-    "--no-trunc",
-    "--filter",
-    filter,
-    "--format",
-    format,
-  ], timeoutMilliseconds);
-  requireDocker(result);
-  return result.stdout.split("\n").filter(Boolean);
-}
-
-function proveGlobalResidueAbsent() {
-  const containers = listExact("name=openspell-wp200-", "{{.ID}}");
-  const images = docker([
-    "image",
-    "ls",
-    "--all",
-    "--no-trunc",
-    "--quiet",
-    "--filter",
-    "reference=openspell-wp200-recovery:*",
-  ]);
-  requireDocker(images);
-  const responseCuts = readdirSync(tmpdir()).filter((name) =>
-    name.startsWith("openspell-wp200-docker-cut-"),
-  );
-  if (
-    containers.length !== 0 ||
-    images.stdout.split("\n").filter(Boolean).length !== 0 ||
-    responseCuts.length !== 0
-  ) {
-    throw new Error("interruption proof residue present");
-  }
-}
-
 function inspectContainer(id, timeoutMilliseconds) {
   const inspection = docker(["container", "inspect", id], timeoutMilliseconds);
   requireDocker(inspection);
@@ -141,9 +103,12 @@ function inspectContainer(id, timeoutMilliseconds) {
   return records[0];
 }
 
-async function observeContainer(containerId, prefix, requiredStatus) {
+async function observeContainer(containerId, prefix, requiredStatus, child) {
   const deadline = performance.now() + setupObservationTimeoutMilliseconds;
   while (performance.now() < deadline) {
+    if (!childIsRunning(child)) {
+      throw new Error("interruption proof response holder exited");
+    }
     let record;
     try {
       record = inspectContainer(containerId, remainingOperationTime(deadline));
@@ -171,24 +136,21 @@ async function observeContainer(containerId, prefix, requiredStatus) {
           record.HostConfig?.Privileged === true &&
           (requiredStatus !== "running" ||
             record.Config?.Cmd?.at(-1) === "external-interruption-hold")));
-    if (exactPhase) return record;
+    if (exactPhase && childIsRunning(child)) return record;
     await delay(observationDelayMilliseconds);
   }
   throw new Error("interruption proof checkpoint unavailable");
 }
 
-function dockerIds(args, timeoutMilliseconds) {
-  const result = docker(args, timeoutMilliseconds);
-  requireDocker(result);
-  return result.stdout.split("\n").filter(Boolean);
-}
-
-async function observeCommittedImage(imageId, record) {
+async function observeCommittedImage(imageId, record, child) {
   const match = /^\/openspell-wp200-stage-([0-9a-f-]{36})$/u.exec(record.Name);
   if (match === null) throw new Error("interruption proof stage identity refused");
   const tag = `openspell-wp200-recovery:${match[1]}`;
   const deadline = performance.now() + setupObservationTimeoutMilliseconds;
   while (performance.now() < deadline) {
+    if (!childIsRunning(child)) {
+      throw new Error("interruption proof response holder exited");
+    }
     const result = docker(
       ["image", "inspect", imageId],
       remainingOperationTime(deadline),
@@ -207,7 +169,8 @@ async function observeCommittedImage(imageId, record) {
       Array.isArray(records[0].RepoTags) &&
       records[0].RepoTags.includes(tag)
     ) {
-      return imageId;
+      if (childIsRunning(child)) return imageId;
+      throw new Error("interruption proof response holder exited");
     }
     throw new Error("interruption proof image identity refused");
   }
@@ -230,6 +193,8 @@ function prepareResponseCut(cut) {
   const release = join(directory, "release");
   const startAttempt = join(directory, "start-attempt");
   const identity = join(directory, "identity.json");
+  const finalDeleteReady = join(directory, "final-delete-ready");
+  const finalDeleteRelease = join(directory, "final-delete-release");
   try {
     writeFileSync(
       launcher,
@@ -243,6 +208,8 @@ function prepareResponseCut(cut) {
       release,
       startAttempt,
       identity,
+      finalDeleteReady,
+      finalDeleteRelease,
       responseHeld: cut !== "case-running",
       releaseRequired: true,
       env: {
@@ -256,6 +223,8 @@ function prepareResponseCut(cut) {
         WP200_DOCKER_RESPONSE_RELEASE: release,
         WP200_DOCKER_START_ATTEMPT: startAttempt,
         WP200_DOCKER_RESPONSE_IDENTITY: identity,
+        WP200_DOCKER_FINAL_DELETE_READY: finalDeleteReady,
+        WP200_DOCKER_FINAL_DELETE_RELEASE: finalDeleteRelease,
         WP200_KERNEL_PROOF_PHASE_FD: "3",
       },
     });
@@ -263,6 +232,32 @@ function prepareResponseCut(cut) {
     rmSync(directory, { force: true, recursive: true });
     throw error;
   }
+}
+
+async function awaitFinalDeleteHeld(cut, child) {
+  const deadline = performance.now() + setupObservationTimeoutMilliseconds;
+  while (performance.now() < deadline) {
+    if (existsSync(cut.finalDeleteReady) && !existsSync(cut.finalDeleteRelease)) return;
+    if (!childIsRunning(child)) {
+      throw new Error("interruption proof final-delete holder exited");
+    }
+    await delay(observationDelayMilliseconds);
+  }
+  throw new Error("interruption proof final-delete response unavailable");
+}
+
+async function awaitExactPhase(output, expected, child, timeoutMilliseconds) {
+  const deadline = performance.now() + timeoutMilliseconds;
+  while (performance.now() < deadline) {
+    if (output.overflowed()) throw new Error("interruption proof phase overflow");
+    const observed = output();
+    if (observed === expected) return;
+    if (!expected.startsWith(observed) || !childIsRunning(child)) {
+      throw new Error("interruption proof phase refused");
+    }
+    await delay(observationDelayMilliseconds);
+  }
+  throw new Error("interruption proof phase unavailable");
 }
 
 async function awaitResponseHeld(cut, child) {
@@ -294,6 +289,16 @@ function releaseResponse(cut) {
   }
 }
 
+function releaseFinalDeleteResponse(cut) {
+  if (!existsSync(cut.finalDeleteRelease)) {
+    writeFileSync(cut.finalDeleteRelease, "release\n", {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+  }
+}
+
 function readResponseIdentity(cut) {
   let identity;
   try {
@@ -316,13 +321,25 @@ function removeResponseCut(cut) {
 }
 
 function collectBounded(stream) {
-  let value = "";
-  stream.setEncoding("utf8");
+  const chunks = [];
+  let bytes = 0;
+  let overflowed = false;
   stream.on("data", (chunk) => {
-    value += chunk;
-    if (value.length > maximumOutputBytes) stream.destroy();
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const remaining = maximumOutputBytes - bytes;
+    if (buffer.length > remaining) {
+      if (remaining > 0) chunks.push(buffer.subarray(0, remaining));
+      bytes = maximumOutputBytes;
+      overflowed = true;
+      stream.destroy();
+      return;
+    }
+    chunks.push(buffer);
+    bytes += buffer.length;
   });
-  return () => value;
+  const value = () => Buffer.concat(chunks, bytes).toString("utf8");
+  value.overflowed = () => overflowed;
+  return Object.freeze(value);
 }
 
 function observeChildExit(child) {
@@ -446,45 +463,6 @@ function expectedDerivedImage(custody) {
     : undefined;
 }
 
-function proveCapturedObjectsAbsent(custody) {
-  const containers = dockerIds([
-    "container",
-    "ls",
-    "--all",
-    "--no-trunc",
-    "--format",
-    "{{.ID}}",
-  ]);
-  if (containers.includes(custody.containerId)) {
-    throw new Error("interruption proof captured container remained");
-  }
-  const volumes = dockerIds(["volume", "ls", "--quiet"]);
-  if (custody.record === undefined) {
-    if (
-      custody.volumesBefore === undefined ||
-      JSON.stringify(volumes.sort()) !== JSON.stringify(custody.volumesBefore)
-    ) {
-      throw new Error("interruption proof volume inventory changed");
-    }
-  } else {
-    for (const mount of custody.record.Mounts ?? []) {
-      if (mount.Type !== "volume" || !/^[0-9a-f]{64}$/u.test(mount.Name)) continue;
-      if (volumes.includes(mount.Name)) {
-        throw new Error("interruption proof anonymous volume remained");
-      }
-    }
-  }
-  const expectedImage = expectedDerivedImage(custody);
-  if (expectedImage !== undefined) {
-    const images = dockerIds(
-      ["image", "ls", "--all", "--no-trunc", "--quiet"],
-    );
-    if (images.includes(expectedImage)) {
-      throw new Error("interruption proof derived image remained");
-    }
-  }
-}
-
 async function runOwnedCommand(command, args, deadline, operationLimit = 10_000) {
   if (deadline - performance.now() <= ownedClientStopReserveMilliseconds) {
     throw new Error("interruption proof owned operation budget refused");
@@ -517,7 +495,9 @@ async function runOwnedCommand(command, args, deadline, operationLimit = 10_000)
     performance.now() > deadline ||
     terminal.timedOut ||
     terminal.spawnFailed ||
-    childIsRunning(child)
+    childIsRunning(child) ||
+    stdout.overflowed() ||
+    stderr.overflowed()
   ) {
     throw new Error("interruption proof owned Docker deadline exhausted");
   }
@@ -560,10 +540,66 @@ async function proveOwnedCommandDeadline() {
   }
 }
 
+async function proveOwnedOutputOverflow() {
+  let refused = false;
+  try {
+    await runOwnedCommand(
+      process.execPath,
+      ["--eval", `process.stdout.write("x".repeat(${maximumOutputBytes + 1}))`],
+      performance.now() + 5_000,
+    );
+  } catch {
+    refused = true;
+  }
+  if (!refused) throw new Error("interruption proof owned output overflow accepted");
+}
+
 async function boundedDockerIds(args, deadline) {
   const result = await runOwnedDocker(args, deadline);
   requireDocker(result);
   return result.stdout.split("\n").filter(Boolean);
+}
+
+async function proveGlobalResidueAbsentBounded(deadline) {
+  const containers = await boundedDockerIds(
+    [
+      "container",
+      "ls",
+      "--all",
+      "--no-trunc",
+      "--filter",
+      "name=openspell-wp200-",
+      "--format",
+      "{{.ID}}",
+    ],
+    deadline,
+  );
+  const images = await boundedDockerIds(
+    [
+      "image",
+      "ls",
+      "--all",
+      "--no-trunc",
+      "--quiet",
+      "--filter",
+      "reference=openspell-wp200-recovery:*",
+    ],
+    deadline,
+  );
+  const responseCuts = readdirSync(tmpdir()).filter((name) =>
+    name.startsWith("openspell-wp200-docker-cut-"),
+  );
+  if (containers.length !== 0 || images.length !== 0 || responseCuts.length !== 0) {
+    throw new Error("interruption proof residue present");
+  }
+}
+
+async function provePostRecoveryAbsent(custody) {
+  const deadline = performance.now() + emergencyCleanupTimeoutMilliseconds;
+  if (custody !== undefined) {
+    await proveCapturedObjectsAbsentBounded(custody, deadline);
+  }
+  await proveGlobalResidueAbsentBounded(deadline);
 }
 
 async function proveCapturedObjectsAbsentBounded(custody, deadline) {
@@ -668,24 +704,21 @@ function waitForImageDelete(imageId) {
   const observedExit = observeChildExit(watcher);
   const expected = new Set([imageId, imageId.replace(/^sha256:/u, "")]);
   let buffered = "";
-  const deleted = new Promise((resolve, reject) => {
+  const outcome = new Promise((resolve) => {
     let finished = false;
-    const finish = (error) => {
+    const finish = (deleted) => {
       if (finished) return;
       finished = true;
       clearTimeout(timeout);
-      if (error === undefined) resolve();
-      else reject(error);
+      resolve(deleted);
     };
     const timeout = setTimeout(
-      () => finish(new Error("interruption proof image-delete timeout")),
+      () => finish(false),
       finalCleanupObservationTimeoutMilliseconds,
     );
-    watcher.once("error", (error) => {
-      finish(new Error("interruption proof image watcher failed", { cause: error }));
-    });
+    watcher.once("error", () => finish(false));
     watcher.once("close", () => {
-      finish(new Error("interruption proof image watcher closed"));
+      finish(false);
     });
     watcher.stdout.setEncoding("utf8");
     watcher.stdout.on("data", (chunk) => {
@@ -693,10 +726,27 @@ function waitForImageDelete(imageId) {
       const lines = buffered.split("\n");
       buffered = lines.pop() ?? "";
       if (!lines.some((line) => expected.has(line))) return;
-      finish();
+      finish(true);
     });
   });
-  return Object.freeze({ deleted, observedExit, watcher });
+  return Object.freeze({ observedExit, outcome, watcher });
+}
+
+async function awaitOwnedFinalStep(
+  step,
+  expected,
+  deletionFailure,
+  wrapperExit,
+  child,
+) {
+  const outcome = await Promise.race([
+    step.then(() => expected),
+    deletionFailure,
+    wrapperExit,
+  ]);
+  if (outcome !== expected || !childIsRunning(child)) {
+    throw new Error("interruption proof final cleanup ownership lost");
+  }
 }
 
 async function stopEventWatcher(watcher, observedExit) {
@@ -711,13 +761,14 @@ async function stopEventWatcher(watcher, observedExit) {
   return Object.freeze({ forced, terminal });
 }
 
-function volumeInventory() {
-  return dockerIds(["volume", "ls", "--quiet"]).sort();
+async function volumeInventory() {
+  const deadline = performance.now() + emergencyCleanupTimeoutMilliseconds;
+  return (await boundedDockerIds(["volume", "ls", "--quiet"], deadline)).sort();
 }
 
 async function createWatchdogFixtureContainer() {
   const name = `openspell-wp200-build-${randomUUID()}`;
-  const volumesBefore = volumeInventory();
+  const volumesBefore = await volumeInventory();
   let containerId;
   let record;
   try {
@@ -746,9 +797,10 @@ async function createWatchdogFixtureContainer() {
     if (/^[0-9a-f]{64}$/u.test(containerId ?? "")) {
       const custody = Object.freeze({ containerId, record, volumesBefore });
       await recoverCapturedObjects(custody);
-      proveCapturedObjectsAbsent(custody);
+      await provePostRecoveryAbsent(custody);
+    } else {
+      await provePostRecoveryAbsent();
     }
-    proveGlobalResidueAbsent();
     throw error;
   }
 }
@@ -765,8 +817,8 @@ function acquireWatchdogFixtureImage(record) {
 }
 
 async function proveUninspectedResponseRecovery() {
-  proveGlobalResidueAbsent();
-  const volumesBefore = volumeInventory();
+  await provePostRecoveryAbsent();
+  const volumesBefore = await volumeInventory();
   const name = `openspell-wp200-build-${randomUUID()}`;
   const tag = `${recoveryImageRepository}:${randomUUID()}`;
   let custody;
@@ -803,8 +855,7 @@ async function proveUninspectedResponseRecovery() {
     custody = Object.freeze({ containerId, imageId, volumesBefore });
     requireDocker(committed);
     await recoverCapturedObjects(custody);
-    proveCapturedObjectsAbsent(custody);
-    proveGlobalResidueAbsent();
+    await provePostRecoveryAbsent(custody);
     proved = true;
   } catch {
     operationFailed = true;
@@ -817,7 +868,7 @@ async function proveUninspectedResponseRecovery() {
       }
     }
     try {
-      proveGlobalResidueAbsent();
+      await provePostRecoveryAbsent(custody);
     } catch {
       operationFailed = true;
     }
@@ -869,6 +920,7 @@ function requireWatchdogFixtureContainer(name, record) {
 async function awaitWatchdogFixtureReady(child, output) {
   const deadline = performance.now() + watchdogFixtureReadyTimeoutMilliseconds;
   while (performance.now() < deadline) {
+    if (output.overflowed()) throw new Error("interruption proof watchdog output overflow");
     if (output() === "ready\n") return;
     if (output() !== "" || !childIsRunning(child)) {
       throw new Error("interruption proof watchdog fixture refused");
@@ -879,7 +931,7 @@ async function awaitWatchdogFixtureReady(child, output) {
 }
 
 async function proveWatchdogRecovery() {
-  proveGlobalResidueAbsent();
+  await provePostRecoveryAbsent();
   let record;
   let child;
   let observedExit;
@@ -926,8 +978,7 @@ async function proveWatchdogRecovery() {
     ) {
       throw new Error("interruption proof watchdog force refused");
     }
-    proveCapturedObjectsAbsent(custody);
-    proveGlobalResidueAbsent();
+    await provePostRecoveryAbsent(custody);
     proved = true;
   } catch {
     operationFailed = true;
@@ -954,7 +1005,7 @@ async function proveWatchdogRecovery() {
       }
     }
     try {
-      proveGlobalResidueAbsent();
+      await provePostRecoveryAbsent(custody);
     } catch {
       operationFailed = true;
     }
@@ -965,8 +1016,8 @@ async function proveWatchdogRecovery() {
 }
 
 async function proveSignal(signal, prefix, responseCutName, observeImage = false) {
-  proveGlobalResidueAbsent();
-  const volumesBefore = volumeInventory();
+  await provePostRecoveryAbsent();
+  const volumesBefore = await volumeInventory();
   let operationFailed = false;
   let responseCut;
   let child;
@@ -1009,13 +1060,14 @@ async function proveSignal(signal, prefix, responseCutName, observeImage = false
       responseIdentity.containerId,
       prefix,
       responseCut.responseHeld ? "created" : "running",
+      child,
     );
     custody = Object.freeze({ ...custody, record });
     if (observeImage) {
       if (responseIdentity.imageId === undefined) {
         throw new Error("interruption proof image response identity required");
       }
-      await observeCommittedImage(responseIdentity.imageId, record);
+      await observeCommittedImage(responseIdentity.imageId, record, child);
     }
     if (!signalProcessGroup(child, signal)) {
       throw new Error("interruption proof signal refused");
@@ -1073,15 +1125,8 @@ async function proveSignal(signal, prefix, responseCutName, observeImage = false
       }
     }
   }
-  if (custody !== undefined) {
-    try {
-      proveCapturedObjectsAbsent(custody);
-    } catch {
-      operationFailed = true;
-    }
-  }
   try {
-    proveGlobalResidueAbsent();
+    await provePostRecoveryAbsent(custody);
   } catch {
     operationFailed = true;
   }
@@ -1097,9 +1142,12 @@ async function proveSignal(signal, prefix, responseCutName, observeImage = false
     forbiddenStartObserved ||
     stdout === undefined ||
     stderr === undefined ||
+    phase === undefined ||
+    stdout.overflowed() ||
+    stderr.overflowed() ||
+    phase.overflowed() ||
     stdout() !== "" ||
     stderr() !== "openspell synthetic kernel proof refused\n" ||
-    phase === undefined ||
     phase() !== "signal-observed\n"
   ) {
     throw new Error("interruption proof refusal mismatch");
@@ -1107,8 +1155,8 @@ async function proveSignal(signal, prefix, responseCutName, observeImage = false
 }
 
 async function proveFinalCleanupSignal() {
-  proveGlobalResidueAbsent();
-  const volumesBefore = volumeInventory();
+  await provePostRecoveryAbsent();
+  const volumesBefore = await volumeInventory();
   let operationFailed = false;
   let responseCut;
   let child;
@@ -1153,17 +1201,50 @@ async function proveFinalCleanupSignal() {
       responseIdentity.containerId,
       "openspell-wp200-stage-",
       "created",
+      child,
     );
     custody = Object.freeze({ ...custody, record });
-    await observeCommittedImage(responseIdentity.imageId, record);
+    await observeCommittedImage(responseIdentity.imageId, record, child);
     const deletion = waitForImageDelete(imageId);
     watcher = deletion.watcher;
     watcherExit = deletion.observedExit;
+    const deletionFailure = deletion.outcome.then((deleted) =>
+      deleted ? new Promise(() => {}) : "deletion-failed",
+    );
+    const wrapperExit = observedExit.then(() => "wrapper-exited");
     releaseResponse(responseCut);
-    await deletion.deleted;
+    await awaitOwnedFinalStep(
+      awaitExactPhase(
+        phase,
+        "cases-complete\n",
+        child,
+        finalCleanupObservationTimeoutMilliseconds,
+      ),
+      "phase-complete",
+      deletionFailure,
+      wrapperExit,
+      child,
+    );
+    await awaitOwnedFinalStep(
+      awaitFinalDeleteHeld(responseCut, child),
+      "delete-held",
+      deletionFailure,
+      wrapperExit,
+      child,
+    );
+    const deletionOutcome = await Promise.race([
+      deletion.outcome.then((deleted) =>
+        deleted ? "deletion-observed" : "deletion-failed",
+      ),
+      wrapperExit,
+    ]);
+    if (deletionOutcome !== "deletion-observed" || !childIsRunning(child)) {
+      throw new Error("interruption proof final delete observation refused");
+    }
     if (!signalProcessGroup(child, "SIGINT")) {
       throw new Error("interruption proof signal refused");
     }
+    releaseFinalDeleteResponse(responseCut);
     terminal = await waitForObservedExit(observedExit);
     primaryTimedOut = terminal.timedOut;
   } catch {
@@ -1189,6 +1270,7 @@ async function proveFinalCleanupSignal() {
     if (responseCut !== undefined) {
       try {
         releaseResponse(responseCut);
+        releaseFinalDeleteResponse(responseCut);
       } catch {
         operationFailed = true;
       }
@@ -1224,15 +1306,8 @@ async function proveFinalCleanupSignal() {
       }
     }
   }
-  if (custody !== undefined) {
-    try {
-      proveCapturedObjectsAbsent(custody);
-    } catch {
-      operationFailed = true;
-    }
-  }
   try {
-    proveGlobalResidueAbsent();
+    await provePostRecoveryAbsent(custody);
   } catch {
     operationFailed = true;
   }
@@ -1251,9 +1326,12 @@ async function proveFinalCleanupSignal() {
     terminal.signal !== null ||
     stdout === undefined ||
     stderr === undefined ||
+    phase === undefined ||
+    stdout.overflowed() ||
+    stderr.overflowed() ||
+    phase.overflowed() ||
     stdout() !== "" ||
     stderr() !== "openspell synthetic kernel proof refused\n" ||
-    phase === undefined ||
     phase() !== "cases-complete\nsignal-observed\n"
   ) {
     throw new Error("interruption proof final-cleanup refusal mismatch");
@@ -1272,8 +1350,9 @@ try {
   await proveWatchdogRecovery();
   await proveUninspectedResponseRecovery();
   await proveOwnedCommandDeadline();
+  await proveOwnedOutputOverflow();
   process.stdout.write(
-    "openspell synthetic kernel proof: interruption-cuts=5 watchdog-recovery=1 uninspected-recovery=1 owned-client-deadline=1 signals=2 residue=0\n",
+    "openspell synthetic kernel proof: interruption-cuts=5 watchdog-recovery=1 uninspected-recovery=1 owned-client-deadline=1 owned-output-overflow=1 signals=2 residue=0\n",
   );
 } catch {
   process.stderr.write("openspell synthetic interruption proof refused\n");
