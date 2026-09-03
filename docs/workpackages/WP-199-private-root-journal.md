@@ -172,6 +172,12 @@ WP-199 does not:
 
 ## Ordered handoff
 
-After merge and exact-main CI, update the rolling handover/status and continue with WP-200's attended
-official CLI provenance plus disposable synthetic launcher proofs. Every external action remains
-separately and exactly gated.
+WP-199 merged through PR #129 at `b0a6b0c262c3c4611836014aa780f0ade2609b0f` after exact-head
+run `33762823607` passed both jobs at `962085507256b95edc51a64c03554112dc945410` and exact-main
+run `33764232345` passed both jobs at the merge revision. All 86 focused Rust tests, 12 TypeScript
+boundary tests, full repository checks and 11 serial browser suites passed. Independent High
+correctness and two Extra-High authority, crash and reliability reviews ended with no finding after
+corrections.
+
+Continue with WP-200's attended official CLI provenance plus disposable synthetic launcher proofs.
+Every external action remains separately and exactly gated.
