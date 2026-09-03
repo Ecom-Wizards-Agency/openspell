@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
@@ -22,7 +23,7 @@ const dockerResponseShim = fileURLToPath(
   new URL("./docker-response-shim.mjs", import.meta.url),
 );
 const maximumOutputBytes = 64 * 1024;
-const setupObservationAttempts = 120_000;
+const setupObservationTimeoutMilliseconds = 10 * 60_000;
 const observationDelayMilliseconds = 5;
 const exitTimeoutMilliseconds = 180_000;
 const forcedExitTimeoutMilliseconds = 180_000;
@@ -30,6 +31,10 @@ const forcedKillTimeoutMilliseconds = 30_000;
 const emergencyCleanupTimeoutMilliseconds = 120_000;
 const finalCleanupObservationTimeoutMilliseconds = 30 * 60_000;
 const watcherExitTimeoutMilliseconds = 10_000;
+
+function remainingOperationTime(deadline) {
+  return Math.max(1, Math.min(10_000, Math.ceil(deadline - performance.now())));
+}
 
 function resolveDocker() {
   for (const directory of (process.env["PATH"] ?? "").split(delimiter)) {
@@ -47,11 +52,11 @@ function resolveDocker() {
 
 const realDocker = resolveDocker();
 
-function docker(args) {
+function docker(args, timeoutMilliseconds = 10_000) {
   const result = spawnSync(realDocker, args, {
     encoding: "utf8",
     maxBuffer: maximumOutputBytes,
-    timeout: 10_000,
+    timeout: timeoutMilliseconds,
   });
   if (result.error !== undefined) throw new Error("interruption proof Docker operation failed");
   return result;
@@ -63,7 +68,7 @@ function requireDocker(result) {
   }
 }
 
-function listExact(filter, format) {
+function listExact(filter, format, timeoutMilliseconds) {
   const result = docker([
     "container",
     "ls",
@@ -73,7 +78,7 @@ function listExact(filter, format) {
     filter,
     "--format",
     format,
-  ]);
+  ], timeoutMilliseconds);
   requireDocker(result);
   return result.stdout.split("\n").filter(Boolean);
 }
@@ -102,8 +107,8 @@ function proveGlobalResidueAbsent() {
   }
 }
 
-function inspectContainer(id) {
-  const inspection = docker(["container", "inspect", id]);
+function inspectContainer(id, timeoutMilliseconds) {
+  const inspection = docker(["container", "inspect", id], timeoutMilliseconds);
   requireDocker(inspection);
   let records;
   try {
@@ -118,12 +123,17 @@ function inspectContainer(id) {
 }
 
 async function observeContainer(prefix, requiredStatus) {
-  for (let attempt = 0; attempt < setupObservationAttempts; attempt += 1) {
-    const ids = listExact(`name=^/${prefix}`, "{{.ID}}");
+  const deadline = performance.now() + setupObservationTimeoutMilliseconds;
+  while (performance.now() < deadline) {
+    const ids = listExact(
+      `name=^/${prefix}`,
+      "{{.ID}}",
+      remainingOperationTime(deadline),
+    );
     if (ids.length === 1 && /^[0-9a-f]{64}$/u.test(ids[0])) {
       let record;
       try {
-        record = inspectContainer(ids[0]);
+        record = inspectContainer(ids[0], remainingOperationTime(deadline));
       } catch {
         await delay(observationDelayMilliseconds);
         continue;
@@ -163,7 +173,8 @@ async function observeCommittedImage(record) {
   const match = /^\/openspell-wp200-stage-([0-9a-f-]{36})$/u.exec(record.Name);
   if (match === null) throw new Error("interruption proof stage identity refused");
   const tag = `openspell-wp200-recovery:${match[1]}`;
-  for (let attempt = 0; attempt < setupObservationAttempts; attempt += 1) {
+  const deadline = performance.now() + setupObservationTimeoutMilliseconds;
+  while (performance.now() < deadline) {
     const result = docker([
       "image",
       "ls",
@@ -172,7 +183,7 @@ async function observeCommittedImage(record) {
       "--quiet",
       "--filter",
       `reference=${tag}`,
-    ]);
+    ], remainingOperationTime(deadline));
     requireDocker(result);
     const ids = result.stdout.split("\n").filter(Boolean);
     if (ids.length === 1 && /^sha256:[0-9a-f]{64}$/u.test(ids[0])) return ids[0];
@@ -222,7 +233,8 @@ function prepareResponseCut(cut) {
 }
 
 async function awaitResponseHeld(cut, child) {
-  for (let attempt = 0; attempt < setupObservationAttempts; attempt += 1) {
+  const deadline = performance.now() + setupObservationTimeoutMilliseconds;
+  while (performance.now() < deadline) {
     if (existsSync(cut.ready) && !existsSync(cut.release)) return;
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error("interruption proof response holder exited");
@@ -313,16 +325,23 @@ function signalProcessGroup(child, signal) {
 }
 
 async function ensureChildExit(child, observedExit, terminal) {
-  if (terminal !== undefined && !terminal.timedOut) return terminal;
+  if (terminal !== undefined && !terminal.timedOut) {
+    return Object.freeze({ forced: false, terminal });
+  }
   if (!childIsRunning(child)) {
-    return waitForObservedExit(observedExit, forcedExitTimeoutMilliseconds);
+    return Object.freeze({
+      forced: false,
+      terminal: await waitForObservedExit(observedExit, forcedExitTimeoutMilliseconds),
+    });
   }
   signalProcessGroup(child, "SIGTERM");
   let stopped = await waitForObservedExit(observedExit, forcedExitTimeoutMilliseconds);
-  if (!stopped.timedOut || !childIsRunning(child)) return stopped;
+  if (!stopped.timedOut || !childIsRunning(child)) {
+    return Object.freeze({ forced: true, terminal: stopped });
+  }
   signalProcessGroup(child, "SIGKILL");
   stopped = await waitForObservedExit(observedExit, forcedKillTimeoutMilliseconds);
-  return stopped;
+  return Object.freeze({ forced: true, terminal: stopped });
 }
 
 function proveCapturedObjectsAbsent(record, imageId) {
@@ -376,18 +395,10 @@ async function recoverCapturedObjects(record, imageId) {
   ) {
     throw new Error("interruption proof recovery identity refused");
   }
-  const volumeNames = (record.Mounts ?? [])
-    .filter(
-      (mount) => mount.Type === "volume" && /^[0-9a-f]{64}$/u.test(mount.Name),
-    )
-    .map((mount) => mount.Name);
   const expectedImage = capturedDerivedImage(record, imageId);
-  const deadline = Date.now() + emergencyCleanupTimeoutMilliseconds;
+  const deadline = performance.now() + emergencyCleanupTimeoutMilliseconds;
   do {
     attemptDockerCleanup(["container", "rm", "--force", "--volumes", record.Id]);
-    for (const volumeName of volumeNames) {
-      attemptDockerCleanup(["volume", "rm", volumeName]);
-    }
     if (expectedImage !== undefined) {
       attemptDockerCleanup(["image", "rm", "--no-prune", expectedImage]);
     }
@@ -397,7 +408,7 @@ async function recoverCapturedObjects(record, imageId) {
     } catch {
       await delay(250);
     }
-  } while (Date.now() < deadline);
+  } while (performance.now() < deadline);
   throw new Error("interruption proof emergency cleanup refused");
 }
 
@@ -466,6 +477,7 @@ async function stopEventWatcher(watcher, observedExit) {
 
 async function proveSignal(signal, prefix, responseCutName, observeImage = false) {
   proveGlobalResidueAbsent();
+  let operationFailed = false;
   let responseCut;
   let child;
   let stdout;
@@ -475,7 +487,7 @@ async function proveSignal(signal, prefix, responseCutName, observeImage = false
   let imageId;
   let terminal;
   let forbiddenStartObserved = false;
-  let primaryTimedOut;
+  let primaryTimedOut = false;
   let forcedExitUsed = false;
   try {
     responseCut =
@@ -497,26 +509,55 @@ async function proveSignal(signal, prefix, responseCutName, observeImage = false
     if (responseCut !== undefined) releaseResponse(responseCut);
     terminal = await waitForObservedExit(observedExit);
     primaryTimedOut = terminal.timedOut;
+  } catch {
+    operationFailed = true;
   } finally {
-    try {
-      if (responseCut !== undefined) releaseResponse(responseCut);
-      if (child !== undefined && observedExit !== undefined) {
-        forcedExitUsed = terminal?.timedOut === true;
-        terminal = await ensureChildExit(child, observedExit, terminal);
+    if (responseCut !== undefined) {
+      try {
+        releaseResponse(responseCut);
+      } catch {
+        operationFailed = true;
       }
-    } finally {
-      if (responseCut !== undefined) {
+    }
+    if (child !== undefined && observedExit !== undefined) {
+      try {
+        const stopped = await ensureChildExit(child, observedExit, terminal);
+        forcedExitUsed ||= stopped.forced;
+        terminal = stopped.terminal;
+      } catch {
+        operationFailed = true;
+      }
+    }
+    if (responseCut !== undefined) {
+      try {
         forbiddenStartObserved = existsSync(responseCut.startAttempt);
         removeResponseCut(responseCut);
+      } catch {
+        operationFailed = true;
       }
     }
   }
   if (forcedExitUsed && record !== undefined) {
-    await recoverCapturedObjects(record, imageId);
+    try {
+      await recoverCapturedObjects(record, imageId);
+    } catch {
+      operationFailed = true;
+    }
   }
-  proveCapturedObjectsAbsent(record, imageId);
-  proveGlobalResidueAbsent();
+  if (record !== undefined) {
+    try {
+      proveCapturedObjectsAbsent(record, imageId);
+    } catch {
+      operationFailed = true;
+    }
+  }
+  try {
+    proveGlobalResidueAbsent();
+  } catch {
+    operationFailed = true;
+  }
   if (
+    operationFailed ||
     terminal === undefined ||
     primaryTimedOut ||
     forcedExitUsed ||
@@ -543,9 +584,10 @@ async function proveFinalCleanupSignal() {
   const observedExit = observeChildExit(child);
   const stdout = collectBounded(child.stdout);
   const stderr = collectBounded(child.stderr);
+  let operationFailed = false;
   let terminal;
-  let primaryTimedOut;
-  let forcedExitUsed;
+  let primaryTimedOut = false;
+  let forcedExitUsed = false;
   let watcher;
   let watcherExit;
   let watcherForcedExit = false;
@@ -564,25 +606,54 @@ async function proveFinalCleanupSignal() {
     }
     terminal = await waitForObservedExit(observedExit);
     primaryTimedOut = terminal.timedOut;
+  } catch {
+    operationFailed = true;
   } finally {
     if (watcher !== undefined && watcherExit !== undefined) {
-      const stoppedWatcher = await stopEventWatcher(watcher, watcherExit);
-      watcherForcedExit = stoppedWatcher.forced;
-      watcherTerminal = stoppedWatcher.terminal;
+      try {
+        const stoppedWatcher = await stopEventWatcher(watcher, watcherExit);
+        watcherForcedExit = stoppedWatcher.forced;
+        watcherTerminal = stoppedWatcher.terminal;
+      } catch {
+        operationFailed = true;
+      }
     }
-    forcedExitUsed = terminal?.timedOut === true;
-    terminal = await ensureChildExit(child, observedExit, terminal);
+    try {
+      const stopped = await ensureChildExit(child, observedExit, terminal);
+      forcedExitUsed ||= stopped.forced;
+      terminal = stopped.terminal;
+    } catch {
+      operationFailed = true;
+    }
   }
-  if (forcedExitUsed) await recoverCapturedObjects(record, imageId);
-  proveCapturedObjectsAbsent(record, imageId);
-  proveGlobalResidueAbsent();
+  if (forcedExitUsed && record !== undefined) {
+    try {
+      await recoverCapturedObjects(record, imageId);
+    } catch {
+      operationFailed = true;
+    }
+  }
+  if (record !== undefined) {
+    try {
+      proveCapturedObjectsAbsent(record, imageId);
+    } catch {
+      operationFailed = true;
+    }
+  }
+  try {
+    proveGlobalResidueAbsent();
+  } catch {
+    operationFailed = true;
+  }
   if (
+    operationFailed ||
     primaryTimedOut ||
     forcedExitUsed ||
     watcherForcedExit ||
     watcherTerminal === undefined ||
     watcherTerminal.timedOut ||
     watcherTerminal.spawnFailed ||
+    terminal === undefined ||
     terminal.timedOut ||
     terminal.spawnFailed ||
     terminal.code === 0 ||

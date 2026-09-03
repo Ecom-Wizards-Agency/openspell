@@ -266,13 +266,18 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(interruptionProof).not.toContain('child.once("exit"');
     expect(interruptionProof).toContain("observedExit = observeChildExit(child)");
     expect(interruptionProof).toContain("waitForObservedExit(observedExit)");
-    expect(interruptionProof).toContain("setupObservationAttempts = 120_000");
+    expect(interruptionProof).toContain(
+      "setupObservationTimeoutMilliseconds = 10 * 60_000",
+    );
+    expect(interruptionProof).toContain("performance.now() < deadline");
+    expect(interruptionProof).toContain("remainingOperationTime(deadline)");
     expect(interruptionProof).toContain(
       "finalCleanupObservationTimeoutMilliseconds = 30 * 60_000",
     );
     expect(interruptionProof).toContain("primaryTimedOut ||");
     expect(interruptionProof).toContain("forcedExitUsed ||");
     expect(interruptionProof).toContain("await recoverCapturedObjects(record, imageId)");
+    expect(interruptionProof).not.toContain('["volume", "rm"');
     expect(interruptionProof).toContain("await stopEventWatcher(watcher, watcherExit)");
     expect(interruptionProof).toContain("watcherTerminal.timedOut ||");
     expect(interruptionProof).toContain("interruption-cuts=5 signals=2 residue=0");

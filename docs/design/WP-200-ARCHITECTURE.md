@@ -347,8 +347,10 @@ privilege. A separate `test:kernel` wrapper:
    error/close observer immediately, starts the child-exit deadline only after the tested signal,
    gives setup and final-deletion observation the composed operation budget, and awaits its Docker
    event watcher. A watchdog-forced wrapper exit always disqualifies the cut and transfers emergency
-   cleanup custody to the harness: it may remove only the already captured immutable container,
-   derived-image and anonymous-volume IDs, then must prove their absence before refusing.
+   cleanup custody to the harness: it may remove only the already captured immutable container ID
+   with `--volumes` and derived-image ID, then must prove the captured anonymous-volume name absent
+   before refusing. A volume name is evidence, never independent deletion authority; if exact
+   container removal cannot establish its absence, cleanup remains uncertain.
 
 The reviewed image is:
 
