@@ -103,6 +103,24 @@ impl ReplyOnce {
         }
         Ok(())
     }
+
+    #[cfg(test)]
+    fn send_prefix_for_test(self, response: &[u8], prefix_len: usize) -> Result<(), IpcError> {
+        let prefix = response
+            .get(..prefix_len)
+            .filter(|prefix| prefix.len() < response.len())
+            .ok_or(IpcError::PartialSend)?;
+        let sent = send(
+            &self.socket,
+            prefix,
+            SendFlags::DONTWAIT | SendFlags::NOSIGNAL,
+        )
+        .map_err(|_| IpcError::Send)?;
+        if sent != response.len() {
+            return Err(IpcError::PartialSend);
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct SupervisorReply(ReplyOnce);
@@ -111,6 +129,15 @@ impl SupervisorReply {
     pub(crate) fn send(self, response: SupervisorResponseFrame) -> Result<(), IpcError> {
         self.0.send_bytes(response.as_bytes())
     }
+
+    #[cfg(test)]
+    pub(crate) fn send_prefix_for_test(
+        self,
+        response: SupervisorResponseFrame,
+        prefix_len: usize,
+    ) -> Result<(), IpcError> {
+        self.0.send_prefix_for_test(response.as_bytes(), prefix_len)
+    }
 }
 
 pub(crate) struct OperatorReply(ReplyOnce);
@@ -118,6 +145,15 @@ pub(crate) struct OperatorReply(ReplyOnce);
 impl OperatorReply {
     pub(crate) fn send(self, response: OperatorResponseFrame) -> Result<(), IpcError> {
         self.0.send_bytes(response.as_bytes())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn send_prefix_for_test(
+        self,
+        response: OperatorResponseFrame,
+        prefix_len: usize,
+    ) -> Result<(), IpcError> {
+        self.0.send_prefix_for_test(response.as_bytes(), prefix_len)
     }
 }
 
@@ -419,6 +455,24 @@ mod tests {
         packet.reply.send_bytes(b"fixed response").expect("reply");
 
         assert_eq!(receive_record(&client, 64), b"fixed response");
+        assert_read_eof(&client);
+    }
+
+    #[test]
+    fn deterministic_short_reply_sends_one_prefix_then_consumes_reply() {
+        let (client, server) = connected_pair(SocketType::SEQPACKET);
+        let reply = super::ReplyOnce { socket: server };
+        let response = b"complete response";
+        let prefix_len = 8;
+
+        assert_eq!(
+            reply.send_prefix_for_test(response, prefix_len),
+            Err(IpcError::PartialSend)
+        );
+        assert_eq!(
+            receive_record(&client, response.len()),
+            &response[..prefix_len]
+        );
         assert_read_eof(&client);
     }
 

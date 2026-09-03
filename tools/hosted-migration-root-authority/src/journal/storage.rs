@@ -12,6 +12,7 @@ use rustix::fs::{
     statat,
 };
 use rustix::io::{Errno, read, write};
+use sha2::{Digest as _, Sha256};
 
 use super::{
     FORMAT_BYTES, InventoryFiles, MAX_CANONICAL_BYTES, MAX_LEAVES, MAX_SIGNATURES, MAX_TOTAL_BYTES,
@@ -22,9 +23,10 @@ use crate::crypto::{RecordSigner, sha256_hex, verify_transition};
 use crate::ipc::{IpcError, OperatorReply, SupervisorReply};
 use crate::protocol::{
     ApproveSuccess, CloseApprovalSuccess, CloseCandidateSuccess, ConsumeSuccess, OperatorRefusal,
-    OperatorRequestFamily, OperatorResponse, RefusalCode, RegisterSuccess, StatusAvailability,
-    StatusResponse, SupervisorRefusal, SupervisorRequestFamily, SupervisorResponse,
-    encode_operator_response, encode_supervisor_response,
+    OperatorRequestFamily, OperatorResponse, OperatorResponseFrame, RefusalCode, RegisterSuccess,
+    StatusAvailability, StatusResponse, SupervisorRefusal, SupervisorRequestFamily,
+    SupervisorResponse, SupervisorResponseFrame, encode_operator_response,
+    encode_supervisor_response,
 };
 use crate::records::{Candidate, Transition};
 use crate::state::{
@@ -55,6 +57,93 @@ const EXT_FAMILY_MAGIC: u64 = 0xef53;
 const XFS_MAGIC: u64 = 0x5846_5342;
 const TMPFS_MAGIC: u64 = 0x0102_1994;
 const INCARNATION_DOMAIN: &[u8] = b"openspell.hosted-migration-authority-incarnation.v1\n";
+const INVENTORY_DIGEST_DOMAIN: &[u8] = b"openspell.hosted-migration-inventory.v1\n";
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TestPublicationBoundary {
+    FinalNameCreated,
+    PartialWrite,
+    CompleteWrite,
+    MetadataVerified,
+    FileSynced,
+    DirectorySynced,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TestFaultPoint {
+    BeforeFirstPublication,
+    Publication {
+        ordinal: usize,
+        boundary: TestPublicationBoundary,
+    },
+    PostCommitVerified,
+}
+
+#[cfg(test)]
+mod test_fault {
+    use std::cell::{Cell, RefCell};
+
+    use super::{TestFaultPoint, TestPublicationBoundary};
+
+    std::thread_local! {
+        static POINT: RefCell<Option<TestFaultPoint>> = const { RefCell::new(None) };
+        static PUBLICATION_ORDINAL: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn set(point: TestFaultPoint) {
+        POINT.with_borrow_mut(|slot| {
+            assert!(slot.replace(point).is_none(), "single test fault");
+        });
+        PUBLICATION_ORDINAL.set(0);
+    }
+
+    pub(super) fn clear() {
+        POINT.with_borrow_mut(|slot| *slot = None);
+        PUBLICATION_ORDINAL.set(0);
+    }
+
+    pub(super) fn armed() -> bool {
+        POINT.with_borrow(Option::is_some)
+    }
+
+    pub(super) fn next_publication() -> usize {
+        PUBLICATION_ORDINAL.with(|ordinal| {
+            let next = ordinal.get() + 1;
+            ordinal.set(next);
+            next
+        })
+    }
+
+    pub(super) fn check(point: TestFaultPoint) -> Result<(), ()> {
+        POINT.with_borrow_mut(|slot| {
+            if slot.as_ref() == Some(&point) {
+                *slot = None;
+                Err(())
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    pub(super) fn check_publication(
+        ordinal: usize,
+        boundary: TestPublicationBoundary,
+    ) -> Result<(), ()> {
+        check(TestFaultPoint::Publication { ordinal, boundary })
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_fail_at(point: TestFaultPoint) {
+    test_fault::set(point);
+}
+
+#[cfg(test)]
+pub(crate) fn test_clear_fault() {
+    test_fault::clear();
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OpenError {
@@ -330,6 +419,13 @@ struct CompleteInventory {
     snapshot: VerifiedSnapshot,
     total_bytes: usize,
     identities: BTreeMap<String, FileIdentity>,
+    digest: [u8; 32],
+}
+
+struct InventoryRevalidation {
+    total_bytes: usize,
+    identities: BTreeMap<String, FileIdentity>,
+    digest: [u8; 32],
 }
 
 #[derive(Eq, PartialEq)]
@@ -473,7 +569,7 @@ pub(crate) struct LockedSupervisorStatus<'a> {
 }
 
 impl LockedSupervisorCommit<'_> {
-    pub(crate) fn attempt(mut self, reply: SupervisorReply) -> Result<(), ResponseAttemptError> {
+    fn encode_response(&mut self) -> Result<SupervisorResponseFrame, ResponseAttemptError> {
         let response = match self.outcome.take().expect("single supervisor outcome") {
             Ok(SupervisorReceipt::Registered {
                 proof,
@@ -508,19 +604,32 @@ impl LockedSupervisorCommit<'_> {
                 code: refusal_code(error),
             }),
         };
-        let frame = match encode_supervisor_response(response) {
-            Ok(frame) => frame,
-            Err(_) => {
-                *self.guard = Health::Sealed;
-                return Err(ResponseAttemptError::Encode);
-            }
-        };
+        encode_supervisor_response(response).map_err(|_| {
+            *self.guard = Health::Sealed;
+            ResponseAttemptError::Encode
+        })
+    }
+
+    pub(crate) fn attempt(mut self, reply: SupervisorReply) -> Result<(), ResponseAttemptError> {
+        let frame = self.encode_response()?;
         reply.send(frame).map_err(ResponseAttemptError::Send)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn attempt_prefix_for_test(
+        mut self,
+        reply: SupervisorReply,
+        prefix_len: usize,
+    ) -> Result<(), ResponseAttemptError> {
+        let frame = self.encode_response()?;
+        reply
+            .send_prefix_for_test(frame, prefix_len)
+            .map_err(ResponseAttemptError::Send)
     }
 }
 
 impl LockedOperatorCommit<'_> {
-    pub(crate) fn attempt(mut self, reply: OperatorReply) -> Result<(), ResponseAttemptError> {
+    fn encode_response(&mut self) -> Result<OperatorResponseFrame, ResponseAttemptError> {
         let response = match self.outcome.take().expect("single operator outcome") {
             Ok(OperatorReceipt::Approved {
                 proof,
@@ -555,14 +664,27 @@ impl LockedOperatorCommit<'_> {
                 code: refusal_code(error),
             }),
         };
-        let frame = match encode_operator_response(response) {
-            Ok(frame) => frame,
-            Err(_) => {
-                *self.guard = Health::Sealed;
-                return Err(ResponseAttemptError::Encode);
-            }
-        };
+        encode_operator_response(response).map_err(|_| {
+            *self.guard = Health::Sealed;
+            ResponseAttemptError::Encode
+        })
+    }
+
+    pub(crate) fn attempt(mut self, reply: OperatorReply) -> Result<(), ResponseAttemptError> {
+        let frame = self.encode_response()?;
         reply.send(frame).map_err(ResponseAttemptError::Send)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn attempt_prefix_for_test(
+        mut self,
+        reply: OperatorReply,
+        prefix_len: usize,
+    ) -> Result<(), ResponseAttemptError> {
+        let frame = self.encode_response()?;
+        reply
+            .send_prefix_for_test(frame, prefix_len)
+            .map_err(ResponseAttemptError::Send)
     }
 }
 
@@ -1043,17 +1165,16 @@ impl JournalStore {
                 return Err(CommitError::Unavailable);
             }
         };
-        let revalidated = match self.scan_complete() {
+        let revalidated = match self.scan_revalidation() {
             Ok(revalidated) => revalidated,
             Err(()) => {
                 **guard = Health::Sealed;
                 return Err(CommitError::Unavailable);
             }
         };
-        if revalidated.inventory != complete.inventory
-            || revalidated.snapshot != complete.snapshot
-            || revalidated.total_bytes != complete.total_bytes
+        if revalidated.total_bytes != complete.total_bytes
             || revalidated.identities != complete.identities
+            || revalidated.digest != complete.digest
         {
             **guard = Health::Sealed;
             return Err(CommitError::Unavailable);
@@ -1101,6 +1222,9 @@ impl JournalStore {
             None
         };
 
+        #[cfg(test)]
+        test_fault::check(TestFaultPoint::BeforeFirstPublication)
+            .map_err(|()| CommitError::Unavailable)?;
         let mut epoch = PublicationEpoch {
             health: guard,
             completed: false,
@@ -1166,6 +1290,9 @@ impl JournalStore {
         {
             return Err(CommitError::Unavailable);
         }
+        #[cfg(test)]
+        test_fault::check(TestFaultPoint::PostCommitVerified)
+            .map_err(|()| CommitError::Unavailable)?;
         epoch.complete();
         drop(epoch);
         Ok((committed.snapshot, super::DurableSuccess::verified()))
@@ -1176,6 +1303,92 @@ impl JournalStore {
     }
 
     fn scan_complete(&self) -> Result<CompleteInventory, ()> {
+        self.verify_tree_shape()?;
+        let mut digest = inventory_digest();
+        let mut total_bytes = FORMAT_BYTES.len();
+        let mut identities = BTreeMap::new();
+        let leaves = scan_objects(
+            &self.fds.leaves,
+            self.owner,
+            MAX_LEAVES,
+            false,
+            "leaves",
+            &mut total_bytes,
+            &mut identities,
+            &mut digest,
+        )?;
+        let signatures = scan_objects(
+            &self.fds.signatures,
+            self.owner,
+            MAX_SIGNATURES,
+            true,
+            "signatures",
+            &mut total_bytes,
+            &mut identities,
+            &mut digest,
+        )?;
+        let transitions = scan_transitions(
+            &self.fds.transitions,
+            self.owner,
+            &mut total_bytes,
+            &mut identities,
+            &mut digest,
+        )?;
+        let inventory = InventoryFiles {
+            leaves,
+            signatures,
+            transitions,
+        };
+        let snapshot = verify_inventory(&inventory, &self.pinned_public_key).map_err(|_| ())?;
+        Ok(CompleteInventory {
+            inventory,
+            snapshot,
+            total_bytes,
+            identities,
+            digest: digest.finalize().into(),
+        })
+    }
+
+    fn scan_revalidation(&self) -> Result<InventoryRevalidation, ()> {
+        self.verify_tree_shape()?;
+        let mut digest = inventory_digest();
+        let mut total_bytes = FORMAT_BYTES.len();
+        let mut identities = BTreeMap::new();
+        scan_objects_revalidation(
+            &self.fds.leaves,
+            self.owner,
+            MAX_LEAVES,
+            false,
+            "leaves",
+            &mut total_bytes,
+            &mut identities,
+            &mut digest,
+        )?;
+        scan_objects_revalidation(
+            &self.fds.signatures,
+            self.owner,
+            MAX_SIGNATURES,
+            true,
+            "signatures",
+            &mut total_bytes,
+            &mut identities,
+            &mut digest,
+        )?;
+        scan_transitions_revalidation(
+            &self.fds.transitions,
+            self.owner,
+            &mut total_bytes,
+            &mut identities,
+            &mut digest,
+        )?;
+        Ok(InventoryRevalidation {
+            total_bytes,
+            identities,
+            digest: digest.finalize().into(),
+        })
+    }
+
+    fn verify_tree_shape(&self) -> Result<(), ()> {
         verify_directory(
             &fstat(&self.fds.root).map_err(|_| ())?,
             self.owner,
@@ -1248,44 +1461,7 @@ impl JournalStore {
         if fstat(&self.fds.lock).map_err(|_| ())?.st_size != 0 {
             return Err(());
         }
-        let mut total_bytes = FORMAT_BYTES.len();
-        let mut identities = BTreeMap::new();
-        let leaves = scan_objects(
-            &self.fds.leaves,
-            self.owner,
-            MAX_LEAVES,
-            false,
-            "leaves",
-            &mut total_bytes,
-            &mut identities,
-        )?;
-        let signatures = scan_objects(
-            &self.fds.signatures,
-            self.owner,
-            MAX_SIGNATURES,
-            true,
-            "signatures",
-            &mut total_bytes,
-            &mut identities,
-        )?;
-        let transitions = scan_transitions(
-            &self.fds.transitions,
-            self.owner,
-            &mut total_bytes,
-            &mut identities,
-        )?;
-        let inventory = InventoryFiles {
-            leaves,
-            signatures,
-            transitions,
-        };
-        let snapshot = verify_inventory(&inventory, &self.pinned_public_key).map_err(|_| ())?;
-        Ok(CompleteInventory {
-            inventory,
-            snapshot,
-            total_bytes,
-            identities,
-        })
+        Ok(())
     }
 }
 
@@ -2365,6 +2541,7 @@ fn read_names(directory: &OwnedFd, limit: usize) -> Result<Vec<String>, ()> {
     Ok(names)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scan_objects(
     directory: &OwnedFd,
     owner: Owner,
@@ -2373,8 +2550,10 @@ fn scan_objects(
     namespace: &str,
     total: &mut usize,
     identities: &mut BTreeMap<String, FileIdentity>,
+    inventory_digest: &mut Sha256,
 ) -> Result<BTreeMap<String, Vec<u8>>, ()> {
-    let names = read_names(directory, limit)?;
+    let mut names = read_names(directory, limit)?;
+    names.sort_unstable();
     let mut objects = BTreeMap::new();
     for name in names {
         if !is_digest(&name) {
@@ -2422,6 +2601,7 @@ fn scan_objects(
         {
             return Err(());
         }
+        update_inventory_digest(inventory_digest, namespace, &name, &bytes)?;
         if name != crate::crypto::sha256_hex(&bytes) || objects.insert(name, bytes).is_some() {
             return Err(());
         }
@@ -2434,8 +2614,10 @@ fn scan_transitions(
     owner: Owner,
     total: &mut usize,
     identities: &mut BTreeMap<String, FileIdentity>,
+    inventory_digest: &mut Sha256,
 ) -> Result<BTreeMap<u64, TransitionFile>, ()> {
-    let names = read_names(directory, MAX_TRANSITIONS)?;
+    let mut names = read_names(directory, MAX_TRANSITIONS)?;
+    names.sort_unstable();
     let mut transitions = BTreeMap::new();
     for name in names {
         let (generation, digest) = parse_transition_name(&name)?;
@@ -2480,6 +2662,7 @@ fn scan_transitions(
         {
             return Err(());
         }
+        update_inventory_digest(inventory_digest, "transitions", &name, &bytes)?;
         if digest != crate::crypto::sha256_hex(&bytes)
             || transitions
                 .insert(generation, TransitionFile { digest, bytes })
@@ -2489,6 +2672,200 @@ fn scan_transitions(
         }
     }
     Ok(transitions)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_objects_revalidation(
+    directory: &OwnedFd,
+    owner: Owner,
+    limit: usize,
+    signatures: bool,
+    namespace: &str,
+    total: &mut usize,
+    identities: &mut BTreeMap<String, FileIdentity>,
+    inventory_digest: &mut Sha256,
+) -> Result<(), ()> {
+    let mut names = read_names(directory, limit)?;
+    names.sort_unstable();
+    for name in names {
+        if !is_digest(&name) {
+            return Err(());
+        }
+        let c_name = std::ffi::CString::new(name.as_bytes()).map_err(|_| ())?;
+        let fd = openat2(directory, &c_name, READ_FLAGS, Mode::empty(), RESOLVE).map_err(|_| ())?;
+        let stat = verify_entry_matches_fd(
+            directory,
+            &c_name,
+            &fd,
+            owner,
+            FileType::RegularFile,
+            0o600,
+            1,
+        )?;
+        let size = usize::try_from(stat.st_size).map_err(|_| ())?;
+        if (signatures && size != 64) || (!signatures && (size == 0 || size > MAX_CANONICAL_BYTES))
+        {
+            return Err(());
+        }
+        add_inventory_bytes(total, size)?;
+        let content_digest = digest_exact_file(inventory_digest, namespace, &name, &fd, size)?;
+        let final_stat = verify_entry_matches_fd(
+            directory,
+            &c_name,
+            &fd,
+            owner,
+            FileType::RegularFile,
+            0o600,
+            1,
+        )?;
+        if !same_stat(&stat, &final_stat)
+            || identities
+                .insert(
+                    format!("{namespace}/{name}"),
+                    FileIdentity::from(&final_stat),
+                )
+                .is_some()
+            || name != hex::encode(content_digest)
+        {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+fn scan_transitions_revalidation(
+    directory: &OwnedFd,
+    owner: Owner,
+    total: &mut usize,
+    identities: &mut BTreeMap<String, FileIdentity>,
+    inventory_digest: &mut Sha256,
+) -> Result<(), ()> {
+    let mut names = read_names(directory, MAX_TRANSITIONS)?;
+    names.sort_unstable();
+    let mut generations = BTreeSet::new();
+    for name in names {
+        let (generation, expected_digest) = parse_transition_name(&name)?;
+        if !generations.insert(generation) {
+            return Err(());
+        }
+        let c_name = std::ffi::CString::new(name.as_bytes()).map_err(|_| ())?;
+        let fd = openat2(directory, &c_name, READ_FLAGS, Mode::empty(), RESOLVE).map_err(|_| ())?;
+        let stat = verify_entry_matches_fd(
+            directory,
+            &c_name,
+            &fd,
+            owner,
+            FileType::RegularFile,
+            0o600,
+            1,
+        )?;
+        let size = usize::try_from(stat.st_size).map_err(|_| ())?;
+        if size == 0 || size > MAX_CANONICAL_BYTES {
+            return Err(());
+        }
+        add_inventory_bytes(total, size)?;
+        let content_digest = digest_exact_file(inventory_digest, "transitions", &name, &fd, size)?;
+        let final_stat = verify_entry_matches_fd(
+            directory,
+            &c_name,
+            &fd,
+            owner,
+            FileType::RegularFile,
+            0o600,
+            1,
+        )?;
+        if !same_stat(&stat, &final_stat)
+            || identities
+                .insert(
+                    format!("transitions/{name}"),
+                    FileIdentity::from(&final_stat),
+                )
+                .is_some()
+            || expected_digest != hex::encode(content_digest)
+        {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+fn inventory_digest() -> Sha256 {
+    let mut digest = Sha256::new();
+    digest.update(INVENTORY_DIGEST_DOMAIN);
+    digest
+}
+
+fn update_inventory_digest(
+    digest: &mut Sha256,
+    namespace: &str,
+    name: &str,
+    bytes: &[u8],
+) -> Result<(), ()> {
+    update_inventory_digest_header(digest, namespace, name, bytes.len())?;
+    digest.update(bytes);
+    Ok(())
+}
+
+fn update_inventory_digest_header(
+    digest: &mut Sha256,
+    namespace: &str,
+    name: &str,
+    size: usize,
+) -> Result<(), ()> {
+    digest.update(
+        u64::try_from(namespace.len())
+            .map_err(|_| ())?
+            .to_be_bytes(),
+    );
+    digest.update(namespace.as_bytes());
+    digest.update(u64::try_from(name.len()).map_err(|_| ())?.to_be_bytes());
+    digest.update(name.as_bytes());
+    digest.update(u64::try_from(size).map_err(|_| ())?.to_be_bytes());
+    Ok(())
+}
+
+fn add_inventory_bytes(total: &mut usize, size: usize) -> Result<(), ()> {
+    *total = total.checked_add(size).ok_or(())?;
+    if *total > MAX_TOTAL_BYTES {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn digest_exact_file(
+    inventory_digest: &mut Sha256,
+    namespace: &str,
+    name: &str,
+    fd: &OwnedFd,
+    size: usize,
+) -> Result<[u8; 32], ()> {
+    update_inventory_digest_header(inventory_digest, namespace, name, size)?;
+    rustix::fs::seek(fd, rustix::fs::SeekFrom::Start(0)).map_err(|_| ())?;
+    let mut content_digest = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    let mut remaining = size;
+    while remaining != 0 {
+        let requested = remaining.min(buffer.len());
+        match read(fd, &mut buffer[..requested]) {
+            Ok(0) => return Err(()),
+            Ok(read_count) => {
+                content_digest.update(&buffer[..read_count]);
+                inventory_digest.update(&buffer[..read_count]);
+                remaining -= read_count;
+            }
+            Err(Errno::INTR) => {}
+            Err(_) => return Err(()),
+        }
+    }
+    loop {
+        match read(fd, &mut buffer[..1]) {
+            Ok(0) => break,
+            Ok(_) => return Err(()),
+            Err(Errno::INTR) => {}
+            Err(_) => return Err(()),
+        }
+    }
+    Ok(content_digest.finalize().into())
 }
 
 fn parse_transition_name(name: &str) -> Result<(u64, String), ()> {
@@ -2552,6 +2929,8 @@ fn acquire_ofd_lock(fd: &OwnedFd) -> Result<(), ()> {
 }
 
 fn publish(directory: &OwnedFd, name: &str, bytes: &[u8], owner: Owner) -> Result<(), ()> {
+    #[cfg(test)]
+    let publication_ordinal = test_fault::next_publication();
     let name = std::ffi::CString::new(name.as_bytes()).map_err(|_| ())?;
     let fd = openat2(
         directory,
@@ -2561,15 +2940,39 @@ fn publish(directory: &OwnedFd, name: &str, bytes: &[u8], owner: Owner) -> Resul
         RESOLVE,
     )
     .map_err(|_| ())?;
+    #[cfg(test)]
+    test_fault::check_publication(
+        publication_ordinal,
+        TestPublicationBoundary::FinalNameCreated,
+    )?;
     let mut offset = 0;
     while offset < bytes.len() {
-        match write(&fd, &bytes[offset..]) {
+        #[cfg(test)]
+        let remaining = if offset == 0 && test_fault::armed() && bytes.len() > 7 {
+            &bytes[offset..7]
+        } else {
+            &bytes[offset..]
+        };
+        #[cfg(not(test))]
+        let remaining = &bytes[offset..];
+        match write(&fd, remaining) {
             Ok(0) => return Err(()),
-            Ok(written) => offset += written,
+            Ok(written) => {
+                offset += written;
+                #[cfg(test)]
+                if offset < bytes.len() {
+                    test_fault::check_publication(
+                        publication_ordinal,
+                        TestPublicationBoundary::PartialWrite,
+                    )?;
+                }
+            }
             Err(Errno::INTR) => {}
             Err(_) => return Err(()),
         }
     }
+    #[cfg(test)]
+    test_fault::check_publication(publication_ordinal, TestPublicationBoundary::CompleteWrite)?;
     let published = verify_entry_matches_fd(
         directory,
         &name,
@@ -2582,8 +2985,20 @@ fn publish(directory: &OwnedFd, name: &str, bytes: &[u8], owner: Owner) -> Resul
     if published.st_size != bytes.len() as i64 {
         return Err(());
     }
+    #[cfg(test)]
+    test_fault::check_publication(
+        publication_ordinal,
+        TestPublicationBoundary::MetadataVerified,
+    )?;
     fsync(&fd).map_err(|_| ())?;
+    #[cfg(test)]
+    test_fault::check_publication(publication_ordinal, TestPublicationBoundary::FileSynced)?;
     fsync(directory).map_err(|_| ())?;
+    #[cfg(test)]
+    test_fault::check_publication(
+        publication_ordinal,
+        TestPublicationBoundary::DirectorySynced,
+    )?;
     Ok(())
 }
 

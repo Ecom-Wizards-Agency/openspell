@@ -6,7 +6,8 @@ use crate::crypto::{
 use crate::journal::storage::{
     ApproveCommand, CloseApprovalCommand, CloseCandidateCommand, CommitError, ConsumeCommand,
     HeadCas, Health, JournalStore, OpenError, RegisterCommand, RootAuthority, StatusCommand,
-    StorageError, TicketEntropy, TrustedClock,
+    StorageError, TestFaultPoint, TestPublicationBoundary, TicketEntropy, TrustedClock,
+    test_clear_fault, test_fail_at,
 };
 use crate::journal::{
     DurableSuccess, InventoryFiles, JournalError, TransitionFile, VerifiedState, VerifiedStatus,
@@ -16,9 +17,9 @@ use crate::protocol::{
     ApproveSuccess, CloseApprovalSuccess, CloseCandidateSuccess, ConsumeSuccess, OPERATOR_APPROVE,
     OPERATOR_APPROVE_SUCCESS, OPERATOR_CLOSE_APPROVAL_SUCCESS, OPERATOR_CLOSE_CANDIDATE_SUCCESS,
     OPERATOR_REFUSAL, OperatorDecode, OperatorRefusal, OperatorRequestFamily, OperatorResponse,
-    RefusalCode, RegisterSuccess, SUPERVISOR_CONSUME_SUCCESS, SUPERVISOR_REFUSAL,
-    SUPERVISOR_REGISTER_SUCCESS, SUPERVISOR_STATUS, SUPERVISOR_STATUS_SUCCESS, StatusAvailability,
-    StatusResponse, SupervisorDecode, SupervisorRefusal, SupervisorRequest,
+    RefusalCode, RegisterSuccess, SUPERVISOR_CONSUME, SUPERVISOR_CONSUME_SUCCESS,
+    SUPERVISOR_REFUSAL, SUPERVISOR_REGISTER_SUCCESS, SUPERVISOR_STATUS, SUPERVISOR_STATUS_SUCCESS,
+    StatusAvailability, StatusResponse, SupervisorDecode, SupervisorRefusal, SupervisorRequest,
     SupervisorRequestFamily, SupervisorResponse, decode_operator, decode_supervisor, encode_frame,
     encode_operator_response, encode_supervisor_response,
 };
@@ -93,6 +94,18 @@ impl TicketEntropy for CountingEntropy {
     }
 }
 
+struct CountingEntropyValue {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    value: [u8; 32],
+}
+
+impl TicketEntropy for CountingEntropyValue {
+    fn draw_once(&self) -> Result<[u8; 32], ()> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self.value)
+    }
+}
+
 struct CountingSigner {
     inner: SyntheticRecordSigner,
     calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -157,6 +170,102 @@ impl RecordSigner for CountingSigner {
     ) -> Result<[u8; 64], CryptoError> {
         self.called();
         self.inner.sign_approval_expired_transition(transition)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FailingTransition {
+    CandidateRegistered,
+    Approved,
+    Consumed,
+    CandidateExpired,
+    ApprovalExpired,
+}
+
+struct FailingTransitionSigner {
+    inner: SyntheticRecordSigner,
+    failure: FailingTransition,
+}
+
+impl FailingTransitionSigner {
+    fn new(failure: FailingTransition) -> Self {
+        Self {
+            inner: SyntheticRecordSigner::from_seed([7; 32]),
+            failure,
+        }
+    }
+
+    fn should_fail(&self, failure: FailingTransition) -> bool {
+        std::mem::discriminant(&self.failure) == std::mem::discriminant(&failure)
+    }
+}
+
+impl RecordSigner for FailingTransitionSigner {
+    fn public_key_bytes(&self) -> [u8; 32] {
+        self.inner.public_key_bytes()
+    }
+
+    fn sign_approval_grant(&self, grant: &ApprovalGrant) -> Result<[u8; 64], CryptoError> {
+        self.inner.sign_approval_grant(grant)
+    }
+
+    fn sign_execution_ticket(&self, ticket: &ExecutionTicket) -> Result<[u8; 64], CryptoError> {
+        self.inner.sign_execution_ticket(ticket)
+    }
+
+    fn sign_candidate_registered_transition(
+        &self,
+        transition: &CandidateRegisteredTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        if self.should_fail(FailingTransition::CandidateRegistered) {
+            Err(CryptoError::Signature)
+        } else {
+            self.inner.sign_candidate_registered_transition(transition)
+        }
+    }
+
+    fn sign_approved_transition(
+        &self,
+        transition: &ApprovedTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        if self.should_fail(FailingTransition::Approved) {
+            Err(CryptoError::Signature)
+        } else {
+            self.inner.sign_approved_transition(transition)
+        }
+    }
+
+    fn sign_consumed_transition(
+        &self,
+        transition: &ConsumedTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        if self.should_fail(FailingTransition::Consumed) {
+            Err(CryptoError::Signature)
+        } else {
+            self.inner.sign_consumed_transition(transition)
+        }
+    }
+
+    fn sign_candidate_expired_transition(
+        &self,
+        transition: &CandidateExpiredTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        if self.should_fail(FailingTransition::CandidateExpired) {
+            Err(CryptoError::Signature)
+        } else {
+            self.inner.sign_candidate_expired_transition(transition)
+        }
+    }
+
+    fn sign_approval_expired_transition(
+        &self,
+        transition: &ApprovalExpiredTransition,
+    ) -> Result<[u8; 64], CryptoError> {
+        if self.should_fail(FailingTransition::ApprovalExpired) {
+            Err(CryptoError::Signature)
+        } else {
+            self.inner.sign_approval_expired_transition(transition)
+        }
     }
 }
 
@@ -540,6 +649,41 @@ fn journal_entry_count(root: &std::path::Path) -> usize {
     visit(root)
 }
 
+fn publication_fault_points(publications: usize) -> Vec<TestFaultPoint> {
+    let mut points = vec![TestFaultPoint::BeforeFirstPublication];
+    for ordinal in 1..=publications {
+        for boundary in [
+            TestPublicationBoundary::FinalNameCreated,
+            TestPublicationBoundary::PartialWrite,
+            TestPublicationBoundary::CompleteWrite,
+            TestPublicationBoundary::MetadataVerified,
+            TestPublicationBoundary::FileSynced,
+            TestPublicationBoundary::DirectorySynced,
+        ] {
+            points.push(TestFaultPoint::Publication { ordinal, boundary });
+        }
+    }
+    points.push(TestFaultPoint::PostCommitVerified);
+    points
+}
+
+fn fault_has_complete_transition(point: TestFaultPoint, transition_ordinal: usize) -> bool {
+    match point {
+        TestFaultPoint::PostCommitVerified => true,
+        TestFaultPoint::Publication { ordinal, boundary } => {
+            ordinal == transition_ordinal
+                && matches!(
+                    boundary,
+                    TestPublicationBoundary::CompleteWrite
+                        | TestPublicationBoundary::MetadataVerified
+                        | TestPublicationBoundary::FileSynced
+                        | TestPublicationBoundary::DirectorySynced
+                )
+        }
+        TestFaultPoint::BeforeFirstPublication => false,
+    }
+}
+
 fn commit_test_registration<S, C, E>(
     authority: &RootAuthority<S, C, E>,
 ) -> (crate::journal::VerifiedSnapshot, Candidate)
@@ -672,6 +816,168 @@ fn approval_close_inputs(
     )
 }
 
+#[test]
+fn transition_signer_failures_after_artifact_publication_seal_current_and_reopened_authorities() {
+    let pinned_public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
+
+    let (register_directory, register_store) = empty_test_store(pinned_public_key);
+    let register_authority = RootAuthority::synthetic(
+        register_store,
+        FailingTransitionSigner::new(FailingTransition::CandidateRegistered),
+        FixedClock(NOW),
+        FixedEntropy([3; 32]),
+    )
+    .expect("register authority");
+    let before = journal_entry_count(register_directory.path());
+    let register = register_authority.register(RegisterCommand::new(
+        HeadCas::new(0, GENESIS_SHA256.to_owned()),
+        candidate("2026-09-03T12:15:00Z"),
+    ));
+    assert_eq!(register.test_error(), Some(CommitError::Unavailable));
+    drop(register);
+    assert!(journal_entry_count(register_directory.path()) > before);
+    assert!(matches!(
+        register_authority.inspect(),
+        Err(StorageError::Sealed)
+    ));
+    drop(register_authority);
+    assert!(matches!(
+        reopen_test_store(register_directory.path(), pinned_public_key).inspect(),
+        Err(StorageError::Sealed)
+    ));
+
+    let (approve_directory, approve_store) = empty_test_store(pinned_public_key);
+    let approve_authority = RootAuthority::synthetic(
+        approve_store,
+        FailingTransitionSigner::new(FailingTransition::Approved),
+        FixedClock(NOW),
+        FixedEntropy([3; 32]),
+    )
+    .expect("approve authority");
+    let (registered, value) = commit_test_registration(&approve_authority);
+    let verified =
+        RootVerifiedPreparedEnvelope::synthetic(&value, observations()).expect("verified envelope");
+    let attended = authentication(&value);
+    let before = journal_entry_count(approve_directory.path());
+    let approve = approve_authority.approve(
+        ApproveCommand::new(
+            HeadCas::new(registered.generation, registered.transition_sha256),
+            value.operation_id.clone(),
+            value.authorization_nonce.clone(),
+            value.envelope_sha256.clone(),
+            value.approval_challenge_sha256.clone(),
+        ),
+        &verified,
+        &attended,
+    );
+    assert_eq!(approve.test_error(), Some(CommitError::Unavailable));
+    drop(approve);
+    assert!(journal_entry_count(approve_directory.path()) > before);
+    assert!(matches!(
+        approve_authority.inspect(),
+        Err(StorageError::Sealed)
+    ));
+    drop(approve_authority);
+    assert!(matches!(
+        reopen_test_store(approve_directory.path(), pinned_public_key).inspect(),
+        Err(StorageError::Sealed)
+    ));
+
+    let (consume_directory, consume_store) = empty_test_store(pinned_public_key);
+    let consume_authority = RootAuthority::synthetic(
+        consume_store,
+        FailingTransitionSigner::new(FailingTransition::Consumed),
+        FixedClock(NOW),
+        FixedEntropy([3; 32]),
+    )
+    .expect("consume authority");
+    let (registered, value) = commit_test_registration(&consume_authority);
+    let approved = commit_test_approval(&consume_authority, &registered, &value);
+    let (grant_sha256, grant_signature_sha256) = match &approved.state {
+        VerifiedState::Approved {
+            grant_sha256,
+            grant_signature_sha256,
+            ..
+        } => (grant_sha256.clone(), grant_signature_sha256.clone()),
+        _ => panic!("approved state"),
+    };
+    let before = journal_entry_count(consume_directory.path());
+    let consume = consume_authority.consume(ConsumeCommand::new(
+        HeadCas::new(approved.generation, approved.transition_sha256),
+        value.operation_id,
+        value.authorization_nonce,
+        grant_sha256,
+        grant_signature_sha256,
+    ));
+    assert_eq!(consume.test_error(), Some(CommitError::Unavailable));
+    drop(consume);
+    assert!(journal_entry_count(consume_directory.path()) > before);
+    assert!(matches!(
+        consume_authority.inspect(),
+        Err(StorageError::Sealed)
+    ));
+    drop(consume_authority);
+    assert!(matches!(
+        reopen_test_store(consume_directory.path(), pinned_public_key).inspect(),
+        Err(StorageError::Sealed)
+    ));
+}
+
+#[test]
+fn transition_signer_failures_before_closure_publication_leave_predecessor_readable() {
+    let pinned_public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
+
+    let (candidate_directory, candidate_store) = empty_test_store(pinned_public_key);
+    let candidate_authority = RootAuthority::synthetic(
+        candidate_store,
+        FailingTransitionSigner::new(FailingTransition::CandidateExpired),
+        SequenceClock::new([NOW, "2026-09-03T12:15:00Z"]),
+        FixedEntropy([3; 32]),
+    )
+    .expect("candidate authority");
+    let (registered, value) = commit_test_registration(&candidate_authority);
+    let (command, attended) =
+        candidate_close_inputs(&registered, &value, '0', "2026-09-03T12:14:30Z");
+    let before = journal_entry_count(candidate_directory.path());
+    let close = candidate_authority.close_candidate(command, &attended);
+    assert_eq!(close.test_error(), Some(CommitError::Signer));
+    drop(close);
+    assert_eq!(journal_entry_count(candidate_directory.path()), before);
+    assert!(matches!(
+        candidate_authority
+            .inspect()
+            .expect("readable candidate")
+            .1
+            .state,
+        VerifiedState::CandidateRegistered { .. }
+    ));
+
+    let (approval_directory, approval_store) = empty_test_store(pinned_public_key);
+    let approval_authority = RootAuthority::synthetic(
+        approval_store,
+        FailingTransitionSigner::new(FailingTransition::ApprovalExpired),
+        SequenceClock::new([NOW, NOW, "2026-09-03T12:09:30Z"]),
+        FixedEntropy([3; 32]),
+    )
+    .expect("approval authority");
+    let (registered, value) = commit_test_registration(&approval_authority);
+    let approved = commit_test_approval(&approval_authority, &registered, &value);
+    let (command, attended) = approval_close_inputs(&approved, &value, '0', "2026-09-03T12:09:00Z");
+    let before = journal_entry_count(approval_directory.path());
+    let close = approval_authority.close_approval(command, &attended);
+    assert_eq!(close.test_error(), Some(CommitError::Signer));
+    drop(close);
+    assert_eq!(journal_entry_count(approval_directory.path()), before);
+    assert!(matches!(
+        approval_authority
+            .inspect()
+            .expect("readable approval")
+            .1
+            .state,
+        VerifiedState::Approved { .. }
+    ));
+}
+
 fn register_request_frame(
     expected_generation: u64,
     expected_transition_sha256: &str,
@@ -747,6 +1053,90 @@ fn register_request_frame(
     ])
     .expect("register request payload");
     encode_frame(crate::protocol::SUPERVISOR_REGISTER, &payload).expect("register request frame")
+}
+
+fn consume_request_frame(
+    snapshot: &crate::journal::VerifiedSnapshot,
+    value: &Candidate,
+) -> Vec<u8> {
+    let (grant_sha256, grant_signature_sha256) = match &snapshot.state {
+        VerifiedState::Approved {
+            grant_sha256,
+            grant_signature_sha256,
+            ..
+        } => (grant_sha256, grant_signature_sha256),
+        _ => panic!("approved state"),
+    };
+    let payload = object(&[
+        (
+            "schemaVersion",
+            FieldValue::String("openspell.hosted-migration-root-consume-request.v1"),
+        ),
+        (
+            "expectedGeneration",
+            FieldValue::Integer(snapshot.generation),
+        ),
+        (
+            "expectedTransitionSha256",
+            FieldValue::String(&snapshot.transition_sha256),
+        ),
+        ("operationId", FieldValue::String(&value.operation_id)),
+        (
+            "authorizationNonce",
+            FieldValue::String(&value.authorization_nonce),
+        ),
+        ("approvalGrantSha256", FieldValue::String(grant_sha256)),
+        (
+            "approvalGrantSignatureSha256",
+            FieldValue::String(grant_signature_sha256),
+        ),
+    ])
+    .expect("consume request payload");
+    encode_frame(SUPERVISOR_CONSUME, &payload).expect("consume request frame")
+}
+
+fn approve_request_frame(
+    snapshot: &crate::journal::VerifiedSnapshot,
+    value: &Candidate,
+) -> Vec<u8> {
+    let payload = object(&[
+        (
+            "schemaVersion",
+            FieldValue::String("openspell.hosted-migration-root-approve-request.v1"),
+        ),
+        (
+            "expectedGeneration",
+            FieldValue::Integer(snapshot.generation),
+        ),
+        (
+            "expectedTransitionSha256",
+            FieldValue::String(&snapshot.transition_sha256),
+        ),
+        ("operationId", FieldValue::String(&value.operation_id)),
+        (
+            "authorizationNonce",
+            FieldValue::String(&value.authorization_nonce),
+        ),
+        ("envelopeSha256", FieldValue::String(&value.envelope_sha256)),
+        (
+            "actionChallengeSha256",
+            FieldValue::String(&value.approval_challenge_sha256),
+        ),
+    ])
+    .expect("approve request payload");
+    encode_frame(OPERATOR_APPROVE, &payload).expect("approve request frame")
+}
+
+fn status_request_frame(operation_id: &str) -> Vec<u8> {
+    let payload = object(&[
+        (
+            "schemaVersion",
+            FieldValue::String("openspell.hosted-migration-root-status-request.v1"),
+        ),
+        ("operationId", FieldValue::String(operation_id)),
+    ])
+    .expect("status request payload");
+    encode_frame(SUPERVISOR_STATUS, &payload).expect("status request frame")
 }
 
 #[test]
@@ -1425,6 +1815,315 @@ fn restart_states_recover_conservatively_and_only_attended_expiry_can_close() {
 }
 
 #[test]
+fn every_register_publication_fault_reopens_as_predecessor_successor_or_sealed() {
+    for point in publication_fault_points(3) {
+        let signer = SyntheticRecordSigner::from_seed([7; 32]);
+        let public_key = signer.public_key_bytes();
+        let (directory, store) = empty_test_store(public_key);
+        let authority =
+            RootAuthority::synthetic(store, signer, FixedClock(NOW), FixedEntropy([3; 32]))
+                .expect("authority open");
+        test_fail_at(point);
+        let outcome = authority.register(RegisterCommand::new(
+            HeadCas::new(0, GENESIS_SHA256.to_owned()),
+            candidate("2026-09-03T12:15:00Z"),
+        ));
+        assert_eq!(
+            outcome.test_error(),
+            Some(CommitError::Unavailable),
+            "{point:?}"
+        );
+        drop(outcome);
+        test_clear_fault();
+        if point == TestFaultPoint::BeforeFirstPublication {
+            assert!(authority.inspect().is_ok(), "{point:?}");
+        } else {
+            assert_eq!(authority.inspect(), Err(StorageError::Sealed), "{point:?}");
+        }
+        drop(authority);
+
+        let reopened = reopen_test_store(directory.path(), public_key);
+        if point == TestFaultPoint::BeforeFirstPublication {
+            let (health, snapshot) = reopened.inspect().expect("exact predecessor");
+            assert_eq!(health, Health::Available);
+            assert!(matches!(snapshot.state, VerifiedState::Empty));
+        } else if fault_has_complete_transition(point, 3) {
+            let (health, snapshot) = reopened.inspect().expect("conservative successor");
+            assert_eq!(health, Health::RecoveredNonterminal);
+            assert!(matches!(
+                snapshot.state,
+                VerifiedState::CandidateRegistered { .. }
+            ));
+        } else {
+            assert_eq!(reopened.inspect(), Err(StorageError::Sealed), "{point:?}");
+        }
+    }
+}
+
+#[test]
+fn every_approve_consume_and_closure_publication_fault_is_conservative() {
+    for point in publication_fault_points(4) {
+        let signer = SyntheticRecordSigner::from_seed([7; 32]);
+        let public_key = signer.public_key_bytes();
+        let (directory, store) = empty_test_store(public_key);
+        let authority = RootAuthority::synthetic(
+            store,
+            signer,
+            SequenceClock::new([NOW, NOW]),
+            FixedEntropy([3; 32]),
+        )
+        .expect("approve authority");
+        let (registered, value) = commit_test_registration(&authority);
+        let verified = RootVerifiedPreparedEnvelope::synthetic(&value, observations())
+            .expect("verified envelope");
+        let attended = authentication(&value);
+        test_fail_at(point);
+        let outcome = authority.approve(
+            ApproveCommand::new(
+                HeadCas::new(registered.generation, registered.transition_sha256),
+                value.operation_id,
+                value.authorization_nonce,
+                value.envelope_sha256,
+                value.approval_challenge_sha256,
+            ),
+            &verified,
+            &attended,
+        );
+        assert_eq!(
+            outcome.test_error(),
+            Some(CommitError::Unavailable),
+            "approve {point:?}"
+        );
+        drop(outcome);
+        test_clear_fault();
+        if point == TestFaultPoint::BeforeFirstPublication {
+            assert!(matches!(
+                authority.inspect().expect("approve predecessor").1.state,
+                VerifiedState::CandidateRegistered { .. }
+            ));
+        } else {
+            assert_eq!(
+                authority.inspect(),
+                Err(StorageError::Sealed),
+                "approve {point:?}"
+            );
+        }
+        drop(authority);
+        let reopened = reopen_test_store(directory.path(), public_key);
+        if point == TestFaultPoint::BeforeFirstPublication {
+            let (health, snapshot) = reopened.inspect().expect("approve predecessor reopen");
+            assert_eq!(health, Health::RecoveredNonterminal);
+            assert!(matches!(
+                snapshot.state,
+                VerifiedState::CandidateRegistered { .. }
+            ));
+        } else if fault_has_complete_transition(point, 4) {
+            let (health, snapshot) = reopened.inspect().expect("approve successor reopen");
+            assert_eq!(health, Health::RecoveredNonterminal);
+            assert!(matches!(snapshot.state, VerifiedState::Approved { .. }));
+        } else {
+            assert_eq!(
+                reopened.inspect(),
+                Err(StorageError::Sealed),
+                "approve {point:?}"
+            );
+        }
+    }
+
+    for point in publication_fault_points(4) {
+        let signer = SyntheticRecordSigner::from_seed([7; 32]);
+        let public_key = signer.public_key_bytes();
+        let (directory, store) = empty_test_store(public_key);
+        let authority = RootAuthority::synthetic(
+            store,
+            signer,
+            SequenceClock::new([NOW, NOW, NOW]),
+            FixedEntropy([3; 32]),
+        )
+        .expect("consume authority");
+        let (registered, value) = commit_test_registration(&authority);
+        let approved = commit_test_approval(&authority, &registered, &value);
+        let (grant_sha256, grant_signature_sha256) = match &approved.state {
+            VerifiedState::Approved {
+                grant_sha256,
+                grant_signature_sha256,
+                ..
+            } => (grant_sha256.clone(), grant_signature_sha256.clone()),
+            _ => panic!("approved state"),
+        };
+        test_fail_at(point);
+        let outcome = authority.consume(ConsumeCommand::new(
+            HeadCas::new(approved.generation, approved.transition_sha256),
+            value.operation_id,
+            value.authorization_nonce,
+            grant_sha256,
+            grant_signature_sha256,
+        ));
+        assert_eq!(
+            outcome.test_error(),
+            Some(CommitError::Unavailable),
+            "consume {point:?}"
+        );
+        drop(outcome);
+        test_clear_fault();
+        if point == TestFaultPoint::BeforeFirstPublication {
+            assert!(matches!(
+                authority.inspect().expect("consume predecessor").1.state,
+                VerifiedState::Approved { .. }
+            ));
+        } else {
+            assert_eq!(
+                authority.inspect(),
+                Err(StorageError::Sealed),
+                "consume {point:?}"
+            );
+        }
+        drop(authority);
+        let reopened = reopen_test_store(directory.path(), public_key);
+        if point == TestFaultPoint::BeforeFirstPublication {
+            let (health, snapshot) = reopened.inspect().expect("consume predecessor reopen");
+            assert_eq!(health, Health::RecoveredNonterminal);
+            assert!(matches!(snapshot.state, VerifiedState::Approved { .. }));
+        } else if fault_has_complete_transition(point, 4) {
+            let (health, snapshot) = reopened.inspect().expect("consume successor reopen");
+            assert_eq!(health, Health::RecoveredNonterminal);
+            assert!(matches!(snapshot.state, VerifiedState::Consumed { .. }));
+        } else {
+            assert_eq!(
+                reopened.inspect(),
+                Err(StorageError::Sealed),
+                "consume {point:?}"
+            );
+        }
+    }
+
+    for point in publication_fault_points(2) {
+        let signer = SyntheticRecordSigner::from_seed([7; 32]);
+        let public_key = signer.public_key_bytes();
+        let (directory, store) = empty_test_store(public_key);
+        let authority = RootAuthority::synthetic(
+            store,
+            signer,
+            SequenceClock::new([NOW, "2026-09-03T12:15:00Z"]),
+            FixedEntropy([3; 32]),
+        )
+        .expect("candidate closure authority");
+        let (registered, value) = commit_test_registration(&authority);
+        let (command, attended) =
+            candidate_close_inputs(&registered, &value, '0', "2026-09-03T12:14:30Z");
+        test_fail_at(point);
+        let outcome = authority.close_candidate(command, &attended);
+        assert_eq!(
+            outcome.test_error(),
+            Some(CommitError::Unavailable),
+            "candidate closure {point:?}"
+        );
+        drop(outcome);
+        test_clear_fault();
+        if point == TestFaultPoint::BeforeFirstPublication {
+            assert!(matches!(
+                authority.inspect().expect("candidate predecessor").1.state,
+                VerifiedState::CandidateRegistered { .. }
+            ));
+        } else {
+            assert_eq!(
+                authority.inspect(),
+                Err(StorageError::Sealed),
+                "candidate closure {point:?}"
+            );
+        }
+        drop(authority);
+        let reopened = reopen_test_store(directory.path(), public_key);
+        if point == TestFaultPoint::BeforeFirstPublication {
+            assert!(matches!(
+                reopened
+                    .inspect()
+                    .expect("candidate predecessor reopen")
+                    .1
+                    .state,
+                VerifiedState::CandidateRegistered { .. }
+            ));
+        } else if fault_has_complete_transition(point, 2) {
+            let (health, snapshot) = reopened.inspect().expect("candidate closure successor");
+            assert_eq!(health, Health::Available);
+            assert!(matches!(
+                snapshot.state,
+                VerifiedState::CandidateExpired { .. }
+            ));
+        } else {
+            assert_eq!(
+                reopened.inspect(),
+                Err(StorageError::Sealed),
+                "candidate closure {point:?}"
+            );
+        }
+    }
+
+    for point in publication_fault_points(2) {
+        let signer = SyntheticRecordSigner::from_seed([7; 32]);
+        let public_key = signer.public_key_bytes();
+        let (directory, store) = empty_test_store(public_key);
+        let authority = RootAuthority::synthetic(
+            store,
+            signer,
+            SequenceClock::new([NOW, NOW, "2026-09-03T12:09:30Z"]),
+            FixedEntropy([3; 32]),
+        )
+        .expect("approval closure authority");
+        let (registered, value) = commit_test_registration(&authority);
+        let approved = commit_test_approval(&authority, &registered, &value);
+        let (command, attended) =
+            approval_close_inputs(&approved, &value, '0', "2026-09-03T12:09:00Z");
+        test_fail_at(point);
+        let outcome = authority.close_approval(command, &attended);
+        assert_eq!(
+            outcome.test_error(),
+            Some(CommitError::Unavailable),
+            "approval closure {point:?}"
+        );
+        drop(outcome);
+        test_clear_fault();
+        if point == TestFaultPoint::BeforeFirstPublication {
+            assert!(matches!(
+                authority.inspect().expect("approval predecessor").1.state,
+                VerifiedState::Approved { .. }
+            ));
+        } else {
+            assert_eq!(
+                authority.inspect(),
+                Err(StorageError::Sealed),
+                "approval closure {point:?}"
+            );
+        }
+        drop(authority);
+        let reopened = reopen_test_store(directory.path(), public_key);
+        if point == TestFaultPoint::BeforeFirstPublication {
+            assert!(matches!(
+                reopened
+                    .inspect()
+                    .expect("approval predecessor reopen")
+                    .1
+                    .state,
+                VerifiedState::Approved { .. }
+            ));
+        } else if fault_has_complete_transition(point, 2) {
+            let (health, snapshot) = reopened.inspect().expect("approval closure successor");
+            assert_eq!(health, Health::Available);
+            assert!(matches!(
+                snapshot.state,
+                VerifiedState::ApprovalExpired { .. }
+            ));
+        } else {
+            assert_eq!(
+                reopened.inspect(),
+                Err(StorageError::Sealed),
+                "approval closure {point:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn same_cas_thread_races_have_one_signing_clock_entropy_and_successor_winner() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1608,6 +2307,432 @@ fn authenticated_supervisor_request_commits_and_emits_one_proof_bearing_response
     response_bytes.truncate(response_len);
     assert_frame_type(&response_bytes, SUPERVISOR_REGISTER_SUCCESS);
     assert!(frame_text(&response_bytes).contains("\"status\": \"committed\""));
+}
+
+#[test]
+fn lost_closed_and_partial_approval_replies_never_resign_the_grant() {
+    use std::os::fd::OwnedFd;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use rustix::net::sockopt::socket_peercred;
+    use rustix::net::{
+        AddressFamily, RecvFlags, SendFlags, Shutdown, SocketFlags, SocketType, recv, send,
+        shutdown, socketpair,
+    };
+
+    use crate::ipc::{IpcError, OperatorIngress, PeerPolicy, prepare_operator};
+    use crate::journal::storage::ResponseAttemptError;
+
+    #[derive(Clone, Copy, Debug)]
+    enum ReplyLoss {
+        Dropped,
+        ClosedPeer,
+        Partial,
+    }
+
+    fn ingress(frame: &[u8]) -> (OwnedFd, OperatorIngress) {
+        let (client, server) = socketpair(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .expect("socket pair");
+        let policy = PeerPolicy::synthetic(socket_peercred(&server).expect("peer credentials"));
+        let prepared = prepare_operator(server, &policy).expect("prepared operator");
+        assert_eq!(
+            send(&client, frame, SendFlags::NOSIGNAL).expect("request send"),
+            frame.len()
+        );
+        shutdown(&client, Shutdown::Write).expect("write shutdown");
+        (
+            client,
+            prepared.receive().expect("authenticated operator request"),
+        )
+    }
+
+    fn receive_record(client: &OwnedFd) -> Vec<u8> {
+        let mut bytes = vec![0_u8; crate::protocol::MAX_FRAME_BYTES];
+        let (received, reported) =
+            recv(client, &mut bytes, RecvFlags::empty()).expect("response receive");
+        assert_eq!(received, reported);
+        bytes.truncate(received);
+        bytes
+    }
+
+    fn assert_eof(client: &OwnedFd) {
+        assert!(receive_record(client).is_empty());
+    }
+
+    fn run(mode: ReplyLoss) {
+        let public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
+        let signer_calls = Arc::new(AtomicUsize::new(0));
+        let clock_calls = Arc::new(AtomicUsize::new(0));
+        let entropy_calls = Arc::new(AtomicUsize::new(0));
+        let (directory, store) = empty_test_store(public_key);
+        let authority = RootAuthority::synthetic(
+            store,
+            CountingSigner {
+                inner: SyntheticRecordSigner::from_seed([7; 32]),
+                calls: Arc::clone(&signer_calls),
+            },
+            CountingClock {
+                calls: Arc::clone(&clock_calls),
+            },
+            CountingEntropyValue {
+                calls: Arc::clone(&entropy_calls),
+                value: [3; 32],
+            },
+        )
+        .expect("authority");
+        let (registered, value) = commit_test_registration(&authority);
+        let verified =
+            RootVerifiedPreparedEnvelope::synthetic(&value, observations()).expect("verified");
+        let attended = authentication(&value);
+        let (client, request) = ingress(&approve_request_frame(&registered, &value));
+        let (request, reply) = match request {
+            OperatorIngress::Request {
+                request: crate::protocol::OperatorRequest::Approve(request),
+                reply,
+            } => (request, reply),
+            _ => panic!("approve request"),
+        };
+        let committed = authority
+            .approve(request.into_command(), &verified, &attended)
+            .expect("durably approved");
+        match mode {
+            ReplyLoss::Dropped => {
+                drop(committed);
+                drop(reply);
+                assert_eof(&client);
+            }
+            ReplyLoss::ClosedPeer => {
+                drop(client);
+                assert_eq!(
+                    committed.attempt(reply),
+                    Err(ResponseAttemptError::Send(IpcError::Send))
+                );
+            }
+            ReplyLoss::Partial => {
+                let prefix_len = crate::protocol::FRAME_HEADER_BYTES + 8;
+                assert_eq!(
+                    committed.attempt_prefix_for_test(reply, prefix_len),
+                    Err(ResponseAttemptError::Send(IpcError::PartialSend))
+                );
+                assert_eq!(receive_record(&client).len(), prefix_len);
+                assert_eof(&client);
+            }
+        }
+
+        assert_eq!(signer_calls.load(Ordering::SeqCst), 3, "{mode:?}");
+        assert_eq!(clock_calls.load(Ordering::SeqCst), 2, "{mode:?}");
+        assert_eq!(entropy_calls.load(Ordering::SeqCst), 1, "{mode:?}");
+        let (_, approved) = authority.inspect().expect("approved inventory");
+        assert!(matches!(approved.state, VerifiedState::Approved { .. }));
+        let entries_after_approval = journal_entry_count(directory.path());
+
+        let replay = authority.approve(
+            ApproveCommand::new(
+                HeadCas::new(approved.generation, approved.transition_sha256.clone()),
+                value.operation_id.clone(),
+                value.authorization_nonce.clone(),
+                value.envelope_sha256.clone(),
+                value.approval_challenge_sha256.clone(),
+            ),
+            &verified,
+            &attended,
+        );
+        assert_eq!(replay.test_error(), Some(CommitError::InvalidState));
+        drop(replay);
+        assert_eq!(signer_calls.load(Ordering::SeqCst), 3, "{mode:?}");
+        assert_eq!(clock_calls.load(Ordering::SeqCst), 2, "{mode:?}");
+        assert_eq!(entropy_calls.load(Ordering::SeqCst), 1, "{mode:?}");
+        assert_eq!(
+            journal_entry_count(directory.path()),
+            entries_after_approval
+        );
+
+        let status = authority
+            .status(StatusCommand::new(value.operation_id.clone()))
+            .expect("approved status");
+        assert_eq!(status.test_snapshot().0, "approved");
+        drop(status);
+        drop(authority);
+
+        let restart_signer_calls = Arc::new(AtomicUsize::new(0));
+        let restart_clock_calls = Arc::new(AtomicUsize::new(0));
+        let restart_entropy_calls = Arc::new(AtomicUsize::new(0));
+        let recovered = RootAuthority::synthetic(
+            reopen_test_store(directory.path(), public_key),
+            CountingSigner {
+                inner: SyntheticRecordSigner::from_seed([7; 32]),
+                calls: Arc::clone(&restart_signer_calls),
+            },
+            CountingClock {
+                calls: Arc::clone(&restart_clock_calls),
+            },
+            CountingEntropyValue {
+                calls: Arc::clone(&restart_entropy_calls),
+                value: [4; 32],
+            },
+        )
+        .expect("recovered authority");
+        assert_eq!(restart_entropy_calls.load(Ordering::SeqCst), 1);
+        let replay = recovered.approve(
+            ApproveCommand::new(
+                HeadCas::new(approved.generation, approved.transition_sha256),
+                value.operation_id.clone(),
+                value.authorization_nonce,
+                value.envelope_sha256,
+                value.approval_challenge_sha256,
+            ),
+            &verified,
+            &attended,
+        );
+        assert_eq!(replay.test_error(), Some(CommitError::RecoveryOnly));
+        drop(replay);
+        assert_eq!(restart_signer_calls.load(Ordering::SeqCst), 0, "{mode:?}");
+        assert_eq!(restart_clock_calls.load(Ordering::SeqCst), 0, "{mode:?}");
+        assert_eq!(restart_entropy_calls.load(Ordering::SeqCst), 1, "{mode:?}");
+        assert_eq!(
+            journal_entry_count(directory.path()),
+            entries_after_approval
+        );
+        assert_eq!(
+            recovered
+                .status(StatusCommand::new(value.operation_id))
+                .expect("recovered status")
+                .test_availability(),
+            Some("recovery_only")
+        );
+    }
+
+    for mode in [
+        ReplyLoss::Dropped,
+        ReplyLoss::ClosedPeer,
+        ReplyLoss::Partial,
+    ] {
+        run(mode);
+    }
+}
+
+#[test]
+fn lost_closed_and_partial_consume_replies_never_remint_the_bearer() {
+    use std::os::fd::OwnedFd;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use rustix::net::sockopt::socket_peercred;
+    use rustix::net::{
+        AddressFamily, RecvFlags, SendFlags, Shutdown, SocketFlags, SocketType, recv, send,
+        shutdown, socketpair,
+    };
+
+    use crate::ipc::{IpcError, PeerPolicy, SupervisorIngress, prepare_supervisor};
+    use crate::journal::storage::ResponseAttemptError;
+
+    #[derive(Clone, Copy, Debug)]
+    enum ReplyLoss {
+        Dropped,
+        ClosedPeer,
+        Partial,
+    }
+
+    fn ingress(frame: &[u8]) -> (OwnedFd, SupervisorIngress) {
+        let (client, server) = socketpair(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .expect("socket pair");
+        let policy = PeerPolicy::synthetic(socket_peercred(&server).expect("peer credentials"));
+        let prepared = prepare_supervisor(server, &policy).expect("prepared supervisor");
+        assert_eq!(
+            send(&client, frame, SendFlags::NOSIGNAL).expect("request send"),
+            frame.len()
+        );
+        shutdown(&client, Shutdown::Write).expect("write shutdown");
+        (
+            client,
+            prepared
+                .receive()
+                .expect("authenticated supervisor request"),
+        )
+    }
+
+    fn receive_record(client: &OwnedFd) -> Vec<u8> {
+        let mut bytes = vec![0_u8; crate::protocol::MAX_FRAME_BYTES];
+        let (received, reported) =
+            recv(client, &mut bytes, RecvFlags::empty()).expect("response receive");
+        assert_eq!(received, reported);
+        bytes.truncate(received);
+        bytes
+    }
+
+    fn assert_eof(client: &OwnedFd) {
+        assert!(receive_record(client).is_empty());
+    }
+
+    fn run(mode: ReplyLoss) {
+        let public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
+        let signer_calls = Arc::new(AtomicUsize::new(0));
+        let clock_calls = Arc::new(AtomicUsize::new(0));
+        let entropy_calls = Arc::new(AtomicUsize::new(0));
+        let (directory, store) = empty_test_store(public_key);
+        let authority = RootAuthority::synthetic(
+            store,
+            CountingSigner {
+                inner: SyntheticRecordSigner::from_seed([7; 32]),
+                calls: Arc::clone(&signer_calls),
+            },
+            CountingClock {
+                calls: Arc::clone(&clock_calls),
+            },
+            CountingEntropyValue {
+                calls: Arc::clone(&entropy_calls),
+                value: [3; 32],
+            },
+        )
+        .expect("authority");
+        let (registered, value) = commit_test_registration(&authority);
+        let approved = commit_test_approval(&authority, &registered, &value);
+        let (grant_sha256, grant_signature_sha256) = match &approved.state {
+            VerifiedState::Approved {
+                grant_sha256,
+                grant_signature_sha256,
+                ..
+            } => (grant_sha256.clone(), grant_signature_sha256.clone()),
+            _ => panic!("approved state"),
+        };
+
+        let (client, request) = ingress(&consume_request_frame(&approved, &value));
+        let (request, reply) = match request {
+            SupervisorIngress::Request {
+                request: SupervisorRequest::Consume(request),
+                reply,
+            } => (request, reply),
+            _ => panic!("consume request"),
+        };
+        let committed = authority
+            .consume(request.into_command())
+            .expect("durably consumed");
+        match mode {
+            ReplyLoss::Dropped => {
+                drop(committed);
+                drop(reply);
+                assert_eof(&client);
+            }
+            ReplyLoss::ClosedPeer => {
+                drop(client);
+                assert_eq!(
+                    committed.attempt(reply),
+                    Err(ResponseAttemptError::Send(IpcError::Send))
+                );
+            }
+            ReplyLoss::Partial => {
+                let prefix_len = crate::protocol::FRAME_HEADER_BYTES + 8;
+                assert_eq!(
+                    committed.attempt_prefix_for_test(reply, prefix_len),
+                    Err(ResponseAttemptError::Send(IpcError::PartialSend))
+                );
+                assert_eq!(receive_record(&client).len(), prefix_len);
+                assert_eof(&client);
+            }
+        }
+
+        assert_eq!(signer_calls.load(Ordering::SeqCst), 5, "{mode:?}");
+        assert_eq!(clock_calls.load(Ordering::SeqCst), 3, "{mode:?}");
+        assert_eq!(entropy_calls.load(Ordering::SeqCst), 2, "{mode:?}");
+        let (_, consumed) = authority.inspect().expect("consumed inventory");
+        assert!(matches!(consumed.state, VerifiedState::Consumed { .. }));
+        let entries_after_consume = journal_entry_count(directory.path());
+
+        let replay = authority.consume(ConsumeCommand::new(
+            HeadCas::new(consumed.generation, consumed.transition_sha256.clone()),
+            value.operation_id.clone(),
+            value.authorization_nonce.clone(),
+            grant_sha256.clone(),
+            grant_signature_sha256.clone(),
+        ));
+        assert_eq!(replay.test_error(), Some(CommitError::InvalidState));
+        drop(replay);
+        assert_eq!(signer_calls.load(Ordering::SeqCst), 5, "{mode:?}");
+        assert_eq!(clock_calls.load(Ordering::SeqCst), 3, "{mode:?}");
+        assert_eq!(entropy_calls.load(Ordering::SeqCst), 2, "{mode:?}");
+        assert_eq!(journal_entry_count(directory.path()), entries_after_consume);
+
+        let (status_client, status_ingress) = ingress(&status_request_frame(&value.operation_id));
+        match status_ingress {
+            SupervisorIngress::Request {
+                request: SupervisorRequest::Status(request),
+                reply,
+            } => authority
+                .status(request.into_command())
+                .expect("status")
+                .attempt(reply)
+                .expect("status response"),
+            _ => panic!("status request"),
+        }
+        let status = receive_record(&status_client);
+        assert_frame_type(&status, SUPERVISOR_STATUS_SUCCESS);
+        let status = frame_text(&status);
+        assert!(status.contains("executionTicketSha256"));
+        assert!(status.contains("executionTicketSignatureSha256"));
+        assert!(!status.contains("executionTicketCanonicalHex"));
+        assert!(!status.contains("executionTicketRawSignatureHex"));
+        assert_eof(&status_client);
+
+        drop(authority);
+        let restart_signer_calls = Arc::new(AtomicUsize::new(0));
+        let restart_clock_calls = Arc::new(AtomicUsize::new(0));
+        let restart_entropy_calls = Arc::new(AtomicUsize::new(0));
+        let recovered = RootAuthority::synthetic(
+            reopen_test_store(directory.path(), public_key),
+            CountingSigner {
+                inner: SyntheticRecordSigner::from_seed([7; 32]),
+                calls: Arc::clone(&restart_signer_calls),
+            },
+            CountingClock {
+                calls: Arc::clone(&restart_clock_calls),
+            },
+            CountingEntropyValue {
+                calls: Arc::clone(&restart_entropy_calls),
+                value: [4; 32],
+            },
+        )
+        .expect("recovered authority");
+        assert_eq!(restart_entropy_calls.load(Ordering::SeqCst), 1);
+        let replay = recovered.consume(ConsumeCommand::new(
+            HeadCas::new(consumed.generation, consumed.transition_sha256),
+            value.operation_id.clone(),
+            value.authorization_nonce,
+            grant_sha256,
+            grant_signature_sha256,
+        ));
+        assert_eq!(replay.test_error(), Some(CommitError::RecoveryOnly));
+        drop(replay);
+        assert_eq!(restart_signer_calls.load(Ordering::SeqCst), 0, "{mode:?}");
+        assert_eq!(restart_clock_calls.load(Ordering::SeqCst), 0, "{mode:?}");
+        assert_eq!(restart_entropy_calls.load(Ordering::SeqCst), 1, "{mode:?}");
+        assert_eq!(journal_entry_count(directory.path()), entries_after_consume);
+        assert_eq!(
+            recovered
+                .status(StatusCommand::new(value.operation_id))
+                .expect("recovered status")
+                .test_availability(),
+            Some("recovery_only")
+        );
+    }
+
+    for mode in [
+        ReplyLoss::Dropped,
+        ReplyLoss::ClosedPeer,
+        ReplyLoss::Partial,
+    ] {
+        run(mode);
+    }
 }
 
 #[test]
