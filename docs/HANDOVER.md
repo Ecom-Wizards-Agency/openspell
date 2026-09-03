@@ -42,9 +42,13 @@ At the time this handover was reconciled:
   baseline plus the five reviewed source migrations, together with rollback-only prefix evidence.
   Exact-head run `33710054372` passed both jobs at `e663e9b`; exact-main run `33710817269` passed
   both jobs at the merge revision. High correctness, Extra-High adversarial safety and Extra-High
-  operational reviews ended with no blocker, high or medium defect. The package performed no
-  hosted query or apply, credential change, staging, activation, deployment, provider call or
-  Amazon mutation.
+  operational reviews accepted that source-only boundary. A post-merge Extra-High review of the
+  later private runner contract then found and corrected a self-blocking advisory-lock sequence and
+  required independently pinned official-release provenance, root-only payload custody, an
+  unforgeable root-consumed execution ticket, a signed external-operation window and an unprivileged,
+  target-scoped CLI sandbox rather than trusting the installed launcher. The package
+  performed no hosted query or apply, credential change, staging, activation, deployment, provider
+  call or Amazon mutation.
 - Production web health returns `ok` at
   `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 127 commits behind the WP-197 source merge. No later
   package deployed or promoted a candidate, so its newer source artifacts are not live evidence.
@@ -343,11 +347,28 @@ authorized, deployed and verified. No Amazon apply path was added.
 
 ## Recommended continuation order
 
-1. Implement and review a narrowly guarded, deployment-private hosted-migration runner before any
-   production apply. Prove the exact Supabase CLI 2.116.0 path in a disposable target and require a
-   target lock, operation-private application name, session advisory guard, an exclusive migration-
-   ledger barrier, exactly one expected CLI backend waiting on it, and terminal reconciliation of
-   child exit or lost response.
+1. Implement and review a dedicated, deployment-private hosted-migration supervisor before any
+   production apply; do not add database authority to the agent-accessible general broker. Prove the
+   official Supabase CLI 2.116.0 two-binary execution topology in a disposable target. Pin the
+   official checksum-asset, Linux archive, front-controller and delegate digests; acquire only
+   through a root-owned, non-agent-writable source; and run the CLI as a capability-free, non-
+   dumpable dedicated uid with target-only credentials and egress. The root launcher must trace and
+   sign the actual namespace, cgroup, exec graph, maps and post-exec protections. Require a durable target quarantine, separate phase tags, external
+   enqueue freeze, root-signed external-operation-window generation, operation ledger and a two-stage
+   migration-ledger/advisory-lock handoff. The same bound CLI backend must first wait on the ledger
+   barrier and then on the first migration's advisory lock before the session guard is released.
+   Reconcile only after exact child, cgroup and tagged-session terminality; never retry a lost
+   response. Agent-accessible operations may prepare, report status and reconcile read-only; only a
+   separate root/operator-only helper with a key and journal unavailable to the supervisor may issue
+   and atomically consume the freshly OS-authenticated single-use signed grant. The minimal root
+   launcher must validate the canonical signed grant and ticket and durably mark the ticket executing
+   before it can create a namespace, cgroup or child. A consumed ticket may close without execution
+   only through a root-signed `terminal_no_spawn` proof that execution state was never entered and no
+   resource or apply-tag session existed. History fetch and dry run use separate root-signed, single-
+   use `writeCapability:false` preparation tickets and must close their terminal exec graphs before
+   the later apply envelope; they never depend on or substitute for its attended execution ticket. A
+   refused preparation ticket may close only through its distinct root-signed
+   `terminal_no_spawn` proof with zero execution resources and zero exact-phase sessions.
 2. Only with authorization for that exact database action, apply only the WP-197-reviewed artifact
    and prove the ledger, schema, privileges, preserved state and queue postflight. Database
    approval does not authorize staging, service, queue-ownership or deployment changes.

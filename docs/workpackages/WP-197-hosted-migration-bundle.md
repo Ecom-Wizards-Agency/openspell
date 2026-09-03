@@ -82,51 +82,117 @@ after reviewed merge and exact-main CI.
     contiguous prefix from 41 through 46 without referencing a relation created by a later prefix,
     exposing target or session identity, using dynamic SQL or mutating state. An unguarded
     probe/prefix/probe sandwich is review evidence only because it cannot close its transaction gaps.
-15. Describe fresh history fetch, target identity, exact CLI binary, dry run, enqueue freeze, apply,
-    response-loss recovery, credentials, staging, activation, scoped admission, deployment and QA as
-    separate later gates. The separately authorized enqueue freeze must be held before final
-    preflight through apply, reconciliation and postflight. Include no non-dry-run apply command in
-    this package.
+15. Describe fresh history fetch, target identity, exact native CLI payload, dry run, enqueue freeze,
+    apply, response-loss recovery, credentials, staging, activation, scoped admission, deployment and
+    QA as separate later gates. The separately authorized enqueue freeze must be held before final
+    preflight through apply, reconciliation and postflight. Include no executable or copy-paste
+    operator apply procedure and no apply capability in this package; a non-executable canonical argv
+    contract for the later private supervisor is allowed.
 16. Make every prefix script return the same named queue, recommendation, schedule and out-of-scope
     privilege fingerprints. The guarded runner must compare each current value to preflight, emit a
     canonical pass/fail comparison record and refuse an operational envelope on any mismatch.
 17. Bind separate phase-stamped pre-apply target and freeze leaves into the private envelope. A
-    future guarded writer must hold a separate target lock and one target-bound database session with
-    the non-waitingly acquired session-level schema-DDL advisory lock. On that same session it runs
-    probe, selected prefix and probe again; both complete probe rows must be byte-identical and all
-    prefix evidence must equal the authorization. After consuming a single-use nonce and before
-    spawning the CLI, it must rerun that guarded sandwich plus target, fingerprint comparison,
-    freeze and CLI-workdir byte checks.
+    future guarded writer must claim and sync a durable private target quarantine before native-
+    runtime preparation or any target-connected phase, bind its generation and evidence digest, and
+    hold it through exact postflight. One authoritative root-owned journal and host-global singleton
+    lock own every generation; missing, duplicate or corrupt authority refuses startup. A valid
+    nonterminal or ambiguous record permits recovery-only status/reconcile but no prepare, latch,
+    spawn or generation. A root-signed, generation-bound external-operation window covers the exact
+    manual, other-host, scheduled and broker actor roster and credential inventory. Bind its digest
+    into the envelope and root latch, revalidate it after approval consumption and require the same
+    held generation through postflight. It must also hold one target-bound database session with the
+    non-waitingly acquired session-level schema-DDL advisory lock. On that same session it runs probe,
+    selected prefix and probe again; both complete probe rows must be byte-identical and all prefix
+    evidence must equal the authorization. After root consumption of a single-use signed grant and before spawning the
+    CLI, it must rerun that guarded sandwich plus target, fingerprint comparison, quarantine, freeze
+    and CLI-workdir byte checks.
 18. Generate operation ids and authorization nonces inside the guarded operation as independent 256-
     bit cryptographic-random values. Enforce separate uniqueness constraints, refuse collisions,
     expire authorization within 15 minutes and never accept either value from a caller.
 19. Require a guarded-service-private mode-`0700` CLI work directory. Make its manifest, migration
     files and migration directories non-writable after dry run, leave only `supabase/.temp`
     writable, and hold exclusive custody through final verification and child-process exit.
-20. Copy the reviewed Supabase CLI executable into the private operation directory, make it
-    non-writable and bind its relative path, device, inode, size, hash, version and provenance. After
-    nonce consumption, remeasure every field and spawn that exact canonical path without resolving
-    `PATH`, following a symlink or invoking a wrapper. Give it an operation-private `PGAPPNAME`; exact
-    CLI disposable proof must show every opened database connection carries the complete tag.
+20. Pin the official `supabase/cli` `v2.116.0` checksum-asset, Linux archive and extracted binaries'
+    digests in reviewed root-owned policy. An attended root acquisition must download into a new
+    root-owned non-agent-writable source, verify the complete chain and reject a package-manager
+    cache, user download, copied executable or any agent-writable path ancestor. Extract and bind the
+    archive's exact `supabase` front controller plus co-located `supabase-go` delegate, rejecting
+    extra entries, symlinks, environment overrides and host launchers. Copy both binaries, the front-
+    controller interpreter and resolved dependency set into the private operation's non-writable
+    runtime image; bind the canonical official-source, native-runtime, image, release-provenance and
+    phase exec-topology-policy digests. Before every phase and after approval consumption, remeasure
+    every field and spawn only the measured front controller inside the retained runtime, without
+    resolving `PATH` or using a shell. Exact CLI disposable proof must close the only allowed phase-
+    specific exec graph, show every opened database connection carries the complete phase tag and
+    show each completed phase leaves zero matching sessions.
 21. Derive target fingerprint and target-selection digest from the same exact 20-character project
-    reference. Pass that reference explicitly with `--project-ref` for dry run and apply; never allow
-    linked or default target selection.
-22. Derive an operation-private session tag from the broker-generated operation id and nonce. The
-    advisory lock is a coordination guard, not a CLI barrier. Immediately before spawn, take a bounded
-    non-waiting `ACCESS EXCLUSIVE` transaction lock on the existing migration-ledger relation. Bind the
-    owned child process to exactly one tagged target backend blocked solely by the guard on that exact
-    relation with exactly `AccessShareLock`, as established by exact-CLI disposable proof. Missing, duplicate,
-    untagged, differently blocked or multiply blocked sessions refuse while the child remains blocked.
-    Release only the relation barrier after the handoff; keep the session advisory guard and broker
-    target lock through terminal child custody, reconciliation and postflight. This handoff and the
-    guarded runner are later private capabilities; the public probe and offline bundle tool do not
-    implement or claim them.
-23. Give the private operation ledger custody of the CLI process id, process-start identity and
-    terminal state. On response loss, first prove that exact child terminal, then validate the still-
-    held database guard or reacquire it non-waitingly under attended ambiguous-outcome recovery.
-    Require zero sessions with its exact private tag and run the guarded probe/prefix/probe sandwich.
-    Refuse reconciliation or suffix authorization on any uncertainty. A new suffix uses a new
-    operation id, nonce, session tag, evidence and authorization.
+    reference. Pass that reference explicitly with `--project-ref` for history fetch, dry run and
+    apply; never allow linked, local, database-URL or default target selection.
+22. Derive separate operation-private history-fetch, dry-run and apply tags from the supervisor-generated
+    operation id and nonce. Immediately before apply spawn, take a bounded non-waiting `ACCESS
+    EXCLUSIVE` transaction lock on the existing migration-ledger relation. Bind the owned child to
+    exactly one apply-tagged backend blocked solely by the guard on that relation with exactly
+    `AccessShareLock`, as established by exact-CLI disposable proof. A missing exact tag, duplicate
+    matching session, different blocker or multiple blockers refuse while the child remains blocked;
+    disposable proof must establish that this exact CLI opens no untagged target connection. After
+    durably recording that first binding, release only the relation barrier and require the same
+    backend to become the sole waiter for the pending migration's transaction advisory lock, blocked
+    only by the session guard. Require its database-observed wait age plus durable binding persistence
+    and confirmed unlock to total at most one second, then record the confirmed release, elapsed time
+    and still-held target-quarantine/freeze state before accepting apply progress. Retain the durable target
+    quarantine and enqueue freeze, not the advisory guard, through apply and postflight. This two-stage
+    handoff and guarded runner are later private capabilities; the public probe and offline bundle
+    tool do not implement or claim them.
+23. Give the private operation ledger custody of the CLI process id, process-start identity, dedicated
+    CLI-child cgroup and terminal state; that cgroup contains the child and descendants but excludes
+    the supervisor and database-guard session. On response loss, first prove that exact child terminal,
+    the cgroup empty and zero sessions with the exact apply tag. Only then open a new target-bound
+    database guard session and reacquire the advisory lock non-waitingly before the guarded probe/
+    prefix/probe sandwich. Refuse reconciliation or suffix authorization on any uncertainty. A new
+    suffix uses a new operation id, nonce, all three phase tags, evidence and authorization.
+24. Keep the applying supervisor in a dedicated unprivileged deployment-private service identity and
+    mode-`0700` state, separate from the agent-accessible general broker. Agent-accessible operations
+    may only prepare, report status and reconcile read-only. Apply requires a separate root/operator-
+    only, freshly OS-authenticated, single-use signed grant binding the exact envelope, operation,
+    nonce, target, external-window generation and expiry with peer/session identity and durable
+    audit. Specify canonical Ed25519-signed grant and ticket leaves, domains, raw key/signature
+    formats and exact `approved` to `consumed` to `executing` to `terminal` root-journal transitions.
+    Also define the only no-execution branch: a root-signed, fsynced `consumed` to
+    `terminal_no_spawn` result is allowed only when compare-and-set proves `executing` was never
+    entered and root-launcher plus zero-session evidence proves no namespace, cgroup, child or pidfd
+    existed. Ambiguity remains quarantined.
+    Only the root authority can issue and atomically consume the grant; its key and approval journal
+    are inaccessible to the supervisor. The minimal root launcher must independently verify the
+    grant and ticket and fsync `consumed` to `executing` before creating any execution resource. The
+    supervisor records only a separate non-authorizing receipt. Agent chat or broker access cannot
+    satisfy it.
+25. Bind fixed per-phase argv, cwd, stdin, strict environment and output policies. A minimal root
+    launcher may create namespaces and the child-only cgroup but receives no provider credential and
+    exposes no arbitrary execution. It retains trace custody across every fork/clone/exec, validates
+    the measured namespace/executable/maps and exact phase exec graph, re-establishes and verifies
+    non-dumpability after each ELF exec reset, and signs actual cgroup/runtime attestations. The
+    relation handoff binds the ordered attestation chain through the proved database-owning exec
+    prefix and exact observed exec count; the terminal graph must extend it. Only
+    helper identity plus cgroup/sandbox/topology policy are preauthorized; pid, cgroup inode and
+    runtime observations are post-spawn evidence. The CLI runs as a dedicated non-login uid/gid with
+    empty capabilities, `no_new_privs`, non-dumpable/core-disabled process state, protected
+    environment, fixed syscall policy and target-only egress. Reject personal, organization-wide,
+    broad service, cross-project and `service_role` credentials; inability to prove exact CLI
+    operation with a target-scoped credential is a production no-go. History fetch,
+    dry run and apply use only the reviewed native-runtime path, explicit `--project-ref`, fixed
+    private `--workdir`, `--yes` and noninteractive output. Both push phases require `--skip-vault`;
+    dry run alone has `--dry-run`. No caller flags, shell, linked/local/database-URL selection,
+    include-all/roles/seed, debug, proxy, loader or executable-override channel is permitted.
+26. Give history fetch and dry run separate canonical Ed25519-signed, single-use preparation tickets
+    with `writeCapability:false`, exact phase/argv/runtime/topology/sandbox/cgroup binding and their
+    own root-journal lifecycle. They cannot name apply or another phase. Runtime-attestation and
+    terminal-graph leaves bind a generic phase-authorization kind/digest: the applicable preparation
+    ticket for those two phases and the attended execution ticket only for apply. Bind both completed
+    preparation-phase terminal graphs into the later envelope. Define a distinct canonical signed,
+    fsynced `prepared` to `terminal_no_spawn` result allowed only when compare-and-set proves
+    `executing` was never entered and root-launcher plus zero exact-phase-session evidence proves no
+    resource existed. Any uncertainty stays recovery-only; abandonment/new generation requires all
+    issued preparation phases terminal or conclusively no-spawn.
 
 ## Exact additions
 
@@ -167,31 +233,46 @@ after reviewed merge and exact-main CI.
   fingerprint through apply, ambiguity reconciliation and postflight;
 - canonical comparison evidence proves current queue, recommendation, schedule and out-of-scope
   privilege fingerprints equal their preflight values before any envelope can be authorized;
-- private evidence binds one target fingerprint and one measured Supabase CLI 2.116.0 executable to
-  fetch, dry run, apply, reconciliation and postflight without entering the public bundle;
+- private evidence binds one target fingerprint and the measured official two-binary Supabase CLI
+  2.116.0 topology to fetch, dry run and apply without entering the public bundle;
 - post-dry-run and immediate pre-apply verification closes the writable CLI clone against the
   authorized manifest and bundle-ledger digests;
 - separate phase-bound CLI-workdir observations, a fresh operation id/nonce, 15-minute expiry and
-  consume-before-spawn private ledger rule prevent observation reuse and apply replay, including
+  root-consume-before-spawn grant plus execution-receipt rule prevent observation reuse and apply replay, including
   same-prefix suffix recovery;
-- after nonce consumption, the guarded writer's final pre-spawn rerun closes target identity,
+- a durable per-target quarantine is claimed and synced before native-runtime preparation or any
+  target-connected phase, is bound into the authorization, and survives process/service failure until
+  exact reconciliation and postflight release it;
+- after root grant consumption, the guarded writer's final pre-spawn rerun closes target identity,
   current prefix/schema, preflight fingerprint equality, held freeze and exact local bytes against
   the authorized leaves before invoking the CLI;
-- the final pre-spawn check remeasures the broker-private Supabase executable and explicit target-
-  selection record, then spawns only that exact non-writable binary with the exact `--project-ref`;
-- process-custody, target-lock and database-guard proofs prevent response-loss reconciliation while
-  the original apply can still advance, and the non-writable private clone prevents migration-byte
-  changes after final verification;
+- the final pre-spawn check remeasures the supervisor-private official Supabase binary pair and
+  explicit target-selection record, then spawns only the exact non-writable front controller with
+  the exact `--project-ref`;
+- an independently pinned official release chain and root-only acquisition prevent an agent-writable
+  executable from entering the measured topology, while root-signed post-exec attestations prove the
+  actual cgroup, binary graph, maps and process protections without relying on the unprivileged
+  supervisor to inspect another uid;
+- process/cgroup custody, durable target quarantine, separate phase tags and exact database-session
+  proofs prevent response-loss reconciliation while the original apply can still advance, and the
+  non-writable private clone prevents migration-byte changes after final verification;
+- canonical signed external-window, grant and execution-ticket records remain outside supervisor
+  write authority; the root launcher enforces their one-use state transition at spawn, and their
+  complete tuple remains bound through final pre-spawn and postflight;
 - Linux publication-race tests prove the output is claimed beneath a held parent descriptor and all
   later marker/payload operations stay beneath the held output descriptor; `build` refuses when
   `/proc/self/fd` custody is unavailable;
 - public probe evidence closes other shared-lock holders/waiters and guarded-CLI session aggregates
   without exposing backend or target identity; its unguarded sandwich is never accepted as apply
   authorization;
-- disposable exact-CLI proof closes `PGAPPNAME` propagation to every database connection, the exact
-  migration-ledger `AccessShareLock` and pre-migration blocking point, one tagged waiting-session handoff
-  behind the short relation barrier, child/session termination, guarded reconciliation and refusal
-  of absent, duplicate or ambiguous sessions;
+- disposable exact-CLI proof closes phase-specific `PGAPPNAME` propagation to every database
+  connection, the exact migration-ledger `AccessShareLock`, the first tagged wait behind the relation
+  barrier, the same backend's second wait on the first migration advisory lock, a durable confirmed
+  release record proving wait age plus handoff sync and unlock took at most one second,
+  child/cgroup/session termination, guarded
+  reconciliation and refusal of absent, duplicate or ambiguous sessions;
+- root-signed non-write preparation tickets and completed terminal graphs close history/dry-run
+  runtime provenance before the envelope without circular dependence on its later apply ticket;
 - provider-negative evidence is limited to unchanged OpenSpell-observable provider/write ledgers,
   empty new SP state and static absence of provider capability;
 - full repository typecheck, lint, tests, hygiene and skill lint pass.
@@ -227,8 +308,11 @@ Neither review may use hosted credentials, query production, stage a service or 
 Merging WP-197 authorizes no hosted action. A fresh read-only hosted-history fetch and exact dry-run
 evidence are required before any application can be proposed. The later operator apply must receive
 its own authorization naming the exact revision, manifest digest, bundle-ledger digest, private
-target fingerprint, CLI semver and binary digest, held enqueue-freeze evidence, writable-clone
-verification and observed prefix-evidence digest.
+   target fingerprint, CLI semver, official two-binary source, runtime image, identity, exec-topology
+   and child-sandbox policy digests, held target-quarantine, root-signed external-window generation,
+   enqueue-freeze evidence, writable-clone verification and observed prefix-evidence digest. The
+   operator authorization names this envelope; the later execution receipt and postflight bind the
+   root-consumed signed ticket rather than making that future ticket an authorization prerequisite.
 Credential provisioning, report/recommendation worker staging, claim-authority handoffs, scoped
 admission, candidate web deployment, bounded live QA and production web promotion each remain
 separate exact authorizations. Amazon mutation remains locked behind the distinct parity and

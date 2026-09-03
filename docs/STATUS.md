@@ -178,8 +178,13 @@ implementation brief in `docs/workpackages/`.
 - On 2026-09-03 PR #125 merged WP-197 exact hosted-migration bundle tooling at `bb3c1cb` after
   exact-head run `33710054372` passed both jobs at `e663e9b`; exact-main run `33710817269` passed
   both jobs at the merge revision. High correctness, Extra-High adversarial safety and Extra-High
-  operational reviews ended with no blocker, high or medium defect. Focused tests passed 29 with
-  three opt-in exact-history tests skipped; exact PostgreSQL 17 replay passed all three cases; and
+  operational reviews accepted the source-only boundary. A post-merge Extra-High review of the
+  later private runner contract found and corrected a self-blocking advisory-lock sequence and
+  required independently pinned official-release provenance, root-only payload custody, an
+  unforgeable root-consumed execution ticket, a signed external-operation window and an unprivileged,
+  target-scoped CLI sandbox rather than trusting the installed launcher. Focused tests
+  passed 29 with three opt-in exact-history tests skipped; exact PostgreSQL 17 replay passed all
+  three cases; and
   serialized full repository verification passed database 451, worker 499, web 656, UI 163
   functional and 10 performance tests plus all remaining packages. The 41-file baseline digest is
   `9dd52d5fdee63b6b3c19de850ec72c27f3d8312a5bb5c73c492705e47c18bcea`; the verified 46-file
@@ -585,8 +590,10 @@ implementation brief in `docs/workpackages/`.
       medium defect.
 - [x] PR #125 exact-head CI run `33710054372` and exact-main run `33710817269` passed both jobs at
       `e663e9b` and merged revision `bb3c1cb`, respectively. High correctness, Extra-High
-      adversarial safety and Extra-High operational reviews ended with no blocker, high or medium
-      defect.
+      adversarial safety and Extra-High operational reviews accepted the source-only boundary; the
+      closeout review corrected the later-runner lock sequence, official CLI topology/provenance,
+      privilege isolation, external exclusivity and root-enforced authorization contracts before
+      implementation or hosted use.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
       `b5c210d` (127 and 267 WP-197-source commits behind, respectively), both new worker units are
       absent, and the active legacy worker revision is unproven. The attended stop/start reset its
