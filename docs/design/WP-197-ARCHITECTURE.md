@@ -166,9 +166,10 @@ and arbitrary files. It still requires an exact migration tree and manifest and 
 `cli_workdir`. Both modes explicitly reject the unpublished marker. Errors are bounded and must not
 echo paths, environment values, SQL bytes or subprocess output.
 
-`build` always verifies its staged output before the atomic publish. `verify` independently rereads
-the completed artifact. The implementation keeps Git extraction, canonical encoding, filesystem
-validation, staging and hashing inside the module rather than asking the caller to coordinate them.
+`build` always verifies its marked output before the publication commit point. `verify`
+independently rereads the completed artifact and the five Git blobs at the claimed revision. The
+implementation keeps Git extraction, canonical encoding, filesystem custody, exclusive output
+claiming and hashing inside the module rather than asking the caller to coordinate them.
 
 ## Exact byte policy
 
@@ -232,19 +233,29 @@ containment or overlap. The reader opens each accepted input with no-follow sema
 the opened descriptor's type, link count, device and inode against the inspected entry before and
 after reading. A path swap or byte change fails the build rather than changing the snapshot.
 
-Construction occurs in a newly created owned sibling staging directory. The tool creates a fixed
-`.BUNDLE_UNPUBLISHED` marker before it writes the 46 SQL files and `BUNDLE_MANIFEST.json`. Its
-private staged-tree checker requires that marker, while the public verifier always rejects it. The
-tool verifies the staged contents, renames the whole directory to the requested output, syncs the
-parent, removes the marker and syncs the published directory. Marker removal is the publication
-commit point.
+After snapshotting every accepted input byte, construction atomically claims the non-existent
+requested output with exclusive directory creation while holding the canonical parent-directory
+descriptor. On Linux it creates the basename through `/proc/self/fd/<parent-fd>/`, immediately opens
+and retains the claimed output-directory descriptor, and rechecks both canonical pathname bindings
+against their held device/inode identities. This no-replace claim refuses a destination created
+concurrently. Every post-claim marker, payload, private-verification and sync operation is rooted at
+`/proc/self/fd/<output-fd>/`, not at the caller-visible output pathname. The tool creates a fixed
+`.BUNDLE_UNPUBLISHED` marker before any payload file, writes the 46 SQL files and
+`BUNDLE_MANIFEST.json`, and rechecks both descriptor and canonical-path custody around private
+marked-tree verification. Public `verify` always rejects the marker. Descriptor-relative marker
+removal followed by an output-directory sync is the publication commit point.
 
-A crash before rename leaves only a marked sibling staging directory. A crash after rename but
-before marker removal leaves a marked requested output. Neither can pass public verification. A
-crash or lost response after marker removal may leave a valid published bundle. The caller
+`build` therefore requires Linux with a mounted, usable `/proc/self/fd`; it fails closed before
+output construction on another platform or when descriptor-relative access is unavailable. Public
+`verify` does not depend on the construction protocol and may remain portable.
+
+A crash before the marker is created can leave only an empty, unverifiable requested directory. A
+crash after marker creation but before marker removal leaves a marked requested output. Neither can
+pass public verification, and the builder never recursively deletes a path after losing custody.
+A crash or lost response after marker removal may leave a valid published bundle. The caller
 reconciles that outcome by running `verify` against the requested output and never rebuilds or
-deletes it blindly. Existing output, overlapping paths and repository-contained output are
-refused.
+deletes it blindly. Existing output, parent/output identity substitution, overlapping paths and
+repository-contained build or verification roots are refused.
 
 The sealed output is not made into a Supabase work directory. Any later CLI dry run operates on a
 fresh writable clone. After the dry run and again immediately before apply, `verify --mode
@@ -350,6 +361,39 @@ reference to a not-yet-created relation. The scripts return aggregate counts, fi
 tuples, bounded catalog properties and fingerprints only. They contain no target locator, dynamic
 SQL or write.
 
+The no-parameter probe also returns separate counts for other granted and waiting holders of the
+shared schema-DDL advisory key. It counts every lock with a null backend id and excludes only its own
+backend id, which permits the future guarded runner to execute it on the same session that holds the
+guard described below. It separately counts all database sessions whose application name has the
+fixed `os-wp197-cli-` prefix, plus the active and lock-waiting subsets. These are aggregate public-safe
+observations; the probe never returns a backend id, application name, query, user, address or target.
+A passing standalone probe is one instant of evidence. It does not identify a session, establish
+custody, eliminate a later race or authorize any action.
+
+The future runner represents the probe's one row as this exact canonical JSON key order and hashes
+its UTF-8 bytes with SHA-256. No timestamp or private identity is added to this public row:
+
+```json
+{
+  "schemaVersion": "openspell.hosted-migration-probe-evidence.v1",
+  "observedPrefixFiles": 41,
+  "observedTerminalVersion": "20260901010000",
+  "observedPrefixLedgerSha256": "...",
+  "selectedEvidenceScript": "wp-197-hosted-migration-prefix-41.sql",
+  "catalogPatternPass": true,
+  "schemaDdlLockHolderCount": 0,
+  "schemaDdlLockWaiterCount": 0,
+  "guardedCliSessionCount": 0,
+  "guardedCliActiveCount": 0,
+  "guardedCliWaitingCount": 0,
+  "pass": true
+}
+```
+
+The canonicalization uses the manifest's JSON rules. Field type, order, presence and exact value are
+closed; an extra, missing, null, duplicated or differently typed result refuses. The two guarded
+probe observations must therefore produce the same digest as well as the same typed values.
+
 A later operator action must rebuild from a fresh read-only fetched snapshot, then independently
 prove:
 
@@ -378,18 +422,68 @@ immediately even though admission initially remains legacy, so ordering is load-
 apply authority does not authorize stopping or changing a service, changing credentials, staging a
 worker, activating fenced authority, authorizing scoped admission or deploying web.
 
-If an apply response is lost, only the read-only reconciler may run. It must identify one exact
-contiguous prefix from 41 through 46 whose ledger and schema evidence agree. Recovery is
-forward-only. Any remaining suffix requires a new dry run, review and exact operator authorization;
-blind retry, migration repair, reverse SQL and replay of an already-applied file are forbidden.
+The probe and selected prefix script are separate transactions. An unguarded
+`probe -> prefix -> probe` sandwich must require both probe rows to agree on prefix count, terminal
+version, prefix digest and selected script, and both must report zero other schema-DDL holders,
+waiters and tagged CLI sessions. That sandwich detects a committed prefix change across its
+observations but does not close either gap around the prefix transaction. It remains review evidence
+only and is never eligible for an apply or suffix authorization. A passing result also cannot rule
+out an actor that ignores both the broker target lock and the shared advisory key; that is an
+operational exclusivity precondition, not a fact this public SQL can prove.
 
-The private operation ledger owns the spawned CLI process id, process-start identity and terminal
-status. Reconciliation cannot begin until the guarded supervisor has conclusively recorded that
-exact child as exited. If the host or supervisor outcome is uncertain, recovery remains blocked
-until attended process inspection proves the child cannot still run. The universal probe must then
-prove that no migration session or shared schema-DDL advisory lock belonging to the operation
-remains. A prefix observation made while the original process or transaction may still advance is
-invalid, and no suffix authorization may be created from it.
+The future guarded runner closes those gaps with a private database guard session. While holding its
+separate broker target lock, it opens one target-bound connection, records its backend id and backend
+start, and uses a bounded non-waiting attempt to acquire the session-level advisory lock on the exact
+`wizard-ads:schema-ddl:v1` key. Failure to acquire refuses. The runner keeps that connection and lock
+under custody, then runs the probe, selected prefix script and second probe on that same connection.
+The prefix script's rollback does not release the session-level lock. The public probe excludes only
+its own guard backend, so any other granted or waiting holder still fails. Both probe results must be
+byte-identical, including prefix selection and all activity counts, and the prefix evidence must
+agree with the authorized leaves. Connection loss, lock loss, a changed backend identity or any
+observation mismatch makes the outcome ambiguous and blocks action. This guarded protocol is a
+contract for a later private runner; neither the public SQL nor WP-197's offline tool implements it.
+
+The CLI does not know the private advisory-key protocol, so that advisory lock alone is not a child
+barrier. Immediately before spawn, the guard session begins a short transaction and acquires
+`ACCESS EXCLUSIVE` on the already-existing `supabase_migrations.schema_migrations` relation with a
+bounded non-waiting attempt. Failure refuses. The future runner then spawns the exact measured CLI
+child with the private operation's fixed application name. Before releasing the relation barrier, it
+must observe exactly one matching target backend whose ungranted relation lock is blocked solely by
+the recorded guard backend. Exact CLI `2.116.0` disposable proof must establish the requested lock
+mode as exactly `AccessShareLock` and prove the reviewed invocation reaches this ledger read before
+any statement capable of applying a migration.
+
+The runner binds that backend id and backend start to the already-owned child process and private
+target. No untagged or additional matching session or blocker may exist. If the tag is absent,
+duplicated, not waiting on that exact relation, or has any other blocker, the runner terminates the
+still-blocked child and proves both process and session termination before ending the barrier
+transaction. Uncertainty leaves both locks held and requires attended recovery. Committing the
+short barrier transaction after a valid handoff is the first point at which the child can execute
+migration SQL. The session-level schema-DDL guard and broker target lock remain held through child
+termination, reconciliation and postflight; they are not the barrier released at handoff. Loss of
+the guard connection during handoff or apply is an ambiguous apply outcome, never proof that nothing
+ran.
+
+The session tag is derived inside the guarded operation from its independently generated operation
+id and nonce. Its exact form is `os-wp197-cli-` followed by the first 48 lowercase hexadecimal
+characters of SHA-256 over
+`openspell.hosted-migration-session.v1\n<operation-id>\n<authorization-nonce>\n`. The complete name is
+61 ASCII bytes, below PostgreSQL's application-name limit. The raw tag stays in guarded memory and
+private evidence. `databaseSessionTagSha256` is SHA-256 over the complete 61 ASCII tag bytes, and the
+private operation envelope carries only that digest. The exact CLI `2.116.0` disposable proof must
+show that the reviewed invocation channel applies this name to every database connection; if it
+cannot, this handoff contract is unavailable and no production apply may use it.
+
+If an apply response is lost, only the read-only reconciler may run. The private operation ledger
+must first prove the exact child process terminal. If the host or supervisor outcome is uncertain,
+recovery stays blocked until attended process inspection proves that child cannot still run. The
+runner then validates the still-held database guard or, if its loss has already made the outcome
+ambiguous, reacquires it non-waitingly under attended recovery. It requires zero sessions with the
+exact private application name and runs the guarded probe/prefix/probe sandwich. Only this combined
+private evidence may identify one exact contiguous prefix from 41 through 46. The public probe alone
+makes no matching-session claim. Recovery is forward-only. Any remaining suffix requires a new dry
+run, operation id, nonce, session tag, evidence and exact operator authorization. Blind retry,
+migration repair, reverse SQL and replay of an already-applied file are forbidden.
 
 The probe and six prefix scripts implement this fixed matrix. Each prefix script has the named
 canonical bundle-prefix digest plus an exact object, function, trigger, policy, ownership, ACL,
@@ -529,6 +623,8 @@ It uses the same canonical JSON rules as the public manifest and this exact key 
   "preApplyCliWorkdirEvidenceSha256": "...",
   "preApplyTargetEvidenceSha256": "...",
   "preApplyFreezeEvidenceSha256": "...",
+  "schemaDdlGuardEvidenceSha256": "...",
+  "databaseSessionTagSha256": "...",
   "observedPrefixFiles": 41,
   "observedPrefixLedgerSha256": "...",
   "prefixEvidenceSha256": "..."
@@ -546,6 +642,48 @@ uses canonical JSON to bind the same operation id and nonce, its exact phase
 `BundleEvidence`. Thus the deterministic verifier output cannot stand in for two fresh phase
 observations.
 
+The guarded runner creates the database session tag before dry run and binds its SHA-256 into the
+envelope. It passes the raw tag only through the reviewed `PGAPPNAME` environment entry to the exact
+private CLI child. The child environment is an exact allowlist; callers cannot add, replace or read
+the tag. Disposable proof against the exact CLI binary must demonstrate that every connection it
+opens carries the complete, untruncated value. Merely setting the environment entry without observing
+the database session is not proof.
+
+`schemaDdlGuardEvidenceSha256` hashes this canonical private leaf, with the same JSON serialization
+rules and key order used by the envelope:
+
+```json
+{
+  "schemaVersion": "openspell.hosted-schema-ddl-guard.v1",
+  "phase": "pre_apply",
+  "operationId": "...",
+  "authorizationNonce": "...",
+  "targetFingerprint": "...",
+  "databaseSessionTagSha256": "...",
+  "guardBackendPid": 123,
+  "guardBackendStart": "...",
+  "acquiredAt": "...",
+  "firstProbeObservedAt": "...",
+  "firstProbeEvidenceSha256": "...",
+  "prefixObservedAt": "...",
+  "prefixEvidenceSha256": "...",
+  "secondProbeObservedAt": "...",
+  "secondProbeEvidenceSha256": "...",
+  "otherSchemaDdlHolderCount": 0,
+  "otherSchemaDdlWaiterCount": 0,
+  "guardedCliSessionCount": 0
+}
+```
+
+The backend id is a positive PostgreSQL process id and all four time fields use the same whole-second
+UTC format as the envelope. `acquiredAt` records the start of continuous custody. The three
+observation times are written only after their respective query result has been fully received, are
+monotonic in the listed order, and `secondProbeObservedAt` measures freshness. The two probe hashes
+bind their complete canonical single-row records, not selected fields, and must be equal. Both probe
+rows must select the same prefix and carry zero values for all five activity counts. The second probe
+observation must be less than 60 seconds old at authorization, and the connection, backend identity
+and session-level lock must remain live through nonce consumption and the final pre-spawn checks.
+
 Before dry run, the guarded operation resolves the reviewed CLI installation once, copies the
 executable into its private mode-`0700` operation directory, makes the copy non-writable and records
 its fixed relative path, device, inode, byte count, SHA-256, `2.116.0` version output and installation
@@ -562,20 +700,23 @@ producer-admission state, active recommendation-job count and queue fingerprint.
 than 60 seconds old at authorization.
 
 After consuming the nonce and before spawning the CLI, the guarded writer performs the last
-pre-spawn checks in this order: reopen the private CLI copy without following links; remeasure its
+pre-spawn checks in this order: verify the same target-bound database guard connection, backend
+identity and session-level lock; reopen the private CLI copy without following links; remeasure its
 path, device, inode, bytes, hash, version and provenance; derive the target fingerprint and target-
-selection digest from the same canonical project-ref preimage; rerun the universal probe; rerun the
-selected prefix script; compare the four named fingerprints to preflight; recheck the held freeze;
-and run `verify --mode cli-workdir`. Every invariant value must equal the matching authorized leaf,
-including the complete deterministic `BundleEvidence`. The writer records new observation times in
-the private ledger. Any executable, target, ledger, object, role, ACL, row, queue, freeze or byte
-change refuses before child creation.
+selection digest from the same canonical project-ref preimage; rerun the guarded probe/prefix/probe
+sandwich on the guard connection; compare the four named fingerprints to preflight; recheck the held
+freeze; and run `verify --mode cli-workdir`. Every invariant value must equal the matching authorized
+leaf, including the complete deterministic `BundleEvidence`. The writer records new observation times
+in the private ledger. Any guard, executable, target, ledger, object, role, ACL, row, queue, freeze or
+byte change refuses before child creation.
 
-The writer then spawns that exact private executable by its already canonicalized absolute path and
-passes the exact validated project reference explicitly with `--project-ref`. It never resolves
+The writer then opens the short transaction-held migration-ledger relation barrier and spawns that
+exact private executable by its already canonicalized absolute path, with the bound application name,
+and passes the exact validated project reference explicitly with `--project-ref`. It never resolves
 `PATH` again and never permits linked or default target selection. Private directory ownership and
-non-writable executable bytes prevent a path or binary swap between the final measurement and
-process creation.
+non-writable executable bytes prevent a path or binary swap between the final measurement and process
+creation. The relation barrier remains held until the exact waiting-session handoff succeeds; the
+session-level database guard remains held after the barrier is released.
 
 The guarded operation writes the envelope only to private evidence storage and reports its SHA-256
 for attended authorization. Apply authorization names that envelope digest. Before invoking the
@@ -583,6 +724,40 @@ measured CLI binary, the guarded writer atomically marks the authorization nonce
 private single-use ledger. An expired or already-consumed nonce refuses without spawning the CLI.
 Failure after consumption requires read-only reconciliation and a new authorization; it never
 reuses or resets the nonce.
+
+Before relation-barrier release, the operation ledger appends one canonical private session-binding
+leaf:
+
+```json
+{
+  "schemaVersion": "openspell.hosted-migration-session-binding.v1",
+  "operationId": "...",
+  "authorizationNonce": "...",
+  "targetFingerprint": "...",
+  "databaseSessionTagSha256": "...",
+  "cliChildPid": 456,
+  "cliChildStart": "...",
+  "guardBackendPid": 123,
+  "guardBackendStart": "...",
+  "cliBackendPid": 789,
+  "cliBackendStart": "...",
+  "blockedRelation": "supabase_migrations.schema_migrations",
+  "requestedLockMode": "AccessShareLock",
+  "blockingBackendPids": [123],
+  "state": "waiting",
+  "waitEventType": "Lock",
+  "observedAt": "..."
+}
+```
+
+The runner accepts exactly one matching backend at handoff, requires its application name to hash to
+the authorized tag digest, proves its ungranted relation-lock row names the fixed migration-ledger
+relation and exact lock mode established by disposable proof, and requires its only blocking backend
+to be the recorded guard. The only accepted mode is `AccessShareLock`; a different exact-CLI
+observation changes the architecture and must return to review. It records the leaf before releasing
+the relation barrier and monitors
+every later backend with that exact tag until the child is terminal. This post-spawn leaf is an audit
+result, not a value that can be predicted and inserted into the pre-spawn authorization envelope.
 
 A remaining-suffix authorization always uses `suffix_apply`, a new operation id and nonce, and a
 new envelope with the newly observed prefix file count, ledger digest and
@@ -622,19 +797,20 @@ Full postflight must prove at least:
 tools/hosted-migration-bundle/
   package.json
   tsconfig.json
+  sql/
+    wp-197-hosted-migration-probe.sql
+    wp-197-hosted-migration-prefix-41.sql
+    wp-197-hosted-migration-prefix-42.sql
+    wp-197-hosted-migration-prefix-43.sql
+    wp-197-hosted-migration-prefix-44.sql
+    wp-197-hosted-migration-prefix-45.sql
+    wp-197-hosted-migration-prefix-46.sql
   src/
     bundle.ts
     bundle.test.ts
     cli.ts
 docs/deploy/
   hosted-migration-bundle.md
-  wp-197-hosted-migration-probe.sql
-  wp-197-hosted-migration-prefix-41.sql
-  wp-197-hosted-migration-prefix-42.sql
-  wp-197-hosted-migration-prefix-43.sql
-  wp-197-hosted-migration-prefix-44.sql
-  wp-197-hosted-migration-prefix-45.sql
-  wp-197-hosted-migration-prefix-46.sql
 ```
 
 `bundle.ts` is the deep module: fixed policy, branded validation, canonical ledger encoding, Git
@@ -664,6 +840,9 @@ Focused tests must prove:
   credential, deployment or apply capability;
 - the universal probe and all six prefix scripts have no mutating or dynamic statement and return
   bounded public-safe evidence;
+- Linux construction claims the output beneath a held parent descriptor, retains the output
+  descriptor for every later marker/payload operation, detects canonical-path displacement, and
+  refuses when `/proc/self/fd` custody is unavailable;
 
 A disposable local proof may build from the already-fetched 41-file directory into a new temporary
 output solely to verify the byte policy. That proves construction mechanics, not snapshot freshness
@@ -671,7 +850,11 @@ or current hosted state.
 
 Change-impact review must additionally exercise a disposable upgrade-shaped database, partial-prefix
 failure and suffix-resume model before any hosted apply is requested. It must count outputs against
-inputs rather than accepting process success alone.
+inputs rather than accepting process success alone. The same disposable proof must validate the
+exact CLI's application-name propagation, migration-ledger relation-lock mode, pre-migration blocking
+point, single tagged-session handoff, child/session termination and guarded response-loss
+reconciliation. Until that private runner and proof exist, the public probe supplies review evidence
+only and no session-binding or apply-safety claim exists.
 
 ## Consequences
 

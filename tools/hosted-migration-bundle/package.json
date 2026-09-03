@@ -1,0 +1,20 @@
+{
+  "name": "@wizard-ads/hosted-migration-bundle",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/bundle.ts"
+  },
+  "bin": {
+    "openspell-hosted-migration-bundle": "./src/cli.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "postgres": "^3.4.9"
+  }
+}

@@ -47,11 +47,17 @@ after reviewed merge and exact-main CI.
    their exact sizes, hashes and order through `20260901060000`.
 7. Refuse missing, changed, renamed, duplicate, extra, non-regular, symlinked or hard-linked input;
    pending-version collision; overlapping paths; repository-contained output; and existing output.
-8. Snapshot all accepted input bytes and construct under a new owned sibling staging path carrying
-   a fixed unpublished marker. The private staged checker requires the marker; public `verify`
-   rejects it. Rename the complete marked tree to the requested output, then remove the marker as
-   the publication commit point. No pre-commit failure may expose a verifiable bundle, and response
-   loss after the commit point must reconcile through `verify`.
+8. Snapshot all accepted input bytes, hold and recheck the canonical output-parent identity, and on
+   Linux claim the non-existent output basename through `/proc/self/fd/<parent-fd>/`. Immediately
+   open and retain the claimed output inode. Perform every post-claim marker, payload, private-check
+   and sync operation through `/proc/self/fd/<output-fd>/`, while rechecking canonical parent/output
+   bindings against both held descriptors. Create a fixed unpublished marker before any payload
+   file. The private marked-tree checker requires the marker; public `verify` rejects it. Remove the
+   marker only after complete verification, then sync the directory; marker removal is the
+   publication commit point. `build` requires Linux with mounted, usable `/proc/self/fd` and fails
+   closed otherwise; `verify` may remain portable. Never overwrite an output created by a race or
+   recursively delete a path after custody is uncertain. No pre-commit failure may expose a
+   verifiable bundle, and response loss after the commit point must reconcile through `verify`.
 9. Emit only `supabase/migrations/*.sql` and deterministic `BUNDLE_MANIFEST.json` after publication.
    Serialize the manifest as UTF-8 without a byte-order mark, with exact documented key order,
    two-space JSON indentation and one terminal line feed. It contains exact provenance, counts,
@@ -70,10 +76,12 @@ after reviewed merge and exact-main CI.
     exact migrations and manifest after dry run and immediately before apply while ignoring rather
     than trusting exactly `supabase/.temp`. It rejects every other extra entry and never traverses
     or reads `.temp`.
-14. Provide one reviewed static read-only probe that selects exactly one of six static read-only
-    prefix scripts. Each script must close its exact contiguous prefix from 41 through 46 without
-    referencing a relation created by a later prefix, exposing target identity, using dynamic SQL or
-    mutating state.
+14. Provide one reviewed no-parameter static read-only probe that selects exactly one of six static
+    read-only prefix scripts and returns aggregate counts for other granted/waiting holders of the
+    shared schema-DDL key and fixed-prefix guarded-CLI sessions. Each script must close its exact
+    contiguous prefix from 41 through 46 without referencing a relation created by a later prefix,
+    exposing target or session identity, using dynamic SQL or mutating state. An unguarded
+    probe/prefix/probe sandwich is review evidence only because it cannot close its transaction gaps.
 15. Describe fresh history fetch, target identity, exact CLI binary, dry run, enqueue freeze, apply,
     response-loss recovery, credentials, staging, activation, scoped admission, deployment and QA as
     separate later gates. The separately authorized enqueue freeze must be held before final
@@ -82,10 +90,13 @@ after reviewed merge and exact-main CI.
 16. Make every prefix script return the same named queue, recommendation, schedule and out-of-scope
     privilege fingerprints. The guarded runner must compare each current value to preflight, emit a
     canonical pass/fail comparison record and refuse an operational envelope on any mismatch.
-17. Bind separate phase-stamped pre-apply target and freeze leaves into the private envelope. After
-    consuming a single-use nonce and before spawning the CLI, the guarded writer must rerun target,
-    probe, selected prefix, fingerprint comparison, freeze and CLI-workdir byte checks and require
-    every invariant value to equal the authorization.
+17. Bind separate phase-stamped pre-apply target and freeze leaves into the private envelope. A
+    future guarded writer must hold a separate target lock and one target-bound database session with
+    the non-waitingly acquired session-level schema-DDL advisory lock. On that same session it runs
+    probe, selected prefix and probe again; both complete probe rows must be byte-identical and all
+    prefix evidence must equal the authorization. After consuming a single-use nonce and before
+    spawning the CLI, it must rerun that guarded sandwich plus target, fingerprint comparison,
+    freeze and CLI-workdir byte checks.
 18. Generate operation ids and authorization nonces inside the guarded operation as independent 256-
     bit cryptographic-random values. Enforce separate uniqueness constraints, refuse collisions,
     expire authorization within 15 minutes and never accept either value from a caller.
@@ -95,13 +106,27 @@ after reviewed merge and exact-main CI.
 20. Copy the reviewed Supabase CLI executable into the private operation directory, make it
     non-writable and bind its relative path, device, inode, size, hash, version and provenance. After
     nonce consumption, remeasure every field and spawn that exact canonical path without resolving
-    `PATH`, following a symlink or invoking a wrapper.
+    `PATH`, following a symlink or invoking a wrapper. Give it an operation-private `PGAPPNAME`; exact
+    CLI disposable proof must show every opened database connection carries the complete tag.
 21. Derive target fingerprint and target-selection digest from the same exact 20-character project
     reference. Pass that reference explicitly with `--project-ref` for dry run and apply; never allow
     linked or default target selection.
-22. Give the private operation ledger custody of the CLI process id, process-start identity and
-    terminal state. Refuse reconciliation or suffix authorization until that exact child is
-    conclusively terminal and the target has no matching migration session or schema-DDL lock.
+22. Derive an operation-private session tag from the broker-generated operation id and nonce. The
+    advisory lock is a coordination guard, not a CLI barrier. Immediately before spawn, take a bounded
+    non-waiting `ACCESS EXCLUSIVE` transaction lock on the existing migration-ledger relation. Bind the
+    owned child process to exactly one tagged target backend blocked solely by the guard on that exact
+    relation with exactly `AccessShareLock`, as established by exact-CLI disposable proof. Missing, duplicate,
+    untagged, differently blocked or multiply blocked sessions refuse while the child remains blocked.
+    Release only the relation barrier after the handoff; keep the session advisory guard and broker
+    target lock through terminal child custody, reconciliation and postflight. This handoff and the
+    guarded runner are later private capabilities; the public probe and offline bundle tool do not
+    implement or claim them.
+23. Give the private operation ledger custody of the CLI process id, process-start identity and
+    terminal state. On response loss, first prove that exact child terminal, then validate the still-
+    held database guard or reacquire it non-waitingly under attended ambiguous-outcome recovery.
+    Require zero sessions with its exact private tag and run the guarded probe/prefix/probe sandwich.
+    Refuse reconciliation or suffix authorization on any uncertainty. A new suffix uses a new
+    operation id, nonce, session tag, evidence and authorization.
 
 ## Exact additions
 
@@ -154,9 +179,19 @@ after reviewed merge and exact-main CI.
   the authorized leaves before invoking the CLI;
 - the final pre-spawn check remeasures the broker-private Supabase executable and explicit target-
   selection record, then spawns only that exact non-writable binary with the exact `--project-ref`;
-- process-custody and target-lock proofs prevent response-loss reconciliation while the original
-  apply can still advance, and the non-writable private clone prevents migration-byte changes after
-  final verification;
+- process-custody, target-lock and database-guard proofs prevent response-loss reconciliation while
+  the original apply can still advance, and the non-writable private clone prevents migration-byte
+  changes after final verification;
+- Linux publication-race tests prove the output is claimed beneath a held parent descriptor and all
+  later marker/payload operations stay beneath the held output descriptor; `build` refuses when
+  `/proc/self/fd` custody is unavailable;
+- public probe evidence closes other shared-lock holders/waiters and guarded-CLI session aggregates
+  without exposing backend or target identity; its unguarded sandwich is never accepted as apply
+  authorization;
+- disposable exact-CLI proof closes `PGAPPNAME` propagation to every database connection, the exact
+  migration-ledger `AccessShareLock` and pre-migration blocking point, one tagged waiting-session handoff
+  behind the short relation barrier, child/session termination, guarded reconciliation and refusal
+  of absent, duplicate or ambiguous sessions;
 - provider-negative evidence is limited to unchanged OpenSpell-observable provider/write ledgers,
   empty new SP state and static absence of provider capability;
 - full repository typecheck, lint, tests, hygiene and skill lint pass.
@@ -174,16 +209,16 @@ Neither review may use hosted credentials, query production, stage a service or 
 
 - [x] Architecture and work-package contract committed separately before implementation.
 - [x] Exact baseline/addition policy and canonical digest format pass High and Extra-High review.
-- [ ] Builder constructs and independently verifies exactly 46 migrations with all grounded counts
+- [x] Builder constructs and independently verifies exactly 46 migrations with all grounded counts
       and digests.
-- [ ] No `.temp`, project binding, credential, profile data, absolute tracked path or external-state
+- [x] No `.temp`, project binding, credential, profile data, absolute tracked path or external-state
       metadata enters output or logs.
-- [ ] Tamper, race and failure-injection proofs show no partial artifact can verify.
-- [ ] Static proof shows no Supabase, database, network, provider, deployment or apply capability.
-- [ ] Read-only SQL and disposable partial-prefix/resume model pass adversarial review.
-- [ ] Focused tests, full `pnpm check`, staged hygiene and `git diff --check` pass.
+- [x] Tamper, race and failure-injection proofs show no partial artifact can verify.
+- [x] Static proof shows no Supabase, database, network, provider, deployment or apply capability.
+- [x] Read-only SQL and disposable partial-prefix/resume model pass adversarial review.
+- [x] Focused tests, full `pnpm check`, staged hygiene and `git diff --check` pass.
 - [ ] Exact-head pull-request CI and exact-main CI pass both jobs.
-- [ ] This package performs no hosted query, migration apply, credential operation, staging,
+- [x] This package performs no hosted query, migration apply, credential operation, staging,
       activation, deployment, provider or Amazon action.
 - [ ] Handover and status update only after reviewed merge and exact-main CI.
 
