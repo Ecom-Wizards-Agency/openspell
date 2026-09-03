@@ -329,6 +329,15 @@ importers:
         specifier: ^22.20.1
         version: 22.20.1
 
+  tools/hosted-migration-bundle:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
+
   tools/hygiene-lint: {}
 
 packages:
