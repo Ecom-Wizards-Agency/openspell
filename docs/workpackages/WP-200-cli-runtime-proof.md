@@ -151,7 +151,11 @@ Handover and status change only after reviewed merge and exact-main CI.
 - privacy-canary proof across results, errors and logs;
 - pinned Cargo format/check/clippy/rustdoc/test plus TypeScript boundary tests;
 - repository typecheck, lint, test and hygiene on exact PR head, plus the permissionless privileged
-  kernel workflow triggered from the default branch after exact-main CI succeeds; and
+  kernel workflow triggered from the default branch after exact-main CI succeeds, with explicit
+  bounds on every fetch, setup, install and acquisition step before the strict wrapper starts,
+  commit-pinned setup actions, exact local image-ID capture through an asynchronously owned
+  TERM/KILL-bounded inspection, `--pull=never` on every create and job headroom beyond the sum of
+  all step ceilings; and
 - one independent High correctness review and two Extra-High authority/kernel/crash reviews.
 
 ## Explicit exclusions

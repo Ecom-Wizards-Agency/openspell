@@ -19,10 +19,12 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
+    timeout-minutes: 230
     env:
       TRUSTED_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
       - name: Fetch exact trusted revision without a credential
+        timeout-minutes: 5
         run: |
           git init workspace
           git -C workspace remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
@@ -30,21 +32,29 @@ jobs:
           git -C workspace checkout --detach FETCH_HEAD
           test "$(git -C workspace rev-parse HEAD)" = "$TRUSTED_SHA"
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        timeout-minutes: 5
         with:
           package_json_file: workspace/package.json
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        timeout-minutes: 10
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: workspace/pnpm-lock.yaml
 
       - name: Install
+        timeout-minutes: 10
         run: pnpm install --frozen-lockfile
         working-directory: workspace
 
+      - name: Acquire exact proof-builder image
+        timeout-minutes: 5
+        run: docker image pull docker.io/library/rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97
+
       - name: Verify hosted migration Linux runtime proof
+        timeout-minutes: 180
         run: |
           pnpm --filter @wizard-ads/hosted-migration-runtime-proof run test:kernel
           pnpm --filter @wizard-ads/hosted-migration-runtime-proof run test:kernel-interruptions

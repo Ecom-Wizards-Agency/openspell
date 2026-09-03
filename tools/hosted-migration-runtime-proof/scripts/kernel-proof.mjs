@@ -97,7 +97,7 @@ function run(command, args, options = {}) {
 }
 
 function createContainer(args, options = {}) {
-  const result = spawnSync("docker", ["container", "create", ...args], {
+  const result = spawnSync("docker", ["container", "create", "--pull", "never", ...args], {
     detached: true,
     encoding: "utf8",
     maxBuffer: maximumOutputBytes,
@@ -339,7 +339,7 @@ function hasNoConfiguredMounts(value) {
   return value === undefined || value === null || (Array.isArray(value) && value.length === 0);
 }
 
-async function buildArtifact() {
+async function buildArtifact(baseImageId) {
   const name = `openspell-wp200-build-${randomUUID()}`;
   let containerId;
   let targetVolume;
@@ -370,7 +370,7 @@ async function buildArtifact() {
         `type=bind,src=${packageDirectory},dst=/workspace,readonly`,
         "--workdir",
         "/workspace",
-        image,
+        baseImageId,
         "cargo",
         "test",
         "--locked",
@@ -570,13 +570,12 @@ function verifyImageLineage(base, derived) {
   }
 }
 
-async function stageProofImage(artifact) {
+async function stageProofImage(artifact, base) {
   const operationId = randomUUID();
   const stageName = `openspell-wp200-stage-${operationId}`;
   let stageId;
   let unresolvedCreation = false;
   recoveryImageTag = `${recoveryImageRepository}:${operationId}`;
-  const base = inspectImage(image);
   if (!/^sha256:[0-9a-f]{64}$/u.test(base.Id)) {
     throw new Error("content addressed base image required");
   }
@@ -594,7 +593,7 @@ async function stageProofImage(artifact) {
         "no-new-privileges",
         "--entrypoint",
         "/usr/bin/false",
-        image,
+        base.Id,
       ],
       { timeout: cleanupTimeoutMilliseconds },
     );
@@ -807,9 +806,13 @@ try {
   if (process.platform !== "linux" || process.arch !== "x64") {
     throw new Error("linux x64 proof host required");
   }
-  const artifact = await buildArtifact();
+  const base = inspectImage(image);
+  if (!/^sha256:[0-9a-f]{64}$/u.test(base.Id)) {
+    throw new Error("content addressed base image required");
+  }
+  const artifact = await buildArtifact(base.Id);
   await interruptionCheckpoint();
-  const imageId = await stageProofImage(artifact);
+  const imageId = await stageProofImage(artifact, base);
   await interruptionCheckpoint();
   await verifyImageArtifact(imageId, artifact.digest);
   await interruptionCheckpoint();
