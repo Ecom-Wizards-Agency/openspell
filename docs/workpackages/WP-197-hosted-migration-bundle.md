@@ -217,10 +217,10 @@ Neither review may use hosted credentials, query production, stage a service or 
 - [x] Static proof shows no Supabase, database, network, provider, deployment or apply capability.
 - [x] Read-only SQL and disposable partial-prefix/resume model pass adversarial review.
 - [x] Focused tests, full `pnpm check`, staged hygiene and `git diff --check` pass.
-- [ ] Exact-head pull-request CI and exact-main CI pass both jobs.
+- [x] Exact-head pull-request CI and exact-main CI pass both jobs.
 - [x] This package performs no hosted query, migration apply, credential operation, staging,
       activation, deployment, provider or Amazon action.
-- [ ] Handover and status update only after reviewed merge and exact-main CI.
+- [x] Handover and status update only after reviewed merge and exact-main CI.
 
 ## External gates
 

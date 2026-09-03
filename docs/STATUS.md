@@ -2,7 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated` · `superseded`.
 
-Source and deployment headers reconciled 2026-09-02 against `origin/main` at `38db8b2`. The
+Source and deployment headers reconciled 2026-09-03 against `origin/main` at `bb3c1cb`. The
 implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
 the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
 the implementation is reachable from the recorded main revision. It does not by itself mean
@@ -161,6 +161,7 @@ implementation brief in `docs/workpackages/`.
 | 194 | Fail-closed report claim custody | merged; source-only | one-way legacy-to-fenced report authority, opaque claim transitions, ambiguity quarantine, bounded report parsing/final audit and revision-pinned deployment rollback merged through PR #119 at `3e1f391`; exact-head and exact-main CI passed, while its migration remains unhosted and no service, queue owner, provider or production state changed |
 | 195 | Campaign-scoped optimizer previews | merged; deployment gated | AdLabs-style campaign checkboxes, explicit all-versus-selected scope, immutable per-group/unassigned child runs, exact queue custody and bounded parent polling merged through PR #121 at `857ce0c`; corrected exact-head and exact-main CI passed, while its migration is unhosted and no compatible worker/web revision, provider call or Amazon mutation is live |
 | 196 | Exclusive recommendation claim custody | merged; deployment gated | private recommendation authority, narrow worker-only RPCs, claim-bound run mutations, a dedicated single-flight database-only claimant, strict web readiness and revision-pinned Evo deployment controls merged through PR #123 at `38db8b2`; corrected exact-head and exact-main CI passed, while its migration is unhosted and no credential, service, admission, deployment, provider call or Amazon mutation is live |
+| 197 | Exact hosted migration bundle | merged; apply gated | deterministic offline reconstruction and independent verification of the exact 41-file hosted baseline plus five reviewed Git blobs, with rollback-only prefix evidence, merged through PR #125 at `bb3c1cb`; no hosted query or apply, credential, deployment, provider call or Amazon mutation occurred |
 
 ## Milestone gates
 
@@ -174,6 +175,17 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-09-03 PR #125 merged WP-197 exact hosted-migration bundle tooling at `bb3c1cb` after
+  exact-head run `33710054372` passed both jobs at `e663e9b`; exact-main run `33710817269` passed
+  both jobs at the merge revision. High correctness, Extra-High adversarial safety and Extra-High
+  operational reviews ended with no blocker, high or medium defect. Focused tests passed 29 with
+  three opt-in exact-history tests skipped; exact PostgreSQL 17 replay passed all three cases; and
+  serialized full repository verification passed database 451, worker 499, web 656, UI 163
+  functional and 10 performance tests plus all remaining packages. The 41-file baseline digest is
+  `9dd52d5fdee63b6b3c19de850ec72c27f3d8312a5bb5c73c492705e47c18bcea`; the verified 46-file
+  bundle-ledger digest is `baef4df400ed7a045395322667e1d3ac61fa27075b2d36bb855071a6bfe20458`.
+  The hosted ledger remains at 41 versions, and no hosted query or apply, credential operation,
+  staging, activation, deployment, provider call or Amazon mutation occurred.
 - On 2026-09-02 PR #123 merged WP-196 exclusive recommendation claim custody at `38db8b2` after
   corrected exact-head run `33673996873` passed both jobs at `88710dc`; exact-main run
   `33675418627` then passed both jobs at the merge revision. The first exact-head browser run
@@ -571,8 +583,12 @@ implementation brief in `docs/workpackages/`.
       run exposed and led to correction of a duplicate status landmark and stale direct-write E2E
       fixture; High correctness and Extra-High operational reviews ended with no blocker, high or
       medium defect.
+- [x] PR #125 exact-head CI run `33710054372` and exact-main run `33710817269` passed both jobs at
+      `e663e9b` and merged revision `bb3c1cb`, respectively. High correctness, Extra-High
+      adversarial safety and Extra-High operational reviews ended with no blocker, high or medium
+      defect.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
-      `b5c210d` (122 and 262 WP-196-source commits behind, respectively), both new worker units are
+      `b5c210d` (127 and 267 WP-197-source commits behind, respectively), both new worker units are
       absent, and the active legacy worker revision is unproven. The attended stop/start reset its
       restart counter to zero; the worker is active/running and now reports one later automatic
       restart whose cause the unprivileged journal does not expose. Claim-failure containment and
@@ -585,7 +601,8 @@ implementation brief in `docs/workpackages/`.
       other features' separate runtime gates. WP-187's `20260901020000`, WP-192's
       `20260901030000`, WP-194's `20260901040000`, and WP-195's `20260901050000` migrations are
       merged source only; WP-196's `20260901060000` is also source only. None is part of that hosted
-      ledger.
+      ledger. WP-197 deterministically builds and verifies the exact 41-plus-five source artifact,
+      but did not query or change hosted state and grants no apply authority.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [x] Full authenticated Wizard Ads route/state click-through at `bfce504`.
 - [x] Authenticated click-through at `b5c210d`: 21 of 21 production routes returned HTTP 200 with
