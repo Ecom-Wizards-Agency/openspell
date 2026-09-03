@@ -338,6 +338,12 @@ importers:
         specifier: ^3.4.9
         version: 3.4.9
 
+  tools/hosted-migration-conformance:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
+
   tools/hygiene-lint: {}
 
 packages:
