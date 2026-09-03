@@ -142,7 +142,8 @@ Handover and status change only after reviewed merge and exact-main CI.
 - exact no-residue proof after success and every real failure case;
 - real process-group SIGINT/SIGTERM cuts during build-container acquisition, committed-image
   acquisition, held pre-start case inspection, running privileged-case execution and final image
-  deletion, including exact anonymous-volume absence;
+  deletion, including regression-sensitive no-start detection, composed phase deadlines, awaited
+  child/event-watcher closure and exact emergency cleanup custody on a disqualifying watchdog path;
 - privacy-canary proof across results, errors and logs;
 - pinned Cargo format/check/clippy/rustdoc/test plus TypeScript boundary tests;
 - repository typecheck, lint, test and hygiene on exact PR head, plus the permissionless privileged

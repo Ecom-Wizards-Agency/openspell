@@ -264,8 +264,17 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(interruptionProof).toContain("forbiddenStartObserved ||");
     expect(interruptionProof).toContain('child.once("close", closed)');
     expect(interruptionProof).not.toContain('child.once("exit"');
+    expect(interruptionProof).toContain("observedExit = observeChildExit(child)");
+    expect(interruptionProof).toContain("waitForObservedExit(observedExit)");
+    expect(interruptionProof).toContain("setupObservationAttempts = 120_000");
+    expect(interruptionProof).toContain(
+      "finalCleanupObservationTimeoutMilliseconds = 30 * 60_000",
+    );
     expect(interruptionProof).toContain("primaryTimedOut ||");
     expect(interruptionProof).toContain("forcedExitUsed ||");
+    expect(interruptionProof).toContain("await recoverCapturedObjects(record, imageId)");
+    expect(interruptionProof).toContain("await stopEventWatcher(watcher, watcherExit)");
+    expect(interruptionProof).toContain("watcherTerminal.timedOut ||");
     expect(interruptionProof).toContain("interruption-cuts=5 signals=2 residue=0");
     expect(kernel).toContain('"/usr/bin/setpriv"');
     expect(kernel).toContain('"--bounding-set=-all,+sys_admin,+setfcap"');

@@ -331,7 +331,8 @@ privilege. A separate `test:kernel` wrapper:
    afterwards, then proves every case container, staging object, local image and anonymous build
    volume absent. Container/image deletion uses only captured immutable IDs; the captured anonymous
    volume identity is verified absent after the exact container's `--volumes` removal and is never
-   separately deleted by name. Names and tags are absence diagnostics, never cleanup authority.
+   separately deleted by the production wrapper. Names and tags are absence diagnostics, never
+   cleanup authority.
    Docker mutation clients run in separate process
    groups so a wrapper process-group SIGINT/SIGTERM cannot sever an in-flight daemon response before
    its ID is retained. Any independent client timeout or malformed response without an ID is
@@ -342,7 +343,12 @@ privilege. A separate `test:kernel` wrapper:
    committed-image responses before returning their immutable IDs. It signals while each response is
    held, holds a case-inspection response to prove cancellation before privileged start, then also
    exercises a running privileged case and final image deletion. Every cut verifies the captured
-   container, image and anonymous-volume IDs are all absent.
+   container, image and anonymous-volume IDs are all absent. The harness installs its child
+   error/close observer immediately, starts the child-exit deadline only after the tested signal,
+   gives setup and final-deletion observation the composed operation budget, and awaits its Docker
+   event watcher. A watchdog-forced wrapper exit always disqualifies the cut and transfers emergency
+   cleanup custody to the harness: it may remove only the already captured immutable container,
+   derived-image and anonymous-volume IDs, then must prove their absence before refusing.
 
 The reviewed image is:
 
