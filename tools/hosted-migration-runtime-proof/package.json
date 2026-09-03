@@ -1,0 +1,15 @@
+{
+  "name": "@wizard-ads/hosted-migration-runtime-proof",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "node scripts/cargo.mjs check && tsc --noEmit",
+    "test": "node scripts/test.mjs",
+    "test:kernel": "node scripts/kernel-proof.mjs",
+    "test:kernel-interruptions": "node scripts/kernel-proof-interruption.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1"
+  }
+}
