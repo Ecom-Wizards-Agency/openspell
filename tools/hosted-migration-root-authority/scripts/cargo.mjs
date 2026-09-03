@@ -1,11 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { isAbsolute, join, relative, sep } from "node:path";
 import process from "node:process";
 import { fileURLToPath, URL } from "node:url";
 
 const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
+const workspaceDirectory = realpathSync(fileURLToPath(new URL("../../..", import.meta.url)));
+const cargoTargetPrefix = "openspell-root-authority-target-";
+const systemTempCandidates = Object.freeze(["/tmp", "/var/tmp"]);
 const image = [
   "docker.io/library/",
   "rust:1.97.1-bookworm",
@@ -50,14 +52,38 @@ function hasPinnedLocalToolchain() {
   );
 }
 
+function isWithin(parent, candidate) {
+  const relation = relative(parent, candidate);
+  return (
+    relation === "" ||
+    (relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation))
+  );
+}
+
+function createCargoTargetDirectory() {
+  for (const candidate of systemTempCandidates) {
+    let resolved;
+    try {
+      resolved = realpathSync(candidate);
+    } catch {
+      continue;
+    }
+    if (isWithin(workspaceDirectory, resolved)) continue;
+    try {
+      return mkdtempSync(join(resolved, cargoTargetPrefix));
+    } catch {
+      continue;
+    }
+  }
+  throw new Error("isolated system temporary directory required");
+}
+
 export function runCargo(mode) {
   const script = commands[mode];
   if (script === undefined) throw new Error("unsupported cargo mode");
 
   if (hasPinnedLocalToolchain()) {
-    const cargoTargetDirectory = mkdtempSync(
-      join(tmpdir(), "openspell-root-authority-target-"),
-    );
+    const cargoTargetDirectory = createCargoTargetDirectory();
     try {
       return run("bash", ["-c", script], {
         env: { ...process.env, CARGO_TARGET_DIR: cargoTargetDirectory },

@@ -1,6 +1,7 @@
-import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -9,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -30,6 +31,22 @@ const rustImage = rustImageFragments.join("");
 
 function read(relativePath: string): string {
   return readFileSync(join(packageDirectory, relativePath), "utf8");
+}
+
+function isWithin(parent: string, candidate: string): boolean {
+  const relation = relative(parent, candidate);
+  return (
+    relation === "" ||
+    (relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation))
+  );
+}
+
+async function waitForFile(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (existsSync(path) && readFileSync(path, "utf8").length > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("timed out waiting for Cargo target probe");
 }
 
 interface CargoTarget {
@@ -208,9 +225,9 @@ describe("private root-authority package boundary", () => {
       "cargo rustdoc --locked --lib --all-features -- -D warnings",
     );
     expect(wrapper).toContain("CARGO_TARGET_DIR: cargoTargetDirectory");
-    expect(wrapper).toContain(
-      'join(tmpdir(), "openspell-root-authority-target-")',
-    );
+    expect(wrapper).toContain('Object.freeze(["/tmp", "/var/tmp"])');
+    expect(wrapper).toContain("if (isWithin(workspaceDirectory, resolved)) continue");
+    expect(wrapper).not.toContain("tmpdir()");
     expect(wrapper).toContain(
       "rmSync(cargoTargetDirectory, { force: true, recursive: true })",
     );
@@ -261,6 +278,99 @@ describe("private root-authority package boundary", () => {
       expect(readdirSync(cargoTempDirectory)).toEqual([]);
       expect(readdirSync(packageDirectory)).not.toContain("target");
     } finally {
+      rmSync(fixtureDirectory, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps populated abrupt-termination residue outside the workspace", async () => {
+    const fixtureDirectory = mkdtempSync(
+      join(tmpdir(), "openspell-root-authority-cargo-signal-"),
+    );
+    const probePath = join(fixtureDirectory, "target-path");
+    let targetPath: string | undefined;
+    let childProcess: ReturnType<typeof spawn> | undefined;
+    try {
+      const binaryDirectory = join(fixtureDirectory, "bin");
+      mkdirSync(binaryDirectory);
+      const rustcPath = join(binaryDirectory, "rustc");
+      const cargoPath = join(binaryDirectory, "cargo");
+      writeFileSync(rustcPath, "#!/bin/sh\nprintf 'rustc 1.97.1 (fixture)\\n'\n", {
+        mode: 0o700,
+      });
+      writeFileSync(
+        cargoPath,
+        [
+          "#!/bin/sh",
+          'if [ "$1" = "--version" ]; then',
+          "  printf 'cargo 1.97.1 (fixture)\\n'",
+          "  exit 0",
+          "fi",
+          'mkdir -p "$CARGO_TARGET_DIR/debug"',
+          'printf artifact > "$CARGO_TARGET_DIR/debug/fingerprint"',
+          'printf "%s" "$CARGO_TARGET_DIR" > "$CARGO_TARGET_PROBE"',
+          "sleep 30",
+          "",
+        ].join("\n"),
+        { mode: 0o700 },
+      );
+      chmodSync(rustcPath, 0o700);
+      chmodSync(cargoPath, 0o700);
+
+      childProcess = spawn(
+        process.execPath,
+        [join(packageDirectory, "scripts/cargo.mjs"), "check"],
+        {
+          cwd: packageDirectory,
+          detached: true,
+          env: {
+            ...process.env,
+            CARGO_TARGET_PROBE: probePath,
+            PATH: `${binaryDirectory}:${process.env.PATH ?? ""}`,
+            TMPDIR: packageDirectory,
+          },
+          stdio: "ignore",
+        },
+      );
+      const exit = new Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>(
+        (resolve, reject) => {
+          childProcess?.once("error", reject);
+          childProcess?.once("exit", (code, signal) => resolve({ code, signal }));
+        },
+      );
+
+      await waitForFile(probePath);
+      targetPath = readFileSync(probePath, "utf8");
+      expect(basename(targetPath)).toMatch(/^openspell-root-authority-target-/u);
+      expect(isWithin(workspaceDirectory, targetPath)).toBe(false);
+      expect(existsSync(join(targetPath, "debug/fingerprint"))).toBe(true);
+
+      if (childProcess.pid === undefined) throw new Error("Cargo wrapper pid unavailable");
+      process.kill(-childProcess.pid, "SIGTERM");
+      const outcome = await exit;
+      childProcess = undefined;
+      expect(outcome.code).toBeNull();
+      expect(outcome.signal).toBe("SIGTERM");
+      expect(existsSync(join(targetPath, "debug/fingerprint"))).toBe(true);
+      expect(
+        readdirSync(packageDirectory).filter((name) =>
+          name.startsWith("openspell-root-authority-target-"),
+        ),
+      ).toEqual([]);
+    } finally {
+      if (childProcess?.pid !== undefined) {
+        try {
+          process.kill(-childProcess.pid, "SIGKILL");
+        } catch {
+          // The process group already exited.
+        }
+      }
+      if (
+        targetPath !== undefined &&
+        basename(targetPath).startsWith("openspell-root-authority-target-") &&
+        !isWithin(workspaceDirectory, targetPath)
+      ) {
+        rmSync(targetPath, { force: true, recursive: true });
+      }
       rmSync(fixtureDirectory, { force: true, recursive: true });
     }
   });
