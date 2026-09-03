@@ -333,6 +333,11 @@ privilege. A separate `test:kernel` wrapper:
    volume identity is verified absent after the exact container's `--volumes` removal and is never
    separately deleted by the production wrapper. Names and tags are absence diagnostics, never
    cleanup authority.
+   For every interruption cut, the test-only shim writes the exact container/image IDs taken from
+   the actual create, commit or inspect response into a mode-0600 file under its private cut
+   directory before publishing readiness. Running-case and final-image-deletion cuts use that same
+   response-bound identity channel; prefix and tag queries never supply adoption or cleanup
+   authority.
    Docker mutation clients run in separate process
    groups so a wrapper process-group SIGINT/SIGTERM cannot sever an in-flight daemon response before
    its ID is retained. Any independent client timeout or malformed response without an ID is

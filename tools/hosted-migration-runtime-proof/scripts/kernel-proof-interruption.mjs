@@ -6,6 +6,7 @@ import {
   constants,
   existsSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -39,7 +40,9 @@ const watchdogFixtureReadyTimeoutMilliseconds = 10_000;
 const recoveryImageRepository = ["openspell", "wp200", "recovery"].join("-");
 
 function remainingOperationTime(deadline) {
-  return Math.max(1, Math.min(10_000, Math.ceil(deadline - performance.now())));
+  const remaining = deadline - performance.now();
+  if (remaining <= 0) throw new Error("interruption proof deadline exhausted");
+  return Math.min(10_000, Math.ceil(remaining));
 }
 
 function resolveDocker() {
@@ -137,42 +140,35 @@ function inspectContainer(id, timeoutMilliseconds) {
   return records[0];
 }
 
-async function observeContainer(prefix, requiredStatus) {
+async function observeContainer(containerId, prefix, requiredStatus) {
   const deadline = performance.now() + setupObservationTimeoutMilliseconds;
   while (performance.now() < deadline) {
-    const ids = listExact(
-      `name=^/${prefix}`,
-      "{{.ID}}",
-      remainingOperationTime(deadline),
+    let record;
+    try {
+      record = inspectContainer(containerId, remainingOperationTime(deadline));
+    } catch {
+      await delay(observationDelayMilliseconds);
+      continue;
+    }
+    const status = record.State?.Status;
+    const targetVolumes = (record.Mounts ?? []).filter(
+      (mount) =>
+        mount.Type === "volume" &&
+        mount.Destination === "/target" &&
+        /^[0-9a-f]{64}$/u.test(mount.Name),
     );
-    if (ids.length === 1 && /^[0-9a-f]{64}$/u.test(ids[0])) {
-      let record;
-      try {
-        record = inspectContainer(ids[0], remainingOperationTime(deadline));
-      } catch {
-        await delay(observationDelayMilliseconds);
-        continue;
-      }
-      const status = record.State?.Status;
-      const targetVolumes = (record.Mounts ?? []).filter(
-        (mount) =>
-          mount.Type === "volume" &&
-          mount.Destination === "/target" &&
-          /^[0-9a-f]{64}$/u.test(mount.Name),
-      );
-      const exactPhase =
-        (prefix === "openspell-wp200-build-" &&
-          status === requiredStatus &&
-          targetVolumes.length === 1) ||
+    const exactPhase =
+      record.Name.startsWith(`/${prefix}`) &&
+      ((prefix === "openspell-wp200-build-" &&
+        status === requiredStatus &&
+        targetVolumes.length === 1) ||
         (prefix === "openspell-wp200-stage-" &&
           status === requiredStatus &&
           record.HostConfig?.Privileged === false) ||
         (prefix === "openspell-wp200-case-" &&
           status === requiredStatus &&
-          record.HostConfig?.Privileged === true);
-      if (exactPhase) return record;
-    }
-    if (ids.length > 1) throw new Error("interruption proof container ambiguity");
+          record.HostConfig?.Privileged === true));
+    if (exactPhase) return record;
     await delay(observationDelayMilliseconds);
   }
   throw new Error("interruption proof checkpoint unavailable");
@@ -184,32 +180,45 @@ function dockerIds(args, timeoutMilliseconds) {
   return result.stdout.split("\n").filter(Boolean);
 }
 
-async function observeCommittedImage(record) {
+async function observeCommittedImage(imageId, record) {
   const match = /^\/openspell-wp200-stage-([0-9a-f-]{36})$/u.exec(record.Name);
   if (match === null) throw new Error("interruption proof stage identity refused");
   const tag = `openspell-wp200-recovery:${match[1]}`;
   const deadline = performance.now() + setupObservationTimeoutMilliseconds;
   while (performance.now() < deadline) {
-    const result = docker([
-      "image",
-      "ls",
-      "--all",
-      "--no-trunc",
-      "--quiet",
-      "--filter",
-      `reference=${tag}`,
-    ], remainingOperationTime(deadline));
+    const result = docker(
+      ["image", "inspect", imageId],
+      remainingOperationTime(deadline),
+    );
     requireDocker(result);
-    const ids = result.stdout.split("\n").filter(Boolean);
-    if (ids.length === 1 && /^sha256:[0-9a-f]{64}$/u.test(ids[0])) return ids[0];
-    if (ids.length > 1) throw new Error("interruption proof image ambiguity");
-    await delay(observationDelayMilliseconds);
+    let records;
+    try {
+      records = JSON.parse(result.stdout);
+    } catch {
+      throw new Error("interruption proof image inspection refused");
+    }
+    if (
+      Array.isArray(records) &&
+      records.length === 1 &&
+      records[0].Id === imageId &&
+      Array.isArray(records[0].RepoTags) &&
+      records[0].RepoTags.includes(tag)
+    ) {
+      return imageId;
+    }
+    throw new Error("interruption proof image identity refused");
   }
   throw new Error("interruption proof image checkpoint unavailable");
 }
 
 function prepareResponseCut(cut) {
-  if (cut !== "build-create" && cut !== "image-commit" && cut !== "case-inspect") {
+  if (
+    cut !== "build-create" &&
+    cut !== "image-commit" &&
+    cut !== "case-inspect" &&
+    cut !== "case-running" &&
+    cut !== "final-image-delete"
+  ) {
     throw new Error("interruption proof response cut refused");
   }
   const directory = mkdtempSync(join(tmpdir(), "openspell-wp200-docker-cut-"));
@@ -217,6 +226,7 @@ function prepareResponseCut(cut) {
   const ready = join(directory, "ready");
   const release = join(directory, "release");
   const startAttempt = join(directory, "start-attempt");
+  const identity = join(directory, "identity.json");
   try {
     writeFileSync(
       launcher,
@@ -229,6 +239,8 @@ function prepareResponseCut(cut) {
       ready,
       release,
       startAttempt,
+      identity,
+      held: cut !== "case-running",
       env: {
         ...process.env,
         PATH: `${directory}${delimiter}${process.env["PATH"] ?? ""}`,
@@ -239,6 +251,7 @@ function prepareResponseCut(cut) {
         WP200_DOCKER_RESPONSE_READY: ready,
         WP200_DOCKER_RESPONSE_RELEASE: release,
         WP200_DOCKER_START_ATTEMPT: startAttempt,
+        WP200_DOCKER_RESPONSE_IDENTITY: identity,
       },
     });
   } catch (error) {
@@ -250,7 +263,13 @@ function prepareResponseCut(cut) {
 async function awaitResponseHeld(cut, child) {
   const deadline = performance.now() + setupObservationTimeoutMilliseconds;
   while (performance.now() < deadline) {
-    if (existsSync(cut.ready) && !existsSync(cut.release)) return;
+    if (
+      existsSync(cut.ready) &&
+      existsSync(cut.identity) &&
+      (!cut.held || !existsSync(cut.release))
+    ) {
+      return;
+    }
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error("interruption proof response holder exited");
     }
@@ -260,6 +279,7 @@ async function awaitResponseHeld(cut, child) {
 }
 
 function releaseResponse(cut) {
+  if (!cut.held) return;
   if (!existsSync(cut.release)) {
     writeFileSync(cut.release, "release\n", {
       encoding: "utf8",
@@ -267,6 +287,23 @@ function releaseResponse(cut) {
       mode: 0o600,
     });
   }
+}
+
+function readResponseIdentity(cut) {
+  let identity;
+  try {
+    identity = JSON.parse(readFileSync(cut.identity, "utf8"));
+  } catch {
+    throw new Error("interruption proof response identity refused");
+  }
+  if (
+    !/^[0-9a-f]{64}$/u.test(identity?.containerId ?? "") ||
+    (identity.imageId !== undefined &&
+      !/^sha256:[0-9a-f]{64}$/u.test(identity.imageId))
+  ) {
+    throw new Error("interruption proof response identity refused");
+  }
+  return Object.freeze(identity);
 }
 
 function removeResponseCut(cut) {
@@ -456,11 +493,17 @@ async function recoverCapturedObjects(record, imageId) {
         remainingOperationTime(deadline),
       );
     }
+    if (performance.now() >= deadline) break;
     try {
       proveCapturedObjectsAbsent(record, imageId, deadline);
+      if (performance.now() > deadline) {
+        throw new Error("interruption proof emergency cleanup deadline exhausted");
+      }
       return;
     } catch {
-      await delay(250);
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) break;
+      await delay(Math.min(250, remaining));
     }
   } while (performance.now() < deadline);
   throw new Error("interruption proof emergency cleanup refused");
@@ -744,6 +787,7 @@ async function proveSignal(signal, prefix, responseCutName, observeImage = false
   let observedExit;
   let record;
   let imageId;
+  let responseIdentity;
   let terminal;
   let forbiddenStartObserved = false;
   let primaryTimedOut = false;
@@ -760,8 +804,21 @@ async function proveSignal(signal, prefix, responseCutName, observeImage = false
     stdout = collectBounded(child.stdout);
     stderr = collectBounded(child.stderr);
     if (responseCut !== undefined) await awaitResponseHeld(responseCut, child);
-    record = await observeContainer(prefix, responseCut === undefined ? "running" : "created");
-    if (observeImage) imageId = await observeCommittedImage(record);
+    if (responseCut === undefined) {
+      throw new Error("interruption proof response identity required");
+    }
+    responseIdentity = readResponseIdentity(responseCut);
+    record = await observeContainer(
+      responseIdentity.containerId,
+      prefix,
+      responseCut.held ? "created" : "running",
+    );
+    if (observeImage) {
+      if (responseIdentity.imageId === undefined) {
+        throw new Error("interruption proof image response identity required");
+      }
+      imageId = await observeCommittedImage(responseIdentity.imageId, record);
+    }
     if (!signalProcessGroup(child, signal)) {
       throw new Error("interruption proof signal refused");
     }
@@ -835,14 +892,12 @@ async function proveSignal(signal, prefix, responseCutName, observeImage = false
 
 async function proveFinalCleanupSignal() {
   proveGlobalResidueAbsent();
-  const child = spawn(process.execPath, [wrapper], {
-    detached: true,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const observedExit = observeChildExit(child);
-  const stdout = collectBounded(child.stdout);
-  const stderr = collectBounded(child.stderr);
   let operationFailed = false;
+  let responseCut;
+  let child;
+  let observedExit;
+  let stdout;
+  let stderr;
   let terminal;
   let primaryTimedOut = false;
   let forcedExitUsed = false;
@@ -853,11 +908,30 @@ async function proveFinalCleanupSignal() {
   let record;
   let imageId;
   try {
-    record = await observeContainer("openspell-wp200-stage-", "created");
-    imageId = await observeCommittedImage(record);
+    responseCut = prepareResponseCut("final-image-delete");
+    child = spawn(process.execPath, [wrapper], {
+      detached: true,
+      env: responseCut.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    observedExit = observeChildExit(child);
+    stdout = collectBounded(child.stdout);
+    stderr = collectBounded(child.stderr);
+    await awaitResponseHeld(responseCut, child);
+    const responseIdentity = readResponseIdentity(responseCut);
+    if (responseIdentity.imageId === undefined) {
+      throw new Error("interruption proof image response identity required");
+    }
+    record = await observeContainer(
+      responseIdentity.containerId,
+      "openspell-wp200-stage-",
+      "created",
+    );
+    imageId = await observeCommittedImage(responseIdentity.imageId, record);
     const deletion = waitForImageDelete(imageId);
     watcher = deletion.watcher;
     watcherExit = deletion.observedExit;
+    releaseResponse(responseCut);
     await deletion.deleted;
     if (!signalProcessGroup(child, "SIGINT")) {
       throw new Error("interruption proof signal refused");
@@ -867,6 +941,13 @@ async function proveFinalCleanupSignal() {
   } catch {
     operationFailed = true;
   } finally {
+    if (responseCut !== undefined) {
+      try {
+        releaseResponse(responseCut);
+      } catch {
+        operationFailed = true;
+      }
+    }
     if (watcher !== undefined && watcherExit !== undefined) {
       try {
         const stoppedWatcher = await stopEventWatcher(watcher, watcherExit);
@@ -876,18 +957,27 @@ async function proveFinalCleanupSignal() {
         operationFailed = true;
       }
     }
-    try {
-      const stopped = await settleChildCustody(
-        child,
-        observedExit,
-        terminal,
-        record,
-        imageId,
-      );
-      forcedExitUsed ||= stopped.forced;
-      terminal = stopped.terminal;
-    } catch {
-      operationFailed = true;
+    if (child !== undefined && observedExit !== undefined) {
+      try {
+        const stopped = await settleChildCustody(
+          child,
+          observedExit,
+          terminal,
+          record,
+          imageId,
+        );
+        forcedExitUsed ||= stopped.forced;
+        terminal = stopped.terminal;
+      } catch {
+        operationFailed = true;
+      }
+    }
+    if (responseCut !== undefined) {
+      try {
+        removeResponseCut(responseCut);
+      } catch {
+        operationFailed = true;
+      }
     }
   }
   if (record !== undefined) {
@@ -915,6 +1005,8 @@ async function proveFinalCleanupSignal() {
     terminal.spawnFailed ||
     terminal.code === 0 ||
     terminal.signal !== null ||
+    stdout === undefined ||
+    stderr === undefined ||
     stdout() !== "" ||
     stderr() !== "openspell synthetic kernel proof refused\n"
   ) {
@@ -929,7 +1021,7 @@ try {
   await proveSignal("SIGINT", "openspell-wp200-build-", "build-create");
   await proveSignal("SIGTERM", "openspell-wp200-stage-", "image-commit", true);
   await proveSignal("SIGINT", "openspell-wp200-case-", "case-inspect");
-  await proveSignal("SIGTERM", "openspell-wp200-case-");
+  await proveSignal("SIGTERM", "openspell-wp200-case-", "case-running");
   await proveFinalCleanupSignal();
   await proveWatchdogRecovery();
   process.stdout.write(

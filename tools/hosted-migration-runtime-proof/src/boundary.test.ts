@@ -243,17 +243,26 @@ describe("private hosted-migration runtime proof boundary", () => {
       'await proveSignal("SIGINT", "openspell-wp200-case-", "case-inspect")',
     );
     expect(interruptionProof).toContain(
-      'await proveSignal("SIGTERM", "openspell-wp200-case-")',
+      'await proveSignal("SIGTERM", "openspell-wp200-case-", "case-running")',
     );
     expect(interruptionProof).toContain("await proveFinalCleanupSignal()");
     expect(interruptionProof).toContain('process.kill(-child.pid, signal)');
     expect(interruptionProof).toContain("await awaitResponseHeld(responseCut, child)");
-    expect(interruptionProof).toContain('responseCut === undefined ? "running" : "created"');
+    expect(interruptionProof).toContain("readResponseIdentity(responseCut)");
+    expect(interruptionProof).toContain("responseIdentity.containerId");
+    expect(interruptionProof).toContain("responseIdentity.imageId");
+    expect(interruptionProof).toContain('prepareResponseCut("final-image-delete")');
+    expect(interruptionProof).not.toContain('listExact(`name=^/${prefix}`');
     expect(interruptionProof).toContain('["volume", "ls", "--quiet"]');
     const responseShim = read("scripts/docker-response-shim.mjs");
     expect(responseShim).toContain('cut === "build-create"');
     expect(responseShim).toContain('cut === "image-commit"');
     expect(responseShim).toContain('cut === "case-inspect"');
+    expect(responseShim).toContain('cut === "case-running"');
+    expect(responseShim).toContain('cut === "final-image-delete"');
+    expect(responseShim).toContain('process.env["WP200_DOCKER_RESPONSE_IDENTITY"]');
+    expect(responseShim).toContain("publishSelectedResponse(heldStdout)");
+    expect(responseShim).toContain("writeFileSync(identityFile");
     expect(responseShim).toContain("refusePostCutCaseStart()");
     expect(responseShim).toContain('writeFileSync(startAttemptFile, "attempted\\n"');
     expect(responseShim).toContain("await holdSuccessfulResponse()");
