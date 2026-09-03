@@ -92,6 +92,8 @@ implementation. Handover and status change only after reviewed merge and exact-m
 16. Use no mutable `HEAD`. Inventory and verify the complete chain on open and before every
     mutation. Corruption, gaps, forks, unknown final files, orphan or unreferenced objects,
     permission drift, impossible edges, clock rollback or uncertain durability enter recovery-only.
+    Enforce the fixed format-v1 inventory caps of 4,096 transitions, 12,288 leaves, 16,384 signatures
+    and 64 MiB total content before allocation.
 17. Never auto-repair, truncate, delete, overwrite, clean, choose a fork, roll back, reset or reuse a
     generation. Maintenance is outside WP-199.
 18. Sign only through crate-private non-cloneable record-specific methods. Expose no arbitrary

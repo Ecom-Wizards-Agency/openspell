@@ -67,7 +67,7 @@ Implement strict records, reducers, journal storage, peer checks and per-surface
 already-open authenticated handles. Publish a Rust library and tests, but no binary or installer.
 Wrap it in a private `tools/*` pnpm package so existing Turbo CI discovers its checks.
 
-Decision: selected. Rust is memory-safe, and a pinned safe `rustix` wrapper supplies Linux
+Decision: selected. Rust is memory-safe; pinned safe `rustix` and `nix` wrappers supply Linux
 peer-message credentials, `recvmsg`, fd-relative filesystem calls and OFD locking without unsafe
 code in this crate. The target is Linux only. The toolchain is pinned; Cargo dependencies are
 locked; the crate forbids unsafe code. GitHub's current Ubuntu 24.04 runner image includes Rust,
@@ -524,6 +524,13 @@ missing or altered object, impossible edge, uniqueness violation, bad ownership/
 symlink, mount crossing, clock rollback or uncertain durability seals the authority recovery-only.
 An unreferenced object is an ambiguous interrupted commit and also seals recovery-only. It never
 truncates, overwrites, chooses a branch, rolls back, repairs or deletes an artifact.
+
+Inventory is bounded before allocation: at most 4,096 transitions, 12,288 leaf objects, 16,384
+signature objects and 64 MiB of total regular-file content across the fixed tree. Enumeration stops
+and seals recovery-only as soon as any bound is exceeded. Files are streamed through bounded buffers;
+only verified typed summaries and bytes needed for predecessor revalidation remain resident. These
+are format-v1 availability constants, not caller policy; raising them requires a reviewed format
+revision.
 
 ## Commit and response ordering
 
