@@ -81,6 +81,7 @@ describe("private hosted-migration runtime proof boundary", () => {
         typecheck: "node scripts/cargo.mjs check && tsc --noEmit",
         test: "node scripts/test.mjs",
         "test:kernel": "node scripts/kernel-proof.mjs",
+        "test:kernel-interruptions": "node scripts/kernel-proof-interruption.mjs",
       },
       devDependencies: { "@types/node": "^22.20.1" },
     });
@@ -212,6 +213,13 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(kernel).toContain('process.on("SIGINT", recordInterruption)');
     expect(kernel).toContain('process.on("SIGTERM", recordInterruption)');
     expect(kernel).toContain("await interruptionCheckpoint()");
+    expect(kernel).toContain("detached: true");
+    expect(kernel).toContain("captureAnonymousTargetVolume");
+    expect(kernel).not.toContain('["volume", "rm", volume]');
+    expect(kernel).toContain("if (unresolvedCreation) throw new Error");
+    expect(kernel.indexOf("proveImageAbsent(derivedImageId, recoveryImageTag)")).toBeLessThan(
+      kernel.lastIndexOf("process.stdout.write(successSummary)"),
+    );
     expect(kernel).not.toContain("= inspectContainer(name)");
     expect(kernel).not.toContain("inspectImage(recoveryImageTag)");
     expect(kernel).toContain("stageProofImage");
@@ -220,6 +228,18 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(kernel).toContain("verifyImageLineage");
     expect(kernel).toContain('["image", "rm", "--no-prune", id]');
     expect(kernel).not.toContain('"image", "rm", "--force"');
+    const interruptionProof = read("scripts/kernel-proof-interruption.mjs");
+    expect(interruptionProof).toContain('await proveSignal("SIGINT", "openspell-wp200-build-")');
+    expect(interruptionProof).toContain(
+      'await proveSignal("SIGTERM", "openspell-wp200-stage-", true)',
+    );
+    expect(interruptionProof).toContain(
+      'await proveSignal("SIGTERM", "openspell-wp200-case-")',
+    );
+    expect(interruptionProof).toContain("await proveFinalCleanupSignal()");
+    expect(interruptionProof).toContain('process.kill(-child.pid, signal)');
+    expect(interruptionProof).toContain('["volume", "ls", "--quiet"]');
+    expect(interruptionProof).toContain('status === "running"');
     expect(kernel).toContain('"/usr/bin/setpriv"');
     expect(kernel).toContain('"--bounding-set=-all,+sys_admin,+setfcap"');
     expect(kernel).toContain('"--no-new-privs"');
@@ -254,7 +274,7 @@ describe("private hosted-migration runtime proof boundary", () => {
     );
     expect(proofContainer).not.toContain('"--mount"');
     expect(proofContainer).toContain("imageId");
-    const removeBuildAt = kernel.indexOf("proveContainerAbsent(name, containerId);");
+    const removeBuildAt = kernel.indexOf("targetVolume === undefined ? [] : [targetVolume]");
     const runCasesAt = kernel.indexOf("for (const [mode, expected] of cases)");
     expect(removeBuildAt).toBeGreaterThan(0);
     expect(runCasesAt).toBeGreaterThan(removeBuildAt);
@@ -287,22 +307,26 @@ describe("private hosted-migration runtime proof boundary", () => {
   });
 
   it("keeps the privileged proof off pull requests and out of credentialed CI", () => {
-    const workflow = readFileSync(join(workspaceDirectory, ".github/workflows/ci.yml"), "utf8");
-    const [ordinaryJobs, kernelAndLater] = workflow.split("\n  kernel-proof:", 2);
-    expect(ordinaryJobs).toBeDefined();
-    expect(kernelAndLater).toBeDefined();
-    expect(ordinaryJobs).not.toContain("test:kernel");
-    const kernelJob = kernelAndLater?.split("\n  e2e:", 1)[0] ?? "";
-    expect(kernelJob).toContain("github.ref == 'refs/heads/main'");
-    expect(kernelJob).toContain("needs: check");
-    expect(kernelJob).toContain("permissions: {}");
-    expect(kernelJob).not.toContain("actions/checkout");
-    expect(kernelJob).toContain("Fetch exact trusted revision without a credential");
-    expect(kernelJob).toContain('git -C workspace fetch --depth=1 origin "$GITHUB_SHA"');
-    expect(kernelJob).toContain(
-      'test "$(git -C workspace rev-parse HEAD)" = "$GITHUB_SHA"',
+    const ordinary = readFileSync(join(workspaceDirectory, ".github/workflows/ci.yml"), "utf8");
+    expect(ordinary).not.toContain("test:kernel");
+
+    const trusted = readFileSync(
+      join(workspaceDirectory, ".github/workflows/trusted-kernel-proof.yml"),
+      "utf8",
     );
-    expect(kernelJob).toContain(
+    expect(trusted).toContain("workflow_run:");
+    expect(trusted).toContain('workflows: ["CI"]');
+    expect(trusted).toContain('branches: ["main"]');
+    expect(trusted).toContain("github.event.workflow_run.conclusion == 'success'");
+    expect(trusted).toContain("github.event.workflow_run.event == 'push'");
+    expect(trusted).toContain("github.event.workflow_run.head_branch == 'main'");
+    expect(trusted).toContain("permissions: {}");
+    expect(trusted).not.toContain("actions/checkout");
+    expect(trusted).toContain("Fetch exact trusted revision without a credential");
+    expect(trusted).toContain('git -C workspace fetch --depth=1 origin "$TRUSTED_SHA"');
+    expect(trusted).toContain('test "$(git -C workspace rev-parse HEAD)" = "$TRUSTED_SHA"');
+    expect(trusted).toContain("package_json_file: workspace/package.json");
+    expect(trusted).toContain(
       "pnpm --filter @wizard-ads/hosted-migration-runtime-proof run test:kernel",
     );
   });

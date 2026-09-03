@@ -110,8 +110,13 @@ Handover and status change only after reviewed merge and exact-main CI.
     object, then run only that immutable image
     ID with private cgroup namespace, no network, read-only root, fresh tmpfs and no repository,
     user-directory, credential, browser, Docker-socket or service mount. Never skip a missing kernel
-    invariant. Cleanup may use only captured container/image IDs, never a mutable name or tag, and
-    graceful SIGINT/SIGTERM cancellation must refuse after exact cleanup. Never run
+    invariant. Capture container and anonymous-volume identities before use; isolate Docker mutation
+    clients from wrapper process-group signals so an in-flight response cannot lose cleanup custody.
+    Cleanup may use only captured container/image IDs, never a mutable name or tag; the anonymous
+    volume identity is verified absent after exact container-owned removal and is never separately
+    deleted by name. A client timeout without an immutable response remains cleanup-uncertain, and
+    graceful SIGINT/SIGTERM cancellation must refuse after exact cleanup and before emitting any
+    success summary. Never run
     pull-request-controlled code in the privileged proof container; CI may run
     it only in a dedicated permissionless job for trusted `main` revisions after ordinary checks
     pass.
@@ -136,10 +141,13 @@ Handover and status change only after reviewed merge and exact-main CI.
 - real namespace, cgroup, pidfd, ptrace/exec-map, topology, capability, core, dumpability and seccomp
   assertions with no skip;
 - exact no-residue proof after success and every real failure case;
+- real process-group SIGINT/SIGTERM cuts during build-container acquisition, committed-image
+  acquisition, running privileged-case execution and final image deletion, including exact
+  anonymous-volume absence;
 - privacy-canary proof across results, errors and logs;
 - pinned Cargo format/check/clippy/rustdoc/test plus TypeScript boundary tests;
 - repository typecheck, lint, test and hygiene on exact PR head, plus the permissionless privileged
-  kernel job on the merged exact-main revision; and
+  kernel workflow triggered from the default branch after exact-main CI succeeds; and
 - one independent High correctness review and two Extra-High authority/kernel/crash reviews.
 
 ## Explicit exclusions

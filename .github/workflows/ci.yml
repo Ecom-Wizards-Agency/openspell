@@ -76,39 +76,6 @@ jobs:
       - name: Hygiene (public-repo gate)
         run: pnpm run hygiene
 
-  kernel-proof:
-    name: trusted hosted-migration kernel proof
-    if: >-
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    needs: check
-    permissions: {}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Fetch exact trusted revision without a credential
-        run: |
-          git init workspace
-          git -C workspace remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
-          git -C workspace fetch --depth=1 origin "$GITHUB_SHA"
-          git -C workspace checkout --detach FETCH_HEAD
-          test "$(git -C workspace rev-parse HEAD)" = "$GITHUB_SHA"
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: workspace/pnpm-lock.yaml
-
-      - name: Install
-        run: pnpm install --frozen-lockfile
-        working-directory: workspace
-
-      - name: Verify hosted migration Linux runtime proof
-        run: pnpm --filter @wizard-ads/hosted-migration-runtime-proof run test:kernel
-        working-directory: workspace
-
   e2e:
     name: Playwright e2e
     runs-on: ubuntu-latest

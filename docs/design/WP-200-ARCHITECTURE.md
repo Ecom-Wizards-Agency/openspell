@@ -313,8 +313,9 @@ The ordinary package test runs the model, provenance, parsing and static boundar
 privilege. A separate `test:kernel` wrapper:
 
 1. creates an unprivileged build container with an anonymous `/target` volume, captures its immutable
-   container ID, and builds the one synthetic kernel-test executable with the pinned Rust toolchain
-   and locked graph without creating a mutable host build tree;
+   container ID from the isolated Docker client's exact response and the immutable anonymous-volume
+   identity from that container, and builds the one synthetic kernel-test executable with the pinned
+   Rust toolchain and locked graph without creating a mutable host build tree;
 2. extracts the compiler-reported object from that stopped container ID as one bounded, strictly
    parsed archive, validates and hashes the exact static-PIE bytes in memory, copies those bytes into
    a separate stopped staging container and commits it to a content-addressed local image;
@@ -328,9 +329,18 @@ privilege. A separate `test:kernel` wrapper:
    capability set; and
 6. requires the exact executable to report all 19 cases and counts, rehashes the immutable image
    afterwards, then proves every case container, staging object, local image and anonymous build
-   volume absent. Container/image deletion uses only captured immutable IDs; names and tags are
-   absence diagnostics, never cleanup authority. SIGINT and SIGTERM are recorded and refused at
-   event-loop checkpoints so graceful cancellation still completes exact cleanup.
+   volume absent. Container/image deletion uses only captured immutable IDs; the captured anonymous
+   volume identity is verified absent after the exact container's `--volumes` removal and is never
+   separately deleted by name. Names and tags are absence diagnostics, never cleanup authority.
+   Docker mutation clients run in separate process
+   groups so a wrapper process-group SIGINT/SIGTERM cannot sever an in-flight daemon response before
+   its ID is retained. Any independent client timeout or malformed response without an ID is
+   permanently cleanup-uncertain even when its name/tag is momentarily absent. Signals are recorded
+   and refused at event-loop checkpoints, and the wrapper
+   emits no success summary until final image cleanup has been proved. A separate real interruption
+   harness exercises build-container acquisition, committed-image acquisition, a running privileged
+   case and final image deletion, then verifies the captured container, image and anonymous-volume
+   IDs are all absent.
 
 The reviewed image is:
 
@@ -339,11 +349,12 @@ docker.io/library/rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe
 ```
 
 The wrapper refuses when Docker, cgroup v2, required namespace/ptrace behavior or exact cleanup is
-unavailable. It never silently skips. Pull-request code never enters a privileged container. CI
-runs the proof only after the ordinary check job on a trusted `main` push or `main`
-`workflow_dispatch`, in a dedicated job with no permissions, no persisted checkout credential and
-the proof as its final step. A local operator can run it explicitly; ordinary local repository tests
-do not silently start a privileged container.
+unavailable. It never silently skips. Pull-request code never enters a privileged container. A
+separate default-branch `workflow_run` workflow runs the proof only after ordinary CI succeeds for a
+trusted `main` push; attended `workflow_dispatch` is the only other trigger. The workflow has no
+permissions or persisted checkout credential, fetches and verifies the triggering exact SHA, points
+pnpm setup at that checked-out manifest and runs the proof as its final step. A local operator can run
+it explicitly; ordinary local repository tests do not silently start a privileged container.
 
 ## WP-199 composition
 
@@ -384,6 +395,7 @@ tools/hosted-migration-runtime-proof/
     cargo.mjs
     test.mjs
     kernel-proof.mjs
+    kernel-proof-interruption.mjs
   Cargo.toml
   Cargo.lock
   rust-toolchain.toml

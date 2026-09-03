@@ -48,8 +48,12 @@ const cases = Object.freeze([
   ["tracer-death-resumed", tracerDeathSummary],
 ]);
 
+class CleanupUncertain extends Error {}
+
 let derivedImageId;
 let recoveryImageTag;
+let unresolvedImageCreation = false;
+let cleanupUncertain = false;
 let interrupted = false;
 
 const recordInterruption = () => {
@@ -69,12 +73,37 @@ async function interruptionCheckpoint() {
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
+    detached: true,
     encoding: "utf8",
     maxBuffer: maximumOutputBytes,
     ...options,
   });
   if (result.error !== undefined) throw new Error("kernel proof operation failed");
   return result;
+}
+
+function createContainer(args, options = {}) {
+  const result = spawnSync("docker", ["container", "create", ...args], {
+    detached: true,
+    encoding: "utf8",
+    maxBuffer: maximumOutputBytes,
+    ...options,
+  });
+  const candidate = result.stdout?.trim();
+  const containerId = /^[0-9a-f]{64}$/u.test(candidate) ? candidate : undefined;
+  return Object.freeze({ containerId, unresolvedCreation: containerId === undefined, result });
+}
+
+function commitImage(containerId, tag) {
+  const result = spawnSync("docker", ["container", "commit", containerId, tag], {
+    detached: true,
+    encoding: "utf8",
+    maxBuffer: maximumOutputBytes,
+    timeout: cleanupTimeoutMilliseconds,
+  });
+  const candidate = result.stdout?.trim();
+  const imageId = /^sha256:[0-9a-f]{64}$/u.test(candidate) ? candidate : undefined;
+  return Object.freeze({ imageId, unresolvedCreation: imageId === undefined, result });
 }
 
 function requireSuccessful(result, message) {
@@ -95,11 +124,16 @@ function requireSuccessfulBinary(result, message) {
   }
 }
 
-function createdContainerId(result) {
+function requireCreatedContainer(created) {
+  const { containerId, result } = created;
+  if (
+    result.error !== undefined ||
+    containerId === undefined ||
+    result.stdout.trim() !== containerId
+  ) {
+    throw new Error("exact container id required");
+  }
   requireSuccessful(result, "container creation failed");
-  const id = result.stdout.trim();
-  if (!/^[0-9a-f]{64}$/u.test(id)) throw new Error("exact container id required");
-  return id;
 }
 
 function inspectContainer(name) {
@@ -119,7 +153,13 @@ function inspectContainer(name) {
   return records[0];
 }
 
-function proveContainerAbsent(name, knownId) {
+function proveContainerAbsentUnchecked(
+  name,
+  knownId,
+  knownVolumes = [],
+  requireKnownVolume = false,
+  unresolvedCreation = false,
+) {
   if (knownId !== undefined && !/^[0-9a-f]{64}$/u.test(knownId)) {
     throw new Error("container cleanup uncertain");
   }
@@ -165,6 +205,47 @@ function proveContainerAbsent(name, knownId) {
       throw new Error("container cleanup uncertain");
     }
   }
+  for (const volume of knownVolumes) {
+    if (!/^[0-9a-f]{64}$/u.test(volume)) throw new Error("volume cleanup uncertain");
+    const volumes = run("docker", ["volume", "ls", "--quiet"], {
+      timeout: cleanupTimeoutMilliseconds,
+    });
+    if (
+      volumes.status !== 0 ||
+      volumes.signal !== null ||
+      volumes.stderr !== "" ||
+      volumes.stdout.split("\n").includes(volume)
+    ) {
+      throw new Error("volume cleanup uncertain");
+    }
+  }
+  if (requireKnownVolume && knownVolumes.length !== 1) {
+    throw new Error("volume cleanup uncertain");
+  }
+  if (unresolvedCreation) throw new Error("container cleanup uncertain");
+}
+
+function proveContainerAbsent(...args) {
+  try {
+    proveContainerAbsentUnchecked(...args);
+  } catch {
+    throw new CleanupUncertain();
+  }
+}
+
+function captureAnonymousTargetVolume(containerId) {
+  const container = inspectContainer(containerId);
+  const targets = (container.Mounts ?? []).filter(
+    (mount) => mount.Type === "volume" && mount.Destination === "/target",
+  );
+  if (
+    targets.length !== 1 ||
+    !/^[0-9a-f]{64}$/u.test(targets[0].Name) ||
+    targets[0].RW !== true
+  ) {
+    throw new Error("exact anonymous target volume required");
+  }
+  return targets[0].Name;
 }
 
 function inspectImage(reference) {
@@ -208,7 +289,7 @@ function proveTagAbsent(tag) {
   }
 }
 
-function proveImageAbsent(id, tag) {
+function proveImageAbsentUnchecked(id, tag, unresolvedCreation = false) {
   if (id !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(id)) {
     throw new Error("image cleanup uncertain");
   }
@@ -229,6 +310,15 @@ function proveImageAbsent(id, tag) {
     throw new Error("image cleanup uncertain");
   }
   if (tag !== undefined) proveTagAbsent(tag);
+  if (unresolvedCreation) throw new Error("image cleanup uncertain");
+}
+
+function proveImageAbsent(...args) {
+  try {
+    proveImageAbsentUnchecked(...args);
+  } catch {
+    throw new CleanupUncertain();
+  }
 }
 
 function hasNoConfiguredMounts(value) {
@@ -238,12 +328,11 @@ function hasNoConfiguredMounts(value) {
 function buildArtifact() {
   const name = `openspell-wp200-build-${randomUUID()}`;
   let containerId;
+  let targetVolume;
+  let unresolvedCreation = false;
   try {
-    const created = run(
-      "docker",
+    const created = createContainer(
       [
-        "container",
-        "create",
         "--name",
         name,
         "--read-only",
@@ -282,7 +371,10 @@ function buildArtifact() {
       ],
       { timeout: buildTimeoutMilliseconds },
     );
-    containerId = createdContainerId(created);
+    unresolvedCreation = created.unresolvedCreation;
+    containerId = created.containerId;
+    if (containerId !== undefined) targetVolume = captureAnonymousTargetVolume(containerId);
+    requireCreatedContainer(created);
     refuseInterruption();
     const result = startCreatedContainer(containerId, buildTimeoutMilliseconds, true);
     refuseInterruption();
@@ -333,7 +425,13 @@ function buildArtifact() {
     }
     return Object.freeze({ bytes, digest });
   } finally {
-    proveContainerAbsent(name, containerId);
+    proveContainerAbsent(
+      name,
+      containerId,
+      targetVolume === undefined ? [] : [targetVolume],
+      containerId !== undefined,
+      unresolvedCreation,
+    );
   }
 }
 
@@ -459,20 +557,19 @@ function verifyImageLineage(base, derived) {
 }
 
 function stageProofImage(artifact) {
-  const stageName = `openspell-wp200-stage-${randomUUID()}`;
+  const operationId = randomUUID();
+  const stageName = `openspell-wp200-stage-${operationId}`;
   let stageId;
-  recoveryImageTag = `${recoveryImageRepository}:${randomUUID()}`;
+  let unresolvedCreation = false;
+  recoveryImageTag = `${recoveryImageRepository}:${operationId}`;
   const base = inspectImage(image);
   if (!/^sha256:[0-9a-f]{64}$/u.test(base.Id)) {
     throw new Error("content addressed base image required");
   }
   proveTagAbsent(recoveryImageTag);
   try {
-    const create = run(
-      "docker",
+    const create = createContainer(
       [
-        "container",
-        "create",
         "--name",
         stageName,
         "--network",
@@ -487,7 +584,9 @@ function stageProofImage(artifact) {
       ],
       { timeout: cleanupTimeoutMilliseconds },
     );
-    stageId = createdContainerId(create);
+    unresolvedCreation = create.unresolvedCreation;
+    stageId = create.containerId;
+    requireCreatedContainer(create);
     refuseInterruption();
     const stage = inspectContainer(stageId);
     if (
@@ -509,19 +608,15 @@ function stageProofImage(artifact) {
     });
     requireSuccessful(copied, "exact executable staging failed");
 
-    const committed = run("docker", ["container", "commit", stageId, recoveryImageTag], {
-      timeout: cleanupTimeoutMilliseconds,
-    });
-    requireSuccessful(committed, "content addressed image commit failed");
-    const reportedId = committed.stdout.trim();
-    if (!/^sha256:[0-9a-f]{64}$/u.test(reportedId)) {
-      throw new Error("exact committed image required");
-    }
-    derivedImageId = reportedId;
+    const committed = commitImage(stageId, recoveryImageTag);
+    unresolvedImageCreation = committed.unresolvedCreation;
+    derivedImageId = committed.imageId;
+    requireSuccessful(committed.result, "content addressed image commit failed");
+    if (derivedImageId === undefined) throw new Error("exact committed image required");
     refuseInterruption();
     const derived = inspectImage(derivedImageId);
     if (
-      derived.Id !== reportedId ||
+      derived.Id !== derivedImageId ||
       derived.RepoTags?.length !== 1 ||
       derived.RepoTags[0] !== recoveryImageTag
     ) {
@@ -530,7 +625,7 @@ function stageProofImage(artifact) {
     verifyImageLineage(base, derived);
     return derivedImageId;
   } finally {
-    proveContainerAbsent(stageName, stageId);
+    proveContainerAbsent(stageName, stageId, [], false, unresolvedCreation);
   }
 }
 
@@ -583,12 +678,10 @@ function runCreatedContainer(containerId, expected, timeout) {
 function verifyImageArtifact(imageId, digest) {
   const name = `openspell-wp200-verify-${randomUUID()}`;
   let containerId;
+  let unresolvedCreation = false;
   try {
-    const create = run(
-      "docker",
+    const create = createContainer(
       [
-        "container",
-        "create",
         "--name",
         name,
         "--network",
@@ -613,7 +706,9 @@ function verifyImageArtifact(imageId, digest) {
       ],
       { timeout: cleanupTimeoutMilliseconds },
     );
-    containerId = createdContainerId(create);
+    unresolvedCreation = create.unresolvedCreation;
+    containerId = create.containerId;
+    requireCreatedContainer(create);
     refuseInterruption();
     const record = inspectContainer(containerId);
     inspectIsolatedContainer(record, imageId, false);
@@ -627,19 +722,17 @@ function verifyImageArtifact(imageId, digest) {
     }
     runCreatedContainer(containerId, `${digest}  /kernel-proof\n`, caseTimeoutMilliseconds);
   } finally {
-    proveContainerAbsent(name, containerId);
+    proveContainerAbsent(name, containerId, [], false, unresolvedCreation);
   }
 }
 
 function runCase(imageId, mode, expected) {
   const name = `openspell-wp200-case-${randomUUID()}`;
   let containerId;
+  let unresolvedCreation = false;
   try {
-    const create = run(
-      "docker",
+    const create = createContainer(
       [
-        "container",
-        "create",
         "--name",
         name,
         "--privileged",
@@ -670,7 +763,9 @@ function runCase(imageId, mode, expected) {
       ],
       { timeout: cleanupTimeoutMilliseconds },
     );
-    containerId = createdContainerId(create);
+    unresolvedCreation = create.unresolvedCreation;
+    containerId = create.containerId;
+    requireCreatedContainer(create);
     refuseInterruption();
     const record = inspectContainer(containerId);
     inspectIsolatedContainer(record, imageId, true);
@@ -685,10 +780,11 @@ function runCase(imageId, mode, expected) {
     }
     runCreatedContainer(containerId, `${expected}\n`, caseTimeoutMilliseconds);
   } finally {
-    proveContainerAbsent(name, containerId);
+    proveContainerAbsent(name, containerId, [], false, unresolvedCreation);
   }
 }
 
+let successSummary;
 try {
   if (process.argv.length !== 2) throw new Error("kernel proof accepts no arguments");
   if (process.platform !== "linux" || process.arch !== "x64") {
@@ -707,23 +803,39 @@ try {
   }
   verifyImageArtifact(imageId, artifact.digest);
   await interruptionCheckpoint();
-  process.stdout.write(
-    `openspell synthetic kernel proof: cases=${cases.length} residue=0 sha256=${artifact.digest}\n`,
-  );
-} catch {
+  successSummary =
+    `openspell synthetic kernel proof: cases=${cases.length} residue=0 ` +
+    `sha256=${artifact.digest}\n`;
+} catch (error) {
+  if (error instanceof CleanupUncertain) cleanupUncertain = true;
   process.stderr.write("openspell synthetic kernel proof refused\n");
   process.exitCode = 1;
 } finally {
   if (derivedImageId !== undefined || recoveryImageTag !== undefined) {
     try {
-      proveImageAbsent(derivedImageId, recoveryImageTag);
+      proveImageAbsent(derivedImageId, recoveryImageTag, unresolvedImageCreation);
       derivedImageId = undefined;
       recoveryImageTag = undefined;
+      unresolvedImageCreation = false;
     } catch {
-      process.stderr.write("openspell synthetic kernel proof cleanup uncertain\n");
+      cleanupUncertain = true;
       process.exitCode = 1;
     }
   }
-  process.off("SIGINT", recordInterruption);
-  process.off("SIGTERM", recordInterruption);
+}
+try {
+  await interruptionCheckpoint();
+} catch {
+  if (process.exitCode !== 1) {
+    process.stderr.write("openspell synthetic kernel proof refused\n");
+  }
+  process.exitCode = 1;
+}
+process.off("SIGINT", recordInterruption);
+process.off("SIGTERM", recordInterruption);
+if (cleanupUncertain) {
+  process.stderr.write("openspell synthetic kernel proof cleanup uncertain\n");
+}
+if (process.exitCode !== 1 && successSummary !== undefined) {
+  process.stdout.write(successSummary);
 }
