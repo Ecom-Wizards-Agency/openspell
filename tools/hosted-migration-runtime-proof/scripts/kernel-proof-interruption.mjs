@@ -36,6 +36,7 @@ const finalCleanupObservationTimeoutMilliseconds = 60 * 60_000;
 const watcherExitTimeoutMilliseconds = 10_000;
 const watchdogFixtureTimeoutMilliseconds = 100;
 const watchdogFixtureReadyTimeoutMilliseconds = 10_000;
+const recoveryImageRepository = ["openspell", "wp200", "recovery"].join("-");
 
 function remainingOperationTime(deadline) {
   return Math.max(1, Math.min(10_000, Math.ceil(deadline - performance.now())));
@@ -587,7 +588,7 @@ async function createWatchdogFixtureContainer() {
 }
 
 function acquireWatchdogFixtureImage(record) {
-  const tag = `openspell-wp200-recovery:${randomUUID()}`;
+  const tag = `${recoveryImageRepository}:${randomUUID()}`;
   const committed = rawDocker(["container", "commit", record.Id, tag]);
   const imageId =
     typeof committed.stdout === "string" ? committed.stdout.trim() : undefined;
