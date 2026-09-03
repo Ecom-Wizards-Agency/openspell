@@ -48,7 +48,7 @@ impl ModelKernel {
     }
 
     fn successful_tape() -> ModelRun {
-        let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture());
+        let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture(1));
         let mut kernel = Self::default();
         kernel.start_case();
 
@@ -63,7 +63,12 @@ impl ModelKernel {
             {
                 Progress::Advanced => {}
                 Progress::Complete(_) => break,
-                Progress::Refused(refusal) => panic!("successful tape refused: {refusal}"),
+                Progress::Refused(refusal) => {
+                    panic!(
+                        "successful tape refused at {kind:?}: {refusal}; accounting={:?}",
+                        machine.accounting()
+                    )
+                }
             }
         }
 
@@ -77,7 +82,7 @@ impl ModelKernel {
     }
 
     fn run_effect_cut(tape: &[EffectKind], cut_index: usize, cut: Cut) -> ModelRun {
-        let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture());
+        let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture(1));
         let mut kernel = Self::default();
         kernel.start_case();
 
@@ -133,7 +138,7 @@ impl ModelKernel {
     }
 
     fn run_interruption(tape: &[EffectKind], prefix_len: usize) -> ModelRun {
-        let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture());
+        let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture(1));
         let mut kernel = Self::default();
         kernel.start_case();
 
@@ -160,7 +165,7 @@ impl ModelKernel {
     }
 
     fn run_in_flight_interruption(tape: &[EffectKind], cut_index: usize) -> ModelRun {
-        let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture());
+        let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture(1));
         let mut kernel = Self::default();
         kernel.start_case();
 
@@ -170,6 +175,10 @@ impl ModelKernel {
             assert_eq!(effect.kind(), expected_kind, "successful tape drift");
             if index == cut_index {
                 kernel.actual.effects_uncertain += 1;
+                kernel
+                    .actual
+                    .uncertain_resources
+                    .add_for_model(expected_kind.declaration().resources);
                 kernel.actual.interruptions += 1;
                 machine.interrupt().expect("in-flight interruption closes");
                 break;
@@ -200,7 +209,7 @@ impl ModelKernel {
             .iter()
             .position(|kind| *kind == effect_kind)
             .expect("hostile effect appears in successful tape");
-        let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture());
+        let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture(1));
         let mut kernel = Self::default();
         kernel.start_case();
 
@@ -238,6 +247,7 @@ impl ResourceCounts {
         self.execs += other.execs;
         self.processes += other.processes;
         self.protected_processes += other.protected_processes;
+        self.bootstrap_continues += other.bootstrap_continues;
         self.resumes += other.resumes;
         self.terminal_children += other.terminal_children;
         self.terminal_descendants += other.terminal_descendants;
@@ -247,15 +257,14 @@ impl ResourceCounts {
     }
 }
 
-fn expected_lifecycle() -> [EffectKind; 11] {
+fn expected_lifecycle() -> [EffectKind; 10] {
     [
         EffectKind::PersistLaunchIntent,
         EffectKind::EstablishPrivateNamespaces,
         EffectKind::EstablishExclusiveChildCgroup,
         EffectKind::SpawnStoppedLeaderAndOpenPidfd,
-        EffectKind::EstablishPtraceAndDescendantCustody,
-        EffectKind::AttestExecsAndMaps,
-        EffectKind::AttestProcessProtections,
+        EffectKind::AttestLeaderExecAndMaps,
+        EffectKind::BootstrapVerifiedProcesses,
         EffectKind::ResumeVerifiedProcesses,
         EffectKind::DrainDescendants,
         EffectKind::ObserveTerminalAndEmptyCgroup,
@@ -266,6 +275,22 @@ fn expected_lifecycle() -> [EffectKind; 11] {
 fn assert_recovery_only(run: &ModelRun) {
     assert_eq!(run.result.refusal(), Some(ProofRefusal::RecoveryRequired));
     assert!(run.result.accounting().effect_events_conserve());
+}
+
+fn assert_accounting_reconciles(reported: Accounting, actual: Accounting) {
+    assert_eq!(reported.cases_offered, actual.cases_offered);
+    assert_eq!(reported.cases_accepted, actual.cases_accepted);
+    assert_eq!(reported.effects_offered, actual.effects_offered);
+    assert_eq!(reported.effects_accepted, actual.effects_accepted);
+    assert_eq!(reported.effects_refused, actual.effects_refused);
+    assert_eq!(reported.effects_uncertain, actual.effects_uncertain);
+    assert_eq!(reported.responses_lost, actual.responses_lost);
+    assert_eq!(reported.interruptions, actual.interruptions);
+    let mut reported_total = reported.resources;
+    reported_total.add_for_model(reported.uncertain_resources);
+    let mut actual_total = actual.resources;
+    actual_total.add_for_model(actual.uncertain_resources);
+    assert_eq!(reported_total, actual_total);
 }
 
 #[test]
@@ -289,6 +314,10 @@ fn legal_transition_table_completes_with_exact_conservation() {
             durable_predecessor_seen = true;
         }
         assert_eq!(
+            declaration.requires_bootstrap_permit,
+            *kind == EffectKind::BootstrapVerifiedProcesses
+        );
+        assert_eq!(
             declaration.requires_resume_permit,
             *kind == EffectKind::ResumeVerifiedProcesses
         );
@@ -296,8 +325,39 @@ fn legal_transition_table_completes_with_exact_conservation() {
 }
 
 #[test]
+fn effects_are_bound_to_one_verified_case_identity() {
+    let mut first = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture(1));
+    let mut second = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture(2));
+    let first_effect = first.offer().expect("first case effect");
+    let second_effect = second.offer().expect("second case effect");
+
+    assert_eq!(
+        first.resolve(
+            second_effect,
+            EffectReply::Observed(Observation::exact(EffectKind::PersistLaunchIntent)),
+        ),
+        Err(MachineError::UnexpectedEffect)
+    );
+    assert_eq!(
+        second.resolve(
+            first_effect,
+            EffectReply::Observed(Observation::exact(EffectKind::PersistLaunchIntent)),
+        ),
+        Err(MachineError::UnexpectedEffect)
+    );
+    assert_eq!(
+        first.result().and_then(ProofResult::refusal),
+        Some(ProofRefusal::RecoveryRequired)
+    );
+    assert_eq!(
+        second.result().and_then(ProofResult::refusal),
+        Some(ProofRefusal::RecoveryRequired)
+    );
+}
+
+#[test]
 fn illegal_transitions_never_advance_or_reissue() {
-    let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture());
+    let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture(1));
     let effect = machine.offer().expect("first effect");
     assert!(matches!(
         machine.offer(),
@@ -321,13 +381,17 @@ fn illegal_transitions_never_advance_or_reissue() {
 }
 
 #[test]
-fn permit_is_minted_only_after_every_verification_and_consumed_by_resume() {
+fn one_use_permits_gate_bootstrap_and_application_resume() {
     let tape = ModelKernel::successful_tape().offered;
-    let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture());
+    let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture(1));
 
     for expected_kind in tape {
         let effect = machine.offer().expect("next effect");
         assert_eq!(effect.kind(), expected_kind);
+        assert_eq!(
+            effect.carries_bootstrap_permit(),
+            expected_kind == EffectKind::BootstrapVerifiedProcesses
+        );
         assert_eq!(
             effect.carries_resume_permit(),
             expected_kind == EffectKind::ResumeVerifiedProcesses
@@ -338,7 +402,10 @@ fn permit_is_minted_only_after_every_verification_and_consumed_by_resume() {
                 EffectReply::Observed(Observation::exact(expected_kind)),
             )
             .expect("exact result");
-        if expected_kind == EffectKind::ResumeVerifiedProcesses {
+        if matches!(
+            expected_kind,
+            EffectKind::BootstrapVerifiedProcesses | EffectKind::ResumeVerifiedProcesses
+        ) {
             assert!(matches!(progress, Progress::Advanced));
         }
     }
@@ -354,6 +421,7 @@ fn every_fault_wrong_result_and_lost_result_cut_comes_from_successful_tape() {
             let run = ModelKernel::run_effect_cut(&success.offered, cut_index, cut);
             assert_eq!(run.offered, success.offered[..=cut_index]);
             assert!(run.actual.effect_events_conserve());
+            assert_accounting_reconciles(run.result.accounting(), run.actual);
             assert_eq!(run.actual.effects_offered as usize, cut_index + 1);
 
             if cut_index == 0 && cut == Cut::Refusal {
@@ -430,6 +498,9 @@ fn lost_spawn_response_cannot_spawn_twice_or_recover_the_case() {
     assert_eq!(run.actual.resources.pidfds, 1);
     assert_eq!(run.result.accounting().resources.children, 0);
     assert_eq!(run.result.accounting().resources.pidfds, 0);
+    assert_eq!(run.result.accounting().uncertain_resources.children, 1);
+    assert_eq!(run.result.accounting().uncertain_resources.pidfds, 1);
+    assert_accounting_reconciles(run.result.accounting(), run.actual);
 }
 
 #[test]
@@ -449,6 +520,10 @@ fn pre_intent_refusal_is_exact_zero_but_intent_loss_is_recovery_only() {
     assert_recovery_only(&lost);
     assert_eq!(lost.actual.resources.durable_intents, 1);
     assert_eq!(lost.result.accounting().resources.durable_intents, 0);
+    assert_eq!(
+        lost.result.accounting().uncertain_resources.durable_intents,
+        1
+    );
     assert!(
         lost.result
             .accounting()
@@ -476,64 +551,79 @@ fn hostile_kernel_observations_are_all_fixed_recovery_outcomes() {
     let tape = ModelKernel::successful_tape().offered;
     let cases = [
         (
-            EffectKind::EstablishPtraceAndDescendantCustody,
+            EffectKind::BootstrapVerifiedProcesses,
             Attestation::StaleOrReusedPid,
         ),
         (
-            EffectKind::EstablishPtraceAndDescendantCustody,
+            EffectKind::BootstrapVerifiedProcesses,
             Attestation::PidfdLost,
         ),
         (
-            EffectKind::EstablishPtraceAndDescendantCustody,
+            EffectKind::BootstrapVerifiedProcesses,
             Attestation::CgroupEscape,
         ),
         (
-            EffectKind::EstablishPtraceAndDescendantCustody,
+            EffectKind::BootstrapVerifiedProcesses,
             Attestation::UnexpectedFork,
         ),
         (
-            EffectKind::EstablishPtraceAndDescendantCustody,
+            EffectKind::BootstrapVerifiedProcesses,
             Attestation::UnexpectedClone,
         ),
         (
-            EffectKind::EstablishPtraceAndDescendantCustody,
+            EffectKind::BootstrapVerifiedProcesses,
             Attestation::UnexpectedVfork,
         ),
-        (EffectKind::AttestExecsAndMaps, Attestation::UnexpectedExec),
         (
-            EffectKind::AttestExecsAndMaps,
+            EffectKind::BootstrapVerifiedProcesses,
+            Attestation::UnexpectedExec,
+        ),
+        (
+            EffectKind::BootstrapVerifiedProcesses,
             Attestation::ExecutableReordered,
         ),
         (
-            EffectKind::AttestExecsAndMaps,
+            EffectKind::BootstrapVerifiedProcesses,
             Attestation::ExecutableSubstituted,
         ),
-        (EffectKind::AttestExecsAndMaps, Attestation::ExtraMapping),
-        (EffectKind::AttestExecsAndMaps, Attestation::WritableMapping),
-        (EffectKind::AttestExecsAndMaps, Attestation::DeletedMapping),
-        (EffectKind::AttestExecsAndMaps, Attestation::HostMapping),
         (
-            EffectKind::AttestExecsAndMaps,
+            EffectKind::BootstrapVerifiedProcesses,
+            Attestation::ExtraMapping,
+        ),
+        (
+            EffectKind::BootstrapVerifiedProcesses,
+            Attestation::WritableMapping,
+        ),
+        (
+            EffectKind::BootstrapVerifiedProcesses,
+            Attestation::DeletedMapping,
+        ),
+        (
+            EffectKind::BootstrapVerifiedProcesses,
+            Attestation::HostMapping,
+        ),
+        (
+            EffectKind::BootstrapVerifiedProcesses,
             Attestation::NamespaceRootDrift,
         ),
         (
-            EffectKind::AttestProcessProtections,
+            EffectKind::BootstrapVerifiedProcesses,
             Attestation::CapabilitiesPresent,
         ),
         (
-            EffectKind::AttestProcessProtections,
+            EffectKind::BootstrapVerifiedProcesses,
             Attestation::NoNewPrivilegesMissing,
         ),
         (
-            EffectKind::AttestProcessProtections,
+            EffectKind::BootstrapVerifiedProcesses,
             Attestation::CoreLimitNonzero,
         ),
         (
-            EffectKind::AttestProcessProtections,
+            EffectKind::BootstrapVerifiedProcesses,
             Attestation::DumpabilityReset,
         ),
         (
-            EffectKind::AttestProcessProtections,
+            EffectKind::BootstrapVerifiedProcesses,
             Attestation::SeccompRefusal,
         ),
         (
@@ -545,13 +635,22 @@ fn hostile_kernel_observations_are_all_fixed_recovery_outcomes() {
     for (effect, attestation) in cases {
         let run = ModelKernel::run_hostile_observation(&tape, effect, attestation);
         assert_recovery_only(&run);
+        assert_accounting_reconciles(run.result.accounting(), run.actual);
         assert!(!run.result.accounting().resources.is_conserved_success());
-        if effect == EffectKind::AttestProcessProtections {
+        if effect == EffectKind::BootstrapVerifiedProcesses {
             assert_eq!(run.result.accounting().resources.resumes, 0);
         }
         if effect == EffectKind::ObserveTerminalAndEmptyCgroup {
             assert_eq!(run.result.accounting().resources.terminal_children, 0);
             assert_eq!(run.result.accounting().resources.empty_cgroups, 0);
+            assert_eq!(
+                run.result
+                    .accounting()
+                    .uncertain_resources
+                    .terminal_children,
+                1
+            );
+            assert_eq!(run.result.accounting().uncertain_resources.empty_cgroups, 1);
         }
     }
 }
@@ -610,7 +709,7 @@ fn refusals_and_transition_errors_have_only_fixed_privacy_safe_text() {
 }
 
 #[test]
-fn resume_permit_has_no_clone_or_copy_implementation() {
+fn bootstrap_and_resume_permits_have_no_clone_or_copy_implementation() {
     let source = include_str!("machine.rs");
     assert!(!source.contains("impl Clone for ResumePermit"));
     assert!(!source.contains("impl Copy for ResumePermit"));
@@ -630,4 +729,11 @@ fn resume_permit_has_no_clone_or_copy_implementation() {
     assert!(!preceding.contains("Clone"));
     assert!(!preceding.contains("Copy"));
     assert!(permit_declaration.contains("OneUseSeal"));
+    assert!(!source.contains("impl Clone for BootstrapPermit"));
+    assert!(!source.contains("impl Copy for BootstrapPermit"));
+    let bootstrap_declaration = source
+        .split("pub(crate) struct BootstrapPermit")
+        .nth(1)
+        .expect("bootstrap permit declaration");
+    assert!(bootstrap_declaration.contains("OneUseSeal"));
 }

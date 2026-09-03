@@ -63,6 +63,7 @@ pub(crate) struct ResourceCounts {
     pub(crate) execs: u8,
     pub(crate) processes: u8,
     pub(crate) protected_processes: u8,
+    pub(crate) bootstrap_continues: u8,
     pub(crate) resumes: u8,
     pub(crate) terminal_children: u8,
     pub(crate) terminal_descendants: u8,
@@ -90,6 +91,7 @@ impl ResourceCounts {
             execs,
             processes,
             protected_processes,
+            bootstrap_continues,
             resumes,
             terminal_children,
             terminal_descendants,
@@ -109,6 +111,7 @@ impl ResourceCounts {
             && self.execs == 0
             && self.processes == 0
             && self.protected_processes == 0
+            && self.bootstrap_continues == 0
             && self.resumes == 0
             && self.terminal_children == 0
             && self.terminal_descendants == 0
@@ -123,6 +126,7 @@ impl ResourceCounts {
             && self.pidfds == self.processes
             && self.execs == self.processes
             && self.protected_processes == self.processes
+            && self.bootstrap_continues == 3
             && self.resumes == self.processes
             && self.terminal_children == self.children
             && self.terminal_descendants == self.descendants
@@ -140,6 +144,7 @@ const SUCCESS_RESOURCES: ResourceCounts = ResourceCounts {
     execs: 2,
     processes: 2,
     protected_processes: 2,
+    bootstrap_continues: 3,
     resumes: 2,
     terminal_children: 1,
     terminal_descendants: 1,
@@ -159,6 +164,7 @@ pub(crate) struct Accounting {
     pub(crate) responses_lost: u8,
     pub(crate) interruptions: u8,
     pub(crate) resources: ResourceCounts,
+    pub(crate) uncertain_resources: ResourceCounts,
 }
 
 impl Accounting {
@@ -208,9 +214,10 @@ pub(crate) struct VerifiedSyntheticCase {
 
 #[cfg(test)]
 impl VerifiedSyntheticCase {
-    pub(crate) fn sealed_fixture() -> Self {
+    pub(crate) fn sealed_fixture(identity: u64) -> Self {
+        assert_ne!(identity, 0, "verified case identity must be nonzero");
         Self {
-            seal: CaseSeal(0x5750_3230_3053_594e),
+            seal: CaseSeal(0x5750_3230_3053_594e_u64.rotate_left(17) ^ identity),
             expected: SUCCESS_RESOURCES,
         }
     }
@@ -222,9 +229,8 @@ pub(crate) enum EffectKind {
     EstablishPrivateNamespaces,
     EstablishExclusiveChildCgroup,
     SpawnStoppedLeaderAndOpenPidfd,
-    EstablishPtraceAndDescendantCustody,
-    AttestExecsAndMaps,
-    AttestProcessProtections,
+    AttestLeaderExecAndMaps,
+    BootstrapVerifiedProcesses,
     ResumeVerifiedProcesses,
     DrainDescendants,
     ObserveTerminalAndEmptyCgroup,
@@ -253,18 +259,17 @@ impl EffectKind {
                 processes: 1,
                 ..ResourceCounts::default()
             },
-            Self::EstablishPtraceAndDescendantCustody => ResourceCounts {
+            Self::AttestLeaderExecAndMaps => ResourceCounts {
+                execs: 1,
+                ..ResourceCounts::default()
+            },
+            Self::BootstrapVerifiedProcesses => ResourceCounts {
                 descendants: 1,
                 pidfds: 1,
                 processes: 1,
-                ..ResourceCounts::default()
-            },
-            Self::AttestExecsAndMaps => ResourceCounts {
-                execs: 2,
-                ..ResourceCounts::default()
-            },
-            Self::AttestProcessProtections => ResourceCounts {
+                execs: 1,
                 protected_processes: 2,
+                bootstrap_continues: 3,
                 ..ResourceCounts::default()
             },
             Self::ResumeVerifiedProcesses => ResourceCounts {
@@ -289,6 +294,7 @@ impl EffectKind {
         };
         EffectDeclaration {
             resources,
+            requires_bootstrap_permit: self == Self::BootstrapVerifiedProcesses,
             requires_resume_permit: self == Self::ResumeVerifiedProcesses,
         }
     }
@@ -298,10 +304,9 @@ impl EffectKind {
             Self::PersistLaunchIntent => Self::EstablishPrivateNamespaces,
             Self::EstablishPrivateNamespaces => Self::EstablishExclusiveChildCgroup,
             Self::EstablishExclusiveChildCgroup => Self::SpawnStoppedLeaderAndOpenPidfd,
-            Self::SpawnStoppedLeaderAndOpenPidfd => Self::EstablishPtraceAndDescendantCustody,
-            Self::EstablishPtraceAndDescendantCustody => Self::AttestExecsAndMaps,
-            Self::AttestExecsAndMaps => Self::AttestProcessProtections,
-            Self::AttestProcessProtections => Self::ResumeVerifiedProcesses,
+            Self::SpawnStoppedLeaderAndOpenPidfd => Self::AttestLeaderExecAndMaps,
+            Self::AttestLeaderExecAndMaps => Self::BootstrapVerifiedProcesses,
+            Self::BootstrapVerifiedProcesses => Self::ResumeVerifiedProcesses,
             Self::ResumeVerifiedProcesses => Self::DrainDescendants,
             Self::DrainDescendants => Self::ObserveTerminalAndEmptyCgroup,
             Self::ObserveTerminalAndEmptyCgroup => Self::PersistTerminalProof,
@@ -313,12 +318,18 @@ impl EffectKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EffectDeclaration {
     pub(crate) resources: ResourceCounts,
+    pub(crate) requires_bootstrap_permit: bool,
     pub(crate) requires_resume_permit: bool,
 }
 
 struct OneUseSeal(u64);
 
 pub(crate) struct ResumePermit {
+    seal: OneUseSeal,
+    issuance: u8,
+}
+
+pub(crate) struct BootstrapPermit {
     seal: OneUseSeal,
     issuance: u8,
 }
@@ -332,6 +343,10 @@ pub(crate) struct EffectHeader {
 
 pub(crate) enum Effect {
     Closed(EffectHeader),
+    Bootstrap {
+        header: EffectHeader,
+        permit: BootstrapPermit,
+    },
     Resume {
         header: EffectHeader,
         permit: ResumePermit,
@@ -341,14 +356,22 @@ pub(crate) enum Effect {
 impl Effect {
     pub(crate) fn kind(&self) -> EffectKind {
         match self {
-            Self::Closed(header) | Self::Resume { header, .. } => header.kind,
+            Self::Closed(header) | Self::Bootstrap { header, .. } | Self::Resume { header, .. } => {
+                header.kind
+            }
         }
     }
 
     fn header(&self) -> EffectHeader {
         match self {
-            Self::Closed(header) | Self::Resume { header, .. } => *header,
+            Self::Closed(header) | Self::Bootstrap { header, .. } | Self::Resume { header, .. } => {
+                *header
+            }
         }
+    }
+
+    pub(crate) fn carries_bootstrap_permit(&self) -> bool {
+        matches!(self, Self::Bootstrap { .. })
     }
 
     pub(crate) fn carries_resume_permit(&self) -> bool {
@@ -357,9 +380,24 @@ impl Effect {
 
     fn has_valid_resume_permit(&self) -> bool {
         match self {
-            Self::Closed(_) => self.kind() != EffectKind::ResumeVerifiedProcesses,
+            Self::Closed(_) | Self::Bootstrap { .. } => {
+                self.kind() != EffectKind::ResumeVerifiedProcesses
+            }
             Self::Resume { header, permit } => {
                 header.kind == EffectKind::ResumeVerifiedProcesses
+                    && permit.seal.0 == header.case_seal
+                    && permit.issuance == 1
+            }
+        }
+    }
+
+    fn has_valid_bootstrap_permit(&self) -> bool {
+        match self {
+            Self::Closed(_) | Self::Resume { .. } => {
+                self.kind() != EffectKind::BootstrapVerifiedProcesses
+            }
+            Self::Bootstrap { header, permit } => {
+                header.kind == EffectKind::BootstrapVerifiedProcesses
                     && permit.seal.0 == header.case_seal
                     && permit.issuance == 1
             }
@@ -369,7 +407,9 @@ impl Effect {
     #[cfg(test)]
     pub(crate) fn substitute_kind(mut self, kind: EffectKind) -> Self {
         match &mut self {
-            Self::Closed(header) | Self::Resume { header, .. } => header.kind = kind,
+            Self::Closed(header) | Self::Bootstrap { header, .. } | Self::Resume { header, .. } => {
+                header.kind = kind
+            }
         }
         self
     }
@@ -451,6 +491,7 @@ pub(crate) struct SyntheticProofMachine {
     case_seal: u64,
     expected: ResourceCounts,
     next_sequence: u8,
+    bootstrap_permit: Option<BootstrapPermit>,
     resume_permit: Option<ResumePermit>,
     accounting: Accounting,
     result: Option<ProofResult>,
@@ -463,6 +504,7 @@ impl SyntheticProofMachine {
             case_seal: case.seal.0,
             expected: case.expected,
             next_sequence: 0,
+            bootstrap_permit: None,
             resume_permit: None,
             accounting: Accounting {
                 cases_offered: 1,
@@ -495,7 +537,13 @@ impl SyntheticProofMachine {
             .ok_or(MachineError::InternalInvariant)?;
         self.state = MachineState::InFlight(header);
 
-        if kind == EffectKind::ResumeVerifiedProcesses {
+        if kind == EffectKind::BootstrapVerifiedProcesses {
+            let permit = self
+                .bootstrap_permit
+                .take()
+                .ok_or(MachineError::InternalInvariant)?;
+            Ok(Effect::Bootstrap { header, permit })
+        } else if kind == EffectKind::ResumeVerifiedProcesses {
             let permit = self
                 .resume_permit
                 .take()
@@ -516,7 +564,10 @@ impl SyntheticProofMachine {
             MachineState::Ready(_) => return Err(MachineError::UnexpectedEffect),
             MachineState::Closed => return Err(MachineError::MachineClosed),
         };
-        if effect.header() != expected_header || !effect.has_valid_resume_permit() {
+        if effect.header() != expected_header
+            || !effect.has_valid_bootstrap_permit()
+            || !effect.has_valid_resume_permit()
+        {
             self.close_refused(ProofRefusal::RecoveryRequired);
             return Err(MachineError::UnexpectedEffect);
         }
@@ -542,6 +593,9 @@ impl SyntheticProofMachine {
                     .responses_lost
                     .checked_add(1)
                     .ok_or(MachineError::InternalInvariant)?;
+                self.accounting
+                    .uncertain_resources
+                    .add(expected_header.kind.declaration().resources)?;
                 Ok(self.close_refused(ProofRefusal::RecoveryRequired))
             }
             EffectReply::Observed(observation) => {
@@ -551,6 +605,9 @@ impl SyntheticProofMachine {
                     .checked_add(1)
                     .ok_or(MachineError::InternalInvariant)?;
                 if observation != Observation::exact(expected_header.kind) {
+                    self.accounting
+                        .uncertain_resources
+                        .add(expected_header.kind.declaration().resources)?;
                     let refusal = if expected_header.kind == EffectKind::PersistLaunchIntent
                         || self.intent_is_durable()
                     {
@@ -561,8 +618,13 @@ impl SyntheticProofMachine {
                     return Ok(self.close_refused(refusal));
                 }
                 self.accounting.resources.add(observation.resources)?;
-
-                if expected_header.kind == EffectKind::AttestProcessProtections {
+                if expected_header.kind == EffectKind::AttestLeaderExecAndMaps {
+                    self.bootstrap_permit = Some(BootstrapPermit {
+                        seal: OneUseSeal(self.case_seal),
+                        issuance: 1,
+                    });
+                }
+                if expected_header.kind == EffectKind::BootstrapVerifiedProcesses {
                     self.resume_permit = Some(ResumePermit {
                         seal: OneUseSeal(self.case_seal),
                         issuance: 1,
@@ -581,8 +643,8 @@ impl SyntheticProofMachine {
 
     pub(crate) fn interrupt(&mut self) -> Result<Progress, MachineError> {
         let in_flight = match self.state {
-            MachineState::Ready(_) => false,
-            MachineState::InFlight(_) => true,
+            MachineState::Ready(_) => None,
+            MachineState::InFlight(header) => Some(header.kind),
             MachineState::Closed => return Err(MachineError::MachineClosed),
         };
         self.accounting.interruptions = self
@@ -590,14 +652,17 @@ impl SyntheticProofMachine {
             .interruptions
             .checked_add(1)
             .ok_or(MachineError::InternalInvariant)?;
-        if in_flight {
+        if let Some(kind) = in_flight {
             self.accounting.effects_uncertain = self
                 .accounting
                 .effects_uncertain
                 .checked_add(1)
                 .ok_or(MachineError::InternalInvariant)?;
+            self.accounting
+                .uncertain_resources
+                .add(kind.declaration().resources)?;
         }
-        let refusal = if self.intent_is_durable() || in_flight {
+        let refusal = if self.intent_is_durable() || in_flight.is_some() {
             ProofRefusal::RecoveryRequired
         } else {
             ProofRefusal::KernelInvariantUnavailable
@@ -626,6 +691,7 @@ impl SyntheticProofMachine {
     }
 
     fn close_refused(&mut self, refusal: ProofRefusal) -> Progress {
+        self.bootstrap_permit = None;
         self.resume_permit = None;
         self.state = MachineState::Closed;
         let result = ProofResult::Refused {
@@ -637,7 +703,9 @@ impl SyntheticProofMachine {
     }
 
     fn complete(&mut self) -> Result<Progress, MachineError> {
-        if self.resume_permit.is_some()
+        if self.bootstrap_permit.is_some()
+            || self.resume_permit.is_some()
+            || self.accounting.uncertain_resources != ResourceCounts::default()
             || self.accounting.resources != self.expected
             || !self.accounting.resources.is_conserved_success()
             || !self.accounting.effect_events_conserve()

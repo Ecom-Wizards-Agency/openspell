@@ -130,6 +130,15 @@ pub(crate) fn ignore_sigpipe() -> Result<(), AbiError> {
     }
 }
 
+pub(crate) fn ignore_sigchld() -> Result<(), AbiError> {
+    // SAFETY: SIG_IGN is a fixed process-wide disposition installed before the bootstrap fork.
+    if unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) } == libc::SIG_ERR {
+        Err(AbiError::OperationFailed)
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn make_pipe() -> Result<PipePair, AbiError> {
     let mut descriptors = [-1_i32; 2];
     // SAFETY: descriptors points to space for exactly two descriptors.
@@ -251,6 +260,27 @@ pub(crate) fn write_all_bounded(
         }
     }
     Ok(())
+}
+
+pub(crate) fn expect_eof_bounded(fd: RawFd, timeout: Duration) -> Result<(), AbiError> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or(AbiError::DeadlineExceeded)?;
+    loop {
+        bounded_poll(fd, libc::POLLIN, deadline)?;
+        let mut byte = 0_u8;
+        // SAFETY: byte is writable and fd is borrowed for this single-byte read.
+        let count = unsafe { libc::read(fd, (&mut byte as *mut u8).cast::<c_void>(), 1) };
+        if count == 0 {
+            return Ok(());
+        }
+        if count > 0 {
+            return Err(AbiError::ProtocolMismatch);
+        }
+        if last_errno() != libc::EINTR {
+            return Err(AbiError::OperationFailed);
+        }
+    }
 }
 
 pub(crate) fn unshare_proof_namespaces() -> Result<(), AbiError> {
@@ -621,6 +651,18 @@ pub(crate) fn duplicate_executable_fd(fd: RawFd) -> Result<OwnedFd, AbiError> {
     Ok(owned_fd(duplicated))
 }
 
+pub(crate) fn duplicate_inherited_fd(fd: RawFd, target: RawFd) -> Result<OwnedFd, AbiError> {
+    if fd < 0 || target < 3 || fd == target {
+        return Err(AbiError::ProtocolMismatch);
+    }
+    // SAFETY: dup3 atomically installs a duplicate without CLOEXEC at the fixed target.
+    let duplicated = unsafe { libc::dup3(fd, target, 0) };
+    if duplicated != target {
+        return Err(AbiError::OperationFailed);
+    }
+    Ok(owned_fd(duplicated))
+}
+
 pub(crate) fn exec_role(executable_fd: RawFd, role: &'static [u8]) -> Result<(), AbiError> {
     if role.last() != Some(&0) || role[..role.len() - 1].contains(&0) {
         return Err(AbiError::ProtocolMismatch);
@@ -652,7 +694,7 @@ pub(crate) fn exec_role(executable_fd: RawFd, role: &'static [u8]) -> Result<(),
     }
 }
 
-pub(crate) fn install_process_protections(cap_last: u32) -> Result<(), AbiError> {
+pub(crate) fn drop_authority_before_exec(cap_last: u32) -> Result<(), AbiError> {
     // SAFETY: every prctl call uses the documented scalar argument form.
     if unsafe {
         libc::prctl(
@@ -723,6 +765,23 @@ pub(crate) fn install_process_protections(cap_last: u32) -> Result<(), AbiError>
     }
     install_dumpability_filter()?;
     // SAFETY: this deliberately exercises the one denied prctl tuple.
+    let denied = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0) };
+    if denied != -1 || last_errno() != libc::EPERM {
+        return Err(AbiError::ProtocolMismatch);
+    }
+    // SAFETY: PR_GET_DUMPABLE ignores remaining scalar arguments.
+    if unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+        return Err(AbiError::ProtocolMismatch);
+    }
+    Ok(())
+}
+
+pub(crate) fn restore_post_exec_dumpability() -> Result<(), AbiError> {
+    // SAFETY: exec may reset dumpability; the inherited seccomp filter permits only value zero.
+    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+        return Err(AbiError::OperationFailed);
+    }
+    // SAFETY: this deliberately exercises the one denied prctl tuple after exec.
     let denied = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0) };
     if denied != -1 || last_errno() != libc::EPERM {
         return Err(AbiError::ProtocolMismatch);

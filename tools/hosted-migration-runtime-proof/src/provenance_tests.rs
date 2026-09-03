@@ -18,7 +18,9 @@ use crate::policy::{
 };
 use crate::provenance::{
     FreshRetainedRoot, ProvenanceRefusal, RootAnchoredPair, TestFaultPoint,
-    filesystem_root_is_self_parent_for_test, seal_release, set_test_fault,
+    descriptors_share_mount_for_test, filesystem_root_is_self_parent_for_test,
+    read_exact_stable_with_mutation_for_test, seal_release, set_test_fault,
+    source_descriptor_owner_matches_for_test,
 };
 
 struct Lab {
@@ -274,6 +276,12 @@ fn checksum_gzip_and_decompression_adversaries_fail_closed() {
         verify_manifest_for_test(&duplicate, &policy),
         Err(ArchiveRefusal::ChecksumsSyntax)
     );
+    let mut oversized_line = vec![b'a'; 257];
+    oversized_line.push(b'\n');
+    assert_eq!(
+        verify_manifest_for_test(&oversized_line, &policy),
+        Err(ArchiveRefusal::ChecksumsSyntax)
+    );
     let wrong = format!("{}  synthetic-runtime.tar.gz\n", "00".repeat(32));
     assert_eq!(
         verify_manifest_for_test(wrong.as_bytes(), &policy),
@@ -319,12 +327,83 @@ fn tar_path_type_size_digest_and_trailer_adversaries_fail_closed() {
         Err(ArchiveRefusal::TarPath)
     );
 
+    for adversarial_name in [
+        b"/absolute".as_slice(),
+        b"nested/front",
+        b"nested\\front",
+        b".",
+        b"..",
+    ] {
+        let mut named = tar.clone();
+        named[..100].fill(0);
+        named[..adversarial_name.len()].copy_from_slice(adversarial_name);
+        refresh_tar_checksum(&mut named[..512]);
+        assert_eq!(
+            parse_exact_tar_for_test(&named, &policy),
+            Err(ArchiveRefusal::TarPath),
+            "path class was accepted"
+        );
+    }
+
     let mut link = tar.clone();
     link[156] = b'2';
     refresh_tar_checksum(&mut link[..512]);
     assert_eq!(
         parse_exact_tar_for_test(&link, &policy),
         Err(ArchiveRefusal::TarType)
+    );
+
+    for type_flag in *b"13456LxgSs" {
+        let mut typed = tar.clone();
+        typed[156] = type_flag;
+        refresh_tar_checksum(&mut typed[..512]);
+        assert_eq!(
+            parse_exact_tar_for_test(&typed, &policy),
+            Err(ArchiveRefusal::TarType),
+            "tar type {type_flag:?} was accepted"
+        );
+    }
+
+    let first_span = 512 + SYNTHETIC_FRONT.len().div_ceil(512) * 512;
+    let second_span = 512 + SYNTHETIC_DELEGATE.len().div_ceil(512) * 512;
+    let entries_end = first_span + second_span;
+    let mut duplicate_entry = Vec::new();
+    duplicate_entry.extend_from_slice(&tar[..entries_end]);
+    duplicate_entry.extend_from_slice(&tar[..first_span]);
+    duplicate_entry.extend_from_slice(&tar[entries_end..]);
+    assert_eq!(
+        parse_exact_tar_for_test(&duplicate_entry, &policy),
+        Err(ArchiveRefusal::TarEntry)
+    );
+
+    let mut extra_header = tar[..first_span].to_vec();
+    extra_header[..100].fill(0);
+    extra_header[..5].copy_from_slice(b"extra");
+    refresh_tar_checksum(&mut extra_header[..512]);
+    let mut extra_entry = Vec::new();
+    extra_entry.extend_from_slice(&tar[..entries_end]);
+    extra_entry.extend_from_slice(&extra_header);
+    extra_entry.extend_from_slice(&tar[entries_end..]);
+    assert_eq!(
+        parse_exact_tar_for_test(&extra_entry, &policy),
+        Err(ArchiveRefusal::TarEntry)
+    );
+
+    let mut reordered = Vec::new();
+    reordered.extend_from_slice(&tar[first_span..entries_end]);
+    reordered.extend_from_slice(&tar[..first_span]);
+    reordered.extend_from_slice(&tar[entries_end..]);
+    assert_eq!(
+        parse_exact_tar_for_test(&reordered, &policy),
+        Err(ArchiveRefusal::TarEntry)
+    );
+
+    let mut extended_metadata = tar.clone();
+    extended_metadata[345] = 1;
+    refresh_tar_checksum(&mut extended_metadata[..512]);
+    assert_eq!(
+        parse_exact_tar_for_test(&extended_metadata, &policy),
+        Err(ArchiveRefusal::TarHeader)
     );
 
     let mut wrong_size = tar.clone();
@@ -376,6 +455,13 @@ fn tar_path_type_size_digest_and_trailer_adversaries_fail_closed() {
     assert_eq!(
         parse_exact_tar_for_test(&trailing, &policy),
         Err(ArchiveRefusal::TarTrailing)
+    );
+
+    let mut non_block_aligned = tar.clone();
+    non_block_aligned.pop();
+    assert_eq!(
+        parse_exact_tar_for_test(&non_block_aligned, &policy),
+        Err(ArchiveRefusal::TarStructure)
     );
 
     assert_eq!(
@@ -432,19 +518,55 @@ fn descriptor_replacement_link_mode_and_ancestor_substitution_are_refused() {
             File::open(wrong_ancestor.intake.join("synthetic-runtime.tar.gz")).expect("archive"),
         );
     assert_eq!(result.err(), Some(ProvenanceRefusal::SourceMismatch));
+
+    let metadata_lab = Lab::new();
+    let archive = File::open(metadata_lab.intake.join("synthetic-runtime.tar.gz"))
+        .expect("archive descriptor");
+    let metadata = archive.metadata().expect("archive metadata");
+    assert!(source_descriptor_owner_matches_for_test(
+        &archive,
+        (metadata.uid(), metadata.gid())
+    ));
+    assert!(!source_descriptor_owner_matches_for_test(
+        &archive,
+        (metadata.uid().wrapping_add(1), metadata.gid())
+    ));
+    let proc_file = File::open("/proc/self/status").expect("proc descriptor");
+    assert!(!descriptors_share_mount_for_test(&archive, &proc_file));
+
+    let read_race = Lab::new();
+    let read_path = read_race.intake.join("checksums.txt");
+    let read_descriptor = File::open(&read_path).expect("read-race descriptor");
+    let original = fs::read(&read_path).expect("read-race bytes");
+    let mut changed = original.clone();
+    changed[0] ^= 1;
+    assert_eq!(
+        read_exact_stable_with_mutation_for_test(&read_descriptor, || {
+            fs::write(&read_path, &changed).expect("concurrent content replacement");
+        }),
+        Err(ProvenanceRefusal::SourceMismatch)
+    );
 }
 
 #[test]
 fn every_publication_cut_consumes_the_nonempty_destination_without_a_result() {
     for point in [
+        TestFaultPoint::BeforeDestinationSync,
+        TestFaultPoint::BeforeDestinationDirectorySync,
         TestFaultPoint::DestinationConsumed,
+        TestFaultPoint::BeforeEntrySync(0),
         TestFaultPoint::EntrySynced(0),
+        TestFaultPoint::BeforeEntrySync(1),
         TestFaultPoint::EntrySynced(1),
+        TestFaultPoint::BeforeEntriesDirectorySync,
         TestFaultPoint::EntriesDirectorySynced,
         TestFaultPoint::BeforeInventory,
+        TestFaultPoint::BeforeInventorySync,
         TestFaultPoint::InventorySynced,
+        TestFaultPoint::BeforeInventoryDirectorySync,
         TestFaultPoint::InventoryDirectorySynced,
         TestFaultPoint::Reopened,
+        TestFaultPoint::BeforeFinalDirectorySync,
         TestFaultPoint::FinalDirectorySynced,
     ] {
         let lab = Lab::new();

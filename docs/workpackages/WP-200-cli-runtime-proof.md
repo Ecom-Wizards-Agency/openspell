@@ -71,9 +71,11 @@ Handover and status change only after reviewed merge and exact-main CI.
 11. Persist a synthetic launch intent before any resource-creating effect. Before intent, refusal
     proves zero namespace/cgroup/child/pidfd/resume counts. After intent, any uncertainty remains
     recovery-only and the case is never reusable.
-12. Construct one non-cloneable resume permit only after exact stopped-exec, map, cgroup, identity,
-    capabilities, `no_new_privs`, zero-core, dumpability and seccomp observations. Consume it on the
-    sole resume effect.
+12. Construct one non-cloneable bootstrap permit only after the leader's exact stopped-exec,
+    executable/root/map and pre-exec protection boundary is proved. Consume it on the sole fixed
+    bootstrap effect. Construct a distinct non-cloneable application-resume permit only after both
+    processes' exact stopped-exec, map, cgroup, identity, capabilities, `no_new_privs`, zero-core,
+    dumpability and seccomp observations. Consume it on the sole application-resume effect.
 13. Derive every model refusal, wrong-result, lost-result and interruption cut from the actual
     successful effect tape. Reconcile offered, accepted, refused, exec, process, pidfd and terminal
     counts exactly.
@@ -83,22 +85,32 @@ Handover and status change only after reviewed merge and exact-main CI.
 15. In the real proof, establish private mount/PID/proc/user/IPC/UTS/network namespaces, a child-only
    cgroup-v2 subtree, atomic leader pidfd and descendant pidfds, ptrace fork/vfork/clone/exec custody,
    exact executable/root/maps identity before any post-exec continue and no unexpected process or
-   executable. Derive the exact permitted static-PIE map records from the executable's `PT_LOAD`
-   segments and compare the complete file-backed inventory at exec and ready stops.
-16. Before each synthetic executable resumes, prove empty effective/permitted/inheritable/bounding/
-    ambient capabilities, `no_new_privs`, zero core limit, post-exec dumpability zero and a seccomp
-    rule rejecting later nonzero dumpability. Repeat for the delegate when present.
-17. On every real refusal, timeout, tracer death or interruption, prevent resume where applicable,
-   kill/observe every descendant, prove pidfd terminal state and cgroup emptiness, or return only
-   recovery/cleanup uncertainty. Exercise real lost-acceptance cuts after resource-creating adapter
-   boundaries and reject a real unexpected post-resume event. PID text is never authority; the
-   tracer-death parent independently retains both descendant pidfds before killing the tracer.
-18. Run the real proof only through an explicit wrapper. Build and hash the exact test executable,
-    then run it in the pinned Rust image with private cgroup namespace, no network, read-only root,
-    fresh tmpfs and no repository, user-directory, credential, browser, Docker-socket or service
-   mount. Never skip a missing kernel invariant. Never run pull-request-controlled code in the
-   privileged proof container; CI may run it only in a dedicated permissionless job for trusted
-   `main` revisions after ordinary checks pass.
+   executable. Drop child authority before exec. Permit only the exact object-bound synthetic ELF's
+   modeled bootstrap after leader exec/map attestation. Derive the exact permitted static-PIE map
+   records from the executable's `PT_LOAD` segments and compare the complete file-backed inventory
+   at exec and ready stops.
+16. Before bootstrap, prove empty effective/permitted/inheritable/bounding/ambient capabilities,
+    `no_new_privs`, zero core limit and the inherited seccomp rule. Because exec resets dumpability,
+    the exact fixed executable must reset it before it forks or reaches its ready stop. Repeat the
+    pre-bootstrap authority observation for the delegate, prove both complete protected ready
+    states, and never issue application resume before both pass.
+17. On every real refusal, timeout, tracer death or interruption, prevent application resume where
+    applicable, kill/observe every descendant, prove pidfd terminal state and cgroup emptiness, or
+    return only recovery/cleanup uncertainty. Exercise real lost-acceptance cuts after every
+    resource-creating adapter boundary, after each application-resume syscall, after drain, after
+    empty-cgroup observation and after terminal-proof persistence. Reject a real unexpected
+    post-resume event. PID text is never authority; the tracer-death parent independently retains
+    both descendant pidfds before killing the tracer in stopped, mixed-resume and fully resumed
+    states, with fixed pipe evidence that the latter two states actually returned from their ready
+    stops.
+18. Run the real proof only through an explicit wrapper. Build, verify and hash one opened test ELF,
+    copy that exact descriptor-owned object into a local content-addressed image derived from the
+    pinned Rust image, independently rehash the in-image object, then run only that immutable image
+    ID with private cgroup namespace, no network, read-only root, fresh tmpfs and no repository,
+    user-directory, credential, browser, Docker-socket or service mount. Never skip a missing kernel
+    invariant. Never run pull-request-controlled code in the privileged proof container; CI may run
+    it only in a dedicated permissionless job for trusted `main` revisions after ordinary checks
+    pass.
 19. Return only bounded summaries or fixed nonsensitive refusals. Do not echo source bytes, paths,
     environments, pids, signatures, target-like canaries or nested OS errors in results/logs.
 20. Static source, Cargo/rustdoc/npm and reverse-dependency tests must prove the production package

@@ -205,33 +205,77 @@ describe("private hosted-migration runtime proof boundary", () => {
       '"CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C target-feature=+crt-static"',
     );
     expect(kernel).toContain("verifyStaticExecutable");
+    expect(kernel).toContain("bytes.readUInt16LE(16) !== 3");
+    expect(kernel).toContain("readExactArtifact");
+    expect(kernel).toContain("constants.O_NOFOLLOW");
+    expect(kernel).toContain("fstatSync(descriptor)");
+    expect(kernel).toContain("stageProofImage");
+    expect(kernel).toContain('"container", "cp"');
+    expect(kernel).toContain('"container", "commit"');
+    expect(kernel).toContain("verifyImageLineage");
+    expect(kernel).toContain('"image", "rm", "--force", "--no-prune", exactId');
     expect(kernel).toContain('"/usr/bin/setpriv"');
     expect(kernel).toContain('"--bounding-set=-all,+sys_admin,+setfcap"');
     expect(kernel).toContain('"--no-new-privs"');
     for (const mode of [
+      "success",
+      "refusal",
+      "timeout",
+      "interruption",
       "unexpected-event",
       "fault-intent",
       "fault-namespace",
       "fault-cgroup",
       "fault-spawn",
-      "fault-custody",
-      "fault-exec",
-      "fault-protection",
-      "tracer-death",
+      "fault-leader-attest",
+      "fault-bootstrap",
+      "lost-resume-one",
+      "lost-resume-two",
+      "lost-drain",
+      "lost-empty-cgroup",
+      "lost-terminal-proof",
+      "tracer-death-stopped",
+      "tracer-death-mixed",
+      "tracer-death-resumed",
     ])
       expect(kernel).toContain(`"${mode}"`);
     const proofContainer = kernel
-      .split("async function runCase", 2)[1]
+      .split("function runCase", 2)[1]
       ?.split("function removeTargetDirectory", 1)[0];
     expect(proofContainer).toBeDefined();
     expect(proofContainer).not.toMatch(
       /(?:packageDirectory|CARGO_HOME|\/workspace|\/cargo|\/target|credential|browser|docker\.sock|systemd|service)/iu,
     );
+    expect(proofContainer).not.toContain('"--mount"');
+    expect(proofContainer).toContain("imageId");
+    const removeBuildAt = kernel.indexOf("removeTargetDirectory(targetDirectory);");
+    const runCasesAt = kernel.indexOf("for (const [mode, expected] of cases)");
+    expect(removeBuildAt).toBeGreaterThan(0);
+    expect(runCasesAt).toBeGreaterThan(removeBuildAt);
+    expect(kernel.match(/verifyImageArtifact\(imageId, artifact\.digest\)/gu)).toHaveLength(2);
     expect(proofContainer).not.toContain("result.stderr.trim()");
     expect(kernel).not.toContain("error.stack");
     expect(kernel).not.toContain("${result.stderr}");
     expect(kernel).not.toContain("${result.status}");
     expect(kernel).not.toContain("${result.signal}");
+
+    const realProof = read("src/linux_kernel_tests.rs");
+    expect(realProof).toContain("EffectKind::AttestLeaderExecAndMaps");
+    expect(realProof).toContain("EffectKind::BootstrapVerifiedProcesses");
+    expect(realProof).toContain("bootstrap_continue(&bootstrap");
+    expect(realProof).toContain("resume_continue(&resume");
+    expect(realProof).toContain("verify_prebootstrap_authority");
+    expect(realProof).toContain("elf.header.e_type != ET_DYN");
+    expect(realProof).toContain("TracerDeathCut::MixedResume");
+    expect(realProof).toContain("TracerDeathCut::FullResume");
+    expect(realProof).toContain("expect_eof_bounded");
+    const childBeforeExec = realProof
+      .split("fn child_before_exec", 2)[1]
+      ?.split("fn run_front_controller", 1)[0];
+    expect(childBeforeExec).toBeDefined();
+    expect(childBeforeExec?.indexOf("stop_self()")).toBeLessThan(
+      childBeforeExec?.indexOf("drop_authority_before_exec()") ?? -1,
+    );
   });
 
   it("keeps the privileged proof off pull requests and out of credentialed CI", () => {

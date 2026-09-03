@@ -215,10 +215,10 @@ verified synthetic ticket
   -> private namespaces established
   -> exclusive child cgroup established
   -> stopped child plus pidfd owned
-  -> ptrace and descendant custody established
-  -> exec stop and maps attested
-  -> post-exec protections attested
-  -> one-use resume permit consumed
+  -> leader exec stop, identity and maps attested
+  -> one-use bootstrap permit consumed
+  -> fixed bootstrap establishes descendant custody and both protected ready stops
+  -> one-use application-resume permit consumed
   -> descendants drained
   -> child terminal and cgroup empty
   -> durable synthetic terminal proof
@@ -229,14 +229,22 @@ the state. An effect failure before the durable launch intent returns a fixed re
 resource counts. Any failure or uncertainty after that intent returns `recovery_required`; it cannot
 rewind, mint another resume permit, declare cleanup successful or run the case again.
 
-The one-use `ResumePermit` is constructed only after the exec, maps, cgroup, uid/gid, capability,
-`no_new_privs`, core-limit, dumpability and seccomp observations match. It is non-cloneable and
-consumed by the single resume effect. This makes "verify before resume" structural rather than a
-test-order convention.
+After the tracer verifies the initial stopped namespace, the child loses all capabilities and
+installs `no_new_privs`, zero-core, dumpability and seccomp protections immediately before exec.
+The one-use `BootstrapPermit` is constructed only after the leader's exact exec object, root and map
+inventory plus its preserved zero-capability, `no_new_privs`, zero-core and seccomp boundary match.
+It authorizes only the fixed object-bound bootstrap that resets exec-time dumpability before any
+fork, creates the delegate and takes both processes to their protected ready stops. A distinct
+one-use `ResumePermit` is constructed only after both exec, map, cgroup, uid/gid, capability,
+`no_new_privs`, core-limit, dumpability and seccomp observations match. It is consumed by the single
+application-resume effect. This makes both bootstrap and application release structural rather than
+a test-order convention.
 
 Every effect declares whether it may create a namespace, cgroup, child, pidfd or resumed process.
 The machine reconciles offered effects, accepted effects, refused effects, observed execs, pidfds,
-children, descendants and terminal resources exactly.
+children, descendants and terminal resources exactly. An accepted effect whose response is wrong or
+lost contributes its complete declared resource vector to a separate `uncertain_resources` ledger;
+it never publishes false zeroes or promotes uncertain terminal state into observed resources.
 
 ## Model proof
 
@@ -250,7 +258,7 @@ For every cut it proves:
 - a pre-intent failure has zero namespace/cgroup/child/pidfd/resume counts;
 - a post-intent failure remains recovery-only;
 - an uncertain child or cgroup is never counted as terminal;
-- no resume occurs without consuming the one permit;
+- no bootstrap or application resume occurs without consuming its distinct one-use permit;
 - no ticket/case can spawn twice after a lost response; and
 - all successful input, exec, process and terminal counts conserve exactly.
 
@@ -273,16 +281,24 @@ The proof establishes:
 - `PTRACE_O_EXITKILL`, fork/vfork/clone/exec stops and exact parent/child/start identity;
 - a statically linked PIE proof executable, with the exact permitted file-map records derived from
   its `PT_LOAD` segments and compared at each exec stop before that process can continue;
+- removal of the child capability, privilege, core-dump and dumpability authority immediately before
+  exec, with the zero-capability, `no_new_privs`, zero-core and seccomp boundary re-attested at each
+  exec stop;
+- one permit-bound fixed bootstrap after the exact leader exec/map stop, with no application input
+  or authority and an exact protected ready stop for both processes;
 - retained executable identity, namespace-root identity and the same exact map inventory again at
   each ready stop before application resume;
 - empty effective, permitted, inheritable, bounding and ambient capability sets;
 - `PR_SET_NO_NEW_PRIVS`, core limit zero and dumpability reset to zero after each exec;
 - rejection of a later nonzero dumpability change by the installed seccomp policy; and
 - a real bounded kernel wait deadline, explicit unexpected-post-resume-event refusal and injected
-  lost-acceptance cuts after every resource-creating adapter boundary; and
+  lost-acceptance cuts after every resource-creating adapter boundary, each resume syscall, drain,
+  empty-cgroup observation and terminal-proof persistence; and
 - pidfd terminal observation, direct-child reaping and an empty cgroup after success, refusal,
   timeout, interruption, unexpected events and adapter faults; tracer death additionally proves
-  terminality through independently retained descendant pidfds.
+  terminality through independently retained descendant pidfds in stopped, mixed-resume and
+  fully-resumed cuts, with fixed `D`/`D+L` pipe evidence that resumed tracees returned from their
+  ready stops before the tracer died.
 
 An unexpected process, exec, mapping, identity or protection result consumes no resume permit,
 kills the complete child cgroup and remains recovery-only unless terminal/empty observations are
@@ -297,14 +313,18 @@ The ordinary package test runs the model, provenance, parsing and static boundar
 privilege. A separate `test:kernel` wrapper:
 
 1. builds the one synthetic kernel-test executable with the pinned Rust toolchain and locked graph;
-2. identifies and hashes that exact executable;
-3. starts the same pinned Rust image with a private cgroup namespace, `--network none`, read-only
+2. opens, validates and hashes one exact static-PIE file object, copies that descriptor-owned object
+   into a stopped container and commits it to a content-addressed local image;
+3. independently rehashes the in-image executable, deletes the mutable build tree, and addresses all
+   later executions only by the immutable image ID;
+4. starts that exact image with a private cgroup namespace, `--network none`, read-only
    root, fresh tmpfs state and no repository, user directory, credential, browser, Docker socket or
    service mount;
-4. enters the disposable container through pinned `setpriv`, retaining only `CAP_SYS_ADMIN` and
+5. enters the disposable container through pinned `setpriv`, retaining only `CAP_SYS_ADMIN` and
    `CAP_SETFCAP` for namespace and identity-map construction before the child proves an empty
    capability set; and
-5. requires the exact executable to report all cases and counts before Docker removes the container.
+6. requires the exact executable to report all 19 cases and counts, rehashes the immutable image
+   afterwards, then proves every case container, staging object, local image and build tree absent.
 
 The reviewed image is:
 
@@ -345,7 +365,7 @@ tools/hosted-migration-runtime-proof/
     elf.rs                 nonexecuting ELF/runtime inventory verifier
     canonical.rs           private canonical evidence encoding and hashing
     ticket.rs              independent WP-199 golden decoder/verifier
-    machine.rs             pure state/effect reducer and one-use resume permit
+    machine.rs             pure state/effect reducer and distinct one-use bootstrap/resume permits
     lib.rs                 private module inventory; no exports
     model_tests.rs         exhaustive derived fault cuts
     provenance_tests.rs    synthetic archive and descriptor adversaries

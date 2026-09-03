@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use goblin::elf::Elf;
+use goblin::elf::header::ET_DYN;
 use goblin::elf::program_header::{PF_R, PF_W, PF_X, PT_LOAD};
 use linux_abi::{CloneOutcome, ForkOutcome, WaitEvent, WaitKind};
 use machine::{
@@ -34,6 +35,7 @@ const LABORATORY: &str = "/tmp/openspell-wp200-proof";
 const INTENT: &str = "/tmp/openspell-wp200-proof/intent";
 const TERMINAL: &str = "/tmp/openspell-wp200-proof/terminal";
 const CGROUP: &str = "/sys/fs/cgroup/openspell-wp200-proof";
+const STATUS_FD: i32 = 199;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KernelError {
@@ -45,6 +47,8 @@ enum KernelError {
     NamespaceReadMismatch,
     ChildMountNamespaceMismatch,
     ChildPidNamespaceMismatch,
+    LeaderPidNamespaceMismatch,
+    DelegatePidNamespaceMismatch,
     ChildUserNamespaceMismatch,
     ChildIpcNamespaceMismatch,
     ChildUtsNamespaceMismatch,
@@ -106,12 +110,18 @@ enum Scenario {
     Timeout,
     Interruption,
     UnexpectedEvent,
+    LostAfterResumeOne,
+    LostAfterResumeTwo,
+    LostAfterDrain,
+    LostAfterEmptyCgroup,
+    LostAfterTerminalProof,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FrontBehavior {
     Normal,
     UnexpectedForkAfterResume,
+    HoldAfterResume,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,9 +130,15 @@ enum FaultPoint {
     Namespace,
     Cgroup,
     Spawn,
-    Custody,
-    ExecAttestation,
-    ProtectionAttestation,
+    LeaderAttestation,
+    Bootstrap,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TracerDeathCut {
+    Stopped,
+    MixedResume,
+    FullResume,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -302,6 +318,11 @@ impl CaseResources {
             }
         }
         if exact {
+            self.unexpected_descendants.clear();
+            self.delegate.take();
+            self.leader.take();
+        }
+        if exact {
             Ok(())
         } else {
             Err(KernelError::CleanupUncertain)
@@ -326,6 +347,23 @@ impl CaseResources {
             Err(KernelError::CleanupUncertain)
         }
     }
+
+    fn release_terminal_custody(&mut self) -> Result<(), KernelError> {
+        if self.cgroup_owned
+            || self
+                .unexpected_descendants
+                .iter()
+                .chain(self.delegate.iter())
+                .chain(self.leader.iter())
+                .any(|process| process.verify_terminal().is_err())
+        {
+            return Err(KernelError::CleanupUncertain);
+        }
+        self.unexpected_descendants.clear();
+        self.delegate.take();
+        self.leader.take();
+        Ok(())
+    }
 }
 
 struct PreparedCase {
@@ -349,21 +387,41 @@ fn main() {
             [_, mode] if mode == "timeout" => run_scenario(Scenario::Timeout),
             [_, mode] if mode == "interruption" => run_scenario(Scenario::Interruption),
             [_, mode] if mode == "unexpected-event" => run_scenario(Scenario::UnexpectedEvent),
+            [_, mode] if mode == "lost-resume-one" => run_scenario(Scenario::LostAfterResumeOne),
+            [_, mode] if mode == "lost-resume-two" => run_scenario(Scenario::LostAfterResumeTwo),
+            [_, mode] if mode == "lost-drain" => run_scenario(Scenario::LostAfterDrain),
+            [_, mode] if mode == "lost-empty-cgroup" => {
+                run_scenario(Scenario::LostAfterEmptyCgroup)
+            }
+            [_, mode] if mode == "lost-terminal-proof" => {
+                run_scenario(Scenario::LostAfterTerminalProof)
+            }
             [_, mode] if mode == "fault-intent" => run_adapter_fault(FaultPoint::Intent),
             [_, mode] if mode == "fault-namespace" => run_adapter_fault(FaultPoint::Namespace),
             [_, mode] if mode == "fault-cgroup" => run_adapter_fault(FaultPoint::Cgroup),
             [_, mode] if mode == "fault-spawn" => run_adapter_fault(FaultPoint::Spawn),
-            [_, mode] if mode == "fault-custody" => run_adapter_fault(FaultPoint::Custody),
-            [_, mode] if mode == "fault-exec" => run_adapter_fault(FaultPoint::ExecAttestation),
-            [_, mode] if mode == "fault-protection" => {
-                run_adapter_fault(FaultPoint::ProtectionAttestation)
+            [_, mode] if mode == "fault-leader-attest" => {
+                run_adapter_fault(FaultPoint::LeaderAttestation)
             }
-            [_, mode] if mode == "tracer-death" => run_tracer_death(),
+            [_, mode] if mode == "fault-bootstrap" => run_adapter_fault(FaultPoint::Bootstrap),
+            [_, mode] if mode == "tracer-death-stopped" => {
+                run_tracer_death(TracerDeathCut::Stopped)
+            }
+            [_, mode] if mode == "tracer-death-mixed" => {
+                run_tracer_death(TracerDeathCut::MixedResume)
+            }
+            [_, mode] if mode == "tracer-death-resumed" => {
+                run_tracer_death(TracerDeathCut::FullResume)
+            }
             [_, mode] if mode == "front" => run_front_controller(FrontBehavior::Normal),
             [_, mode] if mode == "front-unexpected" => {
                 run_front_controller(FrontBehavior::UnexpectedForkAfterResume)
             }
-            [_, mode] if mode == "delegate" => run_delegate(),
+            [_, mode] if mode == "front-held" => {
+                run_front_controller(FrontBehavior::HoldAfterResume)
+            }
+            [_, mode] if mode == "delegate" => run_delegate(false),
+            [_, mode] if mode == "delegate-held" => run_delegate(true),
             _ => Err(KernelError::ProcessMismatch),
         }
     };
@@ -396,12 +454,23 @@ fn main() {
         {
             println!("openspell synthetic kernel proof: adapter-fault recovery=1 residue=0");
         }
-        Ok(()) if matches!(arguments.get(1).map(String::as_str), Some("tracer-death")) => {
+        Ok(())
+            if arguments
+                .get(1)
+                .is_some_and(|mode| mode.starts_with("lost-")) =>
+        {
+            println!("openspell synthetic kernel proof: adapter-loss recovery=1 residue=0");
+        }
+        Ok(())
+            if arguments
+                .get(1)
+                .is_some_and(|mode| mode.starts_with("tracer-death-")) =>
+        {
             println!("openspell synthetic kernel proof: tracer-death exitkill=1 residue=0");
         }
         Ok(()) => linux_abi::exit_immediately(0),
-        Err(error) => {
-            eprintln!("openspell synthetic kernel proof refused: {error:?}");
+        Err(_) => {
+            eprintln!("openspell synthetic kernel proof refused");
             linux_abi::exit_immediately(111);
         }
     }
@@ -422,6 +491,11 @@ fn run_scenario(scenario: Scenario) -> Result<(), KernelError> {
         Scenario::Timeout => finish_timeout(&mut prepared),
         Scenario::Interruption => finish_interruption(&mut prepared),
         Scenario::UnexpectedEvent => finish_unexpected_event(&mut prepared),
+        Scenario::LostAfterResumeOne => finish_lost_after_resume_one(&mut prepared),
+        Scenario::LostAfterResumeTwo => finish_lost_after_resume_two(&mut prepared),
+        Scenario::LostAfterDrain => finish_lost_after_drain(&mut prepared),
+        Scenario::LostAfterEmptyCgroup => finish_lost_after_empty_cgroup(&mut prepared),
+        Scenario::LostAfterTerminalProof => finish_lost_after_terminal_proof(&mut prepared),
     };
     if let Err(primary) = outcome {
         let _ = prepared.machine.interrupt();
@@ -450,7 +524,7 @@ fn prepare_case(
     fault: Option<FaultPoint>,
 ) -> Result<Preparation, KernelError> {
     let mut resources = CaseResources::new();
-    let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture());
+    let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture(1));
     match prepare_case_inner(&mut machine, &mut resources, behavior, fault) {
         Ok(true) => {
             resources.recover_all()?;
@@ -519,13 +593,14 @@ fn prepare_case_inner(
             drop(gate.write);
             let child_result = child_before_exec(gate.read.as_raw_fd());
             drop(gate.read);
-            if let Err(error) = child_result {
-                eprintln!("openspell synthetic child refused: {error:?}");
+            if child_result.is_err() {
+                eprintln!("openspell synthetic child refused");
                 linux_abi::exit_immediately(111);
             }
             let role: &'static [u8] = match behavior {
                 FrontBehavior::Normal => b"front\0",
                 FrontBehavior::UnexpectedForkAfterResume => b"front-unexpected\0",
+                FrontBehavior::HoldAfterResume => b"front-held\0",
             };
             let _ = linux_abi::exec_role(linux_abi::EXECUTABLE_FD, role);
             linux_abi::exit_immediately(111);
@@ -541,26 +616,42 @@ fn prepare_case_inner(
     }
     drop(fixed_executable);
     let leader_pid = resources.leader()?.pid;
+    expect_plain_stop(wait(leader_pid)?, linux_abi::STOP_SIGNAL)
+        .map_err(|_| KernelError::LeaderInitialStopMismatch)?;
+    linux_abi::ptrace_set_fixed_options(leader_pid)?;
+    namespaces.child_pid = namespace_path(Some(leader_pid), "pid")
+        .map_err(|_| KernelError::ChildPidNamespaceMismatch)?;
+    if namespaces.outer.get("pid") == Some(&namespaces.child_pid) {
+        return Err(KernelError::SupervisorNamespaceMismatch);
+    }
+    verify_stopped_leader_namespaces(&namespaces, leader_pid)?;
     verify_cgroup_members(&[leader_pid]).map_err(|_| KernelError::LeaderCgroupMismatch)?;
     if resolve_or_inject(machine, spawn_effect, fault, FaultPoint::Spawn)? {
         return Ok(true);
     }
 
-    let custody_effect = offer_expected(machine, EffectKind::EstablishPtraceAndDescendantCustody)?;
-    expect_plain_stop(wait(leader_pid)?, linux_abi::STOP_SIGNAL)
-        .map_err(|_| KernelError::LeaderInitialStopMismatch)?;
-    namespaces.child_pid = namespace_path(Some(leader_pid), "pid")
-        .map_err(|_| KernelError::ChildPidNamespaceMismatch)?;
-    if namespaces.outer.get("pid") == Some(&namespaces.child_pid) {
-        return Err(KernelError::ChildPidNamespaceMismatch);
-    }
-    linux_abi::ptrace_set_fixed_options(leader_pid)?;
+    let leader_attestation = offer_expected(machine, EffectKind::AttestLeaderExecAndMaps)?;
+    // This is the sole pre-exec leader continue and therefore needs no post-exec permit.
     linux_abi::ptrace_continue(leader_pid)?;
     expect_ptrace_event(wait(leader_pid)?, linux_abi::EVENT_EXEC)
         .map_err(|_| KernelError::LeaderExecStopMismatch)?;
     resources.leader()?.verify_identity()?;
     let leader_exec_maps = attest_exec_stop(&runtime, resources.leader()?, MappingStage::ExecStop)?;
-    linux_abi::ptrace_continue(leader_pid)?;
+    verify_prebootstrap_authority(resources.leader()?)?;
+    if resolve_or_inject(
+        machine,
+        leader_attestation,
+        fault,
+        FaultPoint::LeaderAttestation,
+    )? {
+        return Ok(true);
+    }
+
+    let bootstrap = offer_expected(machine, EffectKind::BootstrapVerifiedProcesses)?;
+    if !bootstrap.carries_bootstrap_permit() {
+        return Err(KernelError::MachineMismatch);
+    }
+    bootstrap_continue(&bootstrap, leader_pid)?;
     expect_ptrace_event(wait(leader_pid)?, linux_abi::EVENT_FORK)
         .map_err(|_| KernelError::ForkStopMismatch)?;
     let delegate_pid = linux_abi::ptrace_event_pid(leader_pid)?;
@@ -575,24 +666,22 @@ fn prepare_case_inner(
     verify_cgroup_members(&[leader_pid, delegate_pid])
         .map_err(|_| KernelError::DescendantCgroupMismatch)?;
     verify_child_namespaces(&namespaces, leader_pid, delegate_pid)?;
-    if resolve_or_inject(machine, custody_effect, fault, FaultPoint::Custody)? {
-        return Ok(true);
-    }
 
-    let exec_effect = offer_expected(machine, EffectKind::AttestExecsAndMaps)?;
+    // The delegate has not executed yet, so this is the sole bootstrap pre-exec continue.
     linux_abi::ptrace_continue(delegate_pid)?;
     expect_ptrace_event(wait(delegate_pid)?, linux_abi::EVENT_EXEC)
         .map_err(|_| KernelError::DelegateExecStopMismatch)?;
     resources.delegate()?.verify_identity()?;
     let delegate_exec_maps =
         attest_exec_stop(&runtime, resources.delegate()?, MappingStage::ExecStop)?;
+    verify_prebootstrap_authority(resources.delegate()?)?;
     if leader_exec_maps != delegate_exec_maps {
         return Err(KernelError::MappingMismatch);
     }
-    linux_abi::ptrace_continue(delegate_pid)?;
+    bootstrap_continue(&bootstrap, delegate_pid)?;
     expect_plain_stop(wait(delegate_pid)?, linux_abi::STOP_SIGNAL)
         .map_err(|_| KernelError::DelegateReadyStopMismatch)?;
-    linux_abi::ptrace_continue(leader_pid)?;
+    bootstrap_continue(&bootstrap, leader_pid)?;
     expect_plain_stop(wait(leader_pid)?, linux_abi::STOP_SIGNAL)
         .map_err(|_| KernelError::LeaderReadyStopMismatch)?;
     let leader_ready_maps =
@@ -602,20 +691,10 @@ fn prepare_case_inner(
     if leader_ready_maps != delegate_ready_maps {
         return Err(KernelError::MappingMismatch);
     }
-    if resolve_or_inject(machine, exec_effect, fault, FaultPoint::ExecAttestation)? {
-        return Ok(true);
-    }
-
-    let protection_effect = offer_expected(machine, EffectKind::AttestProcessProtections)?;
     verify_process_protections(resources.leader()?)?;
     verify_process_protections(resources.delegate()?)?;
     verify_cgroup_members(&[leader_pid, delegate_pid])?;
-    if resolve_or_inject(
-        machine,
-        protection_effect,
-        fault,
-        FaultPoint::ProtectionAttestation,
-    )? {
+    if resolve_or_inject(machine, bootstrap, fault, FaultPoint::Bootstrap)? {
         return Ok(true);
     }
 
@@ -623,32 +702,9 @@ fn prepare_case_inner(
 }
 
 fn finish_success(prepared: &mut PreparedCase) -> Result<(), KernelError> {
-    let resume = offer_expected(&mut prepared.machine, EffectKind::ResumeVerifiedProcesses)?;
-    if !resume.carries_resume_permit() {
-        return Err(KernelError::MachineMismatch);
-    }
-    linux_abi::ptrace_continue(prepared.resources.delegate()?.pid)?;
-    linux_abi::ptrace_continue(prepared.resources.leader()?.pid)?;
-    resolve_exact(&mut prepared.machine, resume)?;
-
-    let drain = offer_expected(&mut prepared.machine, EffectKind::DrainDescendants)?;
-    wait_successful_exit(
-        prepared.resources.delegate_mut()?,
-        PostResumeExpectation::NoStops,
-    )?;
-    resolve_exact(&mut prepared.machine, drain)?;
-
-    let terminal = offer_expected(
-        &mut prepared.machine,
-        EffectKind::ObserveTerminalAndEmptyCgroup,
-    )?;
-    wait_successful_exit(
-        prepared.resources.leader_mut()?,
-        PostResumeExpectation::OnePlainSignal(libc::SIGCHLD),
-    )?;
-    prove_empty_cgroup_and_remove()?;
-    prepared.resources.cgroup_owned = false;
-    resolve_exact(&mut prepared.machine, terminal)?;
+    resume_both(prepared)?;
+    drain_delegate(prepared)?;
+    observe_terminal_and_empty_cgroup(prepared)?;
 
     let proof = offer_expected(&mut prepared.machine, EffectKind::PersistTerminalProof)?;
     create_terminal()?;
@@ -661,7 +717,34 @@ fn finish_success(prepared: &mut PreparedCase) -> Result<(), KernelError> {
     {
         return Err(KernelError::MachineMismatch);
     }
-    Ok(())
+    prepared.resources.release_terminal_custody()
+}
+
+fn resume_both(prepared: &mut PreparedCase) -> Result<(), KernelError> {
+    let resume = offer_expected(&mut prepared.machine, EffectKind::ResumeVerifiedProcesses)?;
+    if !resume.carries_resume_permit() {
+        return Err(KernelError::MachineMismatch);
+    }
+    resume_continue(&resume, prepared.resources.delegate()?.pid)?;
+    resume_continue(&resume, prepared.resources.leader()?.pid)?;
+    resolve_exact(&mut prepared.machine, resume)
+}
+
+fn drain_delegate(prepared: &mut PreparedCase) -> Result<(), KernelError> {
+    let drain = offer_expected(&mut prepared.machine, EffectKind::DrainDescendants)?;
+    wait_successful_exit(prepared.resources.delegate_mut()?)?;
+    resolve_exact(&mut prepared.machine, drain)
+}
+
+fn observe_terminal_and_empty_cgroup(prepared: &mut PreparedCase) -> Result<(), KernelError> {
+    let terminal = offer_expected(
+        &mut prepared.machine,
+        EffectKind::ObserveTerminalAndEmptyCgroup,
+    )?;
+    wait_successful_exit(prepared.resources.leader_mut()?)?;
+    prove_empty_cgroup_and_remove()?;
+    prepared.resources.cgroup_owned = false;
+    resolve_exact(&mut prepared.machine, terminal)
 }
 
 fn finish_refusal(prepared: &mut PreparedCase) -> Result<(), KernelError> {
@@ -700,14 +783,13 @@ fn finish_unexpected_event(prepared: &mut PreparedCase) -> Result<(), KernelErro
     if !resume.carries_resume_permit() {
         return Err(KernelError::MachineMismatch);
     }
-    linux_abi::ptrace_continue(prepared.resources.delegate()?.pid)?;
-    linux_abi::ptrace_continue(prepared.resources.leader()?.pid)?;
+    resume_continue(&resume, prepared.resources.delegate()?.pid)?;
+    resume_continue(&resume, prepared.resources.leader()?.pid)?;
     resolve_exact(&mut prepared.machine, resume)?;
 
     let deadline = Instant::now() + WAIT_BOUND;
     let leader_pid = prepared.resources.leader()?.pid;
     let delegate_pid = prepared.resources.delegate()?.pid;
-    let mut leader_sigchld = false;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -720,13 +802,6 @@ fn finish_unexpected_event(prepared: &mut PreparedCase) -> Result<(), KernelErro
                 kind: WaitKind::Exited(0),
             } if pid == delegate_pid => {
                 prepared.resources.delegate_mut()?.reaped = true;
-            }
-            WaitEvent {
-                pid,
-                kind: WaitKind::Stopped { signal, event: 0 },
-            } if pid == leader_pid && signal == libc::SIGCHLD && !leader_sigchld => {
-                leader_sigchld = true;
-                linux_abi::ptrace_continue(leader_pid)?;
             }
             WaitEvent {
                 pid,
@@ -752,6 +827,72 @@ fn finish_unexpected_event(prepared: &mut PreparedCase) -> Result<(), KernelErro
     terminate_case(prepared)
 }
 
+fn finish_lost_after_resume_one(prepared: &mut PreparedCase) -> Result<(), KernelError> {
+    let resume = offer_expected(&mut prepared.machine, EffectKind::ResumeVerifiedProcesses)?;
+    if !resume.carries_resume_permit() {
+        return Err(KernelError::MachineMismatch);
+    }
+    resume_continue(&resume, prepared.resources.delegate()?.pid)?;
+    let progress = prepared.machine.interrupt()?;
+    assert_recovery(progress, prepared.machine.result())?;
+    terminate_case(prepared)
+}
+
+fn finish_lost_after_resume_two(prepared: &mut PreparedCase) -> Result<(), KernelError> {
+    let resume = offer_expected(&mut prepared.machine, EffectKind::ResumeVerifiedProcesses)?;
+    if !resume.carries_resume_permit() {
+        return Err(KernelError::MachineMismatch);
+    }
+    resume_continue(&resume, prepared.resources.delegate()?.pid)?;
+    resume_continue(&resume, prepared.resources.leader()?.pid)?;
+    let progress = prepared
+        .machine
+        .resolve(resume, EffectReply::LostAfterAcceptance)?;
+    assert_recovery(progress, prepared.machine.result())?;
+    terminate_case(prepared)
+}
+
+fn finish_lost_after_drain(prepared: &mut PreparedCase) -> Result<(), KernelError> {
+    resume_both(prepared)?;
+    let drain = offer_expected(&mut prepared.machine, EffectKind::DrainDescendants)?;
+    wait_successful_exit(prepared.resources.delegate_mut()?)?;
+    let progress = prepared
+        .machine
+        .resolve(drain, EffectReply::LostAfterAcceptance)?;
+    assert_recovery(progress, prepared.machine.result())?;
+    terminate_case(prepared)
+}
+
+fn finish_lost_after_empty_cgroup(prepared: &mut PreparedCase) -> Result<(), KernelError> {
+    resume_both(prepared)?;
+    drain_delegate(prepared)?;
+    let observe = offer_expected(
+        &mut prepared.machine,
+        EffectKind::ObserveTerminalAndEmptyCgroup,
+    )?;
+    wait_successful_exit(prepared.resources.leader_mut()?)?;
+    prove_empty_cgroup_and_remove()?;
+    prepared.resources.cgroup_owned = false;
+    let progress = prepared
+        .machine
+        .resolve(observe, EffectReply::LostAfterAcceptance)?;
+    assert_recovery(progress, prepared.machine.result())?;
+    terminate_case(prepared)
+}
+
+fn finish_lost_after_terminal_proof(prepared: &mut PreparedCase) -> Result<(), KernelError> {
+    resume_both(prepared)?;
+    drain_delegate(prepared)?;
+    observe_terminal_and_empty_cgroup(prepared)?;
+    let proof = offer_expected(&mut prepared.machine, EffectKind::PersistTerminalProof)?;
+    create_terminal()?;
+    let progress = prepared
+        .machine
+        .resolve(proof, EffectReply::LostAfterAcceptance)?;
+    assert_recovery(progress, prepared.machine.result())?;
+    terminate_case(prepared)
+}
+
 fn assert_recovery(progress: Progress, result: Option<ProofResult>) -> Result<(), KernelError> {
     if matches!(progress, Progress::Refused(ProofRefusal::RecoveryRequired))
         && matches!(
@@ -772,18 +913,32 @@ fn terminate_case(prepared: &mut PreparedCase) -> Result<(), KernelError> {
     prepared.resources.recover_programs_and_cgroup()
 }
 
-fn run_tracer_death() -> Result<(), KernelError> {
-    let gate = linux_abi::make_pipe()?;
+fn run_tracer_death(cut: TracerDeathCut) -> Result<(), KernelError> {
+    let report_pipe = linux_abi::make_pipe()?;
+    let command_pipe = linux_abi::make_pipe()?;
+    let status_pipe = linux_abi::make_pipe()?;
     let mut tracer = match linux_abi::fork_process()? {
         ForkOutcome::Child => {
-            drop(gate.read);
-            let Preparation::Ready(prepared) = prepare_case(FrontBehavior::Normal, None)
-                .unwrap_or_else(|_| {
+            drop(report_pipe.read);
+            drop(command_pipe.write);
+            drop(status_pipe.read);
+            let inherited_status =
+                linux_abi::duplicate_inherited_fd(status_pipe.write.as_raw_fd(), STATUS_FD)
+                    .unwrap_or_else(|_| linux_abi::exit_immediately(111));
+            drop(status_pipe.write);
+            let behavior = if cut == TracerDeathCut::Stopped {
+                FrontBehavior::Normal
+            } else {
+                FrontBehavior::HoldAfterResume
+            };
+            let Preparation::Ready(mut prepared) =
+                prepare_case(behavior, None).unwrap_or_else(|_| {
                     linux_abi::exit_immediately(111);
                 })
             else {
                 linux_abi::exit_immediately(111);
             };
+            drop(inherited_status);
             let report = encode_custody_report(
                 prepared
                     .resources
@@ -796,16 +951,50 @@ fn run_tracer_death() -> Result<(), KernelError> {
                     .and_then(TrackedProcess::witness)
                     .unwrap_or_else(|_| linux_abi::exit_immediately(111)),
             );
-            if linux_abi::write_all_bounded(gate.write.as_raw_fd(), &report, WAIT_BOUND).is_err() {
+            if linux_abi::write_all_bounded(report_pipe.write.as_raw_fd(), &report, WAIT_BOUND)
+                .is_err()
+            {
                 linux_abi::exit_immediately(111);
             }
-            drop(gate.write);
+            drop(report_pipe.write);
+            if linux_abi::read_gate(command_pipe.read.as_raw_fd()).is_err() {
+                linux_abi::exit_immediately(111);
+            }
+            drop(command_pipe.read);
+            if cut != TracerDeathCut::Stopped {
+                let resume =
+                    offer_expected(&mut prepared.machine, EffectKind::ResumeVerifiedProcesses)
+                        .unwrap_or_else(|_| linux_abi::exit_immediately(111));
+                let delegate_pid = prepared
+                    .resources
+                    .delegate()
+                    .map(|process| process.pid)
+                    .unwrap_or_else(|_| linux_abi::exit_immediately(111));
+                resume_continue(&resume, delegate_pid)
+                    .unwrap_or_else(|_| linux_abi::exit_immediately(111));
+                if cut == TracerDeathCut::FullResume {
+                    let leader_pid = prepared
+                        .resources
+                        .leader()
+                        .map(|process| process.pid)
+                        .unwrap_or_else(|_| linux_abi::exit_immediately(111));
+                    resume_continue(&resume, leader_pid)
+                        .unwrap_or_else(|_| linux_abi::exit_immediately(111));
+                }
+                // Intentionally keep the one-use resume authority in flight until tracer death.
+                std::hint::black_box(&resume);
+                loop {
+                    std::thread::park();
+                }
+            }
             loop {
                 std::thread::park();
             }
         }
         ForkOutcome::Parent(pid) => {
-            drop(gate.write);
+            drop(report_pipe.write);
+            drop(command_pipe.read);
+            drop(status_pipe.write);
             let mut handle = TrackedProcess::acquired(pid, linux_abi::open_pidfd(pid)?);
             handle.attest_live()?;
             handle
@@ -814,8 +1003,7 @@ fn run_tracer_death() -> Result<(), KernelError> {
 
     let witnesses = (|| -> Result<(TrackedProcess, TrackedProcess), KernelError> {
         let mut report = [0_u8; 32];
-        linux_abi::read_exact_bounded(gate.read.as_raw_fd(), &mut report, WAIT_BOUND)?;
-        drop(gate.read);
+        linux_abi::read_exact_bounded(report_pipe.read.as_raw_fd(), &mut report, WAIT_BOUND)?;
         let (leader, delegate) = decode_custody_report(report)?;
         if leader.pid == delegate.pid {
             return Err(KernelError::ProcessMismatch);
@@ -829,24 +1017,93 @@ fn run_tracer_death() -> Result<(), KernelError> {
         Ok(processes) => processes,
         Err(primary) => return cleanup_failed_tracer(&mut tracer, primary),
     };
+    drop(report_pipe.read);
 
-    linux_abi::signal_pidfd(tracer.pidfd.as_raw_fd(), libc::SIGKILL)?;
-    match wait(tracer.pid)? {
-        WaitEvent {
-            kind: WaitKind::Signaled(signal),
-            ..
-        } if signal == libc::SIGKILL => {}
-        _ => return Err(KernelError::ProcessMismatch),
+    let outcome = (|| -> Result<(), KernelError> {
+        linux_abi::write_gate(command_pipe.write.as_raw_fd())?;
+        drop(command_pipe.write);
+        let mut expected_tags = match cut {
+            TracerDeathCut::Stopped => Vec::new(),
+            TracerDeathCut::MixedResume => vec![b'D'],
+            TracerDeathCut::FullResume => vec![b'D', b'L'],
+        };
+        if !expected_tags.is_empty() {
+            let mut actual_tags = vec![0_u8; expected_tags.len()];
+            linux_abi::read_exact_bounded(
+                status_pipe.read.as_raw_fd(),
+                &mut actual_tags,
+                WAIT_BOUND,
+            )?;
+            expected_tags.sort_unstable();
+            actual_tags.sort_unstable();
+            if actual_tags != expected_tags {
+                return Err(KernelError::ProcessMismatch);
+            }
+        }
+
+        linux_abi::signal_pidfd(tracer.pidfd.as_raw_fd(), libc::SIGKILL)?;
+        match wait(tracer.pid)? {
+            WaitEvent {
+                kind: WaitKind::Signaled(signal),
+                ..
+            } if signal == libc::SIGKILL => {}
+            _ => return Err(KernelError::ProcessMismatch),
+        }
+        tracer.reaped = true;
+        tracer.verify_terminal()?;
+        leader.verify_terminal()?;
+        delegate.verify_terminal()?;
+        linux_abi::expect_eof_bounded(status_pipe.read.as_raw_fd(), WAIT_BOUND)?;
+        wait_for_empty_cgroup()?;
+        fs::remove_dir(CGROUP).map_err(|_| KernelError::CleanupUncertain)?;
+        cleanup_owned_laboratory()?;
+        prove_fixed_residue_absent()
+    })();
+    if let Err(primary) = outcome {
+        return cleanup_failed_tracer_with_witnesses(&mut tracer, &leader, &delegate, primary);
     }
-    tracer.reaped = true;
-    tracer.verify_terminal()?;
-    leader.verify_terminal()?;
-    delegate.verify_terminal()?;
-    wait_for_empty_cgroup()?;
-    fs::remove_dir(CGROUP).map_err(|_| KernelError::CleanupUncertain)?;
-    cleanup_owned_laboratory()?;
-    prove_fixed_residue_absent()?;
+    drop(status_pipe.read);
+    drop((leader, delegate, tracer));
     Ok(())
+}
+
+fn cleanup_failed_tracer_with_witnesses(
+    tracer: &mut TrackedProcess,
+    leader: &TrackedProcess,
+    delegate: &TrackedProcess,
+    primary: KernelError,
+) -> Result<(), KernelError> {
+    let mut exact = true;
+    if matches!(Path::new(CGROUP).try_exists(), Ok(true))
+        && fs::write(format!("{CGROUP}/cgroup.kill"), b"1\n").is_err()
+    {
+        exact = false;
+    }
+    if recover_process(tracer).is_err()
+        || leader.verify_terminal().is_err()
+        || delegate.verify_terminal().is_err()
+    {
+        exact = false;
+    }
+    match Path::new(CGROUP).try_exists() {
+        Ok(true) => {
+            if wait_for_empty_cgroup().is_err() || fs::remove_dir(CGROUP).is_err() {
+                exact = false;
+            }
+        }
+        Ok(false) => {}
+        Err(_) => exact = false,
+    }
+    match Path::new(LABORATORY).try_exists() {
+        Ok(true) if cleanup_owned_laboratory().is_err() => exact = false,
+        Ok(_) => {}
+        Err(_) => exact = false,
+    }
+    if exact && prove_fixed_residue_absent().is_ok() {
+        Err(primary)
+    } else {
+        Err(KernelError::CleanupUncertain)
+    }
 }
 
 fn cleanup_failed_tracer(
@@ -931,37 +1188,55 @@ fn child_before_exec(gate_fd: i32) -> Result<(), KernelError> {
     }
     linux_abi::ptrace_traceme().map_err(|_| KernelError::TracemeMismatch)?;
     linux_abi::stop_self().map_err(|_| KernelError::TracemeMismatch)?;
+    // The tracer verifies the stopped namespace/proc setup, then this is the only path to exec.
+    drop_authority_before_exec()?;
     Ok(())
 }
 
 fn run_front_controller(behavior: FrontBehavior) -> Result<(), KernelError> {
-    install_and_self_check_protections()?;
-    let delegate = match linux_abi::fork_process()? {
+    linux_abi::ignore_sigchld().map_err(|_| KernelError::ProtectionMismatch)?;
+    restore_and_self_check_post_exec_protections()?;
+    match linux_abi::fork_process()? {
         ForkOutcome::Child => {
-            let _ = linux_abi::exec_role(linux_abi::EXECUTABLE_FD, b"delegate\0");
+            let role: &'static [u8] = if behavior == FrontBehavior::HoldAfterResume {
+                b"delegate-held\0"
+            } else {
+                b"delegate\0"
+            };
+            let _ = linux_abi::exec_role(linux_abi::EXECUTABLE_FD, role);
             linux_abi::exit_immediately(111);
         }
-        ForkOutcome::Parent(pid) => pid,
-    };
-    linux_abi::stop_self()?;
-    if behavior == FrontBehavior::UnexpectedForkAfterResume {
-        let unexpected = match linux_abi::fork_process()? {
-            ForkOutcome::Child => linux_abi::exit_immediately(0),
-            ForkOutcome::Parent(pid) => pid,
-        };
-        linux_abi::wait_child_success(unexpected)?;
+        ForkOutcome::Parent(_) => {}
     }
-    linux_abi::wait_child_success(delegate)?;
-    Ok(())
-}
-
-fn run_delegate() -> Result<(), KernelError> {
-    install_and_self_check_protections()?;
     linux_abi::stop_self()?;
+    if behavior == FrontBehavior::HoldAfterResume {
+        linux_abi::write_all_bounded(STATUS_FD, b"L", WAIT_BOUND)?;
+        loop {
+            std::thread::park();
+        }
+    }
+    if behavior == FrontBehavior::UnexpectedForkAfterResume {
+        match linux_abi::fork_process()? {
+            ForkOutcome::Child => linux_abi::exit_immediately(0),
+            ForkOutcome::Parent(_) => {}
+        }
+    }
     Ok(())
 }
 
-fn install_and_self_check_protections() -> Result<(), KernelError> {
+fn run_delegate(hold_after_resume: bool) -> Result<(), KernelError> {
+    restore_and_self_check_post_exec_protections()?;
+    linux_abi::stop_self()?;
+    if hold_after_resume {
+        linux_abi::write_all_bounded(STATUS_FD, b"D", WAIT_BOUND)?;
+        loop {
+            std::thread::park();
+        }
+    }
+    Ok(())
+}
+
+fn drop_authority_before_exec() -> Result<(), KernelError> {
     let cap_last = fs::read_to_string("/proc/sys/kernel/cap_last_cap")
         .map_err(|_| KernelError::ProtectionMismatch)?
         .trim()
@@ -970,7 +1245,11 @@ fn install_and_self_check_protections() -> Result<(), KernelError> {
     if cap_last > 255 {
         return Err(KernelError::ProtectionMismatch);
     }
-    linux_abi::install_process_protections(cap_last).map_err(|_| KernelError::ProtectionMismatch)
+    linux_abi::drop_authority_before_exec(cap_last).map_err(|_| KernelError::ProtectionMismatch)
+}
+
+fn restore_and_self_check_post_exec_protections() -> Result<(), KernelError> {
+    linux_abi::restore_post_exec_dumpability().map_err(|_| KernelError::ProtectionMismatch)
 }
 
 fn verify_supervisor_boundary() -> Result<(), KernelError> {
@@ -1180,6 +1459,20 @@ fn resolve_or_inject(
     }
 }
 
+fn bootstrap_continue(effect: &Effect, pid: i32) -> Result<(), KernelError> {
+    if !effect.carries_bootstrap_permit() {
+        return Err(KernelError::MachineMismatch);
+    }
+    linux_abi::ptrace_continue(pid).map_err(Into::into)
+}
+
+fn resume_continue(effect: &Effect, pid: i32) -> Result<(), KernelError> {
+    if !effect.carries_resume_permit() {
+        return Err(KernelError::MachineMismatch);
+    }
+    linux_abi::ptrace_continue(pid).map_err(Into::into)
+}
+
 fn wait(pid: i32) -> Result<WaitEvent, KernelError> {
     linux_abi::wait_for_pid(pid, WAIT_BOUND).map_err(Into::into)
 }
@@ -1209,38 +1502,13 @@ fn expect_ptrace_event(event: WaitEvent, expected: u32) -> Result<(), KernelErro
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum PostResumeExpectation {
-    NoStops,
-    OnePlainSignal(i32),
-}
-
-fn wait_successful_exit(
-    process: &mut TrackedProcess,
-    expectation: PostResumeExpectation,
-) -> Result<(), KernelError> {
-    let mut expected_stop_seen = false;
-    loop {
-        match wait(process.pid)?.kind {
-            WaitKind::Exited(0) => {
-                process.reaped = true;
-                break;
-            }
-            WaitKind::Stopped { signal, event: 0 }
-                if matches!(expectation, PostResumeExpectation::OnePlainSignal(expected) if signal == expected)
-                    && !expected_stop_seen =>
-            {
-                expected_stop_seen = true;
-                linux_abi::ptrace_continue(process.pid)?;
-            }
-            WaitKind::Stopped { .. } => return Err(KernelError::UnexpectedPostResumeEvent),
-            WaitKind::Exited(_) | WaitKind::Signaled(_) => {
-                return Err(KernelError::ProcessMismatch);
-            }
+fn wait_successful_exit(process: &mut TrackedProcess) -> Result<(), KernelError> {
+    match wait(process.pid)?.kind {
+        WaitKind::Exited(0) => process.reaped = true,
+        WaitKind::Stopped { .. } => return Err(KernelError::UnexpectedPostResumeEvent),
+        WaitKind::Exited(_) | WaitKind::Signaled(_) => {
+            return Err(KernelError::ProcessMismatch);
         }
-    }
-    if matches!(expectation, PostResumeExpectation::OnePlainSignal(_)) && !expected_stop_seen {
-        return Err(KernelError::UnexpectedPostResumeEvent);
     }
     process.verify_terminal()
 }
@@ -1528,7 +1796,7 @@ fn capture_runtime_inventory(pid: i32) -> Result<RuntimeInventory, KernelError> 
         return Err(KernelError::ExecutableMismatch);
     }
     let elf = Elf::parse(&bytes).map_err(|_| KernelError::ExecutableMismatch)?;
-    if elf.interpreter.is_some() || !elf.libraries.is_empty() {
+    if elf.header.e_type != ET_DYN || elf.interpreter.is_some() || !elf.libraries.is_empty() {
         return Err(KernelError::ExecutableMismatch);
     }
     let mut loads = Vec::new();
@@ -1611,6 +1879,39 @@ fn verify_supervisor_namespaces(inventory: &NamespaceInventory) -> Result<(), Ke
     Ok(())
 }
 
+fn verify_stopped_leader_namespaces(
+    inventory: &NamespaceInventory,
+    leader: i32,
+) -> Result<(), KernelError> {
+    if namespace_path(Some(leader), "mnt").map_err(|_| KernelError::ChildMountNamespaceMismatch)?
+        == inventory.private["mnt"]
+    {
+        return Err(KernelError::ChildMountNamespaceMismatch);
+    }
+    for name in ["user", "ipc", "uts", "net"] {
+        if namespace_path(Some(leader), name).map_err(|_| KernelError::NamespaceReadMismatch)?
+            != inventory.private[name]
+        {
+            return Err(KernelError::NamespaceReadMismatch);
+        }
+    }
+    if namespace_path(Some(leader), "pid").map_err(|_| KernelError::NamespaceReadMismatch)?
+        != inventory.child_pid
+    {
+        return Err(KernelError::ChildPidNamespaceMismatch);
+    }
+    let mounts = fs::read_to_string(format!("/proc/{leader}/mountinfo"))
+        .map_err(|_| KernelError::ProcMismatch)?;
+    if !mounts
+        .lines()
+        .any(|line| line.contains(" /proc ") && line.contains(" - proc proc "))
+        || !Path::new(&format!("/proc/{leader}/root/proc/1/status")).is_file()
+    {
+        return Err(KernelError::ProcMismatch);
+    }
+    Ok(())
+}
+
 fn verify_child_namespaces(
     inventory: &NamespaceInventory,
     leader: i32,
@@ -1639,10 +1940,14 @@ fn verify_child_namespaces(
                 return Err(mismatch);
             }
         }
-        if namespace_path(Some(pid), "pid").map_err(|_| KernelError::ChildPidNamespaceMismatch)?
+        if namespace_path(Some(pid), "pid").map_err(|_| KernelError::NamespaceReadMismatch)?
             != inventory.child_pid
         {
-            return Err(KernelError::ChildPidNamespaceMismatch);
+            return Err(if pid == leader {
+                KernelError::LeaderPidNamespaceMismatch
+            } else {
+                KernelError::DelegatePidNamespaceMismatch
+            });
         }
     }
     let leader_mounts = fs::read_to_string(format!("/proc/{leader}/mountinfo"))
@@ -1689,6 +1994,43 @@ fn verify_process_protections(process: &TrackedProcess) -> Result<(), KernelErro
             .split_ascii_whitespace()
             .collect::<Vec<_>>();
         if values != ["0", "0", "0", "0"] {
+            return Err(KernelError::ProtectionMismatch);
+        }
+    }
+    let limits = fs::read_to_string(format!("/proc/{}/limits", process.pid))
+        .map_err(|_| KernelError::ProtectionMismatch)?;
+    let core = limits
+        .lines()
+        .find(|line| line.starts_with("Max core file size"))
+        .ok_or(KernelError::ProtectionMismatch)?
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>();
+    if core.get(4) != Some(&"0") || core.get(5) != Some(&"0") {
+        return Err(KernelError::ProtectionMismatch);
+    }
+    Ok(())
+}
+
+fn verify_prebootstrap_authority(process: &TrackedProcess) -> Result<(), KernelError> {
+    process.verify_identity()?;
+    let status = fs::read_to_string(format!("/proc/{}/status", process.pid))
+        .map_err(|_| KernelError::ProtectionMismatch)?;
+    for (key, expected) in [
+        ("CapInh", "0000000000000000"),
+        ("CapPrm", "0000000000000000"),
+        ("CapEff", "0000000000000000"),
+        ("CapBnd", "0000000000000000"),
+        ("CapAmb", "0000000000000000"),
+        ("NoNewPrivs", "1"),
+        ("Seccomp", "2"),
+        ("CoreDumping", "0"),
+    ] {
+        let actual = status
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}:")))
+            .map(str::trim)
+            .ok_or(KernelError::ProtectionMismatch)?;
+        if actual != expected {
             return Err(KernelError::ProtectionMismatch);
         }
     }

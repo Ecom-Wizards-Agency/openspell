@@ -522,10 +522,12 @@ pub(crate) fn seal_release<C: EvidenceClass>(
             &entry.bytes,
             retained_mode(entry.mode),
             destination_owner,
+            ordinal,
         )?;
         fault(TestFaultPoint::EntrySynced(ordinal))?;
         published.push(file);
     }
+    fault(TestFaultPoint::BeforeEntriesDirectorySync)?;
     fsync(&destination.root).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
     fault(TestFaultPoint::EntriesDirectorySynced)?;
 
@@ -564,6 +566,7 @@ pub(crate) fn seal_release<C: EvidenceClass>(
         RenameFlags::NOREPLACE,
     )
     .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    fault(TestFaultPoint::BeforeInventoryDirectorySync)?;
     fsync(&destination.root).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
     fault(TestFaultPoint::InventoryDirectorySynced)?;
 
@@ -614,6 +617,7 @@ pub(crate) fn seal_release<C: EvidenceClass>(
     {
         return Err(ProvenanceRefusal::RetentionUncertain);
     }
+    fault(TestFaultPoint::BeforeFinalDirectorySync)?;
     fsync(&destination.root).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
     fault(TestFaultPoint::FinalDirectorySynced)?;
 
@@ -815,6 +819,47 @@ fn read_exact_stable(
     Ok(bytes)
 }
 
+#[cfg(test)]
+pub(crate) fn read_exact_stable_with_mutation_for_test(
+    source: &File,
+    mutate: impl FnOnce(),
+) -> Result<Vec<u8>, ProvenanceRefusal> {
+    let expected = Identity::read(source)?;
+    let mut reader = source
+        .try_clone()
+        .map_err(|_| ProvenanceRefusal::SourceUnavailable)?;
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| ProvenanceRefusal::SourceUnavailable)?;
+    let capacity = usize::try_from(expected.size).map_err(|_| ProvenanceRefusal::SourceMismatch)?;
+    let mut bytes = Vec::with_capacity(capacity);
+    reader
+        .take(expected.size + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ProvenanceRefusal::SourceUnavailable)?;
+    mutate();
+    if bytes.len() != capacity || Identity::read(source)? != expected {
+        return Err(ProvenanceRefusal::SourceMismatch);
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+pub(crate) fn source_descriptor_owner_matches_for_test(
+    source: &File,
+    expected_owner: (u32, u32),
+) -> bool {
+    Identity::read(source)
+        .is_ok_and(|identity| verify_source_file(identity, expected_owner, identity.size).is_ok())
+}
+
+#[cfg(test)]
+pub(crate) fn descriptors_share_mount_for_test(first: &File, second: &File) -> bool {
+    Identity::read(first)
+        .and_then(|left| Identity::read(second).map(|right| left.mount_id == right.mount_id))
+        .unwrap_or(false)
+}
+
 fn verify_destination(destination: &FreshRetainedRoot) -> Result<(), ProvenanceRefusal> {
     verify_destination_metadata(destination)?;
     if !directory_names(&destination.root, 0)?.is_empty() {
@@ -852,7 +897,9 @@ fn reserve_destination(root: &File, owner: (u32, u32)) -> Result<File, Provenanc
     fchmod(&owned, Mode::from_raw_mode(0o400))
         .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
     let file: File = owned.into();
+    fault(TestFaultPoint::BeforeDestinationSync)?;
     fsync(&file).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    fault(TestFaultPoint::BeforeDestinationDirectorySync)?;
     fsync(root).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
     let identity = Identity::read(&file)?;
     if !identity.is_regular()
@@ -877,6 +924,7 @@ fn finish_reserved_inventory(
         .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
     fchmod(&*file, Mode::from_raw_mode(0o444))
         .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    fault(TestFaultPoint::BeforeInventorySync)?;
     fsync(&*file).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
     let identity = Identity::read(file)?;
     if !identity.is_regular()
@@ -897,6 +945,7 @@ fn create_and_sync(
     bytes: &[u8],
     mode: u32,
     owner: (u32, u32),
+    ordinal: usize,
 ) -> Result<File, ProvenanceRefusal> {
     let owned = openat2(root, name, CREATE_FLAGS, Mode::from_raw_mode(mode), RESOLVE)
         .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
@@ -906,6 +955,7 @@ fn create_and_sync(
         .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
     file.flush()
         .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    fault(TestFaultPoint::BeforeEntrySync(ordinal))?;
     fsync(&file).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
     let identity = Identity::read(&file)?;
     if !identity.is_regular()
@@ -1012,26 +1062,40 @@ fn directory_names(root: &File, maximum: usize) -> Result<Vec<String>, Provenanc
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TestFaultPoint {
+    BeforeDestinationSync,
+    BeforeDestinationDirectorySync,
     DestinationConsumed,
+    BeforeEntrySync(usize),
     EntrySynced(usize),
+    BeforeEntriesDirectorySync,
     EntriesDirectorySynced,
     BeforeInventory,
+    BeforeInventorySync,
     InventorySynced,
+    BeforeInventoryDirectorySync,
     InventoryDirectorySynced,
     Reopened,
+    BeforeFinalDirectorySync,
     FinalDirectorySynced,
 }
 
 #[cfg(not(test))]
 #[derive(Clone, Copy)]
 enum TestFaultPoint {
+    BeforeDestinationSync,
+    BeforeDestinationDirectorySync,
     DestinationConsumed,
+    BeforeEntrySync(usize),
     EntrySynced(usize),
+    BeforeEntriesDirectorySync,
     EntriesDirectorySynced,
     BeforeInventory,
+    BeforeInventorySync,
     InventorySynced,
+    BeforeInventoryDirectorySync,
     InventoryDirectorySynced,
     Reopened,
+    BeforeFinalDirectorySync,
     FinalDirectorySynced,
 }
 
