@@ -104,6 +104,7 @@ mod test_fault {
         static FAULT: RefCell<Option<Fault>> = const { RefCell::new(None) };
         static PUBLICATION_ORDINAL: Cell<usize> = const { Cell::new(0) };
         static FORCE_GENERATION_CAPACITY: Cell<bool> = const { Cell::new(false) };
+        static FORCE_PROJECTION_CAPACITY: Cell<bool> = const { Cell::new(false) };
         static ARTIFACT_CONTENT_READS: Cell<usize> = const { Cell::new(0) };
     }
 
@@ -121,6 +122,7 @@ mod test_fault {
         FAULT.with_borrow_mut(|slot| *slot = None);
         PUBLICATION_ORDINAL.set(0);
         FORCE_GENERATION_CAPACITY.set(false);
+        FORCE_PROJECTION_CAPACITY.set(false);
         ARTIFACT_CONTENT_READS.set(0);
     }
 
@@ -142,6 +144,14 @@ mod test_fault {
 
     pub(super) fn take_generation_capacity() -> bool {
         FORCE_GENERATION_CAPACITY.replace(false)
+    }
+
+    pub(super) fn force_projection_capacity() {
+        assert!(!FORCE_PROJECTION_CAPACITY.replace(true));
+    }
+
+    pub(super) fn take_projection_capacity() -> bool {
+        FORCE_PROJECTION_CAPACITY.replace(false)
     }
 
     pub(super) fn reset_artifact_content_reads() {
@@ -199,6 +209,11 @@ pub(crate) fn test_clear_fault() {
 #[cfg(test)]
 pub(crate) fn test_force_generation_capacity() {
     test_fault::force_generation_capacity();
+}
+
+#[cfg(test)]
+pub(crate) fn test_force_projection_capacity() {
+    test_fault::force_projection_capacity();
 }
 
 #[cfg(test)]
@@ -2170,12 +2185,15 @@ where
                     trusted_at,
                     self.store.pinned_public_key,
                 )?;
+            let artifact = ArtifactPublication::None;
+            let footprint = artifact.footprint(expected_transition_bytes)?;
+            validate_projection(&complete, &footprint)?;
             self.verify_signer_pin()?;
             let expected_candidate_digest = candidate_sha256;
             let (snapshot, proof) = self.store.publish_successor(
                 &mut guard,
                 complete,
-                ArtifactPublication::None,
+                artifact,
                 transition_plan,
                 expected_transition_bytes,
                 &self.signer,
@@ -2292,13 +2310,16 @@ where
                     trusted_at,
                     self.store.pinned_public_key,
                 )?;
+            let artifact = ArtifactPublication::None;
+            let footprint = artifact.footprint(expected_transition_bytes)?;
+            validate_projection(&complete, &footprint)?;
             self.verify_signer_pin()?;
             let expected_grant_digest = grant_sha256;
             let expected_signature_digest = grant_signature_sha256;
             let (snapshot, proof) = self.store.publish_successor(
                 &mut guard,
                 complete,
-                ArtifactPublication::None,
+                artifact,
                 transition_plan,
                 expected_transition_bytes,
                 &self.signer,
@@ -2576,6 +2597,10 @@ fn validate_projection(
     complete: &CompleteInventory,
     footprint: &Footprint,
 ) -> Result<(), CommitError> {
+    #[cfg(test)]
+    if test_fault::take_projection_capacity() {
+        return Err(CommitError::Capacity);
+    }
     if footprint.bytes < 64 || footprint.bytes > MAX_TOTAL_BYTES {
         return Err(CommitError::Capacity);
     }

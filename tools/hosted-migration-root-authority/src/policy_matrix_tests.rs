@@ -10,7 +10,7 @@ use crate::journal::storage::{
     ApproveCommand, CloseApprovalCommand, CloseCandidateCommand, CommitError, ConsumeCommand,
     HeadCas, JournalStore, RegisterCommand, RootAuthority, StatusCommand, TicketEntropy,
     TrustedClock, plan_approval_closure_before_signing, plan_consumption_before_entropy,
-    test_force_generation_capacity,
+    test_force_generation_capacity, test_force_projection_capacity,
 };
 use crate::journal::{
     InventoryFiles, JournalError, MAX_TRANSITIONS, TransitionFile, VerifiedState, verify_inventory,
@@ -1820,6 +1820,193 @@ fn register_and_approve_capacity_precedes_a_wrong_pin_without_mutating_the_prede
     assert!(matches!(
         approve_predecessor.state,
         VerifiedState::CandidateRegistered { .. }
+    ));
+}
+
+#[test]
+fn closure_projection_capacity_precedes_a_wrong_pin_without_mutating_the_predecessor() {
+    use std::sync::atomic::AtomicBool;
+
+    let authority_with_toggle = || {
+        let public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let wrong_key = Arc::new(AtomicBool::new(false));
+        let clock = Arc::new(Mutex::new(NOW.to_owned()));
+        let (directory, store) = empty_test_store(public_key);
+        let authority = RootAuthority::synthetic(
+            store,
+            CountingSigner::with_key_toggle([7; 32], Arc::clone(&wrong_key), Arc::clone(&calls)),
+            MutableClock(Arc::clone(&clock)),
+            SequenceEntropy::new(
+                [Ok([9; 32])],
+                Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            ),
+        )
+        .expect("authority");
+        (directory, authority, clock, wrong_key, calls)
+    };
+
+    let (_candidate_directory, candidate_authority, candidate_clock, candidate_wrong, calls) =
+        authority_with_toggle();
+    let registration = candidate_authority.register(RegisterCommand::new(
+        HeadCas::new(0, GENESIS_SHA256.to_owned()),
+        candidate(),
+    ));
+    assert!(registration.is_ok());
+    drop(registration);
+    let registered = candidate_authority
+        .inspect()
+        .expect("registered predecessor")
+        .1;
+    let (candidate_sha256, candidate) = match &registered.state {
+        VerifiedState::CandidateRegistered {
+            candidate_sha256,
+            candidate,
+        } => (candidate_sha256.clone(), candidate.as_ref().clone()),
+        _ => panic!("candidate state"),
+    };
+    let candidate_challenge = derive_candidate_close_challenge(
+        &registered.transition_sha256,
+        &candidate_sha256,
+        &candidate.approval_challenge_sha256,
+    )
+    .expect("candidate close challenge");
+    *candidate_clock.lock().expect("candidate clock") = candidate.cutoff_at.clone();
+    calls.store(0, Ordering::SeqCst);
+    candidate_wrong.store(true, Ordering::SeqCst);
+    test_force_projection_capacity();
+    let close_candidate = candidate_authority.close_candidate(
+        CloseCandidateCommand::new(
+            HeadCas::new(registered.generation, registered.transition_sha256.clone()),
+            candidate.operation_id.clone(),
+            candidate.authorization_nonce.clone(),
+            candidate.envelope_sha256.clone(),
+            candidate_challenge.clone(),
+        ),
+        &FreshAttendedAuthentication::synthetic(
+            candidate_challenge,
+            digest('e'),
+            digest('f'),
+            candidate.cutoff_at,
+        ),
+    );
+    assert_eq!(close_candidate.test_error(), Some(CommitError::Capacity));
+    drop(close_candidate);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let candidate_predecessor = candidate_authority
+        .inspect()
+        .expect("readable candidate predecessor")
+        .1;
+    assert_eq!(candidate_predecessor.generation, registered.generation);
+    assert_eq!(
+        candidate_predecessor.transition_sha256,
+        registered.transition_sha256
+    );
+    assert!(matches!(
+        candidate_predecessor.state,
+        VerifiedState::CandidateRegistered { .. }
+    ));
+
+    let (_approval_directory, approval_authority, approval_clock, approval_wrong, calls) =
+        authority_with_toggle();
+    let registration = approval_authority.register(RegisterCommand::new(
+        HeadCas::new(0, GENESIS_SHA256.to_owned()),
+        candidate_at(
+            '1',
+            '2',
+            '5',
+            'd',
+            "2026-09-03T12:15:00Z",
+            "2026-09-03T12:15:00.000Z",
+        ),
+    ));
+    assert!(registration.is_ok());
+    drop(registration);
+    let registered = approval_authority
+        .inspect()
+        .expect("registered approval predecessor")
+        .1;
+    let (candidate_sha256, candidate) = match &registered.state {
+        VerifiedState::CandidateRegistered {
+            candidate_sha256,
+            candidate,
+        } => (candidate_sha256.clone(), candidate.as_ref().clone()),
+        _ => panic!("candidate state"),
+    };
+    let approval = approval_authority.approve(
+        ApproveCommand::new(
+            HeadCas::new(registered.generation, registered.transition_sha256),
+            candidate.operation_id.clone(),
+            candidate.authorization_nonce.clone(),
+            candidate.envelope_sha256.clone(),
+            candidate.approval_challenge_sha256.clone(),
+        ),
+        &verified(&candidate),
+        &approval_authentication(&candidate, 'f', "2026-09-03T12:04:30Z"),
+    );
+    assert!(approval.is_ok());
+    drop(approval);
+    let approved = approval_authority
+        .inspect()
+        .expect("approved predecessor")
+        .1;
+    let (grant_sha256, grant_signature_sha256, expires_at) = match &approved.state {
+        VerifiedState::Approved {
+            grant_sha256,
+            grant_signature_sha256,
+            grant,
+            ..
+        } => (
+            grant_sha256.clone(),
+            grant_signature_sha256.clone(),
+            grant.expires_at.clone(),
+        ),
+        _ => panic!("approved state"),
+    };
+    let approval_challenge = derive_approval_close_challenge(
+        &approved.transition_sha256,
+        &candidate_sha256,
+        &candidate.approval_challenge_sha256,
+        &grant_sha256,
+        &grant_signature_sha256,
+    )
+    .expect("approval close challenge");
+    *approval_clock.lock().expect("approval clock") = expires_at.clone();
+    calls.store(0, Ordering::SeqCst);
+    approval_wrong.store(true, Ordering::SeqCst);
+    test_force_projection_capacity();
+    let close_approval = approval_authority.close_approval(
+        CloseApprovalCommand::new(
+            HeadCas::new(approved.generation, approved.transition_sha256.clone()),
+            candidate.operation_id,
+            candidate.authorization_nonce,
+            candidate.envelope_sha256,
+            grant_sha256.clone(),
+            grant_signature_sha256.clone(),
+            approval_challenge.clone(),
+        ),
+        &FreshAttendedAuthentication::synthetic(
+            approval_challenge,
+            digest('e'),
+            digest('a'),
+            expires_at,
+        ),
+    );
+    assert_eq!(close_approval.test_error(), Some(CommitError::Capacity));
+    drop(close_approval);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let approval_predecessor = approval_authority
+        .inspect()
+        .expect("readable approval predecessor")
+        .1;
+    assert_eq!(approval_predecessor.generation, approved.generation);
+    assert_eq!(
+        approval_predecessor.transition_sha256,
+        approved.transition_sha256
+    );
+    assert!(matches!(
+        approval_predecessor.state,
+        VerifiedState::Approved { .. }
     ));
 }
 
