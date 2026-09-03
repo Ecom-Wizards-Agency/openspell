@@ -1,11 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import process from "node:process";
+import { fileURLToPath, URL } from "node:url";
 
 const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
 const image = [
-  "docker.io/library/rust:1.97.1-bookworm@sha256:",
-  "0e2bcaef56d041a486784e54104a81ae",
-  "be0da44bd03019bd70bc0401e42e4a97",
+  "docker.io/library/",
+  "rust:1.97.1-bookworm",
+  "@sha256:",
+  "0e2bcaef56d041a4",
+  "86784e54104a81ae",
+  "be0da44bd03019bd",
+  "70bc0401e42e4a97",
 ].join("");
 
 const commands = Object.freeze({

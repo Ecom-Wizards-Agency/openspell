@@ -44,13 +44,34 @@ pub(crate) enum IpcError {
 }
 
 pub(crate) struct PeerPolicy {
-    required: UCred,
+    required_pid: i32,
+    required_uid: u32,
+    required_gid: u32,
 }
 
 impl PeerPolicy {
     #[cfg(test)]
     pub(crate) fn synthetic(required: UCred) -> Self {
-        Self { required }
+        Self {
+            required_pid: required.pid.as_raw_pid(),
+            required_uid: required.uid.as_raw(),
+            required_gid: required.gid.as_raw(),
+        }
+    }
+
+    #[cfg(test)]
+    fn synthetic_components(required_pid: i32, required_uid: u32, required_gid: u32) -> Self {
+        Self {
+            required_pid,
+            required_uid,
+            required_gid,
+        }
+    }
+
+    fn permits(&self, peer: UCred) -> bool {
+        peer.pid.as_raw_pid() == self.required_pid
+            && peer.uid.as_raw() == self.required_uid
+            && peer.gid.as_raw() == self.required_gid
     }
 }
 
@@ -235,7 +256,7 @@ fn validate_endpoint(
         return Err(IpcError::Endpoint);
     }
     let peer = socket_peercred(socket).map_err(|_| IpcError::Peer)?;
-    if peer != policy.required {
+    if !policy.permits(peer) {
         return Err(IpcError::Peer);
     }
     Ok((peer, peer_address))
@@ -326,18 +347,22 @@ fn message_address_matches(received: Option<&SocketAddrAny>, expected: &SocketAd
 
 #[cfg(test)]
 mod tests {
-    use std::io::{IoSlice, Read};
+    use std::io::IoSlice;
     use std::mem::MaybeUninit;
     use std::os::fd::{AsFd, OwnedFd};
+    use std::path::Path;
 
-    use rustix::fs::Uid;
-    use rustix::net::sockopt::socket_peercred;
+    use rustix::net::sockopt::{set_socket_send_buffer_size, socket_peercred};
     use rustix::net::{
-        AddressFamily, SendAncillaryBuffer, SendAncillaryMessage, SendFlags, Shutdown, SocketFlags,
-        SocketType, send, sendmsg, shutdown, socketpair,
+        AddressFamily, RecvFlags, SendAncillaryBuffer, SendAncillaryMessage, SendFlags, Shutdown,
+        SocketAddrUnix, SocketFlags, SocketType, accept_with, bind, connect, listen, recv, send,
+        sendmsg, shutdown, socket_with, socketpair,
     };
 
-    use super::{IpcError, MAX_FRAME_BYTES, PeerPolicy, PreparedTransport};
+    use super::{
+        ALLOWED_EOF_FLAGS, CONTROL_BYTES, CREDENTIAL_ALIGNED_BYTES, IpcError, MAX_FRAME_BYTES,
+        MINIMUM_SECOND_ALIGNED_BYTES, PeerPolicy, PreparedTransport,
+    };
 
     fn connected_pair(socket_kind: SocketType) -> (OwnedFd, OwnedFd) {
         socketpair(AddressFamily::UNIX, socket_kind, SocketFlags::CLOEXEC, None)
@@ -356,6 +381,32 @@ mod tests {
         shutdown(client, Shutdown::Write).expect("write shutdown");
     }
 
+    fn receive_record(socket: &OwnedFd, capacity: usize) -> Vec<u8> {
+        let mut buffer = vec![0_u8; capacity];
+        let (received, reported) =
+            recv(socket, buffer.as_mut_slice(), RecvFlags::empty()).expect("response receive");
+        assert_eq!(received, reported);
+        buffer.truncate(received);
+        buffer
+    }
+
+    fn assert_read_eof(socket: &OwnedFd) {
+        let mut byte = [0_u8; 1];
+        let (received, reported) =
+            recv(socket, &mut byte, RecvFlags::empty()).expect("response eof");
+        assert_eq!(received, 0);
+        assert_eq!(reported, 0);
+    }
+
+    fn descriptors_for_path(path: &Path) -> usize {
+        std::fs::read_dir("/proc/self/fd")
+            .expect("descriptor directory")
+            .filter_map(Result::ok)
+            .filter_map(|entry| std::fs::read_link(entry.path()).ok())
+            .filter(|target| target == path)
+            .count()
+    }
+
     #[test]
     fn authenticated_seqpacket_requires_record_then_eof_and_replies_once() {
         let (client, server) = connected_pair(SocketType::SEQPACKET);
@@ -367,14 +418,25 @@ mod tests {
         assert_eq!(packet.bytes, b"fixed request");
         packet.reply.send_bytes(b"fixed response").expect("reply");
 
-        let mut response = std::fs::File::from(client);
-        let mut bytes = Vec::new();
-        response.read_to_end(&mut bytes).expect("response read");
-        assert_eq!(bytes, b"fixed response");
+        assert_eq!(receive_record(&client, 64), b"fixed response");
+        assert_read_eof(&client);
     }
 
     #[test]
-    fn endpoint_type_and_exact_peer_policy_are_checked_before_receive() {
+    fn exact_maximum_record_is_accepted_without_truncation() {
+        let (client, server) = connected_pair(SocketType::SEQPACKET);
+        let policy = expected_policy(&server);
+        let prepared = PreparedTransport::prepare(server, &policy).expect("prepared endpoint");
+        let request = vec![b'x'; MAX_FRAME_BYTES];
+        send_record_and_eof(&client, &request);
+
+        let packet = prepared.receive().expect("maximum authenticated packet");
+        assert_eq!(packet.bytes.len(), MAX_FRAME_BYTES);
+        assert_eq!(packet.bytes, request);
+    }
+
+    #[test]
+    fn endpoint_domain_type_connection_and_listener_state_are_checked_before_receive() {
         let (_stream_client, stream_server) = connected_pair(SocketType::STREAM);
         let stream_policy = expected_policy(&stream_server);
         assert_eq!(
@@ -382,17 +444,135 @@ mod tests {
             Some(IpcError::Endpoint)
         );
 
-        let (_client, server) = connected_pair(SocketType::SEQPACKET);
-        let actual = socket_peercred(&server).expect("peer credentials");
-        let wrong = PeerPolicy::synthetic(rustix::net::UCred {
-            pid: actual.pid,
-            uid: Uid::from_raw(actual.uid.as_raw().wrapping_add(1)),
-            gid: actual.gid,
-        });
+        let (_datagram_client, datagram_server) = connected_pair(SocketType::DGRAM);
+        let datagram_policy = expected_policy(&datagram_server);
         assert_eq!(
-            PreparedTransport::prepare(server, &wrong).err(),
-            Some(IpcError::Peer)
+            PreparedTransport::prepare(datagram_server, &datagram_policy).err(),
+            Some(IpcError::Endpoint)
         );
+
+        let unconnected = socket_with(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .expect("unconnected socket");
+        let (_policy_client, policy_server) = connected_pair(SocketType::SEQPACKET);
+        let policy = expected_policy(&policy_server);
+        assert_eq!(
+            PreparedTransport::prepare(unconnected, &policy).err(),
+            Some(IpcError::Endpoint)
+        );
+
+        let internet = socket_with(
+            AddressFamily::INET,
+            SocketType::STREAM,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .expect("internet socket");
+        assert_eq!(
+            PreparedTransport::prepare(internet, &policy).err(),
+            Some(IpcError::Endpoint)
+        );
+    }
+
+    #[test]
+    fn pid_uid_and_gid_policy_mismatches_are_each_rejected() {
+        for mismatch in ["pid", "uid", "gid"] {
+            let (_client, server) = connected_pair(SocketType::SEQPACKET);
+            let actual = socket_peercred(&server).expect("peer credentials");
+            let actual_pid = actual.pid.as_raw_pid();
+            let actual_uid = actual.uid.as_raw();
+            let actual_gid = actual.gid.as_raw();
+            let required = match mismatch {
+                "pid" => PeerPolicy::synthetic_components(
+                    if actual_pid == 1 { 2 } else { 1 },
+                    actual_uid,
+                    actual_gid,
+                ),
+                "uid" => PeerPolicy::synthetic_components(
+                    actual_pid,
+                    if actual_uid == 0 { 1 } else { 0 },
+                    actual_gid,
+                ),
+                "gid" => PeerPolicy::synthetic_components(
+                    actual_pid,
+                    actual_uid,
+                    if actual_gid == 0 { 1 } else { 0 },
+                ),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                PreparedTransport::prepare(server, &required).err(),
+                Some(IpcError::Peer),
+                "{mismatch} mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn named_seqpacket_peer_is_accepted_but_listener_is_not() {
+        let directory = tempfile::tempdir().expect("socket directory");
+        let listener_address =
+            SocketAddrUnix::new(directory.path().join("listener.sock")).expect("listener address");
+        let client_address =
+            SocketAddrUnix::new(directory.path().join("client.sock")).expect("client address");
+        let listener = socket_with(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .expect("listener socket");
+        bind(&listener, &listener_address).expect("listener bind");
+        listen(&listener, 1).expect("listener listen");
+
+        let (_policy_client, policy_server) = connected_pair(SocketType::SEQPACKET);
+        let policy = expected_policy(&policy_server);
+        let listener_copy = rustix::io::dup(&listener).expect("listener duplicate");
+        assert_eq!(
+            PreparedTransport::prepare(listener_copy, &policy).err(),
+            Some(IpcError::Endpoint)
+        );
+
+        let client = socket_with(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .expect("client socket");
+        bind(&client, &client_address).expect("client bind");
+        connect(&client, &listener_address).expect("client connect");
+        let server = accept_with(&listener, SocketFlags::CLOEXEC).expect("accepted socket");
+        let policy = expected_policy(&server);
+        let prepared = PreparedTransport::prepare(server, &policy).expect("named peer prepared");
+        send_record_and_eof(&client, b"named request");
+
+        assert_eq!(
+            prepared
+                .receive()
+                .expect("named authenticated packet")
+                .bytes,
+            b"named request"
+        );
+    }
+
+    #[test]
+    fn duplicated_sender_handle_preserves_kernel_authenticated_identity() {
+        let (client, server) = connected_pair(SocketType::SEQPACKET);
+        let policy = expected_policy(&server);
+        let prepared = PreparedTransport::prepare(server, &policy).expect("prepared endpoint");
+        let transferred = rustix::io::dup(&client).expect("sender duplicate");
+        let sender = std::thread::spawn(move || send_record_and_eof(&transferred, b"transferred"));
+        sender.join().expect("sender thread");
+
+        let packet = prepared
+            .receive()
+            .expect("transferred authenticated packet");
+        assert_eq!(packet.bytes, b"transferred");
     }
 
     #[test]
@@ -439,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn truncation_and_rights_are_rejected() {
+    fn truncation_and_rights_are_rejected_without_leaking_received_descriptors() {
         let (large_client, large_server) = connected_pair(SocketType::SEQPACKET);
         let large_policy = expected_policy(&large_server);
         let large_prepared =
@@ -451,8 +631,10 @@ mod tests {
         let rights_policy = expected_policy(&rights_server);
         let rights_prepared =
             PreparedTransport::prepare(rights_server, &rights_policy).expect("prepared endpoint");
-        let descriptor = std::fs::File::open("/dev/null").expect("test descriptor");
-        let descriptors = [descriptor.as_fd()];
+        let descriptor = tempfile::NamedTempFile::new().expect("test descriptor");
+        let descriptor_path = descriptor.path().to_path_buf();
+        assert_eq!(descriptors_for_path(&descriptor_path), 1);
+        let descriptors = [descriptor.as_file().as_fd()];
         let mut control_space = [MaybeUninit::<u8>::uninit(); rustix::cmsg_space!(ScmRights(1))];
         let mut ancillary = SendAncillaryBuffer::new(&mut control_space);
         assert!(ancillary.push(SendAncillaryMessage::ScmRights(&descriptors)));
@@ -469,6 +651,16 @@ mod tests {
         );
         shutdown(&rights_client, Shutdown::Write).expect("write shutdown");
         assert_eq!(rights_prepared.receive().err(), Some(IpcError::Record));
+        assert_eq!(descriptors_for_path(&descriptor_path), 1);
+    }
+
+    #[test]
+    fn control_space_survives_worst_alignment_and_cannot_fit_a_second_header() {
+        let maximum_alignment_loss = std::mem::align_of::<usize>() - 1;
+        let control_bytes = std::hint::black_box(CONTROL_BYTES);
+        assert!(control_bytes - maximum_alignment_loss >= CREDENTIAL_ALIGNED_BYTES);
+        assert!(control_bytes < CREDENTIAL_ALIGNED_BYTES + MINIMUM_SECOND_ALIGNED_BYTES);
+        assert_eq!(ALLOWED_EOF_FLAGS, rustix::net::ReturnFlags::CMSG_CLOEXEC);
     }
 
     #[test]
@@ -481,5 +673,54 @@ mod tests {
             prepared.receive(),
             Err(IpcError::Peer | IpcError::Record)
         ));
+    }
+
+    #[test]
+    fn reply_reports_closed_and_saturated_peer_without_signals_or_blocking() {
+        let (closed_client, closed_server) = connected_pair(SocketType::SEQPACKET);
+        let closed_policy = expected_policy(&closed_server);
+        let closed_prepared =
+            PreparedTransport::prepare(closed_server, &closed_policy).expect("prepared endpoint");
+        send_record_and_eof(&closed_client, b"request");
+        let closed_packet = closed_prepared.receive().expect("authenticated packet");
+        drop(closed_client);
+        assert_eq!(
+            closed_packet.reply.send_bytes(b"response").err(),
+            Some(IpcError::Send)
+        );
+
+        let (saturated_client, saturated_server) = connected_pair(SocketType::SEQPACKET);
+        set_socket_send_buffer_size(&saturated_server, 1_024).expect("small send buffer");
+        let mut saturated = false;
+        for _ in 0..10_000 {
+            match send(
+                &saturated_server,
+                &[b'x'; 1_024],
+                SendFlags::DONTWAIT | SendFlags::NOSIGNAL,
+            ) {
+                Ok(1_024) => {}
+                Ok(other) => panic!("partial seqpacket prefill: {other}"),
+                Err(rustix::io::Errno::AGAIN) => {
+                    saturated = true;
+                    break;
+                }
+                Err(error) => panic!("unexpected saturation error: {error}"),
+            }
+        }
+        assert!(
+            saturated,
+            "send queue did not saturate within the fixed bound"
+        );
+        let saturated_policy = expected_policy(&saturated_server);
+        let saturated_prepared = PreparedTransport::prepare(saturated_server, &saturated_policy)
+            .expect("prepared saturated endpoint");
+        send_record_and_eof(&saturated_client, b"request");
+        let saturated_packet = saturated_prepared
+            .receive()
+            .expect("authenticated saturated packet");
+        assert_eq!(
+            saturated_packet.reply.send_bytes(b"response").err(),
+            Some(IpcError::Send)
+        );
     }
 }

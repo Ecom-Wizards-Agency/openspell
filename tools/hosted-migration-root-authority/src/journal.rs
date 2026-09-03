@@ -15,6 +15,53 @@ use crate::state::{
 
 pub(crate) mod storage;
 
+/// Capability created only after the operation-specific leaf publication is durable.
+///
+/// The private field prevents transition signing from being invoked before storage has
+/// completed the required signature/leaf ordering and directory sync.
+pub(crate) struct PostArtifactPublication(());
+
+impl PostArtifactPublication {
+    fn completed() -> Self {
+        Self(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synthetic() -> Self {
+        Self(())
+    }
+}
+
+/// Capability created only after a complete post-publication inventory verifies the
+/// exact successor. Protocol success encoders require this value by ownership.
+pub(crate) struct DurableSuccess(());
+
+impl DurableSuccess {
+    fn verified() -> Self {
+        Self(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synthetic() -> Self {
+        Self(())
+    }
+}
+
+/// Capability created only from a complete inventory verified while the mutation gate
+/// is held. Status encoders require this value by ownership.
+pub(crate) struct VerifiedStatus(());
+
+impl VerifiedStatus {
+    fn verified() -> Self {
+        Self(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synthetic() -> Self {
+        Self(())
+    }
+}
+
 pub(crate) const FORMAT_BYTES: &[u8] = b"openspell.hosted-migration-root-journal.v1\n";
 pub(crate) const MAX_TRANSITIONS: usize = 4_096;
 pub(crate) const MAX_LEAVES: usize = 12_288;
@@ -126,7 +173,7 @@ impl VerifiedState {
     pub(crate) fn is_nonterminal(&self) -> bool {
         matches!(
             self,
-            Self::CandidateRegistered { .. } | Self::Approved { .. }
+            Self::CandidateRegistered { .. } | Self::Approved { .. } | Self::Consumed { .. }
         )
     }
 

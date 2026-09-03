@@ -8,7 +8,12 @@ use crate::canonical::{
 };
 use crate::crypto::sha256;
 use crate::crypto::sha256_hex;
-use crate::records::ExecutionTicket;
+use crate::journal::storage::{
+    ApproveCommand, CloseApprovalCommand, CloseCandidateCommand, ConsumeCommand, HeadCas,
+    RegisterCommand, StatusCommand,
+};
+use crate::journal::{DurableSuccess, VerifiedStatus};
+use crate::records::{CANDIDATE_SCHEMA, Candidate, ExecutionTicket};
 
 pub(crate) const FRAME_VERSION: u16 = 1;
 pub(crate) const MAX_FRAME_BYTES: usize = 16 * 1024;
@@ -122,6 +127,36 @@ pub(crate) struct RegisterRequest {
 }
 
 impl RegisterRequest {
+    pub(crate) fn into_command(self) -> RegisterCommand {
+        RegisterCommand::new(
+            HeadCas::new(self.expected_generation, self.expected_transition_sha256),
+            Candidate {
+                schema_version: CANDIDATE_SCHEMA.to_owned(),
+                operation_id: self.operation_id,
+                authorization_nonce: self.authorization_nonce,
+                target_fingerprint: self.target_fingerprint,
+                target_selection_sha256: self.target_selection_sha256,
+                envelope_sha256: self.envelope_sha256,
+                envelope_expires_at: self.envelope_expires_at,
+                external_exclusive_window_generation: self.external_exclusive_window_generation,
+                external_exclusive_window_evidence_sha256: self
+                    .external_exclusive_window_evidence_sha256,
+                external_exclusive_window_expires_at: self.external_exclusive_window_expires_at,
+                official_source_evidence_sha256: self.official_source_evidence_sha256,
+                native_runtime_identity_sha256: self.native_runtime_identity_sha256,
+                child_sandbox_policy_sha256: self.child_sandbox_policy_sha256,
+                phase_exec_topology_policy_sha256: self.phase_exec_topology_policy_sha256,
+                child_cgroup_policy_sha256: self.child_cgroup_policy_sha256,
+                apply_invocation_evidence_sha256: self.apply_invocation_evidence_sha256,
+                operation_authority_incarnation_sha256: String::new(),
+                candidate_binding_sha256: String::new(),
+                approval_challenge_sha256: String::new(),
+                stored_at: String::new(),
+                cutoff_at: String::new(),
+            },
+        )
+    }
+
     fn encode(&self) -> Result<Vec<u8>, CanonicalError> {
         object(&[
             ("schemaVersion", FieldValue::String(&self.schema_version)),
@@ -229,6 +264,10 @@ pub(crate) struct StatusRequest {
 }
 
 impl StatusRequest {
+    pub(crate) fn into_command(self) -> StatusCommand {
+        StatusCommand::new(self.operation_id)
+    }
+
     fn encode(&self) -> Result<Vec<u8>, CanonicalError> {
         object(&[
             ("schemaVersion", FieldValue::String(&self.schema_version)),
@@ -259,6 +298,16 @@ pub(crate) struct ConsumeRequest {
 }
 
 impl ConsumeRequest {
+    pub(crate) fn into_command(self) -> ConsumeCommand {
+        ConsumeCommand::new(
+            HeadCas::new(self.expected_generation, self.expected_transition_sha256),
+            self.operation_id,
+            self.authorization_nonce,
+            self.approval_grant_sha256,
+            self.approval_grant_signature_sha256,
+        )
+    }
+
     fn encode(&self) -> Result<Vec<u8>, CanonicalError> {
         object(&[
             ("schemaVersion", FieldValue::String(&self.schema_version)),
@@ -378,6 +427,16 @@ pub(crate) struct ApproveRequest {
 }
 
 impl ApproveRequest {
+    pub(crate) fn into_command(self) -> ApproveCommand {
+        ApproveCommand::new(
+            HeadCas::new(self.expected_generation, self.expected_transition_sha256),
+            self.operation_id,
+            self.authorization_nonce,
+            self.envelope_sha256,
+            self.action_challenge_sha256,
+        )
+    }
+
     fn encode(&self) -> Result<Vec<u8>, CanonicalError> {
         operator_payload(
             &self.schema_version,
@@ -420,6 +479,16 @@ pub(crate) struct CloseCandidateRequest {
 }
 
 impl CloseCandidateRequest {
+    pub(crate) fn into_command(self) -> CloseCandidateCommand {
+        CloseCandidateCommand::new(
+            HeadCas::new(self.expected_generation, self.expected_transition_sha256),
+            self.operation_id,
+            self.authorization_nonce,
+            self.envelope_sha256,
+            self.action_challenge_sha256,
+        )
+    }
+
     fn encode(&self) -> Result<Vec<u8>, CanonicalError> {
         operator_payload(
             &self.schema_version,
@@ -464,6 +533,18 @@ pub(crate) struct CloseApprovalRequest {
 }
 
 impl CloseApprovalRequest {
+    pub(crate) fn into_command(self) -> CloseApprovalCommand {
+        CloseApprovalCommand::new(
+            HeadCas::new(self.expected_generation, self.expected_transition_sha256),
+            self.operation_id,
+            self.authorization_nonce,
+            self.envelope_sha256,
+            self.approval_grant_sha256,
+            self.approval_grant_signature_sha256,
+            self.action_challenge_sha256,
+        )
+    }
+
     fn encode(&self) -> Result<Vec<u8>, CanonicalError> {
         operator_payload(
             &self.schema_version,
@@ -610,24 +691,29 @@ pub(crate) enum SupervisorResponse {
 }
 
 pub(crate) struct RegisterSuccess {
-    pub(crate) generation: u64,
-    pub(crate) transition_sha256: String,
-    pub(crate) candidate_sha256: String,
-    pub(crate) candidate_binding_sha256: String,
-    pub(crate) approval_challenge_sha256: String,
-    pub(crate) cutoff_at: String,
+    proof: DurableSuccess,
+    generation: u64,
+    transition_sha256: String,
+    candidate_sha256: String,
+    candidate_binding_sha256: String,
+    approval_challenge_sha256: String,
+    cutoff_at: String,
 }
 
 pub(crate) struct ConsumeSuccess {
-    pub(crate) generation: u64,
-    pub(crate) transition_sha256: String,
-    pub(crate) execution_ticket_canonical_hex: String,
-    pub(crate) execution_ticket_raw_signature_hex: String,
+    proof: DurableSuccess,
+    generation: u64,
+    transition_sha256: String,
+    execution_ticket_canonical_hex: String,
+    execution_ticket_raw_signature_hex: String,
 }
 
 pub(crate) enum StatusResponse {
-    Absent,
+    Absent {
+        proof: VerifiedStatus,
+    },
     Candidate {
+        proof: VerifiedStatus,
         status: StatusAvailability,
         generation: u64,
         transition_sha256: String,
@@ -637,6 +723,7 @@ pub(crate) enum StatusResponse {
         cutoff_at: String,
     },
     Approved {
+        proof: VerifiedStatus,
         status: StatusAvailability,
         generation: u64,
         transition_sha256: String,
@@ -645,6 +732,7 @@ pub(crate) enum StatusResponse {
         expires_at: String,
     },
     Consumed {
+        proof: VerifiedStatus,
         status: StatusAvailability,
         generation: u64,
         transition_sha256: String,
@@ -653,18 +741,67 @@ pub(crate) enum StatusResponse {
         expires_at: String,
     },
     CandidateExpired {
+        proof: VerifiedStatus,
         status: StatusAvailability,
         generation: u64,
         transition_sha256: String,
         candidate_sha256: String,
     },
     ApprovalExpired {
+        proof: VerifiedStatus,
         status: StatusAvailability,
         generation: u64,
         transition_sha256: String,
         approval_grant_sha256: String,
         approval_grant_signature_sha256: String,
     },
+}
+
+impl RegisterSuccess {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn committed(
+        proof: DurableSuccess,
+        generation: u64,
+        transition_sha256: String,
+        candidate_sha256: String,
+        candidate_binding_sha256: String,
+        approval_challenge_sha256: String,
+        cutoff_at: String,
+    ) -> Self {
+        Self {
+            proof,
+            generation,
+            transition_sha256,
+            candidate_sha256,
+            candidate_binding_sha256,
+            approval_challenge_sha256,
+            cutoff_at,
+        }
+    }
+}
+
+impl ConsumeSuccess {
+    pub(crate) fn committed(
+        proof: DurableSuccess,
+        generation: u64,
+        transition_sha256: String,
+        ticket_bytes: Box<[u8]>,
+        ticket_signature: [u8; 64],
+    ) -> Self {
+        Self {
+            proof,
+            generation,
+            transition_sha256,
+            execution_ticket_canonical_hex: hex::encode(ticket_bytes),
+            execution_ticket_raw_signature_hex: hex::encode(ticket_signature),
+        }
+    }
+}
+
+impl StatusResponse {
+    pub(crate) fn absent(proof: VerifiedStatus) -> Self {
+        Self::Absent { proof }
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -712,21 +849,72 @@ pub(crate) enum OperatorResponse {
 }
 
 pub(crate) struct ApproveSuccess {
-    pub(crate) generation: u64,
-    pub(crate) transition_sha256: String,
-    pub(crate) approval_grant_sha256: String,
-    pub(crate) approval_grant_signature_sha256: String,
-    pub(crate) expires_at: String,
+    proof: DurableSuccess,
+    generation: u64,
+    transition_sha256: String,
+    approval_grant_sha256: String,
+    approval_grant_signature_sha256: String,
+    expires_at: String,
 }
 
 pub(crate) struct CloseCandidateSuccess {
-    pub(crate) generation: u64,
-    pub(crate) transition_sha256: String,
+    proof: DurableSuccess,
+    generation: u64,
+    transition_sha256: String,
 }
 
 pub(crate) struct CloseApprovalSuccess {
-    pub(crate) generation: u64,
-    pub(crate) transition_sha256: String,
+    proof: DurableSuccess,
+    generation: u64,
+    transition_sha256: String,
+}
+
+impl ApproveSuccess {
+    pub(crate) fn committed(
+        proof: DurableSuccess,
+        generation: u64,
+        transition_sha256: String,
+        approval_grant_sha256: String,
+        approval_grant_signature_sha256: String,
+        expires_at: String,
+    ) -> Self {
+        Self {
+            proof,
+            generation,
+            transition_sha256,
+            approval_grant_sha256,
+            approval_grant_signature_sha256,
+            expires_at,
+        }
+    }
+}
+
+impl CloseCandidateSuccess {
+    pub(crate) fn committed(
+        proof: DurableSuccess,
+        generation: u64,
+        transition_sha256: String,
+    ) -> Self {
+        Self {
+            proof,
+            generation,
+            transition_sha256,
+        }
+    }
+}
+
+impl CloseApprovalSuccess {
+    pub(crate) fn committed(
+        proof: DurableSuccess,
+        generation: u64,
+        transition_sha256: String,
+    ) -> Self {
+        Self {
+            proof,
+            generation,
+            transition_sha256,
+        }
+    }
 }
 
 pub(crate) struct OperatorRefusal {
@@ -1007,7 +1195,7 @@ fn encode_terminal_success(
 
 fn encode_status(status: &StatusResponse) -> Result<Vec<u8>, ProtocolError> {
     match status {
-        StatusResponse::Absent => Ok(object(&[
+        StatusResponse::Absent { .. } => Ok(object(&[
             (
                 "schemaVersion",
                 FieldValue::String("openspell.hosted-migration-root-status-absent.v1"),
@@ -1015,6 +1203,7 @@ fn encode_status(status: &StatusResponse) -> Result<Vec<u8>, ProtocolError> {
             ("status", FieldValue::String("absent")),
         ])?),
         StatusResponse::Candidate {
+            proof: _,
             status,
             generation,
             transition_sha256,
@@ -1055,6 +1244,7 @@ fn encode_status(status: &StatusResponse) -> Result<Vec<u8>, ProtocolError> {
             ])?)
         }
         StatusResponse::Approved {
+            proof: _,
             status,
             generation,
             transition_sha256,
@@ -1092,6 +1282,7 @@ fn encode_status(status: &StatusResponse) -> Result<Vec<u8>, ProtocolError> {
             ])?)
         }
         StatusResponse::Consumed {
+            proof: _,
             status,
             generation,
             transition_sha256,
@@ -1129,6 +1320,7 @@ fn encode_status(status: &StatusResponse) -> Result<Vec<u8>, ProtocolError> {
             ])?)
         }
         StatusResponse::CandidateExpired {
+            proof: _,
             status,
             generation,
             transition_sha256,
@@ -1142,6 +1334,7 @@ fn encode_status(status: &StatusResponse) -> Result<Vec<u8>, ProtocolError> {
             &[("candidateSha256", candidate_sha256)],
         ),
         StatusResponse::ApprovalExpired {
+            proof: _,
             status,
             generation,
             transition_sha256,
