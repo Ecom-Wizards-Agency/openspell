@@ -11,7 +11,30 @@ const realDocker = process.env["WP200_REAL_DOCKER"];
 const cut = process.env["WP200_DOCKER_RESPONSE_CUT"];
 const readyFile = process.env["WP200_DOCKER_RESPONSE_READY"];
 const releaseFile = process.env["WP200_DOCKER_RESPONSE_RELEASE"];
+const startAttemptFile = process.env["WP200_DOCKER_START_ATTEMPT"];
 const args = process.argv.slice(2);
+
+function refusePostCutCaseStart() {
+  if (
+    cut !== "case-inspect" ||
+    readyFile === undefined ||
+    !existsSync(readyFile) ||
+    args[0] !== "container" ||
+    args[1] !== "start" ||
+    args[2] !== "--attach" ||
+    /^[0-9a-f]{64}$/u.test(args[3] ?? "") === false ||
+    args.length !== 4
+  ) {
+    return;
+  }
+  if (startAttemptFile === undefined) process.exit(125);
+  writeFileSync(startAttemptFile, "attempted\n", {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  process.exit(125);
+}
 
 function isCandidateMutation() {
   if (cut === "build-create") {
@@ -55,6 +78,7 @@ async function holdSuccessfulResponse() {
 }
 
 if (realDocker === undefined || !realDocker.startsWith("/")) process.exit(125);
+refusePostCutCaseStart();
 const candidate = isCandidateMutation();
 const child = spawn(realDocker, args, {
   stdio: ["pipe", "pipe", "pipe"],

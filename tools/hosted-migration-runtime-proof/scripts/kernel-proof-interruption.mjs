@@ -25,7 +25,8 @@ const maximumOutputBytes = 64 * 1024;
 const observationAttempts = 36_000;
 const observationDelayMilliseconds = 5;
 const exitTimeoutMilliseconds = 180_000;
-const forcedExitTimeoutMilliseconds = 10_000;
+const forcedExitTimeoutMilliseconds = 180_000;
+const forcedKillTimeoutMilliseconds = 30_000;
 
 function resolveDocker() {
   for (const directory of (process.env["PATH"] ?? "").split(delimiter)) {
@@ -186,6 +187,7 @@ function prepareResponseCut(cut) {
   const launcher = join(directory, "docker");
   const ready = join(directory, "ready");
   const release = join(directory, "release");
+  const startAttempt = join(directory, "start-attempt");
   try {
     writeFileSync(
       launcher,
@@ -197,6 +199,7 @@ function prepareResponseCut(cut) {
       directory,
       ready,
       release,
+      startAttempt,
       env: {
         ...process.env,
         PATH: `${directory}${delimiter}${process.env["PATH"] ?? ""}`,
@@ -206,6 +209,7 @@ function prepareResponseCut(cut) {
         WP200_DOCKER_RESPONSE_CUT: cut,
         WP200_DOCKER_RESPONSE_READY: ready,
         WP200_DOCKER_RESPONSE_RELEASE: release,
+        WP200_DOCKER_START_ATTEMPT: startAttempt,
       },
     });
   } catch (error) {
@@ -250,7 +254,9 @@ function collectBounded(stream) {
 }
 
 function waitForExit(child, timeoutMilliseconds = exitTimeoutMilliseconds) {
-  if (child.exitCode !== null || child.signalCode !== null) {
+  const streamsEnded =
+    (child.stdout?.readableEnded ?? true) && (child.stderr?.readableEnded ?? true);
+  if ((child.exitCode !== null || child.signalCode !== null) && streamsEnded) {
     return Promise.resolve({
       code: child.exitCode,
       signal: child.signalCode,
@@ -262,19 +268,19 @@ function waitForExit(child, timeoutMilliseconds = exitTimeoutMilliseconds) {
     const finish = (result) => {
       clearTimeout(timeout);
       child.off("error", failed);
-      child.off("exit", exited);
+      child.off("close", closed);
       resolve(result);
     };
     const failed = () =>
       finish({ code: null, signal: null, spawnFailed: true, timedOut: false });
-    const exited = (code, signal) =>
+    const closed = (code, signal) =>
       finish({ code, signal, spawnFailed: false, timedOut: false });
     const timeout = setTimeout(
       () => finish({ code: null, signal: null, spawnFailed: false, timedOut: true }),
       timeoutMilliseconds,
     );
     child.once("error", failed);
-    child.once("exit", exited);
+    child.once("close", closed);
   });
 }
 
@@ -299,7 +305,7 @@ async function ensureChildExit(child, terminal) {
   let stopped = await waitForExit(child, forcedExitTimeoutMilliseconds);
   if (!stopped.timedOut || !childIsRunning(child)) return stopped;
   signalProcessGroup(child, "SIGKILL");
-  stopped = await waitForExit(child, forcedExitTimeoutMilliseconds);
+  stopped = await waitForExit(child, forcedKillTimeoutMilliseconds);
   return stopped;
 }
 
@@ -385,6 +391,9 @@ async function proveSignal(signal, prefix, responseCutName, observeImage = false
   let record;
   let imageId;
   let terminal;
+  let forbiddenStartObserved = false;
+  let primaryTimedOut;
+  let forcedExitUsed = false;
   try {
     responseCut =
       responseCutName === undefined ? undefined : prepareResponseCut(responseCutName);
@@ -395,7 +404,6 @@ async function proveSignal(signal, prefix, responseCutName, observeImage = false
     });
     stdout = collectBounded(child.stdout);
     stderr = collectBounded(child.stderr);
-    exit = waitForExit(child);
     if (responseCut !== undefined) await awaitResponseHeld(responseCut, child);
     record = await observeContainer(prefix, responseCut === undefined ? "running" : "created");
     if (observeImage) imageId = await observeCommittedImage(record);
@@ -403,21 +411,34 @@ async function proveSignal(signal, prefix, responseCutName, observeImage = false
       throw new Error("interruption proof signal refused");
     }
     if (responseCut !== undefined) releaseResponse(responseCut);
+    exit = waitForExit(child);
     terminal = await exit;
+    primaryTimedOut = terminal.timedOut;
   } finally {
     try {
       if (responseCut !== undefined) releaseResponse(responseCut);
-      if (child !== undefined) terminal = await ensureChildExit(child, terminal);
+      if (child !== undefined) {
+        forcedExitUsed = terminal?.timedOut === true;
+        terminal = await ensureChildExit(child, terminal);
+      }
     } finally {
-      if (responseCut !== undefined) removeResponseCut(responseCut);
+      if (responseCut !== undefined) {
+        forbiddenStartObserved = existsSync(responseCut.startAttempt);
+        removeResponseCut(responseCut);
+      }
     }
   }
+  proveCapturedObjectsAbsent(record, imageId);
+  proveGlobalResidueAbsent();
   if (
     terminal === undefined ||
+    primaryTimedOut ||
+    forcedExitUsed ||
     terminal.timedOut ||
     terminal.spawnFailed ||
     terminal.code === 0 ||
     terminal.signal !== null ||
+    forbiddenStartObserved ||
     stdout === undefined ||
     stderr === undefined ||
     stdout() !== "" ||
@@ -425,8 +446,6 @@ async function proveSignal(signal, prefix, responseCutName, observeImage = false
   ) {
     throw new Error("interruption proof refusal mismatch");
   }
-  proveCapturedObjectsAbsent(record, imageId);
-  proveGlobalResidueAbsent();
 }
 
 async function proveFinalCleanupSignal() {
@@ -437,8 +456,10 @@ async function proveFinalCleanupSignal() {
   });
   const stdout = collectBounded(child.stdout);
   const stderr = collectBounded(child.stderr);
-  const exit = waitForExit(child);
+  let exit;
   let terminal;
+  let primaryTimedOut;
+  let forcedExitUsed;
   let watcher;
   let record;
   let imageId;
@@ -451,12 +472,19 @@ async function proveFinalCleanupSignal() {
     if (!signalProcessGroup(child, "SIGINT")) {
       throw new Error("interruption proof signal refused");
     }
+    exit = waitForExit(child);
     terminal = await exit;
+    primaryTimedOut = terminal.timedOut;
   } finally {
     watcher?.kill("SIGTERM");
+    forcedExitUsed = terminal?.timedOut === true;
     terminal = await ensureChildExit(child, terminal);
   }
+  proveCapturedObjectsAbsent(record, imageId);
+  proveGlobalResidueAbsent();
   if (
+    primaryTimedOut ||
+    forcedExitUsed ||
     terminal.timedOut ||
     terminal.spawnFailed ||
     terminal.code === 0 ||
@@ -466,8 +494,6 @@ async function proveFinalCleanupSignal() {
   ) {
     throw new Error("interruption proof final-cleanup refusal mismatch");
   }
-  proveCapturedObjectsAbsent(record, imageId);
-  proveGlobalResidueAbsent();
 }
 
 try {

@@ -254,8 +254,18 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(responseShim).toContain('cut === "build-create"');
     expect(responseShim).toContain('cut === "image-commit"');
     expect(responseShim).toContain('cut === "case-inspect"');
+    expect(responseShim).toContain("refusePostCutCaseStart()");
+    expect(responseShim).toContain('writeFileSync(startAttemptFile, "attempted\\n"');
     expect(responseShim).toContain("await holdSuccessfulResponse()");
     expect(responseShim).toContain("writeFileSync(readyFile");
+    expect(interruptionProof).toContain(
+      "forbiddenStartObserved = existsSync(responseCut.startAttempt)",
+    );
+    expect(interruptionProof).toContain("forbiddenStartObserved ||");
+    expect(interruptionProof).toContain('child.once("close", closed)');
+    expect(interruptionProof).not.toContain('child.once("exit"');
+    expect(interruptionProof).toContain("primaryTimedOut ||");
+    expect(interruptionProof).toContain("forcedExitUsed ||");
     expect(interruptionProof).toContain("interruption-cuts=5 signals=2 residue=0");
     expect(kernel).toContain('"/usr/bin/setpriv"');
     expect(kernel).toContain('"--bounding-set=-all,+sys_admin,+setfcap"');
