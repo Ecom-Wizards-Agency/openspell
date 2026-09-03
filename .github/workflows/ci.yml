@@ -73,6 +73,9 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
           WIZARD_ADS_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
 
+      - name: Verify hosted migration Linux runtime proof
+        run: pnpm --filter @wizard-ads/hosted-migration-runtime-proof run test:kernel
+
       - name: Hygiene (public-repo gate)
         run: pnpm run hygiene
 

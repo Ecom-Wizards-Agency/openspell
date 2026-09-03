@@ -1,0 +1,38 @@
+[package]
+name = "openspell-hosted-migration-runtime-proof"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+autobins = false
+autoexamples = false
+autobenches = false
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[features]
+default = []
+kernel-proof = []
+
+[[test]]
+name = "linux-kernel-proof"
+path = "src/linux_kernel_tests.rs"
+harness = false
+required-features = ["kernel-proof"]
+
+[dependencies]
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std"] }
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+goblin = { version = "=0.10.7", default-features = false, features = ["elf32", "elf64", "endian_fd"] }
+hex = "=0.4.3"
+rustix = { version = "=1.1.4", default-features = false, features = ["fs", "process", "std"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "=0.10.9"
+time = { version = "=0.3.55", features = ["parsing"] }
+
+[dev-dependencies]
+libc = "=0.2.189"
+tempfile = "=3.27.0"

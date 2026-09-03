@@ -272,8 +272,8 @@ privilege. A separate `test:kernel` wrapper:
 1. builds the one synthetic kernel-test executable with the pinned Rust toolchain and locked graph;
 2. identifies and hashes that exact executable;
 3. starts the same pinned Rust image with a private cgroup namespace, `--network none`, read-only
-   root, fresh tmpfs state and no repository, home, credential, browser, Docker socket or service
-   mount;
+   root, fresh tmpfs state and no repository, user directory, credential, browser, Docker socket or
+   service mount;
 4. gives that container only the privilege needed for the disposable kernel proof; and
 5. requires the exact executable to report all cases and counts before Docker removes the container.
 
@@ -453,4 +453,3 @@ real synthetic Linux adapter; then High and Extra-High reviews, blast-radius pro
 After reviewed merge and exact-main CI, update the rolling handover/status and continue with WP-201's
 disposable target-scoped credential, egress, hosted-history and dry-run preparation boundary. Every
 external action remains separately and exactly gated.
-

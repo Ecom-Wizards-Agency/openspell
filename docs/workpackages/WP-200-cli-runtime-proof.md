@@ -84,8 +84,8 @@ Handover and status change only after reviewed merge and exact-main CI.
     recovery/cleanup uncertainty. PID text is never authority.
 18. Run the real proof only through an explicit wrapper. Build and hash the exact test executable,
     then run it in the pinned Rust image with private cgroup namespace, no network, read-only root,
-    fresh tmpfs and no repository/home/credential/browser/Docker-socket/service mount. Never skip a
-    missing kernel invariant.
+    fresh tmpfs and no repository, user-directory, credential, browser, Docker-socket or service
+    mount. Never skip a missing kernel invariant.
 19. Return only bounded summaries or fixed nonsensitive refusals. Do not echo source bytes, paths,
     environments, pids, signatures, target-like canaries or nested OS errors in results/logs.
 20. Static source, Cargo/rustdoc/npm and reverse-dependency tests must prove the production package
@@ -132,4 +132,3 @@ kernel adapter. Close High and Extra-High review findings before full CI and PR.
 After merge and exact-main CI, reconcile handover/status and continue with WP-201's disposable
 target-scoped credential, egress, hosted-history and dry-run preparation boundary. Every external
 action remains separately and exactly gated.
-
