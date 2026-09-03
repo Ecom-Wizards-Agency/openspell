@@ -121,6 +121,15 @@ pub(crate) fn current_pid() -> i32 {
     unsafe { libc::getpid() }
 }
 
+pub(crate) fn ignore_sigpipe() -> Result<(), AbiError> {
+    // SAFETY: SIG_IGN is a fixed process-wide disposition installed before any threads exist.
+    if unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) } == libc::SIG_ERR {
+        Err(AbiError::OperationFailed)
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn make_pipe() -> Result<PipePair, AbiError> {
     let mut descriptors = [-1_i32; 2];
     // SAFETY: descriptors points to space for exactly two descriptors.
@@ -135,37 +144,113 @@ pub(crate) fn make_pipe() -> Result<PipePair, AbiError> {
 }
 
 pub(crate) fn read_gate(fd: RawFd) -> Result<(), AbiError> {
-    let mut byte = 0_u8;
-    loop {
-        // SAFETY: byte is writable for one byte and fd is borrowed for this call.
-        let count = unsafe { libc::read(fd, (&mut byte as *mut u8).cast::<c_void>(), 1) };
-        if count == 1 {
-            return if byte == 0x57 {
-                Ok(())
-            } else {
-                Err(AbiError::ProtocolMismatch)
-            };
-        }
-        if count == -1 && last_errno() == libc::EINTR {
-            continue;
-        }
-        return Err(AbiError::OperationFailed);
+    let mut byte = [0_u8; 1];
+    read_exact_bounded(fd, &mut byte, Duration::from_secs(8))?;
+    if byte == [0x57] {
+        Ok(())
+    } else {
+        Err(AbiError::ProtocolMismatch)
     }
 }
 
 pub(crate) fn write_gate(fd: RawFd) -> Result<(), AbiError> {
-    let byte = 0x57_u8;
+    write_all_bounded(fd, &[0x57], Duration::from_secs(8))
+}
+
+fn bounded_poll(fd: RawFd, events: i16, deadline: Instant) -> Result<(), AbiError> {
     loop {
-        // SAFETY: byte is readable for one byte and fd is borrowed for this call.
-        let count = unsafe { libc::write(fd, (&byte as *const u8).cast::<c_void>(), 1) };
-        if count == 1 {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(AbiError::DeadlineExceeded);
+        }
+        let milliseconds = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+        let mut descriptor = libc::pollfd {
+            fd,
+            events,
+            revents: 0,
+        };
+        // SAFETY: descriptor points to one initialized pollfd for the duration of poll.
+        let count = unsafe { libc::poll(&mut descriptor, 1, milliseconds) };
+        if count == 0 {
+            return Err(AbiError::DeadlineExceeded);
+        }
+        if count < 0 {
+            if last_errno() == libc::EINTR {
+                continue;
+            }
+            return Err(AbiError::OperationFailed);
+        }
+        if descriptor.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+            return Err(AbiError::OperationFailed);
+        }
+        if descriptor.revents & (events | libc::POLLHUP) != 0 {
             return Ok(());
         }
-        if count == -1 && last_errno() == libc::EINTR {
-            continue;
-        }
-        return Err(AbiError::OperationFailed);
     }
+}
+
+pub(crate) fn read_exact_bounded(
+    fd: RawFd,
+    bytes: &mut [u8],
+    timeout: Duration,
+) -> Result<(), AbiError> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or(AbiError::DeadlineExceeded)?;
+    let mut offset = 0_usize;
+    while offset < bytes.len() {
+        bounded_poll(fd, libc::POLLIN, deadline)?;
+        // SAFETY: the remaining slice is writable and fd is borrowed for this call.
+        let count = unsafe {
+            libc::read(
+                fd,
+                bytes[offset..].as_mut_ptr().cast::<c_void>(),
+                bytes.len() - offset,
+            )
+        };
+        if count > 0 {
+            offset = offset
+                .checked_add(usize::try_from(count).map_err(|_| AbiError::ProtocolMismatch)?)
+                .ok_or(AbiError::ProtocolMismatch)?;
+        } else if count == 0 {
+            return Err(AbiError::ProtocolMismatch);
+        } else if last_errno() != libc::EINTR {
+            return Err(AbiError::OperationFailed);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn write_all_bounded(
+    fd: RawFd,
+    bytes: &[u8],
+    timeout: Duration,
+) -> Result<(), AbiError> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or(AbiError::DeadlineExceeded)?;
+    let mut offset = 0_usize;
+    while offset < bytes.len() {
+        bounded_poll(fd, libc::POLLOUT, deadline)?;
+        // SAFETY: the remaining slice is readable and fd is borrowed for this call.
+        let count = unsafe {
+            libc::write(
+                fd,
+                bytes[offset..].as_ptr().cast::<c_void>(),
+                bytes.len() - offset,
+            )
+        };
+        if count > 0 {
+            offset = offset
+                .checked_add(usize::try_from(count).map_err(|_| AbiError::ProtocolMismatch)?)
+                .ok_or(AbiError::ProtocolMismatch)?;
+        } else if count == 0 {
+            return Err(AbiError::ProtocolMismatch);
+        } else if last_errno() != libc::EINTR {
+            return Err(AbiError::OperationFailed);
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn unshare_proof_namespaces() -> Result<(), AbiError> {

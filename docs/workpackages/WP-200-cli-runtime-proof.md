@@ -43,15 +43,22 @@ Handover and status change only after reviewed merge and exact-main CI.
    root. Revalidate the complete ancestor and object device/inode/mode/uid/gid/link/mount identity
    before and after reads. Accept no caller path or user/agent-owned source.
 5. Verify `checksums.txt` and its one exact archive line, the archive size/digest, one gzip member,
-   bounded tar structure and exactly two one-level regular entries with exact sizes/digests. Reject
-   concatenation, trailing data, traversal, nesting, duplicates, links, sparse/extensions, special
-   files, oversize metadata and decompression overrun.
+   bounded tar structure and exactly two one-level regular entries with fixed GNU-ustar headers,
+   archive owners, modes, sizes and digests. Reject concatenation, trailing data, traversal,
+   nesting, duplicates, links, sparse/extensions, special files, oversize metadata and
+   decompression overrun.
 6. Own publication through exclusive fd-relative creation, exact input/output count and byte
    conservation, metadata revalidation, file/directory synchronization, sealed inventory
-   publication last and full reopen. A failed destination is consumed and never repaired or reused.
+   publication last and full reopen. Durably consume the destination before source work; a failed
+   destination is never repaired or reused. Retain and revalidate exact final root and object
+   identities before runtime inspection.
 7. Parse ELF64/x86-64, interpreter and `DT_NEEDED` data without invoking `ldd`, a loader, a helper or
-   either executable. Reject host-backed, writable, extra, substituted, unsupported or incomplete
-   runtime objects.
+   either executable. Resolve both co-located official binaries and the exact known official
+   loader/dependency paths only from a supplied root descriptor, verify their immutable identities,
+   and require the binary bytes to match the retained source pair. Reject host-backed, writable,
+   or unsupported objects. The complete synthetic inventory rejects every extra or substituted
+   object; never elevate the digest-incomplete official subset into complete official runtime
+   evidence.
 8. Do not complete official native-runtime or release-provenance evidence while WP-197's actual
    interpreter/dependency digests and per-phase graph remain unproved. Synthetic evidence cannot
    fill an official field and host facts cannot be inferred as policy.
@@ -74,18 +81,24 @@ Handover and status change only after reviewed merge and exact-main CI.
     uses only fixed synthetic programs and fresh disposable namespaces/cgroup state; no production
     adapter or generic process runner exists.
 15. In the real proof, establish private mount/PID/proc/user/IPC/UTS/network namespaces, a child-only
-    cgroup-v2 subtree, atomic leader pidfd and descendant pidfds, ptrace fork/vfork/clone/exec custody,
-    exact executable/root/maps identity and no unexpected process or executable.
+   cgroup-v2 subtree, atomic leader pidfd and descendant pidfds, ptrace fork/vfork/clone/exec custody,
+   exact executable/root/maps identity before any post-exec continue and no unexpected process or
+   executable. Derive the exact permitted static-PIE map records from the executable's `PT_LOAD`
+   segments and compare the complete file-backed inventory at exec and ready stops.
 16. Before each synthetic executable resumes, prove empty effective/permitted/inheritable/bounding/
     ambient capabilities, `no_new_privs`, zero core limit, post-exec dumpability zero and a seccomp
     rule rejecting later nonzero dumpability. Repeat for the delegate when present.
 17. On every real refusal, timeout, tracer death or interruption, prevent resume where applicable,
-    kill/observe every descendant, prove pidfd terminal state and cgroup emptiness, or return only
-    recovery/cleanup uncertainty. PID text is never authority.
+   kill/observe every descendant, prove pidfd terminal state and cgroup emptiness, or return only
+   recovery/cleanup uncertainty. Exercise real lost-acceptance cuts after resource-creating adapter
+   boundaries and reject a real unexpected post-resume event. PID text is never authority; the
+   tracer-death parent independently retains both descendant pidfds before killing the tracer.
 18. Run the real proof only through an explicit wrapper. Build and hash the exact test executable,
     then run it in the pinned Rust image with private cgroup namespace, no network, read-only root,
     fresh tmpfs and no repository, user-directory, credential, browser, Docker-socket or service
-    mount. Never skip a missing kernel invariant.
+   mount. Never skip a missing kernel invariant. Never run pull-request-controlled code in the
+   privileged proof container; CI may run it only in a dedicated permissionless job for trusted
+   `main` revisions after ordinary checks pass.
 19. Return only bounded summaries or fixed nonsensitive refusals. Do not echo source bytes, paths,
     environments, pids, signatures, target-like canaries or nested OS errors in results/logs.
 20. Static source, Cargo/rustdoc/npm and reverse-dependency tests must prove the production package
@@ -109,7 +122,8 @@ Handover and status change only after reviewed merge and exact-main CI.
 - exact no-residue proof after success and every real failure case;
 - privacy-canary proof across results, errors and logs;
 - pinned Cargo format/check/clippy/rustdoc/test plus TypeScript boundary tests;
-- repository typecheck, lint, test, hygiene and exact-head/exact-main CI; and
+- repository typecheck, lint, test and hygiene on exact PR head, plus the permissionless privileged
+  kernel job on the merged exact-main revision; and
 - one independent High correctness review and two Extra-High authority/kernel/crash reviews.
 
 ## Explicit exclusions

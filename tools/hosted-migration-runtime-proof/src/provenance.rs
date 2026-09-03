@@ -1,16 +1,15 @@
-use std::ffi::CStr;
 use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::mem::MaybeUninit;
 
 use rustix::fs::{
-    AtFlags, FileType, Mode, OFlags, RawDir, ResolveFlags, StatxFlags, fchmod, fsync, openat,
-    openat2, statx,
+    AtFlags, FileType, Mode, OFlags, RawDir, RenameFlags, ResolveFlags, StatxFlags, fchmod, fsync,
+    makedev, openat, openat2, renameat_with, statx,
 };
 use serde::Serialize;
 
 use crate::archive::{ArchiveRefusal, verify_assets};
-use crate::canonical::{Digest32, canonical_json, sha256};
+use crate::canonical::{Digest32, canonical_json, now_utc_milliseconds, sha256};
 use crate::policy::{EvidenceClass, EvidenceMarker, OwnerPolicy};
 
 const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
@@ -31,6 +30,7 @@ const RESOLVE: ResolveFlags = ResolveFlags::BENEATH
     .union(ResolveFlags::NO_MAGICLINKS)
     .union(ResolveFlags::NO_XDEV);
 const REQUIRED_STATX: StatxFlags = StatxFlags::BASIC_STATS.union(StatxFlags::MNT_ID);
+const CONSUMED_NAME: &str = ".RETENTION-CONSUMED";
 const INVENTORY_NAME: &str = "SEALED-INVENTORY.json";
 const MAX_ANCESTORS: usize = 16;
 
@@ -120,6 +120,7 @@ pub(crate) struct RootAnchoredPair<C: EvidenceClass> {
     intake_identity: Identity,
     checksums_identity: Identity,
     archive_identity: Identity,
+    acquired_at: String,
     marker: EvidenceMarker<C>,
 }
 
@@ -186,6 +187,9 @@ impl<C: EvidenceClass> RootAnchoredPair<C> {
             &archive,
             archive_identity,
         )?;
+        verify_intake_inventory(&intake_root, &policy)?;
+        let acquired_at =
+            now_utc_milliseconds().map_err(|_| ProvenanceRefusal::SourceUnavailable)?;
 
         Ok(Self {
             filesystem_root,
@@ -198,6 +202,7 @@ impl<C: EvidenceClass> RootAnchoredPair<C> {
             intake_identity,
             checksums_identity,
             archive_identity,
+            acquired_at,
             marker: EvidenceMarker::new(),
         })
     }
@@ -228,7 +233,8 @@ impl<C: EvidenceClass> RootAnchoredPair<C> {
             policy.archive.name,
             &self.archive,
             self.archive_identity,
-        )
+        )?;
+        verify_intake_inventory(&self.intake_root, &policy)
     }
 }
 
@@ -243,7 +249,7 @@ impl FreshRetainedRoot {
         if !identity.is_directory()
             || identity.permissions() & 0o022 != 0
             || identity.links < 2
-            || !directory_names(&root)?.is_empty()
+            || !directory_names(&root, 0)?.is_empty()
         {
             return Err(ProvenanceRefusal::RetentionUncertain);
         }
@@ -270,6 +276,12 @@ pub(crate) struct RetainedRelease<C: EvidenceClass> {
     root: File,
     retained: [File; 2],
     inventory: File,
+    root_identity: Identity,
+    retained_identities: [Identity; 2],
+    inventory_identity: Identity,
+    inventory_digest: Digest32,
+    source_evidence_bytes: Vec<u8>,
+    source_evidence_digest: Digest32,
     conservation: Conservation,
     marker: EvidenceMarker<C>,
 }
@@ -290,6 +302,61 @@ impl<C: EvidenceClass> RetainedRelease<C> {
     pub(crate) fn inventory(&self) -> &File {
         &self.inventory
     }
+
+    pub(crate) fn source_evidence_bytes(&self) -> &[u8] {
+        &self.source_evidence_bytes
+    }
+
+    pub(crate) fn source_evidence_digest(&self) -> Digest32 {
+        self.source_evidence_digest
+    }
+
+    pub(crate) fn revalidate_for_runtime(&self) -> Result<(), ProvenanceRefusal> {
+        let policy = C::policy();
+        let owner = (self.root_identity.uid, self.root_identity.gid);
+        if Identity::read(&self.root)? != self.root_identity {
+            return Err(ProvenanceRefusal::RetentionUncertain);
+        }
+        for ((file, expected), entry) in self
+            .retained
+            .iter()
+            .zip(self.retained_identities)
+            .zip(policy.entries.iter())
+        {
+            verify_retained_descriptor(
+                &self.root,
+                entry.name,
+                file,
+                expected,
+                entry.size,
+                entry.digest,
+                retained_mode(entry.mode),
+                owner,
+            )?;
+        }
+        verify_retained_descriptor(
+            &self.root,
+            INVENTORY_NAME,
+            &self.inventory,
+            self.inventory_identity,
+            self.inventory_identity.size,
+            self.inventory_digest,
+            0o444,
+            owner,
+        )?;
+        let mut expected_names = vec![
+            policy.entries[0].name.to_owned(),
+            policy.entries[1].name.to_owned(),
+            INVENTORY_NAME.to_owned(),
+        ];
+        expected_names.sort_unstable();
+        if directory_names(&self.root, expected_names.len())? != expected_names
+            || Identity::read(&self.root)? != self.root_identity
+        {
+            return Err(ProvenanceRefusal::RetentionUncertain);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Serialize)]
@@ -299,6 +366,8 @@ struct Inventory<'a> {
     repository: &'a str,
     release: &'a str,
     source_archive_sha256: String,
+    source_evidence: &'a SourceEvidence,
+    source_evidence_sha256: String,
     entries: [InventoryEntry<'a>; 2],
 }
 
@@ -310,10 +379,123 @@ struct InventoryEntry<'a> {
     mode: u32,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceEvidence {
+    schema_version: &'static str,
+    repository: &'static str,
+    release_tag: &'static str,
+    checksums_asset_name: &'static str,
+    checksums_asset_bytes: u64,
+    checksums_asset_sha256: String,
+    archive_asset_name: &'static str,
+    archive_bytes: u64,
+    archive_sha256: String,
+    archive_entries: [&'static str; 2],
+    front_controller_entry: &'static str,
+    front_controller_bytes: u64,
+    front_controller_sha256: String,
+    delegate_entry: &'static str,
+    delegate_bytes: u64,
+    delegate_sha256: String,
+    source_root_device: u64,
+    source_root_inode: u64,
+    source_root_mode: String,
+    source_root_uid: u32,
+    source_root_gid: u32,
+    ancestor_walk_sha256: String,
+    acquired_at: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AncestorWalk {
+    schema_version: &'static str,
+    components: Vec<AncestorComponent>,
+}
+
+#[derive(Serialize)]
+struct AncestorComponent {
+    device: u64,
+    inode: u64,
+    mode: String,
+    uid: u32,
+    gid: u32,
+}
+
+fn source_evidence<C: EvidenceClass>(
+    incoming: &RootAnchoredPair<C>,
+    policy: &crate::policy::ReleasePolicy,
+) -> Result<(SourceEvidence, Vec<u8>, Digest32), ProvenanceRefusal> {
+    if policy.entries[0].name >= policy.entries[1].name {
+        return Err(ProvenanceRefusal::SourceMismatch);
+    }
+    let components = std::iter::once(incoming.root_identity)
+        .chain(incoming.ancestor_identities.iter().copied())
+        .map(|identity| AncestorComponent {
+            device: makedev(identity.dev_major, identity.dev_minor),
+            inode: identity.inode,
+            mode: format!("{:04o}", identity.permissions()),
+            uid: identity.uid,
+            gid: identity.gid,
+        })
+        .collect();
+    let ancestor_walk = canonical_json(&AncestorWalk {
+        schema_version: "openspell.source-ancestor-walk.v1",
+        components,
+    })
+    .map_err(|_| ProvenanceRefusal::SourceMismatch)?;
+    let evidence = SourceEvidence {
+        schema_version: C::source_schema(),
+        repository: policy.repository,
+        release_tag: policy.release,
+        checksums_asset_name: policy.checksums.name,
+        checksums_asset_bytes: policy.checksums.size,
+        checksums_asset_sha256: policy.checksums.digest.to_hex(),
+        archive_asset_name: policy.archive.name,
+        archive_bytes: policy.archive.size,
+        archive_sha256: policy.archive.digest.to_hex(),
+        archive_entries: [policy.entries[0].name, policy.entries[1].name],
+        front_controller_entry: policy.entries[0].name,
+        front_controller_bytes: policy.entries[0].size,
+        front_controller_sha256: policy.entries[0].digest.to_hex(),
+        delegate_entry: policy.entries[1].name,
+        delegate_bytes: policy.entries[1].size,
+        delegate_sha256: policy.entries[1].digest.to_hex(),
+        source_root_device: makedev(
+            incoming.intake_identity.dev_major,
+            incoming.intake_identity.dev_minor,
+        ),
+        source_root_inode: incoming.intake_identity.inode,
+        source_root_mode: format!("{:04o}", incoming.intake_identity.permissions()),
+        source_root_uid: incoming.intake_identity.uid,
+        source_root_gid: incoming.intake_identity.gid,
+        ancestor_walk_sha256: sha256(&ancestor_walk).to_hex(),
+        acquired_at: incoming.acquired_at.clone(),
+    };
+    let bytes = canonical_json(&evidence).map_err(|_| ProvenanceRefusal::SourceMismatch)?;
+    let digest = sha256(&bytes);
+    Ok((evidence, bytes, digest))
+}
+
 pub(crate) fn seal_release<C: EvidenceClass>(
     incoming: RootAnchoredPair<C>,
     destination: FreshRetainedRoot,
 ) -> Result<RetainedRelease<C>, ProvenanceRefusal> {
+    let policy = C::policy();
+    verify_destination(&destination)?;
+    let destination_owner = (destination.identity.uid, destination.identity.gid);
+    let required_destination_owner = match policy.owner {
+        OwnerPolicy::Root => (0, 0),
+        #[cfg(test)]
+        OwnerPolicy::RootDescriptor => (incoming.root_identity.uid, incoming.root_identity.gid),
+    };
+    if destination_owner != required_destination_owner {
+        return Err(ProvenanceRefusal::RetentionUncertain);
+    }
+    let mut inventory = reserve_destination(&destination.root, destination_owner)?;
+    fault(TestFaultPoint::DestinationConsumed)?;
+
     incoming.revalidate_tree()?;
     let checksums = read_exact_stable(
         &incoming.checksums,
@@ -328,18 +510,9 @@ pub(crate) fn seal_release<C: EvidenceClass>(
     )?;
     incoming.revalidate_tree()?;
 
-    let policy = C::policy();
     let parsed = verify_assets(&checksums, &archive_bytes, &policy)?;
-    verify_destination(&destination)?;
-    let destination_owner = (destination.identity.uid, destination.identity.gid);
-    let required_destination_owner = match policy.owner {
-        OwnerPolicy::Root => (0, 0),
-        #[cfg(test)]
-        OwnerPolicy::RootDescriptor => (incoming.root_identity.uid, incoming.root_identity.gid),
-    };
-    if destination_owner != required_destination_owner {
-        return Err(ProvenanceRefusal::RetentionUncertain);
-    }
+    let (source_evidence, source_evidence_bytes, source_evidence_digest) =
+        source_evidence(&incoming, &policy)?;
 
     let mut published = Vec::with_capacity(2);
     for (ordinal, entry) in parsed.entries.iter().enumerate() {
@@ -362,6 +535,8 @@ pub(crate) fn seal_release<C: EvidenceClass>(
         repository: policy.repository,
         release: policy.release,
         source_archive_sha256: policy.archive.digest.to_hex(),
+        source_evidence: &source_evidence,
+        source_evidence_sha256: source_evidence_digest.to_hex(),
         entries: [
             InventoryEntry {
                 name: policy.entries[0].name,
@@ -379,29 +554,49 @@ pub(crate) fn seal_release<C: EvidenceClass>(
     })
     .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
     fault(TestFaultPoint::BeforeInventory)?;
-    let inventory = create_and_sync(
+    finish_reserved_inventory(&mut inventory, &inventory_bytes, destination_owner)?;
+    fault(TestFaultPoint::InventorySynced)?;
+    renameat_with(
+        &destination.root,
+        CONSUMED_NAME,
         &destination.root,
         INVENTORY_NAME,
-        &inventory_bytes,
-        0o444,
-        destination_owner,
-    )?;
+        RenameFlags::NOREPLACE,
+    )
+    .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
     fsync(&destination.root).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
     fault(TestFaultPoint::InventoryDirectorySynced)?;
 
+    let published_identities = [
+        Identity::read(&published[0])?,
+        Identity::read(&published[1])?,
+    ];
+    let inventory_identity = Identity::read(&inventory)?;
+    let final_root_identity = verify_destination_metadata(&destination)?;
+
     let mut expected_names = vec![
-        policy.entries[0].name,
-        policy.entries[1].name,
-        INVENTORY_NAME,
+        policy.entries[0].name.to_owned(),
+        policy.entries[1].name.to_owned(),
+        INVENTORY_NAME.to_owned(),
     ];
     expected_names.sort_unstable();
-    if directory_names(&destination.root)? != expected_names {
+    if directory_names(&destination.root, expected_names.len())? != expected_names {
         return Err(ProvenanceRefusal::RetentionUncertain);
     }
 
     let reopened = [
-        reopen_exact(&destination.root, &policy.entries[0], destination_owner)?,
-        reopen_exact(&destination.root, &policy.entries[1], destination_owner)?,
+        reopen_exact(
+            &destination.root,
+            &policy.entries[0],
+            destination_owner,
+            published_identities[0],
+        )?,
+        reopen_exact(
+            &destination.root,
+            &policy.entries[1],
+            destination_owner,
+            published_identities[1],
+        )?,
     ];
     let reopened_inventory = reopen_bytes(
         &destination.root,
@@ -410,8 +605,17 @@ pub(crate) fn seal_release<C: EvidenceClass>(
         sha256(&inventory_bytes),
         0o444,
         destination_owner,
+        inventory_identity,
     )?;
     fault(TestFaultPoint::Reopened)?;
+
+    if Identity::read(&destination.root)? != final_root_identity
+        || directory_names(&destination.root, expected_names.len())? != expected_names
+    {
+        return Err(ProvenanceRefusal::RetentionUncertain);
+    }
+    fsync(&destination.root).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    fault(TestFaultPoint::FinalDirectorySynced)?;
 
     let parsed_digests = [parsed.entries[0].digest, parsed.entries[1].digest];
     let published_digests = [digest_file(&published[0])?, digest_file(&published[1])?];
@@ -449,6 +653,12 @@ pub(crate) fn seal_release<C: EvidenceClass>(
         root: destination.root,
         retained: reopened,
         inventory: reopened_inventory,
+        root_identity: final_root_identity,
+        retained_identities: published_identities,
+        inventory_identity,
+        inventory_digest: sha256(&inventory_bytes),
+        source_evidence_bytes,
+        source_evidence_digest,
         conservation,
         marker: incoming.marker,
     })
@@ -526,6 +736,59 @@ fn verify_named_descriptor(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn verify_retained_descriptor(
+    root: &File,
+    name: &str,
+    supplied: &File,
+    expected: Identity,
+    size: u64,
+    digest: Digest32,
+    mode: u32,
+    owner: (u32, u32),
+) -> Result<(), ProvenanceRefusal> {
+    let root_identity = Identity::read(root).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    let supplied_before =
+        Identity::read(supplied).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    let opened: File = openat2(root, name, READ_FLAGS, Mode::empty(), RESOLVE)
+        .map_err(|_| ProvenanceRefusal::RetentionUncertain)?
+        .into();
+    let opened_before =
+        Identity::read(&opened).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    if supplied_before != expected
+        || opened_before != expected
+        || expected.mount_id != root_identity.mount_id
+        || !expected.is_regular()
+        || expected.links != 1
+        || expected.permissions() != mode
+        || expected.size != size
+        || (expected.uid, expected.gid) != owner
+        || digest_file(&opened)? != digest
+        || Identity::read(&opened).map_err(|_| ProvenanceRefusal::RetentionUncertain)? != expected
+        || Identity::read(supplied).map_err(|_| ProvenanceRefusal::RetentionUncertain)? != expected
+    {
+        return Err(ProvenanceRefusal::RetentionUncertain);
+    }
+    Ok(())
+}
+
+fn verify_intake_inventory(
+    root: &File,
+    policy: &crate::policy::ReleasePolicy,
+) -> Result<(), ProvenanceRefusal> {
+    let mut expected = vec![
+        policy.checksums.name.to_owned(),
+        policy.archive.name.to_owned(),
+    ];
+    expected.sort_unstable();
+    if directory_names(root, expected.len()).map_err(|_| ProvenanceRefusal::SourceMismatch)?
+        != expected
+    {
+        return Err(ProvenanceRefusal::SourceMismatch);
+    }
+    Ok(())
+}
+
 fn read_exact_stable(
     source: &File,
     expected: Identity,
@@ -553,14 +816,75 @@ fn read_exact_stable(
 }
 
 fn verify_destination(destination: &FreshRetainedRoot) -> Result<(), ProvenanceRefusal> {
+    verify_destination_metadata(destination)?;
+    if !directory_names(&destination.root, 0)?.is_empty() {
+        return Err(ProvenanceRefusal::RetentionUncertain);
+    }
+    Ok(())
+}
+
+fn verify_destination_metadata(
+    destination: &FreshRetainedRoot,
+) -> Result<Identity, ProvenanceRefusal> {
     let now = Identity::read(&destination.root)?;
-    if !now.same_object(destination.identity)
+    if !now.is_directory()
+        || !now.same_object(destination.identity)
         || now.mode != destination.identity.mode
         || now.uid != destination.identity.uid
         || now.gid != destination.identity.gid
         || now.links != destination.identity.links
         || now.mount_id != destination.identity.mount_id
-        || !directory_names(&destination.root)?.is_empty()
+    {
+        return Err(ProvenanceRefusal::RetentionUncertain);
+    }
+    Ok(now)
+}
+
+fn reserve_destination(root: &File, owner: (u32, u32)) -> Result<File, ProvenanceRefusal> {
+    let owned = openat2(
+        root,
+        CONSUMED_NAME,
+        CREATE_FLAGS,
+        Mode::from_raw_mode(0o400),
+        RESOLVE,
+    )
+    .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    fchmod(&owned, Mode::from_raw_mode(0o400))
+        .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    let file: File = owned.into();
+    fsync(&file).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    fsync(root).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    let identity = Identity::read(&file)?;
+    if !identity.is_regular()
+        || identity.links != 1
+        || identity.permissions() != 0o400
+        || identity.size != 0
+        || (identity.uid, identity.gid) != owner
+    {
+        return Err(ProvenanceRefusal::RetentionUncertain);
+    }
+    Ok(file)
+}
+
+fn finish_reserved_inventory(
+    file: &mut File,
+    bytes: &[u8],
+    owner: (u32, u32),
+) -> Result<(), ProvenanceRefusal> {
+    file.write_all(bytes)
+        .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    file.flush()
+        .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    fchmod(&*file, Mode::from_raw_mode(0o444))
+        .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    fsync(&*file).map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
+    let identity = Identity::read(file)?;
+    if !identity.is_regular()
+        || identity.links != 1
+        || identity.permissions() != 0o444
+        || identity.size != bytes.len() as u64
+        || (identity.uid, identity.gid) != owner
+        || digest_file(file)? != sha256(bytes)
     {
         return Err(ProvenanceRefusal::RetentionUncertain);
     }
@@ -599,6 +923,7 @@ fn reopen_exact(
     root: &File,
     policy: &crate::policy::EntryPolicy,
     owner: (u32, u32),
+    expected_identity: Identity,
 ) -> Result<File, ProvenanceRefusal> {
     reopen_bytes(
         root,
@@ -607,6 +932,7 @@ fn reopen_exact(
         policy.digest,
         retained_mode(policy.mode),
         owner,
+        expected_identity,
     )
 }
 
@@ -621,12 +947,14 @@ fn reopen_bytes(
     digest: Digest32,
     mode: u32,
     owner: (u32, u32),
+    expected_identity: Identity,
 ) -> Result<File, ProvenanceRefusal> {
     let file: File = openat2(root, name, READ_FLAGS, Mode::empty(), RESOLVE)
         .map_err(|_| ProvenanceRefusal::RetentionUncertain)?
         .into();
     let before = Identity::read(&file)?;
-    if !before.is_regular()
+    if before != expected_identity
+        || !before.is_regular()
         || before.links != 1
         || before.permissions() != mode
         || before.size != size
@@ -653,7 +981,7 @@ fn file_sizes(files: &[File]) -> Result<u64, ProvenanceRefusal> {
     })
 }
 
-fn directory_names(root: &File) -> Result<Vec<&'static str>, ProvenanceRefusal> {
+fn directory_names(root: &File, maximum: usize) -> Result<Vec<String>, ProvenanceRefusal> {
     let scan_fd = openat2(root, c".", DIRECTORY_FLAGS, Mode::empty(), RESOLVE)
         .map_err(|_| ProvenanceRefusal::RetentionUncertain)?;
     let mut buffer = [MaybeUninit::uninit(); 8_192];
@@ -665,12 +993,15 @@ fn directory_names(root: &File) -> Result<Vec<&'static str>, ProvenanceRefusal> 
         if name == c"." || name == c".." {
             continue;
         }
-        let known = known_name(name).ok_or(ProvenanceRefusal::RetentionUncertain)?;
+        let known = name
+            .to_str()
+            .map_err(|_| ProvenanceRefusal::RetentionUncertain)?
+            .to_owned();
         if entry.file_type() != FileType::RegularFile {
             return Err(ProvenanceRefusal::RetentionUncertain);
         }
         names.push(known);
-        if names.len() > 3 {
+        if names.len() > maximum {
             return Err(ProvenanceRefusal::RetentionUncertain);
         }
     }
@@ -678,35 +1009,30 @@ fn directory_names(root: &File) -> Result<Vec<&'static str>, ProvenanceRefusal> 
     Ok(names)
 }
 
-fn known_name(name: &CStr) -> Option<&'static str> {
-    match name.to_bytes() {
-        b"supabase" => Some("supabase"),
-        b"supabase-go" => Some("supabase-go"),
-        b"front-controller" => Some("front-controller"),
-        b"static-delegate" => Some("static-delegate"),
-        b"SEALED-INVENTORY.json" => Some(INVENTORY_NAME),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TestFaultPoint {
+    DestinationConsumed,
     EntrySynced(usize),
     EntriesDirectorySynced,
     BeforeInventory,
+    InventorySynced,
     InventoryDirectorySynced,
     Reopened,
+    FinalDirectorySynced,
 }
 
 #[cfg(not(test))]
 #[derive(Clone, Copy)]
 enum TestFaultPoint {
+    DestinationConsumed,
     EntrySynced(usize),
     EntriesDirectorySynced,
     BeforeInventory,
+    InventorySynced,
     InventoryDirectorySynced,
     Reopened,
+    FinalDirectorySynced,
 }
 
 #[cfg(test)]

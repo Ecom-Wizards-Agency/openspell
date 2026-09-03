@@ -3,7 +3,7 @@ use std::io::{Cursor, Read as _};
 use flate2::bufread::GzDecoder;
 
 use crate::canonical::{Digest32, sha256};
-use crate::policy::{EntryPolicy, ReleasePolicy};
+use crate::policy::{EntryPolicy, ReleasePolicy, TarFormat};
 
 const TAR_BLOCK: usize = 512;
 const TAR_END_BLOCKS: usize = 2;
@@ -221,10 +221,19 @@ fn parse_header_and_body(
     expected: &EntryPolicy,
 ) -> Result<ParsedEntry, ArchiveRefusal> {
     verify_header_checksum(header)?;
-    if &header[257..263] != b"ustar\0"
-        || &header[263..265] != b"00"
-        || header[345..].iter().any(|byte| *byte != 0)
+    if expected
+        .archive_header
+        .digest
+        .is_some_and(|expected_digest| sha256(header) != expected_digest)
     {
+        return Err(ArchiveRefusal::TarHeader);
+    }
+    let archive_format = (&header[257..263], &header[263..265]);
+    let format_matches = match expected.archive_header.format {
+        TarFormat::Posix => archive_format == (b"ustar\0", b"00"),
+        TarFormat::Gnu => archive_format == (b"ustar ", &[b' ', 0]),
+    };
+    if !format_matches || header[345..].iter().any(|byte| *byte != 0) {
         return Err(ArchiveRefusal::TarHeader);
     }
     if !matches!(header[156], 0 | b'0') {
@@ -241,7 +250,10 @@ fn parse_header_and_body(
     let uid = parse_octal(&header[108..116])?;
     let gid = parse_octal(&header[116..124])?;
     let size = parse_octal(&header[124..136])?;
-    if mode != expected.mode || uid != 0 || gid != 0 {
+    if mode != expected.mode
+        || uid != expected.archive_header.uid
+        || gid != expected.archive_header.gid
+    {
         return Err(ArchiveRefusal::TarHeader);
     }
     if size != expected.size {

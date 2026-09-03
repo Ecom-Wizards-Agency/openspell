@@ -6,14 +6,16 @@ mod linux_abi;
 #[path = "machine.rs"]
 mod machine;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use goblin::elf::Elf;
+use goblin::elf::program_header::{PF_R, PF_W, PF_X, PT_LOAD};
 use linux_abi::{CloneOutcome, ForkOutcome, WaitEvent, WaitKind};
 use machine::{
     Effect, EffectKind, EffectReply, Observation, Progress, ProofRefusal, ProofResult,
@@ -22,6 +24,12 @@ use machine::{
 
 const WAIT_BOUND: Duration = Duration::from_secs(8);
 const TERMINAL_BOUND: Duration = Duration::from_secs(4);
+const TIMEOUT_PROBE_BOUND: Duration = Duration::from_millis(25);
+const MAX_EXECUTABLE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_MAPPING_BYTES: usize = 512 * 1024;
+const MAX_MAPPING_LINES: usize = 256;
+const PAGE_SIZE: u64 = 4096;
+const LABORATORY_PARENT: &str = "/tmp";
 const LABORATORY: &str = "/tmp/openspell-wp200-proof";
 const INTENT: &str = "/tmp/openspell-wp200-proof/intent";
 const TERMINAL: &str = "/tmp/openspell-wp200-proof/terminal";
@@ -68,6 +76,8 @@ enum KernelError {
     ProtectionMismatch,
     MachineMismatch,
     DeadlineExceeded,
+    InjectedAdapterFault,
+    UnexpectedPostResumeEvent,
     CleanupUncertain,
 }
 
@@ -95,6 +105,24 @@ enum Scenario {
     Refusal,
     Timeout,
     Interruption,
+    UnexpectedEvent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrontBehavior {
+    Normal,
+    UnexpectedForkAfterResume,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FaultPoint {
+    Intent,
+    Namespace,
+    Cgroup,
+    Spawn,
+    Custody,
+    ExecAttestation,
+    ProtectionAttestation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -103,10 +131,32 @@ struct FileIdentity {
     inode: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileMappingRecord {
+    offset: u64,
+    length: u64,
+    readable: bool,
+    writable: bool,
+    executable: bool,
+    private: bool,
+    identity: FileIdentity,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AllowedLoadSegment {
+    first_file_page: u64,
+    after_last_file_page: u64,
+    readable: bool,
+    writable: bool,
+    executable: bool,
+}
+
 #[derive(Debug)]
 struct RuntimeInventory {
     executable: FileIdentity,
     root: FileIdentity,
+    loads: Vec<AllowedLoadSegment>,
+    ready_records: Vec<FileMappingRecord>,
 }
 
 #[derive(Debug)]
@@ -120,23 +170,47 @@ struct NamespaceInventory {
 struct TrackedProcess {
     pid: i32,
     pidfd: OwnedFd,
-    start_time: u64,
+    start_time: Option<u64>,
+    reaped: bool,
 }
 
 impl TrackedProcess {
-    fn new(pid: i32, pidfd: OwnedFd) -> Result<Self, KernelError> {
-        if linux_abi::pidfd_is_terminal(pidfd.as_raw_fd(), Duration::ZERO)? {
-            return Err(KernelError::ProcessMismatch);
-        }
-        Ok(Self {
+    fn acquired(pid: i32, pidfd: OwnedFd) -> Self {
+        Self {
             pid,
             pidfd,
-            start_time: read_start_time(pid)?,
-        })
+            start_time: None,
+            reaped: false,
+        }
+    }
+
+    fn attest_live(&mut self) -> Result<(), KernelError> {
+        if linux_abi::pidfd_is_terminal(self.pidfd.as_raw_fd(), Duration::ZERO)? {
+            return Err(KernelError::ProcessMismatch);
+        }
+        let start_time = read_start_time(self.pid)?;
+        if start_time == 0 {
+            return Err(KernelError::ProcessMismatch);
+        }
+        self.start_time = Some(start_time);
+        Ok(())
+    }
+
+    fn from_witness(pid: i32, start_time: u64) -> Result<Self, KernelError> {
+        if pid <= 0 || start_time == 0 {
+            return Err(KernelError::ProcessMismatch);
+        }
+        let mut process = Self::acquired(pid, linux_abi::open_pidfd(pid)?);
+        process.attest_live()?;
+        if process.start_time != Some(start_time) {
+            return Err(KernelError::ProcessMismatch);
+        }
+        Ok(process)
     }
 
     fn verify_identity(&self) -> Result<(), KernelError> {
-        if read_start_time(self.pid)? == self.start_time
+        if self.start_time.is_some()
+            && Some(read_start_time(self.pid)?) == self.start_time
             && !linux_abi::pidfd_is_terminal(self.pidfd.as_raw_fd(), Duration::ZERO)?
         {
             Ok(())
@@ -152,25 +226,146 @@ impl TrackedProcess {
             Err(KernelError::CleanupUncertain)
         }
     }
+
+    fn witness(&self) -> Result<ProcessWitness, KernelError> {
+        Ok(ProcessWitness {
+            pid: self.pid,
+            start_time: self.start_time.ok_or(KernelError::ProcessMismatch)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProcessWitness {
+    pid: i32,
+    start_time: u64,
+}
+
+#[derive(Debug)]
+struct CaseResources {
+    laboratory_owned: bool,
+    cgroup_owned: bool,
+    leader: Option<TrackedProcess>,
+    delegate: Option<TrackedProcess>,
+    unexpected_descendants: Vec<TrackedProcess>,
+}
+
+impl CaseResources {
+    fn new() -> Self {
+        Self {
+            laboratory_owned: false,
+            cgroup_owned: false,
+            leader: None,
+            delegate: None,
+            unexpected_descendants: Vec::new(),
+        }
+    }
+
+    fn leader(&self) -> Result<&TrackedProcess, KernelError> {
+        self.leader.as_ref().ok_or(KernelError::ProcessMismatch)
+    }
+
+    fn leader_mut(&mut self) -> Result<&mut TrackedProcess, KernelError> {
+        self.leader.as_mut().ok_or(KernelError::ProcessMismatch)
+    }
+
+    fn delegate(&self) -> Result<&TrackedProcess, KernelError> {
+        self.delegate.as_ref().ok_or(KernelError::ProcessMismatch)
+    }
+
+    fn delegate_mut(&mut self) -> Result<&mut TrackedProcess, KernelError> {
+        self.delegate.as_mut().ok_or(KernelError::ProcessMismatch)
+    }
+
+    fn recover_programs_and_cgroup(&mut self) -> Result<(), KernelError> {
+        let mut exact = true;
+        if self.cgroup_owned && fs::write(format!("{CGROUP}/cgroup.kill"), b"1\n").is_err() {
+            exact = false;
+        }
+        for process in self
+            .unexpected_descendants
+            .iter_mut()
+            .chain(self.delegate.iter_mut())
+            .chain(self.leader.iter_mut())
+        {
+            if recover_process(process).is_err() {
+                exact = false;
+            }
+        }
+        if self.cgroup_owned {
+            let empty = wait_for_empty_cgroup().is_ok();
+            let removed = fs::remove_dir(CGROUP).is_ok();
+            if !empty || !removed {
+                exact = false;
+            } else {
+                self.cgroup_owned = false;
+            }
+        }
+        if exact {
+            Ok(())
+        } else {
+            Err(KernelError::CleanupUncertain)
+        }
+    }
+
+    fn cleanup_laboratory(&mut self) -> Result<(), KernelError> {
+        if !self.laboratory_owned {
+            return Ok(());
+        }
+        cleanup_owned_laboratory()?;
+        self.laboratory_owned = false;
+        Ok(())
+    }
+
+    fn recover_all(&mut self) -> Result<(), KernelError> {
+        let programs = self.recover_programs_and_cgroup();
+        let laboratory = self.cleanup_laboratory();
+        if programs.is_ok() && laboratory.is_ok() {
+            Ok(())
+        } else {
+            Err(KernelError::CleanupUncertain)
+        }
+    }
 }
 
 struct PreparedCase {
     machine: SyntheticProofMachine,
-    leader: TrackedProcess,
-    delegate: TrackedProcess,
+    resources: CaseResources,
+}
+
+enum Preparation {
+    Ready(Box<PreparedCase>),
+    InjectedAndRecovered,
 }
 
 fn main() {
     let arguments = std::env::args().collect::<Vec<_>>();
-    let status = match arguments.as_slice() {
-        [_, mode] if mode == "success" => run_scenario(Scenario::Success),
-        [_, mode] if mode == "refusal" => run_scenario(Scenario::Refusal),
-        [_, mode] if mode == "timeout" => run_scenario(Scenario::Timeout),
-        [_, mode] if mode == "interruption" => run_scenario(Scenario::Interruption),
-        [_, mode] if mode == "tracer-death" => run_tracer_death(),
-        [_, mode] if mode == "front" => run_front_controller(),
-        [_, mode] if mode == "delegate" => run_delegate(),
-        _ => Err(KernelError::ProcessMismatch),
+    let status = if linux_abi::ignore_sigpipe().is_err() {
+        Err(KernelError::ProcessMismatch)
+    } else {
+        match arguments.as_slice() {
+            [_, mode] if mode == "success" => run_scenario(Scenario::Success),
+            [_, mode] if mode == "refusal" => run_scenario(Scenario::Refusal),
+            [_, mode] if mode == "timeout" => run_scenario(Scenario::Timeout),
+            [_, mode] if mode == "interruption" => run_scenario(Scenario::Interruption),
+            [_, mode] if mode == "unexpected-event" => run_scenario(Scenario::UnexpectedEvent),
+            [_, mode] if mode == "fault-intent" => run_adapter_fault(FaultPoint::Intent),
+            [_, mode] if mode == "fault-namespace" => run_adapter_fault(FaultPoint::Namespace),
+            [_, mode] if mode == "fault-cgroup" => run_adapter_fault(FaultPoint::Cgroup),
+            [_, mode] if mode == "fault-spawn" => run_adapter_fault(FaultPoint::Spawn),
+            [_, mode] if mode == "fault-custody" => run_adapter_fault(FaultPoint::Custody),
+            [_, mode] if mode == "fault-exec" => run_adapter_fault(FaultPoint::ExecAttestation),
+            [_, mode] if mode == "fault-protection" => {
+                run_adapter_fault(FaultPoint::ProtectionAttestation)
+            }
+            [_, mode] if mode == "tracer-death" => run_tracer_death(),
+            [_, mode] if mode == "front" => run_front_controller(FrontBehavior::Normal),
+            [_, mode] if mode == "front-unexpected" => {
+                run_front_controller(FrontBehavior::UnexpectedForkAfterResume)
+            }
+            [_, mode] if mode == "delegate" => run_delegate(),
+            _ => Err(KernelError::ProcessMismatch),
+        }
     };
 
     match status {
@@ -186,6 +381,21 @@ fn main() {
         Ok(()) if matches!(arguments.get(1).map(String::as_str), Some("interruption")) => {
             println!("openspell synthetic kernel proof: interruption recovery=1 residue=0");
         }
+        Ok(())
+            if matches!(
+                arguments.get(1).map(String::as_str),
+                Some("unexpected-event")
+            ) =>
+        {
+            println!("openspell synthetic kernel proof: unexpected-event recovery=1 residue=0");
+        }
+        Ok(())
+            if arguments
+                .get(1)
+                .is_some_and(|mode| mode.starts_with("fault-")) =>
+        {
+            println!("openspell synthetic kernel proof: adapter-fault recovery=1 residue=0");
+        }
         Ok(()) if matches!(arguments.get(1).map(String::as_str), Some("tracer-death")) => {
             println!("openspell synthetic kernel proof: tracer-death exitkill=1 residue=0");
         }
@@ -198,18 +408,75 @@ fn main() {
 }
 
 fn run_scenario(scenario: Scenario) -> Result<(), KernelError> {
-    let mut prepared = prepare_case()?;
-    match scenario {
-        Scenario::Success => finish_success(&mut prepared)?,
-        Scenario::Refusal => finish_refusal(&mut prepared)?,
-        Scenario::Timeout => finish_timeout(&mut prepared)?,
-        Scenario::Interruption => finish_interruption(&mut prepared)?,
+    let behavior = if scenario == Scenario::UnexpectedEvent {
+        FrontBehavior::UnexpectedForkAfterResume
+    } else {
+        FrontBehavior::Normal
+    };
+    let Preparation::Ready(mut prepared) = prepare_case(behavior, None)? else {
+        return Err(KernelError::MachineMismatch);
+    };
+    let outcome = match scenario {
+        Scenario::Success => finish_success(&mut prepared),
+        Scenario::Refusal => finish_refusal(&mut prepared),
+        Scenario::Timeout => finish_timeout(&mut prepared),
+        Scenario::Interruption => finish_interruption(&mut prepared),
+        Scenario::UnexpectedEvent => finish_unexpected_event(&mut prepared),
+    };
+    if let Err(primary) = outcome {
+        let _ = prepared.machine.interrupt();
+        return if prepared.resources.recover_all().is_ok() {
+            Err(primary)
+        } else {
+            Err(KernelError::CleanupUncertain)
+        };
     }
-    cleanup_laboratory()?;
-    Ok(())
+    prepared.resources.cleanup_laboratory()?;
+    prove_fixed_residue_absent()
 }
 
-fn prepare_case() -> Result<PreparedCase, KernelError> {
+fn run_adapter_fault(point: FaultPoint) -> Result<(), KernelError> {
+    match prepare_case(FrontBehavior::Normal, Some(point))? {
+        Preparation::InjectedAndRecovered => prove_fixed_residue_absent(),
+        Preparation::Ready(mut prepared) => {
+            let _ = prepared.resources.recover_all();
+            Err(KernelError::InjectedAdapterFault)
+        }
+    }
+}
+
+fn prepare_case(
+    behavior: FrontBehavior,
+    fault: Option<FaultPoint>,
+) -> Result<Preparation, KernelError> {
+    let mut resources = CaseResources::new();
+    let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture());
+    match prepare_case_inner(&mut machine, &mut resources, behavior, fault) {
+        Ok(true) => {
+            resources.recover_all()?;
+            Ok(Preparation::InjectedAndRecovered)
+        }
+        Ok(false) => Ok(Preparation::Ready(Box::new(PreparedCase {
+            machine,
+            resources,
+        }))),
+        Err(primary) => {
+            if resources.recover_all().is_ok() {
+                Err(primary)
+            } else {
+                Err(KernelError::CleanupUncertain)
+            }
+        }
+    }
+}
+
+fn prepare_case_inner(
+    machine: &mut SyntheticProofMachine,
+    resources: &mut CaseResources,
+    behavior: FrontBehavior,
+    fault: Option<FaultPoint>,
+) -> Result<bool, KernelError> {
+    verify_supervisor_boundary()?;
     let runtime = capture_runtime_inventory(linux_abi::current_pid())?;
     let mut namespaces = NamespaceInventory {
         outer: capture_self_namespace_inventory()
@@ -218,13 +485,13 @@ fn prepare_case() -> Result<PreparedCase, KernelError> {
         child_pid: PathBuf::new(),
     };
     let outer_ids = linux_abi::current_ids();
-    let mut machine = SyntheticProofMachine::begin(VerifiedSyntheticCase::sealed_fixture());
+    let intent_effect = offer_expected(machine, EffectKind::PersistLaunchIntent)?;
+    create_intent(resources)?;
+    if resolve_or_inject(machine, intent_effect, fault, FaultPoint::Intent)? {
+        return Ok(true);
+    }
 
-    let intent_effect = offer_expected(&mut machine, EffectKind::PersistLaunchIntent)?;
-    create_intent()?;
-    resolve_exact(&mut machine, intent_effect)?;
-
-    let namespace_effect = offer_expected(&mut machine, EffectKind::EstablishPrivateNamespaces)?;
+    let namespace_effect = offer_expected(machine, EffectKind::EstablishPrivateNamespaces)?;
     linux_abi::unshare_proof_namespaces()?;
     install_self_identity_map(outer_ids)?;
     linux_abi::enable_supervisor_proc_inspection()?;
@@ -233,17 +500,21 @@ fn prepare_case() -> Result<PreparedCase, KernelError> {
     namespaces.private = capture_self_namespace_inventory()
         .map_err(|_| KernelError::SupervisorNamespaceReadMismatch)?;
     verify_supervisor_namespaces(&namespaces)?;
-    resolve_exact(&mut machine, namespace_effect)?;
+    if resolve_or_inject(machine, namespace_effect, fault, FaultPoint::Namespace)? {
+        return Ok(true);
+    }
 
-    let cgroup_effect = offer_expected(&mut machine, EffectKind::EstablishExclusiveChildCgroup)?;
-    create_cgroup().map_err(|_| KernelError::CgroupCreateMismatch)?;
-    resolve_exact(&mut machine, cgroup_effect)?;
+    let cgroup_effect = offer_expected(machine, EffectKind::EstablishExclusiveChildCgroup)?;
+    create_cgroup(resources).map_err(|_| KernelError::CgroupCreateMismatch)?;
+    if resolve_or_inject(machine, cgroup_effect, fault, FaultPoint::Cgroup)? {
+        return Ok(true);
+    }
 
     let executable = File::open("/proc/self/exe").map_err(|_| KernelError::ExecutableMismatch)?;
     let fixed_executable = linux_abi::duplicate_executable_fd(executable.as_raw_fd())?;
     let gate = linux_abi::make_pipe()?;
-    let spawn_effect = offer_expected(&mut machine, EffectKind::SpawnStoppedLeaderAndOpenPidfd)?;
-    let leader = match linux_abi::clone_with_pidfd()? {
+    let spawn_effect = offer_expected(machine, EffectKind::SpawnStoppedLeaderAndOpenPidfd)?;
+    match linux_abi::clone_with_pidfd()? {
         CloneOutcome::Child => {
             drop(gate.write);
             let child_result = child_before_exec(gate.read.as_raw_fd());
@@ -252,78 +523,103 @@ fn prepare_case() -> Result<PreparedCase, KernelError> {
                 eprintln!("openspell synthetic child refused: {error:?}");
                 linux_abi::exit_immediately(111);
             }
-            let _ = linux_abi::exec_role(linux_abi::EXECUTABLE_FD, b"front\0");
+            let role: &'static [u8] = match behavior {
+                FrontBehavior::Normal => b"front\0",
+                FrontBehavior::UnexpectedForkAfterResume => b"front-unexpected\0",
+            };
+            let _ = linux_abi::exec_role(linux_abi::EXECUTABLE_FD, role);
             linux_abi::exit_immediately(111);
         }
         CloneOutcome::Parent { pid, pidfd } => {
             drop(gate.read);
+            resources.leader = Some(TrackedProcess::acquired(pid, pidfd));
+            resources.leader_mut()?.attest_live()?;
             write_cgroup_pid(pid).map_err(|_| KernelError::LeaderCgroupMismatch)?;
             linux_abi::write_gate(gate.write.as_raw_fd())?;
             drop(gate.write);
-            TrackedProcess::new(pid, pidfd)?
         }
-    };
+    }
     drop(fixed_executable);
-    verify_cgroup_members(&[leader.pid]).map_err(|_| KernelError::LeaderCgroupMismatch)?;
-    resolve_exact(&mut machine, spawn_effect)?;
+    let leader_pid = resources.leader()?.pid;
+    verify_cgroup_members(&[leader_pid]).map_err(|_| KernelError::LeaderCgroupMismatch)?;
+    if resolve_or_inject(machine, spawn_effect, fault, FaultPoint::Spawn)? {
+        return Ok(true);
+    }
 
-    let custody_effect = offer_expected(
-        &mut machine,
-        EffectKind::EstablishPtraceAndDescendantCustody,
-    )?;
-    expect_plain_stop(wait(leader.pid)?, linux_abi::STOP_SIGNAL)
+    let custody_effect = offer_expected(machine, EffectKind::EstablishPtraceAndDescendantCustody)?;
+    expect_plain_stop(wait(leader_pid)?, linux_abi::STOP_SIGNAL)
         .map_err(|_| KernelError::LeaderInitialStopMismatch)?;
-    namespaces.child_pid = namespace_path(Some(leader.pid), "pid")
+    namespaces.child_pid = namespace_path(Some(leader_pid), "pid")
         .map_err(|_| KernelError::ChildPidNamespaceMismatch)?;
     if namespaces.outer.get("pid") == Some(&namespaces.child_pid) {
         return Err(KernelError::ChildPidNamespaceMismatch);
     }
-    linux_abi::ptrace_set_fixed_options(leader.pid)?;
-    linux_abi::ptrace_continue(leader.pid)?;
-    expect_ptrace_event(wait(leader.pid)?, linux_abi::EVENT_EXEC)
+    linux_abi::ptrace_set_fixed_options(leader_pid)?;
+    linux_abi::ptrace_continue(leader_pid)?;
+    expect_ptrace_event(wait(leader_pid)?, linux_abi::EVENT_EXEC)
         .map_err(|_| KernelError::LeaderExecStopMismatch)?;
-    leader.verify_identity()?;
-    linux_abi::ptrace_continue(leader.pid)?;
-    expect_ptrace_event(wait(leader.pid)?, linux_abi::EVENT_FORK)
+    resources.leader()?.verify_identity()?;
+    let leader_exec_maps = attest_exec_stop(&runtime, resources.leader()?, MappingStage::ExecStop)?;
+    linux_abi::ptrace_continue(leader_pid)?;
+    expect_ptrace_event(wait(leader_pid)?, linux_abi::EVENT_FORK)
         .map_err(|_| KernelError::ForkStopMismatch)?;
-    let delegate_pid = linux_abi::ptrace_event_pid(leader.pid)?;
-    let delegate = TrackedProcess::new(delegate_pid, linux_abi::open_pidfd(delegate_pid)?)?;
-    expect_plain_stop(wait(delegate.pid)?, linux_abi::STOP_SIGNAL)
+    let delegate_pid = linux_abi::ptrace_event_pid(leader_pid)?;
+    resources.delegate = Some(TrackedProcess::acquired(
+        delegate_pid,
+        linux_abi::open_pidfd(delegate_pid)?,
+    ));
+    resources.delegate_mut()?.attest_live()?;
+    expect_plain_stop(wait(delegate_pid)?, linux_abi::STOP_SIGNAL)
         .map_err(|_| KernelError::DelegateInitialStopMismatch)?;
-    verify_cgroup_members(&[leader.pid, delegate.pid])
+    linux_abi::ptrace_set_fixed_options(delegate_pid)?;
+    verify_cgroup_members(&[leader_pid, delegate_pid])
         .map_err(|_| KernelError::DescendantCgroupMismatch)?;
-    verify_child_namespaces(&namespaces, leader.pid, delegate.pid)?;
-    resolve_exact(&mut machine, custody_effect)?;
+    verify_child_namespaces(&namespaces, leader_pid, delegate_pid)?;
+    if resolve_or_inject(machine, custody_effect, fault, FaultPoint::Custody)? {
+        return Ok(true);
+    }
 
-    let exec_effect = offer_expected(&mut machine, EffectKind::AttestExecsAndMaps)?;
-    linux_abi::ptrace_continue(delegate.pid)?;
-    expect_ptrace_event(wait(delegate.pid)?, linux_abi::EVENT_EXEC)
+    let exec_effect = offer_expected(machine, EffectKind::AttestExecsAndMaps)?;
+    linux_abi::ptrace_continue(delegate_pid)?;
+    expect_ptrace_event(wait(delegate_pid)?, linux_abi::EVENT_EXEC)
         .map_err(|_| KernelError::DelegateExecStopMismatch)?;
-    delegate.verify_identity()?;
-    linux_abi::ptrace_continue(delegate.pid)?;
-    expect_plain_stop(wait(delegate.pid)?, linux_abi::STOP_SIGNAL)
-        .map_err(|_| KernelError::DelegateReadyStopMismatch)?;
-    linux_abi::ptrace_continue(leader.pid)?;
-    expect_plain_stop(wait(leader.pid)?, linux_abi::STOP_SIGNAL)
-        .map_err(|_| KernelError::LeaderReadyStopMismatch)?;
-    verify_runtime_identity(&runtime, leader.pid)?;
-    verify_runtime_identity(&runtime, delegate.pid)?;
-    if mapped_files(leader.pid)? != mapped_files(delegate.pid)? {
+    resources.delegate()?.verify_identity()?;
+    let delegate_exec_maps =
+        attest_exec_stop(&runtime, resources.delegate()?, MappingStage::ExecStop)?;
+    if leader_exec_maps != delegate_exec_maps {
         return Err(KernelError::MappingMismatch);
     }
-    resolve_exact(&mut machine, exec_effect)?;
+    linux_abi::ptrace_continue(delegate_pid)?;
+    expect_plain_stop(wait(delegate_pid)?, linux_abi::STOP_SIGNAL)
+        .map_err(|_| KernelError::DelegateReadyStopMismatch)?;
+    linux_abi::ptrace_continue(leader_pid)?;
+    expect_plain_stop(wait(leader_pid)?, linux_abi::STOP_SIGNAL)
+        .map_err(|_| KernelError::LeaderReadyStopMismatch)?;
+    let leader_ready_maps =
+        attest_exec_stop(&runtime, resources.leader()?, MappingStage::ReadyStop)?;
+    let delegate_ready_maps =
+        attest_exec_stop(&runtime, resources.delegate()?, MappingStage::ReadyStop)?;
+    if leader_ready_maps != delegate_ready_maps {
+        return Err(KernelError::MappingMismatch);
+    }
+    if resolve_or_inject(machine, exec_effect, fault, FaultPoint::ExecAttestation)? {
+        return Ok(true);
+    }
 
-    let protection_effect = offer_expected(&mut machine, EffectKind::AttestProcessProtections)?;
-    verify_process_protections(&leader)?;
-    verify_process_protections(&delegate)?;
-    verify_cgroup_members(&[leader.pid, delegate.pid])?;
-    resolve_exact(&mut machine, protection_effect)?;
-
-    Ok(PreparedCase {
+    let protection_effect = offer_expected(machine, EffectKind::AttestProcessProtections)?;
+    verify_process_protections(resources.leader()?)?;
+    verify_process_protections(resources.delegate()?)?;
+    verify_cgroup_members(&[leader_pid, delegate_pid])?;
+    if resolve_or_inject(
         machine,
-        leader,
-        delegate,
-    })
+        protection_effect,
+        fault,
+        FaultPoint::ProtectionAttestation,
+    )? {
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 fn finish_success(prepared: &mut PreparedCase) -> Result<(), KernelError> {
@@ -331,20 +627,27 @@ fn finish_success(prepared: &mut PreparedCase) -> Result<(), KernelError> {
     if !resume.carries_resume_permit() {
         return Err(KernelError::MachineMismatch);
     }
-    linux_abi::ptrace_continue(prepared.delegate.pid)?;
-    linux_abi::ptrace_continue(prepared.leader.pid)?;
+    linux_abi::ptrace_continue(prepared.resources.delegate()?.pid)?;
+    linux_abi::ptrace_continue(prepared.resources.leader()?.pid)?;
     resolve_exact(&mut prepared.machine, resume)?;
 
     let drain = offer_expected(&mut prepared.machine, EffectKind::DrainDescendants)?;
-    wait_successful_exit(&prepared.delegate)?;
+    wait_successful_exit(
+        prepared.resources.delegate_mut()?,
+        PostResumeExpectation::NoStops,
+    )?;
     resolve_exact(&mut prepared.machine, drain)?;
 
     let terminal = offer_expected(
         &mut prepared.machine,
         EffectKind::ObserveTerminalAndEmptyCgroup,
     )?;
-    wait_successful_exit(&prepared.leader)?;
+    wait_successful_exit(
+        prepared.resources.leader_mut()?,
+        PostResumeExpectation::OnePlainSignal(libc::SIGCHLD),
+    )?;
     prove_empty_cgroup_and_remove()?;
+    prepared.resources.cgroup_owned = false;
     resolve_exact(&mut prepared.machine, terminal)?;
 
     let proof = offer_expected(&mut prepared.machine, EffectKind::PersistTerminalProof)?;
@@ -370,7 +673,11 @@ fn finish_refusal(prepared: &mut PreparedCase) -> Result<(), KernelError> {
 }
 
 fn finish_timeout(prepared: &mut PreparedCase) -> Result<(), KernelError> {
-    std::thread::sleep(Duration::from_millis(5));
+    let started = Instant::now();
+    match linux_abi::wait_for_pid(prepared.resources.leader()?.pid, TIMEOUT_PROBE_BOUND) {
+        Err(linux_abi::AbiError::DeadlineExceeded) if started.elapsed() >= TIMEOUT_PROBE_BOUND => {}
+        _ => return Err(KernelError::DeadlineExceeded),
+    }
     let progress = prepared.machine.interrupt()?;
     assert_recovery(progress, prepared.machine.result())?;
     terminate_case(prepared)?;
@@ -386,6 +693,63 @@ fn finish_interruption(prepared: &mut PreparedCase) -> Result<(), KernelError> {
     assert_recovery(progress, prepared.machine.result())?;
     terminate_case(prepared)?;
     Ok(())
+}
+
+fn finish_unexpected_event(prepared: &mut PreparedCase) -> Result<(), KernelError> {
+    let resume = offer_expected(&mut prepared.machine, EffectKind::ResumeVerifiedProcesses)?;
+    if !resume.carries_resume_permit() {
+        return Err(KernelError::MachineMismatch);
+    }
+    linux_abi::ptrace_continue(prepared.resources.delegate()?.pid)?;
+    linux_abi::ptrace_continue(prepared.resources.leader()?.pid)?;
+    resolve_exact(&mut prepared.machine, resume)?;
+
+    let deadline = Instant::now() + WAIT_BOUND;
+    let leader_pid = prepared.resources.leader()?.pid;
+    let delegate_pid = prepared.resources.delegate()?.pid;
+    let mut leader_sigchld = false;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(KernelError::DeadlineExceeded);
+        }
+        let event = linux_abi::wait_for_any(remaining)?;
+        match event {
+            WaitEvent {
+                pid,
+                kind: WaitKind::Exited(0),
+            } if pid == delegate_pid => {
+                prepared.resources.delegate_mut()?.reaped = true;
+            }
+            WaitEvent {
+                pid,
+                kind: WaitKind::Stopped { signal, event: 0 },
+            } if pid == leader_pid && signal == libc::SIGCHLD && !leader_sigchld => {
+                leader_sigchld = true;
+                linux_abi::ptrace_continue(leader_pid)?;
+            }
+            WaitEvent {
+                pid,
+                kind: WaitKind::Stopped { event, .. },
+            } if pid == leader_pid && event != 0 => {
+                let descendant_pid = linux_abi::ptrace_event_pid(leader_pid)?;
+                retain_unexpected_descendant(&mut prepared.resources, descendant_pid)?;
+                break;
+            }
+            WaitEvent {
+                pid,
+                kind: WaitKind::Stopped { .. },
+            } if pid != leader_pid && pid != delegate_pid => {
+                retain_unexpected_descendant(&mut prepared.resources, pid)?;
+                break;
+            }
+            _ => return Err(KernelError::UnexpectedPostResumeEvent),
+        }
+    }
+
+    let progress = prepared.machine.interrupt()?;
+    assert_recovery(progress, prepared.machine.result())?;
+    terminate_case(prepared)
 }
 
 fn assert_recovery(progress: Progress, result: Option<ProofResult>) -> Result<(), KernelError> {
@@ -404,22 +768,35 @@ fn assert_recovery(progress: Progress, result: Option<ProofResult>) -> Result<()
     }
 }
 
-fn terminate_case(prepared: &PreparedCase) -> Result<(), KernelError> {
-    fs::write(format!("{CGROUP}/cgroup.kill"), b"1\n")
-        .map_err(|_| KernelError::CleanupUncertain)?;
-    wait_killed_exit(&prepared.delegate)?;
-    wait_killed_exit(&prepared.leader)?;
-    prove_empty_cgroup_and_remove()?;
-    Ok(())
+fn terminate_case(prepared: &mut PreparedCase) -> Result<(), KernelError> {
+    prepared.resources.recover_programs_and_cgroup()
 }
 
 fn run_tracer_death() -> Result<(), KernelError> {
     let gate = linux_abi::make_pipe()?;
-    let tracer = match linux_abi::fork_process()? {
+    let mut tracer = match linux_abi::fork_process()? {
         ForkOutcome::Child => {
             drop(gate.read);
-            let prepared = prepare_case();
-            if prepared.is_err() || linux_abi::write_gate(gate.write.as_raw_fd()).is_err() {
+            let Preparation::Ready(prepared) = prepare_case(FrontBehavior::Normal, None)
+                .unwrap_or_else(|_| {
+                    linux_abi::exit_immediately(111);
+                })
+            else {
+                linux_abi::exit_immediately(111);
+            };
+            let report = encode_custody_report(
+                prepared
+                    .resources
+                    .leader()
+                    .and_then(TrackedProcess::witness)
+                    .unwrap_or_else(|_| linux_abi::exit_immediately(111)),
+                prepared
+                    .resources
+                    .delegate()
+                    .and_then(TrackedProcess::witness)
+                    .unwrap_or_else(|_| linux_abi::exit_immediately(111)),
+            );
+            if linux_abi::write_all_bounded(gate.write.as_raw_fd(), &report, WAIT_BOUND).is_err() {
                 linux_abi::exit_immediately(111);
             }
             drop(gate.write);
@@ -429,11 +806,28 @@ fn run_tracer_death() -> Result<(), KernelError> {
         }
         ForkOutcome::Parent(pid) => {
             drop(gate.write);
-            let handle = TrackedProcess::new(pid, linux_abi::open_pidfd(pid)?)?;
-            linux_abi::read_gate(gate.read.as_raw_fd())?;
-            drop(gate.read);
+            let mut handle = TrackedProcess::acquired(pid, linux_abi::open_pidfd(pid)?);
+            handle.attest_live()?;
             handle
         }
+    };
+
+    let witnesses = (|| -> Result<(TrackedProcess, TrackedProcess), KernelError> {
+        let mut report = [0_u8; 32];
+        linux_abi::read_exact_bounded(gate.read.as_raw_fd(), &mut report, WAIT_BOUND)?;
+        drop(gate.read);
+        let (leader, delegate) = decode_custody_report(report)?;
+        if leader.pid == delegate.pid {
+            return Err(KernelError::ProcessMismatch);
+        }
+        let leader = TrackedProcess::from_witness(leader.pid, leader.start_time)?;
+        let delegate = TrackedProcess::from_witness(delegate.pid, delegate.start_time)?;
+        verify_cgroup_members(&[leader.pid, delegate.pid])?;
+        Ok((leader, delegate))
+    })();
+    let (leader, delegate) = match witnesses {
+        Ok(processes) => processes,
+        Err(primary) => return cleanup_failed_tracer(&mut tracer, primary),
     };
 
     linux_abi::signal_pidfd(tracer.pidfd.as_raw_fd(), libc::SIGKILL)?;
@@ -444,11 +838,85 @@ fn run_tracer_death() -> Result<(), KernelError> {
         } if signal == libc::SIGKILL => {}
         _ => return Err(KernelError::ProcessMismatch),
     }
+    tracer.reaped = true;
     tracer.verify_terminal()?;
+    leader.verify_terminal()?;
+    delegate.verify_terminal()?;
     wait_for_empty_cgroup()?;
     fs::remove_dir(CGROUP).map_err(|_| KernelError::CleanupUncertain)?;
-    cleanup_laboratory()?;
+    cleanup_owned_laboratory()?;
+    prove_fixed_residue_absent()?;
     Ok(())
+}
+
+fn cleanup_failed_tracer(
+    tracer: &mut TrackedProcess,
+    primary: KernelError,
+) -> Result<(), KernelError> {
+    let mut exact = recover_process(tracer).is_ok();
+    match Path::new(CGROUP).try_exists() {
+        Ok(true) => {
+            let killed = fs::write(format!("{CGROUP}/cgroup.kill"), b"1\n").is_ok();
+            let empty = wait_for_empty_cgroup().is_ok();
+            let removed = fs::remove_dir(CGROUP).is_ok();
+            if !killed || !empty || !removed {
+                exact = false;
+            }
+        }
+        Ok(false) => {}
+        Err(_) => exact = false,
+    }
+    match Path::new(LABORATORY).try_exists() {
+        Ok(true) if cleanup_owned_laboratory().is_err() => exact = false,
+        Ok(_) => {}
+        Err(_) => exact = false,
+    }
+    if exact && prove_fixed_residue_absent().is_ok() {
+        Err(primary)
+    } else {
+        Err(KernelError::CleanupUncertain)
+    }
+}
+
+fn encode_custody_report(leader: ProcessWitness, delegate: ProcessWitness) -> [u8; 32] {
+    let mut bytes = [0_u8; 32];
+    bytes[..8].copy_from_slice(b"WP200PFD");
+    bytes[8..12].copy_from_slice(&leader.pid.to_le_bytes());
+    bytes[12..20].copy_from_slice(&leader.start_time.to_le_bytes());
+    bytes[20..24].copy_from_slice(&delegate.pid.to_le_bytes());
+    bytes[24..32].copy_from_slice(&delegate.start_time.to_le_bytes());
+    bytes
+}
+
+fn decode_custody_report(bytes: [u8; 32]) -> Result<(ProcessWitness, ProcessWitness), KernelError> {
+    if &bytes[..8] != b"WP200PFD" {
+        return Err(KernelError::ProcessMismatch);
+    }
+    let leader = ProcessWitness {
+        pid: i32::from_le_bytes(
+            bytes[8..12]
+                .try_into()
+                .map_err(|_| KernelError::ProcessMismatch)?,
+        ),
+        start_time: u64::from_le_bytes(
+            bytes[12..20]
+                .try_into()
+                .map_err(|_| KernelError::ProcessMismatch)?,
+        ),
+    };
+    let delegate = ProcessWitness {
+        pid: i32::from_le_bytes(
+            bytes[20..24]
+                .try_into()
+                .map_err(|_| KernelError::ProcessMismatch)?,
+        ),
+        start_time: u64::from_le_bytes(
+            bytes[24..32]
+                .try_into()
+                .map_err(|_| KernelError::ProcessMismatch)?,
+        ),
+    };
+    Ok((leader, delegate))
 }
 
 fn child_before_exec(gate_fd: i32) -> Result<(), KernelError> {
@@ -466,7 +934,7 @@ fn child_before_exec(gate_fd: i32) -> Result<(), KernelError> {
     Ok(())
 }
 
-fn run_front_controller() -> Result<(), KernelError> {
+fn run_front_controller(behavior: FrontBehavior) -> Result<(), KernelError> {
     install_and_self_check_protections()?;
     let delegate = match linux_abi::fork_process()? {
         ForkOutcome::Child => {
@@ -476,6 +944,13 @@ fn run_front_controller() -> Result<(), KernelError> {
         ForkOutcome::Parent(pid) => pid,
     };
     linux_abi::stop_self()?;
+    if behavior == FrontBehavior::UnexpectedForkAfterResume {
+        let unexpected = match linux_abi::fork_process()? {
+            ForkOutcome::Child => linux_abi::exit_immediately(0),
+            ForkOutcome::Parent(pid) => pid,
+        };
+        linux_abi::wait_child_success(unexpected)?;
+    }
     linux_abi::wait_child_success(delegate)?;
     Ok(())
 }
@@ -498,9 +973,38 @@ fn install_and_self_check_protections() -> Result<(), KernelError> {
     linux_abi::install_process_protections(cap_last).map_err(|_| KernelError::ProtectionMismatch)
 }
 
-fn create_intent() -> Result<(), KernelError> {
+fn verify_supervisor_boundary() -> Result<(), KernelError> {
+    const REQUIRED_BOUNDING_CAPABILITIES: &str = "0000000080200000";
+    let status =
+        fs::read_to_string("/proc/self/status").map_err(|_| KernelError::ProtectionMismatch)?;
+    let required = [
+        ("CapInh", "0000000000000000"),
+        ("CapPrm", REQUIRED_BOUNDING_CAPABILITIES),
+        ("CapEff", REQUIRED_BOUNDING_CAPABILITIES),
+        ("CapBnd", REQUIRED_BOUNDING_CAPABILITIES),
+        ("CapAmb", "0000000000000000"),
+        ("NoNewPrivs", "1"),
+    ];
+    for (key, expected) in required {
+        let actual = status
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}:")))
+            .map(str::trim)
+            .ok_or(KernelError::ProtectionMismatch)?;
+        if actual != expected {
+            return Err(KernelError::ProtectionMismatch);
+        }
+    }
+    Ok(())
+}
+
+fn create_intent(resources: &mut CaseResources) -> Result<(), KernelError> {
     fs::create_dir(LABORATORY).map_err(|_| KernelError::MachineMismatch)?;
-    write_synced_new_file(INTENT, b"openspell.synthetic-launch-intent.v1\n")
+    resources.laboratory_owned = true;
+    write_synced_new_file(INTENT, b"openspell.synthetic-launch-intent.v1\n")?;
+    File::open(LABORATORY_PARENT)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| KernelError::MachineMismatch)
 }
 
 fn create_terminal() -> Result<(), KernelError> {
@@ -521,15 +1025,29 @@ fn write_synced_new_file(path: &str, contents: &[u8]) -> Result<(), KernelError>
         .map_err(|_| KernelError::MachineMismatch)
 }
 
-fn cleanup_laboratory() -> Result<(), KernelError> {
+fn cleanup_owned_laboratory() -> Result<(), KernelError> {
+    let mut exact = true;
     for file in [TERMINAL, INTENT] {
         match fs::remove_file(file) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(KernelError::CleanupUncertain),
+            Err(_) => exact = false,
         }
     }
-    fs::remove_dir(LABORATORY).map_err(|_| KernelError::CleanupUncertain)
+    if fs::remove_dir(LABORATORY).is_err() {
+        exact = false;
+    }
+    if File::open(LABORATORY_PARENT)
+        .and_then(|directory| directory.sync_all())
+        .is_err()
+    {
+        exact = false;
+    }
+    if exact {
+        Ok(())
+    } else {
+        Err(KernelError::CleanupUncertain)
+    }
 }
 
 fn install_self_identity_map((uid, gid): (u32, u32)) -> Result<(), KernelError> {
@@ -557,7 +1075,7 @@ fn assert_private_network() -> Result<(), KernelError> {
     }
 }
 
-fn create_cgroup() -> Result<(), KernelError> {
+fn create_cgroup(resources: &mut CaseResources) -> Result<(), KernelError> {
     if fs::read_to_string("/proc/self/cgroup").map_err(|_| KernelError::CgroupMismatch)? != "0::/\n"
         || !Path::new("/sys/fs/cgroup/cgroup.controllers").is_file()
         || !Path::new("/sys/fs/cgroup/cgroup.kill").is_file()
@@ -565,6 +1083,7 @@ fn create_cgroup() -> Result<(), KernelError> {
         return Err(KernelError::CgroupMismatch);
     }
     fs::create_dir(CGROUP).map_err(|_| KernelError::CgroupMismatch)?;
+    resources.cgroup_owned = true;
     if !read_cgroup_pids()?.is_empty() {
         return Err(KernelError::CgroupMismatch);
     }
@@ -645,6 +1164,22 @@ fn resolve_exact(machine: &mut SyntheticProofMachine, effect: Effect) -> Result<
     }
 }
 
+fn resolve_or_inject(
+    machine: &mut SyntheticProofMachine,
+    effect: Effect,
+    configured: Option<FaultPoint>,
+    current: FaultPoint,
+) -> Result<bool, KernelError> {
+    if configured == Some(current) {
+        let progress = machine.resolve(effect, EffectReply::LostAfterAcceptance)?;
+        assert_recovery(progress, machine.result())?;
+        Ok(true)
+    } else {
+        resolve_exact(machine, effect)?;
+        Ok(false)
+    }
+}
+
 fn wait(pid: i32) -> Result<WaitEvent, KernelError> {
     linux_abi::wait_for_pid(pid, WAIT_BOUND).map_err(Into::into)
 }
@@ -674,30 +1209,100 @@ fn expect_ptrace_event(event: WaitEvent, expected: u32) -> Result<(), KernelErro
     }
 }
 
-fn wait_successful_exit(process: &TrackedProcess) -> Result<(), KernelError> {
+#[derive(Debug, Clone, Copy)]
+enum PostResumeExpectation {
+    NoStops,
+    OnePlainSignal(i32),
+}
+
+fn wait_successful_exit(
+    process: &mut TrackedProcess,
+    expectation: PostResumeExpectation,
+) -> Result<(), KernelError> {
+    let mut expected_stop_seen = false;
     loop {
         match wait(process.pid)?.kind {
-            WaitKind::Exited(0) => break,
-            WaitKind::Stopped { .. } => linux_abi::ptrace_continue(process.pid)?,
+            WaitKind::Exited(0) => {
+                process.reaped = true;
+                break;
+            }
+            WaitKind::Stopped { signal, event: 0 }
+                if matches!(expectation, PostResumeExpectation::OnePlainSignal(expected) if signal == expected)
+                    && !expected_stop_seen =>
+            {
+                expected_stop_seen = true;
+                linux_abi::ptrace_continue(process.pid)?;
+            }
+            WaitKind::Stopped { .. } => return Err(KernelError::UnexpectedPostResumeEvent),
             WaitKind::Exited(_) | WaitKind::Signaled(_) => {
                 return Err(KernelError::ProcessMismatch);
             }
         }
     }
+    if matches!(expectation, PostResumeExpectation::OnePlainSignal(_)) && !expected_stop_seen {
+        return Err(KernelError::UnexpectedPostResumeEvent);
+    }
     process.verify_terminal()
 }
 
-fn wait_killed_exit(process: &TrackedProcess) -> Result<(), KernelError> {
-    loop {
-        match wait(process.pid)?.kind {
-            WaitKind::Exited(_) | WaitKind::Signaled(_) => break,
-            WaitKind::Stopped { .. } => {
-                linux_abi::signal_pidfd(process.pidfd.as_raw_fd(), libc::SIGKILL)?;
+fn recover_process(process: &mut TrackedProcess) -> Result<(), KernelError> {
+    if !linux_abi::pidfd_is_terminal(process.pidfd.as_raw_fd(), Duration::ZERO)?
+        && linux_abi::signal_pidfd(process.pidfd.as_raw_fd(), libc::SIGKILL).is_err()
+        && !linux_abi::pidfd_is_terminal(process.pidfd.as_raw_fd(), Duration::ZERO)?
+    {
+        return Err(KernelError::CleanupUncertain);
+    }
+    let deadline = Instant::now() + TERMINAL_BOUND;
+    while !process.reaped && Instant::now() < deadline {
+        match linux_abi::wait_for_pid(process.pid, Duration::from_millis(5)) {
+            Ok(WaitEvent {
+                kind: WaitKind::Exited(_) | WaitKind::Signaled(_),
+                ..
+            }) => process.reaped = true,
+            Ok(WaitEvent {
+                kind: WaitKind::Stopped { .. },
+                ..
+            }) => {
+                let _ = linux_abi::signal_pidfd(process.pidfd.as_raw_fd(), libc::SIGKILL);
                 let _ = linux_abi::ptrace_continue(process.pid);
             }
+            Err(linux_abi::AbiError::DeadlineExceeded) => {}
+            Err(_) if linux_abi::pidfd_is_terminal(process.pidfd.as_raw_fd(), Duration::ZERO)? => {
+                break;
+            }
+            Err(_) => return Err(KernelError::CleanupUncertain),
         }
     }
     process.verify_terminal()
+}
+
+fn retain_unexpected_descendant(
+    resources: &mut CaseResources,
+    pid: i32,
+) -> Result<(), KernelError> {
+    if pid <= 0
+        || resources.leader()?.pid == pid
+        || resources.delegate()?.pid == pid
+        || resources
+            .unexpected_descendants
+            .iter()
+            .any(|process| process.pid == pid)
+    {
+        return Err(KernelError::UnexpectedPostResumeEvent);
+    }
+    let mut process = TrackedProcess::acquired(pid, linux_abi::open_pidfd(pid)?);
+    process.attest_live()?;
+    resources.unexpected_descendants.push(process);
+    Ok(())
+}
+
+fn prove_fixed_residue_absent() -> Result<(), KernelError> {
+    for path in [CGROUP, LABORATORY, INTENT, TERMINAL] {
+        if !matches!(Path::new(path).try_exists(), Ok(false)) {
+            return Err(KernelError::CleanupUncertain);
+        }
+    }
+    Ok(())
 }
 
 fn read_start_time(pid: i32) -> Result<u64, KernelError> {
@@ -720,17 +1325,53 @@ fn identity(path: impl AsRef<Path>) -> Result<FileIdentity, KernelError> {
     })
 }
 
-fn mapped_files(pid: i32) -> Result<BTreeSet<FileIdentity>, KernelError> {
+#[derive(Debug, Clone, Copy)]
+enum MappingStage {
+    ExecStop,
+    ReadyStop,
+}
+
+fn align_down(value: u64) -> u64 {
+    value & !(PAGE_SIZE - 1)
+}
+
+fn align_up(value: u64) -> Result<u64, KernelError> {
+    value
+        .checked_add(PAGE_SIZE - 1)
+        .map(align_down)
+        .ok_or(KernelError::MappingMismatch)
+}
+
+fn device_major(device: u64) -> u64 {
+    ((device >> 8) & 0xfff) | ((device >> 32) & 0xffff_f000)
+}
+
+fn device_minor(device: u64) -> u64 {
+    (device & 0xff) | ((device >> 12) & 0xffff_ff00)
+}
+
+fn parse_mapping_device(value: &str) -> Result<(u64, u64), KernelError> {
+    let (major, minor) = value.split_once(':').ok_or(KernelError::MappingMismatch)?;
+    Ok((
+        u64::from_str_radix(major, 16).map_err(|_| KernelError::MappingMismatch)?,
+        u64::from_str_radix(minor, 16).map_err(|_| KernelError::MappingMismatch)?,
+    ))
+}
+
+fn mapped_file_records(
+    pid: i32,
+    expected: &RuntimeInventory,
+) -> Result<Vec<FileMappingRecord>, KernelError> {
     let maps = fs::read_to_string(format!("/proc/{pid}/maps"))
         .map_err(|_| KernelError::ExecutableMismatch)?;
-    if maps.len() > 512 * 1024 {
+    if maps.len() > MAX_MAPPING_BYTES {
         return Err(KernelError::MappingMismatch);
     }
-    let mut files = BTreeSet::new();
+    let mut files = Vec::new();
     let mut line_count = 0_usize;
     for line in maps.lines() {
         line_count += 1;
-        if line_count > 256 || line.len() > 4096 {
+        if line_count > MAX_MAPPING_LINES || line.len() > 4096 {
             return Err(KernelError::MappingMismatch);
         }
         let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
@@ -738,32 +1379,202 @@ fn mapped_files(pid: i32) -> Result<BTreeSet<FileIdentity>, KernelError> {
             return Err(KernelError::ExecutableMismatch);
         }
         let permissions = fields[1];
-        if permissions.contains('w') && permissions.contains('x') {
-            return Err(KernelError::ExecutableMismatch);
-        }
-        if let Some(path) = fields.get(5).filter(|path| path.starts_with('/')) {
-            if line.ends_with(" (deleted)") {
-                return Err(KernelError::ExecutableMismatch);
-            }
-            files.insert(identity(path)?);
-        } else if permissions.contains('x')
-            && !matches!(fields.get(5), Some(&"[vdso]") | Some(&"[vsyscall]"))
+        let permission_bytes = permissions.as_bytes();
+        if permission_bytes.len() != 4
+            || !matches!(permission_bytes[0], b'r' | b'-')
+            || !matches!(permission_bytes[1], b'w' | b'-')
+            || !matches!(permission_bytes[2], b'x' | b'-')
+            || permission_bytes[3] != b'p'
         {
             return Err(KernelError::MappingMismatch);
         }
+        let readable = permission_bytes[0] == b'r';
+        let writable = permission_bytes[1] == b'w';
+        let executable = permission_bytes[2] == b'x';
+        if writable && executable {
+            return Err(KernelError::ExecutableMismatch);
+        }
+        let (first_address, last_address) = fields[0]
+            .split_once('-')
+            .ok_or(KernelError::MappingMismatch)?;
+        let first_address =
+            u64::from_str_radix(first_address, 16).map_err(|_| KernelError::MappingMismatch)?;
+        let last_address =
+            u64::from_str_radix(last_address, 16).map_err(|_| KernelError::MappingMismatch)?;
+        let length = last_address
+            .checked_sub(first_address)
+            .filter(|length| *length > 0 && *length % PAGE_SIZE == 0)
+            .ok_or(KernelError::MappingMismatch)?;
+        let offset =
+            u64::from_str_radix(fields[2], 16).map_err(|_| KernelError::MappingMismatch)?;
+        if offset % PAGE_SIZE != 0 {
+            return Err(KernelError::MappingMismatch);
+        }
+
+        if fields.get(5).is_some_and(|path| path.starts_with('/')) {
+            if fields.len() != 6 || line.ends_with(" (deleted)") {
+                return Err(KernelError::ExecutableMismatch);
+            }
+            let inode = fields[4]
+                .parse::<u64>()
+                .map_err(|_| KernelError::MappingMismatch)?;
+            let (major, minor) = parse_mapping_device(fields[3])?;
+            if inode == 0
+                || inode != expected.executable.inode
+                || major != device_major(expected.executable.device)
+                || minor != device_minor(expected.executable.device)
+            {
+                return Err(KernelError::MappingExtra);
+            }
+            let record = FileMappingRecord {
+                offset,
+                length,
+                readable,
+                writable,
+                executable,
+                private: true,
+                identity: expected.executable,
+            };
+            if !mapping_matches_allowed_load(&record, &expected.loads) {
+                return Err(KernelError::MappingExtra);
+            }
+            files.push(record);
+        } else if executable && !matches!(fields.get(5), Some(&"[vdso]") | Some(&"[vsyscall]")) {
+            return Err(KernelError::MappingMismatch);
+        }
     }
-    if files.is_empty() || files.len() > 16 {
-        Err(KernelError::ExecutableMismatch)
-    } else {
-        Ok(files)
+    if files.is_empty() {
+        return Err(KernelError::MappingMissing);
     }
+    for load in &expected.loads {
+        if !files.iter().any(|record| {
+            record.offset < load.after_last_file_page
+                && record.offset.saturating_add(record.length) > load.first_file_page
+        }) {
+            return Err(KernelError::MappingMissing);
+        }
+    }
+    Ok(files)
+}
+
+fn mapping_matches_allowed_load(record: &FileMappingRecord, loads: &[AllowedLoadSegment]) -> bool {
+    let Some(end) = record.offset.checked_add(record.length) else {
+        return false;
+    };
+    loads.iter().any(|load| {
+        record.offset >= load.first_file_page
+            && end <= load.after_last_file_page
+            && record.readable == load.readable
+            && (!record.writable || load.writable)
+            && record.executable == load.executable
+    })
+}
+
+fn expected_exec_records(runtime: &RuntimeInventory) -> Vec<FileMappingRecord> {
+    runtime
+        .loads
+        .iter()
+        .map(|load| FileMappingRecord {
+            offset: load.first_file_page,
+            length: load.after_last_file_page - load.first_file_page,
+            readable: load.readable,
+            writable: load.writable,
+            executable: load.executable,
+            private: true,
+            identity: runtime.executable,
+        })
+        .collect()
+}
+
+fn attest_exec_stop(
+    runtime: &RuntimeInventory,
+    process: &TrackedProcess,
+    stage: MappingStage,
+) -> Result<Vec<FileMappingRecord>, KernelError> {
+    process.verify_identity()?;
+    verify_runtime_identity(runtime, process.pid)?;
+    let records = mapped_file_records(process.pid, runtime)?;
+    let expected = match stage {
+        MappingStage::ExecStop => expected_exec_records(runtime),
+        MappingStage::ReadyStop => runtime.ready_records.clone(),
+    };
+    if records != expected {
+        return Err(match records.len().cmp(&expected.len()) {
+            std::cmp::Ordering::Less => KernelError::MappingMissing,
+            std::cmp::Ordering::Greater => KernelError::MappingExtra,
+            std::cmp::Ordering::Equal => KernelError::MappingMismatch,
+        });
+    }
+    Ok(records)
 }
 
 fn capture_runtime_inventory(pid: i32) -> Result<RuntimeInventory, KernelError> {
-    Ok(RuntimeInventory {
-        executable: identity(format!("/proc/{pid}/exe"))?,
+    let executable_link = format!("/proc/{pid}/exe");
+    let mut executable_file =
+        File::open(&executable_link).map_err(|_| KernelError::ExecutableMismatch)?;
+    let metadata = executable_file
+        .metadata()
+        .map_err(|_| KernelError::ExecutableMismatch)?;
+    if metadata.len() == 0 || metadata.len() > MAX_EXECUTABLE_BYTES {
+        return Err(KernelError::ExecutableMismatch);
+    }
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(metadata.len()).map_err(|_| KernelError::ExecutableMismatch)?,
+    );
+    executable_file
+        .read_to_end(&mut bytes)
+        .map_err(|_| KernelError::ExecutableMismatch)?;
+    if u64::try_from(bytes.len()).map_err(|_| KernelError::ExecutableMismatch)? != metadata.len() {
+        return Err(KernelError::ExecutableMismatch);
+    }
+    let elf = Elf::parse(&bytes).map_err(|_| KernelError::ExecutableMismatch)?;
+    if elf.interpreter.is_some() || !elf.libraries.is_empty() {
+        return Err(KernelError::ExecutableMismatch);
+    }
+    let mut loads = Vec::new();
+    for header in elf
+        .program_headers
+        .iter()
+        .filter(|header| header.p_type == PT_LOAD && header.p_filesz > 0)
+    {
+        if header.p_memsz < header.p_filesz
+            || header.p_offset % PAGE_SIZE != header.p_vaddr % PAGE_SIZE
+        {
+            return Err(KernelError::ExecutableMismatch);
+        }
+        let first_file_page = align_down(header.p_offset);
+        let after_last_file_page = align_up(
+            header
+                .p_offset
+                .checked_add(header.p_filesz)
+                .ok_or(KernelError::ExecutableMismatch)?,
+        )?;
+        loads.push(AllowedLoadSegment {
+            first_file_page,
+            after_last_file_page,
+            readable: header.p_flags & PF_R != 0,
+            writable: header.p_flags & PF_W != 0,
+            executable: header.p_flags & PF_X != 0,
+        });
+    }
+    if loads.is_empty()
+        || loads
+            .windows(2)
+            .any(|pair| pair[0].first_file_page >= pair[1].first_file_page)
+    {
+        return Err(KernelError::ExecutableMismatch);
+    }
+    let mut runtime = RuntimeInventory {
+        executable: FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        },
         root: identity(format!("/proc/{pid}/root"))?,
-    })
+        loads,
+        ready_records: Vec::new(),
+    };
+    runtime.ready_records = mapped_file_records(pid, &runtime)?;
+    Ok(runtime)
 }
 
 fn verify_runtime_identity(expected: &RuntimeInventory, pid: i32) -> Result<(), KernelError> {

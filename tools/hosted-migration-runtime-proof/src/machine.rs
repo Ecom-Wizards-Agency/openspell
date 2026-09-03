@@ -239,7 +239,7 @@ impl EffectKind {
                 ..ResourceCounts::default()
             },
             Self::EstablishPrivateNamespaces => ResourceCounts {
-                namespaces: 7,
+                namespaces: 6,
                 ..ResourceCounts::default()
             },
             Self::EstablishExclusiveChildCgroup => ResourceCounts {
@@ -247,6 +247,7 @@ impl EffectKind {
                 ..ResourceCounts::default()
             },
             Self::SpawnStoppedLeaderAndOpenPidfd => ResourceCounts {
+                namespaces: 1,
                 children: 1,
                 pidfds: 1,
                 processes: 1,

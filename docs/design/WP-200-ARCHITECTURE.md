@@ -128,9 +128,13 @@ The production policy contains exactly these WP-197 facts:
 - `supabase_2.116.0_linux_amd64.tar.gz`, 56,699,663 bytes, SHA-256
   `5b3031cb297d51b25be4c284e4c852254460ec722ec221d3b81b07d55acfd158`;
 - `supabase`, 96,900,296 bytes, SHA-256
-  `3cfb10e8cb7b8cb4d6807117865a2a39891178ec83f4d0c86ac49f633d2c43f4`; and
+  `3cfb10e8cb7b8cb4d6807117865a2a39891178ec83f4d0c86ac49f633d2c43f4`, archive owner
+  `1001:1001`, mode `0755` and header SHA-256
+  `bcfc0395fada1a7a6118aa194a046a83f8fd917833ff030a8cb705c98cbf8c7d`; and
 - `supabase-go`, 43,892,898 bytes, SHA-256
-  `1530ee645cea869f6a440782b1732ede4b57d7646fea8494b8db1c59370e5eb1`.
+  `1530ee645cea869f6a440782b1732ede4b57d7646fea8494b8db1c59370e5eb1`, archive owner
+  `1001:1001`, mode `0755` and header SHA-256
+  `137ad9282585686605175d9e88927c551a90e7a07ca8bc48a93940ce48facaf7`.
 
 There is no runtime policy injection. Tests use a sealed `SyntheticEvidence` policy with small
 fixtures through the same parsing and publication engine. The result type preserves its evidence
@@ -142,7 +146,10 @@ class and cannot become `RetainedRelease<OfficialEvidence>`.
 The private constructor records a root-to-leaf ancestor walk from an already-open filesystem-root
 descriptor and requires every component to be owned by the expected root identity, not writable by
 group or other, not a symlink, not a mount crossing and stable by device/inode/mode/uid/gid before
-and after each read. Both assets require one link, exact size and stable metadata.
+and after each read. Both assets require one link, exact size and stable metadata. The intake root
+contains exactly those two assets. The transaction records the exact WP-197
+`openspell.supabase-official-source.v1` canonical leaf and its root-to-source ancestor-walk digest;
+synthetic evidence uses a distinct schema and cannot satisfy an official field.
 
 WP-200 does not download the assets. A future attended helper may supply official handles only after
 its separately authorized fixed transport has completed. Agent-produced, user-owned, package-cache
@@ -155,14 +162,18 @@ The transaction is one deep operation:
 1. stream and hash the checksums asset under a fixed bound;
 2. require exactly one canonical line naming the pinned archive and digest;
 3. stream and hash one gzip member, refusing concatenated or trailing compressed data;
-4. parse bounded 512-byte tar headers internally;
-5. accept exactly the two one-level regular files in sorted inventory order;
+4. parse bounded 512-byte tar headers internally, accepting only the pinned official GNU-ustar
+   representation or the fixed synthetic POSIX-ustar representation;
+5. accept exactly the two one-level regular files in sorted inventory order with fixed header,
+   owner, mode, size and content digests;
 6. refuse links, sparse/PAX/GNU extensions, devices, FIFOs, sockets, duplicate or nested names,
    absolute paths, traversal, extra entries, oversized metadata and unconsumed data;
-7. write fixed names under a consumed fresh destination using exclusive fd-relative creation;
+7. durably consume the fresh destination with an exclusive fixed reservation before any source
+   read, then write fixed names using exclusive fd-relative creation;
 8. verify count, byte and digest conservation, sync each file and directory, then publish one sealed
    inventory last; and
-9. reopen and revalidate every retained byte before returning.
+9. atomically rename the synced reservation into the sealed inventory, reopen the exact same
+   objects and revalidate every retained identity and byte before returning.
 
 Failure consumes the destination and never returns a reusable object. Production does not delete,
 repair, overwrite or retry an ambiguous partial tree. Disposable tests remove only their own outer
@@ -174,15 +185,23 @@ The ELF verifier parses bytes; it never uses `ldd`, a loader or an executable:
 
 - exact ELF64/x86-64 headers, program headers, interpreter and dynamic sections;
 - the statically linked delegate;
-- complete `DT_NEEDED` names and descriptor-relative resolution within one supplied root;
-- exact file inventory, modes, owners, link counts, mounts, sizes and digests; and
-- rejection of host-backed paths, writable objects, unknown executable mappings, extra files,
-  unsupported features and dependency substitution.
+- the exact official `PT_INTERP` and ordered `DT_NEEDED` names, plus descriptor-relative resolution
+  of every currently specified loader/dependency path within one supplied root;
+- the exact two co-located root-image binary paths, whose bytes must match the retained official
+  source pair before any component result exists;
+- modes, owners, link counts, mounts, sizes, stable descriptor identities and computed digests for
+  those known official objects; and
+- rejection of host-backed paths, writable objects and unsupported features; exact unknown-map,
+  extra-file and dependency-substitution rejection in the complete synthetic proof.
 
-WP-197 does not yet contain the official interpreter/dependency digests or the measured per-phase
-front-controller/delegate graph. WP-200 therefore cannot emit a complete official
+The synthetic root has a fixed complete inventory and rejects every extra or substituted object.
+The raw 2.116.0 `DT_NEEDED` order is `libc.so.6`, `ld-linux-x86-64.so.2`,
+`libpthread.so.0`, `libdl.so.2`, `libm.so.6`; the separately bound loader entry is resolved once and
+is not duplicated in WP-197's four-entry canonical dependency array.
+WP-197 does not yet contain the official interpreter/dependency digests, the complete runtime-image
+inventory or the measured per-phase front-controller/delegate graph. WP-200 therefore cannot emit a complete official
 `nativeRuntimeIdentitySha256` or `releaseProvenanceSha256`. It returns only typed official runtime
-components. Synthetic fixtures can complete a synthetic identity and exercise every rule. Filling
+components marked incomplete even after the known paths resolve. Synthetic fixtures can complete a synthetic identity and exercise every rule. Filling
 the official missing values requires later separately authorized acquisition and disposable-target
 proof; they are never inferred from the host.
 
@@ -252,17 +271,25 @@ The proof establishes:
 - one private cgroup-v2 subtree containing the child and every descendant but not the supervisor;
 - atomic leader pidfd custody and pidfd custody for every traced descendant;
 - `PTRACE_O_EXITKILL`, fork/vfork/clone/exec stops and exact parent/child/start identity;
-- retained executable identity, namespace-root identity and every bounded file-backed map before
-  application resume;
+- a statically linked PIE proof executable, with the exact permitted file-map records derived from
+  its `PT_LOAD` segments and compared at each exec stop before that process can continue;
+- retained executable identity, namespace-root identity and the same exact map inventory again at
+  each ready stop before application resume;
 - empty effective, permitted, inheritable, bounding and ambient capability sets;
 - `PR_SET_NO_NEW_PRIVS`, core limit zero and dumpability reset to zero after each exec;
 - rejection of a later nonzero dumpability change by the installed seccomp policy; and
-- pidfd terminal observation plus an empty cgroup after success, refusal, timeout and tracer death.
+- a real bounded kernel wait deadline, explicit unexpected-post-resume-event refusal and injected
+  lost-acceptance cuts after every resource-creating adapter boundary; and
+- pidfd terminal observation, direct-child reaping and an empty cgroup after success, refusal,
+  timeout, interruption, unexpected events and adapter faults; tracer death additionally proves
+  terminality through independently retained descendant pidfds.
 
 An unexpected process, exec, mapping, identity or protection result consumes no resume permit,
 kills the complete child cgroup and remains recovery-only unless terminal/empty observations are
 conclusive. PID text is evidence only; it is never an authority handle and is not reopened after
-its pidfd reports exit.
+its pidfd reports exit. The tracer-death parent receives a bounded fixed-format witness, opens and
+holds independent leader and delegate pidfds, verifies their start identities and exact cgroup
+membership before killing the tracer, then proves all three pidfds terminal.
 
 ### Disposable proof container
 
@@ -274,7 +301,9 @@ privilege. A separate `test:kernel` wrapper:
 3. starts the same pinned Rust image with a private cgroup namespace, `--network none`, read-only
    root, fresh tmpfs state and no repository, user directory, credential, browser, Docker socket or
    service mount;
-4. gives that container only the privilege needed for the disposable kernel proof; and
+4. enters the disposable container through pinned `setpriv`, retaining only `CAP_SYS_ADMIN` and
+   `CAP_SETFCAP` for namespace and identity-map construction before the child proves an empty
+   capability set; and
 5. requires the exact executable to report all cases and counts before Docker removes the container.
 
 The reviewed image is:
@@ -284,9 +313,11 @@ docker.io/library/rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe
 ```
 
 The wrapper refuses when Docker, cgroup v2, required namespace/ptrace behavior or exact cleanup is
-unavailable. It never silently skips. CI runs this proof in the disposable GitHub runner VM. A local
-operator can run it explicitly; ordinary local repository tests do not silently start a privileged
-container.
+unavailable. It never silently skips. Pull-request code never enters a privileged container. CI
+runs the proof only after the ordinary check job on a trusted `main` push or `main`
+`workflow_dispatch`, in a dedicated job with no permissions, no persisted checkout credential and
+the proof as its final step. A local operator can run it explicitly; ordinary local repository tests
+do not silently start a privileged container.
 
 ## WP-199 composition
 
@@ -384,7 +415,8 @@ Focused acceptance proves:
 - exact zero resource residue and no surviving synthetic process/container after every real case;
 - production source contains no public item, binary, process/namespace/cgroup/socket/network/
   database/Supabase/credential/service/deployment capability or arbitrary input surface;
-- package checks, repository CI, public hygiene and exact-head/exact-main CI; and
+- package checks, repository CI and public hygiene on the exact PR head, followed by the isolated
+  privileged kernel proof on the merged exact-main revision; and
 - one independent High correctness review plus two Extra-High authority/kernel/crash reviews.
 
 ## Owned files
@@ -437,8 +469,9 @@ WP-200 does not:
 - We accept a substantial Linux-shaped private effect vocabulary to derive exhaustive fault cuts
   from the same order used by the real proof.
 - We accept an explicit privileged disposable test container because ordinary cgroup delegation is
-  insufficient; its network and mounts remain closed and no production artifact contains an
-  adapter.
+  insufficient; its network and mounts remain closed, it receives no repository or credential
+  mount, it runs only in a credential-free trusted-main CI job, and no production artifact contains
+  an adapter.
 - We accept Linux/x86-64 specificity because the pinned official release and post-exec proof are
   Linux/x86-64 specific.
 - We accept incomplete official runtime identity until separately authorized evidence supplies the

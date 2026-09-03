@@ -162,6 +162,9 @@ describe("private hosted-migration runtime proof boundary", () => {
     }
 
     const cargoProduction = read("Cargo.toml").split("[dev-dependencies]")[0] ?? "";
+    expect(cargoProduction).toContain(
+      'rustix = { version = "=1.1.4", default-features = false, features = ["fs", "std"] }',
+    );
     for (const dependency of ["libc", "nix", "reqwest", "tokio", "sqlx", "postgres"])
       expect(cargoProduction).not.toMatch(new RegExp(`^${dependency}\\s*=`, "mu"));
   });
@@ -198,13 +201,78 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(kernel).toContain('"--read-only"');
     expect(kernel).toContain('"--cgroupns"');
     expect(kernel).toContain('"private"');
+    expect(kernel).toContain(
+      '"CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C target-feature=+crt-static"',
+    );
+    expect(kernel).toContain("verifyStaticExecutable");
+    expect(kernel).toContain('"/usr/bin/setpriv"');
+    expect(kernel).toContain('"--bounding-set=-all,+sys_admin,+setfcap"');
+    expect(kernel).toContain('"--no-new-privs"');
+    for (const mode of [
+      "unexpected-event",
+      "fault-intent",
+      "fault-namespace",
+      "fault-cgroup",
+      "fault-spawn",
+      "fault-custody",
+      "fault-exec",
+      "fault-protection",
+      "tracer-death",
+    ])
+      expect(kernel).toContain(`"${mode}"`);
     const proofContainer = kernel
       .split("async function runCase", 2)[1]
-      ?.split("let executable", 1)[0];
+      ?.split("function removeTargetDirectory", 1)[0];
     expect(proofContainer).toBeDefined();
     expect(proofContainer).not.toMatch(
       /(?:packageDirectory|CARGO_HOME|\/workspace|\/cargo|\/target|credential|browser|docker\.sock|systemd|service)/iu,
     );
     expect(proofContainer).not.toContain("result.stderr.trim()");
+    expect(kernel).not.toContain("error.stack");
+    expect(kernel).not.toContain("${result.stderr}");
+    expect(kernel).not.toContain("${result.status}");
+    expect(kernel).not.toContain("${result.signal}");
+  });
+
+  it("keeps the privileged proof off pull requests and out of credentialed CI", () => {
+    const workflow = readFileSync(join(workspaceDirectory, ".github/workflows/ci.yml"), "utf8");
+    const [ordinaryJobs, kernelAndLater] = workflow.split("\n  kernel-proof:", 2);
+    expect(ordinaryJobs).toBeDefined();
+    expect(kernelAndLater).toBeDefined();
+    expect(ordinaryJobs).not.toContain("test:kernel");
+    const kernelJob = kernelAndLater?.split("\n  e2e:", 1)[0] ?? "";
+    expect(kernelJob).toContain("github.ref == 'refs/heads/main'");
+    expect(kernelJob).toContain("needs: check");
+    expect(kernelJob).toContain("permissions: {}");
+    expect(kernelJob).not.toContain("actions/checkout");
+    expect(kernelJob).toContain("Fetch exact trusted revision without a credential");
+    expect(kernelJob).toContain('git -C workspace fetch --depth=1 origin "$GITHUB_SHA"');
+    expect(kernelJob).toContain(
+      'test "$(git -C workspace rev-parse HEAD)" = "$GITHUB_SHA"',
+    );
+    expect(kernelJob).toContain(
+      "pnpm --filter @wizard-ads/hosted-migration-runtime-proof run test:kernel",
+    );
+  });
+
+  it("resolves known official runtime objects only beneath a supplied descriptor", () => {
+    const elf = read("src/elf.rs");
+    expect(elf).toMatch(
+      /fn inspect_official_components\(\s*release: &RetainedRelease<OfficialEvidence>,\s*runtime_root: &File,/u,
+    );
+    for (const fixedPath of [
+      "usr/local/libexec/supabase",
+      "usr/local/libexec/supabase-go",
+      "lib64/ld-linux-x86-64.so.2",
+      "usr/lib/x86_64-linux-gnu/libc.so.6",
+      "usr/lib/x86_64-linux-gnu/libdl.so.2",
+      "usr/lib/x86_64-linux-gnu/libm.so.6",
+      "usr/lib/x86_64-linux-gnu/libpthread.so.0",
+    ]) {
+      expect(elf).toContain(fixedPath);
+    }
+    for (const resolution of ["BENEATH", "NO_SYMLINKS", "NO_MAGICLINKS", "NO_XDEV"])
+      expect(elf).toContain(`ResolveFlags::${resolution}`);
+    expect(elf).toContain("IncompleteOfficialRuntime");
   });
 });

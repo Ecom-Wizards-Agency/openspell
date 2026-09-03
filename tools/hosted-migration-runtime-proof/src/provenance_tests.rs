@@ -91,6 +91,37 @@ fn official_root_anchor_requires_the_actual_filesystem_root() {
 }
 
 #[test]
+fn intake_inventory_refuses_extra_files_directories_and_post_admission_drift() {
+    let extra_file = Lab::new();
+    fs::write(extra_file.intake.join("extra"), b"unexpected").expect("extra file");
+    assert_eq!(
+        extra_file.pair().err(),
+        Some(ProvenanceRefusal::SourceMismatch)
+    );
+
+    let extra_directory = Lab::new();
+    fs::create_dir(extra_directory.intake.join("extra")).expect("extra directory");
+    assert_eq!(
+        extra_directory.pair().err(),
+        Some(ProvenanceRefusal::SourceMismatch)
+    );
+
+    let drift = Lab::new();
+    let pair = drift.pair().expect("admitted pair");
+    fs::write(drift.intake.join("late-extra"), b"unexpected").expect("late extra file");
+    assert_eq!(
+        seal_release(pair, drift.destination()).err(),
+        Some(ProvenanceRefusal::SourceMismatch)
+    );
+    assert!(
+        FreshRetainedRoot::from_open_descriptor(
+            File::open(&drift.destination).expect("consumed destination")
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn exact_two_entry_release_is_retained_and_reopened_with_conservation() {
     let lab = Lab::new();
     let retained = seal_release(lab.pair().expect("anchored pair"), lab.destination())
@@ -135,6 +166,94 @@ fn exact_two_entry_release_is_retained_and_reopened_with_conservation() {
         .expect("inventory read");
     assert!(inventory_bytes.contains("\"evidence_class\": \"synthetic\""));
     assert!(!inventory_bytes.contains(lab.root.to_str().expect("utf8 path")));
+
+    let source_evidence =
+        std::str::from_utf8(retained.source_evidence_bytes()).expect("canonical source evidence");
+    let ordered_fields = [
+        "schemaVersion",
+        "repository",
+        "releaseTag",
+        "checksumsAssetName",
+        "checksumsAssetBytes",
+        "checksumsAssetSha256",
+        "archiveAssetName",
+        "archiveBytes",
+        "archiveSha256",
+        "archiveEntries",
+        "frontControllerEntry",
+        "frontControllerBytes",
+        "frontControllerSha256",
+        "delegateEntry",
+        "delegateBytes",
+        "delegateSha256",
+        "sourceRootDevice",
+        "sourceRootInode",
+        "sourceRootMode",
+        "sourceRootUid",
+        "sourceRootGid",
+        "ancestorWalkSha256",
+        "acquiredAt",
+    ];
+    let mut previous = 0;
+    for field in ordered_fields {
+        let current = source_evidence
+            .find(&format!("\"{field}\""))
+            .expect("required source-evidence field");
+        assert!(current >= previous, "field order drifted at {field}");
+        previous = current;
+    }
+    assert!(source_evidence.contains("openspell.synthetic-source.v1"));
+    assert_eq!(
+        retained.source_evidence_digest(),
+        crate::canonical::sha256(retained.source_evidence_bytes())
+    );
+}
+
+#[test]
+fn retained_release_revalidation_refuses_mode_link_and_inventory_drift() {
+    let mode_lab = Lab::new();
+    let mode_release = seal_release(mode_lab.pair().expect("mode pair"), mode_lab.destination())
+        .expect("mode release");
+    fs::set_permissions(
+        mode_lab.destination.join("front-controller"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("mode drift");
+    assert!(mode_release.revalidate_for_runtime().is_err());
+
+    let link_lab = Lab::new();
+    let link_release = seal_release(link_lab.pair().expect("link pair"), link_lab.destination())
+        .expect("link release");
+    fs::hard_link(
+        link_lab.destination.join("front-controller"),
+        link_lab.destination.join("extra-link"),
+    )
+    .expect("link drift");
+    assert!(link_release.revalidate_for_runtime().is_err());
+
+    let root_lab = Lab::new();
+    let root_release = seal_release(root_lab.pair().expect("root pair"), root_lab.destination())
+        .expect("root release");
+    fs::set_permissions(&root_lab.destination, fs::Permissions::from_mode(0o750))
+        .expect("root drift");
+    assert!(root_release.revalidate_for_runtime().is_err());
+}
+
+#[test]
+fn an_early_source_failure_still_consumes_the_destination() {
+    let lab = Lab::new();
+    let pair = lab.pair().expect("admitted pair");
+    fs::write(lab.intake.join("checksums.txt"), b"changed").expect("source drift");
+    assert_eq!(
+        seal_release(pair, lab.destination()).err(),
+        Some(ProvenanceRefusal::SourceMismatch)
+    );
+    assert!(
+        FreshRetainedRoot::from_open_descriptor(
+            File::open(&lab.destination).expect("consumed destination")
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -227,6 +346,16 @@ fn tar_path_type_size_digest_and_trailer_adversaries_fail_closed() {
         Err(ArchiveRefusal::TarHeader)
     );
 
+    let mut wrong_format = tar.clone();
+    wrong_format[257..263].copy_from_slice(b"ustar ");
+    wrong_format[263] = b' ';
+    wrong_format[264] = 0;
+    refresh_tar_checksum(&mut wrong_format[..512]);
+    assert_eq!(
+        parse_exact_tar_for_test(&wrong_format, &policy),
+        Err(ArchiveRefusal::TarHeader)
+    );
+
     let mut body = tar.clone();
     body[512] ^= 1;
     assert_eq!(
@@ -308,12 +437,15 @@ fn descriptor_replacement_link_mode_and_ancestor_substitution_are_refused() {
 #[test]
 fn every_publication_cut_consumes_the_nonempty_destination_without_a_result() {
     for point in [
+        TestFaultPoint::DestinationConsumed,
         TestFaultPoint::EntrySynced(0),
         TestFaultPoint::EntrySynced(1),
         TestFaultPoint::EntriesDirectorySynced,
         TestFaultPoint::BeforeInventory,
+        TestFaultPoint::InventorySynced,
         TestFaultPoint::InventoryDirectorySynced,
         TestFaultPoint::Reopened,
+        TestFaultPoint::FinalDirectorySynced,
     ] {
         let lab = Lab::new();
         set_test_fault(Some(point));
@@ -348,6 +480,20 @@ fn elf_parser_rejects_format_architecture_linkage_mapping_and_dependency_substit
     );
     let static_binary = synthetic_elf(Linkage::StaticExecutable, None, &[]);
     assert!(parse_component_for_test(&static_binary, Linkage::StaticExecutable, None, &[]).is_ok());
+    let exact_absolute_interpreter = synthetic_elf(
+        Linkage::DynamicExecutable,
+        Some("/lib64/ld-linux-x86-64.so.2"),
+        &[],
+    );
+    assert!(
+        parse_component_for_test(
+            &exact_absolute_interpreter,
+            Linkage::DynamicExecutable,
+            Some("/lib64/ld-linux-x86-64.so.2"),
+            &[],
+        )
+        .is_ok()
+    );
 
     let mut bad_magic = dynamic.clone();
     bad_magic[0] = 0;
@@ -395,7 +541,7 @@ fn elf_parser_rejects_format_architecture_linkage_mapping_and_dependency_substit
             Some("runtime-loader"),
             &["libsynthetic.so"],
         ),
-        Err(ElfRefusal::Dependency)
+        Err(ElfRefusal::Interpreter)
     );
     let substituted = synthetic_elf(
         Linkage::DynamicExecutable,

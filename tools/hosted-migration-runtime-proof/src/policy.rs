@@ -9,6 +9,7 @@ mod sealed {
 pub(crate) trait EvidenceClass: sealed::Sealed + Sized + 'static {
     fn policy() -> ReleasePolicy;
     fn label() -> &'static str;
+    fn source_schema() -> &'static str;
 }
 
 #[derive(Debug)]
@@ -37,12 +38,24 @@ impl EvidenceClass for OfficialEvidence {
                     96_900_296,
                     "3cfb10e8cb7b8cb4d6807117865a2a39891178ec83f4d0c86ac49f633d2c43f4",
                     0o755,
+                    ArchiveHeaderPolicy::new(
+                        1_001,
+                        1_001,
+                        TarFormat::Gnu,
+                        Some("bcfc0395fada1a7a6118aa194a046a83f8fd917833ff030a8cb705c98cbf8c7d"),
+                    ),
                 ),
                 EntryPolicy::new(
                     "supabase-go",
                     43_892_898,
                     "1530ee645cea869f6a440782b1732ede4b57d7646fea8494b8db1c59370e5eb1",
                     0o755,
+                    ArchiveHeaderPolicy::new(
+                        1_001,
+                        1_001,
+                        TarFormat::Gnu,
+                        Some("137ad9282585686605175d9e88927c551a90e7a07ca8bc48a93940ce48facaf7"),
+                    ),
                 ),
             ],
             manifest_line_limit: 64,
@@ -53,6 +66,10 @@ impl EvidenceClass for OfficialEvidence {
 
     fn label() -> &'static str {
         "official"
+    }
+
+    fn source_schema() -> &'static str {
+        "openspell.supabase-official-source.v1"
     }
 }
 
@@ -88,12 +105,24 @@ impl EvidenceClass for SyntheticEvidence {
                     size: SYNTHETIC_FRONT.len() as u64,
                     digest: crate::canonical::sha256(SYNTHETIC_FRONT),
                     mode: 0o755,
+                    archive_header: ArchiveHeaderPolicy {
+                        uid: 0,
+                        gid: 0,
+                        format: TarFormat::Posix,
+                        digest: None,
+                    },
                 },
                 EntryPolicy {
                     name: "static-delegate",
                     size: SYNTHETIC_DELEGATE.len() as u64,
                     digest: crate::canonical::sha256(SYNTHETIC_DELEGATE),
                     mode: 0o755,
+                    archive_header: ArchiveHeaderPolicy {
+                        uid: 0,
+                        gid: 0,
+                        format: TarFormat::Posix,
+                        digest: None,
+                    },
                 },
             ],
             manifest_line_limit: 1,
@@ -104,6 +133,10 @@ impl EvidenceClass for SyntheticEvidence {
 
     fn label() -> &'static str {
         "synthetic"
+    }
+
+    fn source_schema() -> &'static str {
+        "openspell.synthetic-source.v1"
     }
 }
 
@@ -130,15 +163,50 @@ pub(crate) struct EntryPolicy {
     pub(crate) size: u64,
     pub(crate) digest: Digest32,
     pub(crate) mode: u32,
+    pub(crate) archive_header: ArchiveHeaderPolicy,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ArchiveHeaderPolicy {
+    pub(crate) uid: u64,
+    pub(crate) gid: u64,
+    pub(crate) format: TarFormat,
+    pub(crate) digest: Option<Digest32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TarFormat {
+    Posix,
+    Gnu,
 }
 
 impl EntryPolicy {
-    fn new(name: &'static str, size: u64, digest: &'static str, mode: u32) -> Self {
+    fn new(
+        name: &'static str,
+        size: u64,
+        digest: &'static str,
+        mode: u32,
+        archive_header: ArchiveHeaderPolicy,
+    ) -> Self {
         Self {
             name,
             size,
             digest: Digest32::parse_hex(digest).expect("compiled digest is valid"),
             mode,
+            archive_header,
+        }
+    }
+}
+
+impl ArchiveHeaderPolicy {
+    fn new(uid: u64, gid: u64, format: TarFormat, digest: Option<&'static str>) -> Self {
+        Self {
+            uid,
+            gid,
+            format,
+            digest: digest.map(|digest| {
+                Digest32::parse_hex(digest).expect("compiled header digest is valid")
+            }),
         }
     }
 }
@@ -257,6 +325,17 @@ mod tests {
             "3cfb10e8cb7b8cb4d6807117865a2a39891178ec83f4d0c86ac49f633d2c43f4"
         );
         assert_eq!(policy.entries[0].mode, 0o755);
+        assert_eq!(policy.entries[0].archive_header.uid, 1_001);
+        assert_eq!(policy.entries[0].archive_header.gid, 1_001);
+        assert_eq!(policy.entries[0].archive_header.format, TarFormat::Gnu);
+        assert_eq!(
+            policy.entries[0]
+                .archive_header
+                .digest
+                .expect("official header digest")
+                .to_hex(),
+            "bcfc0395fada1a7a6118aa194a046a83f8fd917833ff030a8cb705c98cbf8c7d"
+        );
         assert_eq!(policy.entries[1].name, "supabase-go");
         assert_eq!(policy.entries[1].size, 43_892_898);
         assert_eq!(
@@ -264,6 +343,17 @@ mod tests {
             "1530ee645cea869f6a440782b1732ede4b57d7646fea8494b8db1c59370e5eb1"
         );
         assert_eq!(policy.entries[1].mode, 0o755);
+        assert_eq!(policy.entries[1].archive_header.uid, 1_001);
+        assert_eq!(policy.entries[1].archive_header.gid, 1_001);
+        assert_eq!(policy.entries[1].archive_header.format, TarFormat::Gnu);
+        assert_eq!(
+            policy.entries[1]
+                .archive_header
+                .digest
+                .expect("official header digest")
+                .to_hex(),
+            "137ad9282585686605175d9e88927c551a90e7a07ca8bc48a93940ce48facaf7"
+        );
         assert_eq!(policy.manifest_line_limit, 64);
         assert_eq!(policy.uncompressed_limit, 140_800_000);
         assert_eq!(policy.owner, OwnerPolicy::Root);

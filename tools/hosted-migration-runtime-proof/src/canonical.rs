@@ -1,5 +1,6 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Digest32([u8; 32]);
@@ -50,6 +51,20 @@ pub(crate) fn canonical_json<T: Serialize>(value: &T) -> Result<Vec<u8>, Canonic
     Ok(bytes)
 }
 
+pub(crate) fn now_utc_milliseconds() -> Result<String, CanonicalRefusal> {
+    let now = OffsetDateTime::now_utc();
+    let month = u8::from(now.month());
+    Ok(format!(
+        "{:04}-{month:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        now.year(),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second(),
+        now.millisecond(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use serde::Serialize;
@@ -83,5 +98,16 @@ mod tests {
             Digest32::parse_hex(&"AA".repeat(32)),
             Err(CanonicalRefusal::InvalidDigest)
         );
+    }
+
+    #[test]
+    fn acquired_timestamp_is_fixed_utc_millisecond_form() {
+        let timestamp = now_utc_milliseconds().expect("UTC timestamp");
+        assert_eq!(timestamp.len(), 24);
+        assert_eq!(timestamp.as_bytes().get(4), Some(&b'-'));
+        assert_eq!(timestamp.as_bytes().get(7), Some(&b'-'));
+        assert_eq!(timestamp.as_bytes().get(10), Some(&b'T'));
+        assert_eq!(timestamp.as_bytes().get(19), Some(&b'.'));
+        assert!(timestamp.ends_with('Z'));
     }
 }

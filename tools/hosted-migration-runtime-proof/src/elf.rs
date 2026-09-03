@@ -3,8 +3,9 @@ use std::io::{Read as _, Seek as _, SeekFrom};
 use std::marker::PhantomData;
 
 use goblin::elf::{Elf, header, program_header};
-#[cfg(test)]
-use rustix::fs::{AtFlags, Mode, OFlags, ResolveFlags, StatxFlags, openat2, statx};
+use rustix::fs::{
+    AtFlags, Mode, OFlags, ResolveFlags, StatVfsMountFlags, StatxFlags, fstatvfs, openat2, statx,
+};
 
 use crate::canonical::{Digest32, sha256};
 use crate::policy::{EvidenceMarker, OfficialEvidence};
@@ -12,6 +13,58 @@ use crate::provenance::RetainedRelease;
 
 const MAX_PROGRAM_HEADERS: usize = 128;
 const MAX_INTERPRETER_BYTES: usize = 256;
+const OFFICIAL_INTERPRETER: &str = "/lib64/ld-linux-x86-64.so.2";
+const OFFICIAL_NEEDED: &[&str] = &[
+    "libc.so.6",
+    "ld-linux-x86-64.so.2",
+    "libpthread.so.0",
+    "libdl.so.2",
+    "libm.so.6",
+];
+const OFFICIAL_FRONT_PATH: &str = "usr/local/libexec/supabase";
+const OFFICIAL_DELEGATE_PATH: &str = "usr/local/libexec/supabase-go";
+const OFFICIAL_RUNTIME_DIRECTORIES: &[&str] = &[
+    "lib64",
+    "usr",
+    "usr/lib",
+    "usr/lib/x86_64-linux-gnu",
+    "usr/local",
+    "usr/local/libexec",
+];
+const OFFICIAL_RUNTIME_OBJECTS: &[RuntimeObjectPolicy] = &[
+    RuntimeObjectPolicy {
+        soname: "ld-linux-x86-64.so.2",
+        relative_path: "lib64/ld-linux-x86-64.so.2",
+        bytes: 254_864,
+    },
+    RuntimeObjectPolicy {
+        soname: "libc.so.6",
+        relative_path: "usr/lib/x86_64-linux-gnu/libc.so.6",
+        bytes: 2_186_512,
+    },
+    RuntimeObjectPolicy {
+        soname: "libdl.so.2",
+        relative_path: "usr/lib/x86_64-linux-gnu/libdl.so.2",
+        bytes: 14_408,
+    },
+    RuntimeObjectPolicy {
+        soname: "libm.so.6",
+        relative_path: "usr/lib/x86_64-linux-gnu/libm.so.6",
+        bytes: 1_198_376,
+    },
+    RuntimeObjectPolicy {
+        soname: "libpthread.so.0",
+        relative_path: "usr/lib/x86_64-linux-gnu/libpthread.so.0",
+        bytes: 14_408,
+    },
+];
+
+#[derive(Clone, Copy)]
+struct RuntimeObjectPolicy {
+    soname: &'static str,
+    relative_path: &'static str,
+    bytes: u64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ElfRefusal {
@@ -46,8 +99,16 @@ pub(crate) struct ElfComponent {
 pub(crate) struct OfficialRuntimeComponents {
     pub(crate) front: ElfComponent,
     pub(crate) delegate: ElfComponent,
+    pub(crate) loader: ElfComponent,
+    pub(crate) dependencies: Vec<OfficialDependency>,
     incomplete: IncompleteOfficialRuntime,
     marker: EvidenceMarker<OfficialEvidence>,
+}
+
+pub(crate) struct OfficialDependency {
+    pub(crate) soname: &'static str,
+    pub(crate) relative_path: &'static str,
+    pub(crate) component: ElfComponent,
 }
 
 #[derive(Clone, Copy)]
@@ -55,7 +116,11 @@ struct IncompleteOfficialRuntime(PhantomData<fn() -> OfficialEvidence>);
 
 pub(crate) fn inspect_official_components(
     release: &RetainedRelease<OfficialEvidence>,
+    runtime_root: &File,
 ) -> Result<OfficialRuntimeComponents, ElfRefusal> {
+    release
+        .revalidate_for_runtime()
+        .map_err(|_| ElfRefusal::Inventory)?;
     let policy = <OfficialEvidence as crate::policy::EvidenceClass>::policy();
     let front_bytes = read_bounded(&release.retained()[0], policy.entries[0].size)?;
     let delegate_bytes = read_bounded(&release.retained()[1], policy.entries[1].size)?;
@@ -64,14 +129,177 @@ pub(crate) fn inspect_official_components(
     {
         return Err(ElfRefusal::Digest);
     }
-    let front = parse_component(&front_bytes, ExpectedLinkage::Dynamic, None, None)?;
-    let delegate = parse_component(&delegate_bytes, ExpectedLinkage::Static, None, None)?;
+    let source_front = parse_component(
+        &front_bytes,
+        ExpectedLinkage::Dynamic,
+        Some(OFFICIAL_INTERPRETER),
+        Some(OFFICIAL_NEEDED),
+    )?;
+    let source_delegate = parse_component(&delegate_bytes, ExpectedLinkage::Static, None, None)?;
+    let known_runtime = inspect_known_official_runtime(runtime_root)?;
+    if known_runtime.front != source_front || known_runtime.delegate != source_delegate {
+        return Err(ElfRefusal::Digest);
+    }
+    release
+        .revalidate_for_runtime()
+        .map_err(|_| ElfRefusal::Inventory)?;
     Ok(OfficialRuntimeComponents {
-        front,
-        delegate,
+        front: known_runtime.front,
+        delegate: known_runtime.delegate,
+        loader: known_runtime.loader,
+        dependencies: known_runtime.dependencies,
         incomplete: IncompleteOfficialRuntime(PhantomData),
         marker: EvidenceMarker::new(),
     })
+}
+
+struct KnownOfficialRuntime {
+    front: ElfComponent,
+    delegate: ElfComponent,
+    loader: ElfComponent,
+    dependencies: Vec<OfficialDependency>,
+}
+
+fn inspect_known_official_runtime(root: &File) -> Result<KnownOfficialRuntime, ElfRefusal> {
+    let root_before = descriptor_stat(root)?;
+    let required_mount_flags =
+        StatVfsMountFlags::RDONLY | StatVfsMountFlags::NODEV | StatVfsMountFlags::NOSUID;
+    let mount = fstatvfs(root).map_err(|_| ElfRefusal::Inventory)?;
+    if root_before.stx_mode != 0o040_555 || root_before.stx_uid != 0 || root_before.stx_gid != 0 {
+        return Err(ElfRefusal::WritableObject);
+    }
+    if !mount.f_flag.contains(required_mount_flags) {
+        return Err(ElfRefusal::WritableObject);
+    }
+
+    let mut directories = Vec::with_capacity(OFFICIAL_RUNTIME_DIRECTORIES.len());
+    for relative_path in OFFICIAL_RUNTIME_DIRECTORIES {
+        let directory: File = openat2(
+            root,
+            *relative_path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+            ResolveFlags::BENEATH
+                | ResolveFlags::NO_SYMLINKS
+                | ResolveFlags::NO_MAGICLINKS
+                | ResolveFlags::NO_XDEV,
+        )
+        .map_err(|_| ElfRefusal::Inventory)?
+        .into();
+        let identity = descriptor_stat(&directory)?;
+        if identity.stx_mode != 0o040_555
+            || identity.stx_uid != 0
+            || identity.stx_gid != 0
+            || identity.stx_mnt_id != root_before.stx_mnt_id
+        {
+            return Err(ElfRefusal::WritableObject);
+        }
+        directories.push((directory, identity));
+    }
+
+    let policy = <OfficialEvidence as crate::policy::EvidenceClass>::policy();
+    let front_bytes = read_immutable_runtime_object(
+        root,
+        &root_before,
+        OFFICIAL_FRONT_PATH,
+        policy.entries[0].size,
+    )?;
+    if sha256(&front_bytes) != policy.entries[0].digest {
+        return Err(ElfRefusal::Digest);
+    }
+    let front = parse_component(
+        &front_bytes,
+        ExpectedLinkage::Dynamic,
+        Some(OFFICIAL_INTERPRETER),
+        Some(OFFICIAL_NEEDED),
+    )?;
+    let delegate_bytes = read_immutable_runtime_object(
+        root,
+        &root_before,
+        OFFICIAL_DELEGATE_PATH,
+        policy.entries[1].size,
+    )?;
+    if sha256(&delegate_bytes) != policy.entries[1].digest {
+        return Err(ElfRefusal::Digest);
+    }
+    let delegate = parse_component(&delegate_bytes, ExpectedLinkage::Static, None, Some(&[]))?;
+
+    let mut components = Vec::with_capacity(OFFICIAL_RUNTIME_OBJECTS.len());
+    for policy in OFFICIAL_RUNTIME_OBJECTS {
+        let bytes =
+            read_immutable_runtime_object(root, &root_before, policy.relative_path, policy.bytes)?;
+        let component = parse_component(&bytes, ExpectedLinkage::Shared, None, None)?;
+        components.push((policy, component));
+    }
+    for (directory, identity) in &directories {
+        if !same_statx(identity, &descriptor_stat(directory)?) {
+            return Err(ElfRefusal::Inventory);
+        }
+    }
+    if !same_statx(&root_before, &descriptor_stat(root)?) {
+        return Err(ElfRefusal::Inventory);
+    }
+
+    let (_, loader) = components.remove(0);
+    let dependencies = components
+        .into_iter()
+        .map(|(policy, component)| OfficialDependency {
+            soname: policy.soname,
+            relative_path: policy.relative_path,
+            component,
+        })
+        .collect();
+    Ok(KnownOfficialRuntime {
+        front,
+        delegate,
+        loader,
+        dependencies,
+    })
+}
+
+fn read_immutable_runtime_object(
+    root: &File,
+    root_identity: &rustix::fs::Statx,
+    relative_path: &str,
+    exact_size: u64,
+) -> Result<Vec<u8>, ElfRefusal> {
+    let file: File = openat2(
+        root,
+        relative_path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+        ResolveFlags::BENEATH
+            | ResolveFlags::NO_SYMLINKS
+            | ResolveFlags::NO_MAGICLINKS
+            | ResolveFlags::NO_XDEV,
+    )
+    .map_err(|_| ElfRefusal::Inventory)?
+    .into();
+    let before = descriptor_stat(&file)?;
+    if before.stx_mode != 0o100_555
+        || before.stx_uid != 0
+        || before.stx_gid != 0
+        || before.stx_nlink != 1
+        || before.stx_mnt_id != root_identity.stx_mnt_id
+        || before.stx_size != exact_size
+    {
+        return Err(ElfRefusal::WritableObject);
+    }
+    let bytes = read_bounded(&file, exact_size)?;
+    if !same_statx(&before, &descriptor_stat(&file)?) {
+        return Err(ElfRefusal::Inventory);
+    }
+    Ok(bytes)
+}
+
+fn descriptor_stat(file: &File) -> Result<rustix::fs::Statx, ElfRefusal> {
+    let required = StatxFlags::BASIC_STATS | StatxFlags::MNT_ID;
+    let identity =
+        statx(file, c"", AtFlags::EMPTY_PATH, required).map_err(|_| ElfRefusal::Inventory)?;
+    if identity.stx_mask & required.bits() != required.bits() {
+        return Err(ElfRefusal::Inventory);
+    }
+    Ok(identity)
 }
 
 #[derive(Clone, Copy)]
@@ -142,7 +370,6 @@ fn parse_component(
             }
             if let Some(expected_interpreter) = expected_interpreter {
                 let actual = interpreter.as_deref().ok_or(ElfRefusal::Interpreter)?;
-                validate_leaf(actual)?;
                 if actual != expected_interpreter {
                     return Err(ElfRefusal::Interpreter);
                 }
@@ -399,7 +626,6 @@ pub(crate) fn verify_synthetic_runtime(
     })
 }
 
-#[cfg(test)]
 fn same_statx(left: &rustix::fs::Statx, right: &rustix::fs::Statx) -> bool {
     left.stx_dev_major == right.stx_dev_major
         && left.stx_dev_minor == right.stx_dev_minor
