@@ -194,8 +194,16 @@ describe("private root-authority package boundary", () => {
   });
 
   it("keeps rustdoc warnings fatal in the ordinary package check", () => {
-    expect(read("scripts/cargo.mjs")).toContain(
+    const wrapper = read("scripts/cargo.mjs");
+    expect(wrapper).toContain(
       "cargo rustdoc --locked --lib --all-features -- -D warnings",
+    );
+    expect(wrapper).toContain("CARGO_TARGET_DIR: cargoTargetDirectory");
+    expect(wrapper).toContain(
+      'join(tmpdir(), "openspell-root-authority-target-")',
+    );
+    expect(wrapper).toContain(
+      "rmSync(cargoTargetDirectory, { force: true, recursive: true })",
     );
   });
 

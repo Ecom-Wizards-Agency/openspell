@@ -1,4 +1,7 @@
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import process from "node:process";
 import { fileURLToPath, URL } from "node:url";
 
@@ -52,7 +55,16 @@ export function runCargo(mode) {
   if (script === undefined) throw new Error("unsupported cargo mode");
 
   if (hasPinnedLocalToolchain()) {
-    run("bash", ["-c", script]);
+    const cargoTargetDirectory = mkdtempSync(
+      join(tmpdir(), "openspell-root-authority-target-"),
+    );
+    try {
+      run("bash", ["-c", script], {
+        env: { ...process.env, CARGO_TARGET_DIR: cargoTargetDirectory },
+      });
+    } finally {
+      rmSync(cargoTargetDirectory, { force: true, recursive: true });
+    }
     return;
   }
 
