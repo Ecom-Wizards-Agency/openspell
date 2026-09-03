@@ -213,6 +213,10 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(kernel).toContain('process.on("SIGINT", recordInterruption)');
     expect(kernel).toContain('process.on("SIGTERM", recordInterruption)');
     expect(kernel).toContain("await interruptionCheckpoint()");
+    expect(kernel).toContain("async function buildArtifact()");
+    expect(kernel).toContain("async function stageProofImage(artifact)");
+    expect(kernel).toContain("async function runCase(imageId, mode, expected)");
+    expect(kernel).toContain("await runCase(imageId, mode, expected)");
     expect(kernel).toContain("detached: true");
     expect(kernel).toContain("captureAnonymousTargetVolume");
     expect(kernel).not.toContain('["volume", "rm", volume]');
@@ -229,17 +233,25 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(kernel).toContain('["image", "rm", "--no-prune", id]');
     expect(kernel).not.toContain('"image", "rm", "--force"');
     const interruptionProof = read("scripts/kernel-proof-interruption.mjs");
-    expect(interruptionProof).toContain('await proveSignal("SIGINT", "openspell-wp200-build-")');
     expect(interruptionProof).toContain(
-      'await proveSignal("SIGTERM", "openspell-wp200-stage-", true)',
+      'await proveSignal("SIGINT", "openspell-wp200-build-", "build-create")',
+    );
+    expect(interruptionProof).toContain(
+      '"openspell-wp200-stage-", "image-commit", true',
     );
     expect(interruptionProof).toContain(
       'await proveSignal("SIGTERM", "openspell-wp200-case-")',
     );
     expect(interruptionProof).toContain("await proveFinalCleanupSignal()");
     expect(interruptionProof).toContain('process.kill(-child.pid, signal)');
+    expect(interruptionProof).toContain("await awaitResponseHeld(responseCut, child)");
+    expect(interruptionProof).toContain('responseCut === undefined ? "running" : "created"');
     expect(interruptionProof).toContain('["volume", "ls", "--quiet"]');
-    expect(interruptionProof).toContain('status === "running"');
+    const responseShim = read("scripts/docker-response-shim.mjs");
+    expect(responseShim).toContain('cut === "build-create"');
+    expect(responseShim).toContain('cut === "image-commit"');
+    expect(responseShim).toContain("await holdSuccessfulResponse()");
+    expect(responseShim).toContain("writeFileSync(readyFile");
     expect(kernel).toContain('"/usr/bin/setpriv"');
     expect(kernel).toContain('"--bounding-set=-all,+sys_admin,+setfcap"');
     expect(kernel).toContain('"--no-new-privs"');
@@ -317,9 +329,11 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(trusted).toContain("workflow_run:");
     expect(trusted).toContain('workflows: ["CI"]');
     expect(trusted).toContain('branches: ["main"]');
+    expect(trusted).not.toContain("workflow_dispatch");
     expect(trusted).toContain("github.event.workflow_run.conclusion == 'success'");
     expect(trusted).toContain("github.event.workflow_run.event == 'push'");
     expect(trusted).toContain("github.event.workflow_run.head_branch == 'main'");
+    expect(trusted).toContain("TRUSTED_SHA: ${{ github.event.workflow_run.head_sha }}");
     expect(trusted).toContain("permissions: {}");
     expect(trusted).not.toContain("actions/checkout");
     expect(trusted).toContain("Fetch exact trusted revision without a credential");

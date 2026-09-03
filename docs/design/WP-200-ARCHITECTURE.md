@@ -336,11 +336,12 @@ privilege. A separate `test:kernel` wrapper:
    groups so a wrapper process-group SIGINT/SIGTERM cannot sever an in-flight daemon response before
    its ID is retained. Any independent client timeout or malformed response without an ID is
    permanently cleanup-uncertain even when its name/tag is momentarily absent. Signals are recorded
-   and refused at event-loop checkpoints, and the wrapper
-   emits no success summary until final image cleanup has been proved. A separate real interruption
-   harness exercises build-container acquisition, committed-image acquisition, a running privileged
-   case and final image deletion, then verifies the captured container, image and anonymous-volume
-   IDs are all absent.
+   and refused at event-loop checkpoints before any following start or commit, and the wrapper emits
+   no success summary until final image cleanup has been proved. A separate real interruption harness
+   interposes a fixed test-only Docker client shim that holds successful build-container and
+   committed-image responses before returning their immutable IDs. It signals while each response is
+   held, then also exercises a running privileged case and final image deletion, and verifies the
+   captured container, image and anonymous-volume IDs are all absent.
 
 The reviewed image is:
 
@@ -349,12 +350,13 @@ docker.io/library/rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe
 ```
 
 The wrapper refuses when Docker, cgroup v2, required namespace/ptrace behavior or exact cleanup is
-unavailable. It never silently skips. Pull-request code never enters a privileged container. A
-separate default-branch `workflow_run` workflow runs the proof only after ordinary CI succeeds for a
-trusted `main` push; attended `workflow_dispatch` is the only other trigger. The workflow has no
-permissions or persisted checkout credential, fetches and verifies the triggering exact SHA, points
-pnpm setup at that checked-out manifest and runs the proof as its final step. A local operator can run
-it explicitly; ordinary local repository tests do not silently start a privileged container.
+unavailable. It never silently skips. The trusted proof workflow never fetches or executes a
+pull-request-controlled revision in its privileged proof container. A separate default-branch
+`workflow_run` workflow runs the proof only after ordinary CI succeeds for a
+trusted `main` push. The trusted workflow has no manual or pull-request trigger, no permissions or
+persisted checkout credential, fetches and verifies the triggering exact SHA, points pnpm setup at
+that checked-out manifest and runs the proof as its final step. A local operator can run the wrapper
+explicitly; ordinary local repository tests do not silently start a privileged container.
 
 ## WP-199 composition
 

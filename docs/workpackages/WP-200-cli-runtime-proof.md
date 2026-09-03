@@ -116,10 +116,9 @@ Handover and status change only after reviewed merge and exact-main CI.
     volume identity is verified absent after exact container-owned removal and is never separately
     deleted by name. A client timeout without an immutable response remains cleanup-uncertain, and
     graceful SIGINT/SIGTERM cancellation must refuse after exact cleanup and before emitting any
-    success summary. Never run
-    pull-request-controlled code in the privileged proof container; CI may run
-    it only in a dedicated permissionless job for trusted `main` revisions after ordinary checks
-    pass.
+    success summary. The trusted privileged proof workflow must never fetch or execute a
+    pull-request-controlled revision; CI may run it only in a dedicated permissionless job for
+    trusted `main` revisions after ordinary checks pass.
 19. Return only bounded summaries or fixed nonsensitive refusals. Do not echo source bytes, paths,
     environments, pids, signatures, target-like canaries or nested OS errors in results/logs.
 20. Static source, Cargo/rustdoc/npm and reverse-dependency tests must prove the production package

@@ -325,7 +325,7 @@ function hasNoConfiguredMounts(value) {
   return value === undefined || value === null || (Array.isArray(value) && value.length === 0);
 }
 
-function buildArtifact() {
+async function buildArtifact() {
   const name = `openspell-wp200-build-${randomUUID()}`;
   let containerId;
   let targetVolume;
@@ -375,9 +375,9 @@ function buildArtifact() {
     containerId = created.containerId;
     if (containerId !== undefined) targetVolume = captureAnonymousTargetVolume(containerId);
     requireCreatedContainer(created);
-    refuseInterruption();
+    await interruptionCheckpoint();
     const result = startCreatedContainer(containerId, buildTimeoutMilliseconds, true);
-    refuseInterruption();
+    await interruptionCheckpoint();
 
     let records;
     try {
@@ -416,7 +416,7 @@ function buildArtifact() {
       },
     );
     requireSuccessfulBinary(copied, "exact executable extraction failed");
-    refuseInterruption();
+    await interruptionCheckpoint();
     const bytes = extractSingleFileArchive(copied.stdout, basename(insideTarget));
     verifyStaticExecutable(bytes);
     const digest = createHash("sha256").update(bytes).digest("hex");
@@ -556,7 +556,7 @@ function verifyImageLineage(base, derived) {
   }
 }
 
-function stageProofImage(artifact) {
+async function stageProofImage(artifact) {
   const operationId = randomUUID();
   const stageName = `openspell-wp200-stage-${operationId}`;
   let stageId;
@@ -587,7 +587,7 @@ function stageProofImage(artifact) {
     unresolvedCreation = create.unresolvedCreation;
     stageId = create.containerId;
     requireCreatedContainer(create);
-    refuseInterruption();
+    await interruptionCheckpoint();
     const stage = inspectContainer(stageId);
     if (
       stage.Image !== base.Id ||
@@ -607,13 +607,14 @@ function stageProofImage(artifact) {
       timeout: cleanupTimeoutMilliseconds,
     });
     requireSuccessful(copied, "exact executable staging failed");
+    await interruptionCheckpoint();
 
     const committed = commitImage(stageId, recoveryImageTag);
     unresolvedImageCreation = committed.unresolvedCreation;
     derivedImageId = committed.imageId;
     requireSuccessful(committed.result, "content addressed image commit failed");
     if (derivedImageId === undefined) throw new Error("exact committed image required");
-    refuseInterruption();
+    await interruptionCheckpoint();
     const derived = inspectImage(derivedImageId);
     if (
       derived.Id !== derivedImageId ||
@@ -675,7 +676,7 @@ function runCreatedContainer(containerId, expected, timeout) {
   if (result.stdout !== expected) throw new Error("kernel proof summary mismatch");
 }
 
-function verifyImageArtifact(imageId, digest) {
+async function verifyImageArtifact(imageId, digest) {
   const name = `openspell-wp200-verify-${randomUUID()}`;
   let containerId;
   let unresolvedCreation = false;
@@ -709,7 +710,7 @@ function verifyImageArtifact(imageId, digest) {
     unresolvedCreation = create.unresolvedCreation;
     containerId = create.containerId;
     requireCreatedContainer(create);
-    refuseInterruption();
+    await interruptionCheckpoint();
     const record = inspectContainer(containerId);
     inspectIsolatedContainer(record, imageId, false);
     if (
@@ -726,7 +727,7 @@ function verifyImageArtifact(imageId, digest) {
   }
 }
 
-function runCase(imageId, mode, expected) {
+async function runCase(imageId, mode, expected) {
   const name = `openspell-wp200-case-${randomUUID()}`;
   let containerId;
   let unresolvedCreation = false;
@@ -766,7 +767,7 @@ function runCase(imageId, mode, expected) {
     unresolvedCreation = create.unresolvedCreation;
     containerId = create.containerId;
     requireCreatedContainer(create);
-    refuseInterruption();
+    await interruptionCheckpoint();
     const record = inspectContainer(containerId);
     inspectIsolatedContainer(record, imageId, true);
     if (
@@ -790,18 +791,18 @@ try {
   if (process.platform !== "linux" || process.arch !== "x64") {
     throw new Error("linux x64 proof host required");
   }
-  const artifact = buildArtifact();
+  const artifact = await buildArtifact();
   await interruptionCheckpoint();
-  const imageId = stageProofImage(artifact);
+  const imageId = await stageProofImage(artifact);
   await interruptionCheckpoint();
-  verifyImageArtifact(imageId, artifact.digest);
+  await verifyImageArtifact(imageId, artifact.digest);
   await interruptionCheckpoint();
 
   for (const [mode, expected] of cases) {
-    runCase(imageId, mode, expected);
+    await runCase(imageId, mode, expected);
     await interruptionCheckpoint();
   }
-  verifyImageArtifact(imageId, artifact.digest);
+  await verifyImageArtifact(imageId, artifact.digest);
   await interruptionCheckpoint();
   successSummary =
     `openspell synthetic kernel proof: cases=${cases.length} residue=0 ` +

@@ -5,24 +5,22 @@ on:
     workflows: ["CI"]
     types: [completed]
     branches: ["main"]
-  workflow_dispatch:
 
 permissions: {}
 
 concurrency:
-  group: trusted-kernel-proof-${{ github.event.workflow_run.head_sha || github.sha }}
+  group: trusted-kernel-proof-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 jobs:
   kernel-proof:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main')
+      github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
     env:
-      TRUSTED_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      TRUSTED_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
       - name: Fetch exact trusted revision without a credential
         run: |
