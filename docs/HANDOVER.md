@@ -1,6 +1,6 @@
 # OpenSpell continuation handover
 
-Last reconciled: 2026-09-02. This is a rolling handover for the next implementation chat, not a
+Last reconciled: 2026-09-03. This is a rolling handover for the next implementation chat, not a
 historical changelog.
 
 ## How to use and maintain this file
@@ -37,20 +37,23 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- WP-196 source is merged at `38db8b22d27a471b9a47ce9730d5132e248adeeb`. PR #123 added
-  exclusive recommendation claim custody, a dedicated single-flight database-only claimant,
-  claim-bound recommendation mutations, narrow worker authority, strict web readiness and
-  revision-pinned Evo staging/activation/rollback artifacts. Corrected exact-head run
-  `33673996873` passed both jobs at `88710dc`; exact-main run `33675418627` passed both jobs at the
-  merge revision. The first exact-head browser run exposed and led to correction of a duplicate
-  status landmark and a stale direct-write E2E fixture. High correctness and Extra-High operational
-  reviews ended with no blocker, high or medium defect. The package applied no hosted migration,
-  credential change, staging, activation, deployment, provider call or Amazon mutation.
+- WP-197 source is merged at `bb3c1cb0c7c22a2de89344c396ed56b2dc0511a4`. PR #125 added an
+  offline exact hosted-migration bundle builder and independent verifier for the 41-file hosted
+  baseline plus the five reviewed source migrations, together with rollback-only prefix evidence.
+  Exact-head run `33710054372` passed both jobs at `e663e9b`; exact-main run `33710817269` passed
+  both jobs at the merge revision. High correctness, Extra-High adversarial safety and Extra-High
+  operational reviews accepted that source-only boundary. A post-merge Extra-High review of the
+  later private runner contract then found and corrected a self-blocking advisory-lock sequence and
+  required independently pinned official-release provenance, root-only payload custody, an
+  unforgeable root-consumed execution ticket, a signed external-operation window and an unprivileged,
+  target-scoped CLI sandbox rather than trusting the installed launcher. The package
+  performed no hosted query or apply, credential change, staging, activation, deployment, provider
+  call or Amazon mutation.
 - Production web health returns `ok` at
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 122 commits behind the WP-196 source merge. No later
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 127 commits behind the WP-197 source merge. No later
   package deployed or promoted a candidate, so its newer source artifacts are not live evidence.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 224 commits behind
-  the WP-193 source merge and 262 commits behind the WP-196 source merge, and still returns the
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 267 commits behind
+  the WP-197 source merge, and still returns the
   legacy `wizard-ads` service shape.
 - The new Evo report-worker and recommendation-worker units are not installed, so their loopback
   health is unavailable. The legacy integration worker is active, but exposes no revision stamp.
@@ -64,7 +67,7 @@ At the time this handover was reconciled:
 - Current source, deployed web, deployed MCP, and the active worker are not one proven release. Do
   not describe post-deployment main features as live until a revision-stamped candidate is promoted
   and checked.
-- `docs/STATUS.md` now records WP-179 through WP-196, but the implementation-wave table remains
+- `docs/STATUS.md` now records WP-179 through WP-197, but the implementation-wave table remains
   incomplete between WP-149 and WP-178. Use Git, CI, code, the migration ledger, and live health as
   evidence; then update status prose.
 
@@ -106,6 +109,10 @@ Recent verified source work includes:
   single-flight database-only worker, strict web readiness and revision-pinned Evo deployment
   controls. Its migration is not hosted, its credential is not provisioned, and its worker is not
   staged or active;
+- an offline exact hosted-migration bundle builder and independent verifier that deterministically
+  reconstruct the reviewed 41-file hosted baseline plus the five exact Git blobs as a 46-file
+  artifact, with rollback-only prefix evidence and no database, network, Supabase or apply
+  capability. It authorizes no hosted action;
 - strict provider-native Unified Reporting create/retrieve methods with exact indexed accounting,
   ambiguity-safe create behavior, idempotent retrieval, and no download or promotion claim;
 - a default-off Unified Reporting dual-run sidecar for `spCampaigns`, with explicit advertiser
@@ -172,7 +179,7 @@ These are source outcomes, not blanket claims of live behavior.
 
 Reconcile heads and checks again before acting.
 
-There are no open pull requests. PR #123 merged WP-196 at `38db8b2`; PR #24 remains closed unmerged
+There are no open pull requests. PR #125 merged WP-197 at `bb3c1cb`; PR #24 remains closed unmerged
 at archival head `78e718b` after WP-191 preserved its remaining token-fenced ownership/recovery
 lesson on accepted current main. Its superseded source was not rebased, cherry-picked or merged.
 
@@ -195,6 +202,13 @@ PR #81 is on main and WP-186 is in the hosted ledger, so the two prior logical c
 closed. Persistent historical filename remapping still means the literal hosted and repository
 migration directories are never the deployment comparison. The ledger-compatible fetched-history
 workdir remains the only hosted deployment artifact.
+
+WP-197 now provides a deterministic reviewed source policy for reconstructing and independently
+verifying exactly 46 migration files: the same 41-file baseline plus the five exact Git blobs. Its
+baseline digest is `9dd52d5fdee63b6b3c19de850ec72c27f3d8312a5bb5c73c492705e47c18bcea`; its
+final bundle-ledger digest is
+`baef4df400ed7a045395322667e1d3ac61fa27075b2d36bb855071a6bfe20458`. The tool and its SQL
+evidence are offline and inert. They neither establish fresh hosted history nor authorize an apply.
 
 The push completed in filename order. Schema-only postflight confirms expected objects, columns,
 constraints, indexes, grants and RLS definitions with no blocking locks. Guarded browser postflight
@@ -333,11 +347,31 @@ authorized, deployed and verified. No Amazon apply path was added.
 
 ## Recommended continuation order
 
-1. Build and review the exact ledger-compatible hosted artifact for WP-187, WP-192, WP-194, WP-195
-   and WP-196; do not apply it as part of artifact construction or review.
-2. Only with authorization for that exact database action, apply only the reviewed artifact and
-   prove the ledger, schema, privileges, preserved state and queue postflight. Database approval
-   does not authorize staging, service, queue-ownership or deployment changes.
+1. Implement and review a dedicated, deployment-private hosted-migration supervisor before any
+   production apply; do not add database authority to the agent-accessible general broker. Prove the
+   official Supabase CLI 2.116.0 two-binary execution topology in a disposable target. Pin the
+   official checksum-asset, Linux archive, front-controller and delegate digests; acquire only
+   through a root-owned, non-agent-writable source; and run the CLI as a capability-free, non-
+   dumpable dedicated uid with target-only credentials and egress. The root launcher must trace and
+   sign the actual namespace, cgroup, exec graph, maps and post-exec protections. Require a durable target quarantine, separate phase tags, external
+   enqueue freeze, root-signed external-operation-window generation, operation ledger and a two-stage
+   migration-ledger/advisory-lock handoff. The same bound CLI backend must first wait on the ledger
+   barrier and then on the first migration's advisory lock before the session guard is released.
+   Reconcile only after exact child, cgroup and tagged-session terminality; never retry a lost
+   response. Agent-accessible operations may prepare, report status and reconcile read-only; only a
+   separate root/operator-only helper with a key and journal unavailable to the supervisor may issue
+   and atomically consume the freshly OS-authenticated single-use signed grant. The minimal root
+   launcher must validate the canonical signed grant and ticket and durably mark the ticket executing
+   before it can create a namespace, cgroup or child. A consumed ticket may close without execution
+   only through a root-signed `terminal_no_spawn` proof that execution state was never entered and no
+   resource or apply-tag session existed. History fetch and dry run use separate root-signed, single-
+   use `writeCapability:false` preparation tickets and must close their terminal exec graphs before
+   the later apply envelope; they never depend on or substitute for its attended execution ticket. A
+   refused preparation ticket may close only through its distinct root-signed
+   `terminal_no_spawn` proof with zero execution resources and zero exact-phase sessions.
+2. Only with authorization for that exact database action, apply only the WP-197-reviewed artifact
+   and prove the ledger, schema, privileges, preserved state and queue postflight. Database
+   approval does not authorize staging, service, queue-ownership or deployment changes.
 3. With separate exact authorization, provision or rotate only the narrow recommendation-worker
    database credential through an allowlisted Writer operation. Do not expose a broad
    service-account token or reuse `service_role`; credential custody does not authorize staging or
