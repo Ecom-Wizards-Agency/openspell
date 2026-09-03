@@ -337,7 +337,10 @@ privilege. A separate `test:kernel` wrapper:
    the actual create, commit or inspect response into a mode-0600 file under its private cut
    directory before publishing readiness. Running-case and final-image-deletion cuts use that same
    response-bound identity channel; prefix and tag queries never supply adoption or cleanup
-   authority.
+   authority. The harness promotes each response ID into cleanup custody before attempting Docker
+   inspection. If inspection cannot capture anonymous-volume identity, exact container removal with
+   `--volumes` must restore the complete pre-spawn volume inventory; the exact response-bound image
+   ID remains independently removable.
    Docker mutation clients run in separate process
    groups so a wrapper process-group SIGINT/SIGTERM cannot sever an in-flight daemon response before
    its ID is retained. Any independent client timeout or malformed response without an ID is
@@ -346,9 +349,14 @@ privilege. A separate `test:kernel` wrapper:
    no success summary until final image cleanup has been proved. A separate real interruption harness
    interposes a fixed test-only Docker client shim that holds successful build-container and
    committed-image responses before returning their immutable IDs. It signals while each response is
-   held, holds a case-inspection response to prove cancellation before privileged start, then also
-   exercises a running privileged case and final image deletion. Every cut verifies the captured
-   container, image and anonymous-volume IDs are all absent. The harness installs its child
+   held and holds a case-inspection response to prove cancellation before privileged start. For the
+   running cut, the shim substitutes one fixed external-interruption hold mode into the selected
+   timeout-case create request, verifies the response-bound container is running that exact mode and
+   kills only that exact ID after the wrapper signal has been sent. A private fixed-fd phase pipe
+   proves that the wrapper observed each signal. The same pipe publishes `cases-complete` only after
+   all 19 cases and the final artifact verification succeed, so the final image-deletion cut cannot
+   pass on a failure-path deletion. Every cut verifies the captured container, image and
+   anonymous-volume IDs are all absent. The harness installs its child
    error/close observer immediately, starts the child-exit deadline only after the tested signal,
    gives setup and final-deletion observation the composed operation budget, and awaits its Docker
    event watcher. A watchdog-forced wrapper exit always disqualifies the cut and transfers emergency
@@ -356,6 +364,11 @@ privilege. A separate `test:kernel` wrapper:
    with `--volumes` and derived-image ID, then must prove the captured anonymous-volume name absent
    before refusing. A volume name is evidence, never independent deletion authority; if exact
    container removal cannot establish its absence, cleanup remains uncertain.
+   Emergency Docker clients are asynchronously owned process groups. Each operation reserves time
+   inside one monotonic cleanup deadline for TERM and KILL settlement; no synchronous client timeout
+   can extend that deadline. Fixed uninspected container/image recovery and a TERM-resistant child
+   prove response-ID fallback cleanup and forced client closure through the same bounded ownership
+   path.
    A fixed watchdog fixture exercises that disqualifying path with an inert, networkless,
    read-only container, anonymous volume and disposable derived image, forces the unresponsive
    fixture supervisor to close through the same custody function used by every real cut, then proves

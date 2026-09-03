@@ -253,6 +253,15 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(interruptionProof).toContain("responseIdentity.imageId");
     expect(interruptionProof).toContain('prepareResponseCut("final-image-delete")');
     expect(interruptionProof).not.toContain('listExact(`name=^/${prefix}`');
+    expect(interruptionProof).toContain('phase() !== "signal-observed\\n"');
+    expect(interruptionProof).toContain(
+      'phase() !== "cases-complete\\nsignal-observed\\n"',
+    );
+    expect(interruptionProof).toContain("function runOwnedDocker(");
+    expect(interruptionProof).toContain("async function proveOwnedCommandDeadline()");
+    expect(interruptionProof).toContain("async function proveUninspectedResponseRecovery()");
+    expect(interruptionProof).toContain("ownedClientStopReserveMilliseconds = 1_250");
+    expect(interruptionProof).toContain('signalProcessGroup(child, "SIGKILL")');
     expect(interruptionProof).toContain('["volume", "ls", "--quiet"]');
     const responseShim = read("scripts/docker-response-shim.mjs");
     expect(responseShim).toContain('cut === "build-create"');
@@ -263,6 +272,10 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(responseShim).toContain('process.env["WP200_DOCKER_RESPONSE_IDENTITY"]');
     expect(responseShim).toContain("publishSelectedResponse(heldStdout)");
     expect(responseShim).toContain("writeFileSync(identityFile");
+    expect(responseShim).toContain('"external-interruption-hold"');
+    expect(responseShim).toContain(
+      'spawn(realDocker, ["container", "kill", containerId]',
+    );
     expect(responseShim).toContain("refusePostCutCaseStart()");
     expect(responseShim).toContain('writeFileSync(startAttemptFile, "attempted\\n"');
     expect(responseShim).toContain("await holdSuccessfulResponse()");
@@ -285,11 +298,11 @@ describe("private hosted-migration runtime proof boundary", () => {
     );
     expect(interruptionProof).toContain("primaryTimedOut ||");
     expect(interruptionProof).toContain("forcedExitUsed ||");
-    expect(interruptionProof).toContain("await recoverCapturedObjects(record, imageId)");
+    expect(interruptionProof).toContain("await recoverCapturedObjects(custody)");
     expect(interruptionProof).toContain("async function settleChildCustody(");
     expect(interruptionProof).toContain("const stopped = await settleChildCustody(");
     expect(interruptionProof).toContain("requireWatchdogFixtureImage(imageAcquisition)");
-    expect(interruptionProof).toContain("proveCapturedObjectsAbsent(record, imageId)");
+    expect(interruptionProof).toContain("proveCapturedObjectsAbsent(custody)");
     expect(interruptionProof).not.toContain('["volume", "rm"');
     expect(interruptionProof).toContain("await stopEventWatcher(watcher, watcherExit)");
     expect(interruptionProof).toContain("watcherTerminal.timedOut ||");
@@ -303,14 +316,17 @@ describe("private hosted-migration runtime proof boundary", () => {
     );
     expect(interruptionProof).toContain("const volumesBefore = volumeInventory()");
     expect(interruptionProof).toContain(
-      "JSON.stringify(volumeInventory()) !== JSON.stringify(volumesBefore)",
+      "JSON.stringify(volumes.sort()) !== JSON.stringify(custody.volumesBefore)",
     );
     expect(interruptionProof).toContain(
-      "interruption-cuts=5 watchdog-recovery=1 signals=2 residue=0",
+      "interruption-cuts=5 watchdog-recovery=1 uninspected-recovery=1 owned-client-deadline=1 signals=2 residue=0",
     );
     expect(kernel).toContain('"/usr/bin/setpriv"');
     expect(kernel).toContain('"--bounding-set=-all,+sys_admin,+setfcap"');
     expect(kernel).toContain('"--no-new-privs"');
+    expect(kernel).toContain('process.env["WP200_KERNEL_PROOF_PHASE_FD"] === "3"');
+    expect(kernel).toContain('publishTestPhase("cases-complete")');
+    expect(kernel).toContain('publishTestPhase("signal-observed")');
     for (const mode of [
       "success",
       "refusal",
@@ -364,6 +380,8 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(realProof).toContain("elf.header.e_type != ET_DYN");
     expect(realProof).toContain("TracerDeathCut::MixedResume");
     expect(realProof).toContain("TracerDeathCut::FullResume");
+    expect(realProof).toContain('mode == "external-interruption-hold"');
+    expect(realProof).toContain("hold_for_external_interruption");
     expect(realProof).toContain("expect_eof_bounded");
     const childBeforeExec = realProof
       .split("fn child_before_exec", 2)[1]

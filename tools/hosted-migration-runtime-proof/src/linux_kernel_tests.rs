@@ -109,6 +109,7 @@ enum Scenario {
     Refusal,
     Timeout,
     Interruption,
+    ExternalInterruptionHold,
     UnexpectedEvent,
     LostAfterResumeOne,
     LostAfterResumeTwo,
@@ -392,6 +393,9 @@ fn main() {
             [_, mode] if mode == "refusal" => run_scenario(Scenario::Refusal),
             [_, mode] if mode == "timeout" => run_scenario(Scenario::Timeout),
             [_, mode] if mode == "interruption" => run_scenario(Scenario::Interruption),
+            [_, mode] if mode == "external-interruption-hold" => {
+                run_scenario(Scenario::ExternalInterruptionHold)
+            }
             [_, mode] if mode == "unexpected-event" => run_scenario(Scenario::UnexpectedEvent),
             [_, mode] if mode == "lost-resume-one" => run_scenario(Scenario::LostAfterResumeOne),
             [_, mode] if mode == "lost-resume-two" => run_scenario(Scenario::LostAfterResumeTwo),
@@ -496,6 +500,7 @@ fn run_scenario(scenario: Scenario) -> Result<(), KernelError> {
         Scenario::Refusal => finish_refusal(&mut prepared),
         Scenario::Timeout => finish_timeout(&mut prepared),
         Scenario::Interruption => finish_interruption(&mut prepared),
+        Scenario::ExternalInterruptionHold => hold_for_external_interruption(&mut prepared),
         Scenario::UnexpectedEvent => finish_unexpected_event(&mut prepared),
         Scenario::LostAfterResumeOne => finish_lost_after_resume_one(&mut prepared),
         Scenario::LostAfterResumeTwo => finish_lost_after_resume_two(&mut prepared),
@@ -793,6 +798,16 @@ fn finish_interruption(prepared: &mut PreparedCase) -> Result<(), KernelError> {
     assert_recovery(progress, prepared.machine.result())?;
     terminate_case(prepared)?;
     Ok(())
+}
+
+fn hold_for_external_interruption(prepared: &mut PreparedCase) -> Result<(), KernelError> {
+    let effect = offer_expected(&mut prepared.machine, EffectKind::ResumeVerifiedProcesses)?;
+    if !effect.carries_resume_permit() {
+        return Err(KernelError::MachineMismatch);
+    }
+    loop {
+        std::thread::park();
+    }
 }
 
 fn finish_unexpected_event(prepared: &mut PreparedCase) -> Result<(), KernelError> {

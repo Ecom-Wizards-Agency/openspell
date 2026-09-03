@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { writeSync } from "node:fs";
 import { basename } from "node:path";
 import process from "node:process";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
@@ -55,15 +56,28 @@ let recoveryImageTag;
 let unresolvedImageCreation = false;
 let cleanupUncertain = false;
 let interrupted = false;
+let phaseChannelFailed = false;
+const phaseFileDescriptor =
+  process.env["WP200_KERNEL_PROOF_PHASE_FD"] === "3" ? 3 : undefined;
+
+function publishTestPhase(phase) {
+  if (phaseFileDescriptor === undefined) return;
+  try {
+    writeSync(phaseFileDescriptor, `${phase}\n`);
+  } catch {
+    phaseChannelFailed = true;
+  }
+}
 
 const recordInterruption = () => {
   interrupted = true;
+  publishTestPhase("signal-observed");
 };
 process.on("SIGINT", recordInterruption);
 process.on("SIGTERM", recordInterruption);
 
 function refuseInterruption() {
-  if (interrupted) throw new Error("kernel proof interrupted");
+  if (interrupted || phaseChannelFailed) throw new Error("kernel proof interrupted");
 }
 
 async function interruptionCheckpoint() {
@@ -809,6 +823,8 @@ try {
   successSummary =
     `openspell synthetic kernel proof: cases=${cases.length} residue=0 ` +
     `sha256=${artifact.digest}\n`;
+  publishTestPhase("cases-complete");
+  if (phaseChannelFailed) throw new Error("kernel proof phase channel failed");
 } catch (error) {
   if (error instanceof CleanupUncertain) cleanupUncertain = true;
   process.stderr.write("openspell synthetic kernel proof refused\n");

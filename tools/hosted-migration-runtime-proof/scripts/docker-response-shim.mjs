@@ -1,12 +1,14 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import process from "node:process";
+import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 
 const maximumHeldBytes = 64 * 1024;
 const releaseAttempts = 36_000;
 const releaseDelayMilliseconds = 5;
+const controlTimeoutMilliseconds = 10_000;
 const realDocker = process.env["WP200_REAL_DOCKER"];
 const cut = process.env["WP200_DOCKER_RESPONSE_CUT"];
 const readyFile = process.env["WP200_DOCKER_RESPONSE_READY"];
@@ -65,6 +67,30 @@ function isCandidateMutation() {
   );
 }
 
+function heldRunningContainerId() {
+  if (
+    cut !== "case-running" ||
+    readyFile === undefined ||
+    !existsSync(readyFile) ||
+    identityFile === undefined ||
+    args[0] !== "container" ||
+    args[1] !== "start" ||
+    args[2] !== "--attach" ||
+    args.length !== 4
+  ) {
+    return undefined;
+  }
+  try {
+    const identity = JSON.parse(readFileSync(identityFile, "utf8"));
+    return /^[0-9a-f]{64}$/u.test(identity?.containerId ?? "") &&
+      args[3] === identity.containerId
+      ? identity.containerId
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function isSelectedResponse(stdout) {
   if (cut !== "case-inspect") return true;
   try {
@@ -90,9 +116,18 @@ async function holdSuccessfulResponse() {
 }
 
 function selectedIdentity(stdout) {
-  if (cut === "build-create" || cut === "case-running") {
+  if (cut === "build-create") {
     const containerId = Buffer.concat(stdout).toString("utf8").trim();
     return /^[0-9a-f]{64}$/u.test(containerId) ? { containerId } : undefined;
+  }
+  if (cut === "case-running") {
+    const containerId = Buffer.concat(stdout).toString("utf8").trim();
+    const commandAt = args.indexOf("--bounding-set=-all,+sys_admin,+setfcap");
+    const imageId = args[commandAt - 1];
+    return /^[0-9a-f]{64}$/u.test(containerId) &&
+      /^sha256:[0-9a-f]{64}$/u.test(imageId ?? "")
+      ? { containerId, imageId }
+      : undefined;
   }
   if (cut === "image-commit" || cut === "final-image-delete") {
     const containerId = args[2];
@@ -106,8 +141,9 @@ function selectedIdentity(stdout) {
     const records = JSON.parse(Buffer.concat(stdout).toString("utf8"));
     return Array.isArray(records) &&
       records.length === 1 &&
-      /^[0-9a-f]{64}$/u.test(records[0]?.Id ?? "")
-      ? { containerId: records[0].Id }
+      /^[0-9a-f]{64}$/u.test(records[0]?.Id ?? "") &&
+      /^sha256:[0-9a-f]{64}$/u.test(records[0]?.Image ?? "")
+      ? { containerId: records[0].Id, imageId: records[0].Image }
       : undefined;
   } catch {
     return undefined;
@@ -127,12 +163,69 @@ async function publishSelectedResponse(stdout) {
   if (cut !== undefined && heldCuts.has(cut)) await holdSuccessfulResponse();
 }
 
+async function killHeldRunningContainer(containerId) {
+  await holdSuccessfulResponse();
+  const control = spawn(realDocker, ["container", "kill", containerId], {
+    detached: true,
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  const observed = new Promise((resolve) => {
+    control.once("error", () => resolve({ status: 125, signal: null }));
+    control.once("close", (status, signal) => resolve({ status, signal }));
+  });
+  const wait = (timeoutMilliseconds) =>
+    new Promise((resolve) => {
+      let finished = false;
+      const finish = (result) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeout);
+        resolve(result);
+      };
+      const timeout = setTimeout(
+        () => finish({ status: null, signal: null, timedOut: true }),
+        timeoutMilliseconds,
+      );
+      void observed.then((result) => finish({ ...result, timedOut: false }));
+    });
+  let result = await wait(controlTimeoutMilliseconds);
+  if (result.timedOut) {
+    if (control.pid !== undefined) {
+      try {
+        process.kill(-control.pid, "SIGKILL");
+      } catch {
+        // The close result below remains authoritative.
+      }
+    }
+    result = await wait(1_000);
+  }
+  if (result.timedOut || result.status !== 0 || result.signal !== null) process.exit(125);
+}
+
 if (realDocker === undefined || !realDocker.startsWith("/")) process.exit(125);
 refusePostCutCaseStart();
 const candidate = isCandidateMutation();
-const child = spawn(realDocker, args, {
+const runningContainerId = heldRunningContainerId();
+if (
+  cut === "case-running" &&
+  readyFile !== undefined &&
+  existsSync(readyFile) &&
+  args[0] === "container" &&
+  args[1] === "start" &&
+  runningContainerId === undefined
+) {
+  process.exit(125);
+}
+const dockerArgs =
+  cut === "case-running" && candidate
+    ? [...args.slice(0, -1), "external-interruption-hold"]
+    : args;
+const child = spawn(realDocker, dockerArgs, {
   stdio: ["pipe", "pipe", "pipe"],
 });
+if (runningContainerId !== undefined) {
+  void killHeldRunningContainer(runningContainerId).catch(() => process.exit(125));
+}
 process.stdin.pipe(child.stdin);
 const heldStdout = [];
 const heldStderr = [];
