@@ -2,7 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated` · `superseded`.
 
-Source and deployment headers reconciled 2026-09-03 against `origin/main` at `bb3c1cb`. The
+Source and deployment headers reconciled 2026-09-03 against `origin/main` at `3c190ba`. The
 implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
 the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
 the implementation is reachable from the recorded main revision. It does not by itself mean
@@ -162,6 +162,7 @@ implementation brief in `docs/workpackages/`.
 | 195 | Campaign-scoped optimizer previews | merged; deployment gated | AdLabs-style campaign checkboxes, explicit all-versus-selected scope, immutable per-group/unassigned child runs, exact queue custody and bounded parent polling merged through PR #121 at `857ce0c`; corrected exact-head and exact-main CI passed, while its migration is unhosted and no compatible worker/web revision, provider call or Amazon mutation is live |
 | 196 | Exclusive recommendation claim custody | merged; deployment gated | private recommendation authority, narrow worker-only RPCs, claim-bound run mutations, a dedicated single-flight database-only claimant, strict web readiness and revision-pinned Evo deployment controls merged through PR #123 at `38db8b2`; corrected exact-head and exact-main CI passed, while its migration is unhosted and no credential, service, admission, deployment, provider call or Amazon mutation is live |
 | 197 | Exact hosted migration bundle | merged; apply gated | deterministic offline reconstruction and independent verification of the exact 41-file hosted baseline plus five reviewed Git blobs, with rollback-only prefix evidence, merged through PR #125 at `bb3c1cb`; no hosted query or apply, credential, deployment, provider call or Amazon mutation occurred |
+| 198 | Hosted migration conformance oracle | merged; source-only | pure verification of the eight WP-197 signed record families, canonical signatures, phase tags, official CLI topology, runtime chains and legal transcripts merged through PR #127 at `3c190ba`; no CLI, external I/O, signing, launcher, authorization or apply capability exists |
 
 ## Milestone gates
 
@@ -175,6 +176,15 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-09-03 PR #127 merged WP-198 hosted-migration conformance at `3c190ba` after exact-head
+  run `33724348201` passed both jobs at `f14b5b4`; exact-main run `33725586955` passed both jobs at
+  the merge revision. High correctness, Extra-High apply-protocol and Extra-High
+  authority/capability reviews ended with no blocker, high or medium finding. Focused tests passed
+  54, strict package typecheck and lint passed, and serialized local repository verification passed
+  PostgreSQL migrations 22, all 19 non-UI packages, UI functional 163 and CI-threshold performance
+  10 tests. The package is a frozen, fail-closed, source-only oracle with no live authority or
+  external capability. The hosted ledger remains at 41 versions, and no hosted query or apply,
+  credential operation, staging, activation, deployment, provider call or Amazon mutation occurred.
 - On 2026-09-03 PR #125 merged WP-197 exact hosted-migration bundle tooling at `bb3c1cb` after
   exact-head run `33710054372` passed both jobs at `e663e9b`; exact-main run `33710817269` passed
   both jobs at the merge revision. High correctness, Extra-High adversarial safety and Extra-High
@@ -594,8 +604,12 @@ implementation brief in `docs/workpackages/`.
       closeout review corrected the later-runner lock sequence, official CLI topology/provenance,
       privilege isolation, external exclusivity and root-enforced authorization contracts before
       implementation or hosted use.
+- [x] PR #127 exact-head CI run `33724348201` and exact-main run `33725586955` passed both jobs at
+      `f14b5b4` and merged revision `3c190ba`, respectively. High correctness, Extra-High
+      apply-protocol and Extra-High authority/capability reviews ended with no blocker, high or
+      medium finding.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
-      `b5c210d` (127 and 267 WP-197-source commits behind, respectively), both new worker units are
+      `b5c210d` (133 and 273 WP-198-source commits behind, respectively), both new worker units are
       absent, and the active legacy worker revision is unproven. The attended stop/start reset its
       restart counter to zero; the worker is active/running and now reports one later automatic
       restart whose cause the unprivileged journal does not expose. Claim-failure containment and
@@ -609,7 +623,8 @@ implementation brief in `docs/workpackages/`.
       `20260901030000`, WP-194's `20260901040000`, and WP-195's `20260901050000` migrations are
       merged source only; WP-196's `20260901060000` is also source only. None is part of that hosted
       ledger. WP-197 deterministically builds and verifies the exact 41-plus-five source artifact,
-      but did not query or change hosted state and grants no apply authority.
+      while WP-198 verifies its signed lifecycle evidence vocabulary; neither queried or changed
+      hosted state, and neither grants apply authority.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [x] Full authenticated Wizard Ads route/state click-through at `bfce504`.
 - [x] Authenticated click-through at `b5c210d`: 21 of 21 production routes returned HTTP 200 with
