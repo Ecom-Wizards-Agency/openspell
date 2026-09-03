@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
-use std::fs::{self, File, Permissions};
+use std::fs::{self, File, OpenOptions, Permissions};
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, symlink};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
 use nix::sys::stat::Mode as NixMode;
@@ -12,7 +12,9 @@ use crate::canonical::MAX_CANONICAL_BYTES;
 use crate::crypto::{RecordSigner, SyntheticRecordSigner, sha256_hex};
 use crate::journal::storage::{
     HeadCas, JournalStore, OpenError, RegisterCommand, RootAuthority, StorageError, TicketEntropy,
-    TrustedClock, guarded_open_directory_for_test, verify_local_filesystem_for_test,
+    TrustedClock, guarded_metadata_open_for_test, guarded_open_directory_for_test,
+    test_artifact_content_reads, test_reset_artifact_content_reads,
+    verify_local_filesystem_for_test,
 };
 use crate::journal::{
     FORMAT_BYTES, InventoryFiles, JournalError, MAX_LEAVES, MAX_SIGNATURES, MAX_TOTAL_BYTES,
@@ -383,7 +385,7 @@ fn every_regular_artifact_executes_the_owner_mismatch_guard() {
 }
 
 #[test]
-fn production_open_guard_rejects_a_real_mount_crossing() {
+fn production_scanner_metadata_and_directory_guards_reject_a_real_mount_crossing() {
     let parent: OwnedFd = File::open("/dev").expect("open /dev").into();
     let parent_stat = fstat(&parent).expect("/dev stat");
     let child_stat = statat(&parent, c"shm", AtFlags::SYMLINK_NOFOLLOW).expect("/dev/shm stat");
@@ -406,6 +408,7 @@ fn production_open_guard_rejects_a_real_mount_crossing() {
         fstat(&control).expect("control stat").st_dev,
         parent_stat.st_dev
     );
+    assert!(guarded_metadata_open_for_test(&parent, c"shm").is_err());
     assert!(guarded_open_directory_for_test(&parent, c"shm").is_err());
 }
 
@@ -716,4 +719,83 @@ fn inventory_count_and_total_byte_caps_refuse_before_content_interpretation() {
         verify_inventory(&oversized_object, &public_key),
         Err(JournalError::Shape | JournalError::Limit)
     ));
+}
+
+#[test]
+fn production_scanner_caps_precede_any_artifact_content_read() {
+    const SPARSE_LEAF_COUNT: usize = 4_096;
+    const SPARSE_LEAF_BYTES: usize = 16 * 1_024;
+    const {
+        assert!(MAX_TRANSITIONS == 4_096);
+        assert!(MAX_CANONICAL_BYTES == SPARSE_LEAF_BYTES);
+        assert!(SPARSE_LEAF_COUNT <= MAX_LEAVES);
+        assert!(SPARSE_LEAF_COUNT * SPARSE_LEAF_BYTES == MAX_TOTAL_BYTES);
+        assert!(!FORMAT_BYTES.is_empty());
+    }
+
+    let public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
+
+    let transition_directory = new_tree();
+    for generation in 1..=MAX_TRANSITIONS + 1 {
+        let digest = format!("{generation:064x}");
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(
+                transition_directory
+                    .path()
+                    .join("transitions")
+                    .join(format!("{generation:020}-{digest}.json")),
+            )
+            .expect("sparse transition placeholder");
+    }
+    test_reset_artifact_content_reads();
+    let metadata = fs::metadata(transition_directory.path()).expect("transition root metadata");
+    let store = open_store(
+        transition_directory.path(),
+        public_key,
+        metadata.uid(),
+        metadata.gid(),
+    )
+    .expect("count-limited store opens sealed");
+    assert_eq!(store.inspect(), Err(StorageError::Sealed));
+    assert_eq!(
+        test_artifact_content_reads(),
+        0,
+        "transition count must fail before artifact content reads"
+    );
+    drop(store);
+
+    let byte_directory = new_tree();
+    for index in 0..SPARSE_LEAF_COUNT {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(
+                byte_directory
+                    .path()
+                    .join("objects/leaves")
+                    .join(format!("{index:064x}")),
+            )
+            .expect("sparse leaf placeholder");
+        file.set_len(SPARSE_LEAF_BYTES as u64)
+            .expect("size sparse leaf placeholder");
+    }
+    test_reset_artifact_content_reads();
+    let metadata = fs::metadata(byte_directory.path()).expect("byte root metadata");
+    let store = open_store(
+        byte_directory.path(),
+        public_key,
+        metadata.uid(),
+        metadata.gid(),
+    )
+    .expect("byte-limited store opens sealed");
+    assert_eq!(store.inspect(), Err(StorageError::Sealed));
+    assert_eq!(
+        test_artifact_content_reads(),
+        0,
+        "aggregate bytes must fail before artifact content reads"
+    );
 }

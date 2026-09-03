@@ -10,6 +10,7 @@ use crate::journal::storage::{
     ApproveCommand, CloseApprovalCommand, CloseCandidateCommand, CommitError, ConsumeCommand,
     HeadCas, JournalStore, RegisterCommand, RootAuthority, StatusCommand, TicketEntropy,
     TrustedClock, plan_approval_closure_before_signing, plan_consumption_before_entropy,
+    test_force_generation_capacity,
 };
 use crate::journal::{
     InventoryFiles, JournalError, MAX_TRANSITIONS, TransitionFile, VerifiedState, verify_inventory,
@@ -772,6 +773,8 @@ impl TicketEntropy for SequenceEntropy {
 
 struct CountingSigner {
     inner: SyntheticRecordSigner,
+    alternate_public_key: [u8; 32],
+    wrong_key: Option<Arc<std::sync::atomic::AtomicBool>>,
     calls: Arc<AtomicUsize>,
 }
 
@@ -779,6 +782,21 @@ impl CountingSigner {
     fn new(seed: [u8; 32], calls: Arc<AtomicUsize>) -> Self {
         Self {
             inner: SyntheticRecordSigner::from_seed(seed),
+            alternate_public_key: SyntheticRecordSigner::from_seed([8; 32]).public_key_bytes(),
+            wrong_key: None,
+            calls,
+        }
+    }
+
+    fn with_key_toggle(
+        seed: [u8; 32],
+        wrong_key: Arc<std::sync::atomic::AtomicBool>,
+        calls: Arc<AtomicUsize>,
+    ) -> Self {
+        Self {
+            inner: SyntheticRecordSigner::from_seed(seed),
+            alternate_public_key: SyntheticRecordSigner::from_seed([8; 32]).public_key_bytes(),
+            wrong_key: Some(wrong_key),
             calls,
         }
     }
@@ -790,7 +808,16 @@ impl CountingSigner {
 
 impl RecordSigner for CountingSigner {
     fn public_key_bytes(&self) -> [u8; 32] {
-        self.inner.public_key_bytes()
+        self.record_call();
+        if self
+            .wrong_key
+            .as_ref()
+            .is_some_and(|wrong| wrong.load(Ordering::SeqCst))
+        {
+            self.alternate_public_key
+        } else {
+            self.inner.public_key_bytes()
+        }
     }
 
     fn sign_approval_grant(&self, grant: &ApprovalGrant) -> Result<[u8; 64], CryptoError> {
@@ -1692,6 +1719,108 @@ fn deterministic_generation_capacity_precedes_entropy_and_signing_but_follows_ti
     assert!(matches!(expired_at_capacity, Err(CommitError::Capacity)));
     assert_eq!(entropy_calls.load(Ordering::SeqCst), 0);
     assert_eq!(signer_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn register_and_approve_capacity_precedes_a_wrong_pin_without_mutating_the_predecessor() {
+    use std::sync::atomic::AtomicBool;
+
+    let public_key = SyntheticRecordSigner::from_seed([7; 32]).public_key_bytes();
+
+    let register_calls = Arc::new(AtomicUsize::new(0));
+    let register_wrong_key = Arc::new(AtomicBool::new(true));
+    let (_register_directory, register_store) = empty_test_store(public_key);
+    let register_authority = RootAuthority::synthetic(
+        register_store,
+        CountingSigner::with_key_toggle(
+            [7; 32],
+            Arc::clone(&register_wrong_key),
+            Arc::clone(&register_calls),
+        ),
+        MutableClock(Arc::new(Mutex::new(NOW.to_owned()))),
+        SequenceEntropy::new(
+            [Ok([9; 32])],
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        ),
+    )
+    .expect("register authority");
+    register_calls.store(0, Ordering::SeqCst);
+    test_force_generation_capacity();
+    let register = register_authority.register(RegisterCommand::new(
+        HeadCas::new(0, GENESIS_SHA256.to_owned()),
+        candidate(),
+    ));
+    assert_eq!(register.test_error(), Some(CommitError::Capacity));
+    drop(register);
+    assert_eq!(register_calls.load(Ordering::SeqCst), 0);
+    let register_predecessor = register_authority
+        .inspect()
+        .expect("readable empty predecessor")
+        .1;
+    assert_eq!(register_predecessor.generation, 0);
+    assert!(matches!(register_predecessor.state, VerifiedState::Empty));
+
+    let approve_calls = Arc::new(AtomicUsize::new(0));
+    let approve_wrong_key = Arc::new(AtomicBool::new(false));
+    let (_approve_directory, approve_store) = empty_test_store(public_key);
+    let approve_authority = RootAuthority::synthetic(
+        approve_store,
+        CountingSigner::with_key_toggle(
+            [7; 32],
+            Arc::clone(&approve_wrong_key),
+            Arc::clone(&approve_calls),
+        ),
+        MutableClock(Arc::new(Mutex::new(NOW.to_owned()))),
+        SequenceEntropy::new(
+            [Ok([9; 32])],
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        ),
+    )
+    .expect("approve authority");
+    let registration = approve_authority.register(RegisterCommand::new(
+        HeadCas::new(0, GENESIS_SHA256.to_owned()),
+        candidate(),
+    ));
+    assert!(registration.is_ok());
+    drop(registration);
+    let registered = approve_authority
+        .inspect()
+        .expect("registered predecessor")
+        .1;
+    let candidate = match &registered.state {
+        VerifiedState::CandidateRegistered { candidate, .. } => candidate.as_ref().clone(),
+        _ => panic!("candidate state"),
+    };
+    approve_calls.store(0, Ordering::SeqCst);
+    approve_wrong_key.store(true, Ordering::SeqCst);
+    test_force_generation_capacity();
+    let approve = approve_authority.approve(
+        ApproveCommand::new(
+            HeadCas::new(registered.generation, registered.transition_sha256.clone()),
+            candidate.operation_id.clone(),
+            candidate.authorization_nonce.clone(),
+            candidate.envelope_sha256.clone(),
+            candidate.approval_challenge_sha256.clone(),
+        ),
+        &verified(&candidate),
+        &approval_authentication(&candidate, 'f', "2026-09-03T12:04:30Z"),
+    );
+    assert_eq!(approve.test_error(), Some(CommitError::Capacity));
+    drop(approve);
+    assert_eq!(approve_calls.load(Ordering::SeqCst), 0);
+    let approve_predecessor = approve_authority
+        .inspect()
+        .expect("readable candidate predecessor")
+        .1;
+    assert_eq!(approve_predecessor.generation, registered.generation);
+    assert_eq!(
+        approve_predecessor.transition_sha256,
+        registered.transition_sha256
+    );
+    assert!(matches!(
+        approve_predecessor.state,
+        VerifiedState::CandidateRegistered { .. }
+    ));
 }
 
 #[test]

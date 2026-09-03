@@ -8,8 +8,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use nix::fcntl::{FcntlArg, fcntl};
 use rustix::fs::{
-    AtFlags, FileType, Mode, OFlags, RawDir, ResolveFlags, Stat, fstat, fstatfs, fsync, openat2,
-    statat,
+    FileType, Mode, OFlags, RawDir, ResolveFlags, Stat, fstat, fstatfs, fsync, openat2,
 };
 use rustix::io::{Errno, read, write};
 use sha2::{Digest as _, Sha256};
@@ -50,6 +49,7 @@ const READ_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::CLOEXEC)
     .union(OFlags::NOFOLLOW)
     .union(OFlags::NONBLOCK);
+const METADATA_FLAGS: OFlags = OFlags::PATH.union(OFlags::CLOEXEC).union(OFlags::NOFOLLOW);
 const CREATE_FLAGS: OFlags = OFlags::WRONLY
     .union(OFlags::CLOEXEC)
     .union(OFlags::NOFOLLOW)
@@ -103,6 +103,8 @@ mod test_fault {
     std::thread_local! {
         static FAULT: RefCell<Option<Fault>> = const { RefCell::new(None) };
         static PUBLICATION_ORDINAL: Cell<usize> = const { Cell::new(0) };
+        static FORCE_GENERATION_CAPACITY: Cell<bool> = const { Cell::new(false) };
+        static ARTIFACT_CONTENT_READS: Cell<usize> = const { Cell::new(0) };
     }
 
     pub(super) fn set(point: TestFaultPoint, action: Action) {
@@ -118,6 +120,8 @@ mod test_fault {
     pub(super) fn clear() {
         FAULT.with_borrow_mut(|slot| *slot = None);
         PUBLICATION_ORDINAL.set(0);
+        FORCE_GENERATION_CAPACITY.set(false);
+        ARTIFACT_CONTENT_READS.set(0);
     }
 
     pub(super) fn armed() -> bool {
@@ -130,6 +134,26 @@ mod test_fault {
             ordinal.set(next);
             next
         })
+    }
+
+    pub(super) fn force_generation_capacity() {
+        assert!(!FORCE_GENERATION_CAPACITY.replace(true));
+    }
+
+    pub(super) fn take_generation_capacity() -> bool {
+        FORCE_GENERATION_CAPACITY.replace(false)
+    }
+
+    pub(super) fn reset_artifact_content_reads() {
+        ARTIFACT_CONTENT_READS.set(0);
+    }
+
+    pub(super) fn record_artifact_content_read() {
+        ARTIFACT_CONTENT_READS.with(|count| count.set(count.get() + 1));
+    }
+
+    pub(super) fn artifact_content_reads() -> usize {
+        ARTIFACT_CONTENT_READS.get()
     }
 
     pub(super) fn check(point: TestFaultPoint) -> Result<(), ()> {
@@ -170,6 +194,21 @@ pub(crate) fn test_park_at(point: TestFaultPoint, signal: impl FnOnce() + 'stati
 #[cfg(test)]
 pub(crate) fn test_clear_fault() {
     test_fault::clear();
+}
+
+#[cfg(test)]
+pub(crate) fn test_force_generation_capacity() {
+    test_fault::force_generation_capacity();
+}
+
+#[cfg(test)]
+pub(crate) fn test_reset_artifact_content_reads() {
+    test_fault::reset_artifact_content_reads();
+}
+
+#[cfg(test)]
+pub(crate) fn test_artifact_content_reads() -> usize {
+    test_fault::artifact_content_reads()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1692,7 +1731,6 @@ where
             let trusted_at = self.clock.sample().map_err(|()| CommitError::Clock)?;
             require_monotonic_clock(&complete.snapshot, &trusted_at)?;
             seal_candidate(&mut candidate, &trusted_at).map_err(map_state_error)?;
-            self.verify_signer_pin()?;
             let candidate_bytes = candidate.encode().map_err(|_| CommitError::Build)?;
             let candidate_sha256 = sha256_hex(&candidate_bytes);
             let next_generation = next_generation(&complete.snapshot)?;
@@ -1710,6 +1748,9 @@ where
                 .expected_signed_bytes()
                 .map_err(map_state_error)?;
             let artifact = ArtifactPublication::Candidate(ContentObject::leaf(candidate_bytes)?);
+            let footprint = artifact.footprint(expected_transition_bytes)?;
+            validate_projection(&complete, &footprint)?;
+            self.verify_signer_pin()?;
             let expected_candidate = candidate.clone();
             let expected_digest = candidate_sha256.clone();
             let (snapshot, proof) = self.store.publish_successor(
@@ -1803,7 +1844,6 @@ where
                 &self.store.pinned_public_key,
             )
             .map_err(map_state_error)?;
-            self.verify_signer_pin()?;
             let projected_grant = approval_plan.projected_signed();
             let projected_grant_bytes = projected_grant.encode().map_err(|_| CommitError::Build)?;
             let projected_transition = plan_approved_transition(
@@ -1834,6 +1874,7 @@ where
                         .ok_or(CommitError::Capacity)?,
                 },
             )?;
+            self.verify_signer_pin()?;
             let (grant, grant_signature) = approval_plan
                 .sign(&self.signer, &self.store.pinned_public_key)
                 .map_err(map_state_error)?;
@@ -2418,6 +2459,10 @@ pub(crate) fn plan_approval_closure_before_signing(
 }
 
 fn next_generation(snapshot: &VerifiedSnapshot) -> Result<u64, CommitError> {
+    #[cfg(test)]
+    if test_fault::take_generation_capacity() {
+        return Err(CommitError::Capacity);
+    }
     snapshot
         .generation
         .checked_add(1)
@@ -2703,7 +2748,7 @@ fn open_regular(
         }
         return Ok(fd);
     }
-    let before = statat(parent, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|_| ())?;
+    let (_metadata_fd, before) = open_metadata(parent, name)?;
     verify_metadata(&before, owner, FileType::RegularFile, 0o600, 1)?;
     if before.st_size != size as i64 {
         return Err(());
@@ -2719,7 +2764,7 @@ fn open_regular(
 }
 
 fn open_regular_read(parent: &OwnedFd, name: &CStr, owner: Owner) -> Result<(OwnedFd, Stat), ()> {
-    let before = statat(parent, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|_| ())?;
+    let (_metadata_fd, before) = open_metadata(parent, name)?;
     verify_metadata(&before, owner, FileType::RegularFile, 0o600, 1)?;
     let fd = open_existing(parent, name, READ_FLAGS)?;
     let opened =
@@ -2732,6 +2777,17 @@ fn open_regular_read(parent: &OwnedFd, name: &CStr, owner: Owner) -> Result<(Own
 
 fn open_existing(parent: &OwnedFd, name: &CStr, flags: OFlags) -> Result<OwnedFd, ()> {
     openat2(parent, name, flags, Mode::empty(), RESOLVE).map_err(|_| ())
+}
+
+fn open_metadata(parent: &OwnedFd, name: &CStr) -> Result<(OwnedFd, Stat), ()> {
+    let fd = open_existing(parent, name, METADATA_FLAGS)?;
+    let stat = fstat(&fd).map_err(|_| ())?;
+    Ok((fd, stat))
+}
+
+#[cfg(test)]
+pub(crate) fn guarded_metadata_open_for_test(parent: &OwnedFd, name: &CStr) -> Result<OwnedFd, ()> {
+    open_metadata(parent, name).map(|(fd, _)| fd)
 }
 
 #[cfg(test)]
@@ -2751,7 +2807,7 @@ fn verify_entry_matches_fd(
     mode: u32,
     nlink: u64,
 ) -> Result<Stat, ()> {
-    let entry = statat(parent, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|_| ())?;
+    let (_entry_fd, entry) = open_metadata(parent, name)?;
     let opened = fstat(fd).map_err(|_| ())?;
     if entry.st_dev != opened.st_dev
         || entry.st_ino != opened.st_ino
@@ -3230,6 +3286,8 @@ fn digest_exact_file(
     fd: &OwnedFd,
     size: usize,
 ) -> Result<[u8; 32], ()> {
+    #[cfg(test)]
+    test_fault::record_artifact_content_read();
     update_inventory_digest_header(inventory_digest, namespace, name, size)?;
     rustix::fs::seek(fd, rustix::fs::SeekFrom::Start(0)).map_err(|_| ())?;
     let mut content_digest = Sha256::new();
