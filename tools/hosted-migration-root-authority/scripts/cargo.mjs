@@ -30,7 +30,7 @@ function run(command, args, options = {}) {
     ...options,
   });
   if (result.error !== undefined) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  return result.status ?? 1;
 }
 
 function hasPinnedLocalToolchain() {
@@ -59,19 +59,18 @@ export function runCargo(mode) {
       join(tmpdir(), "openspell-root-authority-target-"),
     );
     try {
-      run("bash", ["-c", script], {
+      return run("bash", ["-c", script], {
         env: { ...process.env, CARGO_TARGET_DIR: cargoTargetDirectory },
       });
     } finally {
       rmSync(cargoTargetDirectory, { force: true, recursive: true });
     }
-    return;
   }
 
   const uid = process.getuid?.();
   const gid = process.getgid?.();
   if (uid === undefined || gid === undefined) throw new Error("linux uid/gid required");
-  run("docker", [
+  return run("docker", [
     "run",
     "--rm",
     "--user",
@@ -103,5 +102,5 @@ if (invokedPath !== undefined && fileURLToPath(import.meta.url) === invokedPath)
   if (rest.length !== 0 || (mode !== "check" && mode !== "test")) {
     throw new Error("usage: node scripts/cargo.mjs check|test");
   }
-  runCargo(mode);
+  process.exitCode = runCargo(mode);
 }

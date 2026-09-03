@@ -1,5 +1,14 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -205,6 +214,55 @@ describe("private root-authority package boundary", () => {
     expect(wrapper).toContain(
       "rmSync(cargoTargetDirectory, { force: true, recursive: true })",
     );
+  });
+
+  it("removes the isolated local Cargo target after a command failure", () => {
+    const fixtureDirectory = mkdtempSync(
+      join(tmpdir(), "openspell-root-authority-cargo-failure-"),
+    );
+    try {
+      const binaryDirectory = join(fixtureDirectory, "bin");
+      const cargoTempDirectory = join(fixtureDirectory, "tmp");
+      mkdirSync(binaryDirectory);
+      mkdirSync(cargoTempDirectory);
+      const rustcPath = join(binaryDirectory, "rustc");
+      const cargoPath = join(binaryDirectory, "cargo");
+      writeFileSync(rustcPath, "#!/bin/sh\nprintf 'rustc 1.97.1 (fixture)\\n'\n", {
+        mode: 0o700,
+      });
+      writeFileSync(
+        cargoPath,
+        [
+          "#!/bin/sh",
+          'if [ "$1" = "--version" ]; then',
+          "  printf 'cargo 1.97.1 (fixture)\\n'",
+          "  exit 0",
+          "fi",
+          "exit 23",
+          "",
+        ].join("\n"),
+        { mode: 0o700 },
+      );
+      chmodSync(rustcPath, 0o700);
+      chmodSync(cargoPath, 0o700);
+
+      const result = spawnSync(process.execPath, [join(packageDirectory, "scripts/cargo.mjs"), "check"], {
+        cwd: packageDirectory,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${binaryDirectory}:${process.env.PATH ?? ""}`,
+          TMPDIR: cargoTempDirectory,
+        },
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(23);
+      expect(readdirSync(cargoTempDirectory)).toEqual([]);
+      expect(readdirSync(packageDirectory)).not.toContain("target");
+    } finally {
+      rmSync(fixtureDirectory, { force: true, recursive: true });
+    }
   });
 
   it("forbids unsafe and exposes no public Rust API", () => {

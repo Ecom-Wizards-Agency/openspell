@@ -13,7 +13,8 @@ if (
   throw new Error("only the repository --maxWorkers=1 test argument is accepted");
 }
 
-runCargo("test");
+const cargoStatus = runCargo("test");
+if (cargoStatus !== 0) process.exit(cargoStatus);
 
 const result = spawnSync(
   "pnpm",
