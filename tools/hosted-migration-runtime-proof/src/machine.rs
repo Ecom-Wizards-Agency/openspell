@@ -568,6 +568,14 @@ impl SyntheticProofMachine {
             || !effect.has_valid_bootstrap_permit()
             || !effect.has_valid_resume_permit()
         {
+            self.accounting.effects_uncertain = self
+                .accounting
+                .effects_uncertain
+                .checked_add(1)
+                .ok_or(MachineError::InternalInvariant)?;
+            self.accounting
+                .uncertain_resources
+                .add(expected_header.kind.declaration().resources)?;
             self.close_refused(ProofRefusal::RecoveryRequired);
             return Err(MachineError::UnexpectedEffect);
         }

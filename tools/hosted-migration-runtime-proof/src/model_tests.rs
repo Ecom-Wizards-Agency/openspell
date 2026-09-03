@@ -353,6 +353,12 @@ fn effects_are_bound_to_one_verified_case_identity() {
         second.result().and_then(ProofResult::refusal),
         Some(ProofRefusal::RecoveryRequired)
     );
+    for accounting in [first.accounting(), second.accounting()] {
+        assert!(accounting.effect_events_conserve());
+        assert_eq!(accounting.effects_offered, 1);
+        assert_eq!(accounting.effects_uncertain, 1);
+        assert_eq!(accounting.uncertain_resources.durable_intents, 1);
+    }
 }
 
 #[test]
@@ -376,6 +382,9 @@ fn illegal_transitions_never_advance_or_reissue() {
         machine.result().and_then(ProofResult::refusal),
         Some(ProofRefusal::RecoveryRequired)
     );
+    assert!(machine.accounting().effect_events_conserve());
+    assert_eq!(machine.accounting().effects_uncertain, 1);
+    assert_eq!(machine.accounting().uncertain_resources.durable_intents, 1);
     assert!(matches!(machine.offer(), Err(MachineError::MachineClosed)));
     assert_eq!(machine.interrupt(), Err(MachineError::MachineClosed));
 }
