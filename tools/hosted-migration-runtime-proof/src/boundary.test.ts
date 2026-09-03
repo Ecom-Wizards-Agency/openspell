@@ -277,10 +277,25 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(interruptionProof).toContain("primaryTimedOut ||");
     expect(interruptionProof).toContain("forcedExitUsed ||");
     expect(interruptionProof).toContain("await recoverCapturedObjects(record, imageId)");
+    expect(interruptionProof).toContain("async function settleChildCustody(");
+    expect(interruptionProof).toContain("const stopped = await settleChildCustody(");
+    expect(interruptionProof).toContain("requireWatchdogFixtureImage(imageAcquisition)");
+    expect(interruptionProof).toContain("proveCapturedObjectsAbsent(record, imageId)");
     expect(interruptionProof).not.toContain('["volume", "rm"');
     expect(interruptionProof).toContain("await stopEventWatcher(watcher, watcherExit)");
     expect(interruptionProof).toContain("watcherTerminal.timedOut ||");
     expect(interruptionProof).toContain("await proveWatchdogRecovery()");
+    expect(
+      interruptionProof.indexOf(
+        'containerId = typeof created.stdout === "string" ? created.stdout.trim()',
+      ),
+    ).toBeLessThan(
+      interruptionProof.indexOf("requireDocker(created)"),
+    );
+    expect(interruptionProof).toContain("const volumesBefore = volumeInventory()");
+    expect(interruptionProof).toContain(
+      "JSON.stringify(volumeInventory()) !== JSON.stringify(volumesBefore)",
+    );
     expect(interruptionProof).toContain(
       "interruption-cuts=5 watchdog-recovery=1 signals=2 residue=0",
     );

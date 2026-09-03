@@ -352,8 +352,11 @@ privilege. A separate `test:kernel` wrapper:
    before refusing. A volume name is evidence, never independent deletion authority; if exact
    container removal cannot establish its absence, cleanup remains uncertain.
    A fixed watchdog fixture exercises that disqualifying path with an inert, networkless,
-   read-only container and anonymous volume, forces the unresponsive fixture supervisor to close,
-   then proves exact container-owned cleanup and captured-volume absence.
+   read-only container, anonymous volume and disposable derived image, forces the unresponsive
+   fixture supervisor to close through the same custody function used by every real cut, then proves
+   exact container/image cleanup and captured-volume absence. Fixture setup retains a valid
+   container ID before validating the create response; if inspection cannot capture the volume
+   name, teardown must restore the complete pre-create volume inventory or refuse.
 
 The reviewed image is:
 
