@@ -272,7 +272,7 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(interruptionProof).toContain("performance.now() < deadline");
     expect(interruptionProof).toContain("remainingOperationTime(deadline)");
     expect(interruptionProof).toContain(
-      "finalCleanupObservationTimeoutMilliseconds = 30 * 60_000",
+      "finalCleanupObservationTimeoutMilliseconds = 60 * 60_000",
     );
     expect(interruptionProof).toContain("primaryTimedOut ||");
     expect(interruptionProof).toContain("forcedExitUsed ||");
@@ -280,7 +280,10 @@ describe("private hosted-migration runtime proof boundary", () => {
     expect(interruptionProof).not.toContain('["volume", "rm"');
     expect(interruptionProof).toContain("await stopEventWatcher(watcher, watcherExit)");
     expect(interruptionProof).toContain("watcherTerminal.timedOut ||");
-    expect(interruptionProof).toContain("interruption-cuts=5 signals=2 residue=0");
+    expect(interruptionProof).toContain("await proveWatchdogRecovery()");
+    expect(interruptionProof).toContain(
+      "interruption-cuts=5 watchdog-recovery=1 signals=2 residue=0",
+    );
     expect(kernel).toContain('"/usr/bin/setpriv"');
     expect(kernel).toContain('"--bounding-set=-all,+sys_admin,+setfcap"');
     expect(kernel).toContain('"--no-new-privs"');

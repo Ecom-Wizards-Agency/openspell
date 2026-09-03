@@ -143,7 +143,8 @@ Handover and status change only after reviewed merge and exact-main CI.
 - real process-group SIGINT/SIGTERM cuts during build-container acquisition, committed-image
   acquisition, held pre-start case inspection, running privileged-case execution and final image
   deletion, including regression-sensitive no-start detection, composed phase deadlines, awaited
-  child/event-watcher closure and exact emergency cleanup custody on a disqualifying watchdog path;
+  child/event-watcher closure and an executable exact emergency-cleanup custody proof on a
+  disqualifying watchdog path;
 - privacy-canary proof across results, errors and logs;
 - pinned Cargo format/check/clippy/rustdoc/test plus TypeScript boundary tests;
 - repository typecheck, lint, test and hygiene on exact PR head, plus the permissionless privileged

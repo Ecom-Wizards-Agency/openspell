@@ -351,6 +351,9 @@ privilege. A separate `test:kernel` wrapper:
    with `--volumes` and derived-image ID, then must prove the captured anonymous-volume name absent
    before refusing. A volume name is evidence, never independent deletion authority; if exact
    container removal cannot establish its absence, cleanup remains uncertain.
+   A fixed watchdog fixture exercises that disqualifying path with an inert, networkless,
+   read-only container and anonymous volume, forces the unresponsive fixture supervisor to close,
+   then proves exact container-owned cleanup and captured-volume absence.
 
 The reviewed image is:
 

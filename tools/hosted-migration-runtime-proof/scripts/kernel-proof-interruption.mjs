@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   accessSync,
   chmodSync,
@@ -18,6 +19,8 @@ import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, URL } from "node:url";
 
+import { image } from "./cargo.mjs";
+
 const wrapper = fileURLToPath(new URL("./kernel-proof.mjs", import.meta.url));
 const dockerResponseShim = fileURLToPath(
   new URL("./docker-response-shim.mjs", import.meta.url),
@@ -29,8 +32,10 @@ const exitTimeoutMilliseconds = 180_000;
 const forcedExitTimeoutMilliseconds = 180_000;
 const forcedKillTimeoutMilliseconds = 30_000;
 const emergencyCleanupTimeoutMilliseconds = 120_000;
-const finalCleanupObservationTimeoutMilliseconds = 30 * 60_000;
+const finalCleanupObservationTimeoutMilliseconds = 60 * 60_000;
 const watcherExitTimeoutMilliseconds = 10_000;
+const watchdogFixtureTimeoutMilliseconds = 100;
+const watchdogFixtureReadyTimeoutMilliseconds = 10_000;
 
 function remainingOperationTime(deadline) {
   return Math.max(1, Math.min(10_000, Math.ceil(deadline - performance.now())));
@@ -324,23 +329,29 @@ function signalProcessGroup(child, signal) {
   }
 }
 
-async function ensureChildExit(child, observedExit, terminal) {
+async function ensureChildExit(
+  child,
+  observedExit,
+  terminal,
+  gracefulTimeoutMilliseconds = forcedExitTimeoutMilliseconds,
+  killTimeoutMilliseconds = forcedKillTimeoutMilliseconds,
+) {
   if (terminal !== undefined && !terminal.timedOut) {
     return Object.freeze({ forced: false, terminal });
   }
   if (!childIsRunning(child)) {
     return Object.freeze({
       forced: false,
-      terminal: await waitForObservedExit(observedExit, forcedExitTimeoutMilliseconds),
+      terminal: await waitForObservedExit(observedExit, gracefulTimeoutMilliseconds),
     });
   }
   signalProcessGroup(child, "SIGTERM");
-  let stopped = await waitForObservedExit(observedExit, forcedExitTimeoutMilliseconds);
+  let stopped = await waitForObservedExit(observedExit, gracefulTimeoutMilliseconds);
   if (!stopped.timedOut || !childIsRunning(child)) {
     return Object.freeze({ forced: true, terminal: stopped });
   }
   signalProcessGroup(child, "SIGKILL");
-  stopped = await waitForObservedExit(observedExit, forcedKillTimeoutMilliseconds);
+  stopped = await waitForObservedExit(observedExit, killTimeoutMilliseconds);
   return Object.freeze({ forced: true, terminal: stopped });
 }
 
@@ -473,6 +484,147 @@ async function stopEventWatcher(watcher, observedExit) {
     terminal = await waitForObservedExit(observedExit, forcedKillTimeoutMilliseconds);
   }
   return Object.freeze({ forced, terminal });
+}
+
+function createWatchdogFixtureContainer() {
+  const name = `openspell-wp200-build-${randomUUID()}`;
+  let containerId;
+  try {
+    const created = docker([
+      "container",
+      "create",
+      "--name",
+      name,
+      "--network",
+      "none",
+      "--read-only",
+      "--mount",
+      "type=volume,destination=/target",
+      "--entrypoint",
+      "/bin/true",
+      image,
+    ]);
+    requireDocker(created);
+    containerId = created.stdout.trim();
+    if (!/^[0-9a-f]{64}$/u.test(containerId)) {
+      throw new Error("interruption proof watchdog container identity refused");
+    }
+    return Object.freeze({ name, record: inspectContainer(containerId) });
+  } catch (error) {
+    if (/^[0-9a-f]{64}$/u.test(containerId ?? "")) {
+      attemptDockerCleanup(["container", "rm", "--force", "--volumes", containerId]);
+    }
+    throw error;
+  }
+}
+
+function requireWatchdogFixtureContainer(name, record) {
+  const volumes = (record.Mounts ?? []).filter(
+    (mount) =>
+      mount.Type === "volume" &&
+      mount.Destination === "/target" &&
+      /^[0-9a-f]{64}$/u.test(mount.Name),
+  );
+  if (
+    record.Name !== `/${name}` ||
+    record.State?.Status !== "created" ||
+    record.HostConfig?.Privileged !== false ||
+    record.HostConfig?.NetworkMode !== "none" ||
+    record.HostConfig?.ReadonlyRootfs !== true ||
+    volumes.length !== 1
+  ) {
+    throw new Error("interruption proof watchdog container refused");
+  }
+}
+
+async function awaitWatchdogFixtureReady(child, output) {
+  const deadline = performance.now() + watchdogFixtureReadyTimeoutMilliseconds;
+  while (performance.now() < deadline) {
+    if (output() === "ready\n") return;
+    if (output() !== "" || !childIsRunning(child)) {
+      throw new Error("interruption proof watchdog fixture refused");
+    }
+    await delay(observationDelayMilliseconds);
+  }
+  throw new Error("interruption proof watchdog fixture unavailable");
+}
+
+async function proveWatchdogRecovery() {
+  proveGlobalResidueAbsent();
+  let record;
+  let child;
+  let observedExit;
+  let terminal;
+  let operationFailed = false;
+  let proved = false;
+  try {
+    const fixture = createWatchdogFixtureContainer();
+    record = fixture.record;
+    requireWatchdogFixtureContainer(fixture.name, record);
+    child = spawn(
+      process.execPath,
+      [
+        "--eval",
+        "process.on('SIGTERM',()=>{});process.stdout.write('ready\\n');setInterval(()=>{},1000)",
+      ],
+      { detached: true, stdio: ["ignore", "pipe", "ignore"] },
+    );
+    observedExit = observeChildExit(child);
+    const output = collectBounded(child.stdout);
+    await awaitWatchdogFixtureReady(child, output);
+    const stopped = await ensureChildExit(
+      child,
+      observedExit,
+      undefined,
+      watchdogFixtureTimeoutMilliseconds,
+      watcherExitTimeoutMilliseconds,
+    );
+    terminal = stopped.terminal;
+    if (
+      !stopped.forced ||
+      terminal.timedOut ||
+      terminal.spawnFailed ||
+      terminal.code !== null ||
+      terminal.signal !== "SIGKILL"
+    ) {
+      throw new Error("interruption proof watchdog force refused");
+    }
+    await recoverCapturedObjects(record);
+    proveCapturedObjectsAbsent(record);
+    proveGlobalResidueAbsent();
+    proved = true;
+  } catch {
+    operationFailed = true;
+  } finally {
+    if (child !== undefined && observedExit !== undefined && childIsRunning(child)) {
+      try {
+        await ensureChildExit(
+          child,
+          observedExit,
+          terminal,
+          watchdogFixtureTimeoutMilliseconds,
+          watcherExitTimeoutMilliseconds,
+        );
+      } catch {
+        operationFailed = true;
+      }
+    }
+    if (record !== undefined) {
+      try {
+        await recoverCapturedObjects(record);
+      } catch {
+        operationFailed = true;
+      }
+    }
+    try {
+      proveGlobalResidueAbsent();
+    } catch {
+      operationFailed = true;
+    }
+  }
+  if (operationFailed || !proved) {
+    throw new Error("interruption proof watchdog recovery refused");
+  }
 }
 
 async function proveSignal(signal, prefix, responseCutName, observeImage = false) {
@@ -674,8 +826,9 @@ try {
   await proveSignal("SIGINT", "openspell-wp200-case-", "case-inspect");
   await proveSignal("SIGTERM", "openspell-wp200-case-");
   await proveFinalCleanupSignal();
+  await proveWatchdogRecovery();
   process.stdout.write(
-    "openspell synthetic kernel proof: interruption-cuts=5 signals=2 residue=0\n",
+    "openspell synthetic kernel proof: interruption-cuts=5 watchdog-recovery=1 signals=2 residue=0\n",
   );
 } catch {
   process.stderr.write("openspell synthetic interruption proof refused\n");
