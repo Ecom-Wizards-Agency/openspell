@@ -20,9 +20,13 @@ import process from "node:process";
 import { TextDecoder } from "node:util";
 
 const CONTROL_MAGIC = "openspell.wp201.path-cleanup.v2";
+const FAILED_CUT_CONTROL_MAGIC = "openspell.wp201.path-cleanup-failed-cut.v1";
 const INVOCATION_PREFIX = "openspell-wp201-root-proof-";
 const INVOCATION_MAGIC = "openspell.wp201.invocation.v1";
 const COMPLETION = Buffer.from("openspell.wp201.path-cleanup-complete.v2\n");
+const FAILED_CUT_COMPLETION = Buffer.from(
+  "openspell.wp201.path-cleanup-failed-cut-complete.v1\n",
+);
 const REFUSAL = Buffer.from("openspell.wp201.path-cleanup-refused.v2\n");
 const LEDGER_MAGIC = "openspell.wp201.vendor-ledger.v1";
 
@@ -228,7 +232,26 @@ function parseControl(bytes) {
   const value = decodeExactUtf8(bytes);
   requireThat(!value.includes("\0") && !value.includes("\r"));
   const fields = value.split("\n");
-  requireThat(fields.length === 7 && fields.at(-1) === "");
+  requireThat(fields.at(-1) === "");
+  if (fields[0] === FAILED_CUT_CONTROL_MAGIC) {
+    requireThat(fields.length === 8);
+    const [magic, parentToken, invocation, device, inode, mountId, ledgerDigest] = fields;
+    requireThat(magic === FAILED_CUT_CONTROL_MAGIC);
+    requireThat(parentToken === "tmp" || parentToken === "var-tmp");
+    requireThat(/^[0-9a-f]{64}$/u.test(invocation));
+    requireThat(/^[0-9a-f]{64}$/u.test(ledgerDigest));
+    return {
+      protocol: "failed-cut",
+      parentToken,
+      invocation,
+      device: parseUnsigned(device),
+      inode: parseUnsigned(inode),
+      mountId: parseUnsigned(mountId),
+      ledgerDigest,
+    };
+  }
+
+  requireThat(fields.length === 7);
   const [magic, parentToken, invocation, device, inode, cleanupState] = fields;
   requireThat(magic === CONTROL_MAGIC);
   requireThat(parentToken === "tmp" || parentToken === "var-tmp");
@@ -239,6 +262,7 @@ function parseControl(bytes) {
       cleanupState === "ledger-backed",
   );
   return {
+    protocol: "normal",
     parentToken,
     invocation,
     device: parseUnsigned(device),
@@ -262,6 +286,52 @@ function readPathBounded(path, maximumBytes) {
   } finally {
     closeSync(descriptor);
   }
+}
+
+function descriptorInfo(descriptor) {
+  const text = decodeExactUtf8(
+    readPathBounded(`/proc/self/fdinfo/${descriptor}`, 4_096),
+  );
+  requireThat(text.endsWith("\n") && !text.includes("\r") && !text.includes("\0"));
+  const flagMatches = [...text.matchAll(/^flags:\s+(?<flags>[0-7]+)$/gmu)];
+  const mountMatches = [...text.matchAll(/^mnt_id:\s+(?<mountId>[1-9][0-9]*)$/gmu)];
+  requireThat(flagMatches.length === 1 && mountMatches.length === 1);
+  const flags = flagMatches[0]?.groups?.flags;
+  const mountId = mountMatches[0]?.groups?.mountId;
+  requireThat(flags !== undefined && mountId !== undefined);
+  return { flags, mountId: parseUnsigned(mountId) };
+}
+
+function descriptorIdentity(stat) {
+  return `${stat.dev}:${stat.ino}`;
+}
+
+function descriptorTableIdentityCount(expected) {
+  const directory = opendirSync("/proc/self/fd", { encoding: "buffer" });
+  const descriptors = [];
+  try {
+    for (;;) {
+      const entry = directory.readSync();
+      if (entry === null) break;
+      const name = Buffer.isBuffer(entry.name)
+        ? entry.name.toString("ascii")
+        : entry.name;
+      if (/^(?:0|[1-9][0-9]*)$/u.test(name)) descriptors.push(Number(name));
+    }
+  } finally {
+    directory.closeSync();
+  }
+
+  let count = 0;
+  for (const descriptor of descriptors) {
+    try {
+      const observed = fstatSync(descriptor, { bigint: true });
+      if (observed.dev === expected.dev && observed.ino === expected.ino) count += 1;
+    } catch (error) {
+      requireThat(error?.code === "EBADF" || error?.code === "ENOENT");
+    }
+  }
+  return count;
 }
 
 function decodeMountPath(value) {
@@ -638,6 +708,99 @@ function parseLedger(bytes) {
   return specifications;
 }
 
+function addStructuralSpecifications(specifications) {
+  function add(path, specification) {
+    requireThat(!specifications.has(path));
+    specifications.set(path, specification);
+  }
+
+  add("INVOCATION", { kind: "invocation" });
+  add("control", { kind: "directory", mode: 0o555 });
+  add("control/acquisition.sh", {
+    kind: "file",
+    mode: 0o444,
+    size: ACQUISITION_CONTROLLER.size,
+    digest: ACQUISITION_CONTROLLER.digest,
+  });
+  add("acquisition", { kind: "directory", mode: 0o700 });
+  add("acquisition/vendor-ledger.v1", { kind: "ledger" });
+  add("docker", { kind: "directory", mode: 0o500 });
+  add("docker/home", { kind: "directory", mode: 0o700 });
+  add("docker/config", { kind: "directory", mode: 0o500 });
+  add("docker/config/config.json", {
+    kind: "bytes",
+    mode: 0o400,
+    bytes: Buffer.from("{}"),
+  });
+  return specifications;
+}
+
+function positionalDescriptorBytes(descriptor, size) {
+  requireThat(size >= 0 && size <= MAX_LEDGER_BYTES);
+  const bytes = Buffer.allocUnsafe(size);
+  let offset = 0;
+  while (offset < size) {
+    const requested = Math.min(1024 * 1024, size - offset);
+    const count = readSync(descriptor, bytes, offset, requested, offset);
+    requireThat(count > 0);
+    offset += count;
+  }
+  const probe = Buffer.allocUnsafe(1);
+  requireThat(readSync(descriptor, probe, 0, 1, size) === 0);
+  return bytes;
+}
+
+function sameRetainedLedgerIdentity(expected, observed) {
+  return (
+    observed.isFile() &&
+    expected.dev === observed.dev &&
+    expected.ino === observed.ino &&
+    expected.uid === observed.uid &&
+    expected.gid === observed.gid &&
+    expected.mode === observed.mode &&
+    expected.rdev === observed.rdev &&
+    expected.size === observed.size &&
+    expected.mtimeNs === observed.mtimeNs &&
+    observed.ctimeNs >= expected.ctimeNs
+  );
+}
+
+function readRetainedLedger(descriptor, expectedDigest, rootIdentity) {
+  const before = fstatSync(descriptor, { bigint: true });
+  requireThat(
+    before.isFile() &&
+      before.dev === rootIdentity.dev &&
+      before.uid === BigInt(process.getuid()) &&
+      before.gid === BigInt(process.getgid()) &&
+      modeBits(before) === 0o444 &&
+      (before.nlink === 0n || before.nlink === 1n) &&
+      before.size >= 0n &&
+      before.size <= BigInt(MAX_LEDGER_BYTES),
+  );
+  const bytes = positionalDescriptorBytes(descriptor, Number(before.size));
+  const after = fstatSync(descriptor, { bigint: true });
+  requireThat(
+    sameRetainedLedgerIdentity(before, after) && before.nlink === after.nlink,
+  );
+  requireThat(createHash("sha256").update(bytes).digest("hex") === expectedDigest);
+  return { identity: before, bytes };
+}
+
+function revalidateRetainedLedger(descriptor, authority, expectedDigest, terminal) {
+  const before = fstatSync(descriptor, { bigint: true });
+  requireThat(sameRetainedLedgerIdentity(authority.identity, before));
+  requireThat(terminal ? before.nlink === 0n : before.nlink === 0n || before.nlink === 1n);
+  const bytes = positionalDescriptorBytes(descriptor, Number(before.size));
+  const after = fstatSync(descriptor, { bigint: true });
+  requireThat(
+    sameRetainedLedgerIdentity(authority.identity, after) &&
+      before.nlink === after.nlink &&
+      bytes.equals(authority.bytes) &&
+      createHash("sha256").update(bytes).digest("hex") === expectedDigest,
+  );
+  return after;
+}
+
 function validateInvocationRecord(entry, invocation, allowPartial) {
   const expected = Buffer.from(`${INVOCATION_MAGIC}\n${invocation}\n`, "utf8");
   if (entry === undefined) {
@@ -664,31 +827,7 @@ function validateLedgerBackedTree(entries, invocation) {
   const ledgerEntry = actual.get("acquisition/vendor-ledger.v1");
   requireExpectedFileStat(ledgerEntry, 0o444, MAX_LEDGER_BYTES);
   const ledgerBytes = readStableFile(ledgerEntry, MAX_LEDGER_BYTES);
-  const specifications = parseLedger(ledgerBytes);
-
-  function addException(path, specification) {
-    requireThat(!specifications.has(path));
-    specifications.set(path, specification);
-  }
-
-  addException("INVOCATION", { kind: "invocation" });
-  addException("control", { kind: "directory", mode: 0o555 });
-  addException("control/acquisition.sh", {
-    kind: "file",
-    mode: 0o444,
-    size: ACQUISITION_CONTROLLER.size,
-    digest: ACQUISITION_CONTROLLER.digest,
-  });
-  addException("acquisition", { kind: "directory", mode: 0o700 });
-  addException("acquisition/vendor-ledger.v1", { kind: "ledger" });
-  addException("docker", { kind: "directory", mode: 0o500 });
-  addException("docker/home", { kind: "directory", mode: 0o700 });
-  addException("docker/config", { kind: "directory", mode: 0o500 });
-  addException("docker/config/config.json", {
-    kind: "bytes",
-    mode: 0o400,
-    bytes: Buffer.from("{}"),
-  });
+  const specifications = addStructuralSpecifications(parseLedger(ledgerBytes));
 
   requireThat(actual.size === specifications.size);
   for (const [path, specification] of specifications) {
@@ -713,6 +852,10 @@ function validateLedgerBackedTree(entries, invocation) {
   }
   for (const path of actual.keys()) requireThat(specifications.has(path));
 
+  validateFixedLedgerSpecifications(specifications);
+}
+
+function validateFixedLedgerSpecifications(specifications) {
   const proofSpecification = specifications.get("control/proof.sh");
   requireThat(
     proofSpecification?.kind === "file" &&
@@ -736,6 +879,81 @@ function validateLedgerBackedTree(entries, invocation) {
         specification.digest === createHash("sha256").update(expected).digest("hex"),
     );
   }
+}
+
+function directoryModeAllowed(entry, specification) {
+  return (
+    entry.stat.isDirectory() &&
+    (modeBits(entry.stat) === specification.mode || modeBits(entry.stat) === 0o700)
+  );
+}
+
+function validateSubsetDirectoryLinks(actual, rootIdentity) {
+  const directoryChildren = new Map([["", 0]]);
+  for (const [path, entry] of actual) {
+    if (entry.stat.isDirectory()) directoryChildren.set(path, 0);
+  }
+  for (const [path, entry] of actual) {
+    if (!entry.stat.isDirectory()) continue;
+    const separator = path.lastIndexOf("/");
+    const parent = separator === -1 ? "" : path.slice(0, separator);
+    requireThat(directoryChildren.has(parent));
+    directoryChildren.set(parent, directoryChildren.get(parent) + 1);
+  }
+  requireThat(rootIdentity.nlink === 2n + BigInt(directoryChildren.get("")));
+  for (const [path, children] of directoryChildren) {
+    if (path === "") continue;
+    const entry = actual.get(path);
+    requireThat(entry !== undefined && entry.stat.nlink === 2n + BigInt(children));
+  }
+}
+
+function validateFailedCutSubset(
+  entries,
+  rootIdentity,
+  invocation,
+  ledgerAuthority,
+  specifications,
+) {
+  const actual = new Map();
+  for (const entry of entries) {
+    requireThat(entry.relativeText !== undefined && !actual.has(entry.relativeText));
+    actual.set(entry.relativeText, entry);
+  }
+  requireThat(actual.size <= specifications.size);
+
+  for (const [path, entry] of actual) {
+    const specification = specifications.get(path);
+    requireThat(specification !== undefined);
+    if (specification.kind === "directory") {
+      requireThat(directoryModeAllowed(entry, specification));
+    } else if (specification.kind === "file") {
+      requireDigestFile(
+        entry,
+        specification.mode,
+        specification.size,
+        specification.digest,
+      );
+    } else if (specification.kind === "bytes") {
+      requireExactFile(entry, specification.mode, specification.bytes);
+    } else if (specification.kind === "invocation") {
+      validateInvocationRecord(entry, invocation, false);
+    } else {
+      requireThat(
+        specification.kind === "ledger" &&
+          entry.stat.isFile() &&
+          entry.stat.dev === ledgerAuthority.identity.dev &&
+          entry.stat.ino === ledgerAuthority.identity.ino &&
+          entry.stat.uid === ledgerAuthority.identity.uid &&
+          entry.stat.gid === ledgerAuthority.identity.gid &&
+          entry.stat.mode === ledgerAuthority.identity.mode &&
+          entry.stat.rdev === ledgerAuthority.identity.rdev &&
+          entry.stat.size === ledgerAuthority.identity.size &&
+          entry.stat.nlink === 1n,
+      );
+    }
+  }
+  validateSubsetDirectoryLinks(actual, rootIdentity);
 }
 
 function revalidateDirectoryPermissions(directories, rootPath, rootDescriptor, rootIdentity) {
@@ -834,12 +1052,8 @@ function validateDescriptorTable() {
   requireThat(channelIdentities.size === channels.length);
 }
 
-function cleanup() {
-  validateEnvironment();
-  validateDescriptorTable();
-  const controlBytes = readDescriptorBounded(3, MAX_CONTROL_BYTES);
-  closeSync(3);
-  const control = parseControl(controlBytes);
+function cleanupNormal(control) {
+  requireThat(control.protocol === "normal");
   const parentPath = control.parentToken === "tmp" ? "/tmp" : "/var/tmp";
   const targetPath = `${parentPath}/${INVOCATION_PREFIX}${control.invocation}`;
   const expectedUid = BigInt(process.getuid());
@@ -869,7 +1083,10 @@ function cleanup() {
   let rootDescriptor;
   try {
     const openedParent = fstatSync(parentDescriptor, { bigint: true });
-    requireThat(sameIdentity(parentIdentity, openedParent));
+    requireThat(
+      sameDirectoryIdentity(parentIdentity, openedParent) &&
+        modeBits(openedParent) === 0o1777,
+    );
 
     const rootIdentity = lstatSync(targetPath, { bigint: true });
     requireThat(
@@ -941,6 +1158,213 @@ function cleanup() {
 
   writeAll(4, COMPLETION);
   closeSync(4);
+}
+
+function lstatIfPresent(path) {
+  try {
+    return lstatSync(path, { bigint: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    refuse();
+  }
+}
+
+function requireHeldDirectoryEmpty(descriptor) {
+  const directory = opendirSync(`/proc/self/fd/${descriptor}`, { encoding: "buffer" });
+  try {
+    requireThat(directory.readSync() === null);
+  } finally {
+    directory.closeSync();
+  }
+}
+
+function validateFailedCutDescriptors(control) {
+  const rootInfo = descriptorInfo(5);
+  const ledgerInfo = descriptorInfo(6);
+  requireThat(rootInfo.flags === "02700000" && rootInfo.mountId === control.mountId);
+  requireThat(ledgerInfo.flags === "02500000");
+
+  const root = fstatSync(5, { bigint: true });
+  const ledger = fstatSync(6, { bigint: true });
+  requireThat(
+    root.isDirectory() &&
+      root.dev === control.device &&
+      root.ino === control.inode &&
+      root.uid === BigInt(process.getuid()) &&
+      root.gid === BigInt(process.getgid()) &&
+      modeBits(root) === 0o700 &&
+      ledger.isFile() &&
+      descriptorIdentity(root) !== descriptorIdentity(ledger) &&
+      descriptorTableIdentityCount(root) === 1 &&
+      descriptorTableIdentityCount(ledger) === 1,
+  );
+  return { root, ledger };
+}
+
+function validateFixedParent(parentPath) {
+  const filesystemRoot = lstatSync("/", { bigint: true });
+  const parentIdentity = lstatSync(parentPath, { bigint: true });
+  requireThat(
+    filesystemRoot.isDirectory() &&
+      !filesystemRoot.isSymbolicLink() &&
+      filesystemRoot.uid === 0n &&
+      parentIdentity.isDirectory() &&
+      !parentIdentity.isSymbolicLink() &&
+      parentIdentity.uid === 0n &&
+      modeBits(parentIdentity) === 0o1777 &&
+      realpathSync("/") === "/" &&
+      realpathSync(parentPath) === parentPath,
+  );
+  return parentIdentity;
+}
+
+function revalidateFailedCutTerminal(control, rootStart, ledgerAuthority) {
+  const ledger = revalidateRetainedLedger(
+    6,
+    ledgerAuthority,
+    control.ledgerDigest,
+    true,
+  );
+  const root = fstatSync(5, { bigint: true });
+  requireThat(
+    sameDirectoryIdentity(rootStart, root) &&
+      root.dev === control.device &&
+      root.ino === control.inode &&
+      root.uid === BigInt(process.getuid()) &&
+      root.gid === BigInt(process.getgid()) &&
+      modeBits(root) === 0o700 &&
+      root.nlink === 0n &&
+      descriptorInfo(5).mountId === control.mountId &&
+      descriptorTableIdentityCount(root) === 1 &&
+      descriptorTableIdentityCount(ledger) === 1,
+  );
+  requireHeldDirectoryEmpty(5);
+}
+
+function cleanupFailedCut(control) {
+  requireThat(control.protocol === "failed-cut");
+  const { root: rootStart } = validateFailedCutDescriptors(control);
+  const parentPath = control.parentToken === "tmp" ? "/tmp" : "/var/tmp";
+  const alternateParentPath = control.parentToken === "tmp" ? "/var/tmp" : "/tmp";
+  const targetPath = `${parentPath}/${INVOCATION_PREFIX}${control.invocation}`;
+  const alternatePath = `${alternateParentPath}/${INVOCATION_PREFIX}${control.invocation}`;
+  const expectedUid = BigInt(process.getuid());
+  const expectedGid = BigInt(process.getgid());
+  const parentIdentity = validateFixedParent(parentPath);
+  validateFixedParent(alternateParentPath);
+  requireAbsent(alternatePath);
+  requireThat(rootStart.dev === parentIdentity.dev);
+  const ledgerAuthority = readRetainedLedger(
+    6,
+    control.ledgerDigest,
+    rootStart,
+  );
+  const specifications = addStructuralSpecifications(parseLedger(ledgerAuthority.bytes));
+  validateFixedLedgerSpecifications(specifications);
+
+  const parentDescriptor = openSync(
+    parentPath,
+    constants.O_RDONLY |
+      constants.O_DIRECTORY |
+      constants.O_NOFOLLOW |
+      constants.O_CLOEXEC,
+  );
+  let rootPathDescriptor;
+  try {
+    const openedParent = fstatSync(parentDescriptor, { bigint: true });
+    requireThat(
+      sameDirectoryIdentity(parentIdentity, openedParent) &&
+        modeBits(openedParent) === 0o1777,
+    );
+    const rootPathIdentity = lstatIfPresent(targetPath);
+    if (rootPathIdentity === undefined) {
+      requireThat(rootStart.nlink === 0n);
+      requireHeldDirectoryEmpty(5);
+    } else {
+      requireThat(
+        rootPathIdentity.isDirectory() &&
+          !rootPathIdentity.isSymbolicLink() &&
+          rootPathIdentity.dev === control.device &&
+          rootPathIdentity.ino === control.inode &&
+          rootPathIdentity.uid === expectedUid &&
+          rootPathIdentity.gid === expectedGid &&
+          modeBits(rootPathIdentity) === 0o700 &&
+          realpathSync(targetPath) === targetPath,
+      );
+      rootPathDescriptor = openSync(
+        targetPath,
+        constants.O_RDONLY |
+          constants.O_DIRECTORY |
+          constants.O_NOFOLLOW |
+          constants.O_CLOEXEC,
+      );
+      const openedPath = fstatSync(rootPathDescriptor, { bigint: true });
+      requireThat(
+        sameIdentity(rootPathIdentity, openedPath) &&
+          sameDirectoryIdentity(rootStart, openedPath) &&
+          descriptorInfo(rootPathDescriptor).mountId === control.mountId,
+      );
+      closeSync(rootPathDescriptor);
+      rootPathDescriptor = undefined;
+      assertNoNestedMounts(targetPath);
+
+      const { entries, directories } = walkInvocation(
+        targetPath,
+        rootPathIdentity,
+        expectedUid,
+        expectedGid,
+        rootPathIdentity.dev,
+        true,
+      );
+      validateFailedCutSubset(
+        entries,
+        rootPathIdentity,
+        control.invocation,
+        ledgerAuthority,
+        specifications,
+      );
+      revalidateRetainedLedger(6, ledgerAuthority, control.ledgerDigest, false);
+      revalidateDirectoryPermissions(directories, targetPath, 5, rootPathIdentity);
+      const parentBeforeRemoval = lstatSync(parentPath, { bigint: true });
+      const openedParentBeforeRemoval = fstatSync(parentDescriptor, { bigint: true });
+      requireThat(
+        sameDirectoryIdentity(parentIdentity, parentBeforeRemoval) &&
+          sameDirectoryIdentity(parentBeforeRemoval, openedParentBeforeRemoval) &&
+          modeBits(parentBeforeRemoval) === 0o1777 &&
+          modeBits(openedParentBeforeRemoval) === 0o1777,
+      );
+      assertNoNestedMounts(targetPath);
+      removeCapturedInventory(entries, targetPath, 5, rootPathIdentity);
+      fsyncSync(parentDescriptor);
+      const parentAfterRemoval = fstatSync(parentDescriptor, { bigint: true });
+      const parentPathAfterRemoval = lstatSync(parentPath, { bigint: true });
+      requireThat(
+        sameDirectoryIdentity(parentIdentity, parentAfterRemoval) &&
+          sameDirectoryIdentity(parentAfterRemoval, parentPathAfterRemoval) &&
+          modeBits(parentAfterRemoval) === 0o1777 &&
+          modeBits(parentPathAfterRemoval) === 0o1777,
+      );
+    }
+  } finally {
+    if (rootPathDescriptor !== undefined) closeSync(rootPathDescriptor);
+    closeSync(parentDescriptor);
+  }
+
+  requireAbsent(targetPath);
+  requireAbsent(alternatePath);
+  revalidateFailedCutTerminal(control, rootStart, ledgerAuthority);
+  writeAll(4, FAILED_CUT_COMPLETION);
+  closeSync(4);
+}
+
+function cleanup() {
+  validateEnvironment();
+  validateDescriptorTable();
+  const controlBytes = readDescriptorBounded(3, MAX_CONTROL_BYTES);
+  closeSync(3);
+  const control = parseControl(controlBytes);
+  if (control.protocol === "failed-cut") cleanupFailedCut(control);
+  else cleanupNormal(control);
 }
 
 try {
