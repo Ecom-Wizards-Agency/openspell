@@ -3425,14 +3425,15 @@ reserve's otherwise unused 15-second create-settlement slice belongs to exact ha
 TERM/KILL/reap settlement before state-specific path cleanup. No harness owns normal cleanup until
 spawn identity is positively established, and no failed spawn can be retried with that root.
 
-The outer no-argument test orchestrator gives the complete Docker integration child exactly 7,750
+The outer no-argument test orchestrator gives the complete Docker integration child exactly 7,490
 seconds. That is the non-overlapping sum of 460 seconds for initial source staging, 460 seconds for
 image authentication, 460 seconds for dependency acquisition, 1,660 seconds for the normal matrix,
-three times 325 seconds for fresh-copy construction plus 1,110 seconds for a cut plus 130 seconds
-for mandatory failed-cut teardown, and 15 seconds for final path cleanup. A clean run can consume at
-most 7,360 seconds of those internal allocations; the remaining fixed difference is failure-only
-teardown, not a phase budget and cannot be borrowed by an inner operation. Ordinary CI invokes this
-package separately with no forwarded Vitest argument.
+three times 325 seconds for fresh-copy construction plus 1,110 seconds for a cut, one mutually
+exclusive 130-second mandatory failed-cut teardown, and 15 seconds for final path cleanup. The cut
+loop aborts after its first failure, so at most one failed-cut teardown can execute. A clean run can
+consume at most 7,360 seconds of those internal allocations; the remaining fixed 130 seconds is
+failure-only teardown, not a phase budget and cannot be borrowed by an inner operation. Ordinary CI
+invokes this package separately with no forwarded Vitest argument.
 
 For each completed case root the supervisor opens and authenticates the root twice with
 `O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`: one retained custody descriptor and one handoff
