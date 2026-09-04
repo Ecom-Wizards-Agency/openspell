@@ -584,6 +584,7 @@ export function createCleanupCursor(ids) {
     finalIds: Object.freeze([]),
     active: null,
     preliminaryCensus: false,
+    preliminaryEventId: null,
     closeSent: false,
     watcherReaped: false,
     finalCensus: false,
@@ -644,7 +645,9 @@ export function expectedCleanupOperation(cursor) {
   return Object.freeze({ operation });
 }
 
-function validateCleanupResult(operation, outcome) {
+function validateCleanupResult(cursor, transition) {
+  const operation = cursor.active.operation;
+  const outcome = transition.outcome;
   const allowed = {
     "remove-1": removeOutcomes,
     "absence-1": absenceOutcomes,
@@ -659,6 +662,19 @@ function validateCleanupResult(operation, outcome) {
   }[operation];
   if (allowed === undefined || !allowed.has(outcome)) {
     throw new Error("invalid cleanup operation result");
+  }
+  if (operation === "preliminary-census" && outcome === "deferred-event") {
+    const id = requireContainerId(transition.id);
+    if (
+      cursor.eventCount !== 1 ||
+      cursor.preliminaryEventId !== id ||
+      cursor.finalIds.length !== 1 ||
+      cursor.finalIds[0].id !== id
+    ) {
+      throw new Error("deferred census identity is not the sole post-launch event");
+    }
+  } else if (transition.id !== undefined) {
+    throw new Error("unexpected cleanup result ID");
   }
 }
 
@@ -687,7 +703,7 @@ function recordCleanupResult(cursor, transition) {
   if (cursor.active === null || cursor.active.result !== null) {
     throw new Error("cleanup result replay or reorder");
   }
-  validateCleanupResult(cursor.active.operation, transition.outcome);
+  validateCleanupResult(cursor, transition);
   return freezeCleanupCursor({
     ...cursor,
     active: { ...cursor.active, result: transition.outcome },
@@ -785,6 +801,13 @@ function advanceRecordedOperation(cursor) {
 
 function adoptEventId(cursor, transition) {
   const id = requireContainerId(transition.id);
+  if (
+    cursor.watcherReaped ||
+    (cursor.active?.operation === "settle-watcher" &&
+      cursor.active.result !== null)
+  ) {
+    throw new Error("event arrived after watcher settlement");
+  }
   if (!["initial-ids", "preliminary-census", "close", "watcher"].includes(cursor.phase)) {
     throw new Error("event arrived after watcher settlement");
   }
@@ -823,6 +846,10 @@ function adoptEventId(cursor, transition) {
   return freezeCleanupCursor({
     ...cursor,
     eventCount: 1,
+    preliminaryEventId:
+      cursor.active?.operation === "preliminary-census"
+        ? id
+        : cursor.preliminaryEventId,
     finalIds: [...cursor.finalIds, entry],
   });
 }

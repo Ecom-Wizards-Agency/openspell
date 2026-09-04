@@ -473,6 +473,7 @@ describe("WP-201 sealed proof engine", () => {
     cursor = reduceCleanupCursor(cursor, {
       type: "record-result",
       outcome: "deferred-event",
+      id: finalEventId,
     });
     cursor = reduceCleanupCursor(cursor, { type: "advance" });
     expect(cursor.phase).toBe("close");
@@ -526,5 +527,54 @@ describe("WP-201 sealed proof engine", () => {
       first,
       second,
     ]);
+  });
+
+  it("binds a deferred census row to the sole event received after census launch", () => {
+    const eventId = "7".repeat(64);
+    let cursor = createCleanupCursor([]);
+    cursor = reduceCleanupCursor(cursor, {
+      type: "begin-operation",
+      operation: "preliminary-census",
+    });
+    expect(() =>
+      reduceCleanupCursor(cursor, {
+        type: "record-result",
+        outcome: "deferred-event",
+        id: eventId,
+      }),
+    ).toThrow("deferred census identity is not the sole post-launch event");
+
+    cursor = reduceCleanupCursor(cursor, { type: "adopt-event-id", id: eventId });
+    expect(() =>
+      reduceCleanupCursor(cursor, {
+        type: "record-result",
+        outcome: "deferred-event",
+      }),
+    ).toThrow("invalid container ID");
+    expect(() =>
+      reduceCleanupCursor(cursor, {
+        type: "record-result",
+        outcome: "deferred-event",
+        id: "8".repeat(64),
+      }),
+    ).toThrow("deferred census identity is not the sole post-launch event");
+  });
+
+  it("rejects an event after watcher EOF and reap have been recorded", () => {
+    const eventId = "9".repeat(64);
+    let cursor = createCleanupCursor([]);
+    cursor = settle(cursor, "preliminary-census", "empty");
+    cursor = settle(cursor, "send-close", "sent");
+    cursor = reduceCleanupCursor(cursor, {
+      type: "begin-operation",
+      operation: "settle-watcher",
+    });
+    cursor = reduceCleanupCursor(cursor, {
+      type: "record-result",
+      outcome: "reaped",
+    });
+    expect(() =>
+      reduceCleanupCursor(cursor, { type: "adopt-event-id", id: eventId }),
+    ).toThrow("event arrived after watcher settlement");
   });
 });
