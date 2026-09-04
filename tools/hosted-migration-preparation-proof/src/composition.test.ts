@@ -88,6 +88,22 @@ describe("WP-201 composition boundary", () => {
       "tools/hosted-migration-runtime-proof/fixtures/wp199-grant-ticket-v1.golden.json",
       "tools/hosted-migration-runtime-proof/src/machine.rs",
     ]);
+
+    const adversarial = new Map(bytes);
+    const rootLibrary = records.find(
+      ({ path }) => path === "tools/hosted-migration-root-authority/src/lib.rs",
+    );
+    expect(rootLibrary).toBeDefined();
+    adversarial.set(
+      rootLibrary?.path ?? "missing",
+      Buffer.concat([
+        bytes.get(rootLibrary?.path ?? "missing") ?? Buffer.alloc(0),
+        Buffer.from('\nconst _: &str = include_str!(concat!("/etc/passwd"));\n'),
+      ]),
+    );
+    expect(() => assertCompileTimeInputs(records, adversarial)).toThrow(
+      "unsupported compile-time include form",
+    );
   });
 
   it("normalizes manifest escapes before dependency-boundary checks", () => {

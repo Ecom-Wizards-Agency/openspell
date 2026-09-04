@@ -13,7 +13,9 @@ const fixedCompileTimeInputs = new Set([
 
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 const indexRecordPattern = /^(?<mode>[0-9]{6}) (?<object>[0-9a-f]{40}|[0-9a-f]{64}) (?<stage>[0-3])\t(?<path>[^\r\n\0]+)$/u;
-const includeLiteralPattern = /\binclude_(?:bytes|str)!\(\s*"(?<path>[A-Za-z0-9._+@/-]+)"\s*\)/gu;
+const includeMacroNamePattern = /\binclude_(?:bytes|str)\b/gu;
+const exactIncludeLiteralPattern =
+  /^include_(?:bytes|str)!\(\s*"(?<path>[A-Za-z0-9._+@/-]+)"\s*\)/u;
 
 export const SOURCE_ROOTS = packageRoots;
 export const SOURCE_FILE_COUNT = 45;
@@ -73,8 +75,14 @@ export function assertCompileTimeInputs(records, sourceBytesByPath) {
     if (!(bytes instanceof Uint8Array)) throw new Error("missing source bytes");
     const source = utf8.decode(bytes);
     const sourceDirectory = path.slice(0, path.lastIndexOf("/"));
-    for (const match of source.matchAll(includeLiteralPattern)) {
-      const relative = match.groups?.path;
+    for (const macro of source.matchAll(includeMacroNamePattern)) {
+      const offset = macro.index;
+      if (offset === undefined) throw new Error("invalid compile-time include position");
+      const match = exactIncludeLiteralPattern.exec(source.slice(offset));
+      if (match?.groups === undefined) {
+        throw new Error("unsupported compile-time include form");
+      }
+      const relative = match.groups.path;
       if (relative === undefined || relative.startsWith("/") || relative.includes("//")) {
         throw new Error("invalid compile-time include literal");
       }
