@@ -8,45 +8,41 @@ lacks (SUPA-style SQP×PPC analysis, DataDive rank tracking, Keepa BSR proximity
 Creative Hub, off-Amazon placement control). Later: own GitHub repo + webpage, web-based Amazon
 authorization, an MCP server, and a daily headless-AI analyst.
 
-**Working model:** Fable 5 = manager (plans, reviews, verifies). Codex + Claude Opus = builders,
-working parallel work packages. Every work package gets a **handover brief as an md file** in
-`docs/workpackages/WP-XX-<name>.md` — Victor kicks off an implementer with a one-line prompt
-("read docs/workpackages/WP-05 and implement it"), never a long prompt.
+**Working model:** one coordinating agent plans, reviews and verifies while bounded implementers and
+independent reviewers take non-overlapping work. Every work package gets a durable brief in
+`docs/workpackages/WP-XX-<name>.md`. `AGENTS.md` alone defines repository authority;
+`docs/STATUS.md` and `docs/HANDOVER.md` record program and continuation state.
 
-The public repository and package identifiers remain `wizard-ads` and `@wizard-ads/*` until a
-separate infrastructure migration is planned. User-facing product copy uses **OpenSpell**.
+The public repository is `openspell`; the TypeScript package scope remains `@wizard-ads/*` until a
+separate package-identity migration is planned. User-facing product copy uses **OpenSpell**.
 
-**Key facts established during research (2026-08-13):**
+**Key facts established during research (2026-08-13; historical unless revalidated):**
 
-- **Amazon Ads API access is LIVE.** LWA app has `advertising::campaign_management`, OAuth done
-  2026-08-13, refresh token in `amazon-agent/_local/ads-monitor/config.json`, `GET /v2/profiles`
-  returns 211 profiles (NA 71, EU 138, FE 2). Existing OAuth worker:
-  `amazon-agent/tools/ads-auth/callback-worker/` (auth.ecomwizards.agency).
+- Amazon Ads API access and profile discovery were observed on 2026-08-13. No historical token
+  location, profile count or roster is current authority. Revalidate access, scope and write
+  authorization through the approved 1Password-injected runtime and the guarded contract in
+  `AGENTS.md` before relying on them.
 - **SP-API pending** (public-developer upgrade). v1 ships without it; clean seam for total
   sales/TACOS, SQP (SUPA), inventory later.
-- **Prior planning doc**: `~/os/personal/Projects/amazon-ads-tool/README.md` (2026-07-29).
-  Carried-over decisions: own repo · read-only first · "v1 proposes, the operator applies" ·
-  writes only after numbers match AdLabs side by side · job queue not request/response ·
-  429-only throttling → backoff day one. Its "BLOCKED" status is stale — update at kickoff.
+- The original plan chose a read-only-first rollout and a queued worker boundary. Current policy
+  supersedes its blanket write prohibition: individually approved, profile-enabled batches may use
+  the guarded worker write path; sustained parity still gates scaled automation.
 - **AdLabs' algorithm is public** ("White Box"): Bid = RPC × Target ACOS; four reasons (High
   ACOS / High Spend no sales / Low ACOS / Low Visibility); Data Confidence Hierarchy
-  (keyword→ad group→campaign→profile AOV/CVR fallback); layered ceilings; change caps
-  (−25/−50% down, +33% placement up); Placement Adj = (Target ACOS / Current ACOS) − 1.
-  Offline copies: `amazon-agent/AdLabs Help/articles/`.
-- **AdLabs MCP surface documented** in `amazon-agent/skills/amazon-audit/references/source-adlabs.md`
-  (+ gotchas in `amazon-agent/docs/ads-runtime-notes.md`).
-- **"SUPA"** = in-house SQP×PPC analyzer at `amazon-agent/tools/sqp-supa/` (weekly SQP share ×
+  (keyword→ad group→campaign→profile AOV/CVR fallback); layered ceilings and bounded changes;
+  Placement Adj = (Target ACOS / Current ACOS) − 1. Tenant threshold values remain private runtime
+  configuration and never belong in this repository.
+- **"SUPA"** = the in-house SQP×PPC analyzer concept (weekly SQP share ×
   ad spend/sales per keyword per ASIN; P1/P2/P3 flags). Needs SP-API SQP → v2 lane.
 - **LinkedIn features decoded** (Alexander Swade, SYNQ): off-Amazon SP placement = per-campaign
   attribute (bulk col AQ) + reportable placement + leakage report · Creative Hub = asset-centric
   creative table, dedupe one-row-per-asset, winners/losers, bulk fan-out/pause · SQP cannot
   replace rank tracking (absence is data; ads inflate SQP share) → build a reconciliation view ·
   Keepa BSR proximity alerts = relative subcategory BSR gap vs competitor with threshold +
-  deep links. Keepa client reference: `wizards-ai/keepa_client.py`.
-- **Portable doctrine code** (Python, port to TS with selftests as ground truth):
-  `amazon-agent/tools/amazon-ads-monitor/{flags,recommendations,pacing,analyze,crosscheck,datasource}.py`,
-  `tools/amazon-ppc-management/batches.py`, `tools/amazon-campaign-builder/`. Confidential
-  thresholds (`_local/ads-strategy/strategy.json`) become per-tenant DB config, never repo code.
+  deep links.
+- **Portable doctrine code:** port the reference implementations to TypeScript with their synthetic
+  selftests as ground truth. Confidential thresholds become per-tenant runtime configuration and
+  never repository code.
 - **Ads API alone covers**: SP/SB(v4)/SD management, placement + off-Amazon controls, budgets,
   Reporting v3 (async, GZIP_JSON, ≤3h latency), Marketing Stream, SB creative/video APIs, AMC.
   **SP-API needed for**: total sales/TACOS, SQP, inventory, listings. **Neither**: BSR (Keepa),
@@ -56,7 +52,7 @@ separate infrastructure migration is planned. User-facing product copy uses **Op
 
 | Decision | Choice |
 |---|---|
-| Location | `~/os/wizard-ads` (sixth ~/os project; register in root `AGENTS.md` + `company-ai-skills/docs/dependencies.md`) |
+| Location | Repository root; no operator-specific filesystem path is part of the product contract |
 | Name | **OpenSpell**; repository and package identifiers remain stable initially |
 | Tenancy | Internal-first, SaaS-ready (multi-tenant schema/auth day one; no signup/billing in v1) |
 | Stack | Next.js (Vercel) + Supabase (Postgres/Auth/pg_cron) + long-lived job worker; MCP on the always-on operator host behind Cloudflare Tunnel; **all TypeScript** monorepo |
@@ -71,8 +67,8 @@ pnpm workspaces + Turborepo. Package boundaries = work-package ownership, so par
 never touch the same files.
 
 ```
-wizard-ads/
-├── AGENTS.md                      # repo rules (public-safe, amazon-agent conventions)
+openspell/
+├── AGENTS.md                      # authoritative public-safe repository rules
 ├── apps/
 │   ├── web/                       # Next.js App Router (Vercel): auth, org switcher,
 │   │   │                          #   dashboard/grid/recommendations/ngram/tags/settings,
@@ -104,7 +100,7 @@ wizard-ads/
 ```
 
 Dependency direction (enforced): `shared` ← `core`/`strategy`/`ads-api`/`sp-api`/`db` ← `web`/`worker`/`mcp`.
-`core` never imports `db`, `ads-api`, or `sp-api`. wizard-ads consumes no sibling project at
+`core` never imports `db`, `ads-api`, or `sp-api`. OpenSpell consumes no sibling project at
 runtime (Python reference tools are build-time spec sources via the fixtures generator only).
 
 ## Database schema outline
@@ -112,7 +108,7 @@ runtime (Python reference tools are build-time spec sources via the fixtures gen
 Supabase Postgres; all tenant tables carry `org_id` + RLS; worker uses service role.
 
 - **Tenancy**: `orgs`, `org_members` (roles owner|admin|analyst|viewer), `ads_connections`
-  (refresh token in Supabase Vault via security-definer RPC), `ad_profiles` (211 rows day one;
+  (refresh token in Supabase Vault via security-definer RPC), `ad_profiles` (discovered profiles;
   `sync_enabled` gates cost; per-profile target ACOS/goal lens/monthly budget),
   `profile_strategy` (confidential doctrine as per-tenant jsonb, seeded by operator-run script
   from gitignored local file).
@@ -144,8 +140,8 @@ Supabase Postgres; all tenant tables carry `org_id` + RLS; worker uses service r
 - **OAuth through the webpage** (apps/web owns it): signed state (org + session bound, 15-min
   expiry, same pattern as existing callback-worker) → server-side code exchange (secret only in
   Vercel env) → refresh token into Supabase Vault → immediate `/v2/profiles` per region →
-  upsert 211 `ad_profiles`. Register the new redirect URI on the existing LWA app. The
-  Cloudflare worker stays for CLI flows; wizard-ads doesn't depend on it.
+  upsert the authorized discovered `ad_profiles`. Redirect registration is an action-specific
+  operator-controlled setup step. The application does not depend on the separate CLI callback.
 - **Tokens**: web never holds Amazon tokens; worker caches access tokens in memory, refreshes
   60s early (pattern from `SPAdsApiDataSource._get_access_token`).
 - **Scheduler**: pg_cron (5-min tick) turns due `sync_schedules` into `sync_jobs`; a long-lived
@@ -161,8 +157,8 @@ Supabase Postgres; all tenant tables carry `org_id` + RLS; worker uses service r
   attribute late; idempotent upserts on grain key). v1 report types: spCampaigns (target),
   spSearchTerm, placement grouping, sbCampaigns, sdCampaigns; budget usage via Budgets endpoint
   on entity pass.
-- **Ramp deliberately**: pilot profiles daily, long tail weekly/on-demand; 211×5 reports at
-  once is how you find the invisible quota (429-only, no headers).
+- **Ramp deliberately**: pilot profiles daily, long tail weekly/on-demand; releasing every profile
+  and report type at once is how invisible quota becomes an outage (429-only, no headers).
 
 ## Operator-managed module scope
 
@@ -182,7 +178,7 @@ Supabase Postgres; all tenant tables carry `org_id` + RLS; worker uses service r
    API application requires an exact preview, separately recorded approval, profile write
    enablement, idempotent row identities, per-row response counts, and post-write resynchronization.
 7. N-gram explorer (uni/bi/tri over search terms; negative candidates as proposals).
-8. Nested tags (also the client-grouping mechanism for 211 profiles) + tag-scoped views.
+8. Nested tags (also the profile-grouping mechanism) + tag-scoped views.
 9. Goto links (`/go/[token]` → route + filter state).
 10. MCP server with analytical reads plus approval-gated batch triggering. MCP may draft a batch
     or trigger one approved elsewhere; it cannot approve its own mutation, create a cadence, or
@@ -211,11 +207,11 @@ approved product direction under `AGENTS.md`, but it is not implemented or live 
 the policy changed. Scaled automation, unattended dayparting, and MCP mutation still require the
 evidence criterion plus their action-specific gates.
 
-- **v0 (~2 wks)** — skeleton proves the loop: scaffold + frozen contracts, ~/os registration,
-  Supabase project + migrations + RLS, OAuth live with 211 profiles listed, entity sync +
-  spCampaigns daily report for 2 pilot profiles end-to-end into facts, minimal grid, fixtures
-  generator producing Python goldens. **AdLabs recon runs in parallel during v0** (feeds UI
-  specs). Supabase Pro decision at v0 close.
+- **v0 (~2 wks)** — original skeleton target: scaffold + frozen contracts, project registration,
+  Supabase migrations and RLS, OAuth/profile discovery, bounded pilot entity/report ingestion,
+  minimal grid, and synthetic parity fixtures. Historical live counts are not present authority;
+  **AdLabs recon ran in parallel during v0** to feed UI specs. Supabase Pro was an explicit v0-close
+  decision.
 - **v1 (~6 wks after v0)** — everything above; exit = crosscheck criterion.
 - **v1.x (active implementation lane)** — staged-apply write engine (batches.py port: preview → approve →
   apply via Ads API, snapshot/revert/cooldown, scoring) · harvesting via campaign maps incl.
@@ -223,7 +219,7 @@ evidence criterion plus their action-specific gates.
   MCP batch triggers (every mutation = an audited apply batch; only legal inverse changes are
   restorable) · **headless analyst** (Claude Agent SDK
   scheduled run, reads via MCP only, writes `insights` + Slack digest via the guarded Wizards
-  AI helper; per-profile Context-Manager-equivalent doc as MCP resource; optional amazon-agent
+  AI helper; per-profile Context-Manager-equivalent doc as MCP resource; optional reference-system
   context on the operator-machine variant) · white-label shareable dashboards.
 - **v2 (each lane gated on its external dependency)** — SP-API activation: TACOS everywhere,
   SQP → **SUPA module** (P1/P2/P3 port with stock-first evaluation), inventory stock-gate for
@@ -240,9 +236,9 @@ files to read, interfaces, acceptance checks) — written by Fable in v0 step 2.
 
 | WP | Package | Owner | Acceptance check (Fable verifies) |
 |---|---|---|---|
-| 0 | Scaffold + contracts (`shared`, CI, AGENTS.md, ~/os registration) | **Opus** | CI green; contracts cover all cross-package types; no client names/thresholds greppable |
-| 1 | DB schema + RLS + partitions (`db`, migrations) | **Opus** | Migrations clean; RLS negative test (org A ∕ org B); partition automation; strategy seed from `_local/` |
-| 2 | `ads-api` client (port datasource.py 731–1030) | **Codex** | Fixture tests incl. 429/Retry-After/gzip; live smoke: request→poll→download 1 real report, print row count |
+| 0 | Scaffold + contracts (`shared`, CI, AGENTS.md, repository registration) | **Opus** | CI green; contracts cover all cross-package types; no client names/thresholds greppable |
+| 1 | DB schema + RLS + partitions (`db`, migrations) | **Opus** | Migrations clean; RLS negative test (org A ∕ org B); partition automation; strategy seeded through an operator-only runtime path |
+| 2 | `ads-api` client (reference-port slice) | **Codex** | Fixture tests incl. 429/Retry-After/gzip; separately authorized live smoke uses runtime-injected credentials and reconciles one real report count |
 | 3 | Worker + queue + pg_cron scheduler | **Codex** | Fake-API integration: full request→poll→fetch→facts; kill-and-resume survives; parsed == loaded asserted |
 | 4 | Web auth + orgs + LWA OAuth + connections UI | **Codex** | Playwright: mocked-LWA connect lands profiles; token only via service RPC; state tampering rejected |
 | 5 | `core` doctrine port + White Box bidding | **Opus** | Parity suite: TS byte-equals Python goldens for every selftest scenario; worked-example bid tests pass |
@@ -256,8 +252,10 @@ files to read, interfaces, acceptance checks) — written by Fable in v0 step 2.
 | 13 | Headless analyst (v1.x) | **Opus** | Daily insight with correct figures; audit_log proves zero write calls |
 
 Day-1 parallel set after WP-0 (~2 days): WP-1, 2, 3, 4, 5, 11 simultaneously — six agents, no
-file overlap. WP-6/7/8 start when recon + contracts land; WP-9/10 at v0 close; WP-12/13 gated
-on v1 exit.
+file overlap. WP-6/7/8 start when recon + contracts land; WP-9/10 at v0 close. The historical
+WP-12 blanket v1-exit gate is superseded by the current guarded-write contract: explicit manual
+batches require the exact approval and profile/environment gates, while the evidence criterion
+continues to gate scaled or automatic execution.
 
 ### Active operator-experience queue
 
@@ -285,12 +283,13 @@ numbered briefs in `docs/workpackages/`; status and release gates remain in `doc
 
 ## Verification strategy
 
-1. **Parity harness**: `fixtures/generate/` Python scripts import the real amazon-agent modules,
+1. **Parity harness**: `fixtures/generate/` Python scripts import the approved reference modules,
    run every selftest scenario (synthetic data only), dump `{input, expected}` goldens; Vitest
    replays and asserts deep equality (6dp). Bidding engine gets worked-example tests from the
    AdLabs formula articles.
 2. **API contract tests**: recorded fixtures for every endpoint incl. 429/425/PENDING paths;
-   one gated live smoke reading creds from `_local/`.
+   one separately authorized live smoke with credentials injected at runtime. `_local/` may hold
+   only bounded non-secret authorization/configuration, never the credential.
 3. **Crosscheck vs AdLabs**: the running nightly check + the v1 exit gate + optimizer parity
    spot-check.
 4. **E2E**: Playwright (OAuth, grid, recommendations), worker kill/resume, count verification
@@ -298,27 +297,26 @@ numbered briefs in `docs/workpackages/`; status and release gates remain in `doc
 5. **Public-repo hygiene gate**: CI secret scan + lint rejecting client names/threshold
    literals outside TEMPLATE files (modeled on `lint_agent_docs.py`).
 
-## Execution order (what happens after approval)
+## Historical kickoff order (completed context; not external authority)
 
-1. Scaffold `~/os/wizard-ads` (WP-0, Opus) and register it in `~/os/AGENTS.md` +
-   `company-ai-skills/docs/dependencies.md`; update the stale status in
-   `~/os/personal/Projects/amazon-ads-tool/README.md` (points to the new repo).
-2. Fable writes all handover briefs into `docs/workpackages/` (from this plan + research).
-3. Launch the day-1 parallel set (WP-1..5 to their owners; WP-11 scheduled with Victor for the
-   AdLabs login session).
-4. Supabase project creation (free tier); choose the job-worker host from measured runtime and
-   reliability needs; flag Victor before a paid Supabase upgrade and for the new LWA redirect URI
-   registration.
-5. Fable reviews each WP against its acceptance checks before merge; contracts change only
-   through WP-0's owner with Fable sign-off.
+This records the original repository kickoff. It is not an instruction to create a project,
+register a redirect, provision credentials or mutate any external system. Every current external
+action requires the exact target, action and window authorization in `AGENTS.md`.
+
+1. WP-0 scaffolded the repository, contracts and public-repository gates.
+2. The coordinator created work-package briefs under `docs/workpackages/`.
+3. The original day-one packages and competitor-recon lane were launched independently.
+4. Project, worker-host and redirect setup were treated as separate operator-controlled actions.
+5. Each package was reviewed against its acceptance checks before merge.
 
 ## Top risks (full list in docs/ later)
 
-429-only throttling at 211-profile scale (ramp pilot-first) · report latency + late sales
+429-only throttling at full-roster scale (ramp pilot-first) · report latency + late sales
 restatement (three-pass sync + re-pull cadence are load-bearing) · same-day data provisional
 (exclude from crosscheck) · Exports API contract unverified live (WP-2 smoke first) ·
 zero-impression rows omitted (freshness from `report_requests`, never inferred from facts) ·
 timezone/currency across NA/EU/FE · Supabase free tier dies during backfill (planned Pro
-upgrade) · public-repo exposure (CI gate from day one) · single agency refresh token = SPOF
-(hourly health-check + Slack alert) · writes are client money (keep every batches.py safety in
-the port, gate on v1 exit).
+upgrade) · public-repo exposure (CI gate from day one) · credential concentration = SPOF
+(health-check and alerting required) · writes are client money (retain preview, approval,
+idempotency, conflict, accounting, observation and rollback gates; scaled automation also requires
+the evidence criterion).

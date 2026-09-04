@@ -3,6 +3,100 @@
 Last reconciled: 2026-09-04. This is a rolling handover for the next implementation chat, not a
 historical changelog.
 
+This is an operator-requested interim continuity checkpoint under the narrow WP-201 documentation
+exception. It records verified state and open work only; it does not complete WP-201, satisfy an
+acceptance row, update rolling status or authorize any external action.
+
+## Human status and visible plan
+
+OpenSpell is not one release away from the full intended product. The repository contains a large
+amount of reviewed source, but production still runs an older, unmatched web/MCP/worker set. The
+next useful product milestone is the live campaign-scoped optimization preview; direct Amazon
+application and complete multi-product campaign creation remain later implementation milestones.
+
+Current stage:
+
+- [x] WP-200 and all preceding source through current `origin/main` are merged and exact-main CI is
+  green at `51a56b392ab524dc140e343fe1dc87b58e17c42f`.
+- [x] WP-201's initial architecture plus the root-authority implementation checkpoint culminate at
+  `c36b680e0ee7a4f5e71382c011c613902db2cdfa`; this later commit is documentation-only.
+- [ ] Before more step-3 implementation, commit and independently review an architecture-and-brief
+  exactness amendment. It must freeze the invocation-directory prefix, Docker label keys and role
+  values, acquisition network, container mount destinations, vendor-ledger byte framing,
+  event-helper descriptor/control protocol, pinned proof-image digest and per-manifest Cargo command
+  matrix. The current architecture fixes the safety constraints but not those concrete values.
+- [ ] Finish WP-201 step 3 by implementing and proving the amended root/container composition
+  boundary. The coordinator-owned root proof is required by source acceptance and is the remaining
+  executable proof for the newly committed bridge. Do not begin step 4 before its production uid-0
+  call chain and procfs mount attack matrix pass.
+- [ ] Commit and independently review WP-201's remaining v2 record/transition/domain contract, then
+  implement its private preparation machine, target/credential/gateway/egress/history/dry-run
+  models, exhaustive cuts and live-route absence proof. Apply remains absent from WP-201.
+- [ ] Push WP-201 only after the full package is reviewed and verified; require exact-head CI,
+  merge, exact-main CI, and only then mark it complete in rolling status.
+- [ ] WP-202: prove disposable apply, lock handoff, lost-response reconciliation and every valid
+  41-through-46 migration prefix on a separately authorized disposable target.
+- [ ] WP-203 through WP-205: build the immutable deployment artifact, prove disabled staging,
+  perform separately authorized production preparation, and apply the exact five-migration artifact
+  with complete postflight.
+- [ ] Provision the narrow recommendation credential; stage and activate revision-matched report
+  and recommendation workers; deploy a matching candidate; admit scoped preview traffic; run
+  authenticated campaign-checkbox/Run-preview QA; then promote web and revision-stamp MCP.
+- [ ] Activate and verify the read-only Sponsored Brands Video Creative pipeline with one bounded
+  profile pilot and exact source/parsed asset and ad counts; mapped/legacy/unsupported/ambiguous/
+  unmapped states; report source/parsed/refused/mapped/unpromoted rows; asset/mapping/snapshot/fact
+  upserts; and persisted read-back counts.
+- [ ] Implement the guarded Amazon optimization executor: immutable approved batch, explicit
+  first-write profile activation, one-attempt worker dispatch, partial-result accounting,
+  resynchronization and conflict-safe inverse write. Exports remain evidence, not application.
+- [ ] Implement direct multi-product campaign creation (SP/SB/SBV/SD). Retain the complete
+  read-only Asset Library search; add upload/register and version-aware selection, product create
+  adapters and compilers, persistence/projection, guarded worker execution, guided approval UI and
+  separate bounded live evidence. No product currently has a direct creation runtime; the existing
+  SP builder previews and exports a bulksheet only.
+
+Practical distance, expressed as gates rather than calendar promises:
+
+- **Campaign checkbox + Run preview:** source exists; the five WP-201–205 migration/deployment
+  safety prerequisites plus the revision-matched activation and QA sequence remain.
+- **Creative Performance:** the read UI and ingestion source exist; the exclusive report lane,
+  deployment gates, pilot and live Asset-ID/count proof remain. This is closer than SB campaign
+  creation.
+- **Direct SP optimization apply:** write contracts, client adapter, ledger and outbox source exist,
+  but hosted schema, worker executor, approval/activation UI and one bounded observed live cycle are
+  still missing.
+- **Multi-product campaign creation (SP/SB/SBV/SD):** architecture/contracts and read-only Asset
+  Library search exist, but no direct creation runtime exists. Upload/register, version-aware asset
+  selection, product create adapters/compilers, persistence/projection, worker execution, approval
+  UI and live evidence remain. This is a later product wave, not an activation-only task.
+
+When resuming, use goal mode with this objective: **Continue OpenSpell from `docs/HANDOVER.md` in
+the visible dependency order, keeping source, hosted schema, deployment, activation and live proof
+as separate states.** If goal mode is unavailable, keep this checklist visible and update it after
+each verified checkpoint.
+
+### Fast resume for another agent
+
+1. Read `AGENTS.md`, this file, `docs/workpackages/WP-201-disposable-preparation-proof.md` and
+   `docs/design/WP-201-ARCHITECTURE.md` completely.
+2. Run `git worktree list --porcelain`. Use the worktree whose `branch` field is
+   `refs/heads/wp-201-disposable-preparation`; do not switch, reset or clean the protected dirty
+   `codex/onepassword-secrets` worktree.
+3. Verify the WP-201 branch contains `c36b680e0ee7a4f5e71382c011c613902db2cdfa` and the worktree
+   is clean, fetch and reconcile `origin/main`, the current set of open PRs and exact-main CI, and
+   recheck live health before trusting the counts below.
+4. Treat the hosted ledger as last verified at 41 migrations on 2026-09-01. Do not query or mutate a
+   hosted project without fresh action-specific authorization.
+5. Before the remaining step-3 container-wrapper implementation, freeze the known concrete
+   Docker/proof values enumerated in the first unchecked item in an architecture-and-brief
+   amendment and review its exact hash. Then implement the amended root/container proof before
+   starting step 4. Follow the remaining unchecked list in order. Use High for bounded
+   implementation and one High plus two independent Extra-High reviews for security, crash,
+   migration, deployment and Amazon-write boundaries.
+6. Do not push or open a PR for the current partial WP-201 package merely to preserve it: all work is
+   committed locally. Push only when the package's documented source slice and reviews are complete,
+   unless the operator explicitly asks for a draft remote backup.
+
 ## How to use and maintain this file
 
 1. Read `AGENTS.md` completely before taking any action. It is authoritative when this file,
@@ -41,7 +135,8 @@ historical changelog.
 
 At the time this handover was reconciled:
 
-- WP-200 is merged through `f06efeacd4f1aa3b8729c1f6c5b970d6850b81f5`. PR #131 added the
+- WP-200 is merged and closed out through current main
+  `51a56b392ab524dc140e343fe1dc87b58e17c42f`. PR #131 added the
   fixed official-release policy, descriptor-only custody verifier and synthetic Linux
   namespace/cgroup/pidfd/ptrace/exec-map and process-protection proof. PR #132 fixed deterministic
   proof-builder cold-run acquisition with commit-pinned
@@ -53,11 +148,25 @@ At the time this handover was reconciled:
   residue. The package remains a private nondeployable `rlib`; it has no production launcher,
   external target, credential, listener, service, database connection, Supabase operation or apply
   capability. Official CLI acquisition and complete official runtime/release provenance remain
-  later gates.
+  later gates. Exact-main CI run `33821396062` and trusted-kernel run `33822223884` passed on
+  `51a56b392ab524dc140e343fe1dc87b58e17c42f`.
+- WP-201 is local and unmerged on branch `wp-201-disposable-preparation`. Six implementation
+  commits culminate at `c36b680e0ee7a4f5e71382c011c613902db2cdfa`, defining the initial
+  architecture and implementing the root-authority portion of step 3; this later standalone
+  documentation checkpoint follows them. The final 15-file Rust checkpoint passed format,
+  check, Clippy with warnings denied and rustdoc in both feature modes; 86 no-feature Rust tests,
+  117 `wp201-internal` Rust tests and 14 TypeScript tests passed. One High correctness reviewer and
+  two Extra-High authority/crash reviewers ended clean on exact staged hash
+  `3d881b1996aa9b3adac51f983f5cc2f3bb99ab901c6fa26b451db3431dc8e68f` before commit. It adds the
+  root-owned authority registry, shared v1/v2 OFD super-lock, empty v2 journal, exact descriptor
+  graph revalidation, independent signed vectors and real crash/race proofs. It remains a private,
+  nondeployable, source-only library with no target, credential, listener, database connection,
+  hosted query, dry run or apply capability. The branch is not pushed, has no PR or hosted CI, and
+  must not be described as merged.
 - Production web health returns `ok` at
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 173 commits behind current main. No later
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 175 commits behind current main. No later
   package deployed or promoted a candidate, so its newer source artifacts are not live evidence.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 313 commits behind
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 315 commits behind
   current main, and still returns the
   legacy `wizard-ads` service shape.
 - The new Evo report-worker and recommendation-worker units are not installed, so their loopback
@@ -72,9 +181,10 @@ At the time this handover was reconciled:
 - Current source, deployed web, deployed MCP, and the active worker are not one proven release. Do
   not describe post-deployment main features as live until a revision-stamped candidate is promoted
   and checked.
-- `docs/STATUS.md` now records WP-179 through WP-200, but the implementation-wave table remains
-  incomplete between WP-149 and WP-178. Use Git, CI, code, the migration ledger, and live health as
-  evidence; then update status prose.
+- `docs/STATUS.md` records WP-179 through WP-200, but its reconciliation header still names
+  `f06efea` rather than current main `51a56b3`, and the implementation-wave table remains incomplete
+  between WP-149 and WP-178. WP-201 must not be added until it is merged and exact-main CI passes.
+  Use Git, CI, code, the migration ledger and live health as evidence before updating status prose.
 
 Re-run:
 
@@ -197,13 +307,39 @@ These are source outcomes, not blanket claims of live behavior.
 
 Reconcile heads and checks again before acting.
 
-There are no open pull requests. PR #131 merged WP-200 at `9d932f5`, and PR #132 merged its
-trusted-runner cold-start correction at current main `f06efea`; PR #24 remains closed unmerged
-at archival head `78e718b` after WP-191 preserved its remaining token-fenced ownership/recovery
-lesson on accepted current main. Its superseded source was not rebased, cherry-picked or merged.
+There are no open pull requests. PR #131 merged WP-200 at `9d932f5`, PR #132 merged its
+trusted-runner cold-start correction at `f06efea`, and PR #133 closed WP-200 at current main
+`51a56b3`. The local WP-201 branch is not pushed and therefore has no PR or hosted CI. PR #24
+remains closed unmerged at archival head `78e718b` after WP-191 preserved its remaining
+token-fenced ownership/recovery lesson on accepted current main. Its superseded source was not
+rebased, cherry-picked or merged.
 
 Do not keep stale pull requests merely as storage. Preserve useful design in a current brief,
 replace or rebase live work, and close branches that are proven superseded.
+
+## Local worktrees and branch safety
+
+Only two worktrees remain:
+
+- the active WP-201 worktree on `wp-201-disposable-preparation`, containing the implementation
+  checkpoint `c36b680`; and
+- the original operator worktree on `codex/onepassword-secrets` at `9e59587`.
+
+Do not merge or delete `codex/onepassword-secrets` wholesale. It diverged from current main at an
+old base, has 18 graph commits outside main, conflicts with current policy/runtime files in a
+read-only merge simulation, and currently has uncommitted operator changes. The nine runtime
+commits from `737f4bf` through `9e59587` are obsolete, equivalent or partly superseded by the
+current immutable MCP/report-worker installers; none is safe to cherry-pick. The only independently
+portable dirty change found is a two-line roadmap layout fix, which should be reapplied and reviewed
+on a fresh current-main UI branch. The dirty Evo files are historical integration-worker design
+evidence, not transplantable source. `supabase/.temp/cli-latest` is generated cache;
+`supabase/.temp/linked-project.json` is local project-binding metadata and must never be committed.
+
+The safe eventual disposition is to classify the remaining dirty operator edits, reapply only the
+roadmap fix and any newly designed integration-worker behavior on fresh current-main branches, then
+preserve or close the old branch and remove its worktree only after every commit and dirty file is
+accounted for. Never reset, checkout, clean or remove that protected worktree merely to reduce the
+branch list.
 
 ## Hosted migration gates
 
@@ -300,11 +436,18 @@ proven automatically active in production. Activation still requires:
 - the exclusive Evo report lane;
 - all three Creative producer gates and a deployment-only pilot allowlist;
 - one authorized read-only profile probe;
-- source/ad/creative/asset/report/mapped/upsert count reconciliation;
+- exact source/parsed asset and ad counts; mapped/legacy/unsupported/ambiguous/unmapped mapping
+  states; report source/parsed/refused/mapped/unpromoted rows; asset/mapping/snapshot/fact upserts;
+  and every persisted read-back count;
 - live UI verification against authoritative Amazon Asset IDs.
 
 PR #86 merged the lifecycle-aware automatic-sync copy at `2154b5a65ab7e795ff5aa1456c149569444fa14c`.
 It remains source-only until a matching web revision is deployed and verified live.
+
+This section describes the read-only Creative Performance feature. It does not mean operators can
+upload/register Asset Library media or create Sponsored Brands/SB Video campaigns. Those write-side
+features still need the current Asset Library lifecycle, a version-aware picker, Unified SB
+client/compiler support, a guarded worker executor and the explicit Amazon creation confirmation.
 
 ### SQP and Query Intelligence
 
@@ -352,7 +495,9 @@ enqueue-time campaign/policy evidence. WP-196 supplies the exclusive compatible 
 claim-bound run writes and a fail-closed shared readiness gate in source. The complete preview path
 remains unavailable live until all five pending migrations, the narrow worker credential, staged and
 activated recommendation service, scoped admission and a matching web revision are separately
-authorized, deployed and verified. No Amazon apply path was added.
+authorized, deployed and verified. No Amazon apply path was added. After preview activation, direct
+application still requires the guarded worker executor and explicit first-write profile activation;
+sync alone must never grant write authority.
 
 ## Known UX and performance follow-ups
 
@@ -380,9 +525,14 @@ authority. Target or project creation, credential provision or rotation, hosted 
 apply, authenticated acquisition, real-host staging, activation or service mutation, and deployment
 each require a fresh exact action-specific authorization before that action occurs.
 
-1. Use WP-201 to implement the disposable target-scoped credential, egress, hosted-history and
-   dry-run preparation boundary with apply absent. Any actual disposable target, credential or
-   hosted preparation requires its own exact disposable-only authorization. WP-202 then proves
+1. Resume the clean local WP-201 branch containing `c36b680`. First commit and review the
+   architecture-and-brief exactness amendment for the known invocation-directory, Docker-label,
+   acquisition-network, mount-destination, vendor-ledger, helper-protocol, image-digest and Cargo
+   matrix gaps. Then implement and prove the amended root/container composition boundary before
+   step 4. Next commit and review the remaining v2 record/transition/domain contract and continue
+   WP-201's disposable target-scoped credential, egress, hosted-history and dry-run preparation
+   boundary with apply absent. Any actual disposable target, credential or hosted preparation
+   requires its own exact disposable-only authorization. WP-202 then proves
    disposable apply, the two-stage lock handoff, crash/lost-response reconciliation and every valid
    41-through-46 prefix, again only under a fresh exact disposable-target authorization.
 2. Use WP-203 for the immutable deployment artifact and source or synthetic-harness proof of

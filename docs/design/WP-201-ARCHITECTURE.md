@@ -166,13 +166,21 @@ tools/hosted-migration-preparation-proof/
 pnpm-lock.yaml
 ```
 
+For an operator-requested capacity/continuation checkpoint only, the coordinator may also update
+`docs/HANDOVER.md` and correct stale `docs/PLAN.md` prose solely to align it with
+already-authoritative `AGENTS.md` in one standalone documentation commit. That exception records
+verified state and open work only; it cannot create or change a product, implementation or security
+requirement, claim WP-201 acceptance or completion, update `docs/STATUS.md`, satisfy any
+source-acceptance row or authorize an external action.
+
 The source slice does not add or edit an external adapter, production launcher or wrapper. A later
 adapter-candidate architecture addendum must name its exact ignored path, deny-live construction
 boundary and expanded ownership before that file exists. The separately reviewed final policy can
 then pin the already staged, measured candidate rather than predicting future bytes.
 The implementation does not edit `packages/shared`, applications, migrations, Supabase
-configuration, WP-197/WP-198 sources, deployment files, services, status or handover. Status and
-handover change only after a reviewed merge and exact-main CI.
+configuration, WP-197/WP-198 sources, deployment files, services or status. Apart from the narrow
+operator-requested continuity exception above, status and handover change only after a reviewed
+merge and exact-main CI.
 
 Dependency direction is fixed:
 
@@ -2185,6 +2193,12 @@ bounded summary. Secret and target canaries must not occur anywhere in CLI-visib
 logs, panic output or cleanup errors.
 
 ## Source-only versus external proof
+
+Before implementing the container wrapper, amend this architecture and the brief to freeze the
+invocation-directory prefix, Docker label keys and role values, acquisition network, container
+mount destinations, vendor-ledger byte framing, event-helper descriptor/control protocol, pinned
+proof-image digest and per-manifest Cargo command matrix. The constraints below are mandatory but
+do not yet supply those concrete values. Independently review the exact amendment hash before code.
 
 WP-201 test behavior uses only synthetic assets, fake gateways, fake credentials and disposable
 local files. It opens no external network and contacts no Supabase project, browser, database,

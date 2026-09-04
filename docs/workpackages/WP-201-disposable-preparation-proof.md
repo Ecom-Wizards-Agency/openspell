@@ -36,9 +36,16 @@ addendum pins its already measured bytes and complete acquisition/runtime/gatewa
 - root pnpm lockfile changes required by the new package.
 
 Do not edit `packages/shared`, applications, migrations, Supabase configuration, WP-197/WP-198,
-deployment/service files, operator configuration, status or handover. Do not change WP-199 v1
-journal bytes, parsing or recovery semantics. The source slice must not add an external adapter or
-live wrapper. Status and handover update only after reviewed merge and exact-main CI.
+deployment/service files, operator configuration or status. Do not change WP-199 v1 journal bytes,
+parsing or recovery semantics. The source slice must not add an external adapter or live wrapper.
+Status and ordinary handover updates occur only after reviewed merge and exact-main CI.
+
+One narrow exception applies when the operator explicitly requests a capacity/continuation
+checkpoint before WP-201 completes: the coordinator may update `docs/HANDOVER.md` and correct stale
+`docs/PLAN.md` prose solely to align it with already-authoritative `AGENTS.md` in one standalone
+documentation commit. It may record only verified state and open work. It cannot create or change a
+product, implementation or security requirement, claim WP-201 acceptance or completion, update
+`docs/STATUS.md`, satisfy an acceptance row, or authorize an external action.
 
 ## Required behavior
 
@@ -246,17 +253,25 @@ WP-201 does not:
 - create a broker, listener, binary, deployable service, systemd unit or production signer;
 - stage, activate, restart, promote or mutate live infrastructure;
 - change a worker, queue owner, web/MCP revision, feature admission or Amazon write state; or
-- update rolling status/handover before reviewed merge and exact-main CI.
+- update rolling status or make an ordinary handover completion claim before reviewed merge and
+  exact-main CI; the narrow operator-requested continuity checkpoint above remains allowed.
 
 ## Implementation order
 
 1. Commit this architecture and brief before implementation.
 2. Add bridge feature declarations and exact dependency/reverse-dependency boundary tests.
-3. Implement the minimal synthetic installed-policy and installation-authorization codecs/trust
-   checks, state-root installer, bootstrap lease, super-lock, signed registry generation one, empty
-   v2 journal storage and durable no-feature/feature proof of v1 byte/recovery invariance. This step
-   exposes only internal installation and inspection; the remaining operation authorization,
-   record, transition, policy and preparation-machine contracts belong to step 4.
+3. The local checkpoint at `c36b680` contains the minimal synthetic installed-policy and
+   installation-authorization codecs/trust checks, state-root installer, bootstrap lease,
+   super-lock, signed registry generation one, empty v2 journal storage and durable
+   no-feature/feature v1-invariance work. That portion is not accepted until the remaining
+   root/container composition proof passes. Before implementing the container wrapper, amend this
+   brief and the architecture to freeze the invocation-directory prefix, Docker label keys and role
+   values, acquisition network, container mount destinations, vendor-ledger byte framing,
+   event-helper descriptor/control protocol, pinned proof-image digest and per-manifest Cargo
+   command matrix. Independently review that exact documentation hash, then implement and prove the
+   remaining container-wrapper portion. This step exposes only internal installation and inspection;
+   the remaining operation authorization, record, transition, policy and preparation-machine
+   contracts belong to step 4.
 4. Commit and independently review the exact remaining v2 record/transition/domain contract, then
    implement private canonical records, fixed policies and preparation machine.
 5. Implement target/credential/gateway/egress/observer/history/dry-run models.
@@ -265,7 +280,8 @@ WP-201 does not:
 8. Run High correctness and two Extra-High authority/crash reviews; correct every finding.
 9. Run focused, blast-radius and full repository verification.
 10. Push, open a PR and require exact-head CI before merge; require exact-main CI after merge.
-11. Update status/handover only after the source slice is merged and verified.
+11. Update status and the ordinary completion handover only after the source slice is merged and
+    verified; the narrow operator-requested continuity checkpoint above remains allowed.
 12. Commit and independently review the read-only discovery-policy addendum before touching an
     official asset, disposable target or credential.
 13. Under fresh authorization, run that bounded non-writing discovery harness; its private trace is
