@@ -3153,8 +3153,10 @@ poll interval, but the fresh boot-time sample latches expiry before any later st
 accepted. This is an acceptance deadline, not a claim that the credential-free setup child performs
 no instruction during that interval.
 
-The existing 300-second acquisition and one 900-second deadline for the complete ordered proof
-matrix remain exact. Each hard deadline has one 160-second cleanup reserve sized for the two-ID
+The existing 300-second acquisition and one 1,500-second deadline for the complete ordered proof
+matrix are exact. The matrix bound was corrected after an unchanged no-argument run admitted row
+23 but exhausted the former 900-second shared active window before that row's Cargo process; it is
+one bound for the complete matrix, not a per-row allowance. Each hard deadline has one 160-second cleanup reserve sized for the two-ID
 conflict case and bounded retry protocol. Signals or deadline latch cleanup; no later start is
 allowed. Each container has one
 issued start/attach command and no retry. Pre-start inspection requires `created`, PID zero,
@@ -3413,7 +3415,7 @@ group within the first 160 reserve seconds. At its first instruction the harness
 boot-time clock and establishes the same 900-plus-160-second inner deadline as an additional
 defense; those later local instants can never extend the supervisor's earlier inner bound. The
 outer 50 seconds are unreachable to harness work and begin only after harness reap and all five
-output pipes reach EOF. The normal 28-row matrix has a separate 900-plus-160-second deadline. These
+output pipes reach EOF. The normal 28-row matrix has a separate 1,500-plus-160-second deadline. These
 four proof deadlines are independent; no cut borrows a slot or unused time from construction, the
 matrix or another cut. The supervisor starts a cut's 900-plus-210-second deadline immediately
 before consuming its token
@@ -3423,12 +3425,12 @@ reserve's otherwise unused 15-second create-settlement slice belongs to exact ha
 TERM/KILL/reap settlement before state-specific path cleanup. No harness owns normal cleanup until
 spawn identity is positively established, and no failed spawn can be retried with that root.
 
-The outer no-argument test orchestrator gives the complete Docker integration child exactly 7,150
+The outer no-argument test orchestrator gives the complete Docker integration child exactly 7,750
 seconds. That is the non-overlapping sum of 460 seconds for initial source staging, 460 seconds for
-image authentication, 460 seconds for dependency acquisition, 1,060 seconds for the normal matrix,
+image authentication, 460 seconds for dependency acquisition, 1,660 seconds for the normal matrix,
 three times 325 seconds for fresh-copy construction plus 1,110 seconds for a cut plus 130 seconds
 for mandatory failed-cut teardown, and 15 seconds for final path cleanup. A clean run can consume at
-most 6,760 seconds of those internal allocations; the remaining fixed difference is failure-only
+most 7,360 seconds of those internal allocations; the remaining fixed difference is failure-only
 teardown, not a phase budget and cannot be borrowed by an inner operation. Ordinary CI invokes this
 package separately with no forwarded Vitest argument.
 
@@ -3763,7 +3765,7 @@ The wrapper holds and strictly parses `/proc/uptime` through bounded positional 
 derives one absolute Linux boot-time deadline per image acquisition, dependency acquisition and the
 complete proof matrix, samples around every transition
 and polls at most every 50 milliseconds while a child is live. Active budgets are 300 seconds for
-either acquisition and 900 seconds for proof; each hard deadline adds exactly 160 seconds of cleanup
+either acquisition and 1,500 seconds for the complete normal proof matrix; each hard deadline adds exactly 160 seconds of cleanup
 reserve. This is the inner driver and normal-matrix allocation; only the three outer interruption
 supervisors add their disjoint 50-second post-reap acceptance interval and therefore use 210 seconds.
 Every child from the closed operation table is an asynchronous owned process group capped
