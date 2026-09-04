@@ -2823,9 +2823,9 @@ must be the checksummed crates.io registry; Git sources, alternate registries, s
 patch, credential provider and unchecksummed packages refuse.
 
 The reviewed union vendor contains 3,657 regular files, 941 directories and 67,159,121 regular-file
-bytes. The reviewed source snapshot has 45 regular files, 10 directories and 1,281,046 regular-file
+bytes. The reviewed source snapshot has 45 regular files, 10 directories and 1,283,730 regular-file
 bytes. Its 55-row source ledger is 6,533 bytes with SHA-256
-`14b09ed879bbdf0758345d49fc184792f2145749d1e864ba3a854916dada7892`. The reviewed
+`a8020e58a2ef55706e89498dd87cf4186f9e83e4c673f8273aaf96591b75a5a6`. The reviewed
 Rustfmt/Clippy toolchain contains 168 regular files, 28 directories and 653,573,520 regular-file
 bytes. All have zero links and no path outside the grammar below. With four control files, the full
 ledger has exactly 4,853 records. A future count difference is a review-requiring input change, not

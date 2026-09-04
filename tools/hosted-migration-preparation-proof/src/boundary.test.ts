@@ -29,6 +29,7 @@ import {
   verifyControllerFixtures,
   verifyTestOrchestratorRuntimeForTests,
 } from "../scripts/test.mjs";
+import { requireRootBridgeMarker } from "../scripts/docker-integration.mjs";
 
 const packageDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourceDirectory = join(packageDirectory, "src");
@@ -642,6 +643,48 @@ function tomlTable(contents: string, name: string): string {
 }
 
 describe("private preparation-proof package boundary", () => {
+  it("accepts only one exact root bridge line on root-positive stdout", () => {
+    const marker = Buffer.from("openspell.wp201.root-bridge-success.v1\n", "ascii");
+    const prefix = Buffer.from("cargo output\n", "ascii");
+    expect(() =>
+      requireRootBridgeMarker("root-positive", Buffer.concat([prefix, marker]), Buffer.alloc(0)),
+    ).not.toThrow();
+    expect(() =>
+      requireRootBridgeMarker("root-fmt", prefix, Buffer.alloc(0)),
+    ).not.toThrow();
+
+    for (const [rowId, stdout, stderr] of [
+      ["root-positive", prefix, Buffer.alloc(0)],
+      ["root-positive", Buffer.concat([prefix, marker, marker]), Buffer.alloc(0)],
+      ["root-positive", Buffer.concat([prefix, marker]), marker],
+      ["root-positive", Buffer.concat([prefix, Buffer.from("x"), marker]), Buffer.alloc(0)],
+      [
+        "root-positive",
+        Buffer.concat([prefix, marker.subarray(0, marker.length - 1)]),
+        Buffer.alloc(0),
+      ],
+      ["root-fmt", Buffer.concat([prefix, marker]), Buffer.alloc(0)],
+    ] as const) {
+      expect(() => requireRootBridgeMarker(rowId, stdout, stderr)).toThrow(
+        "WP-201 Docker integration refused: root bridge",
+      );
+    }
+
+    for (let length = 1; length < marker.length - 1; length += 1) {
+      const partial = marker.subarray(0, length);
+      for (const [rowId, stdout, stderr] of [
+        ["root-positive", Buffer.concat([prefix, partial]), Buffer.alloc(0)],
+        ["root-positive", Buffer.concat([prefix, marker, partial]), Buffer.alloc(0)],
+        ["root-positive", Buffer.concat([prefix, marker]), partial],
+        ["root-fmt", Buffer.concat([prefix, partial]), Buffer.alloc(0)],
+      ] as const) {
+        expect(() => requireRootBridgeMarker(rowId, stdout, stderr)).toThrow(
+          "WP-201 Docker integration refused: root bridge partial marker",
+        );
+      }
+    }
+  });
+
   it("holds the boot clock and bounds captured-output refusal before suite spawn", async () => {
     await expect(verifyControllerFixtures()).resolves.toEqual({
       acquisition: {

@@ -288,6 +288,18 @@ describe("private root-authority package boundary", () => {
     expect(reader).toContain("!= seed.len()");
   });
 
+  it("requires the fixed proc sys component to cross a statx mount boundary", () => {
+    const source = read("src/authority_registry.rs");
+    const sampler = /pub\(crate\) fn sample_clock[\s\S]*?\n\}\n\npub\(crate\) fn same_clock_path/u.exec(
+      source,
+    )?.[0];
+    expect(sampler).toBeDefined();
+    expect(sampler).toContain("let procfs_identity = verify_procfs_root(procfs)?;");
+    expect(sampler).toContain("let (sys, sys_identity) = open_clock_sys(procfs)?;");
+    expect(sampler).toContain("if sys_identity.mount_id == procfs_identity.mount_id {");
+    expect(sampler).toContain("reopened_sys_identity != sys_identity");
+  });
+
   it("removes the isolated local Cargo target after a command failure", () => {
     const fixtureDirectory = mkdtempSync(
       join(tmpdir(), "openspell-root-authority-cargo-failure-"),
@@ -495,6 +507,37 @@ describe("private root-authority package boundary", () => {
     expect(library).toMatch(
       /#\[cfg\(test\)\][\s\S]*?pub\(crate\) fn inspect_fresh_owned/u,
     );
+  });
+
+  it("keeps the ignored root bridge on the exact public six-call chain", () => {
+    const tests = read("src/authority_registry_tests.rs");
+    const bridge = /#\[test\]\n#\[ignore = "WP-201 root-container bridge row only"\]\nfn wp201_root_container_bridge_success\(\) \{(?<body>[\s\S]*?)\n\}\n\n#\[test\]/u.exec(
+      tests,
+    )?.groups?.body;
+    expect(bridge).toBeDefined();
+    expect(bridge).toContain(
+      "rustix::process::getuid().as_raw() != 0 || rustix::process::getgid().as_raw() != 0",
+    );
+    expect(bridge).toContain("return;");
+    expect(bridge).toContain('InstallationFixture::new("openspell-wp201-root-bridge-")');
+    expect(bridge).toContain("assert_eq!((fixture.uid, fixture.gid), (0, 0));");
+    expect(bridge).not.toMatch(/\b(?:install_owned|inspect_fresh_owned|ExpectedOwner::for_test)\b/u);
+
+    const publicCalls = [
+      ...(bridge?.matchAll(
+        /\b(inspect_installed_preparation_policy|inspect_preparation_bootstrap|install_preparation_state_root|inspect_fresh_preparation_state_root)\s*\(/gu,
+      ) ?? []),
+    ].map((match) => match[1]);
+    expect(publicCalls).toEqual([
+      "inspect_installed_preparation_policy",
+      "inspect_preparation_bootstrap",
+      "install_preparation_state_root",
+      "inspect_installed_preparation_policy",
+      "inspect_preparation_bootstrap",
+      "inspect_fresh_preparation_state_root",
+    ]);
+    expect(bridge).toContain('concat!("openspell.wp201.", "root-bridge-success.v1\\n")');
+    expect(bridge).toContain("stdout.flush().expect(\"bridge marker flush\")");
   });
 
   it("permits only the WP-201 coordinator to enable the reserved bridge feature", () => {

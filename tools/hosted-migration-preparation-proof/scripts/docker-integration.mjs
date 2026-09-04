@@ -103,6 +103,8 @@ const FAILED_PATH_COMPLETE = Buffer.from(
 );
 const NAMESPACE_READY = Buffer.from("openspell.wp201.namespace-ready.v1\n", "ascii");
 const ROOT_SUCCESS = Buffer.from("openspell.wp201.root-bridge-success.v1\n", "ascii");
+const ROOT_SUCCESS_BODY = ROOT_SUCCESS.subarray(0, ROOT_SUCCESS.length - 1);
+const ROOT_SUCCESS_PREFIX = Buffer.from("openspell.wp201.root-bridge-success", "ascii");
 const AUDIT_OPEN = Buffer.from("openspell.wp201.real-cut-audit-open.v1\n", "ascii");
 const CUT_SIGNAL_ACKNOWLEDGEMENT_BYTES = 155;
 const SUCCESS = Buffer.from("openspell.wp201.docker-integration-complete.v1\n", "ascii");
@@ -123,6 +125,40 @@ let activeChild;
 
 function refuse(reason) {
   throw new Error(`WP-201 Docker integration refused: ${reason}`);
+}
+
+function inspectRootBridgeLines(bytes) {
+  let count = 0;
+  let start = 0;
+  for (;;) {
+    const end = bytes.indexOf(0x0a, start);
+    const terminated = end !== -1;
+    const line = bytes.subarray(start, terminated ? end : bytes.length);
+    if (line.equals(ROOT_SUCCESS_BODY)) {
+      if (!terminated) refuse("root bridge partial marker");
+      count += 1;
+    } else if (
+      (line.length > 0 &&
+        line.length < ROOT_SUCCESS_BODY.length &&
+        ROOT_SUCCESS_BODY.subarray(0, line.length).equals(line)) ||
+      line.indexOf(ROOT_SUCCESS_PREFIX) !== -1
+    ) {
+      refuse("root bridge partial marker");
+    }
+    if (!terminated) return count;
+    start = end + 1;
+  }
+}
+
+export function requireRootBridgeMarker(rowId, stdout, stderr) {
+  if (!ROW_IDS.includes(rowId) || !Buffer.isBuffer(stdout) || !Buffer.isBuffer(stderr)) {
+    refuse("root bridge marker input");
+  }
+  const stdoutLines = inspectRootBridgeLines(stdout);
+  const stderrLines = inspectRootBridgeLines(stderr);
+  if (stderrLines !== 0 || stdoutLines !== (rowId === "root-positive" ? 1 : 0)) {
+    refuse("root bridge marker count");
+  }
 }
 
 function modeOf(status) {
@@ -1132,10 +1168,7 @@ async function startProof(context, id, rowId) {
     });
     if (result.status !== 0 || result.signal !== null) refuse("proof Cargo row");
     const complete = result.stdout.subarray(NAMESPACE_READY.length);
-    const occurrences = complete.toString("utf8").split(ROOT_SUCCESS.toString("ascii")).length - 1;
-    if ((rowId === "root-positive" && occurrences !== 1) || (rowId !== "root-positive" && occurrences !== 0)) {
-      refuse("root bridge marker count");
-    }
+    requireRootBridgeMarker(rowId, complete, result.stderr);
   } catch (error) {
     signalGroup(child.pid, "SIGKILL");
     throw error;

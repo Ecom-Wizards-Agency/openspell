@@ -61,8 +61,8 @@ const fixedSourceObjects = new Map([
   ["tools/hosted-migration-root-authority/Cargo.lock", "b90437c9cb4fa0096bd043704e73c0089c01ef89"],
   ["tools/hosted-migration-root-authority/Cargo.toml", "b836aa485a81064156cd4ee4801af2f28bbce4f6"],
   ["tools/hosted-migration-root-authority/rust-toolchain.toml", "3caff2a7c8054117b0c69401d38fbb47ba2241a2"],
-  ["tools/hosted-migration-root-authority/src/authority_registry.rs", "d8c1ad93f8d3f7f1c2cefcd46f076741a68c607f"],
-  ["tools/hosted-migration-root-authority/src/authority_registry_tests.rs", "2bc2416f00b255ce48121d71b4470d5c481a5329"],
+  ["tools/hosted-migration-root-authority/src/authority_registry.rs", "29aab7a97ba690b1151bf095a4c681d23ba7423f"],
+  ["tools/hosted-migration-root-authority/src/authority_registry_tests.rs", "9d44702a9c5cb99e9531ada0113e9901a3c3a191"],
   ["tools/hosted-migration-root-authority/src/canonical.rs", "1e76e4032fda57f1fd295184d49e461eecfa0393"],
   ["tools/hosted-migration-root-authority/src/corruption_tests.rs", "6b12315e7297c9ae57a6b51010e1ba0c410341d1"],
   ["tools/hosted-migration-root-authority/src/cross_version_tests.rs", "f6704a0503f31dc14f2e0e2583ec26612bdad607"],
@@ -73,7 +73,7 @@ const fixedSourceObjects = new Map([
   ["tools/hosted-migration-root-authority/src/journal/storage.rs", "6a531478729fd71afb76572b405176262718a842"],
   ["tools/hosted-migration-root-authority/src/lib.rs", "13992f6b0439374977357692e733bdd3fb6e5962"],
   ["tools/hosted-migration-root-authority/src/mutation_tests.rs", "e0868fa95ce23cfe86a8f4ac64bbbeba9d875deb"],
-  ["tools/hosted-migration-root-authority/src/policy_matrix_tests.rs", "64c7a8810a2a4d8944aa95af700a6bf1c5912803"],
+  ["tools/hosted-migration-root-authority/src/policy_matrix_tests.rs", "a45e448a37f272c812f4ca9c13506b1f7f75ee62"],
   ["tools/hosted-migration-root-authority/src/preparation-policy-v1.golden.json", "88cb0c664d52075ada10e5f42f76bc8cf6394296"],
   ["tools/hosted-migration-root-authority/src/preparation_v2.rs", "9fd8c5aeb7948ce0135d3654b30260dce699d988"],
   ["tools/hosted-migration-root-authority/src/preparation_v2_tests.rs", "3efa8df77cc3f0474cfc0aa88824c1608e037b08"],
@@ -114,7 +114,7 @@ const fixedSourceDirectories = Object.freeze([
   "source/tools/hosted-migration-runtime-proof/src",
 ]);
 
-const SOURCE_REGULAR_FILE_BYTES = 1_281_046;
+const SOURCE_REGULAR_FILE_BYTES = 1_283_730;
 const workspaceDirectory = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
 const proofPackageDirectory = resolve(fileURLToPath(new URL("../", import.meta.url)));
 const capturedNodeExecutable = process.execPath;

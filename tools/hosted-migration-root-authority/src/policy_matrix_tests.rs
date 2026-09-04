@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use crate::crypto::{CryptoError, RecordSigner, SyntheticRecordSigner, sha256_hex, verify_grant};
 use crate::journal::storage::{
     ApproveCommand, CloseApprovalCommand, CloseCandidateCommand, CommitError, ConsumeCommand,
-    HeadCas, JournalStore, RegisterCommand, RootAuthority, StatusCommand, TicketEntropy,
+    HeadCas, JournalStore, OpenError, RegisterCommand, RootAuthority, StatusCommand, TicketEntropy,
     TrustedClock, plan_approval_closure_before_signing, plan_consumption_before_entropy,
     test_force_generation_capacity, test_force_projection_capacity,
 };
@@ -900,10 +900,20 @@ fn empty_test_store(public_key: [u8; 32]) -> (tempfile::TempDir, JournalStore) {
 }
 
 fn reopen_test_store(root: &std::path::Path, public_key: [u8; 32]) -> JournalStore {
-    let metadata = fs::metadata(root).expect("root metadata");
-    let root_fd: OwnedFd = File::open(root).expect("root fd").into();
-    JournalStore::open_from_fd(root_fd, metadata.uid(), metadata.gid(), public_key)
-        .expect("reopened journal store")
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let metadata = fs::metadata(root).expect("root metadata");
+        let root_fd: OwnedFd = File::open(root).expect("root fd").into();
+        match JournalStore::open_from_fd(root_fd, metadata.uid(), metadata.gid(), public_key) {
+            Ok(store) => return store,
+            Err(OpenError::Lock) if std::time::Instant::now() < deadline => {
+                // A concurrently spawned libtest child can briefly inherit another test's
+                // close-on-exec OFD. The descriptor is gone as soon as exec completes.
+                std::thread::yield_now();
+            }
+            Err(error) => panic!("reopened journal store: {error:?}"),
+        }
+    }
 }
 
 #[test]

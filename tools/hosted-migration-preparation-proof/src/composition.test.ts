@@ -651,12 +651,12 @@ describe("WP-201 composition boundary", () => {
     expect(sourceLedger).toMatchObject({
       files: 45,
       directories: 10,
-      regularFileBytes: 1_281_046,
+      regularFileBytes: 1_283_730,
       records: 55,
     });
     expect(Buffer.byteLength(sourceLedger.ledgerRows, "utf8")).toBe(6_533);
     expect(createHash("sha256").update(sourceLedger.ledgerRows).digest("hex")).toBe(
-      "14b09ed879bbdf0758345d49fc184792f2145749d1e864ba3a854916dada7892",
+      "a8020e58a2ef55706e89498dd87cf4186f9e83e4c673f8273aaf96591b75a5a6",
     );
     expect(
       verifySourceLedgerRows(records, bytes, Buffer.from(sourceLedger.ledgerRows, "utf8")),
@@ -788,7 +788,7 @@ describe("WP-201 composition boundary", () => {
       expect(result).toMatchObject({
         files: 45,
         directories: 10,
-        regularFileBytes: 1_281_046,
+        regularFileBytes: 1_283_730,
         records: 55,
       });
       expect(Object.isFrozen(result)).toBe(true);
@@ -828,7 +828,7 @@ describe("WP-201 composition boundary", () => {
       expect(result).toMatchObject({
         files: 45,
         directories: 10,
-        regularFileBytes: 1_281_046,
+        regularFileBytes: 1_283_730,
         records: 55,
       });
     } finally {

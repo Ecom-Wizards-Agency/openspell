@@ -613,6 +613,9 @@ pub(crate) fn sample_clock(procfs: &OwnedFd) -> Result<TrustedClockSample, ()> {
         return Err(());
     }
     let (sys, sys_identity) = open_clock_sys(procfs)?;
+    if sys_identity.mount_id == procfs_identity.mount_id {
+        return Err(());
+    }
     let (boot_id, boot_id_identity) = open_boot_id(&sys)?;
     let before_boot_id = pread_exact(&boot_id, 37)?;
     let offsets_path = format!("{pid_text}/timens_offsets");

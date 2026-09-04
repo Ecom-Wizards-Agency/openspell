@@ -1,4 +1,5 @@
 use std::fs::{File, OpenOptions, create_dir, write};
+use std::io::Write as _;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
@@ -21,7 +22,11 @@ use crate::journal::storage::{
     test_delay_at, test_fail_at, test_park_at, test_run_at,
 };
 use crate::super_lock::ExpectedOwner;
-use crate::wp201_internal::{StateRootInstallationOutcomeV1, inspect_fresh_owned, install_owned};
+use crate::wp201_internal::{
+    StateRootInstallationOutcomeV1, inspect_fresh_owned, inspect_fresh_preparation_state_root,
+    inspect_installed_preparation_policy, inspect_preparation_bootstrap, install_owned,
+    install_preparation_state_root,
+};
 
 const POLICY: &[u8] = include_bytes!("preparation-policy-v1.golden.json");
 const BOOTSTRAP_FORMAT: &[u8] = b"openspell.synthetic-preparation-proof-bootstrap.v1\n";
@@ -31,6 +36,55 @@ const PROCESS_POLICY: &str = "OPENSP_WP201_TEST_POLICY";
 const PROCESS_OWNER: &str = "OPENSP_WP201_TEST_OWNER";
 const PROCESS_READY: &str = "OPENSP_WP201_TEST_READY";
 const PROCESS_CUT: &str = "OPENSP_WP201_TEST_CUT";
+
+#[test]
+#[ignore = "WP-201 root-container bridge row only"]
+fn wp201_root_container_bridge_success() {
+    if rustix::process::getuid().as_raw() != 0 || rustix::process::getgid().as_raw() != 0 {
+        return;
+    }
+    let fixture = InstallationFixture::new("openspell-wp201-root-bridge-");
+    assert_eq!((fixture.uid, fixture.gid), (0, 0));
+
+    let fixture_bootstrap = fixture.bootstrap();
+    let (authorization, signature) = fixture.authorization(&fixture_bootstrap);
+    drop(fixture_bootstrap);
+
+    let policy =
+        inspect_installed_preparation_policy(open_read(&fixture.policy_path)).expect("root policy");
+    let bootstrap = inspect_preparation_bootstrap(policy, open_dir(&fixture.bootstrap_path))
+        .expect("root bootstrap");
+    let fresh = match install_preparation_state_root(
+        bootstrap,
+        open_dir(&fixture.state_path),
+        registry_seed_memfd(),
+        open_dir(Path::new("/proc")),
+        &authorization,
+        &signature,
+    )
+    .expect("root installation")
+    {
+        StateRootInstallationOutcomeV1::Installed(fresh) => fresh,
+        StateRootInstallationOutcomeV1::CommitOutcomeUnknown => {
+            panic!("known root installation")
+        }
+    };
+    drop(fresh);
+
+    let policy = inspect_installed_preparation_policy(open_read(&fixture.policy_path))
+        .expect("second root policy");
+    let bootstrap = inspect_preparation_bootstrap(policy, open_dir(&fixture.bootstrap_path))
+        .expect("second root bootstrap");
+    let recovered = inspect_fresh_preparation_state_root(bootstrap, open_dir(&fixture.state_path))
+        .expect("fresh root recovery");
+    drop(recovered);
+
+    let mut stdout = std::io::stdout().lock();
+    stdout
+        .write_all(concat!("openspell.wp201.", "root-bridge-success.v1\n").as_bytes())
+        .expect("bridge marker write");
+    stdout.flush().expect("bridge marker flush");
+}
 
 #[test]
 fn installs_and_recovers_exact_fresh_generation_one() {
