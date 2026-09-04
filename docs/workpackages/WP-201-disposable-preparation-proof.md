@@ -289,7 +289,33 @@ WP-201 does not:
    two-remove exact-ID recovery under the 160-second cleanup reserve, a pure sealed fault model and
    a mandatory smaller real-Docker compatibility suite, and
    one fresh proof container for each of the
-   28 ordered Cargo/positive-marker rows. Independently review the exact architecture-and-brief hash, then
+   28 ordered Cargo/positive-marker rows. For each of the three interruption cuts, the supervisor
+   must use the frozen bounded no-follow copier to build one fresh, independently reverified
+   `ledger-backed` root, retain its own root/ledger custody, and pass only the exact fd-`7` root
+   capability to the no-argument harness. Harness telemetry is equality evidence, never cleanup or
+   pathname authority. Before a cut passes, use that retained custody to prove the ledger identity
+   and digest with link count zero, the root identity empty and unlinked with link count zero, then
+   prove exactly those two retained descriptors and no duplicate in the supervisor table, close
+   both, and prove `EBADF` plus neither identity remaining. A post-close anomaly uses only bounded
+   descriptor-identity settlement; it cannot invoke pathname cleanup without both capabilities.
+   The authoritative cut supervisor owns a separate 50-second post-reap acceptance interval
+   outside the harness's existing 160-second cleanup reserve: three ten-second Docker checks, five
+   seconds for local process/path absence, ten seconds for custody settlement and five seconds
+   scheduling reserve. Failed-cut helper completion likewise
+   requires the ledger's authenticated bytes and terminal link count zero plus the root
+   empty/unlinked at link count zero. After every helper outcome, run the separate descriptor phase
+   unconditionally: a clean exact-one state closes normally, while helper refusal or any mismatch
+   enumerates/closes only matching supervisor descriptors and remains cleanup failure.
+   Test external ledger hardlink and rename refusal, supervisor descriptor-duplicate refusal and
+   the ordinary terminal two-object unlink. A permanently
+   failed, fully reaped cut may use only the architecture's
+   retained-capability subset teardown, and that teardown can never upgrade the cut. Bind each
+   fresh-root copy to its 300-plus-25-second construction deadline, each harness to its independent
+   900-plus-160-second inner deadline inside its supervisor's 900-plus-210-second cut deadline, and
+   permanently failed supervisor teardown to its separate non-upgrading 130-second deadline.
+   Exact-name recovery may return a validated full ID
+   for deletion, but a name or label is never a deletion operand. Independently
+   review the exact architecture-and-brief hash, then
    implement only that fixed container-wrapper portion. First regenerate the stale coordinator lock
    with the pinned toolchain: its package/registry/checksum counts remain `68/65/65`, while its root-
    authority entry gains the already-declared `zeroize` edge so acquisition can pass `cargo fetch

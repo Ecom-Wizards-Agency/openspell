@@ -2289,6 +2289,16 @@ an `include_bytes!` or `include_str!` literal, any other index mode, link, speci
 non-UTF-8 path, nested mount or identity change across open/read closes the proof. The
 wrapper copies those bytes with no-follow opens into `<invocation>/source` under the same
 `tools/<package>` layout, then fixes proof-bound directories to `0555` and regular files to `0444`.
+Index mode `100644` is an index assertion, not a live-workspace permission assertion. Ordinary
+checkout modes including file mode `0664` and directory mode `0775` are accepted: the workspace is
+never mounted, and only bytes that survive stable no-follow pathname/open/read identity checks and
+match their fixed stage-zero Git object IDs are copied. Every component from the workspace root
+through each fixed package root must itself be opened without following links and remain on the
+workspace device and mount; a symlinked package root, a mount at or below the workspace, or a
+replaced in-workspace ancestor refuses even when the resulting file bytes match. Mount boundaries
+above the already selected workspace, such as the filesystem containing it, are recorded but are
+not newly prohibited. The `0555`/`0444` requirements apply to the staged invocation snapshot, not
+the checkout.
 The enclosing invocation directory remains invoking-user-owned mode `0700`, so these immutable
 read/execute bits do not expose the snapshot outside that private parent. Neither
 container ever receives the workspace, `.git`, ignored files, `_local`, environment files,
@@ -2853,10 +2863,12 @@ absolute, repeated-slash, `.` or `..` component. Decimal fields have no sign or 
 131,072 records, 16 MiB ledger bytes, 256 MiB per regular file and 2 GiB total regular-file bytes.
 The directory set must equal all observed directories, not merely the parents derivable from files.
 
-Before normalization, every acquired entry must belong to the invoking uid/gid and stay on the
-invocation filesystem. A directory must have owner `rwx`, no special bit and no group/other write;
-a regular file must have owner `rw`, link count one, no special bit and no group/other write. Links,
-special files, nested mounts and any other mode refuse. Proof-bound directories normalize to
+Before normalization, every entry produced by dependency acquisition must belong to the invoking
+uid/gid and stay on the invocation filesystem. A directory must have owner `rwx`, no special bit
+and no group/other write; a regular file must have owner `rw`, link count one, no special bit and no
+group/other write. These acquisition-output predicates do not apply to the live source checkout,
+whose separate authenticated-copy rules are fixed above. Links, special files, nested mounts and
+any other acquisition-output mode refuse. Proof-bound directories normalize to
 `0555`; source, vendor and control files normalize to `0444`. A toolchain regular file normalizes
 to `0555` iff its accepted pre-normalization mode had any execute bit, otherwise `0444`; the resulting mode is in its
 `T` row. Every Cargo checksum map must have exact membership and matching contents.
@@ -3178,9 +3190,10 @@ revalidates the invocation root immediately before fixed recursive removal, remo
 syncs the parent and proves absence. This explicitly covers partial `cargo-home`, `rustup-cargo`,
 `vendor`, `toolchain`, source/controller/config construction and ledger scratch. The same-uid
 rename/write race is excluded by the explicit trust boundary above; no fd-relative safety claim is
-made for Node's recursive removal API. It has no glob, path, environment-selected root, generic
-cleanup mode or other deletion operation. The parent repeats the exact-path absence check after
-helper EOF and reap.
+made for Node's recursive removal API. It has no glob, path or environment-selected root and no
+generic cleanup mode. Its only other operation is the exact test-supervisor failed-cut protocol
+defined below, which requires retained descriptor custody and permanently disqualifies cut success.
+The parent repeats the exact-path absence check after helper EOF and reap.
 
 The next implementation step is limited to the stale lock correction, this fixed coordinator
 wrapper/helper and boundary/interruption tests, plus the root-owned positive public-bridge test.
@@ -3323,8 +3336,72 @@ no-create watcher that proves the daemon's real header/close behavior; and the t
 cuts: before issue, after daemon acceptance and full-ID capture but before parent delivery, and
 after parent custody but before inspect/start. The closed `scripts/interruption-harness.mjs` owns
 those three pause points. `scripts/docker-integration.mjs` is the outer supervisor and starts one
-fresh harness process group per source-literal case. The otherwise absolute no-case-through-argv
-rule has one closed test-only exception: the supervisor constructs exactly one of these three
+fresh harness process group per source-literal case.
+
+The normal matrix's completed acquisition invocation remains the one authenticated copy source
+while the cuts run. Before each cut, the supervisor creates one new exclusive invocation under the
+same fixed-parent policy and uses one closed, bounded, no-follow copier to construct a fresh
+`ledger-backed` root. The copier copies bytes with ordinary bounded reads and exclusive writes; it
+never hardlinks, reflinks, clones, symlinks, renames or bind-mounts an input into the destination.
+It rebuilds the new `INVOCATION` record, Docker home/config tree and fixed structural files rather
+than copying their authority. Before and after copying it verifies every `D`/`S`/`V`/`T`/`C` row,
+source object ID, Cargo checksum membership, toolchain authority tuple, controller hash, mode,
+owner, link count, size, digest, device and mount identity, all fixed counts and all byte totals. It
+syncs and independently re-verifies the complete destination before handoff. One opaque in-memory
+root token is consumed by the first spawn attempt, including a failed attempt; a root is never
+offered to another case. At most the acquisition root and the current case root exist at once, and
+the next case root is not created until the prior case's path and process cleanup have settled.
+
+Each case construction has its own absolute `CLOCK_BOOTTIME` deadline: 300 seconds of active copy
+work plus a 25-second reserve containing exactly 15 seconds for the existing state-specific path
+helper and parent absence check and 10 seconds scheduling reserve. The wrapper samples before and
+after every at-most-1-MiB read or write and every state transition. Exclusive directory creation
+enters `pre-record`; only the complete synced `INVOCATION` record advances to
+`partial-acquisition`; only scratch-free complete-tree and ledger reverification advances to
+`ledger-backed` and creates the one-use handoff token. A signal, active expiry or copy failure runs
+the existing authenticated cleanup helper with the current exact state. A construction
+hard-deadline or residue failure permanently fails the real suite and cannot borrow time from the
+later harness.
+
+Each harness attempt receives a new 900-second active proof budget plus the existing exact
+160-second inner cleanup reserve. The outer supervisor adds one disjoint 50-second post-reap
+acceptance interval, so its authoritative cut deadline is 900 plus 210 seconds. That interval is
+the exact non-overlapping sum of ten seconds for an accepted-ID absence inspect when applicable,
+ten seconds for the independent exact-name census, ten seconds for the independent label census,
+five seconds for watcher identity, process-group and both-parent pathname absence, ten seconds for
+retained root/ledger custody settlement, and five seconds scheduling reserve. An inapplicable
+accepted-ID slot remains unused and cannot be borrowed. Each of the three Docker slots uses the
+fixed five/two/three normal/TERM/KILL/reap split; expiry or ambiguity fails the cut.
+The supervisor's held boot-time clock establishes the pre-spawn active, inner-settlement and outer
+hard deadlines; it
+latches/signals at active expiry, rejects any success after that instant and kills/reaps the process
+group within the first 160 reserve seconds. At its first instruction the harness opens its own held
+boot-time clock and establishes the same 900-plus-160-second inner deadline as an additional
+defense; those later local instants can never extend the supervisor's earlier inner bound. The
+outer 50 seconds are unreachable to harness work and begin only after harness reap and all five
+output pipes reach EOF. The normal 28-row matrix has a separate 900-plus-160-second deadline. These
+four proof deadlines are independent; no cut borrows a slot or unused time from construction, the
+matrix or another cut. The supervisor starts a cut's 900-plus-210-second deadline immediately
+before consuming its token
+and attempting the first harness spawn, not after child readiness. A synchronous spawn error or a
+partially established process burns the token; when no Docker create has yet been issued, the
+reserve's otherwise unused 15-second create-settlement slice belongs to exact harness process-group
+TERM/KILL/reap settlement before state-specific path cleanup. No harness owns normal cleanup until
+spawn identity is positively established, and no failed spawn can be retried with that root.
+
+For each completed case root the supervisor opens and authenticates the root twice with
+`O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`: one retained custody descriptor and one handoff
+descriptor. It also retains an authenticated read-only descriptor for the complete ledger so a
+failed-case cleanup can validate a remaining subset even if the ledger pathname has already been
+unlinked. The two root descriptors, the canonical pathname, fixed parent, invocation record,
+device, inode, statx mount ID and complete-ledger SHA-256 must agree. The supervisor derives the
+invocation, parent token, canonical path, exact container name, labels and proof argv only from this
+pre-spawn custody; no harness frame supplies cleanup, Docker or pathname authority. The spawn file
+action installs the handoff descriptor as child fd `7`, after which the supervisor immediately
+closes its handoff copy and keeps its separate custody descriptors through harness settlement.
+
+The otherwise absolute no-case-through-argv rule has one closed test-only exception: the supervisor
+constructs exactly one of these three
 complete argument vectors, with no concatenation, interpolation or trailing token, under the fixed
 package working directory, detached process-group setting, descriptor table below and environment
 containing exactly `LANG=C` and `LC_ALL=C`:
@@ -3345,8 +3422,13 @@ therefore does not inspect `process.argv`, `process.execArgv`, environment or an
 select a case. These three fixed programs are internal fault-injection launch identities, not a
 generic command surface. They cannot select a fake driver or alter the production lifecycle.
 
-Every harness launch uses this exact descriptor table; none of fds `3` through `6` is inherited by
-a Docker client, event helper, path helper or container:
+Every harness launch uses this exact descriptor table. No harness descriptor or open file
+description referring to the invocation-root identity is inadvertently inherited by a Docker
+client, event helper, normal path helper, container or other subordinate process. A descendant may
+reuse numeric fd `7` for an unrelated pipe; the invariant is that no descendant descriptor matches
+the retained root's device, inode and mount ID. The sole deliberate exception is the permanently
+failed supervisor teardown helper defined below, which receives separate root and ledger
+capabilities on fds `5` and `6` after every harness process has reaped:
 
 | Descriptor | Direction | Contract and total cap |
 |---:|---|---|
@@ -3354,16 +3436,36 @@ a Docker client, event helper, path helper or container:
 | `1` | harness to supervisor | terminal stdout, 64 bytes |
 | `2` | harness to supervisor | terminal stderr, 128 bytes |
 | `3` | supervisor to harness | one release frame, 160 bytes, then EOF |
-| `4` | harness to supervisor | one identity frame, 256 bytes, then EOF |
+| `4` | harness to supervisor | one identity frame, 320 bytes, then EOF |
 | `5` | harness to supervisor | one accepted-ID frame, 128 bytes, then EOF |
 | `6` | harness to supervisor | operation-audit stream, 512 bytes, then EOF |
+| `7` | supervisor to harness | one authenticated, fully verified `ledger-backed` invocation-root directory capability; no byte protocol |
+
+At the first harness instruction, before installing timers or signal handlers, creating a promise,
+opening the watcher or constructing any child, fd `7` must be an invoking-user-owned mode-`0700`
+directory whose `/proc/self/fdinfo/7` has the exact Linux flags `02700000` and one shortest-unsigned
+decimal `mnt_id`. The exact production spawn wrapper must prove on the captured Node runtime that
+its deliberate fd-`7` file action produces those flags and that a later child does not inherit the
+descriptor. The harness reads the bounded `INVOCATION` record relative to fd `7`, derives only the
+two literal possible canonical paths, requires the selected parent/path no-follow reopen to match
+the fd's device, inode and mount ID, the fixed parent identity and the record, and independently
+requires the alternate-parent path for that same invocation value to be absent. It then retains that reopened
+`O_CLOEXEC` directory handle, closes fd `7`, proves fd `7` absent, and only then installs the rest of
+the lifecycle. `/proc/self/fd/7` may be used only for this admission read; it is never passed to
+Docker. The harness re-verifies the complete root and ledger immediately before create, reopens and
+compares the canonical path to the retained identity before and after every Docker client, and
+keeps its retained handle until normal path cleanup and canonical absence are proved. Admission
+provides assets only and cannot select or relabel any of the three literal cases.
 
 The three exact case tokens are `before-issue`, `after-daemon-accept-before-delivery` and
 `after-parent-custody-before-start`. The release frame is
 `openspell.wp201.real-cut-release.v1\n<case>\n`. The harness emits the accepted-ID frame and then the
 identity frame only after its event watcher has produced READY and the source-fixed case-specific
 pause point has been reached; the complete identity frame is the reached-cut attestation:
-`openspell.wp201.real-cut-identity.v1\n<case>\n<invocation-value>\n<tmp-or-var-tmp-token>\n<watcher-pid>\n<watcher-proc-starttime>\n`.
+`openspell.wp201.real-cut-identity.v2\n<case>\n<invocation-value>\n<tmp-or-var-tmp-token>\n<directory-device>\n<directory-inode>\n<directory-mount-id>\n<complete-ledger-sha256>\n<watcher-pid>\n<watcher-proc-starttime>\n`.
+Device, inode, mount ID, PID and start time are shortest unsigned one-to-20-digit decimals; the
+invocation value and ledger digest are lowercase 64-hex. The longest valid frame is 316 bytes. Every root field must equal the
+supervisor's retained pre-spawn custody, and no frame field grants authority.
 The PID and Linux `/proc/<pid>/stat` field-22 start time are shortest unsigned decimals; the parent
 token is exactly `tmp` or `var-tmp`. The accepted-ID frame is
 `openspell.wp201.real-cut-accepted-id.v1\n<value>\n`, where value is exactly `none` for
@@ -3377,9 +3479,11 @@ Partial, duplicate, reordered, unknown, over-cap or trailing bytes in
 any of these single frames fail the cut. The supervisor continuously drains fds `1`, `2`, `4`, `5`
 and `6`, requires the complete audit-open frame, validates the watcher PID/start-time identity in
 `/proc`, requires the case-appropriate accepted-ID frame to precede the reached-cut identity frame,
-and derives the one invocation path, exact name and label solely from the authenticated identity
-frame. It then sends exactly one `SIGTERM` to the still-unreaped harness PID whose child identity it
-recorded at spawn. The installed production signal handler first atomically latches the same cleanup
+and compares the complete identity frame to the invocation path, exact name, labels, device, inode,
+mount ID and ledger digest it derived from its retained pre-spawn custody. A mismatch fails the cut
+and none of the child-supplied values becomes a cleanup target. It then sends exactly one `SIGTERM`
+to the still-unreaped harness PID whose child identity it recorded at spawn. The installed
+production signal handler first atomically latches the same cleanup
 and no-later-dispatch state used outside tests, then synchronously writes and flushes
 this exact frame on fd `6`:
 
@@ -3415,10 +3519,11 @@ start/attach spawns unreachable. Any attempted post-latch call must synchronousl
 `openspell.wp201.real-cut-forbidden-config-inspect.v1\n` or
 `openspell.wp201.real-cut-forbidden-start-attach.v1\n` and refuse without spawning; cleanup remove,
 absence and census operations remain reachable through their separate closed cases. After cleanup
-has settled every child including the event watcher, the harness writes
-`openspell.wp201.real-cut-audit-close.v1\n`, closes fd `6`, then closes fds `4` and `5`, emits its
-terminal streams and exits. Unknown, duplicate, out-of-order, partial, over-cap or trailing audit
-frames, close before watcher settlement, or EOF before the close frame fail. Each interruption cut
+has settled every child including the event watcher, proved canonical path absence and closed its
+retained invocation handle, the harness writes `openspell.wp201.real-cut-audit-close.v1\n`, closes
+fd `6`, then closes fds `4` and `5`, emits its terminal streams and exits. Unknown, duplicate,
+out-of-order, partial, over-cap or trailing audit frames, close before watcher, invocation-handle or
+path settlement, or EOF before the close frame fail. Each interruption cut
 requires exactly audit-open, signal-latched and audit-close with zero start/attach or forbidden
 frames. Static boundary tests prove every
 allowed start/attach argv reaches only this dispatcher and that no alternate child-spawn site can
@@ -3430,27 +3535,144 @@ same signal latch before child construction.
 For each cut, the required terminal vector is exit status `73`, empty stdout and stderr exactly
 `openspell.wp201.interrupted-before-start.v1\n`; the exact bridge-success marker must be absent from
 both streams. After reaping the harness, the supervisor requires EOF on all five harness-output
-pipes (fds `1`, `2`, `4`, `5` and `6`), the original
-watcher PID/start-time identity absent (a reused PID with a different start time does not match), the
-harness process group absent, the accepted ID absent when supplied, both independently queried
-exact-name and label censuses empty, and the derived invocation path absent under both fixed parents.
+pipes (fds `1`, `2`, `4`, `5` and `6`) within the inner deadline, then enters the outer 50-second
+post-reap interval. In its allocated slots it requires the accepted ID absent when supplied, the
+independently queried exact-name and label censuses empty, the original watcher PID/start-time
+identity absent (a reused PID with a different start time does not match), the harness process group
+absent, and the derived invocation path absent under both fixed parents.
 The before-issue cut instead requires the exact name and label to have remained absent. Every
-ID-owning cut must have the harness itself remove and prove absent that exact ID. Only after one of
-these pass assertions fails may fixed supervisor teardown remove the recorded ID; teardown is
-reported separately and can never convert that cut to success. Thus a harness that ignores the cut,
-starts the container and later removes all residue still fails its exact terminal vector and audit.
+ID-owning cut must have the harness itself remove and prove absent that exact ID. The supervisor
+then enters the interval's dedicated ten-second custody slot. Before any cut can pass,
+it positionally rereads its separately retained ledger descriptor from offset zero in
+at-most-1-MiB chunks, samples boot time before and after every chunk and descriptor transition,
+requires the original device, inode, uid/gid, mode, frozen at-most-16-MiB size and complete digest
+with link count zero, and requires EOF at the authenticated size. It then requires its separately retained root
+descriptor to preserve the original device, inode, mount ID and uid/gid while being empty, unlinked
+and link-count zero. Before closing either descriptor, it scans its own complete descriptor table
+and requires exactly its one recorded root descriptor and one recorded ledger descriptor to match
+those identities, with no duplicate. Only after those retained-capability assertions does it close
+the ledger and root descriptors, require both recorded numbers to produce `EBADF`, rescan and
+require neither identity anywhere in its descriptor table. A renamed root, renamed ledger,
+still-linked object, descriptor leak or byte drift therefore fails the cut even when both canonical
+pathnames are absent. Failure before either close retains both capabilities for the fixed failed-cut
+helper. A close failure or identity match after the first close irrevocably fails the cut and enters
+descriptor-only settlement: using the recorded identities, the supervisor enumerates and closes
+only its own matching descriptors and proves them absent, without pathname deletion or the
+failed-cut helper. That settlement uses the failed teardown's existing ten-second root/ledger
+descriptor slot; its otherwise inapplicable helper slot remains unused and cannot be borrowed.
+Only after any required success assertion fails, the failed verdict is irrevocably recorded, the harness and complete
+process group are proved reaped and all harness pipes are at EOF may fixed supervisor teardown
+begin. A child-supplied accepted ID is eligible for supervisor removal only after an independent
+full-ID inspect matches the supervisor-derived exact name, invocation and proof-role labels,
+immutable image reference and expected proof role. Name and label censuses remain diagnostic and
+never grant deletion authority. When no child-supplied ID passes that gate, the supervisor may run
+exactly one bounded inspect using its source-derived exact container name. Absence grants no
+custody; a present result grants removal authority only to the returned full ID after that same
+name, invocation/role-label, immutable-image and proof-role validation. Removal always addresses
+the adopted full ID, never the name or label, and uses the exact two-remove/two-absence protocol.
+Their adoption results are mutually exclusive and can retain at most one ID because the
+supervisor-derived name is unique. Teardown is reported separately and can never convert that cut
+to success. Thus a harness that ignores the cut, starts the container and later removes all residue
+still fails its exact terminal vector and audit.
+
+Failed-case pathname teardown is a second closed protocol in
+`scripts/path-cleanup-helper.mjs`; it is not a normal harness cleanup state and cannot be selected
+by argv or environment. The supervisor invokes it only after the conditions above, with the fixed
+script/cwd/environment and this bounded control frame on fd `3`:
+
+```text
+openspell.wp201.path-cleanup-failed-cut.v1
+<tmp-or-var-tmp-token>
+<invocation-value>
+<directory-device>
+<directory-inode>
+<directory-mount-id>
+<complete-ledger-sha256>
+```
+
+Its exact descriptor table is `/dev/null` on fds `0` and `1`, a 4,096-byte diagnostic pipe on fd
+`2`, the at-most-512-byte control pipe on fd `3`, a 64-byte completion pipe on fd `4`, a root
+directory capability with exact Linux flags `02700000` on fd `5`, and a regular-ledger capability
+with exact Linux flags `02500000` on fd `6`. The root descriptor must match the supervisor's
+original device/inode/mount ID and uid/gid. The ledger descriptor must match its pre-handoff
+device/inode/uid/gid, mode `0444`, bounded size and complete digest; its link count may only
+move from one to zero after unlink. The helper reads it positionally from offset zero, requires EOF
+at the authenticated size and never trusts or changes its shared file position.
+
+Those held ledger bytes are the complete member allowlist even when the ledger pathname has already
+been unlinked. If the canonical root still resolves to the retained device/inode/mount identity,
+every remaining regular file must retain its authenticated type, owner, device, mode, link count
+one, size, bytes and digest. Every remaining directory must retain type, device and uid/gid and may have only its
+original authenticated mode or cleanup mode `0700`; the root additionally matches the retained
+inode and mount ID. Descendant-directory inode values are not part of the ledger and are not
+compared to unavailable pre-delete values. Its current link count, size and timestamps
+are not compared to stale pre-delete values. Its children and subdirectories instead must equal a
+subset of the authenticated inventory, and its link state must be consistent with that observed
+subset. The held root may likewise show only cleanup-induced directory metadata changes. No content
+or path may be added. Extras, foreign ownership, a device, a nested mount or any changed regular
+member refuse. The helper may then finish the same bounded no-follow postorder removal. If the canonical
+path is absent, success additionally requires the retained directory to be empty, link count zero
+and unlinked; a still-linked, renamed or nonempty retained directory refuses. If the canonical path
+resolves to a different identity, the helper deletes nothing. Exact completion is
+`openspell.wp201.path-cleanup-failed-cut-complete.v1\n`, but immediately before emitting it the
+helper must positionally revalidate the retained ledger's original device, inode, uid/gid, mode,
+size, bytes and digest with terminal link count zero and must revalidate the retained root's
+original device, inode, mount ID and uid/gid while empty, unlinked and link-count zero. Any external
+ledger hardlink or rename therefore refuses even if the root pathname has disappeared. Any
+invocation of this protocol statically disqualifies cut success. The supervisor's ten-second
+root/ledger descriptor phase runs unconditionally after the helper slot whether the helper reports
+completion, refuses, is killed or fails to reap. For a clean completion it independently repeats
+both retained-capability checks, requires exactly its one root and one ledger descriptor and no
+identity-matching duplicate in its descriptor table, closes its originals, requires both recorded
+numbers to produce `EBADF`, and requires neither identity in a final scan. On helper refusal or any
+identity, content, link-count or descriptor-count mismatch before close, it instead enumerates and
+closes only supervisor descriptors matching the two pre-recorded root/ledger identities and proves
+neither identity remains. A close, `EBADF` or final-scan anomaly takes that same descriptor-only
+route. Every such mismatch and every helper failure remains cleanup failure; this phase grants no
+pathname authority and cannot convert the failed cut or teardown to success. Thus the supervisor
+always settles its retained identities, while an unreaped helper or external filesystem link remains
+explicit residue rather than a zero-residue claim.
+
+This failed supervisor teardown begins a separate 130-second absolute boot-time deadline only after
+the failed verdict and complete harness reap. Its non-overlapping allocation is 10 seconds for
+child-supplied accepted-ID validation when such a complete frame exists, 10 seconds for the one
+exact-name recovery inspect when no ID was adopted, 40 seconds for at most one adopted ID's
+two-remove/two-absence sequence, 10 seconds each for final exact-name and label censuses, 10 seconds
+for the failed-cut helper, 5 seconds for parent absence, 10 seconds for root/ledger descriptor
+settlement, and 25 seconds scheduling reserve. Every ten-second Docker slot uses the fixed
+five/two/three normal/TERM/KILL/reap split; the helper uses four/three/three. Expiry or an
+unreaped child remains cleanup failure, never permission to continue or claim success.
 Delayed subscription remains in the deterministic driver because a compliant real daemon cannot be
 forced reproducibly into that scheduling race.
+
+Executable failed-teardown tests create an external hardlink and an external rename of the ledger
+and require refusal, duplicate each supervisor custody descriptor in turn and require refusal plus
+descriptor-only settlement, and prove an ordinary interrupted cleanup reaches terminal link count
+zero for both retained objects before closing their sole supervisor descriptors.
 
 Static boundary tests prove the real no-argument path constructs only the real driver, cannot import
 or select a fake case, and does not read CLI arguments, test environment or the harness descriptor.
 They also compare all three complete supervisor launch vectors, cwd, exact environment, detached
-setting and descriptor table byte for byte, prove there is no fourth importer or dynamically
+setting and fd-`7` descriptor table byte for byte, prove there is no fourth importer or dynamically
 constructed eval source, require the harness's one-use latch, and bind each exported no-argument
 entry to its distinct literal predicate and attestation site.
 Path-cleanup cases use the actual filesystem and fixed helper against test-owned invocation
 directories. Tests never claim zero residue after an ID-less mutation timeout; they require the
 cleanup-uncertain refusal.
+
+Executable cut tests additionally cover three distinct fresh roots; a missing/closed fd `7` and a
+wrong file, socket, access mode, flags, owner, mode, device, inode, mount ID, record, ledger or
+inventory; a root absent, renamed, substituted, nested-mounted or simultaneously present under
+both fixed parents; swapped roots and replayed one-use tokens; every identity-v2 field mismatch,
+ordering, cap, partial, duplicate and trailing frame; immediate harness closure of fd `7`; and
+absence of any matching root device/inode/mount identity in every child class even when an unrelated
+descriptor reuses numeric fd `7`. They interrupt the normal helper after every directory chmod,
+unlink and rmdir boundary and prove the failed-cut subset teardown finishes only while the case
+remains failed. They also
+prove deletion while the harness and supervisor handles remain open, closure of both handles,
+supervisor refusal of an accepted ID with a wrong name/label/image, failure before identity and
+after accepted ID, absence of any harness acquisition path, and unchanged literal argv, cwd,
+environment and case-selection rules.
 
 The watcher lifecycle has one sequence on success, refusal and interruption: establish the socket
 connection and flush the request; receive READY; issue at most one create; reap the create client;
@@ -3480,7 +3702,9 @@ derives one absolute Linux boot-time deadline per image acquisition, dependency 
 complete proof matrix, samples around every transition
 and polls at most every 50 milliseconds while a child is live. Active budgets are 300 seconds for
 either acquisition and 900 seconds for proof; each hard deadline adds exactly 160 seconds of cleanup
-reserve. Every child from the closed operation table is an asynchronous owned process group capped
+reserve. This is the inner driver and normal-matrix allocation; only the three outer interruption
+supervisors add their disjoint 50-second post-reap acceptance interval and therefore use 210 seconds.
+Every child from the closed operation table is an asynchronous owned process group capped
 to the remaining absolute deadline. At active-budget expiry or the first caught `SIGINT`, `SIGTERM`
 or `SIGHUP`, cleanup is latched and later signals cannot
 reenter or bypass it. A Docker create client is first allowed at most five seconds to settle so its
@@ -3549,7 +3773,8 @@ restore verified directory owner-write bits, remove the source/vendor/toolchain/
 ledger/record tree and invocation directory, sync its fixed parent and confirm every tracked
 pathname absent: at most four seconds normal work, three after `SIGTERM`, three after `SIGKILL` for
 reap, and five for the parent's exact final `lstat` absence check. Ten seconds remain only as
-scheduling reserve. No phase receives a fresh cleanup deadline.
+scheduling reserve. No inner phase receives a fresh cleanup deadline. Only the interruption
+supervisor owns the disjoint post-reap acceptance interval and its custody slot described above.
 
 From successful invocation-directory creation onward, one outer `try/finally` latches this cleanup
 path for every normal success, ordinary nonzero exit, validation refusal, setup exception, deadline
