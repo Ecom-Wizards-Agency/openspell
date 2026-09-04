@@ -219,8 +219,11 @@ product, implementation or security requirement, claim WP-201 acceptance or comp
     is not evidence, while its checksum-locked vendored dependencies and independently pinned
     toolchain bytes are explicit ledger-bound, read-only build inputs.
     Neither phase may become an external adapter. Use exact-ID preinspection plus `--pull never`,
-    root proof `--read-only`/capability/no-new-privileges isolation and the architecture's immutable-
-    label create-response reconciliation. Enforce its absolute boot-time deadlines: 300-second
+    the architecture's exact eight-entry selected-manifest annotation map, its raw inspected
+    lifecycle-state-dependent `HostConfig.OomKillDisable` Boolean-`false`/JSON-`null`
+    representation, root proof `--read-only`/capability/no-new-privileges isolation and its
+    immutable-label create-response reconciliation. Enforce its absolute boot-time deadlines:
+    300-second
     acquisition or 900-second proof active budget plus one 160-second total cleanup reserve. Allocate
     it exactly as the architecture's 15-second create settlement, 10-second mutually exclusive
     other-active-child or post-settlement exact-name-recovery slot with the fixed five/two/three

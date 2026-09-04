@@ -133,6 +133,28 @@ const CONFIG_MEDIA_TYPE = "application/vnd.oci.image.config.v1+json";
 const LAYER_MEDIA_TYPE = "application/vnd.oci.image.layer.v1.tar+gzip";
 const MANIFEST_SIZE = 1_940;
 const CONFIG_SIZE = 4_547;
+const PLATFORM_MANIFEST_ANNOTATIONS = Object.freeze([
+  ["com.docker.official-images.bashbrew.arch", "amd64"],
+  [
+    "org.opencontainers.image.base.digest",
+    "sha256:" + "f1695dea7f56437da0208aee8a6e473c" + "ec40a04864233ac5a344c5ee4b4f1d7e",
+  ],
+  ["org.opencontainers.image.base.name", "buildpack-deps:bookworm"],
+  ["org.opencontainers.image.created", "2026-08-10T22:41:20Z"],
+  [
+    "org.opencontainers.image.revision",
+    "5ba8fc7544e1880d0fc5" + "f56e9f11081082057dc2",
+  ],
+  [
+    "org.opencontainers.image.source",
+    "https://github.com/rust-lang/docker-rust.git#" +
+      "5ba8fc7544e1880d0fc5" +
+      "f56e9f11081082057dc2" +
+      ":stable/bookworm",
+  ],
+  ["org.opencontainers.image.url", "https://hub.docker.com/_/rust"],
+  ["org.opencontainers.image.version", "1-bookworm"],
+]);
 const LAYER_DESCRIPTORS = Object.freeze([
   ["sha256:3af9207d37990175f61d5ce9faa0c7373ffcd2d6da1b6ba0a9ca9d61f8f47cc9", 48_497_091],
   ["sha256:6b02178232c403d8a6d5b460ad955daba177c38e178ed7dd417e5c4d748e948d", 24_044_139],
@@ -972,7 +994,7 @@ export function parseDockerPlatformManifest(result) {
   const stdout = requireZeroSuccess(result, 1024 * 1024, 1024 * 1024);
   const manifest = exactMapKeys(
     decodeJsonLine(stdout, "object"),
-    ["schemaVersion", "mediaType", "config", "layers"],
+    ["schemaVersion", "mediaType", "config", "layers", "annotations"],
     "platform manifest",
   );
   if (
@@ -996,6 +1018,16 @@ export function parseDockerPlatformManifest(result) {
       { mediaType: LAYER_MEDIA_TYPE, digest, size },
       `manifest layer ${index}`,
     );
+  }
+  const annotations = exactMapKeys(
+    mapValue(manifest, "annotations"),
+    PLATFORM_MANIFEST_ANNOTATIONS.map(([key]) => key),
+    "platform manifest annotations",
+  );
+  for (const [key, expected] of PLATFORM_MANIFEST_ANNOTATIONS) {
+    if (stringValue(mapValue(annotations, key), `manifest annotation ${key}`) !== expected) {
+      throw new Error("platform manifest annotation mismatch");
+    }
   }
   return Object.freeze({ manifestDigest: MANIFEST_DIGEST, configDigest: CONFIG_DIGEST });
 }
@@ -1389,7 +1421,6 @@ function requireContainerHostConfiguration(container, options) {
     Runtime: "runc",
     Init: false,
     AutoRemove: false,
-    OomKillDisable: false,
     PublishAllPorts: false,
     ContainerIDFile: "",
     VolumeDriver: "",
@@ -1414,6 +1445,10 @@ function requireContainerHostConfiguration(container, options) {
     mapValue(host, "MemorySwappiness") !== null
   ) {
     throw new Error("container HostConfig forbidden authority");
+  }
+  const expectedOomKillDisable = options.state === "created" ? false : null;
+  if (mapValue(host, "OomKillDisable") !== expectedOomKillDisable) {
+    throw new Error("container HostConfig OomKillDisable mismatch");
   }
   const devices = mapValue(host, "Devices");
   if (!Array.isArray(devices) || devices.length !== 0) {

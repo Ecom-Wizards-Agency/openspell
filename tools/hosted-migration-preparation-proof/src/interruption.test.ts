@@ -2060,7 +2060,7 @@ function dockerResult(status: number | null, stdout: string | Buffer, stderr: st
   };
 }
 
-function inspectionHostConfig(kind: "acquisition" | "proof") {
+function inspectionHostConfig(kind: "acquisition" | "proof", state: "created" | "exited" = "created") {
   const proof = kind === "proof";
   const mounts = proof
     ? [
@@ -2146,7 +2146,7 @@ function inspectionHostConfig(kind: "acquisition" | "proof") {
     MemorySwap: proof ? 6_442_450_944 : 2_147_483_648,
     MemorySwappiness: null,
     Init: false,
-    OomKillDisable: false,
+    OomKillDisable: state === "created" ? false : null,
     PidsLimit: proof ? 512 : 128,
     Ulimits: proof
       ? [
@@ -2252,7 +2252,7 @@ function acquisitionInspection(state: "created" | "exited") {
       ],
       WorkingDir: "/tmp",
     },
-    HostConfig: inspectionHostConfig("acquisition"),
+    HostConfig: inspectionHostConfig("acquisition", state),
     State: {
       Status: state,
       Running: false,
@@ -2440,6 +2440,18 @@ describe("WP-201 strict Docker and interruption protocols", () => {
     const manifest = {
       schemaVersion: 2,
       mediaType: "application/vnd.oci.image.manifest.v1+json",
+      annotations: {
+        "com.docker.official-images.bashbrew.arch": "amd64",
+        "org.opencontainers.image.base.digest":
+          "sha256:f1695dea7f56437da0208aee8a6e473cec40a04864233ac5a344c5ee4b4f1d7e",
+        "org.opencontainers.image.base.name": "buildpack-deps:bookworm",
+        "org.opencontainers.image.created": "2026-08-10T22:41:20Z",
+        "org.opencontainers.image.revision": "5ba8fc7544e1880d0fc5f56e9f11081082057dc2",
+        "org.opencontainers.image.source":
+          "https://github.com/rust-lang/docker-rust.git#5ba8fc7544e1880d0fc5f56e9f11081082057dc2:stable/bookworm",
+        "org.opencontainers.image.url": "https://hub.docker.com/_/rust",
+        "org.opencontainers.image.version": "1-bookworm",
+      },
       config: {
         mediaType: "application/vnd.oci.image.config.v1+json",
         digest: configDigest,
@@ -2455,6 +2467,21 @@ describe("WP-201 strict Docker and interruption protocols", () => {
       manifestDigest,
       configDigest,
     });
+    expect(
+      parseDockerPlatformManifest(
+        dockerResult(
+          0,
+          `${JSON.stringify(
+            {
+              ...manifest,
+              annotations: Object.fromEntries(Object.entries(manifest.annotations).reverse()),
+            },
+            null,
+            2,
+          )}\n`,
+        ),
+      ),
+    ).toEqual({ manifestDigest, configDigest });
 
     expect(() => parseDockerContextName(dockerResult(0, "default\nextra"))).toThrow();
     expect(() => parseDockerContextEndpoint(dockerResult(0, '"tcp://peer"\n'))).toThrow();
@@ -2474,6 +2501,39 @@ describe("WP-201 strict Docker and interruption protocols", () => {
     expect(() =>
       parseDockerPlatformManifest(jsonResult({ ...manifest, layers: [...manifest.layers].reverse() })),
     ).toThrow();
+    expect(() =>
+      parseDockerPlatformManifest(
+        jsonResult({ ...manifest, annotations: { ...manifest.annotations, unexpected: "value" } }),
+      ),
+    ).toThrow("annotation");
+    expect(() =>
+      parseDockerPlatformManifest(
+        jsonResult({
+          ...manifest,
+          annotations: Object.fromEntries(
+            Object.entries(manifest.annotations).filter(
+              ([key]) => key !== "org.opencontainers.image.version",
+            ),
+          ),
+        }),
+      ),
+    ).toThrow("annotation");
+    expect(() =>
+      parseDockerPlatformManifest(
+        jsonResult({
+          ...manifest,
+          annotations: { ...manifest.annotations, "org.opencontainers.image.version": 1 },
+        }),
+      ),
+    ).toThrow("manifest annotation");
+    expect(() =>
+      parseDockerPlatformManifest(
+        jsonResult({
+          ...manifest,
+          annotations: { ...manifest.annotations, "org.opencontainers.image.version": "changed" },
+        }),
+      ),
+    ).toThrow("annotation mismatch");
     expect(() =>
       parseDockerApiSupport(
         jsonResult({
@@ -2765,6 +2825,8 @@ describe("WP-201 strict Docker and interruption protocols", () => {
       { VolumesFrom: ["foreign:rw"] },
       { PortBindings: { "80/tcp": [{ HostPort: "8080" }] } },
       { PublishAllPorts: true },
+      { OomKillDisable: null },
+      { OomKillDisable: true },
     ]) {
       const authority = acquisitionInspection("created");
       expect(() =>
@@ -2779,6 +2841,22 @@ describe("WP-201 strict Docker and interruption protocols", () => {
           dockerReceiptSource("configuration-inspect"),
         ),
       ).toThrow();
+    }
+
+    for (const value of [false, true]) {
+      const exited = acquisitionInspection("exited");
+      expect(() =>
+        parseDockerContainerInspection(
+          jsonResult([
+            {
+              ...exited,
+              HostConfig: { ...exited.HostConfig, OomKillDisable: value },
+            },
+          ]),
+          { ...options, state: "exited-zero" },
+          dockerReceiptSource("configuration-inspect"),
+        ),
+      ).toThrow("OomKillDisable mismatch");
     }
 
     const extra = acquisitionInspection("created");

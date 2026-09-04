@@ -2361,6 +2361,27 @@ type is `application/vnd.oci.image.manifest.v1+json`, the config media type is
 `application/vnd.oci.image.config.v1+json`, and every layer media type is
 `application/vnd.oci.image.layer.v1.tar+gzip`.
 
+Docker 29.7.2's content-addressed `manifest inspect` response for that selected immutable manifest
+also has one required top-level `annotations` map. The observed reformatted stdout is 1,846 bytes
+with SHA-256 `973a2d5d3defa0ea0c186624870c0eb8ccbff0a1be0c9bf606d3cc9b3668ee56`;
+that output digest records the reviewed observation but remains non-authoritative because JSON key
+order and whitespace are not identity. The parser instead requires exactly these eight string
+entries and no other annotation:
+
+| key | exact value |
+|---|---|
+| `com.docker.official-images.bashbrew.arch` | `amd64` |
+| `org.opencontainers.image.base.digest` | `sha256:f1695dea7f56437da0208aee8a6e473cec40a04864233ac5a344c5ee4b4f1d7e` |
+| `org.opencontainers.image.base.name` | `buildpack-deps:bookworm` |
+| `org.opencontainers.image.created` | `2026-08-10T22:41:20Z` |
+| `org.opencontainers.image.revision` | `5ba8fc7544e1880d0fc5f56e9f11081082057dc2` |
+| `org.opencontainers.image.source` | `https://github.com/rust-lang/docker-rust.git#5ba8fc7544e1880d0fc5f56e9f11081082057dc2:stable/bookworm` |
+| `org.opencontainers.image.url` | `https://hub.docker.com/_/rust` |
+| `org.opencontainers.image.version` | `1-bookworm` |
+
+These manifest annotations are immutable descriptive identity attached to the already pinned
+manifest, not execution authority. A missing, additional, non-string or changed entry refuses.
+
 The selected image's five ordered uncompressed rootfs diff IDs are:
 
 ```text
@@ -2446,7 +2467,7 @@ tests. No other Docker verb is reachable.
 | context name | `context show` | exact `default\n`, 64-byte cap |
 | context endpoint | `context inspect default --format {{json .Endpoints.docker.Host}}` | exact JSON string `"unix:///var/run/docker.sock"` plus LF, 4 KiB cap |
 | API support | `version --format {{json .}}` | one bounded duplicate-key-free JSON object plus LF, 16 KiB cap; `Client` equals the frozen tuple and `Server.ApiVersion` parses to at least `1.49` |
-| platform manifest | `manifest inspect <repository-at-manifest-digest>` | one duplicate-key-free JSON object plus LF with the exact schema/config/layer descriptors above, 1 MiB per stream |
+| platform manifest | `manifest inspect <repository-at-manifest-digest>` | one duplicate-key-free JSON object plus LF with the exact schema/config/layer descriptors and eight-entry annotation map above, 1 MiB per stream |
 | cached image | `image inspect --platform linux/amd64 <index-reference>` | one-element duplicate-key-free JSON array plus LF, 1 MiB per stream |
 | image setup | `image pull --platform linux/amd64 <index-reference>` | exit zero, continuously drained 16 MiB per stream |
 | label census | `container ls --all --no-trunc --filter <invocation-label> --format {{.ID}}` | zero or bounded full-ID-plus-LF rows, 1 MiB per stream |
@@ -2568,7 +2589,11 @@ Both creates specify `--platform linux/amd64`, `--read-only`, `--cap-drop ALL`,
 `--runtime runc`, `--restart no`, `--init=false`, `--log-driver none`, the fixed hostname and resource
 limits below. PID and UTS modes are left at Docker's private defaults and must inspect as empty;
 privileged mode is false, `CapAdd`, supplementary groups, devices and device-cgroup rules are empty,
-and restart count is zero. Any unavailable or normalized-away setting refuses rather than relaxing.
+and restart count is zero. Docker 29.7.2's raw inspection JSON represents the unset nullable
+`HostConfig.OomKillDisable` field as Boolean `false` while the container is created and as JSON
+`null` after its successful exit. The parser binds that exact lifecycle-state-dependent
+representation; the other Boolean/null variant, omission and every other value refuse. Any
+unavailable or normalized-away setting refuses rather than relaxing.
 
 | Setting | Acquisition | Root proof |
 |---|---:|---:|
