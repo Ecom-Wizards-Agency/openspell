@@ -312,6 +312,11 @@ WP-201 does not:
    empty/unlinked at link count zero. After every helper outcome, run the separate descriptor phase
    unconditionally: a clean exact-one state closes normally, while helper refusal or any mismatch
    enumerates/closes only matching supervisor descriptors and remains cleanup failure.
+   Bind the reached-cut release ordering with the architecture's v2 one-use 32-byte freshness
+   challenge: mint it only after the first exact `SIGTERM` permanently latches revocation, emit it
+   in the exact acknowledgment, let only the token-bound proof-engine receipt build the matching
+   source-fixed-case release, and require the final audit to bind the same challenge without
+   exposing it in its terminal receipt or any Docker, cleanup, pathname or public authority.
    Test external ledger hardlink and rename refusal, supervisor descriptor-duplicate refusal and
    the ordinary terminal two-object unlink. A permanently
    failed, fully reaped cut may use only the architecture's

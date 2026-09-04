@@ -3502,7 +3502,9 @@ provides assets only and cannot select or relabel any of the three literal cases
 
 The three exact case tokens are `before-issue`, `after-daemon-accept-before-delivery` and
 `after-parent-custody-before-start`. The release frame is
-`openspell.wp201.real-cut-release.v1\n<case>\n`. The harness emits the accepted-ID frame and then the
+`openspell.wp201.real-cut-release.v2\n<case>\n<challenge>\n`, where `<challenge>` is the exact
+64-lowercase-hex freshness value from the signal acknowledgment below. Its maximum size is 137
+bytes. The harness emits the accepted-ID frame and then the
 identity frame only after its event watcher has produced READY and the source-fixed case-specific
 pause point has been reached; the complete identity frame is the reached-cut attestation:
 `openspell.wp201.real-cut-identity.v2\n<case>\n<invocation-value>\n<tmp-or-var-tmp-token>\n<directory-device>\n<directory-inode>\n<directory-mount-id>\n<complete-ledger-sha256>\n<watcher-pid>\n<watcher-proc-starttime>\n`.
@@ -3527,19 +3529,34 @@ mount ID and ledger digest it derived from its retained pre-spawn custody. A mis
 and none of the child-supplied values becomes a cleanup target. It then sends exactly one `SIGTERM`
 to the still-unreaped harness PID whose child identity it recorded at spawn. The installed
 production signal handler first atomically latches the same cleanup
-and no-later-dispatch state used outside tests, then synchronously writes and flushes
-this exact frame on fd `6`:
+and no-later-dispatch state used outside tests. Only after that latch and exact `SIGTERM`
+validation, it synchronously obtains 32 random bytes from the captured native runtime, converts
+them to one private immutable 64-lowercase-hex challenge, then synchronously writes and flushes
+this exact 116-byte frame on fd `6`:
 
 ```text
-openspell.wp201.real-cut-signal-latched.v1
+openspell.wp201.real-cut-signal-latched.v2
 SIGTERM
+<challenge>
 ```
 
-Only after the supervisor receives
-that complete acknowledgment may it write the matching release frame and close fd `3`; consuming
-release merely unblocks the case pause and cleanup must observe the already-latched state. Signal
-delivery failure, harness exit before acknowledgment, missing/duplicate/wrong-signal acknowledgment,
-release before acknowledgment or release consumed without the latch fails the cut.
+The first signal is final: a repeated signal cannot replace the latch or mint or acknowledge a
+second challenge. Randomness or acknowledgment-write failure permanently refuses. The supervisor
+uses a strict token-bound parser for the complete audit-open plus acknowledgment prefix before it
+may construct any release bytes. Only the proof engine may construct a release, from that branded
+acknowledgment and the source-fixed case. The final audit parser must bind the same branded
+acknowledgment and challenge, while its terminal receipt omits the challenge. Only after the
+supervisor receives that complete acknowledgment may it write the matching release frame and close
+fd `3`; consuming release merely unblocks the case pause and cleanup must observe the already-latched
+state. A release queued before acknowledgment cannot contain the subsequently minted challenge and
+must fail even when Node dispatches its pipe callback after the signal callback. Missing EOF,
+partial, duplicate, unknown, over-cap or trailing release bytes fail. Signal delivery failure,
+harness exit before acknowledgment, missing/duplicate/wrong-signal acknowledgment, challenge
+mismatch, release before acknowledgment or release consumed without the latch fails the cut.
+The challenge is freshness and ordering evidence only. It may occur only on private fds `6` and `3`
+and in the proof engine's private acknowledgment receipt/release builder; it never enters Docker
+arguments, names, labels, IDs, cleanup cursors, pathname/root custody, public receipts, terminal
+output or diagnostics.
 For `before-issue`, release leaves create unissued. For
 `after-daemon-accept-before-delivery`, release transfers the already captured immutable full ID into
 response cleanup custody only, with every configuration/start/success gate permanently false. For
