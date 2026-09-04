@@ -1462,10 +1462,12 @@ function installSignalLatch(clock) {
       if (!freshnessChallengePattern.test(challenge)) {
         throw new Error("signal freshness challenge mismatch");
       }
-      const acknowledgment = Buffer.from(
-        `openspell.wp201.real-cut-signal-latched.v2\nSIGTERM\n${challenge}\n`,
-        "ascii",
-      );
+      const acknowledgment = Buffer.concat([
+        Buffer.from("openspell.wp201.real-cut-", "ascii"),
+        Buffer.from("signal-latched.v2\nSIGTERM\n", "ascii"),
+        Buffer.from(challenge, "ascii"),
+        Buffer.from("\n", "ascii"),
+      ]);
       if (acknowledgment.length !== 116) {
         throw new Error("signal acknowledgment framing mismatch");
       }
