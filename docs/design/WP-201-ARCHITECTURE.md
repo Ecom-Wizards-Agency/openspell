@@ -3323,8 +3323,30 @@ no-create watcher that proves the daemon's real header/close behavior; and the t
 cuts: before issue, after daemon acceptance and full-ID capture but before parent delivery, and
 after parent custody but before inspect/start. The closed `scripts/interruption-harness.mjs` owns
 those three pause points. `scripts/docker-integration.mjs` is the outer supervisor and starts one
-fresh harness process group per source-literal case with this exact descriptor table; none of fds
-`3` through `6` is inherited by a Docker client, event helper, path helper or container:
+fresh harness process group per source-literal case. The otherwise absolute no-case-through-argv
+rule has one closed test-only exception: the supervisor constructs exactly one of these three
+complete argument vectors, with no concatenation, interpolation or trailing token, under the fixed
+package working directory, detached process-group setting, descriptor table below and environment
+containing exactly `LANG=C` and `LC_ALL=C`:
+
+```json
+["<captured-process.execPath>","--input-type=module","--eval","import{runBeforeIssueCut}from\"./scripts/interruption-harness.mjs\";await runBeforeIssueCut()"]
+["<captured-process.execPath>","--input-type=module","--eval","import{runAfterDaemonAcceptBeforeDeliveryCut}from\"./scripts/interruption-harness.mjs\";await runAfterDaemonAcceptBeforeDeliveryCut()"]
+["<captured-process.execPath>","--input-type=module","--eval","import{runAfterParentCustodyBeforeStartCut}from\"./scripts/interruption-harness.mjs\";await runAfterParentCustodyBeforeStartCut()"]
+```
+
+Those literal module programs are the complete case-selection identity; no case string is passed to
+or parsed by the harness. The harness exports exactly those three no-argument entry functions, has
+one shared one-use entry latch, and exposes no `run(case)`, selector map, default executable entry,
+caller callback or driver. Each export reaches its own private literal pause predicate and emits its
+own literal case token. The common lifecycle and cleanup implementation remains private. Node ESM
+evaluation makes `process.argv` contain only the Node executable in this launch form; the harness
+therefore does not inspect `process.argv`, `process.execArgv`, environment or any descriptor to
+select a case. These three fixed programs are internal fault-injection launch identities, not a
+generic command surface. They cannot select a fake driver or alter the production lifecycle.
+
+Every harness launch uses this exact descriptor table; none of fds `3` through `6` is inherited by
+a Docker client, event helper, path helper or container:
 
 | Descriptor | Direction | Contract and total cap |
 |---:|---|---|
@@ -3415,6 +3437,10 @@ forced reproducibly into that scheduling race.
 
 Static boundary tests prove the real no-argument path constructs only the real driver, cannot import
 or select a fake case, and does not read CLI arguments, test environment or the harness descriptor.
+They also compare all three complete supervisor launch vectors, cwd, exact environment, detached
+setting and descriptor table byte for byte, prove there is no fourth importer or dynamically
+constructed eval source, require the harness's one-use latch, and bind each exported no-argument
+entry to its distinct literal predicate and attestation site.
 Path-cleanup cases use the actual filesystem and fixed helper against test-owned invocation
 directories. Tests never claim zero residue after an ID-less mutation timeout; they require the
 cleanup-uncertain refusal.
