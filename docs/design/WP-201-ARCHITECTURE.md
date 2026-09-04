@@ -3542,9 +3542,11 @@ SIGTERM
 
 The first signal is final: a repeated signal cannot replace the latch or mint or acknowledge a
 second challenge. Randomness or acknowledgment-write failure permanently refuses. The supervisor
-uses a strict token-bound parser for the complete audit-open plus acknowledgment prefix before it
-may construct any release bytes. Only the proof engine may construct a release, from that branded
-acknowledgment and the source-fixed case. The final audit parser must bind the same branded
+uses a strict token-bound parser for the complete audit-open plus acknowledgment prefix and the
+source-fixed case before it may construct any release bytes. The first successful parse permanently
+binds that child token and case to one branded acknowledgment; reparsing the same bytes or any other
+acknowledgment for that token fails. Only the proof engine may construct a release, deriving the case
+from that branded acknowledgment with no separate case selector. The final audit parser must bind the same branded
 acknowledgment and challenge, while its terminal receipt omits the challenge. Only after the
 supervisor receives that complete acknowledgment may it write the matching release frame and close
 fd `3`; consuming release merely unblocks the case pause and cleanup must observe the already-latched

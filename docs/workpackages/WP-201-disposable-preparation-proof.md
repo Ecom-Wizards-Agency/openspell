@@ -314,8 +314,9 @@ WP-201 does not:
    enumerates/closes only matching supervisor descriptors and remains cleanup failure.
    Bind the reached-cut release ordering with the architecture's v2 one-use 32-byte freshness
    challenge: mint it only after the first exact `SIGTERM` permanently latches revocation, emit it
-   in the exact acknowledgment, let only the token-bound proof-engine receipt build the matching
-   source-fixed-case release, and require the final audit to bind the same challenge without
+   in the exact acknowledgment, permanently bind the first successful proof-engine parse to that
+   child token and source-fixed case, let only that receipt build the matching release without a
+   separate case selector, and require the final audit to bind the same challenge without
    exposing it in its terminal receipt or any Docker, cleanup, pathname or public authority.
    Test external ledger hardlink and rename refusal, supervisor descriptor-duplicate refusal and
    the ordinary terminal two-object unlink. A permanently
