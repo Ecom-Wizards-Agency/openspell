@@ -1143,6 +1143,7 @@ export function classifyDockerExactName(result, options, provenance) {
       "exact-name-recovery",
       "exact-name-census",
       "final-exact-name-census",
+      "accepted-id-validation",
     ],
   );
   const receiptIdentity = {
@@ -1182,10 +1183,44 @@ export function classifyDockerExactName(result, options, provenance) {
 }
 
 export function parseDockerCreatedId(result) {
-  const stdout = requireZeroSuccess(result, 4_096, 4_096);
-  const text = fatalUtf8.decode(stdout);
-  if (!/^[0-9a-f]{64}\n$/u.test(text)) throw new Error("invalid create identity");
-  return text.slice(0, -1);
+  const classified = classifyDockerCreateResult(result);
+  if (!classified.success || classified.custodyId === null) {
+    throw new Error("Docker create did not succeed exactly");
+  }
+  return classified.custodyId;
+}
+
+export function classifyDockerCreateResult(result) {
+  exactObjectKeys(result, ["status", "stdout", "stderr"], "Docker create result");
+  if (result.status !== null && !Number.isInteger(result.status)) {
+    throw new Error("invalid Docker create status");
+  }
+  const parsed = {
+    status: result.status,
+    stdout: byteBuffer(result.stdout, "Docker create stdout"),
+    stderr: byteBuffer(result.stderr, "Docker create stderr"),
+  };
+  if (parsed.stdout.length > 4_096 || parsed.stderr.length > 4_096) {
+    throw new Error("Docker create output cap exceeded");
+  }
+  let text;
+  try {
+    text = fatalUtf8.decode(parsed.stdout);
+  } catch {
+    text = undefined;
+  }
+  const custodyId = /^[0-9a-f]{64}\n$/u.test(text) ? text.slice(0, -1) : null;
+  return Object.freeze({
+    custodyId,
+    response:
+      custodyId !== null
+        ? "bound"
+        : parsed.stdout.length === 0
+          ? "missing"
+          : "malformed",
+    success:
+      parsed.status === 0 && parsed.stderr.length === 0 && custodyId !== null,
+  });
 }
 
 export function parseDockerRemove(result, id, provenance) {
@@ -3447,13 +3482,6 @@ function validateCutSlotReceipt(cursor, transition) {
   ) {
     throw new Error("Docker observation receipt provenance mismatch or replay");
   }
-  const validProofInspection =
-    containerInspectionReceipts.has(receipt) &&
-    receipt.kind === "proof" &&
-    receipt.invocation === cursor.invocation &&
-    receipt.role === PROOF_ROLE &&
-    receipt.name === proofContainerName(cursor.invocation, "root-fmt") &&
-    receipt.rowId === "root-fmt";
   const validProofNameReceipt =
     exactNameReceipts.has(receipt) &&
     receipt.kind === "proof" &&
@@ -3464,7 +3492,8 @@ function validateCutSlotReceipt(cursor, transition) {
   if (operation === "accepted-id-validation") {
     if (
       pass &&
-      validProofInspection &&
+      validProofNameReceipt &&
+      receipt.outcome === "present" &&
       receipt.id === cursor.acceptedId
     ) {
       return { adoptedId: receipt.id, absenceProved: false };
@@ -3473,7 +3502,7 @@ function validateCutSlotReceipt(cursor, transition) {
     throw new Error("invalid accepted-ID validation receipt");
   }
   if (operation === "exact-name-recovery") {
-    if (pass && validProofInspection) {
+    if (pass && validProofNameReceipt && receipt.outcome === "present") {
       return { adoptedId: receipt.id, absenceProved: false };
     }
     if (pass && validProofNameReceipt && receipt.outcome === "absent") return {};

@@ -33,6 +33,7 @@ import {
   proofContainerName,
   proofCreateArguments,
   classifyDockerCachedImage,
+  classifyDockerCreateResult,
   classifyDockerExactName,
   parseCutAcceptedIdFrame,
   parseCutAuditStream,
@@ -1819,7 +1820,7 @@ describe("WP-201 sealed proof engine", () => {
   });
 });
 
-function dockerResult(status: number, stdout: string | Buffer, stderr: string | Buffer = "") {
+function dockerResult(status: number | null, stdout: string | Buffer, stderr: string | Buffer = "") {
   return {
     status,
     stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout, "utf8"),
@@ -2163,16 +2164,20 @@ function exactProofNameAbsent(token: object, operation: string) {
   );
 }
 
-function inspectedProof(id: string, token: object, operation: string) {
-  return parseDockerContainerInspection(jsonResult([{ ...proofInspection(), Id: id }]), {
-    kind: "proof",
-    invocation,
-    invocationDirectory,
-    rowId: "root-fmt",
-    ledgerSha256,
-    localImageId: configDigest,
-    state: "created",
-  }, { token, operation });
+function cleanupProofIdentity(id: string, token: object, operation: string) {
+  const inspection = proofInspection();
+  return classifyDockerExactName(
+    jsonResult([
+      {
+        ...inspection,
+        Id: id,
+        Config: { ...inspection.Config, Cmd: ["invalid-for-start"] },
+        HostConfig: { ...inspection.HostConfig, ReadonlyRootfs: false },
+      },
+    ]),
+    { kind: "proof", invocation, rowId: "root-fmt" },
+    { token, operation },
+  );
 }
 
 describe("WP-201 strict Docker and interruption protocols", () => {
@@ -2314,6 +2319,34 @@ describe("WP-201 strict Docker and interruption protocols", () => {
   it("parses exact create, remove, absence, census, name, and container-state results", () => {
     const id = "a".repeat(64);
     expect(parseDockerCreatedId(dockerResult(0, `${id}\n`))).toBe(id);
+    expect(classifyDockerCreateResult(dockerResult(17, `${id}\n`, "bounded failure\n"))).toEqual({
+      custodyId: id,
+      response: "bound",
+      success: false,
+    });
+    expect(classifyDockerCreateResult(dockerResult(null, `${id}\n`))).toEqual({
+      custodyId: id,
+      response: "bound",
+      success: false,
+    });
+    expect(classifyDockerCreateResult(dockerResult(0, ""))).toEqual({
+      custodyId: null,
+      response: "missing",
+      success: false,
+    });
+    expect(classifyDockerCreateResult(dockerResult(0, "malformed\n"))).toEqual({
+      custodyId: null,
+      response: "malformed",
+      success: false,
+    });
+    expect(classifyDockerCreateResult(dockerResult(0, Buffer.from([0xff])))).toEqual({
+      custodyId: null,
+      response: "malformed",
+      success: false,
+    });
+    expect(() =>
+      parseDockerCreatedId(dockerResult(17, `${id}\n`, "bounded failure\n")),
+    ).toThrow("did not succeed exactly");
     expect(
       parseDockerRemove(dockerResult(0, `${id}\n`), id, dockerReceiptSource("remove")),
     ).toMatchObject({ outcome: "removed", id, operation: "remove" });
@@ -3458,6 +3491,27 @@ describe("WP-201 strict Docker and interruption protocols", () => {
     );
     failed = reduceCutSupervisorCursor(failed, { type: "begin-failed-teardown" }, clock(2n));
 
+    const identity = proofInspection();
+    for (const invalid of [
+      { ...identity, Name: "/wrong" },
+      {
+        ...identity,
+        Config: {
+          ...identity.Config,
+          Labels: { ...identity.Config.Labels, "com.openspell.wp201.role": ACQUISITION_ROLE },
+        },
+      },
+      { ...identity, Config: { ...identity.Config, Image: "wrong" } },
+    ]) {
+      expect(() =>
+        classifyDockerExactName(
+          jsonResult([invalid]),
+          { kind: "proof", invocation, rowId: "root-fmt" },
+          { token: createOwnedChildToken(), operation: "accepted-id-validation" },
+        ),
+      ).toThrow();
+    }
+
     const validationToken = createOwnedChildToken();
     failed = reduceCutSupervisorCursor(
       failed,
@@ -3473,13 +3527,13 @@ describe("WP-201 strict Docker and interruption protocols", () => {
           outcome: "pass",
           reaped: true,
           token: validationToken,
-          receipt: inspectedProof(otherId, validationToken, "accepted-id-validation"),
+          receipt: cleanupProofIdentity(otherId, validationToken, "accepted-id-validation"),
         },
         clock(2n),
       ),
     ).toThrow("accepted-ID validation receipt");
     const validationCursor = failed;
-    const validationReceipt = inspectedProof(id, validationToken, "accepted-id-validation");
+    const validationReceipt = cleanupProofIdentity(id, validationToken, "accepted-id-validation");
     failed = reduceCutSupervisorCursor(
       validationCursor,
       {
@@ -3675,7 +3729,7 @@ describe("WP-201 strict Docker and interruption protocols", () => {
         outcome: "pass",
         reaped: true,
         token: recoveryToken,
-        receipt: inspectedProof(id, recoveryToken, "exact-name-recovery"),
+        receipt: cleanupProofIdentity(id, recoveryToken, "exact-name-recovery"),
       },
       clock(2n),
     );
