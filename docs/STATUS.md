@@ -2,7 +2,7 @@
 
 Manager: Fable. States: `todo` · `in-progress` · `review` · `merged` · `gated` · `superseded`.
 
-Source and deployment headers reconciled 2026-09-03 against `origin/main` at `b0a6b0c`. The
+Source and deployment headers reconciled 2026-09-04 against `origin/main` at `f06efea`. The
 implementation-wave table remains incomplete after WP-148; `docs/HANDOVER.md` is authoritative for
 the active continuation until the next live deployment/QA reconciliation. Here, **merged** means
 the implementation is reachable from the recorded main revision. It does not by itself mean
@@ -164,6 +164,7 @@ implementation brief in `docs/workpackages/`.
 | 197 | Exact hosted migration bundle | merged; apply gated | deterministic offline reconstruction and independent verification of the exact 41-file hosted baseline plus five reviewed Git blobs, with rollback-only prefix evidence, merged through PR #125 at `bb3c1cb`; no hosted query or apply, credential, deployment, provider call or Amazon mutation occurred |
 | 198 | Hosted migration conformance oracle | merged; source-only | pure verification of the eight WP-197 signed record families, canonical signatures, phase tags, official CLI topology, runtime chains and legal transcripts merged through PR #127 at `3c190ba`; no CLI, external I/O, signing, launcher, authorization or apply capability exists |
 | 199 | Private root journal and fixed IPC | merged; source-only | private immutable journal custody, separate fixed operator/supervisor IPC, exact grant/ticket signing, one-use consumption and recovery-only restart behavior merged through PR #129 at `b0a6b0c`; no binary, listener, launcher, network, database, credential, deployment or apply capability exists |
+| 200 | Official policy and synthetic runtime proof | merged; source-only | fixed official-release policy and descriptor-only verifier plus complete synthetic Linux namespace, cgroup, pidfd, ptrace/exec-map, interruption and zero-residue proofs merged through PR #131 at `9d932f5`; PR #132 fixed trusted fresh-runner proof-builder acquisition at `f06efea`, whose exact-main CI and trusted kernel workflow passed; official acquisition and complete official provenance remain open, and no production launcher, target, credential, database connection, deployment or apply capability exists |
 
 ## Milestone gates
 
@@ -177,6 +178,19 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-09-04 PR #131 merged WP-200 official-release policy and synthetic runtime proof at
+  `9d932f5`; PR #132 then
+  merged the trusted-runner cold-start correction at `f06efea`. Corrected exact-head run
+  `33817286905` and exact-main run `33818382351` passed both jobs, and trusted-main run
+  `33819407467` passed exact proof-builder image acquisition and the privileged kernel proof on the
+  same main revision.
+  High correctness and two Extra-High authority, crash and cleanup reviews ended clean after
+  correction. Focused verification passed 34 Rust and eight TypeScript tests, 19 real Linux cases,
+  five real interruption cuts, fixed missing-Docker refusal and zero residue. Production web still
+  reports `44da7ac`, production MCP still reports `b5c210d`, the active legacy worker remains
+  unstamped, both new worker units remain absent and the hosted ledger remains at its last verified
+  41 versions. No hosted query or apply, credential operation, staging, activation, deployment,
+  provider call or Amazon mutation occurred.
 - On 2026-09-03 PR #129 merged WP-199 private root journal and fixed IPC at `b0a6b0c` after
   exact-head run `33762823607` passed both jobs at `9620855`; exact-main run `33764232345` passed
   both jobs at the merge revision. High correctness and two Extra-High authority, crash and
@@ -620,8 +634,12 @@ implementation brief in `docs/workpackages/`.
 - [x] PR #129 exact-head CI run `33762823607` and exact-main run `33764232345` passed both jobs at
       `9620855` and merged revision `b0a6b0c`, respectively. High correctness and two Extra-High
       authority, crash and reliability reviews ended with no finding after corrections.
+- [x] PR #131 merged WP-200 at `9d932f5`; PR #132 exact-head CI run `33817286905`, exact-main run
+      `33818382351` and trusted-main run `33819407467` passed at corrected head `57b5d0a` and merge
+      revision `f06efea`. High correctness and two Extra-High authority, crash and cleanup reviews
+      ended clean after the cold-run and deadline corrections.
 - [ ] Keep the explicit deployment drift: production web is at `44da7ac`, MCP remains at
-      `b5c210d` (149 and 289 WP-199-source commits behind, respectively), both new worker units are
+      `b5c210d` (173 and 313 current-main commits behind, respectively), both new worker units are
       absent, and the active legacy worker revision is unproven. The attended stop/start reset its
       restart counter to zero; the worker is active/running and now reports one later automatic
       restart whose cause the unprivileged journal does not expose. Claim-failure containment and
@@ -636,8 +654,10 @@ implementation brief in `docs/workpackages/`.
       merged source only; WP-196's `20260901060000` is also source only. None is part of that hosted
       ledger. WP-197 deterministically builds and verifies the exact 41-plus-five source artifact,
       WP-198 verifies its signed lifecycle evidence vocabulary, and WP-199 provides only the private
-      root journal/IPC custody through one-use ticket consumption. None queried or changed hosted
-      state, and none grants apply authority.
+      root journal/IPC custody through one-use ticket consumption. WP-200 adds only fixed official
+      release policy, a descriptor-only verifier and complete synthetic Linux runtime containment;
+      official acquisition and complete official runtime/release provenance remain open. None
+      queried or changed hosted state, and none grants apply authority.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [x] Full authenticated Wizard Ads route/state click-through at `bfce504`.
 - [x] Authenticated click-through at `b5c210d`: 21 of 21 production routes returned HTTP 200 with
