@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { closeSync, createReadStream, writeSync } from "node:fs";
 import { createConnection } from "node:net";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
 
 const socketPath = "/var/run/docker.sock";
@@ -13,10 +14,10 @@ const maximumHeaderBytes = 8_192;
 const maximumHttpChunkBytes = 65_536;
 const maximumEventFrameBytes = 65_536;
 const maximumStreamBytes = 1024 * 1024;
-const maximumBufferedPreReadyBytes =
-  maximumStreamBytes + maximumHttpChunkBytes + 1024;
 const maximumJsonDepth = 64;
 const maximumJsonNodes = 10_000;
+const maximumAttributeBytes = 4_096;
+const maximumAttributes = 32;
 const invocationAttribute = "com.openspell.wp201.invocation";
 const roleAttribute = "com.openspell.wp201.role";
 const allowedRoles = new Set([
@@ -41,66 +42,42 @@ const eventPrefix = Buffer.from(
 );
 const fatalUtf8 = new TextDecoder("utf-8", { fatal: true });
 
-let phase = "open";
-let terminal = false;
-let controlEnded = false;
-let controlBuffer = Buffer.alloc(0);
-let socket;
-let socketClosed = false;
-let requestFlushed = false;
-let headersAccepted = false;
-let pendingBody = Buffer.alloc(0);
-let headerBuffer = Buffer.alloc(0);
-let chunkBuffer = Buffer.alloc(0);
-let expectedChunkBytes;
-let eventBuffer = Buffer.alloc(0);
-let decodedStreamBytes = 0;
-let matchingEventSeen = false;
-let invocationValue;
-let selectedRole;
+export const DOCKER_EVENT_LIMITS = Object.freeze({
+  headerBytes: maximumHeaderBytes,
+  httpChunkBytes: maximumHttpChunkBytes,
+  eventFrameBytes: maximumEventFrameBytes,
+  streamBytes: maximumStreamBytes,
+  attributes: maximumAttributes,
+  attributeBytes: maximumAttributeBytes,
+  jsonDepth: maximumJsonDepth,
+  jsonNodes: maximumJsonNodes,
+});
 
-function closeIgnoringErrors(fd) {
-  try {
-    closeSync(fd);
-  } catch {
-    // A refusal remains a refusal when its peer has already closed the pipe.
+export class DockerEventProtocolError extends Error {
+  constructor(code) {
+    super(code);
+    this.name = "DockerEventProtocolError";
+    this.code = code;
   }
 }
 
-function writeAll(fd, bytes) {
-  let offset = 0;
-  while (offset < bytes.length) {
-    const written = writeSync(fd, bytes, offset, bytes.length - offset);
-    if (written <= 0) throw new Error("short write");
-    offset += written;
-  }
+function protocolError(code) {
+  throw new DockerEventProtocolError(code);
 }
 
-function refuse(code) {
-  if (terminal) return;
-  terminal = true;
-  try {
-    writeAll(
-      2,
-      Buffer.from(
-        `openspell.wp201.docker-event-helper.refused.v1\n${code}\n`,
-        "ascii",
-      ),
-    );
-  } catch {
-    // The exit status remains authoritative when the diagnostic peer is gone.
-  }
-  if (socket !== undefined) socket.destroy();
-  closeIgnoringErrors(readyFd);
-  closeIgnoringErrors(eventFd);
-  process.exit(125);
+function byteBuffer(bytes, label) {
+  if (!(bytes instanceof Uint8Array)) protocolError(`${label}-bytes`);
+  return Buffer.isBuffer(bytes)
+    ? bytes
+    : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 }
 
 function appendBounded(current, addition, maximum, code) {
-  if (current.length + addition.length > maximum) refuse(code);
+  const incoming = byteBuffer(addition, "input");
+  if (incoming.length > maximum - current.length) protocolError(code);
   return current.length === 0
-    ? Buffer.from(addition)
-    : Buffer.concat([current, addition], current.length + addition.length);
+    ? Buffer.from(incoming)
+    : Buffer.concat([current, incoming], current.length + incoming.length);
 }
 
 function byteLength(value) {
@@ -115,15 +92,15 @@ class JsonDecoder {
   }
 
   decodeObjectFrame() {
-    if (this.text[0] !== "{") throw new Error("root");
+    if (this.text[0] !== "{") protocolError("event-json-root");
     const value = this.parseObject(0);
-    if (this.offset !== this.text.length) throw new Error("trailing");
+    if (this.offset !== this.text.length) protocolError("event-json-trailing");
     return value;
   }
 
   countNode() {
     this.nodes += 1;
-    if (this.nodes > maximumJsonNodes) throw new Error("nodes");
+    if (this.nodes > maximumJsonNodes) protocolError("event-json-nodes");
   }
 
   skipWhitespace() {
@@ -139,7 +116,7 @@ class JsonDecoder {
   }
 
   parseValue(depth) {
-    if (depth > maximumJsonDepth) throw new Error("depth");
+    if (depth > maximumJsonDepth) protocolError("event-json-depth");
     this.skipWhitespace();
     const next = this.text[this.offset];
     if (next === "{") return this.parseObject(depth);
@@ -162,11 +139,13 @@ class JsonDecoder {
     }
     while (this.offset < this.text.length) {
       this.skipWhitespace();
-      if (this.text[this.offset] !== '"') throw new Error("object-key");
+      if (this.text[this.offset] !== '"') {
+        protocolError("event-json-object-key");
+      }
       const key = this.parseString();
-      if (entries.has(key)) throw new Error("duplicate-key");
+      if (entries.has(key)) protocolError("event-json-duplicate-key");
       this.skipWhitespace();
-      if (this.text[this.offset] !== ":") throw new Error("colon");
+      if (this.text[this.offset] !== ":") protocolError("event-json-colon");
       this.offset += 1;
       entries.set(key, this.parseValue(depth + 1));
       this.skipWhitespace();
@@ -174,10 +153,12 @@ class JsonDecoder {
         this.offset += 1;
         return entries;
       }
-      if (this.text[this.offset] !== ",") throw new Error("object-comma");
+      if (this.text[this.offset] !== ",") {
+        protocolError("event-json-object-comma");
+      }
       this.offset += 1;
     }
-    throw new Error("object-eof");
+    protocolError("event-json-object-eof");
   }
 
   parseArray(depth) {
@@ -196,10 +177,12 @@ class JsonDecoder {
         this.offset += 1;
         return values;
       }
-      if (this.text[this.offset] !== ",") throw new Error("array-comma");
+      if (this.text[this.offset] !== ",") {
+        protocolError("event-json-array-comma");
+      }
       this.offset += 1;
     }
-    throw new Error("array-eof");
+    protocolError("event-json-array-eof");
   }
 
   parseString() {
@@ -210,16 +193,20 @@ class JsonDecoder {
       const code = this.text.charCodeAt(this.offset);
       if (code === 0x22) {
         this.offset += 1;
-        return JSON.parse(this.text.slice(start, this.offset));
+        try {
+          return JSON.parse(this.text.slice(start, this.offset));
+        } catch {
+          protocolError("event-json-string");
+        }
       }
-      if (code < 0x20) throw new Error("string-control");
+      if (code < 0x20) protocolError("event-json-string-control");
       if (code !== 0x5c) {
         this.offset += 1;
         continue;
       }
       this.offset += 1;
       const escape = this.text[this.offset];
-      if ('"\\/bfnrt'.includes(escape)) {
+      if (escape !== undefined && '"\\/bfnrt'.includes(escape)) {
         this.offset += 1;
         continue;
       }
@@ -229,16 +216,18 @@ class JsonDecoder {
           this.text.slice(this.offset + 1, this.offset + 5),
         )
       ) {
-        throw new Error("string-escape");
+        protocolError("event-json-string-escape");
       }
       this.offset += 5;
     }
-    throw new Error("string-eof");
+    protocolError("event-json-string-eof");
   }
 
   parseLiteral(token, value) {
     this.countNode();
-    if (!this.text.startsWith(token, this.offset)) throw new Error("literal");
+    if (!this.text.startsWith(token, this.offset)) {
+      protocolError("event-json-literal");
+    }
     this.offset += token.length;
     return value;
   }
@@ -249,7 +238,7 @@ class JsonDecoder {
       /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/u.exec(
         this.text.slice(this.offset),
       );
-    if (match === null) throw new Error("number");
+    if (match === null) protocolError("event-json-number");
     this.offset += match[0].length;
     return { numberToken: match[0] };
   }
@@ -268,27 +257,44 @@ function isNumberToken(value) {
 }
 
 function requireExactKeys(object, allowed, required) {
-  if (!isObject(object)) throw new Error("object");
+  if (!isObject(object)) protocolError("event-json-object");
   for (const key of object.keys()) {
-    if (!allowed.has(key)) throw new Error("unknown-key");
+    if (!allowed.has(key)) protocolError("event-json-unknown-key");
   }
   for (const key of required) {
-    if (!object.has(key)) throw new Error("missing-key");
+    if (!object.has(key)) protocolError("event-json-missing-key");
   }
 }
 
 function requireString(object, key) {
   const value = object.get(key);
-  if (typeof value !== "string") throw new Error("string-field");
+  if (typeof value !== "string") protocolError("event-json-string-field");
   return value;
 }
 
-function classifyEvent(frame) {
+function validateInvocation(invocation) {
+  if (!/^[0-9a-f]{64}$/u.test(invocation)) {
+    protocolError("event-invocation");
+  }
+}
+
+function validateRole(role) {
+  if (!allowedRoles.has(role)) protocolError("event-role");
+}
+
+export function parseDockerCreateEventFrame(frame, invocation, role) {
+  validateInvocation(invocation);
+  validateRole(role);
+  const bytes = byteBuffer(frame, "event-frame");
+  if (bytes.length === 0 || bytes.length > maximumEventFrameBytes) {
+    protocolError("event-frame-cap");
+  }
+
   let text;
   try {
-    text = fatalUtf8.decode(frame);
+    text = fatalUtf8.decode(bytes);
   } catch {
-    throw new Error("utf8");
+    protocolError("event-json-utf8");
   }
   const event = new JsonDecoder(text).decodeObjectFrame();
   requireExactKeys(
@@ -311,10 +317,10 @@ function classifyEvent(frame) {
     requireString(event, "Action") !== "create" ||
     requireString(event, "scope") !== "local"
   ) {
-    throw new Error("event-kind");
+    protocolError("event-kind");
   }
   if (event.has("status") && requireString(event, "status") !== "create") {
-    throw new Error("status");
+    protocolError("event-status");
   }
 
   const actor = event.get("Actor");
@@ -324,29 +330,32 @@ function classifyEvent(frame) {
     new Set(["ID", "Attributes"]),
   );
   const actorId = requireString(actor, "ID");
-  if (!/^[0-9a-f]{64}$/u.test(actorId)) throw new Error("actor-id");
+  if (!/^[0-9a-f]{64}$/u.test(actorId)) protocolError("event-actor-id");
   if (event.has("id") && requireString(event, "id") !== actorId) {
-    throw new Error("id-mismatch");
+    protocolError("event-id-mismatch");
   }
-  if (event.has("from") && byteLength(requireString(event, "from")) > 4096) {
-    throw new Error("from-size");
+  if (
+    event.has("from") &&
+    byteLength(requireString(event, "from")) > maximumAttributeBytes
+  ) {
+    protocolError("event-from-cap");
   }
 
   const attributes = actor.get("Attributes");
-  if (!isObject(attributes) || attributes.size > 32) {
-    throw new Error("attributes");
+  if (!isObject(attributes) || attributes.size > maximumAttributes) {
+    protocolError("event-attributes");
   }
   for (const [key, value] of attributes) {
     if (
       typeof value !== "string" ||
-      byteLength(key) > 4096 ||
-      byteLength(value) > 4096
+      byteLength(key) > maximumAttributeBytes ||
+      byteLength(value) > maximumAttributeBytes
     ) {
-      throw new Error("attribute-value");
+      protocolError("event-attribute-value");
     }
   }
   if (!attributes.has(invocationAttribute) || !attributes.has(roleAttribute)) {
-    throw new Error("attribute-missing");
+    protocolError("event-attribute-missing");
   }
 
   const time = event.get("time");
@@ -355,163 +364,65 @@ function classifyEvent(frame) {
     !/^(?:0|[1-9][0-9]*)$/u.test(time.numberToken) ||
     !Number.isSafeInteger(Number(time.numberToken))
   ) {
-    throw new Error("time");
+    protocolError("event-time");
   }
   const timeNano = event.get("timeNano");
   if (
     !isNumberToken(timeNano) ||
     !/^(?:0|[1-9][0-9]{0,18})$/u.test(timeNano.numberToken)
   ) {
-    throw new Error("time-nano");
+    protocolError("event-time-nano");
   }
 
-  if (attributes.get(invocationAttribute) !== invocationValue) {
-    return undefined;
-  }
-  if (attributes.get(roleAttribute) !== selectedRole) {
-    throw new Error("role-collision");
+  if (attributes.get(invocationAttribute) !== invocation) return undefined;
+  if (attributes.get(roleAttribute) !== role) {
+    protocolError("event-role-collision");
   }
   return actorId;
 }
 
-function emitEvent(frame) {
-  let id;
-  try {
-    id = classifyEvent(frame);
-  } catch {
-    refuse("event-json");
-  }
-  if (id === undefined) return;
-  if (matchingEventSeen) refuse("duplicate-event");
-  matchingEventSeen = true;
-  try {
-    writeAll(eventFd, Buffer.concat([eventPrefix, Buffer.from(`${id}\n`, "ascii")]));
-  } catch {
-    refuse("event-pipe");
-  }
-}
-
-function acceptDecodedBytes(bytes) {
-  decodedStreamBytes += bytes.length;
-  if (decodedStreamBytes > maximumStreamBytes) refuse("stream-cap");
-  eventBuffer = appendBounded(
-    eventBuffer,
-    bytes,
-    maximumEventFrameBytes + maximumHttpChunkBytes,
-    "event-cap",
-  );
-  while (true) {
-    const newline = eventBuffer.indexOf(0x0a);
-    if (newline < 0) {
-      if (eventBuffer.length > maximumEventFrameBytes) refuse("event-cap");
-      return;
-    }
-    if (newline > maximumEventFrameBytes) refuse("event-cap");
-    const frame = eventBuffer.subarray(0, newline);
-    eventBuffer = Buffer.from(eventBuffer.subarray(newline + 1));
-    emitEvent(frame);
-  }
-}
-
-function acceptChunkedBytes(bytes) {
-  chunkBuffer = appendBounded(
-    chunkBuffer,
-    bytes,
-    maximumHttpChunkBytes * 2 + 128,
-    "chunk-cap",
-  );
-  while (true) {
-    if (expectedChunkBytes === undefined) {
-      const lineEnd = chunkBuffer.indexOf("\r\n", 0, "ascii");
-      if (lineEnd < 0) {
-        if (chunkBuffer.length > 16) refuse("chunk-size");
-        return;
-      }
-      const sizeLine = chunkBuffer.subarray(0, lineEnd).toString("ascii");
-      if (!/^[0-9a-fA-F]+$/u.test(sizeLine) || sizeLine.length > 8) {
-        refuse("chunk-size");
-      }
-      const size = Number.parseInt(sizeLine, 16);
-      if (size === 0) refuse("socket-eof-before-close");
-      if (size > maximumHttpChunkBytes) refuse("chunk-cap");
-      expectedChunkBytes = size;
-      chunkBuffer = Buffer.from(chunkBuffer.subarray(lineEnd + 2));
-    }
-    if (chunkBuffer.length < expectedChunkBytes + 2) return;
-    if (
-      chunkBuffer[expectedChunkBytes] !== 0x0d ||
-      chunkBuffer[expectedChunkBytes + 1] !== 0x0a
-    ) {
-      refuse("chunk-ending");
-    }
-    const decoded = chunkBuffer.subarray(0, expectedChunkBytes);
-    chunkBuffer = Buffer.from(chunkBuffer.subarray(expectedChunkBytes + 2));
-    expectedChunkBytes = undefined;
-    acceptDecodedBytes(decoded);
-  }
-}
-
 function parseHeaders(bytes) {
-  headerBuffer = appendBounded(
-    headerBuffer,
-    bytes,
-    maximumHeaderBytes + maximumBufferedPreReadyBytes,
-    "header-cap",
-  );
-  const headerEnd = headerBuffer.indexOf("\r\n\r\n", 0, "ascii");
-  if (headerEnd < 0) {
-    if (headerBuffer.length > maximumHeaderBytes) refuse("header-cap");
-    for (let index = 0; index < headerBuffer.length; index += 1) {
-      if (headerBuffer[index] === 0x0a && headerBuffer[index - 1] !== 0x0d) {
-        refuse("header-line");
-      }
-      if (
-        headerBuffer[index] === 0x0d &&
-        index + 1 < headerBuffer.length &&
-        headerBuffer[index + 1] !== 0x0a
-      ) {
-        refuse("header-line");
-      }
-    }
-    return;
+  const headerBytes = byteBuffer(bytes, "headers");
+  if (headerBytes.length + 4 > maximumHeaderBytes) {
+    protocolError("event-header-cap");
   }
-  const completeLength = headerEnd + 4;
-  if (completeLength > maximumHeaderBytes) refuse("header-cap");
-  const headerBytes = headerBuffer.subarray(0, headerEnd);
   for (const byte of headerBytes) {
-    if (byte > 0x7e || (byte < 0x20 && byte !== 0x09 && byte !== 0x0d && byte !== 0x0a)) {
-      refuse("header-byte");
+    if (
+      byte > 0x7e ||
+      (byte < 0x20 && byte !== 0x09 && byte !== 0x0d && byte !== 0x0a)
+    ) {
+      protocolError("event-header-byte");
     }
   }
   const lines = headerBytes.toString("ascii").split("\r\n");
   const statusLine = lines.shift();
   if (!/^HTTP\/1\.1 200(?: [\x20-\x7e]*)?$/u.test(statusLine ?? "")) {
-    refuse("http-status");
+    protocolError("event-http-status");
   }
   const headers = new Map();
   for (const line of lines) {
     const colon = line.indexOf(":");
-    if (colon <= 0) refuse("header-field");
+    if (colon <= 0) protocolError("event-header-field");
     const name = line.slice(0, colon);
     const rawValue = line.slice(colon + 1);
     if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u.test(name)) {
-      refuse("header-name");
+      protocolError("event-header-name");
     }
     for (const character of rawValue) {
       const code = character.charCodeAt(0);
       if (code !== 0x09 && (code < 0x20 || code > 0x7e)) {
-        refuse("header-value");
+        protocolError("event-header-value");
       }
     }
     const lowerName = name.toLowerCase();
-    if (headers.has(lowerName)) refuse("header-duplicate");
+    if (headers.has(lowerName)) protocolError("event-header-duplicate");
     headers.set(lowerName, rawValue.trim());
   }
   if (headers.has("content-length") || headers.has("content-encoding")) {
-    refuse("http-encoding");
+    protocolError("event-http-encoding");
   }
   if (headers.get("transfer-encoding")?.toLowerCase() !== "chunked") {
-    refuse("http-transfer");
+    protocolError("event-http-transfer");
   }
   if (
     headers.has("upgrade") ||
@@ -520,183 +431,485 @@ function parseHeaders(bytes) {
       ?.split(",")
       .some((token) => token.trim().toLowerCase() === "upgrade") === true
   ) {
-    refuse("http-upgrade");
+    protocolError("event-http-upgrade");
   }
-  pendingBody = Buffer.from(headerBuffer.subarray(completeLength));
-  if (pendingBody.length > maximumBufferedPreReadyBytes) refuse("stream-cap");
-  headerBuffer = Buffer.alloc(0);
-  headersAccepted = true;
-  phase = "ready";
-  enterStreamingIfReady();
 }
 
-function enterStreamingIfReady() {
-  if (!headersAccepted || !requestFlushed || phase === "streaming") return;
-  if (phase !== "ready") refuse("ready-order");
-  try {
-    writeAll(readyFd, readyFrame);
-  } catch {
-    refuse("ready-pipe");
-  }
-  phase = "streaming";
-  const body = pendingBody;
-  pendingBody = Buffer.alloc(0);
-  if (body.length > 0) acceptChunkedBytes(body);
-}
-
-function handleSocketBytes(bytes) {
-  if (terminal || phase === "closing") return;
-  if (!headersAccepted) {
-    parseHeaders(bytes);
-    return;
-  }
-  if (phase === "ready") {
-    pendingBody = appendBounded(
-      pendingBody,
-      bytes,
-      maximumBufferedPreReadyBytes,
-      "stream-cap",
-    );
-    return;
-  }
-  if (phase !== "streaming") refuse("socket-order");
-  acceptChunkedBytes(bytes);
-}
-
-function finishIfSettled() {
-  if (terminal || phase !== "closing" || !controlEnded || !socketClosed) return;
-  terminal = true;
-  closeIgnoringErrors(controlFd);
-  process.exit(0);
-}
-
-function beginClose() {
-  if (phase !== "streaming") refuse("close-order");
-  phase = "closing";
-  try {
-    closeSync(readyFd);
-    closeSync(eventFd);
-  } catch {
-    refuse("output-close");
-  }
-  socket.destroy();
-  finishIfSettled();
-}
-
-function connectToEngine() {
-  phase = "connecting";
-  const filter = `{"event":["create"],"label":["${invocationAttribute}=${invocationValue}"],"type":["container"]}`;
-  const target = "/v1.47/events" + "?since=0&filters=" + encodeURIComponent(filter);
-  const request = Buffer.from(
+export function buildDockerEventRequest(invocation) {
+  validateInvocation(invocation);
+  const filter = `{"event":["create"],"label":["${invocationAttribute}=${invocation}"],"type":["container"]}`;
+  const target =
+    "/v1.47/events" + "?since=0&filters=" + encodeURIComponent(filter);
+  return Buffer.from(
     `GET ${target} HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n`,
     "ascii",
   );
-  socket = createConnection({ path: socketPath });
-  socket.on("connect", () => {
-    if (terminal || phase !== "connecting") return;
-    phase = "headers";
-    socket.write(request, () => {
-      if (terminal || phase === "closing") return;
-      requestFlushed = true;
-      enterStreamingIfReady();
-    });
-  });
-  socket.on("data", (bytes) => {
-    if (terminal) return;
-    handleSocketBytes(bytes);
-  });
-  socket.on("end", () => {
-    if (!terminal && phase !== "closing") refuse("socket-eof-before-close");
-  });
-  socket.on("error", () => {
-    if (!terminal && phase !== "closing") refuse("socket-error");
-  });
-  socket.on("close", () => {
-    if (terminal) return;
-    if (phase !== "closing") refuse("socket-close-before-control");
-    socketClosed = true;
-    finishIfSettled();
-  });
 }
 
-function parseOpenControl() {
-  if (controlBuffer.length > maximumControlBytes) refuse("control-cap");
-  const firstNewline = controlBuffer.indexOf(0x0a);
-  if (firstNewline < 0) {
-    const comparable = Math.min(controlBuffer.length, openPrefix.length);
-    if (!controlBuffer.subarray(0, comparable).equals(openPrefix.subarray(0, comparable))) {
+export class DockerEventHttpStreamParser {
+  constructor(invocation, role) {
+    validateInvocation(invocation);
+    validateRole(role);
+    this.invocation = invocation;
+    this.role = role;
+    this.phase = "headers";
+    this.requestFlushed = false;
+    this.headersAccepted = false;
+    this.headerBuffer = Buffer.alloc(0);
+    this.pendingBody = Buffer.alloc(0);
+    this.chunkBuffer = Buffer.alloc(0);
+    this.expectedChunkBytes = undefined;
+    this.eventBuffer = Buffer.alloc(0);
+    this.rawStreamBytes = 0;
+    this.decodedStreamBytes = 0;
+    this.matchingEventId = undefined;
+  }
+
+  markRequestFlushed() {
+    if (this.phase === "closed" || this.requestFlushed) {
+      protocolError("event-request-order");
+    }
+    this.requestFlushed = true;
+    return this.enterStreamingIfReady();
+  }
+
+  acceptSocketBytes(bytes) {
+    if (this.phase === "closed") protocolError("event-socket-after-close");
+    const input = byteBuffer(bytes, "socket");
+    if (input.length === 0) return [];
+    if (!this.headersAccepted) return this.acceptHeaderBytes(input);
+    if (this.phase === "waiting-for-request-flush") {
+      this.pendingBody = appendBounded(
+        this.pendingBody,
+        input,
+        maximumStreamBytes,
+        "event-stream-cap",
+      );
+      return [];
+    }
+    if (this.phase !== "streaming") protocolError("event-socket-order");
+    return this.acceptBodyBytes(input);
+  }
+
+  acceptHeaderBytes(bytes) {
+    this.headerBuffer = appendBounded(
+      this.headerBuffer,
+      bytes,
+      maximumHeaderBytes + maximumStreamBytes,
+      "event-header-cap",
+    );
+    const headerEnd = this.headerBuffer.indexOf("\r\n\r\n", 0, "ascii");
+    if (headerEnd < 0) {
+      if (this.headerBuffer.length > maximumHeaderBytes) {
+        protocolError("event-header-cap");
+      }
+      for (let index = 0; index < this.headerBuffer.length; index += 1) {
+        if (
+          this.headerBuffer[index] === 0x0a &&
+          this.headerBuffer[index - 1] !== 0x0d
+        ) {
+          protocolError("event-header-line");
+        }
+        if (
+          this.headerBuffer[index] === 0x0d &&
+          index + 1 < this.headerBuffer.length &&
+          this.headerBuffer[index + 1] !== 0x0a
+        ) {
+          protocolError("event-header-line");
+        }
+      }
+      return [];
+    }
+
+    const completeLength = headerEnd + 4;
+    if (completeLength > maximumHeaderBytes) protocolError("event-header-cap");
+    parseHeaders(this.headerBuffer.subarray(0, headerEnd));
+    const body = Buffer.from(this.headerBuffer.subarray(completeLength));
+    if (body.length > maximumStreamBytes) protocolError("event-stream-cap");
+    this.headerBuffer = Buffer.alloc(0);
+    this.headersAccepted = true;
+    this.pendingBody = body;
+    this.phase = "waiting-for-request-flush";
+    return this.enterStreamingIfReady();
+  }
+
+  enterStreamingIfReady() {
+    if (!this.headersAccepted || !this.requestFlushed) return [];
+    if (this.phase !== "waiting-for-request-flush") {
+      protocolError("event-ready-order");
+    }
+    this.phase = "streaming";
+    const body = this.pendingBody;
+    this.pendingBody = Buffer.alloc(0);
+    const actions = [{ type: "ready" }];
+    if (body.length > 0) actions.push(...this.acceptBodyBytes(body));
+    return Object.freeze(actions);
+  }
+
+  acceptBodyBytes(bytes) {
+    const input = byteBuffer(bytes, "body");
+    if (input.length > maximumStreamBytes - this.rawStreamBytes) {
+      protocolError("event-stream-cap");
+    }
+    this.rawStreamBytes += input.length;
+    this.chunkBuffer = appendBounded(
+      this.chunkBuffer,
+      input,
+      maximumStreamBytes,
+      "event-stream-cap",
+    );
+    const actions = [];
+
+    while (true) {
+      if (this.expectedChunkBytes === undefined) {
+        const lineEnd = this.chunkBuffer.indexOf("\r\n", 0, "ascii");
+        if (lineEnd < 0) {
+          if (this.chunkBuffer.length > 8) protocolError("event-chunk-size");
+          break;
+        }
+        const sizeLine = this.chunkBuffer.subarray(0, lineEnd).toString("ascii");
+        if (!/^[0-9a-fA-F]+$/u.test(sizeLine) || sizeLine.length > 8) {
+          protocolError("event-chunk-size");
+        }
+        const size = Number.parseInt(sizeLine, 16);
+        if (size === 0) protocolError("event-socket-eof-before-close");
+        if (size > maximumHttpChunkBytes) protocolError("event-chunk-cap");
+        this.expectedChunkBytes = size;
+        this.chunkBuffer = Buffer.from(this.chunkBuffer.subarray(lineEnd + 2));
+      }
+      if (this.chunkBuffer.length < this.expectedChunkBytes + 2) break;
+      if (
+        this.chunkBuffer[this.expectedChunkBytes] !== 0x0d ||
+        this.chunkBuffer[this.expectedChunkBytes + 1] !== 0x0a
+      ) {
+        protocolError("event-chunk-ending");
+      }
+      const decoded = this.chunkBuffer.subarray(0, this.expectedChunkBytes);
+      this.chunkBuffer = Buffer.from(
+        this.chunkBuffer.subarray(this.expectedChunkBytes + 2),
+      );
+      this.expectedChunkBytes = undefined;
+      actions.push(...this.acceptDecodedBytes(decoded));
+    }
+    return Object.freeze(actions);
+  }
+
+  acceptDecodedBytes(bytes) {
+    if (bytes.length > maximumStreamBytes - this.decodedStreamBytes) {
+      protocolError("event-stream-cap");
+    }
+    this.decodedStreamBytes += bytes.length;
+    this.eventBuffer = appendBounded(
+      this.eventBuffer,
+      bytes,
+      maximumEventFrameBytes + maximumHttpChunkBytes,
+      "event-frame-cap",
+    );
+    const actions = [];
+    while (true) {
+      const newline = this.eventBuffer.indexOf(0x0a);
+      if (newline < 0) break;
+      if (newline === 0 || newline > maximumEventFrameBytes) {
+        protocolError("event-frame-cap");
+      }
+      const frame = this.eventBuffer.subarray(0, newline);
+      this.eventBuffer = Buffer.from(this.eventBuffer.subarray(newline + 1));
+      const id = parseDockerCreateEventFrame(
+        frame,
+        this.invocation,
+        this.role,
+      );
+      if (id === undefined) continue;
+      if (this.matchingEventId !== undefined) {
+        protocolError("event-duplicate");
+      }
+      this.matchingEventId = id;
+      actions.push(Object.freeze({ type: "event", id }));
+    }
+    if (this.eventBuffer.length > maximumEventFrameBytes) {
+      protocolError("event-frame-cap");
+    }
+    return Object.freeze(actions);
+  }
+
+  closeAtControlLinearization() {
+    if (this.phase !== "streaming") protocolError("event-close-order");
+    if (
+      this.pendingBody.length !== 0 ||
+      this.chunkBuffer.length !== 0 ||
+      this.expectedChunkBytes !== undefined ||
+      this.eventBuffer.length !== 0
+    ) {
+      protocolError("event-incomplete-at-close");
+    }
+    this.phase = "closed";
+  }
+}
+
+function closeIgnoringErrors(fd) {
+  try {
+    closeSync(fd);
+  } catch {
+    // A refusal remains a refusal when its peer has already closed the pipe.
+  }
+}
+
+function writeAll(fd, bytes) {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = writeSync(fd, bytes, offset, bytes.length - offset);
+    if (written <= 0) throw new Error("short write");
+    offset += written;
+  }
+}
+
+function runDockerEventHelper() {
+  let phase = "open";
+  let terminal = false;
+  let controlEnded = false;
+  let controlBuffer = Buffer.alloc(0);
+  let socket;
+  let socketClosed = false;
+  let streamParser;
+
+  function refuse(code) {
+    if (terminal) return;
+    terminal = true;
+    try {
+      writeAll(
+        2,
+        Buffer.from(
+          `openspell.wp201.docker-event-helper.refused.v1\n${code}\n`,
+          "ascii",
+        ),
+      );
+    } catch {
+      // The exit status remains authoritative when the diagnostic peer is gone.
+    }
+    if (socket !== undefined) socket.destroy();
+    closeIgnoringErrors(readyFd);
+    closeIgnoringErrors(eventFd);
+    process.exit(125);
+  }
+
+  function applyActions(actions) {
+    try {
+      for (const action of actions) {
+        if (action.type === "ready") {
+          if (phase !== "headers") throw new Error("ready order");
+          writeAll(readyFd, readyFrame);
+          phase = "streaming";
+        } else if (action.type === "event") {
+          if (phase !== "streaming") throw new Error("event order");
+          writeAll(
+            eventFd,
+            Buffer.concat([
+              eventPrefix,
+              Buffer.from(`${action.id}\n`, "ascii"),
+            ]),
+          );
+        } else {
+          throw new Error("unknown action");
+        }
+      }
+    } catch {
+      refuse("output-pipe");
+    }
+  }
+
+  function finishIfSettled() {
+    if (terminal || phase !== "closing" || !controlEnded || !socketClosed) {
+      return;
+    }
+    terminal = true;
+    closeIgnoringErrors(controlFd);
+    process.exit(0);
+  }
+
+  function beginClose() {
+    if (phase !== "streaming" || streamParser === undefined) {
+      refuse("control-close-order");
+    }
+    try {
+      streamParser.closeAtControlLinearization();
+    } catch (error) {
+      refuse(
+        error instanceof DockerEventProtocolError
+          ? error.code
+          : "event-close",
+      );
+    }
+    phase = "closing";
+    try {
+      closeSync(readyFd);
+      closeSync(eventFd);
+    } catch {
+      refuse("output-close");
+    }
+    socket.destroy();
+    finishIfSettled();
+  }
+
+  function connectToEngine(invocation, role) {
+    phase = "connecting";
+    try {
+      streamParser = new DockerEventHttpStreamParser(invocation, role);
+    } catch (error) {
+      refuse(
+        error instanceof DockerEventProtocolError
+          ? error.code
+          : "event-parser",
+      );
+    }
+    const request = buildDockerEventRequest(invocation);
+    socket = createConnection({ path: socketPath });
+    socket.on("connect", () => {
+      if (terminal || phase !== "connecting") return;
+      phase = "headers";
+      socket.write(request, (error) => {
+        if (terminal || phase === "closing") return;
+        if (error !== undefined && error !== null) {
+          refuse("event-request-write");
+          return;
+        }
+        try {
+          applyActions(streamParser.markRequestFlushed());
+        } catch (error) {
+          refuse(
+            error instanceof DockerEventProtocolError
+              ? error.code
+              : "request-flush",
+          );
+        }
+      });
+    });
+    socket.on("data", (bytes) => {
+      if (terminal || phase === "closing") return;
+      try {
+        applyActions(streamParser.acceptSocketBytes(bytes));
+      } catch (error) {
+        refuse(
+          error instanceof DockerEventProtocolError
+            ? error.code
+            : "event-stream",
+        );
+      }
+    });
+    socket.on("end", () => {
+      if (!terminal && phase !== "closing") {
+        refuse("event-socket-eof-before-close");
+      }
+    });
+    socket.on("error", () => {
+      if (!terminal && phase !== "closing") refuse("event-socket-error");
+    });
+    socket.on("close", () => {
+      if (terminal) return;
+      if (phase !== "closing") refuse("event-socket-close-before-control");
+      socketClosed = true;
+      finishIfSettled();
+    });
+  }
+
+  function parseOpenControl() {
+    if (controlBuffer.length > maximumControlBytes) refuse("control-cap");
+    const firstNewline = controlBuffer.indexOf(0x0a);
+    if (firstNewline < 0) {
+      const comparable = Math.min(controlBuffer.length, openPrefix.length);
+      if (
+        !controlBuffer
+          .subarray(0, comparable)
+          .equals(openPrefix.subarray(0, comparable))
+      ) {
+        refuse("control-open");
+      }
+      return;
+    }
+    const secondNewline = controlBuffer.indexOf(0x0a, firstNewline + 1);
+    const thirdNewline =
+      secondNewline < 0
+        ? -1
+        : controlBuffer.indexOf(0x0a, secondNewline + 1);
+    if (thirdNewline < 0) return;
+    const open = controlBuffer.subarray(0, thirdNewline + 1);
+    let text;
+    try {
+      text = fatalUtf8.decode(open);
+    } catch {
+      refuse("control-utf8");
+    }
+    const lines = text.split("\n");
+    if (
+      lines.length !== 4 ||
+      lines[0] !== "openspell.wp201.docker-event-open.v1" ||
+      !/^[0-9a-f]{64}$/u.test(lines[1]) ||
+      !allowedRoles.has(lines[2]) ||
+      lines[3] !== ""
+    ) {
       refuse("control-open");
     }
-    return;
+    controlBuffer = Buffer.from(controlBuffer.subarray(thirdNewline + 1));
+    if (controlBuffer.length !== 0) refuse("control-order");
+    connectToEngine(lines[1], lines[2]);
   }
-  const secondNewline = controlBuffer.indexOf(0x0a, firstNewline + 1);
-  const thirdNewline =
-    secondNewline < 0 ? -1 : controlBuffer.indexOf(0x0a, secondNewline + 1);
-  if (thirdNewline < 0) return;
-  const open = controlBuffer.subarray(0, thirdNewline + 1);
-  let text;
-  try {
-    text = fatalUtf8.decode(open);
-  } catch {
-    refuse("control-utf8");
+
+  function parseCloseControl() {
+    if (controlBuffer.length > closeFrame.length) {
+      refuse("control-trailing");
+    }
+    const comparable = Math.min(controlBuffer.length, closeFrame.length);
+    if (
+      !controlBuffer
+        .subarray(0, comparable)
+        .equals(closeFrame.subarray(0, comparable))
+    ) {
+      refuse("control-close");
+    }
+    if (controlBuffer.length === closeFrame.length) beginClose();
   }
-  const lines = text.split("\n");
-  if (
-    lines.length !== 4 ||
-    lines[0] !== "openspell.wp201.docker-event-open.v1" ||
-    !/^[0-9a-f]{64}$/u.test(lines[1]) ||
-    !allowedRoles.has(lines[2]) ||
-    lines[3] !== ""
-  ) {
-    refuse("control-open");
+
+  function handleControlBytes(bytes) {
+    if (terminal) return;
+    if (phase === "closing") refuse("control-trailing");
+    try {
+      controlBuffer = appendBounded(
+        controlBuffer,
+        bytes,
+        maximumControlBytes,
+        "control-cap",
+      );
+    } catch (error) {
+      refuse(
+        error instanceof DockerEventProtocolError ? error.code : "control-cap",
+      );
+    }
+    if (phase === "open") {
+      parseOpenControl();
+      return;
+    }
+    if (phase !== "streaming") refuse("control-order");
+    parseCloseControl();
   }
-  invocationValue = lines[1];
-  selectedRole = lines[2];
-  controlBuffer = Buffer.from(controlBuffer.subarray(thirdNewline + 1));
-  if (controlBuffer.length !== 0) refuse("control-order");
-  connectToEngine();
+
+  if (process.argv.length !== 2) refuse("arguments");
+
+  const control = createReadStream("/dev/null", {
+    fd: controlFd,
+    autoClose: false,
+  });
+  control.on("data", (bytes) => handleControlBytes(bytes));
+  control.on("end", () => {
+    if (terminal) return;
+    controlEnded = true;
+    if (phase !== "closing") refuse("control-eof-before-close");
+    finishIfSettled();
+  });
+  control.on("error", () => refuse("control-read"));
+
+  process.on("uncaughtException", () => refuse("uncaught"));
+  process.on("unhandledRejection", () => refuse("rejection"));
 }
 
-function parseCloseControl() {
-  if (controlBuffer.length > closeFrame.length) refuse("control-trailing");
-  const comparable = Math.min(controlBuffer.length, closeFrame.length);
-  if (!controlBuffer.subarray(0, comparable).equals(closeFrame.subarray(0, comparable))) {
-    refuse("control-close");
-  }
-  if (controlBuffer.length === closeFrame.length) beginClose();
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  runDockerEventHelper();
 }
-
-function handleControlBytes(bytes) {
-  if (terminal) return;
-  if (phase === "closing") refuse("control-trailing");
-  controlBuffer = appendBounded(
-    controlBuffer,
-    bytes,
-    maximumControlBytes,
-    "control-cap",
-  );
-  if (phase === "open") {
-    parseOpenControl();
-    return;
-  }
-  if (phase !== "streaming") refuse("control-order");
-  parseCloseControl();
-}
-
-if (process.argv.length !== 2) refuse("arguments");
-
-const control = createReadStream("/dev/null", {
-  fd: controlFd,
-  autoClose: false,
-});
-control.on("data", (bytes) => handleControlBytes(bytes));
-control.on("end", () => {
-  if (terminal) return;
-  controlEnded = true;
-  if (phase !== "closing") refuse("control-eof-before-close");
-  finishIfSettled();
-});
-control.on("error", () => refuse("control-read"));
-
-process.on("uncaughtException", () => refuse("uncaught"));
-process.on("unhandledRejection", () => refuse("rejection"));
