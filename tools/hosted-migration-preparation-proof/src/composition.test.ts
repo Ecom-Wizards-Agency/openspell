@@ -1,18 +1,41 @@
 import { Buffer } from "node:buffer";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, realpathSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import {
+  appendFileSync,
+  chmodSync,
+  closeSync,
+  constants,
+  copyFileSync,
+  fsyncSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { open } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
 import {
   SOURCE_ROOTS,
   assertCompileTimeInputs,
-  buildSourceLedger,
+  assertNoFixedWorkspaceMountpoints,
+  buildSourceLedgerRows,
   parseSourceIndex,
-  verifySourceLedger,
+  stageFixedSourceSnapshot,
+  verifySourceLedgerRows,
 } from "../scripts/cargo.mjs";
 
 const packageDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -33,6 +56,87 @@ function sourceIndexBytes(): Buffer {
     ["ls-files", "--stage", "-z", "--", ...SOURCE_ROOTS],
     { cwd: workspaceDirectory, maxBuffer: 1024 * 1024 },
   );
+}
+
+function makeTreeWritable(path: string): void {
+  const status = lstatSync(path);
+  if (!status.isDirectory()) return;
+  chmodSync(path, 0o700);
+  for (const entry of readdirSync(path)) {
+    const child = join(path, entry);
+    if (lstatSync(child).isDirectory()) makeTreeWritable(child);
+  }
+}
+
+function removeFixture(path: string): void {
+  try {
+    makeTreeWritable(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  rmSync(path, { force: true, recursive: true });
+}
+
+function createInvocationDestination(): {
+  readonly invocation: string;
+  readonly source: string;
+} {
+  const invocation = join(
+    "/tmp",
+    `openspell-wp201-root-proof-${randomBytes(32).toString("hex")}`,
+  );
+  mkdirSync(invocation, { mode: 0o700 });
+  const invocationValue = invocation.slice(invocation.lastIndexOf("-") + 1);
+  const record = openSync(
+    join(invocation, "INVOCATION"),
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    writeFileSync(record, `openspell.wp201.invocation.v1\n${invocationValue}\n`);
+    fsyncSync(record);
+  } finally {
+    closeSync(record);
+  }
+  const source = join(invocation, "source");
+  mkdirSync(source, { mode: 0o700 });
+  const invocationDirectory = openSync(
+    invocation,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    fsyncSync(invocationDirectory);
+  } finally {
+    closeSync(invocationDirectory);
+  }
+  return { invocation, source };
+}
+
+async function copiedCargoModule(index: Buffer): Promise<{
+  readonly directory: string;
+  readonly module: {
+    readonly assertNoFixedWorkspaceMountpoints: typeof assertNoFixedWorkspaceMountpoints;
+    readonly stageFixedSourceSnapshot: typeof stageFixedSourceSnapshot;
+  };
+}> {
+  const directory = mkdtempSync(join(tmpdir(), "wp201-source-workspace-"));
+  const records = parseSourceIndex(index);
+  for (const { path } of records) {
+    const destination = join(directory, path);
+    mkdirSync(dirname(destination), { mode: 0o700, recursive: true });
+    copyFileSync(join(workspaceDirectory, path), destination);
+    chmodSync(destination, 0o600);
+  }
+  const modulePath = join(
+    directory,
+    "tools/hosted-migration-preparation-proof/scripts/cargo.mjs",
+  );
+  mkdirSync(dirname(modulePath), { mode: 0o700, recursive: true });
+  copyFileSync(join(packageDirectory, "scripts/cargo.mjs"), modulePath);
+  const module = await import(
+    `${pathToFileURL(modulePath).href}?fixture=${randomBytes(8).toString("hex")}`
+  );
+  return { directory, module };
 }
 
 function normalizedManifestText(contents: string): string {
@@ -97,7 +201,7 @@ describe("WP-201 composition boundary", () => {
       "tools/hosted-migration-runtime-proof/src/machine.rs",
     ]);
 
-    const sourceLedger = buildSourceLedger(records, bytes);
+    const sourceLedger = buildSourceLedgerRows(records, bytes);
     expect(sourceLedger).toMatchObject({
       files: 45,
       directories: 10,
@@ -109,7 +213,7 @@ describe("WP-201 composition boundary", () => {
       "6a224a221f053899905985486de42b986e551f014c0e758a8efb6f50256c2289",
     );
     expect(
-      verifySourceLedger(records, bytes, Buffer.from(sourceLedger.ledgerRows, "utf8")),
+      verifySourceLedgerRows(records, bytes, Buffer.from(sourceLedger.ledgerRows, "utf8")),
     ).toEqual(sourceLedger);
     const ledgerRows = sourceLedger.ledgerRows.split("\n").filter(Boolean);
     expect(ledgerRows).toHaveLength(55);
@@ -200,26 +304,335 @@ describe("WP-201 composition boundary", () => {
       first.path,
       Buffer.concat([changedBytes.get(first.path) ?? Buffer.alloc(0), Buffer.of(0)]),
     );
-    expect(() => buildSourceLedger(records, changedBytes)).toThrow(
+    expect(() => buildSourceLedgerRows(records, changedBytes)).toThrow(
       "source bytes do not match indexed object",
     );
     const missingBytes = new Map(bytes);
     missingBytes.delete(first.path);
-    expect(() => buildSourceLedger(records, missingBytes)).toThrow(
+    expect(() => buildSourceLedgerRows(records, missingBytes)).toThrow(
       "source byte inventory mismatch",
     );
     const extraBytes = new Map(bytes);
     extraBytes.set("tools/hosted-migration-root-authority/src/extra.rs", Buffer.alloc(0));
-    expect(() => buildSourceLedger(records, extraBytes)).toThrow(
+    expect(() => buildSourceLedgerRows(records, extraBytes)).toThrow(
       "source byte inventory mismatch",
     );
 
-    const sourceLedger = buildSourceLedger(records, bytes);
+    const sourceLedger = buildSourceLedgerRows(records, bytes);
     const changedLedger = Buffer.from(sourceLedger.ledgerRows, "utf8");
     changedLedger[0] = (changedLedger[0] ?? 0) ^ 1;
-    expect(() => verifySourceLedger(records, bytes, changedLedger)).toThrow(
+    expect(() => verifySourceLedgerRows(records, bytes, changedLedger)).toThrow(
       "source ledger byte mismatch",
     );
+  });
+
+  it("stages and re-proves the fixed source tree through an exact open destination", async () => {
+    const index = sourceIndexBytes();
+    const fixture = await copiedCargoModule(index);
+    const destination = createInvocationDestination();
+    const handle = await open(
+      destination.source,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      const result = await fixture.module.stageFixedSourceSnapshot({
+        indexBytes: index,
+        sourceDirectory: handle,
+      });
+      expect(result).toMatchObject({
+        files: 45,
+        directories: 10,
+        regularFileBytes: 1_281_104,
+        records: 55,
+      });
+      expect(Object.isFrozen(result)).toBe(true);
+      expect(lstatSync(destination.source).mode & 0o7777).toBe(0o555);
+      expect(
+        lstatSync(
+          join(destination.source, "tools/hosted-migration-root-authority/src/lib.rs"),
+        ).mode & 0o7777,
+      ).toBe(0o444);
+      expect(
+        readFileSync(
+          join(destination.source, "tools/hosted-migration-root-authority/src/lib.rs"),
+        ),
+      ).toEqual(
+        readFileSync(
+          join(fixture.directory, "tools/hosted-migration-root-authority/src/lib.rs"),
+        ),
+      );
+    } finally {
+      await handle.close();
+      removeFixture(destination.invocation);
+      removeFixture(fixture.directory);
+    }
+  });
+
+  it("stages the actual fixed workspace without changing its checkout modes", async () => {
+    const destination = createInvocationDestination();
+    const handle = await open(
+      destination.source,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      const result = await stageFixedSourceSnapshot({
+        indexBytes: sourceIndexBytes(),
+        sourceDirectory: handle,
+      });
+      expect(result).toMatchObject({
+        files: 45,
+        directories: 10,
+        regularFileBytes: 1_281_104,
+        records: 55,
+      });
+    } finally {
+      await handle.close();
+      removeFixture(destination.invocation);
+    }
+  });
+
+  it("refuses isolated untracked, link, special, and mode substitutions", async () => {
+    const index = sourceIndexBytes();
+    const cases = [
+      {
+        expected: "untracked source file",
+        mutate(directory: string): void {
+          writeFileSync(
+            join(directory, "tools/hosted-migration-root-authority/src/untracked.rs"),
+            "fn untracked() {}\n",
+          );
+        },
+      },
+      {
+        expected: "untracked source directory",
+        mutate(directory: string): void {
+          mkdirSync(
+            join(directory, "tools/hosted-migration-runtime-proof/src/empty-untracked"),
+          );
+        },
+      },
+      {
+        expected: "link or special source entry",
+        mutate(directory: string): void {
+          const selected = join(
+            directory,
+            "tools/hosted-migration-root-authority/src/lib.rs",
+          );
+          const sameBytes = join(directory, "same-bytes-lib.rs");
+          copyFileSync(selected, sameBytes);
+          rmSync(selected);
+          symlinkSync(sameBytes, selected);
+        },
+      },
+      {
+        expected: "link or special source entry",
+        mutate(directory: string): void {
+          execFileSync("/usr/bin/mkfifo", [
+            join(directory, "tools/hosted-migration-runtime-proof/src/untracked.rs"),
+          ]);
+        },
+      },
+      {
+        expected: "source bytes do not match indexed object",
+        mutate(directory: string): void {
+          appendFileSync(
+            join(directory, "tools/hosted-migration-runtime-proof/src/lib.rs"),
+            "\n",
+          );
+        },
+      },
+    ] as const;
+
+    for (const adversarial of cases) {
+      const fixture = await copiedCargoModule(index);
+      const destination = createInvocationDestination();
+      const handle = await open(
+        destination.source,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      try {
+        adversarial.mutate(fixture.directory);
+        await expect(
+          fixture.module.stageFixedSourceSnapshot({
+            indexBytes: index,
+            sourceDirectory: handle,
+          }),
+        ).rejects.toThrow(adversarial.expected);
+      } finally {
+        await handle.close();
+        removeFixture(destination.invocation);
+        removeFixture(fixture.directory);
+      }
+    }
+  });
+
+  it("accepts workspace permission variation without weakening byte identity", async () => {
+    const index = sourceIndexBytes();
+    for (const mode of [0o400, 0o666, 0o700]) {
+      const fixture = await copiedCargoModule(index);
+      const destination = createInvocationDestination();
+      const handle = await open(
+        destination.source,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      try {
+        chmodSync(
+          join(fixture.directory, "tools/hosted-migration-runtime-proof/src/lib.rs"),
+          mode,
+        );
+        const result = await fixture.module.stageFixedSourceSnapshot({
+          indexBytes: index,
+          sourceDirectory: handle,
+        });
+        expect(result.files).toBe(45);
+        expect(
+          lstatSync(
+            join(destination.source, "tools/hosted-migration-runtime-proof/src/lib.rs"),
+          ).mode & 0o7777,
+        ).toBe(0o444);
+      } finally {
+        await handle.close();
+        removeFixture(destination.invocation);
+        removeFixture(fixture.directory);
+      }
+    }
+  });
+
+  it("refuses a symlink substituted for an exact package-root component", async () => {
+    const index = sourceIndexBytes();
+    const fixture = await copiedCargoModule(index);
+    const destination = createInvocationDestination();
+    const handle = await open(
+      destination.source,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      const packageRoot = join(fixture.directory, "tools/hosted-migration-runtime-proof");
+      const relocated = join(fixture.directory, "runtime-proof-relocated");
+      renameSync(packageRoot, relocated);
+      symlinkSync(relocated, packageRoot, "dir");
+      await expect(
+        fixture.module.stageFixedSourceSnapshot({
+          indexBytes: index,
+          sourceDirectory: handle,
+        }),
+      ).rejects.toThrow();
+      expect(lstatSync(packageRoot).isSymbolicLink()).toBe(true);
+    } finally {
+      await handle.close();
+      removeFixture(destination.invocation);
+      removeFixture(fixture.directory);
+    }
+  });
+
+  it("binds the live workspace mount and refuses a synthetic same-device bind", async () => {
+    expect(
+      assertNoFixedWorkspaceMountpoints(readFileSync("/proc/self/mountinfo")).length,
+    ).toBeGreaterThan(0);
+
+    const index = sourceIndexBytes();
+    const fixture = await copiedCargoModule(index);
+    try {
+      const synthetic = Buffer.from(
+        [
+          "1 0 8:1 / / rw - ext4 /dev/root rw",
+          `2 1 8:1 / ${fixture.directory} rw - ext4 /dev/root rw`,
+          "",
+        ].join("\n"),
+      );
+      expect(() => fixture.module.assertNoFixedWorkspaceMountpoints(synthetic)).toThrow(
+        "mountpoint in fixed workspace ancestry",
+      );
+    } finally {
+      removeFixture(fixture.directory);
+    }
+  });
+
+  it("keeps writes on its owned root after the caller fd is closed and reused", async () => {
+    const destinationA = createInvocationDestination();
+    const destinationB = createInvocationDestination();
+    const callerHandle = await open(
+      destinationA.source,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    const callerDescriptor = callerHandle.fd;
+    let callerClosed = false;
+    let reusedDescriptor: number | undefined;
+    let staging: ReturnType<typeof stageFixedSourceSnapshot> | undefined;
+    try {
+      staging = stageFixedSourceSnapshot({
+        indexBytes: sourceIndexBytes(),
+        sourceDirectory: callerHandle,
+      });
+      closeSync(callerDescriptor);
+      callerClosed = true;
+      reusedDescriptor = openSync(
+        destinationB.source,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      expect(reusedDescriptor).toBe(callerDescriptor);
+      await expect(staging).resolves.toMatchObject({ files: 45, directories: 10 });
+      expect(readdirSync(destinationB.source)).toEqual([]);
+      expect(existsSync(join(destinationA.source, "tools"))).toBe(true);
+    } finally {
+      if (staging !== undefined) await staging.catch(() => undefined);
+      if (reusedDescriptor !== undefined) closeSync(reusedDescriptor);
+      if (callerClosed) await callerHandle.close().catch(() => undefined);
+      else await callerHandle.close();
+      removeFixture(destinationA.invocation);
+      removeFixture(destinationB.invocation);
+    }
+  });
+
+  it("refuses a structurally spoofed destination handle", async () => {
+    const destination = createInvocationDestination();
+    const handle = await open(
+      destination.source,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      const spoof = {
+        fd: handle.fd,
+        async chmod(): Promise<void> {},
+        async stat(): Promise<never> {
+          throw new Error("spoof stat must not be called");
+        },
+        async sync(): Promise<void> {},
+      };
+      await expect(
+        stageFixedSourceSnapshot({
+          indexBytes: sourceIndexBytes(),
+          sourceDirectory: spoof,
+        }),
+      ).rejects.toThrow("actual FileHandle source destination required");
+    } finally {
+      await handle.close();
+      removeFixture(destination.invocation);
+    }
+  });
+
+  it("refuses an invocation record that does not bind the directory name", async () => {
+    const destination = createInvocationDestination();
+    const recordPath = join(destination.invocation, "INVOCATION");
+    const record = readFileSync(recordPath);
+    record[0] = (record[0] ?? 0) ^ 1;
+    writeFileSync(recordPath, record);
+    const handle = await open(
+      destination.source,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      await expect(
+        stageFixedSourceSnapshot({
+          indexBytes: sourceIndexBytes(),
+          sourceDirectory: handle,
+        }),
+      ).rejects.toThrow("invocation record byte mismatch");
+      expect(readdirSync(destination.source)).toEqual([]);
+    } finally {
+      await handle.close();
+      removeFixture(destination.invocation);
+    }
   });
 
   it("normalizes manifest escapes before dependency-boundary checks", () => {
