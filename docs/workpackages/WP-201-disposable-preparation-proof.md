@@ -50,6 +50,9 @@ live wrapper. Status and handover update only after reviewed merge and exact-mai
    magic, schema, signature domains and authority root. Reuse generalized crate-private publication
    machinery while proving every v1 byte, classification and recovery result unchanged. Never
    parse, append, upgrade, repair or reinterpret v1 as v2.
+   Use the architecture's exact v2 layout, magic, genesis, inventory domain, limits and direct-final
+   publication discipline. Step 3 accepts only an empty v2 journal in production; semantic v2
+   append begins only after step 4 supplies the exact record decoders.
 4. Add the exact descriptor/runtime bridge to the existing runtime-proof crate under the same
    non-default feature. Refactor and reuse custody/archive/ELF/synthetic-launcher invariants; do not
    copy them or expose the raw ABI.
@@ -235,8 +238,13 @@ WP-201 does not:
 
 1. Commit this architecture and brief before implementation.
 2. Add bridge feature declarations and exact dependency/reverse-dependency boundary tests.
-3. Implement fresh v2 journal storage and prove v1 byte/recovery invariance.
-4. Implement private canonical records, fixed policies and preparation machine.
+3. Implement the minimal synthetic installed-policy and installation-authorization codecs/trust
+   checks, state-root installer, bootstrap lease, super-lock, signed registry generation one, empty
+   v2 journal storage and durable no-feature/feature proof of v1 byte/recovery invariance. This step
+   exposes only internal installation and inspection; the remaining operation authorization,
+   record, transition, policy and preparation-machine contracts belong to step 4.
+4. Commit and independently review the exact remaining v2 record/transition/domain contract, then
+   implement private canonical records, fixed policies and preparation machine.
 5. Implement target/credential/gateway/egress/observer/history/dry-run models.
 6. Derive exhaustive cut/adversarial/privacy/conservation tests from the successful tape.
 7. Prove the external adapter is absent and ordinary CI cannot authorize a live route.
@@ -268,6 +276,8 @@ WP-201 does not:
 
 - pinned `cargo fmt --check`, `cargo check --locked`, clippy with warnings denied, rustdoc with
   warnings denied and `cargo test --locked` for all three crates and bridge feature combinations;
+- root-authority CI separately runs no-default-feature and `wp201-internal` check, clippy, rustdoc
+  and test commands through its reviewed pinned-toolchain wrapper;
 - exact module, dependency, feature and reverse-dependency inventories;
 - deterministic golden regeneration comparison;
 - exhaustive pure transition/effect/cut/resource accounting;

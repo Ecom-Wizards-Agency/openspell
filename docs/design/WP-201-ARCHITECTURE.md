@@ -108,6 +108,7 @@ tools/hosted-migration-root-authority/
   Cargo.toml
   Cargo.lock
   README.md
+  scripts/cargo.mjs
   src/lib.rs
   src/boundary.test.ts
   src/journal.rs
@@ -197,6 +198,11 @@ crates independently parse them and compare the same golden bytes. Bridge-local 
 wrappers expose only `as_slice()` and fixed-size signature accessors; the coordinator never passes a
 root-crate capability into the runtime crate.
 
+Unless a field contract says otherwise, canonical JSON in WP-201 is UTF-8, uses the stated key
+order, two-space indentation, no insignificant whitespace inside scalar values, and exactly one
+terminal line feed. Objects reject duplicate, missing, reordered or unknown keys; strings reject
+control characters and noncanonical escapes; integers use their shortest decimal spelling.
+
 The root-authority bridge is exactly:
 
 ```rust
@@ -204,7 +210,16 @@ The root-authority bridge is exactly:
 #[doc(hidden)]
 pub mod wp201_internal {
     pub struct InstalledPreparationRootPolicyV1 { /* sealed, non-Clone */ }
+    pub struct PreparationBootstrapLeaseV1 { /* sealed, non-Clone; owns policy/shared lock */ }
+    pub struct FreshPreparationStateRootV1 { /* sealed; exact empty v2 journal only */ }
+    pub struct ActivePreparationStateRootV1 { /* sealed; exact one nonterminal operation only */ }
+    pub struct ClosedPreparationStateRootV1 { /* sealed, non-Clone; read-only terminal root */ }
+    pub enum StateRootInstallationOutcomeV1 {
+        Installed(FreshPreparationStateRootV1),
+        CommitOutcomeUnknown,
+    }
     pub struct RegisteredPreparationAuthorityV2 { /* sealed, non-Clone */ }
+    pub struct RecoveryPreparationAuthorityV2 { /* sealed, non-Clone; no normal advancement */ }
     pub struct EffectIntentHandleV1 { /* sealed, non-Clone */ }
     pub struct ClassifiedEffectHandleV1 { /* sealed, non-Clone */ }
     pub struct EvidenceChannelReceiptV1 { /* sealed, one-record */ }
@@ -220,16 +235,41 @@ pub mod wp201_internal {
 
     pub fn inspect_installed_preparation_policy(policy: std::os::fd::OwnedFd)
         -> Result<InstalledPreparationRootPolicyV1, PreparationRefusal>;
-    pub fn open_preparation_authority(policy: InstalledPreparationRootPolicyV1,
+    pub fn inspect_preparation_bootstrap(policy: InstalledPreparationRootPolicyV1,
+        synthetic_proof_bootstrap_root: std::os::fd::OwnedFd)
+        -> Result<PreparationBootstrapLeaseV1, PreparationRefusal>;
+    pub fn install_preparation_state_root(bootstrap: PreparationBootstrapLeaseV1,
+        empty_state_root: std::os::fd::OwnedFd,
+        registry_signing_key: std::os::fd::OwnedFd,
+        trusted_clock: std::os::fd::OwnedFd,
+        installation_authorization_bytes: &[u8],
+        installation_authorization_signature: &[u8; 64])
+        -> Result<StateRootInstallationOutcomeV1, PreparationRefusal>;
+    pub fn inspect_fresh_preparation_state_root(bootstrap: PreparationBootstrapLeaseV1,
+        state_root: std::os::fd::OwnedFd)
+        -> Result<FreshPreparationStateRootV1, PreparationRefusal>;
+    pub fn inspect_active_preparation_state_root(bootstrap: PreparationBootstrapLeaseV1,
         state_root: std::os::fd::OwnedFd,
+        operation_sha256: [u8; 32])
+        -> Result<ActivePreparationStateRootV1, PreparationRefusal>;
+    pub fn inspect_closed_preparation_state_root(bootstrap: PreparationBootstrapLeaseV1,
+        state_root: std::os::fd::OwnedFd,
+        operation_sha256: [u8; 32])
+        -> Result<ClosedPreparationStateRootV1, PreparationRefusal>;
+    pub fn open_preparation_authority(state_root: FreshPreparationStateRootV1,
         signing_key: std::os::fd::OwnedFd,
         credential_broker_control: std::os::fd::OwnedFd,
         trusted_clock: std::os::fd::OwnedFd,
         entropy: std::os::fd::OwnedFd,
         authorization_bytes: &[u8], authorization_signature: &[u8; 64])
         -> Result<RegisteredPreparationAuthorityV2, PreparationRefusal>;
-    pub fn reopen_closed_authority(policy: InstalledPreparationRootPolicyV1,
-        state_root: std::os::fd::OwnedFd,
+    pub fn reopen_active_preparation_authority(state_root: ActivePreparationStateRootV1,
+        signing_key: std::os::fd::OwnedFd,
+        credential_broker_control: std::os::fd::OwnedFd,
+        trusted_clock: std::os::fd::OwnedFd,
+        authorization_bytes: &[u8], authorization_signature: &[u8; 64])
+        -> Result<RecoveryPreparationAuthorityV2, PreparationRefusal>;
+    pub fn reopen_closed_authority(state_root: ClosedPreparationStateRootV1,
         retained_bundle_root: std::os::fd::OwnedFd,
         operation_sha256: [u8; 32])
         -> Result<ClosedJournalReaderV2, PreparationRefusal>;
@@ -281,6 +321,31 @@ pub mod wp201_internal {
             -> Result<BoundedClosedReceiptBytes, PreparationRefusal>;
     }
 
+    impl RecoveryPreparationAuthorityV2 {
+        pub fn begin_recovery_cleanup(&mut self, release_effect_code: u8,
+            recovery_anchor_fds: Vec<std::os::fd::OwnedFd>)
+            -> Result<EffectIntentHandleV1, PreparationRefusal>;
+        pub fn authenticate_evidence_channel(&self,
+            channel: std::os::fd::OwnedFd, producer_code: u8)
+            -> Result<EvidenceChannelReceiptV1, PreparationRefusal>;
+        pub fn record_accepted(&mut self, intent: EffectIntentHandleV1,
+            channel: EvidenceChannelReceiptV1)
+            -> Result<ClassifiedEffectHandleV1, PreparationRefusal>;
+        pub fn record_no_accept(&mut self, intent: EffectIntentHandleV1,
+            channel: EvidenceChannelReceiptV1)
+            -> Result<ClassifiedEffectHandleV1, PreparationRefusal>;
+        pub fn close_effect(&mut self, effect: ClassifiedEffectHandleV1,
+            channel: EvidenceChannelReceiptV1)
+            -> Result<BoundedStatusBytes, PreparationRefusal>;
+        pub fn reconcile_credential(&mut self, effect_code: u8)
+            -> Result<BoundedStatusBytes, PreparationRefusal>;
+        pub fn status(&self, operation_sha256: [u8; 32])
+            -> Result<BoundedStatusBytes, PreparationRefusal>;
+        pub fn reconcile(&mut self, operation_sha256: [u8; 32],
+            channel: EvidenceChannelReceiptV1)
+            -> Result<BoundedStatusBytes, PreparationRefusal>;
+    }
+
     impl PreparedTicketHandleV2 {
         pub fn canonical_bytes(&self) -> &[u8];
         pub fn signature(&self) -> &[u8; 64];
@@ -311,7 +376,10 @@ not the future external trust path. The root and runtime source golden copies ar
 canonical JSON with this exact key order:
 
 ```text
-schemaVersion, policyClass, rootIssuerPublicKeyHex, runtimeCustodianPublicKeyHex,
+schemaVersion, policyClass, sourceRevision,
+proofBootstrapVerifierIdentitySha256, proofBootstrapManifestSha256,
+proofBootstrapActivationPublicKeyHex,
+rootIssuerPublicKeyHex, runtimeCustodianPublicKeyHex,
 credentialBrokerSignerPublicKeyHex, credentialBrokerRequestVerifierPublicKeyHex,
 credentialBrokerRequestDomainSha256, credentialBrokerRuntimeIdentitySha256,
 credentialBrokerProtocolSha256,
@@ -324,18 +392,139 @@ privilegedExecutablePolicyGeneration, targetClass,
 externalCapability, liveAdapterAllowed
 ```
 
-The source values fix `policyClass` to `synthetic_deny_live`,
+`schemaVersion` is exactly `openspell.preparation-installed-root-policy.v1`. The source values fix
+`policyClass` to `synthetic_deny_live`,
 `privilegedExecutablePolicyGeneration` to zero, `targetClass` to `synthetic_only`, both booleans to
-false, 32-byte public keys to lowercase 64-hex and every digest to lowercase 64-hex.
+false, `sourceRevision` to lowercase 40-hex, 32-byte public keys to lowercase 64-hex and every
+digest to lowercase 64-hex.
 Unknown/reordered fields, a nonzero source generation or a digest mismatch refuses before registry
 access.
 The source slice compiles only a deny-live synthetic policy whose keys and target class cannot
 authorize an external route.
 
-The later adapter-candidate addendum must define a separate external bootstrap constructor and its
-canonical signed-policy framing. Its small bootstrap verifier/root launcher is pinned by a WP-201-
-owned, nondeployable proof-bootstrap record under a separate attended trust root; WP-203 later
-adopts and revalidates that exact mechanism rather than being a prerequisite for WP-201 or WP-202.
+The policy deliberately does not contain the current bootstrap-record digest or its physical lock
+identity. The signed bootstrap record contains `currentPolicySha256`, so including the reciprocal
+record digest in policy bytes would create a cryptographic hash cycle. The verified lease derives
+and carries the complete current-record and physical lock-identity digests; the later installation
+authorization and state-root registry bind both.
+
+For this source slice, `inspect_preparation_bootstrap` consumes one root-owned, already-open
+synthetic-bootstrap root descriptor. It opens and takes the root's non-waiting shared OFD lock before
+opening `CURRENT` or any referenced object, verifies the complete exact inventory and current
+pointer fd-relative under that lock, and requires the current record's policy, verifier, manifest
+and source tuple to equal the installed policy. The returned `PreparationBootstrapLeaseV1` owns the
+inspected policy plus the root, lock, current, record and signature descriptors and retains the
+shared lock. Installation or state-root inspection consumes that lease, takes the state-root
+super-lock second and embeds the bootstrap lease into exactly one state-specific root capability;
+authority
+close drops state-root mutation/signing capability, then the super-lock, then the bootstrap lease.
+The source-only format is generation zero and cannot authorize a live adapter.
+
+The exact source-only synthetic-bootstrap inventory is:
+
+```text
+FORMAT
+LOCK
+CURRENT
+objects/records/<sha256>
+objects/signatures/<sha256>
+```
+
+`FORMAT` is exactly `openspell.synthetic-preparation-proof-bootstrap.v1\n`, with SHA-256
+`2d725313c18b3834778b935550f47ad1cc85c00356a1e1004dcb35306f104f70`. `LOCK` is an empty,
+mode-`0600`, link-count-one regular file. `CURRENT` is exactly the lowercase 64-hex complete-record
+digest plus one line feed. The root and directories are mode `0700`; all files are mode `0600`,
+regular and link-count one on the root device. Production ownership is uid/gid zero; alternate test
+ownership is confined to `cfg(test)`. The inventory admits exactly one record, one raw 64-byte
+signature and no other entry, with 16,384 bytes maximum for the record and 65,536 bytes total.
+
+The one complete bootstrap record has this exact canonical key order:
+
+```text
+schemaVersion, registryGeneration, previousRegistryRecordSha256,
+currentPolicySha256, currentManifestSha256, bootstrapVerifierIdentitySha256,
+bootstrapLockIdentitySha256, sourceRevision, activatedAt,
+issuerPublicKeySha256, detachedSignatureSha256
+```
+
+Its schema is `openspell.synthetic-preparation-proof-bootstrap-record.v1`; generation is zero; and
+the predecessor is
+`8a8a886ffc13da0bbb70e73d66268c16ad36ba5a23b00bb7e5bb911e01a10345`, the SHA-256 of
+`openspell.synthetic-preparation-proof-bootstrap-genesis.v1\n`. Its signature domain is
+`openspell.synthetic-preparation-proof-bootstrap-signature.v1\n<canonical-unsigned-record>\n`;
+the unsigned record omits only `detachedSignatureSha256`. `issuerPublicKeySha256` is SHA-256 of the
+raw `proofBootstrapActivationPublicKeyHex` public key. `activatedAt` uses canonical millisecond UTC.
+`currentPolicySha256` is the complete installed-policy digest; the manifest, verifier and source
+values equal the corresponding policy fields.
+
+`bootstrapLockIdentitySha256` is SHA-256 of
+`openspell.synthetic-preparation-proof-bootstrap-lock-identity.v1\n<canonical-identity>\n`.
+The identity key order is `schemaVersion`, `filesystemDeviceDecimal`, `inodeDecimal`, `ownerUid`,
+`ownerGid`, `modeOctal`, `linkCount`, `sizeBytes`; its schema is the domain name without the terminal
+line feed, and its scalar rules match the state-root super-lock identity. The verifier derives this
+identity from the held locked fd and requires it to equal the signed current record and the `LOCK`
+pathname entry before returning and again before every state-root mutation and success. Unknown,
+missing, extra, linked, reordered, noncanonical, misowned, replaced or stale-current content
+refuses. Because `CURRENT` and its only object set are immutable in this source format, there is no
+source activation or mutable head.
+
+State-root installation is separately authorized. `installation_authorization_bytes` are this
+canonical record in exact key order:
+
+```text
+schemaVersion, installationAuthorizationNonce, sourceRevision,
+proofBootstrapRegistrySha256, proofBootstrapVerifierIdentitySha256,
+proofBootstrapManifestSha256, proofBootstrapLockIdentitySha256,
+boundStateRootIdentitySha256, preparationPolicySha256,
+privilegedExecutablePolicySha256, privilegedExecutablePolicyGeneration,
+registrySignerPublicKeySha256, trustedClockProviderSha256, activeFormat,
+activeJournalName, targetClass, externalCapability, liveAdapterAllowed,
+maximumDurationSeconds, issuedAt, expiresAt, authenticatedOperatorIdentitySha256,
+osAuthenticationSessionSha256, authenticatedAt, issuerPublicKeySha256,
+detachedSignatureSha256
+```
+
+`schemaVersion` is `openspell.preparation-state-root-installation-authorization.v1`; the signing
+domain is
+`openspell.preparation-state-root-installation-authorization-signature.v1\n<canonical-unsigned-record>\n`.
+The unsigned encoding omits only `detachedSignatureSha256`. The issuer is the installed policy's
+`rootIssuerPublicKeyHex`; `issuerPublicKeySha256` is SHA-256 of that raw public key. The registry
+signing key descriptor's public component and `registrySignerPublicKeySha256` must match the
+installed policy's `credentialBrokerRequestVerifierPublicKeyHex`.
+`proofBootstrapRegistrySha256` is the SHA-256 of the lease's complete synthetic current record and
+`proofBootstrapLockIdentitySha256` is its verified physical lock-identity digest; neither value
+comes from the installed policy or caller fields. The policy, bootstrap,
+executable-policy, source, clock, target class and live-capability fields must exactly match the
+installed policy and current proof-bootstrap tuple. `activeFormat` and `activeJournalName` equal the
+compiled constants `preparation_v2` and `PREPARATION_JOURNAL_V2`; they are not caller- or
+policy-selected fields. Source fixtures require generation
+zero, `synthetic_only` and both booleans false; a later final policy requires its positive activated
+generation and exact reviewed values. `maximumDurationSeconds` is 300. The three timestamps use the
+operation authorization's canonical millisecond UTC form and ordering/freshness rules, with
+`0 < expiresAt - issuedAt <= 300 seconds`. The nonce is lowercase 64-hex and the authorization is
+bound to one state-root identity, so it cannot initialize a second root.
+
+`boundStateRootIdentitySha256` is SHA-256 of
+`openspell.hosted-migration-state-root-identity.v1\n<canonical-identity>\n`. Its canonical key order
+is `schemaVersion`, `filesystemDeviceDecimal`, `inodeDecimal`, `ownerUid`, `ownerGid`, `modeOctal`;
+the schema is `openspell.hosted-migration-state-root-identity.v1` and the scalar encodings follow
+the journal identity rules. Installation verifies this identity before the first write and again
+immediately before the final transition publication. The signing-key and clock descriptors are
+consumed on every outcome. Successful installation returns `FreshPreparationStateRootV1`. After
+process loss, the three state-root inspectors verify the same policy, signed registry,
+root/super-lock/journal identities and exact inventory before returning mutually exclusive sealed
+types: fresh accepts only registry generation one plus an exactly empty v2 journal; active accepts
+only the exact named single nonterminal operation/cross-store state; closed accepts only the exact
+named single `closed` operation. No type converts to another in caller code. The inspectors neither
+install, repair nor change content; they may perform only the explicit durability-completion
+sync/reverification below.
+
+The later adapter-candidate addendum must define a separate external bootstrap constructor, mutable
+append-only registry/current-head format and canonical signed-policy framing. It must not reinterpret
+or widen the immutable synthetic format above. Its small bootstrap verifier/root launcher is pinned
+by a WP-201-owned, nondeployable proof-bootstrap record under a separate attended trust root; WP-203
+later adopts and revalidates that exact mechanism rather than being a prerequisite for WP-201 or
+WP-202.
 The verifier embeds only the policy/activation verification public key and signature domains, never
 a future policy or manifest digest. It verifies the active policy tuple, then verifies the separately
 hashed subordinate executable manifest and constructs the sealed installed-policy capability. The
@@ -371,22 +560,32 @@ publishes and syncs the head, then reopens and verifies it; every crash cut yiel
 tuple, exactly the new tuple or recovery-only, never an inferred head. A crashed nonterminal
 operation therefore prevents head advance until exact cleanup/terminality.
 
-After an operation is durably `closed`, a read-only reopener may verify the exact historical
-activation-chain tuple journal-bound at operation open even if a later generation is current. That
-historical capability can only enter `reopen_closed_authority`; mutation open, cleanup and normal
-advancement reject it. Stale policy bytes can therefore neither start nor recover active work after
-activation, while an already closed lost response remains reproducible. The proof bootstrap record,
-lock, activation command and private path are nondeployable WP-201 external-proof artifacts; they
-create no service/listener and grant only one separately authorized disposable execution. WP-203
-later independently pins the deployable installer/state root and imports no implicit authority from
-this proof registry.
+After an operation is durably `closed`, only `ClosedPreparationStateRootV1` may enter
+`reopen_closed_authority`; that type is statically ineligible for mutation open, cleanup or normal
+advancement. In this source slice, `inspect_closed_preparation_state_root` constructs it only from
+the still-current immutable synthetic-bootstrap lease after proving the named v2 operation exactly
+closed; the fresh and active inspectors refuse an exactly closed journal. Before an
+external mutable bootstrap exists, the adapter-candidate addendum must define a second constructor
+that holds the current bootstrap lock, verifies the complete activation chain from current head to
+the operation's journal-bound historical tuple and returns only
+`ClosedPreparationStateRootV1`. It must not return a mutation-capable installed-root type. Stale
+policy bytes can therefore neither start nor recover active work after activation, while an already
+closed lost response remains reproducible through the separately verified historical path. The
+proof bootstrap record, lock, activation command and private path are nondeployable WP-201
+external-proof artifacts; they create no service/listener and grant only one separately authorized
+disposable execution. WP-203 later independently pins the deployable installer/state root and
+imports no implicit authority from this proof registry.
 
-The open function is the only mutation-custody constructor. It consumes that externally anchored
-policy capability, validates every descriptor fd-relative, takes the registry/super-lock, verifies
-the authorization signature with `rootIssuerPublicKeyHex` and the supplied signing key's public
-component against `credentialBrokerRequestVerifierPublicKeyHex` before parsing the registry or
-trusting any field. That signing key is confined to the root authority and signs the journal plus
-one-shot broker requests; the broker receives no private key.
+`open_preparation_authority` is the only constructor for normal advancement;
+`reopen_active_preparation_authority` is the separate cleanup/reconciliation-only custody
+constructor described below. Normal open consumes a `FreshPreparationStateRootV1` that already
+owns the verified policy/bootstrap capabilities,
+the shared bootstrap lock and the exclusive state-root super-lock. It revalidates every retained
+descriptor fd-relative, then verifies the operation authorization signature with
+`rootIssuerPublicKeyHex` and the supplied signing key's public component against
+`credentialBrokerRequestVerifierPublicKeyHex` before trusting any operation field. It neither
+reopens a path nor takes a second lock. That signing key is confined to the root authority and
+signs the journal plus one-shot broker requests; the broker receives no private key.
 The broker-control input must be an already connected `AF_UNIX SOCK_SEQPACKET` descriptor opened by
 the proof bootstrap, with no queued records or descriptors. Before registry mutation, the root
 checks socket type/state, one fixed mutual-authentication handshake and the policy-pinned peer
@@ -395,11 +594,25 @@ control capability. It performs no path/address lookup and receives no factory, 
 or arbitrary-connect capability. A restarted active-operation authority must receive a freshly
 authenticated connection to the same broker identity; terminal close drops it before the
 post-authority observation counts are derived.
-It then verifies the clock and entropy provider identities against both the signed authorization
+`reopen_active_preparation_authority` is the only restart path for a nonterminal operation. It
+requires the exact authorization bytes/signature and signer already bound by the verified intent,
+accepts the otherwise-used operation id and nonce only when every byte equals that journal binding,
+and never appends a second intent or samples entropy. If the intent is complete and generation two
+has no final-name artifact, it may finish only the same journal-bound target CAS before returning;
+a partial registry suffix remains permanently recovery-only. The returned
+`RecoveryPreparationAuthorityV2` has no normal `begin_effect`, ticket, execution or terminal-success
+method. It may authenticate bounded evidence, reconcile an already journaled effect and append only
+the zero-acquisition cleanup lane for exact journal-bound recovery anchors. Authorization expiry
+forces cleanup-only behavior rather than granting advancement or abandoning held resources. No
+ephemeral key, nonce or capability is reconstructed unless its complete identity and cleanup
+custody were already journaled; missing custody remains recovery-only.
+`open_preparation_authority` then verifies the clock and entropy provider identities against both
+the signed authorization
 fields and the final executable policy before sampling either provider. The clock protocol supplies
 one authenticated realtime/`CLOCK_BOOTTIME`-nanoseconds/boot-id tuple; the entropy protocol supplies exactly one
 authenticated 256-bit value and EOF. Reuse, extra bytes, provider substitution, caller bytes or a
-provider whose measured executable/runtime is not pinned refuses before journal creation. It
+provider whose measured executable/runtime is not pinned refuses before registry generation two or
+any v2 operation-record publication. It
 consumes all input descriptors. Source tests use
 fixed fixture providers with the same framing and identity checks; no caller chooses a clock value,
 nonce or entropy value. Test callers can therefore
@@ -426,10 +639,12 @@ is drawn and no output crosses into public evidence.
 then consumes itself and closes the journal signer, mutation descriptors and OFD-lock guard before
 returning its non-authorizing receipt bytes. It cannot derive success. A separately pre-opened or
 installer-reopened state-root descriptor and independently opened retained-bundle descriptor must
-then enter `reopen_closed_authority` with a newly inspected instance of the same external policy.
-That read-only capability must equal the operation's journal-bound historical activation-chain
-tuple and is rejected unless the journal is already exactly `closed`; reopening never advances or
-mutates the current head. It accepts no signing key and recognizes only the exact terminal operation digest. The read-only
+then enter `inspect_closed_preparation_state_root` and `reopen_closed_authority` with the exact
+source-current or externally chain-verified historical policy capability described above. The
+resulting closed-root capability must equal the operation's journal-bound historical activation-
+chain tuple and is rejected unless the journal is already exactly `closed`; reopening never advances
+or mutates the current head. It accepts no signing key and recognizes only the exact terminal
+operation digest. The read-only
 verifier checks the registry issuer against the installed policy before trusting the chain, takes a
 non-waiting exclusive OFD lock and holds
 it through complete registry/journal/bundle verification and in-memory observation construction,
@@ -687,8 +902,19 @@ authority verifies this canonical, Ed25519-signed authorization in exact key ord
 
 The signature domain is
 `openspell.disposable-preparation-authorization-signature.v1\n<canonical-unsigned-record>\n`.
-The authorization issuer generates the operation id and nonce; neither is an unsigned caller field,
-and the root refuses either value unless it is fresh and unused in the signed registry chain.
+The authorization issuer generates the operation id and nonce; neither is an unsigned caller field.
+Fresh `open_preparation_authority` refuses either value unless it is fresh and unused in the
+verified v2 journal history; the active-recovery exception is the exact journal-bound match above.
+While holding the super-lock, open first verifies freshness, durably appends the v2 operation intent,
+then compare-and-sets registry generation one to generation two with target generation exactly one.
+No external effect or target quarantine begins until both publications reopen and verify. A cut
+before a complete intent leaves no registry target mutation; an uncertain intent is recovery-only.
+A cut after intent but before the first generation-two final name exists may resume only that exact
+generation-two compare-and-set under the same authorization; it cannot admit a new operation,
+nonce, target or entropy draw. Any partial generation-two final-name suffix is permanently
+recovery-only and is never overwritten or adopted. A complete, cryptographically valid generation-
+two transition is durability-completed and verified from readback as specified for the registry
+below, then continues without retrying publication.
 Authorization binds three already-existing credential resources and never permits their lifecycle
 mutation.
 `sourceRevision` is the lowercase 40-hex reviewed implementation revision pinned by the final
@@ -1146,9 +1372,13 @@ exactly one of:
 Only the journal selected by the registry may exist; the other directory must be absent.
 `AUTHORITY_SUPER_LOCK` is a root-owned, mode-`0600`, link-count-one regular file on the same local
 filesystem. Every externally composable v1 or v2 open first takes its non-waiting exclusive OFD
-write lock and retains it for the authority lifetime. Registry files are immutable,
-content-addressed and published with the same create/write/file-sync/rename/directory-sync/reopen
-cuts as the journal. `FORMAT` is exactly
+write lock and retains it for the authority lifetime. Registry files are immutable and content-
+addressed. Registry and v2 publication deliberately use the v1 direct-final discipline: create the
+final name with `O_CREAT | O_EXCL`, write completely, verify metadata, sync the file, sync its
+containing directory and reopen/reverify the complete inventory. There is no temporary name or
+rename cut. An empty, partial or otherwise unreferenced final-name artifact is recovery-only. The
+v1 publisher, publication ordinals, bytes and recovery classifications remain unchanged. `FORMAT`
+is exactly
 `openspell.hosted-migration-authority-registry.v1\n`; the generation-zero predecessor is
 `dfe1ba8e9380db530e4d8847e8169cf919455cb25df9734bdab34def9ba8f0c7`. Each registry record has this
 exact canonical key order:
@@ -1161,6 +1391,18 @@ exact canonical key order:
   "activeFormat": "preparation_v2",
   "activeJournalName": "PREPARATION_JOURNAL_V2",
   "activeJournalIdentitySha256": "...",
+  "authoritySuperLockIdentitySha256": "...",
+  "installationAuthorizationSha256": "...",
+  "installationAuthorizationSignatureSha256": "...",
+  "boundStateRootIdentitySha256": "...",
+  "preparationPolicySha256": "...",
+  "proofBootstrapRegistrySha256": "...",
+  "proofBootstrapVerifierIdentitySha256": "...",
+  "proofBootstrapManifestSha256": "...",
+  "proofBootstrapLockIdentitySha256": "...",
+  "sourceRevision": "...",
+  "privilegedExecutablePolicySha256": "...",
+  "privilegedExecutablePolicyGeneration": 0,
   "activeTargetFingerprint": null,
   "activeTargetGeneration": 0,
   "otherFormatDisposition": "absent",
@@ -1173,18 +1415,109 @@ exact canonical key order:
 
 Its domain is
 `openspell.hosted-migration-authority-registry-signature.v1\n<canonical-unsigned-registry>\n`.
+The unsigned canonical registry omits only the final `detachedSignatureSha256` key; every earlier
+key remains in the displayed order. The registry signing and verification key is the installed
+policy's `credentialBrokerRequestVerifierPublicKeyHex`, also used by the confined root authority
+for authenticated broker requests. `issuerPublicKeySha256` is SHA-256 of that raw public key.
+Before generation one, the installer retains the complete canonical installation-authorization
+record at `objects/records/<installationAuthorizationSha256>` and its raw signature at
+`objects/signatures/<installationAuthorizationSignatureSha256>`. Those two digests must equal the
+record's own complete-record digest and `detachedSignatureSha256`; neither object is a registry
+generation or transition. The generation-one registry record binds those two objects, the verified
+state-root identity, exact policy digest and complete proof-bootstrap/source/executable-policy
+tuple displayed above. A restart verifies the retained authorization with the policy's
+`rootIssuerPublicKeyHex`, verifies every bound value against the supplied installed-policy and
+bootstrap capabilities and verifies that its registry-signer digest equals the registry issuer
+before reconstructing the exact fresh, active or closed state-specific root capability. Generation
+two repeats every installation, policy, bootstrap, state-root and executable-policy field
+byte-for-byte.
 The raw 64-byte signature is retained only at
 `objects/signatures/<detachedSignatureSha256>`; the complete record is retained at
 `objects/records/<recordSha256>` and repeated byte-for-byte as its transition filename payload.
+The registry tree contains exactly `FORMAT`, `objects/records`, `objects/signatures` and
+`transitions`; it has no inner lock because `AUTHORITY_SUPER_LOCK` serializes every registry open
+and mutation. Its root and directories are mode `0700`; `FORMAT`, record files, signature files and
+transition files are mode `0600`, regular, link-count-one entries owned by uid/gid zero on the
+state-root device. Transition names are exactly
+`<20-digit-generation>-<lowercase-64-hex-sha256>.json`.
+The registry admits at most two transitions, three records, three signatures, 16,384 bytes per
+canonical record and 262,144 total bytes including the repeated transition payloads and `FORMAT`.
+Its inventory digest domain is
+`openspell.hosted-migration-authority-registry-inventory.v1\n`. Generation one publishes exactly
+five distinct direct-final files in this order: installation-authorization signature,
+installation-authorization complete record, registry signature, registry complete record and
+repeated registry transition. Generation two publishes exactly three: registry signature, registry
+complete record and repeated registry transition. Any content-address collision or attempted object
+alias refuses. Tests cut each ordinal after final-name creation, partial write, complete write,
+metadata verification, file sync and containing-directory sync, plus after complete-inventory
+reopen verification.
+Registry and v2 recovery never infer whether a prior `fsync` call returned. When the final
+transition name contains complete canonical, cryptographically valid bytes and every referenced
+object is complete, the inspector may perform only durability completion: sync the transition file,
+then every verified referenced record/signature file, then their containing directories and the
+transition directory, and finally reopen and reverify the entire inventory before granting
+authority. This writes no content, creates no entry and cannot make partial or invalid bytes valid.
+A zero-length, partial, noncanonical, invalidly signed or missing-reference transition remains
+permanently recovery-only. Crash tests include complete referenced bytes whose prior file-sync
+outcome is unknown. The v1 scanner and its existing recovery classifications are unchanged.
 Startup scans the complete strictly consecutive chain and verifies every predecessor, record hash,
 signature object and signature before trusting the last generation. Fork, gap, orphan, overwrite,
-rollback or extra object is recovery-only.
+or extra object is recovery-only. A coherent rollback that removes one or more complete suffix
+generations together with every exclusively referenced object is outside this local-filesystem
+threat model: no hash chain can detect rollback of its own complete storage domain. The disposable
+proof assumes a root-owned local filesystem that is not snapshot-rolled-back by a privileged host
+administrator. WP-203 must add an independently anchored monotonic counter before claiming
+rollback resistance across privileged offline snapshot restore.
+
+Registry generation one is installation and has `activeTargetFingerprint: null`,
+`activeTargetGeneration: 0`, `otherFormatDisposition: "absent"` and a null other-format terminal
+digest. `activeFormat` is exactly `root_v1` or `preparation_v2`; `activeJournalName` must respectively
+be `ROOT_JOURNAL_V1` or `PREPARATION_JOURNAL_V2`. No other enum pair decodes. WP-201 installs only
+`preparation_v2`; a separately installed `root_v1` selection is recovery-only to its coordinator.
+The other journal directory must be absent, so `otherFormatDisposition` has no second WP-201 value
+and its terminal digest is always null. The installation-authorization, state-root, policy,
+bootstrap, source and executable-policy bindings are immutable across the chain. For the single
+disposable operation, generation two is the
+only target-binding compare-and-set: it changes null/zero to the authorization-bound lowercase
+64-hex fingerprint and target generation one. No third registry generation is legal in WP-201.
+Closure does not append to the registry: generation two already retains the target tuple as replay
+history, and the v2 journal independently reduces to `closed`. A generation-two registry plus an
+exactly closed v2 journal is therefore the read-only terminal condition, with no cross-store crash
+interval.
+
+`activeJournalIdentitySha256` is the lowercase SHA-256 of
+`openspell.hosted-migration-journal-identity.v1\n<canonical-identity>\n`. The canonical identity key
+order is `schemaVersion`, `activeFormat`, `activeJournalName`, `filesystemDeviceDecimal`,
+`inodeDecimal`, `ownerUid`, `ownerGid`, `modeOctal`, `formatSha256`. Device and inode are nonempty
+ASCII decimal strings without leading zeroes; `schemaVersion` is exactly
+`openspell.hosted-migration-journal-identity.v1`; production `ownerUid` and `ownerGid` are unsigned
+JSON integer zeroes; `modeOctal` is the string `0700`. The format digest is SHA-256 over the exact
+`FORMAT` bytes: `72bfa677e453b8e77492ee2d0d15b9041f31986410e00a02d374cc3d60c3c1b5`
+for `root_v1` or `25b0ecf781f361559c6e59297b4caacbda88742c63bdd28a53cd2a9cc0b4a16a`
+for `preparation_v2`. The identity is derived from the already-open journal directory and its
+verified `FORMAT`, never from caller bytes, and its pathname entry must be revalidated against the
+held fd before every registry or journal publication and again before success. Every registry hash
+and signature field is lowercase 64-hex. `installedAt` is the authenticated time of that registry
+append in canonical millisecond UTC form and is nondecreasing across the chain despite its
+historical field name.
+
+`authoritySuperLockIdentitySha256` is unchanged across the registry chain and is SHA-256 of
+`openspell.hosted-migration-authority-super-lock-identity.v1\n<canonical-identity>\n`. The canonical
+key order is `schemaVersion`, `filesystemDeviceDecimal`, `inodeDecimal`, `ownerUid`, `ownerGid`,
+`modeOctal`, `linkCount`, `sizeBytes`; the schema is
+`openspell.hosted-migration-authority-super-lock-identity.v1`, device/inode use the decimal-string
+rules above, owner uid/gid are unsigned integer zeroes, mode is `0600`, link count is one and size is
+zero. Installation derives it from the newly created, already locked fd. Every later opener first
+takes the offered inode's non-waiting OFD lock, then refuses unless the registry's signed identity
+equals that held fd and its pathname entry. Replacing the lock path therefore cannot create a
+second accepted lock domain even if the incumbent has not yet reached its next revalidation.
 Before target quarantine, a locked compare-and-set replaces `null`/zero with the exact target
-fingerprint and positive target generation. Closure keeps the last target/generation as replay
-history by appending a new immutable registry generation; it never rewrites a record. The signed
-registry therefore arbitrates both format and target generation. Missing/extra
-files, lock contention, rollback, a second journal, an unknown format or nonterminal other-format
-state enters recovery-only before entropy, signing or mutation.
+fingerprint and target generation one. Closure leaves that immutable generation-two tuple in place
+as replay history and never rewrites or appends a registry record. The signed registry therefore
+arbitrates both format and target generation. Missing/extra
+files, lock contention, a detectable incomplete suffix, a second journal, an unknown format or
+nonterminal other-format state enters recovery-only before entropy, signing or mutation. Coherent
+offline suffix rollback has the explicit limitation above.
 
 This proves one authority only within the supplied state root. It does not prove a second root is
 absent elsewhere on the host. WP-203 must establish one installed state-root descriptor and one
@@ -1193,16 +1526,87 @@ is deliberately not claimed.
 
 The external disposable proof requires a newly provisioned isolated proof host/root whose registry
 selects `preparation_v2` and proves v1 absent. Initialization is a distinct root installation
-capability that may act only on a completely empty root; it creates and syncs the lock, v2 journal,
-registry and parent in that order. There is no v1-to-v2 upgrade. A registry selecting v1 gives the
+capability that may act only on an already-open, completely empty, root-owned mode-`0700` directory
+on the approved local filesystem. Production ownership is fixed to uid/gid zero; alternate
+ownership exists only in `cfg(test)` synthetic constructors and cannot reach the bridge. The
+installer validates the complete installed policy, held bootstrap lease/current tuple, canonical
+installation authorization and root-issuer signature, registry-signing public component,
+state-root identity and trusted-clock identity before it creates the first child. Its initial
+authenticated realtime/`CLOCK_BOOTTIME`/boot-id tuple maps `expiresAt` to an absolute
+`CLOCK_BOOTTIME` deadline; an already expired authorization refuses without mutation. Expiry
+authorizes initiation of this single bounded installation attempt; once mutation starts, expiry
+cannot turn an otherwise complete signed installation into an adoptable-but-refused tree. The
+installer syncs the empty root, creates and syncs `AUTHORITY_SUPER_LOCK`, takes its OFD lock, creates
+and syncs the complete v2 journal, creates and syncs the complete registry, publishes registry
+generation one in that order. Immediately before creating the generation-one transition final name,
+it revalidates the held bootstrap/current tuple, root, super-lock, journal, registry objects, signer
+and clock descriptors, requires the local boot id unchanged and `CLOCK_BOOTTIME` strictly before
+the derived deadline, then performs no further authority decision. After final-name creation, any
+publication, sync, reopen or verification error is an uncertain commit outcome rather than a
+refusal. A successful containing-directory sync followed by complete reopen verification returns
+`StateRootInstallationOutcomeV1::Installed`; any post-final-name I/O or verification failure returns
+`StateRootInstallationOutcomeV1::CommitOutcomeUnknown`, after consuming and dropping every
+held descriptor/capability. The caller must acquire a fresh policy/bootstrap lease and root
+descriptor and recover only through `inspect_fresh_preparation_state_root`. That inspector applies the
+observable durability-completion rule above: a complete valid transition becomes installed after
+sync/reverify, while partial or invalid bytes are permanently recovery-only. No post-final-name path
+returns `PreparationRefusal`. Directory creation is
+followed by parent-directory sync; file publication follows the direct-final discipline above. The
+supplied state-root directory is the parent being synced; the installer does not create or accept an
+outside pathname. A cut before the first child exists may be retried. Any validation failure,
+expiry or cut after the first child but before final-transition creation is permanently
+recovery-only and requires reprovisioning a different disposable root. A cut after final-name
+creation is outcome-unknown and resolves only by the inspector rule above. Open never deletes,
+overwrites or repairs content. There is no v1-to-v2 upgrade. A registry selecting v1 gives the
 WP-201 coordinator only `legacy_v1_recovery_only`.
 
-V2 has its own `FORMAT`, `LOCK`, object directories, genesis digest and signature domains. No v2
-file may enter a v1 tree. The v1 storage implementation's canonical publication primitives become
-format-generic behind crate-private compile-time traits. Default-feature and `wp201-internal` tests
-must produce identical v1 bytes, hashes and classifications for every clean, terminal,
-nonterminal, corrupt, forked, orphaned, permission-drift and unknown-transition fixture. Cross-
-process v1/v2 races prove one lock owner and zero loser-side files, entropy or signatures.
+The v2 journal tree is exactly:
+
+```text
+FORMAT
+LOCK
+objects/
+  records/
+  signatures/
+transitions/
+```
+
+Its `FORMAT` bytes are exactly
+`openspell.hosted-migration-preparation-journal.v2\n` (SHA-256
+`25b0ecf781f361559c6e59297b4caacbda88742c63bdd28a53cd2a9cc0b4a16a`). Its generation-zero
+predecessor is
+`e7ebfa2198a1417a28ff4be3a4c34bb6dc1d37acd9d81da7fcd4007c0a2c1222`, defined as SHA-256 of
+`openspell.hosted-migration-preparation-journal-genesis.v2\n`. Its inventory digest domain is
+`openspell.hosted-migration-preparation-inventory.v2\n`. Transition names use the same exact
+20-digit/lowercase-digest grammar as the registry, but the namespaces and decoder remain statically
+v2. The root and all directories are mode `0700`; `FORMAT`, `LOCK`, record files, signature files
+and transition files are mode `0600`, regular, link-count-one entries on the root device. `LOCK` is
+empty and held after the super-lock in fixed lock order. The journal permits at most 4,096 transitions,
+12,288 records, 16,384 raw 64-byte signatures, 16,384 bytes per canonical record and 64 MiB for the
+complete tree. Step 3 exposes no production append and accepts only the verified empty v2 tree;
+the registry and unchanged v1 paths exercise the shared direct-final publication kernel. Before
+step 4 implementation begins, a separately reviewed contract amendment must fix every remaining
+v2 milestone/terminal record schema, transition decoder and record-signature domain; none may be
+invented in code.
+
+No v2 file may enter a v1 tree. The v1 storage implementation's canonical publication primitives
+become format-generic only behind sealed crate-private compile-time traits. The shared kernel may
+open, verify, index, publish and revalidate immutable bytes; it never selects a runtime format,
+decodes a transition, reduces state, signs, draws entropy or exposes a generic append. V1 retains
+its exact `objects/leaves` namespace, format, genesis, inventory domain, limits, direct-final
+publisher and reducer. Default-feature and `wp201-internal` tests must produce identical v1 bytes,
+hashes and classifications for every clean, terminal, nonterminal, corrupt, forked, orphaned,
+permission-drift and unknown-transition fixture. Cross-process v1/v2 races prove one super-lock
+owner and zero loser-side files, entropy or signatures.
+
+Every production open derives uid/gid zero from compiled installed policy rather than accepting
+ownership from its caller. It retains the state-root dirfd, super-lock fd and selected-journal lock
+fd. Immediately before each publication and before returning success it revalidates root identity,
+the selected journal pathname-to-fd identity, super-lock pathname-to-fd identity, owner, mode,
+link-count and device. Replacement, unlink, rename, hard-link or metadata drift seals the authority
+recovery-only. `F_OFD_SETLK` failure has no `flock` or POSIX-lock fallback. Destruction closes journal
+mutation/signing capabilities before dropping the super-lock, so no contender can enter during
+teardown.
 
 WP-201 does not put preparation-scoped evidence into the unchanged WP-197/WP-198 v1 ticket. Its
 ticket is exactly this canonical v2 record:
@@ -1465,7 +1869,7 @@ commit the already-held identity or remains permanently recovery-only; it never 
 
 ## Fixed bounds and deadlines
 
-The v2 journal permits at most 128 effects, 4,096 transitions, 12,288 leaves, 16,384 signatures,
+The v2 journal permits at most 128 effects, 4,096 transitions, 12,288 records, 16,384 signatures,
 16,384 bytes per canonical record and 64 MiB for the complete tree. CLI stdout and stderr are each
 capped at the WP-197 value of 1,048,576 bytes. Observer output is at most 4,096 rows and 1,048,576
 canonical bytes. Control HTTP permits at most 64 headers, 65,536 header bytes and 1,048,576 request
