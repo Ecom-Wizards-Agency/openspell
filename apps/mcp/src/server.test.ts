@@ -22,6 +22,7 @@ import { jsonText } from './json.js';
 import type { RunningServer } from './http.js';
 import {
   issueApiKey,
+  listApiKeys,
   MAX_API_KEY_LIFETIME_DAYS,
   revokeApiKey,
 } from './keys.js';
@@ -676,7 +677,14 @@ describe.skipIf(!available)('the MCP server', () => {
     });
     expect(valid.record.label).toBe('bounded key');
     expect(valid.record.profileIds).toEqual([profileA, profileB]);
-    expect(valid.record.expiresAt).not.toBeNull();
+    expect(valid.record.expiresAt).toBeInstanceOf(Date);
+    expect(valid.record.createdAt).toBeInstanceOf(Date);
+
+    const listed = (await listApiKeys(database, orgAId)).find(
+      (record) => record.id === valid.record.id,
+    );
+    expect(listed?.expiresAt).toBeInstanceOf(Date);
+    expect(listed?.createdAt).toBeInstanceOf(Date);
 
     const missingProfiles = {
       orgId: orgAId,
