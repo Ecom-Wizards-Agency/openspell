@@ -59,10 +59,20 @@ interface KeyRow {
   key_prefix: string;
   scope: KeyScope;
   profile_ids: string[] | null;
-  expires_at: Date | null;
-  revoked_at: Date | null;
-  last_used_at: Date | null;
-  created_at: Date;
+  expires_at: Date | string | null;
+  revoked_at: Date | string | null;
+  last_used_at: Date | string | null;
+  created_at: Date | string;
+}
+
+function dateValue(value: Date | string): Date {
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw new Error('API key row contains an invalid timestamp');
+  return parsed;
+}
+
+function nullableDateValue(value: Date | string | null): Date | null {
+  return value === null ? null : dateValue(value);
 }
 
 const toRecord = (row: KeyRow): ApiKeyRecord => ({
@@ -72,10 +82,10 @@ const toRecord = (row: KeyRow): ApiKeyRecord => ({
   keyPrefix: row.key_prefix,
   scope: row.scope,
   profileIds: row.profile_ids,
-  expiresAt: row.expires_at,
-  revokedAt: row.revoked_at,
-  lastUsedAt: row.last_used_at,
-  createdAt: row.created_at,
+  expiresAt: nullableDateValue(row.expires_at),
+  revokedAt: nullableDateValue(row.revoked_at),
+  lastUsedAt: nullableDateValue(row.last_used_at),
+  createdAt: dateValue(row.created_at),
 });
 
 export function hashToken(token: string): string {

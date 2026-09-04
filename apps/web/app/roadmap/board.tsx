@@ -123,6 +123,8 @@ export function RoadmapBoardView(initial: BoardProps) {
                 background: colors.subtle,
                 border: `1px solid ${colors.border}`,
                 borderRadius: '0.5rem',
+                minWidth: 0,
+                overflow: 'hidden',
                 padding: '0.75rem',
               }}
             >
