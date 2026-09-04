@@ -2105,13 +2105,14 @@ function observeOwnedChild(child, deadlineNanoseconds) {
       killTimer = setTimeout(() => {
         if (finished) return;
         settlementTimedOut = true;
-        process.exitCode = 1;
+        processGroupResidual = true;
+        signalGroup("SIGKILL");
         try {
           writeSync(2, CHILD_SETTLEMENT_REFUSAL);
         } catch {
           // Refusal is already latched even when the diagnostic peer is gone.
         }
-        probeGroupAbsence();
+        process.exit(1);
       }, KILL_SETTLEMENT_MILLISECONDS);
     }, TERM_SETTLEMENT_MILLISECONDS);
   }
