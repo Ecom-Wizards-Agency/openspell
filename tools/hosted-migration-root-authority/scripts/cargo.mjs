@@ -20,8 +20,9 @@ const image = [
 
 const commands = Object.freeze({
   check:
-    "cargo fmt --all -- --check && cargo check --locked --all-targets --all-features && cargo clippy --locked --all-targets --all-features -- -D warnings && cargo rustdoc --locked --lib --all-features -- -D warnings",
-  test: "cargo test --locked --all-targets --all-features",
+    "cargo fmt --all -- --check && cargo check --locked --all-targets --no-default-features && cargo check --locked --all-targets --no-default-features --features wp201-internal && cargo clippy --locked --all-targets --no-default-features -- -D warnings && cargo clippy --locked --all-targets --no-default-features --features wp201-internal -- -D warnings && cargo rustdoc --locked --lib --no-default-features -- -D warnings && cargo rustdoc --locked --lib --no-default-features --features wp201-internal -- -D warnings",
+  test:
+    "cargo test --locked --all-targets --no-default-features && cargo test --locked --all-targets --no-default-features --features wp201-internal",
 });
 
 function run(command, args, options = {}) {

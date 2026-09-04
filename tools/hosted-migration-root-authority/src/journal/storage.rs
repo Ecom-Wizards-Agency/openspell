@@ -75,8 +75,22 @@ pub(crate) enum TestPublicationBoundary {
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TestDirectoryBoundary {
+    Created,
+    ParentSynced,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TestFaultPoint {
     BeforeFirstPublication,
+    RegistryBeforeFinalValidation,
+    RegistryBeforeFinalCreate,
+    RegistryPostDurability,
+    Directory {
+        ordinal: usize,
+        boundary: TestDirectoryBoundary,
+    },
     Publication {
         ordinal: usize,
         boundary: TestPublicationBoundary,
@@ -88,11 +102,13 @@ pub(crate) enum TestFaultPoint {
 mod test_fault {
     use std::cell::{Cell, RefCell};
 
-    use super::{TestFaultPoint, TestPublicationBoundary};
+    use super::{TestDirectoryBoundary, TestFaultPoint, TestPublicationBoundary};
 
     pub(super) enum Action {
         ReturnError,
         ParkAt(Box<dyn FnOnce()>),
+        Delay(std::time::Duration),
+        Run(Box<dyn FnOnce()>),
     }
 
     struct Fault {
@@ -103,6 +119,7 @@ mod test_fault {
     std::thread_local! {
         static FAULT: RefCell<Option<Fault>> = const { RefCell::new(None) };
         static PUBLICATION_ORDINAL: Cell<usize> = const { Cell::new(0) };
+        static DIRECTORY_ORDINAL: Cell<usize> = const { Cell::new(0) };
         static FORCE_GENERATION_CAPACITY: Cell<bool> = const { Cell::new(false) };
         static FORCE_PROJECTION_CAPACITY: Cell<bool> = const { Cell::new(false) };
         static ARTIFACT_CONTENT_READS: Cell<usize> = const { Cell::new(0) };
@@ -116,11 +133,13 @@ mod test_fault {
             );
         });
         PUBLICATION_ORDINAL.set(0);
+        DIRECTORY_ORDINAL.set(0);
     }
 
     pub(super) fn clear() {
         FAULT.with_borrow_mut(|slot| *slot = None);
         PUBLICATION_ORDINAL.set(0);
+        DIRECTORY_ORDINAL.set(0);
         FORCE_GENERATION_CAPACITY.set(false);
         FORCE_PROJECTION_CAPACITY.set(false);
         ARTIFACT_CONTENT_READS.set(0);
@@ -132,6 +151,14 @@ mod test_fault {
 
     pub(super) fn next_publication() -> usize {
         PUBLICATION_ORDINAL.with(|ordinal| {
+            let next = ordinal.get() + 1;
+            ordinal.set(next);
+            next
+        })
+    }
+
+    pub(super) fn next_directory() -> usize {
+        DIRECTORY_ORDINAL.with(|ordinal| {
             let next = ordinal.get() + 1;
             ordinal.set(next);
             next
@@ -180,6 +207,14 @@ mod test_fault {
                     std::thread::park();
                 }
             }
+            Some(Action::Delay(duration)) => {
+                std::thread::sleep(duration);
+                Ok(())
+            }
+            Some(Action::Run(action)) => {
+                action();
+                Ok(())
+            }
         }
     }
 
@@ -188,6 +223,13 @@ mod test_fault {
         boundary: TestPublicationBoundary,
     ) -> Result<(), ()> {
         check(TestFaultPoint::Publication { ordinal, boundary })
+    }
+
+    pub(super) fn check_directory(
+        ordinal: usize,
+        boundary: TestDirectoryBoundary,
+    ) -> Result<(), ()> {
+        check(TestFaultPoint::Directory { ordinal, boundary })
     }
 }
 
@@ -199,6 +241,16 @@ pub(crate) fn test_fail_at(point: TestFaultPoint) {
 #[cfg(test)]
 pub(crate) fn test_park_at(point: TestFaultPoint, signal: impl FnOnce() + 'static) {
     test_fault::set(point, test_fault::Action::ParkAt(Box::new(signal)));
+}
+
+#[cfg(test)]
+pub(crate) fn test_delay_at(point: TestFaultPoint, duration: std::time::Duration) {
+    test_fault::set(point, test_fault::Action::Delay(duration));
+}
+
+#[cfg(test)]
+pub(crate) fn test_run_at(point: TestFaultPoint, action: impl FnOnce() + 'static) {
+    test_fault::set(point, test_fault::Action::Run(Box::new(action)));
 }
 
 #[cfg(test)]
@@ -1128,10 +1180,10 @@ impl Drop for PublicationEpoch<'_> {
 }
 
 #[derive(Clone, Copy)]
-struct Owner {
-    uid: u32,
-    gid: u32,
-    dev: u64,
+pub(crate) struct Owner {
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
+    pub(crate) dev: u64,
 }
 
 struct JournalFds {
@@ -2739,7 +2791,7 @@ fn refusal_code(error: CommitError) -> RefusalCode {
     }
 }
 
-fn verify_local_filesystem(fd: &OwnedFd) -> Result<(), ()> {
+pub(crate) fn verify_local_filesystem(fd: &OwnedFd) -> Result<(), ()> {
     let magic = fstatfs(fd).map_err(|_| ())?.f_type as u64;
     let synthetic_tmpfs = cfg!(test) && magic == TMPFS_MAGIC;
     if ![EXT_FAMILY_MAGIC, XFS_MAGIC].contains(&magic) && !synthetic_tmpfs {
@@ -2753,13 +2805,18 @@ pub(crate) fn verify_local_filesystem_for_test(fd: &OwnedFd) -> Result<(), ()> {
     verify_local_filesystem(fd)
 }
 
-fn open_directory(parent: &OwnedFd, name: &CStr, owner: Owner, nlink: u64) -> Result<OwnedFd, ()> {
+pub(crate) fn open_directory(
+    parent: &OwnedFd,
+    name: &CStr,
+    owner: Owner,
+    nlink: u64,
+) -> Result<OwnedFd, ()> {
     let fd = open_existing(parent, name, DIRECTORY_FLAGS)?;
     verify_entry_matches_fd(parent, name, &fd, owner, FileType::Directory, 0o700, nlink)?;
     Ok(fd)
 }
 
-fn open_regular(
+pub(crate) fn open_regular(
     parent: &OwnedFd,
     name: &CStr,
     owner: Owner,
@@ -2800,7 +2857,7 @@ fn open_regular_read(parent: &OwnedFd, name: &CStr, owner: Owner) -> Result<(Own
     Ok((fd, opened))
 }
 
-fn open_existing(parent: &OwnedFd, name: &CStr, flags: OFlags) -> Result<OwnedFd, ()> {
+pub(crate) fn open_existing(parent: &OwnedFd, name: &CStr, flags: OFlags) -> Result<OwnedFd, ()> {
     openat2(parent, name, flags, Mode::empty(), RESOLVE).map_err(|_| ())
 }
 
@@ -2823,7 +2880,7 @@ pub(crate) fn guarded_open_directory_for_test(
     open_existing(parent, name, DIRECTORY_FLAGS)
 }
 
-fn verify_entry_matches_fd(
+pub(crate) fn verify_entry_matches_fd(
     parent: &OwnedFd,
     name: &CStr,
     fd: &OwnedFd,
@@ -2848,11 +2905,11 @@ fn verify_entry_matches_fd(
     Ok(opened)
 }
 
-fn verify_directory(stat: &Stat, owner: Owner, mode: u32, nlink: u64) -> Result<(), ()> {
+pub(crate) fn verify_directory(stat: &Stat, owner: Owner, mode: u32, nlink: u64) -> Result<(), ()> {
     verify_metadata(stat, owner, FileType::Directory, mode, nlink)
 }
 
-fn verify_metadata(
+pub(crate) fn verify_metadata(
     stat: &Stat,
     owner: Owner,
     expected_type: FileType,
@@ -2872,7 +2929,7 @@ fn verify_metadata(
     Ok(())
 }
 
-fn require_names(directory: &OwnedFd, expected: &[&str]) -> Result<(), ()> {
+pub(crate) fn require_names(directory: &OwnedFd, expected: &[&str]) -> Result<(), ()> {
     let actual: BTreeSet<String> = read_names(directory, expected.len())?.into_iter().collect();
     let expected: BTreeSet<String> = expected.iter().map(|name| (*name).to_owned()).collect();
     if actual != expected {
@@ -2881,7 +2938,7 @@ fn require_names(directory: &OwnedFd, expected: &[&str]) -> Result<(), ()> {
     Ok(())
 }
 
-fn read_names(directory: &OwnedFd, limit: usize) -> Result<Vec<String>, ()> {
+pub(crate) fn read_names(directory: &OwnedFd, limit: usize) -> Result<Vec<String>, ()> {
     rustix::fs::seek(directory, rustix::fs::SeekFrom::Start(0)).map_err(|_| ())?;
     let mut buffer = [MaybeUninit::<u8>::uninit(); 8192];
     let mut reader = RawDir::new(directory, &mut buffer);
@@ -3368,7 +3425,7 @@ fn is_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn read_exact_file(fd: &OwnedFd, size: usize) -> Result<Vec<u8>, ()> {
+pub(crate) fn read_exact_file(fd: &OwnedFd, size: usize) -> Result<Vec<u8>, ()> {
     rustix::fs::seek(fd, rustix::fs::SeekFrom::Start(0)).map_err(|_| ())?;
     let mut bytes = vec![0; size];
     let mut offset = 0;
@@ -3390,7 +3447,7 @@ fn read_exact_file(fd: &OwnedFd, size: usize) -> Result<Vec<u8>, ()> {
     Ok(bytes)
 }
 
-fn acquire_ofd_lock(fd: &OwnedFd) -> Result<(), ()> {
+pub(crate) fn acquire_ofd_lock(fd: &OwnedFd) -> Result<(), ()> {
     let lock = nix::libc::flock {
         l_type: nix::libc::F_WRLCK as nix::libc::c_short,
         l_whence: nix::libc::SEEK_SET as nix::libc::c_short,
@@ -3402,7 +3459,24 @@ fn acquire_ofd_lock(fd: &OwnedFd) -> Result<(), ()> {
     Ok(())
 }
 
-fn publish(directory: &OwnedFd, name: &str, bytes: &[u8], owner: Owner) -> Result<(), ()> {
+pub(crate) fn acquire_shared_ofd_lock(fd: &OwnedFd) -> Result<(), ()> {
+    let lock = nix::libc::flock {
+        l_type: nix::libc::F_RDLCK as nix::libc::c_short,
+        l_whence: nix::libc::SEEK_SET as nix::libc::c_short,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    fcntl(fd, FcntlArg::F_OFD_SETLK(&lock)).map_err(|_| ())?;
+    Ok(())
+}
+
+pub(crate) fn publish(
+    directory: &OwnedFd,
+    name: &str,
+    bytes: &[u8],
+    owner: Owner,
+) -> Result<(), ()> {
     #[cfg(test)]
     let publication_ordinal = test_fault::next_publication();
     let name = std::ffi::CString::new(name.as_bytes()).map_err(|_| ())?;
@@ -3474,6 +3548,124 @@ fn publish(directory: &OwnedFd, name: &str, bytes: &[u8], owner: Owner) -> Resul
         TestPublicationBoundary::DirectorySynced,
     )?;
     Ok(())
+}
+
+#[cfg(feature = "wp201-internal")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RegistryFinalPublicationError {
+    BeforeFinalName,
+    AfterFinalName,
+}
+
+/// The registry's only classified commit point; the unchanged v1 publisher does not use it.
+#[cfg(feature = "wp201-internal")]
+pub(crate) fn publish_registry_final(
+    directory: &OwnedFd,
+    name: &CStr,
+    bytes: &[u8],
+    owner: Owner,
+) -> Result<(), RegistryFinalPublicationError> {
+    #[cfg(test)]
+    let publication_ordinal = test_fault::next_publication();
+    #[cfg(test)]
+    test_fault::check(TestFaultPoint::RegistryBeforeFinalCreate)
+        .map_err(|()| RegistryFinalPublicationError::BeforeFinalName)?;
+    let fd = openat2(
+        directory,
+        name,
+        CREATE_FLAGS,
+        Mode::RUSR | Mode::WUSR,
+        RESOLVE,
+    )
+    .map_err(|_| RegistryFinalPublicationError::BeforeFinalName)?;
+    #[cfg(test)]
+    test_fault::check_publication(
+        publication_ordinal,
+        TestPublicationBoundary::FinalNameCreated,
+    )
+    .map_err(|()| RegistryFinalPublicationError::AfterFinalName)?;
+    let mut offset = 0;
+    while offset < bytes.len() {
+        #[cfg(test)]
+        let remaining = if offset == 0 && test_fault::armed() && bytes.len() > 7 {
+            &bytes[offset..7]
+        } else {
+            &bytes[offset..]
+        };
+        #[cfg(not(test))]
+        let remaining = &bytes[offset..];
+        match write(&fd, remaining) {
+            Ok(0) => return Err(RegistryFinalPublicationError::AfterFinalName),
+            Ok(written) => {
+                offset += written;
+                #[cfg(test)]
+                if offset < bytes.len() {
+                    test_fault::check_publication(
+                        publication_ordinal,
+                        TestPublicationBoundary::PartialWrite,
+                    )
+                    .map_err(|()| RegistryFinalPublicationError::AfterFinalName)?;
+                }
+            }
+            Err(Errno::INTR) => {}
+            Err(_) => return Err(RegistryFinalPublicationError::AfterFinalName),
+        }
+    }
+    #[cfg(test)]
+    test_fault::check_publication(publication_ordinal, TestPublicationBoundary::CompleteWrite)
+        .map_err(|()| RegistryFinalPublicationError::AfterFinalName)?;
+    let published =
+        verify_entry_matches_fd(directory, name, &fd, owner, FileType::RegularFile, 0o600, 1)
+            .map_err(|()| RegistryFinalPublicationError::AfterFinalName)?;
+    if published.st_size != bytes.len() as i64 {
+        return Err(RegistryFinalPublicationError::AfterFinalName);
+    }
+    #[cfg(test)]
+    test_fault::check_publication(
+        publication_ordinal,
+        TestPublicationBoundary::MetadataVerified,
+    )
+    .map_err(|()| RegistryFinalPublicationError::AfterFinalName)?;
+    fsync(&fd).map_err(|_| RegistryFinalPublicationError::AfterFinalName)?;
+    #[cfg(test)]
+    test_fault::check_publication(publication_ordinal, TestPublicationBoundary::FileSynced)
+        .map_err(|()| RegistryFinalPublicationError::AfterFinalName)?;
+    fsync(directory).map_err(|_| RegistryFinalPublicationError::AfterFinalName)?;
+    #[cfg(test)]
+    test_fault::check_publication(
+        publication_ordinal,
+        TestPublicationBoundary::DirectorySynced,
+    )
+    .map_err(|()| RegistryFinalPublicationError::AfterFinalName)?;
+    Ok(())
+}
+
+#[cfg(all(test, feature = "wp201-internal"))]
+pub(crate) fn test_registry_post_durability_cut() -> Result<(), ()> {
+    test_fault::check(TestFaultPoint::RegistryPostDurability)
+}
+
+#[cfg(all(test, feature = "wp201-internal"))]
+pub(crate) fn test_registry_before_final_validation_cut() -> Result<(), ()> {
+    test_fault::check(TestFaultPoint::RegistryBeforeFinalValidation)
+}
+
+#[cfg(all(test, feature = "wp201-internal"))]
+pub(crate) fn test_before_first_publication_cut() -> Result<(), ()> {
+    test_fault::check(TestFaultPoint::BeforeFirstPublication)
+}
+
+#[cfg(test)]
+pub(crate) fn test_next_directory() -> usize {
+    test_fault::next_directory()
+}
+
+#[cfg(test)]
+pub(crate) fn test_directory_cut(
+    ordinal: usize,
+    boundary: TestDirectoryBoundary,
+) -> Result<(), ()> {
+    test_fault::check_directory(ordinal, boundary)
 }
 
 fn same_stat(left: &Stat, right: &Stat) -> bool {

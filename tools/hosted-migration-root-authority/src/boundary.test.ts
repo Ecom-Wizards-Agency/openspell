@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -196,7 +197,9 @@ describe("private root-authority package boundary", () => {
 
     const featureTable = /^\[features\]\n(?<body>(?:(?!^\[)[\s\S])*)/mu.exec(cargo)?.groups?.body;
     expect(featureTable?.trim()).toBe("wp201-internal = []");
-    expect(read("src/lib.rs")).not.toContain("wp201_internal");
+    const library = read("src/lib.rs");
+    expect(library).toContain('#[cfg(feature = "wp201-internal")]');
+    expect(library).toContain("pub mod wp201_internal {");
 
     const packageJson = JSON.parse(read("package.json")) as Record<string, unknown>;
     expect(packageJson.private).toBe(true);
@@ -245,8 +248,13 @@ describe("private root-authority package boundary", () => {
   it("keeps rustdoc warnings fatal in the ordinary package check", () => {
     const wrapper = read("scripts/cargo.mjs");
     expect(wrapper).toContain(
-      "cargo rustdoc --locked --lib --all-features -- -D warnings",
+      "cargo rustdoc --locked --lib --no-default-features -- -D warnings",
     );
+    expect(wrapper).toContain(
+      "cargo rustdoc --locked --lib --no-default-features --features wp201-internal -- -D warnings",
+    );
+    expect(wrapper.match(/--features wp201-internal/gu)).toHaveLength(4);
+    expect(wrapper.match(/--no-default-features/gu)).toHaveLength(8);
     expect(wrapper).toContain("CARGO_TARGET_DIR: cargoTargetDirectory");
     expect(wrapper).toContain('Object.freeze(["/tmp", "/var/tmp"])');
     expect(wrapper).toContain("if (isWithin(workspaceDirectory, resolved)) continue");
@@ -254,6 +262,30 @@ describe("private root-authority package boundary", () => {
     expect(wrapper).toContain(
       "rmSync(cargoTargetDirectory, { force: true, recursive: true })",
     );
+  });
+
+  it("pins the exact synthetic deny-live installation policy", () => {
+    const policy = readFileSync(join(sourceDirectory, "preparation-policy-v1.golden.json"));
+    expect(policy).toHaveLength(2_508);
+    expect(createHash("sha256").update(policy).digest("hex")).toBe(
+      "692216120478fce4caa82e569767ec872b36ec7fccbf4c9430eb7f11e433fcdb",
+    );
+    const parsed = JSON.parse(policy.toString("utf8")) as Record<string, unknown>;
+    expect(parsed.policyClass).toBe("synthetic_deny_live");
+    expect(parsed.sourceRevision).toBe("0000000000000000000000000000000000000000");
+    expect(parsed.targetClass).toBe("synthetic_only");
+    expect(parsed.externalCapability).toBe(false);
+    expect(parsed.liveAdapterAllowed).toBe(false);
+  });
+
+  it("keeps registry seed custody to one stack-shaped zeroizing pread", () => {
+    const source = read("src/authority_registry.rs");
+    const reader = /fn read_registry_seed_once[\s\S]*?\n\}/u.exec(source)?.[0];
+    expect(reader).toBeDefined();
+    expect(reader).toContain("Zeroizing<[u8; 32]>");
+    expect(reader?.match(/rustix::io::pread\(/gu)).toHaveLength(1);
+    expect(reader).not.toMatch(/\bVec\b|read_exact_file|pread_bounded/u);
+    expect(reader).toContain("!= seed.len()");
   });
 
   it("removes the isolated local Cargo target after a command failure", () => {
@@ -398,8 +430,11 @@ describe("private root-authority package boundary", () => {
     }
   });
 
-  it("forbids unsafe and exposes no public Rust API", () => {
-    const sources = readdirSync(sourceDirectory, { recursive: true })
+  it("forbids unsafe and exposes only the feature-gated installation bridge", () => {
+    const sourceNames = readdirSync(sourceDirectory, { recursive: true }).filter(
+      (name): name is string => typeof name === "string" && name.endsWith(".rs"),
+    );
+    const sources = sourceNames
       .filter((name): name is string => typeof name === "string" && name.endsWith(".rs"))
       .map((name) => readFileSync(join(sourceDirectory, name), "utf8"));
     expect(read("src/lib.rs")).toContain("#![forbid(unsafe_code)]");
@@ -408,10 +443,58 @@ describe("private root-authority package boundary", () => {
       expect(source).not.toMatch(/#\s*\[\s*macro_export\s*\]/u);
       expect(source).not.toMatch(/#\s*\[\s*(?:unsafe\s*\(\s*)?(?:no_mangle|export_name)/u);
       expect(source).not.toMatch(/\bextern\s+"C"\b/u);
+    }
+    const nonLibrarySources = sourceNames
+      .filter((name) => name !== "lib.rs")
+      .map((name) => readFileSync(join(sourceDirectory, name), "utf8"));
+    for (const source of nonLibrarySources) {
       expect(source).not.toMatch(
         /^\s*pub\s+(?:async\s+)?(?:const|static|fn|struct|enum|union|trait|type|mod|use|extern\s+crate)\b/mu,
       );
     }
+    const library = read("src/lib.rs");
+    expect(library).toContain('#[cfg(feature = "wp201-internal")]\n#[doc(hidden)]\npub mod wp201_internal');
+    expect(
+      [...library.matchAll(/^\s*pub (?:struct|enum|fn|mod)\s+([A-Za-z0-9_]+)/gmu)].map(
+        (match) => match[1],
+      ),
+    ).toEqual([
+      "wp201_internal",
+      "PreparationRefusal",
+      "InstalledPreparationRootPolicyV1",
+      "PreparationBootstrapLeaseV1",
+      "FreshPreparationStateRootV1",
+      "StateRootInstallationOutcomeV1",
+      "inspect_installed_preparation_policy",
+      "inspect_preparation_bootstrap",
+      "install_preparation_state_root",
+      "inspect_fresh_preparation_state_root",
+    ]);
+    for (const absent of [
+      "ActivePreparationStateRootV1",
+      "ClosedPreparationStateRootV1",
+      "RegisteredPreparationAuthorityV2",
+      "open_preparation_authority",
+      "reopen_active_preparation_authority",
+      "reopen_closed_authority",
+    ]) {
+      expect(library).not.toContain(absent);
+    }
+
+    const superLock = read("src/super_lock.rs");
+    expect(superLock).toMatch(
+      /#\[cfg\(test\)\]\s+pub\(crate\) const fn for_test\(uid: u32, gid: u32\)/u,
+    );
+    expect(superLock.match(/pub\(crate\) const fn root\(\)/gu)).toHaveLength(1);
+    expect(library).toMatch(
+      /pub fn install_preparation_state_root[\s\S]*?ExpectedOwner::root\(\)/u,
+    );
+    expect(library).toMatch(
+      /#\[cfg\(test\)\][\s\S]*?pub\(crate\) fn install_owned/u,
+    );
+    expect(library).toMatch(
+      /#\[cfg\(test\)\][\s\S]*?pub\(crate\) fn inspect_fresh_owned/u,
+    );
   });
 
   it("permits only the WP-201 coordinator to enable the reserved bridge feature", () => {
@@ -474,7 +557,10 @@ describe("private root-authority package boundary", () => {
     const productionSources = readdirSync(sourceDirectory, { recursive: true })
       .filter(
         (name): name is string =>
-          typeof name === "string" && name.endsWith(".rs") && name !== "tests.rs",
+          typeof name === "string" &&
+          name.endsWith(".rs") &&
+          name !== "tests.rs" &&
+          !name.endsWith("_tests.rs"),
       )
       .map((name) => readFileSync(join(sourceDirectory, name), "utf8"));
     const productionManifestAndSources = [read("Cargo.toml"), ...productionSources].join("\n");
@@ -540,7 +626,7 @@ describe("private root-authority package boundary", () => {
 
     for (const forbidden of [
       /\bstd\s*::\s*(?:env|fs|path|process)\b/u,
-      /\b(?:Path|PathBuf|Command|SigningKey)\b/u,
+      /\b(?:Path|PathBuf|Command)\b/u,
       /\b(?:socket|socketpair|bind|listen|connect|accept)\s*\(/u,
       /\bFile\s*::/u,
       /\b(?:remove_file|remove_dir|rename|unlink|ftruncate|set_len)\s*\(/u,

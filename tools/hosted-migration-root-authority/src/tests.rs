@@ -780,7 +780,11 @@ fn fault_has_complete_transition(point: TestFaultPoint, transition_ordinal: usiz
                         | TestPublicationBoundary::DirectorySynced
                 )
         }
-        TestFaultPoint::BeforeFirstPublication => false,
+        TestFaultPoint::BeforeFirstPublication
+        | TestFaultPoint::RegistryBeforeFinalValidation
+        | TestFaultPoint::RegistryBeforeFinalCreate
+        | TestFaultPoint::RegistryPostDurability => false,
+        TestFaultPoint::Directory { .. } => false,
     }
 }
 
