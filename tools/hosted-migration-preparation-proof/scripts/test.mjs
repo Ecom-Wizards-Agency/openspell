@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants, writeSync } from "node:fs";
+import { constants, readSync, writeSync } from "node:fs";
 import { lstat, open, readFile, stat } from "node:fs/promises";
 import process from "node:process";
 import { clearTimeout, setTimeout } from "node:timers";
@@ -1736,9 +1736,19 @@ const DOCKER_INTEGRATION_DEADLINE_MILLISECONDS = 2_400_000;
 const TERM_SETTLEMENT_MILLISECONDS = 2_000;
 const KILL_SETTLEMENT_MILLISECONDS = 3_000;
 const GROUP_ABSENCE_POLL_MILLISECONDS = 50;
+const DEADLINE_POLL_MILLISECONDS = 50;
+const OUTPUT_SETTLEMENT_MILLISECONDS = 5_000;
+const MAXIMUM_UPTIME_BYTES = 128;
+const MAXIMUM_UPTIME_FRACTION_DIGITS = 9;
+const UPTIME_PATH = "/proc/uptime";
 const NANOSECONDS_PER_MILLISECOND = 1_000_000n;
+const NANOSECONDS_PER_SECOND = 1_000_000_000n;
 const CHILD_SETTLEMENT_REFUSAL = Buffer.from(
   "openspell.wp201.child-settlement-timeout.v1\n",
+  "ascii",
+);
+const ORCHESTRATOR_REFUSAL = Buffer.from(
+  "openspell.wp201.test-orchestrator-failed.v1\n",
   "ascii",
 );
 
@@ -1982,12 +1992,133 @@ function captureStream(stream, state, requestTermination) {
   });
 }
 
-function monotonicNanoseconds() {
-  return process.hrtime.bigint();
+function parseBootTimeNanoseconds(bytes) {
+  if (bytes.length === 0 || bytes.length > MAXIMUM_UPTIME_BYTES) {
+    refuse("boot-time sample size");
+  }
+  for (const byte of bytes) {
+    if (byte > 0x7f) refuse("boot-time sample encoding");
+  }
+
+  let position = 0;
+  function parseField(terminator) {
+    if (position >= bytes.length) refuse("boot-time sample framing");
+    let seconds = 0n;
+    if (bytes[position] === 0x30) {
+      position += 1;
+      if (
+        position < bytes.length &&
+        bytes[position] >= 0x30 &&
+        bytes[position] <= 0x39
+      ) {
+        refuse("boot-time sample leading zero");
+      }
+    } else {
+      if (bytes[position] < 0x31 || bytes[position] > 0x39) {
+        refuse("boot-time sample seconds");
+      }
+      while (
+        position < bytes.length &&
+        bytes[position] >= 0x30 &&
+        bytes[position] <= 0x39
+      ) {
+        seconds = seconds * 10n + BigInt(bytes[position] - 0x30);
+        position += 1;
+      }
+    }
+
+    let fraction = 0n;
+    let fractionDigits = 0;
+    if (bytes[position] === 0x2e) {
+      position += 1;
+      while (
+        position < bytes.length &&
+        bytes[position] >= 0x30 &&
+        bytes[position] <= 0x39
+      ) {
+        if (fractionDigits === MAXIMUM_UPTIME_FRACTION_DIGITS) {
+          refuse("boot-time sample fraction cap");
+        }
+        fraction = fraction * 10n + BigInt(bytes[position] - 0x30);
+        fractionDigits += 1;
+        position += 1;
+      }
+      if (fractionDigits === 0) refuse("boot-time sample fraction");
+    }
+    if (bytes[position] !== terminator) refuse("boot-time sample delimiter");
+    position += 1;
+    while (fractionDigits < MAXIMUM_UPTIME_FRACTION_DIGITS) {
+      fraction *= 10n;
+      fractionDigits += 1;
+    }
+    return seconds * NANOSECONDS_PER_SECOND + fraction;
+  }
+
+  const bootTime = parseField(0x20);
+  parseField(0x0a);
+  if (position !== bytes.length) refuse("boot-time sample trailing bytes");
+  return bootTime;
 }
 
-function absoluteDeadline(milliseconds) {
-  return monotonicNanoseconds() + BigInt(milliseconds) * NANOSECONDS_PER_MILLISECOND;
+async function openBootTimeClock() {
+  let file;
+  try {
+    file = await open(UPTIME_PATH, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const identity = await file.stat({ bigint: true });
+    if (
+      !identity.isFile() ||
+      identity.nlink !== 1n ||
+      identity.size !== 0n ||
+      identity.uid !== 0n ||
+      identity.gid !== 0n ||
+      modeOf(identity) !== 0o444
+    ) {
+      refuse("boot-time descriptor identity");
+    }
+
+    let closed = false;
+    let previous;
+    const clock = Object.freeze({
+      sample() {
+        if (closed) refuse("boot-time descriptor closed");
+        const buffer = Buffer.allocUnsafe(MAXIMUM_UPTIME_BYTES + 1);
+        const bytesRead = readSync(file.fd, buffer, 0, buffer.length, 0);
+        if (
+          !Number.isSafeInteger(bytesRead) ||
+          bytesRead <= 0 ||
+          bytesRead > MAXIMUM_UPTIME_BYTES
+        ) {
+          refuse("boot-time sample cap");
+        }
+        const value = parseBootTimeNanoseconds(buffer.subarray(0, bytesRead));
+        if (previous !== undefined && value < previous) {
+          refuse("boot-time clock regressed");
+        }
+        previous = value;
+        return value;
+      },
+      async close() {
+        if (closed) return;
+        closed = true;
+        await file.close();
+      },
+    });
+    clock.sample();
+    return clock;
+  } catch (error) {
+    if (file !== undefined) {
+      try {
+        await file.close();
+      } catch {
+        // Preserve the original clock refusal.
+      }
+    }
+    throw error;
+  }
+}
+
+function absoluteDeadline(clock, milliseconds) {
+  return clock.sample() + BigInt(milliseconds) * NANOSECONDS_PER_MILLISECOND;
 }
 
 function spawnFailureResult() {
@@ -2005,7 +2136,7 @@ function spawnFailureResult() {
   });
 }
 
-function observeOwnedChild(child, deadlineNanoseconds) {
+function observeOwnedChild(child, clock, deadlineNanoseconds) {
   const stdout = { chunks: [], kept: 0, overflow: false, total: 0 };
   const stderr = { chunks: [], kept: 0, overflow: false, total: 0 };
   let closed = false;
@@ -2018,9 +2149,10 @@ function observeOwnedChild(child, deadlineNanoseconds) {
   let exitSignal = null;
   let groupAbsenceConfirmed = false;
   let deadlineTimer;
-  let termTimer;
-  let killTimer;
   let absenceTimer;
+  let termDeadlineNanoseconds;
+  let killDeadlineNanoseconds;
+  let killSent = false;
   let finish;
   const completed = new Promise((resolve) => {
     finish = resolve;
@@ -2028,8 +2160,6 @@ function observeOwnedChild(child, deadlineNanoseconds) {
 
   function clearTimers() {
     clearTimeout(deadlineTimer);
-    clearTimeout(termTimer);
-    clearTimeout(killTimer);
     clearTimeout(absenceTimer);
   }
 
@@ -2095,43 +2225,66 @@ function observeOwnedChild(child, deadlineNanoseconds) {
   }
 
   let terminationRequested = false;
-  function requestTermination() {
-    if (terminationRequested || finished) return;
-    terminationRequested = true;
-    signalGroup("SIGTERM");
-    termTimer = setTimeout(() => {
-      if (finished) return;
-      signalGroup("SIGKILL");
-      killTimer = setTimeout(() => {
-        if (finished) return;
-        settlementTimedOut = true;
-        processGroupResidual = true;
-        signalGroup("SIGKILL");
-        try {
-          writeSync(2, CHILD_SETTLEMENT_REFUSAL);
-        } catch {
-          // Refusal is already latched even when the diagnostic peer is gone.
-        }
-        process.exit(1);
-      }, KILL_SETTLEMENT_MILLISECONDS);
-    }, TERM_SETTLEMENT_MILLISECONDS);
+  function refuseExceptionalSettlement() {
+    settlementTimedOut = true;
+    processGroupResidual = true;
+    signalGroup("SIGKILL");
+    try {
+      writeSync(2, CHILD_SETTLEMENT_REFUSAL);
+    } catch {
+      // Refusal is already latched even when the diagnostic peer is gone.
+    }
+    process.exit(1);
   }
 
-  function scheduleDeadline() {
-    const remaining = deadlineNanoseconds - monotonicNanoseconds();
-    if (remaining <= 0n) {
+  function sampleOrRefuse() {
+    try {
+      return clock.sample();
+    } catch {
+      spawnFailed = true;
+      refuseExceptionalSettlement();
+      return 0n;
+    }
+  }
+
+  function requestTermination(sampledAt) {
+    if (terminationRequested || finished) return;
+    terminationRequested = true;
+    const now = sampledAt ?? sampleOrRefuse();
+    signalGroup("SIGTERM");
+    termDeadlineNanoseconds =
+      now + BigInt(TERM_SETTLEMENT_MILLISECONDS) * NANOSECONDS_PER_MILLISECOND;
+    sampleOrRefuse();
+  }
+
+  function pollDeadlines() {
+    deadlineTimer = undefined;
+    if (finished) return;
+    const now = sampleOrRefuse();
+    if (now >= deadlineNanoseconds) {
       deadlineExpired = true;
-      requestTermination();
+      requestTermination(now);
+    }
+    if (
+      terminationRequested &&
+      !killSent &&
+      termDeadlineNanoseconds !== undefined &&
+      now >= termDeadlineNanoseconds
+    ) {
+      signalGroup("SIGKILL");
+      killSent = true;
+      killDeadlineNanoseconds =
+        now + BigInt(KILL_SETTLEMENT_MILLISECONDS) * NANOSECONDS_PER_MILLISECOND;
+      sampleOrRefuse();
+    } else if (
+      killSent &&
+      killDeadlineNanoseconds !== undefined &&
+      now >= killDeadlineNanoseconds
+    ) {
+      refuseExceptionalSettlement();
       return;
     }
-    const milliseconds = Number(
-      (remaining + NANOSECONDS_PER_MILLISECOND - 1n) /
-        NANOSECONDS_PER_MILLISECOND,
-    );
-    deadlineTimer = setTimeout(() => {
-      deadlineTimer = undefined;
-      scheduleDeadline();
-    }, milliseconds);
+    deadlineTimer = setTimeout(pollDeadlines, DEADLINE_POLL_MILLISECONDS);
   }
 
   captureStream(child.stdout, stdout, requestTermination);
@@ -2143,29 +2296,34 @@ function observeOwnedChild(child, deadlineNanoseconds) {
   });
   child.once("close", (childStatus, signal) => {
     if (closed) return;
+    const now = sampleOrRefuse();
     closed = true;
     status = childStatus;
     exitSignal = signal;
-    if (monotonicNanoseconds() >= deadlineNanoseconds) deadlineExpired = true;
+    if (now >= deadlineNanoseconds) deadlineExpired = true;
+    sampleOrRefuse();
     probeGroupAbsence();
   });
 
-  scheduleDeadline();
+  pollDeadlines();
 
   return Object.freeze({ completed, requestTermination });
 }
 
 let activeChildControl;
+let activeOutputControl;
 let caughtSignal;
 
 function catchSignal(signal) {
   if (caughtSignal !== undefined) return;
   caughtSignal = signal;
   activeChildControl?.requestTermination();
+  activeOutputControl?.requestTermination();
 }
 
-async function runFixedVitest() {
-  const deadline = absoluteDeadline(VITEST_DEADLINE_MILLISECONDS);
+async function runFixedVitest(clock) {
+  if (caughtSignal !== undefined) return spawnFailureResult();
+  const deadline = absoluteDeadline(clock, VITEST_DEADLINE_MILLISECONDS);
   let child;
   try {
     child = spawn(
@@ -2187,7 +2345,7 @@ async function runFixedVitest() {
   } catch {
     return spawnFailureResult();
   }
-  const control = observeOwnedChild(child, deadline);
+  const control = observeOwnedChild(child, clock, deadline);
   activeChildControl = control;
   if (caughtSignal !== undefined) control.requestTermination();
   const result = await control.completed;
@@ -2195,8 +2353,12 @@ async function runFixedVitest() {
   return Object.freeze(result);
 }
 
-async function runFixedDockerIntegration() {
-  const deadline = absoluteDeadline(DOCKER_INTEGRATION_DEADLINE_MILLISECONDS);
+async function runFixedDockerIntegration(clock) {
+  if (caughtSignal !== undefined) return spawnFailureResult();
+  const deadline = absoluteDeadline(
+    clock,
+    DOCKER_INTEGRATION_DEADLINE_MILLISECONDS,
+  );
   let child;
   try {
     child = spawn(process.execPath, [DOCKER_INTEGRATION], {
@@ -2208,7 +2370,7 @@ async function runFixedDockerIntegration() {
   } catch {
     return spawnFailureResult();
   }
-  const control = observeOwnedChild(child, deadline);
+  const control = observeOwnedChild(child, clock, deadline);
   activeChildControl = control;
   if (caughtSignal !== undefined) control.requestTermination();
   const result = await control.completed;
@@ -2229,23 +2391,185 @@ function succeeded(result) {
   );
 }
 
-async function writeCaptured(stream, bytes) {
+async function writeCaptured(stream, bytes, clock, deadlineNanoseconds) {
+  if (
+    caughtSignal !== undefined ||
+    clock.sample() >= deadlineNanoseconds
+  ) {
+    throw new Error("WP-201 captured output refused before write");
+  }
   if (bytes.length === 0) return;
   await new Promise((resolve, reject) => {
-    stream.write(bytes, (error) => {
-      if (error === null || error === undefined) resolve();
+    let settled = false;
+    let timer;
+    const control = Object.freeze({ requestTermination });
+
+    function finish(error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (activeOutputControl === control) activeOutputControl = undefined;
+      if (error === undefined) resolve();
       else reject(error);
-    });
+    }
+
+    function requestTermination() {
+      if (settled) return;
+      try {
+        stream.destroy();
+      } finally {
+        finish(new Error("WP-201 captured output settlement refused"));
+      }
+    }
+
+    function pollDeadline() {
+      timer = undefined;
+      if (settled) return;
+      try {
+        if (
+          caughtSignal !== undefined ||
+          clock.sample() >= deadlineNanoseconds
+        ) {
+          requestTermination();
+          return;
+        }
+      } catch {
+        requestTermination();
+        return;
+      }
+      timer = setTimeout(pollDeadline, DEADLINE_POLL_MILLISECONDS);
+    }
+
+    activeOutputControl = control;
+    timer = setTimeout(pollDeadline, DEADLINE_POLL_MILLISECONDS);
+    try {
+      stream.write(bytes, (error) => {
+        if (error !== null && error !== undefined) {
+          finish(error);
+          return;
+        }
+        try {
+          if (
+            caughtSignal !== undefined ||
+            clock.sample() >= deadlineNanoseconds
+          ) {
+            finish(new Error("WP-201 captured output deadline expired"));
+            return;
+          }
+        } catch (sampleError) {
+          finish(sampleError);
+          return;
+        }
+        finish();
+      });
+    } catch (error) {
+      finish(error);
+    }
   });
 }
 
-async function emitResult(name, result) {
-  await writeCaptured(process.stdout, result.stdout);
-  await writeCaptured(process.stderr, result.stderr);
+/**
+ * Exercises the private boot-time and captured-output invariants without
+ * accepting a caller-selected path, clock, stream or deadline.
+ */
+export async function verifyTestOrchestratorRuntimeForTests() {
+  if (
+    caughtSignal !== undefined ||
+    activeChildControl !== undefined ||
+    activeOutputControl !== undefined
+  ) {
+    refuse("test-only orchestrator exercise while active");
+  }
+
+  if (
+    parseBootTimeNanoseconds(Buffer.from("1.25 2.50\n", "ascii")) !==
+    1_250_000_000n
+  ) {
+    refuse("test-only boot-time conversion");
+  }
+  for (const invalid of [
+    "01.25 2.50\n",
+    "1.1234567890 2.50\n",
+    "1.25 2.50",
+    "1.25  2.50\n",
+    "1.25 2.50\nignored",
+  ]) {
+    let rejected = false;
+    try {
+      parseBootTimeNanoseconds(Buffer.from(invalid, "ascii"));
+    } catch {
+      rejected = true;
+    }
+    if (!rejected) refuse("test-only boot-time malformed acceptance");
+  }
+
+  const heldClock = await openBootTimeClock();
+  let descriptorClosed = false;
+  try {
+    const before = heldClock.sample();
+    const after = heldClock.sample();
+    if (after < before) refuse("test-only boot-time regression");
+  } finally {
+    await heldClock.close();
+  }
+  try {
+    heldClock.sample();
+  } catch {
+    descriptorClosed = true;
+  }
+  if (!descriptorClosed) refuse("test-only boot-time descriptor leak");
+
+  let samples = 0;
+  const advancingClock = Object.freeze({
+    sample() {
+      samples += 1;
+      return samples === 1 ? 0n : 1n;
+    },
+  });
+  const outputEvents = [];
+  const blockedStream = Object.freeze({
+    write() {
+      outputEvents.push("write");
+    },
+    destroy() {
+      outputEvents.push("destroy");
+    },
+  });
+  let outputRefused = false;
+  try {
+    await writeCaptured(blockedStream, Buffer.from([0]), advancingClock, 1n);
+  } catch {
+    outputEvents.push("refuse");
+    outputRefused = true;
+  }
+  if (
+    !outputRefused ||
+    outputEvents.length !== 3 ||
+    outputEvents[0] !== "write" ||
+    outputEvents[1] !== "destroy" ||
+    outputEvents[2] !== "refuse" ||
+    activeOutputControl !== undefined
+  ) {
+    refuse("test-only captured output settlement");
+  }
+
+  return Object.freeze({
+    bootTimeParsing: true,
+    descriptorClosed,
+    capturedOutputDisposition: outputEvents.join(":"),
+  });
+}
+
+async function emitResult(name, result, clock) {
+  const deadline = absoluteDeadline(clock, OUTPUT_SETTLEMENT_MILLISECONDS);
+  await writeCaptured(process.stdout, result.stdout, clock, deadline);
+  await writeCaptured(process.stderr, result.stderr, clock, deadline);
   if (!succeeded(result)) {
     await writeCaptured(
       process.stderr,
       Buffer.from(`openspell.wp201.${name}-suite-failed.v1\n`, "ascii"),
+      clock,
+      deadline,
     );
   }
 }
@@ -2260,39 +2584,84 @@ function directInvocation() {
 }
 
 async function main() {
-  if (process.argv.length !== 2) refuse("arguments");
+  const signalHandlers = new Map();
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-    process.on(signal, () => catchSignal(signal));
+    const handler = () => catchSignal(signal);
+    signalHandlers.set(signal, handler);
+    process.on(signal, handler);
   }
 
-  const vitest = await runFixedVitest();
-  await emitResult("vitest", vitest);
+  let clock;
+  try {
+    clock = await openBootTimeClock();
+    if (process.argv.length !== 2) refuse("arguments");
+    if (caughtSignal !== undefined) {
+      process.exitCode = 1;
+      return;
+    }
+    await verifyControllerFixtures();
+    if (caughtSignal !== undefined) {
+      process.exitCode = 1;
+      return;
+    }
 
-  let docker;
-  if (caughtSignal === undefined) {
-    docker = await runFixedDockerIntegration();
-    await emitResult("docker-integration", docker);
-  }
+    const vitest = await runFixedVitest(clock);
+    if (caughtSignal === undefined) {
+      await emitResult("vitest", vitest, clock);
+    }
 
-  if (
-    caughtSignal !== undefined ||
-    !succeeded(vitest) ||
-    docker === undefined ||
-    !succeeded(docker)
-  ) {
+    let docker;
+    if (caughtSignal === undefined) {
+      docker = await runFixedDockerIntegration(clock);
+      if (caughtSignal === undefined) {
+        await emitResult("docker-integration", docker, clock);
+      }
+    }
+
+    if (
+      caughtSignal !== undefined ||
+      !succeeded(vitest) ||
+      docker === undefined ||
+      !succeeded(docker)
+    ) {
+      process.exitCode = 1;
+    }
+  } catch {
     process.exitCode = 1;
+    if (clock !== undefined && caughtSignal === undefined) {
+      try {
+        const deadline = absoluteDeadline(
+          clock,
+          OUTPUT_SETTLEMENT_MILLISECONDS,
+        );
+        await writeCaptured(
+          process.stderr,
+          ORCHESTRATOR_REFUSAL,
+          clock,
+          deadline,
+        );
+      } catch {
+        // The fixed refusal remains an exit failure if its peer cannot drain.
+      }
+    }
+  } finally {
+    activeOutputControl?.requestTermination();
+    if (clock !== undefined) {
+      try {
+        await clock.close();
+      } catch {
+        process.exitCode = 1;
+      }
+    }
+    if (caughtSignal !== undefined) process.exitCode = 1;
+    for (const [signal, handler] of signalHandlers) {
+      process.removeListener(signal, handler);
+    }
   }
 }
 
 if (directInvocation()) {
-  main().catch(async () => {
-    try {
-      await writeCaptured(
-        process.stderr,
-        Buffer.from("openspell.wp201.test-orchestrator-failed.v1\n", "ascii"),
-      );
-    } finally {
-      process.exitCode = 1;
-    }
+  main().catch(() => {
+    process.exitCode = 1;
   });
 }

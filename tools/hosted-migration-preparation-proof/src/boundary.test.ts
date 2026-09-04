@@ -19,6 +19,11 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import {
+  verifyControllerFixtures,
+  verifyTestOrchestratorRuntimeForTests,
+} from "../scripts/test.mjs";
+
 const packageDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourceDirectory = join(packageDirectory, "src");
 const cleanupHelper = join(packageDirectory, "scripts/path-cleanup-helper.mjs");
@@ -358,6 +363,39 @@ function tomlTable(contents: string, name: string): string {
 }
 
 describe("private preparation-proof package boundary", () => {
+  it("holds the boot clock and bounds captured-output refusal before suite spawn", async () => {
+    await expect(verifyControllerFixtures()).resolves.toEqual({
+      acquisition: {
+        bytes: 9_956,
+        sha256:
+          "72290e827399c5e6eb4c597312a65fbd6402c2d8ad87993c7e336a27f6d48258",
+      },
+      proof: {
+        bytes: 30_322,
+        sha256:
+          "914feaa7cece86e66a81a4dd8595d7efc2ae2e7be241d6190aee97c5c213bfcb",
+      },
+    });
+    await expect(verifyTestOrchestratorRuntimeForTests()).resolves.toEqual({
+      bootTimeParsing: true,
+      descriptorClosed: true,
+      capturedOutputDisposition: "write:destroy:refuse",
+    });
+
+    const orchestrator = read("scripts/test.mjs");
+    expect(orchestrator).not.toContain("process.hrtime");
+    expect(orchestrator).toContain(
+      "caughtSignal = signal;\n" +
+        "  activeChildControl?.requestTermination();\n" +
+        "  activeOutputControl?.requestTermination();",
+    );
+    expect(
+      orchestrator.indexOf("await verifyControllerFixtures();"),
+    ).toBeLessThan(
+      orchestrator.indexOf("const vitest = await runFixedVitest(clock);"),
+    );
+  });
+
   it("is exactly one inert private rlib with no default feature or executable surface", () => {
     expect(JSON.parse(read("package.json"))).toEqual({
       name: "@wizard-ads/hosted-migration-preparation-proof",
