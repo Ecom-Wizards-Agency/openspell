@@ -1,0 +1,17 @@
+[package]
+name = "openspell-hosted-migration-preparation-proof"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+autobins = false
+autoexamples = false
+autobenches = false
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+openspell-hosted-migration-root-authority = { path = "../hosted-migration-root-authority", default-features = false, features = ["wp201-internal"] }
+openspell-hosted-migration-runtime-proof = { path = "../hosted-migration-runtime-proof", default-features = false, features = ["wp201-internal"] }

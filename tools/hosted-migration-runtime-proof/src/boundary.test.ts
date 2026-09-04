@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,10 +28,40 @@ const testOnlyRustSources = new Set([
   "model_tests.rs",
   "provenance_tests.rs",
 ]);
+const libraryModules = Object.freeze([
+  "archive",
+  "canonical",
+  "elf",
+  "machine",
+  "policy",
+  "provenance",
+  "ticket",
+  "model_tests",
+  "provenance_tests",
+]);
 const libraryTestModules = Object.freeze(["model_tests.rs", "provenance_tests.rs"]);
+const wp201CoordinatorDirectory = join(
+  workspaceDirectory,
+  "tools/hosted-migration-preparation-proof",
+);
+const wp201CoordinatorCargoManifest = join(wp201CoordinatorDirectory, "Cargo.toml");
 
 function read(relativePath: string): string {
   return readFileSync(join(packageDirectory, relativePath), "utf8");
+}
+
+function normalizedManifestText(contents: string): string {
+  return contents
+    .replace(/\\[\t ]*\r?\n[\t \r\n]*/gu, "")
+    .replace(/\\x(?<hex>[0-9a-fA-F]{2})/gu, (_match, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    )
+    .replace(/\\u(?<hex>[0-9a-fA-F]{4})/gu, (_match, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    )
+    .replace(/\\U(?<hex>[0-9a-fA-F]{8})/gu, (_match, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    );
 }
 
 function runtimeImageFromWrapper(): string {
@@ -51,6 +81,9 @@ function workspaceManifests(): readonly string[] {
   const manifests: string[] = [];
   const visit = (directory: string): void => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) {
+        throw new Error(`workspace manifest scan refuses symbolic link: ${join(directory, entry.name)}`);
+      }
       if (entry.isDirectory()) {
         if ([".git", ".turbo", "node_modules", "target"].includes(entry.name)) continue;
         visit(join(directory, entry.name));
@@ -61,6 +94,18 @@ function workspaceManifests(): readonly string[] {
   };
   visit(workspaceDirectory);
   return manifests;
+}
+
+function tomlTable(contents: string, name: string): string {
+  const marker = `[${name}]`;
+  const tableStart = contents.indexOf(marker);
+  if (tableStart === -1) throw new Error(`missing exact ${marker} table`);
+  const bodyStart = tableStart + marker.length;
+  const nextTableOffset = contents.slice(bodyStart).search(/^\s*\[/mu);
+  return contents.slice(
+    bodyStart,
+    nextTableOffset === -1 ? undefined : bodyStart + nextTableOffset,
+  );
 }
 
 function isWithin(parent: string, candidate: string): boolean {
@@ -114,6 +159,12 @@ describe("private hosted-migration runtime proof boundary", () => {
     const nextTable = cargo.indexOf("\n[", libStart + "[lib]".length);
     const libTable = cargo.slice(libStart, nextTable === -1 ? undefined : nextTable);
     expect(libTable).not.toMatch(/^\s*name\s*=/mu);
+    expect(
+      tomlTable(cargo, "features")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0),
+    ).toEqual(["default = []", "kernel-proof = []", "wp201-internal = []"]);
     expect(packageJson).not.toHaveProperty("bin");
     expect(packageJson).not.toHaveProperty("exports");
     expect(packageJson).not.toHaveProperty("main");
@@ -128,6 +179,14 @@ describe("private hosted-migration runtime proof boundary", () => {
 
     const library = read("src/lib.rs");
     expect(library).toContain("#![deny(unsafe_code)]");
+    expect(
+      [
+        ...library.matchAll(
+          /^(?:pub(?:\([^\n)]*\))?\s+)?mod\s+([a-z0-9_]+);$/gmu,
+        ),
+      ].map((match) => match[1]),
+    ).toEqual(libraryModules);
+    expect(library).not.toMatch(/\bmod\s+wp201_internal\b/u);
     for (const file of libraryTestModules) {
       expect(library).toMatch(
         new RegExp(`#\\[cfg\\(test\\)\\]\\s*mod ${file.replace(/\.rs$/u, "")};`, "u"),
@@ -183,14 +242,55 @@ describe("private hosted-migration runtime proof boundary", () => {
       expect(cargoProduction).not.toMatch(new RegExp(`^${dependency}\\s*=`, "mu"));
   });
 
-  it("has no reverse dependency or workspace-local output", () => {
+  it("permits only the exact WP-201 coordinator reverse dependency and no workspace-local output", () => {
     const npmName = "@wizard-ads/hosted-migration-runtime-proof";
     const cargoName = "openspell-hosted-migration-runtime-proof";
+    const cargoPathName = "hosted-migration-runtime-proof";
     for (const manifest of workspaceManifests()) {
       if (dirname(manifest) === packageDirectory) continue;
-      const contents = readFileSync(manifest, "utf8");
+      const contents = normalizedManifestText(readFileSync(manifest, "utf8"));
       expect(contents, manifest).not.toContain(npmName);
+      if (manifest === wp201CoordinatorCargoManifest) continue;
       expect(contents, manifest).not.toContain(cargoName);
+      expect(contents, manifest).not.toContain(cargoPathName);
+    }
+
+    if (existsSync(wp201CoordinatorCargoManifest)) {
+      const coordinatorCargo = normalizedManifestText(
+        readFileSync(wp201CoordinatorCargoManifest, "utf8"),
+      );
+      expect(tomlTable(coordinatorCargo, "package")).toMatch(
+        /^\s*name\s*=\s*"openspell-hosted-migration-preparation-proof"\s*$/mu,
+      );
+      const coordinatorDependencies = tomlTable(coordinatorCargo, "dependencies");
+      const escapedCargoName = cargoName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+      const dependencyPattern = new RegExp(
+        `^${escapedCargoName}\\s*=\\s*\\{([^}\\n]*)\\}\\s*$`,
+        "gmu",
+      );
+      const dependencyMatches = [...coordinatorDependencies.matchAll(dependencyPattern)];
+      expect(dependencyMatches, wp201CoordinatorCargoManifest).toHaveLength(1);
+      const dependencyFields = dependencyMatches[0]?.[1] ?? "";
+      expect(dependencyFields).toMatch(
+        /(?:^|,)\s*path\s*=\s*"\.\.\/hosted-migration-runtime-proof"\s*(?:,|$)/u,
+      );
+      expect(dependencyFields).toMatch(/(?:^|,)\s*default-features\s*=\s*false\s*(?:,|$)/u);
+      expect(dependencyFields).toMatch(
+        /(?:^|,)\s*features\s*=\s*\[\s*"wp201-internal"\s*\]\s*(?:,|$)/u,
+      );
+      const unknownDependencyFields = dependencyFields
+        .replace(/(?:^|,)\s*path\s*=\s*"\.\.\/hosted-migration-runtime-proof"\s*(?=,|$)/u, "")
+        .replace(/(?:^|,)\s*default-features\s*=\s*false\s*(?=,|$)/u, "")
+        .replace(
+          /(?:^|,)\s*features\s*=\s*\[\s*"wp201-internal"\s*\]\s*(?=,|$)/u,
+          "",
+        )
+        .replace(/[\s,]/gu, "");
+      expect(unknownDependencyFields, wp201CoordinatorCargoManifest).toBe("");
+      const dependencyLine = dependencyMatches[0]?.[0] ?? "";
+      const remainingCoordinatorCargo = coordinatorCargo.replace(dependencyLine, "");
+      expect(remainingCoordinatorCargo, wp201CoordinatorCargoManifest).not.toContain(cargoName);
+      expect(remainingCoordinatorCargo, wp201CoordinatorCargoManifest).not.toContain(cargoPathName);
     }
 
     const wrapper = read("scripts/cargo.mjs");

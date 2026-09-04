@@ -15,6 +15,7 @@ crate-type = ["rlib"]
 [features]
 default = []
 kernel-proof = []
+wp201-internal = []
 
 [[test]]
 name = "linux-kernel-proof"

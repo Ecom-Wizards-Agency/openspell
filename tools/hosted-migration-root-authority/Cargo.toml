@@ -12,6 +12,9 @@ autobenches = false
 path = "src/lib.rs"
 crate-type = ["rlib"]
 
+[features]
+wp201-internal = []
+
 [dependencies]
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "zeroize"] }
 hex = "=0.4.3"

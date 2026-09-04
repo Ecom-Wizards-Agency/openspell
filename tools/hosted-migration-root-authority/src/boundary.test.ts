@@ -33,6 +33,20 @@ function read(relativePath: string): string {
   return readFileSync(join(packageDirectory, relativePath), "utf8");
 }
 
+function normalizedManifestText(contents: string): string {
+  return contents
+    .replace(/\\[\t ]*\r?\n[\t \r\n]*/gu, "")
+    .replace(/\\x(?<hex>[0-9a-fA-F]{2})/gu, (_match, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    )
+    .replace(/\\u(?<hex>[0-9a-fA-F]{4})/gu, (_match, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    )
+    .replace(/\\U(?<hex>[0-9a-fA-F]{8})/gu, (_match, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    );
+}
+
 function isWithin(parent: string, candidate: string): boolean {
   const relation = relative(parent, candidate);
   return (
@@ -56,6 +70,7 @@ interface CargoTarget {
 }
 
 interface CargoPackage {
+  readonly features: Readonly<Record<string, readonly string[]>>;
   readonly name: string;
   readonly publish: readonly string[] | null;
   readonly targets: readonly CargoTarget[];
@@ -137,6 +152,9 @@ function workspaceManifests(): readonly string[] {
   const manifests: string[] = [];
   const visit = (directory: string): void => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) {
+        throw new Error(`workspace manifest scan refuses symbolic link: ${join(directory, entry.name)}`);
+      }
       if (entry.isDirectory()) {
         if ([".git", ".turbo", "node_modules", "target"].includes(entry.name)) continue;
         visit(join(directory, entry.name));
@@ -157,6 +175,7 @@ describe("private root-authority package boundary", () => {
     const packageMetadata = metadata.packages[0];
     expect(packageMetadata?.name).toBe("openspell-hosted-migration-root-authority");
     expect(packageMetadata?.publish).toEqual([]);
+    expect(packageMetadata?.features).toEqual({ "wp201-internal": [] });
     expect(packageMetadata?.targets).toEqual([
       expect.objectContaining({
         kind: ["rlib"],
@@ -174,6 +193,10 @@ describe("private root-authority package boundary", () => {
     expect(cargo).not.toMatch(/^\s*\[\[bin\]\]/mu);
     expect(cargo).not.toMatch(/^\s*\[\[example\]\]/mu);
     expect(cargo).not.toMatch(/^\s*\[\[bench\]\]/mu);
+
+    const featureTable = /^\[features\]\n(?<body>(?:(?!^\[)[\s\S])*)/mu.exec(cargo)?.groups?.body;
+    expect(featureTable?.trim()).toBe("wp201-internal = []");
+    expect(read("src/lib.rs")).not.toContain("wp201_internal");
 
     const packageJson = JSON.parse(read("package.json")) as Record<string, unknown>;
     expect(packageJson.private).toBe(true);
@@ -391,15 +414,60 @@ describe("private root-authority package boundary", () => {
     }
   });
 
-  it("has no reverse dependency from another workspace package", () => {
+  it("permits only the WP-201 coordinator to enable the reserved bridge feature", () => {
     const npmName = ["@wizard-ads/hosted-migration", "root-authority"].join("-");
     const cargoName = ["openspell-hosted-migration", "root-authority"].join("-");
-    for (const manifest of workspaceManifests()) {
+    const packageStem = ["hosted-migration", "root-authority"].join("-");
+    const coordinatorManifest = join(
+      workspaceDirectory,
+      "tools/hosted-migration-preparation-proof/Cargo.toml",
+    );
+    const manifests = workspaceManifests();
+    const consumers: string[] = [];
+    for (const manifest of manifests) {
       if (dirname(manifest) === packageDirectory) continue;
-      const text = readFileSync(manifest, "utf8");
-      expect(text, manifest).not.toContain(npmName);
-      expect(text, manifest).not.toContain(cargoName);
+      const contents = normalizedManifestText(readFileSync(manifest, "utf8"));
+      if (!contents.includes(packageStem)) continue;
+      consumers.push(manifest);
+      expect(manifest).toBe(coordinatorManifest);
+      expect(contents).not.toContain(npmName);
+
+      const dependencies = /^\[dependencies\]\n(?<body>(?:(?!^\[)[\s\S])*)/mu.exec(contents)?.groups
+        ?.body;
+      expect(dependencies, coordinatorManifest).toBeDefined();
+      const escapedCargoName = cargoName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+      const dependencyPattern = new RegExp(
+        `^${escapedCargoName}\\s*=\\s*\\{([^}\\n]*)\\}\\s*$`,
+        "gmu",
+      );
+      const dependencyMatches = [...(dependencies ?? "").matchAll(dependencyPattern)];
+      expect(dependencyMatches, coordinatorManifest).toHaveLength(1);
+      const dependencyFields = dependencyMatches[0]?.[1] ?? "";
+      expect(dependencyFields).toMatch(
+        new RegExp(`(?:^|,)\\s*path\\s*=\\s*"\\.\\./${packageStem}"\\s*(?:,|$)`, "u"),
+      );
+      expect(dependencyFields).toMatch(/(?:^|,)\s*default-features\s*=\s*false\s*(?:,|$)/u);
+      expect(dependencyFields).toMatch(
+        /(?:^|,)\s*features\s*=\s*\[\s*"wp201-internal"\s*\]\s*(?:,|$)/u,
+      );
+      const unknownDependencyFields = dependencyFields
+        .replace(
+          new RegExp(`(?:^|,)\\s*path\\s*=\\s*"\\.\\./${packageStem}"\\s*(?=,|$)`, "u"),
+          "",
+        )
+        .replace(/(?:^|,)\s*default-features\s*=\s*false\s*(?=,|$)/u, "")
+        .replace(
+          /(?:^|,)\s*features\s*=\s*\[\s*"wp201-internal"\s*\]\s*(?=,|$)/u,
+          "",
+        )
+        .replace(/[\s,]/gu, "");
+      expect(unknownDependencyFields, coordinatorManifest).toBe("");
+      const dependencyLine = dependencyMatches[0]?.[0] ?? "";
+      const remainingCoordinatorCargo = contents.replace(dependencyLine, "");
+      expect(remainingCoordinatorCargo, coordinatorManifest).not.toContain(cargoName);
+      expect(remainingCoordinatorCargo, coordinatorManifest).not.toContain(packageStem);
     }
+    expect(consumers).toEqual(manifests.includes(coordinatorManifest) ? [coordinatorManifest] : []);
   });
 
   it("keeps deployment, process, network, database and credential capabilities absent", () => {
