@@ -4,7 +4,7 @@ Owner: private preparation-journal v2, narrow root/runtime composition bridges a
 history-fetch/dry-run coordinator.
 
 Depends on: merged WP-200 closeout and exact-main CI at
-`51a56b392ab524dc140e343fe1dc87b58e17c42f`.
+`560d5e28615ea023f020f1a3d0944dff96213981`.
 
 Architecture: `docs/design/WP-201-ARCHITECTURE.md`.
 
@@ -27,7 +27,8 @@ addendum pins its already measured bytes and complete acquisition/runtime/gatewa
 
 ## Owned files
 
-- `docs/design/WP-201-ARCHITECTURE.md` and this brief;
+- `docs/design/WP-201-ARCHITECTURE.md`, the reviewed controller preimages under
+  `docs/design/wp201-controller-fixtures/`, and this brief;
 - the explicitly enumerated registry, super-lock, v2 journal, storage-refactor, bridge, boundary and
   invariance files inside `tools/hosted-migration-root-authority/` from the architecture;
 - the explicitly enumerated bridge, kernel-custody refactor, boundary and proof files inside
@@ -213,16 +214,24 @@ product, implementation or security requirement, claim WP-201 acceptance or comp
     database, a service, production data, a provider or Amazon. Ambient repository CI may run its
     unrelated PostgreSQL suites. For a cold container run, the reviewed wrapper uses the exact
     bounded acquisition and proof-container protocol in the architecture;
-    any `wp201-internal` bridge-success or coordinator-success run must use its root, network-disabled
-    proof container even when the local toolchain exists. The networked operation is not evidence, while
-    its checksum-locked vendored dependency bytes are explicit ledger-bound, read-only build inputs.
+    any `wp201-internal` bridge-success or coordinator-success run must use the row's fresh root,
+    network-disabled proof container even when the local toolchain exists. The networked operation
+    is not evidence, while its checksum-locked vendored dependencies and independently pinned
+    toolchain bytes are explicit ledger-bound, read-only build inputs.
     Neither phase may become an external adapter. Use exact-ID preinspection plus `--pull never`,
     root proof `--read-only`/capability/no-new-privileges isolation and the architecture's immutable-
     label create-response reconciliation. Enforce its absolute boot-time deadlines: 300-second
-    acquisition or 900-second proof active budget plus one 55-second total cleanup reserve, with a
-    five-second create-response settlement interval, five-second TERM and KILL/reap intervals,
-    ten-second verified-ID container removal/inspection, ten-second bounded watcher settlement,
-    15-second inclusive path-helper run/TERM/KILL/reap/absence and five-second scheduling reserve.
+    acquisition or 900-second proof active budget plus one 160-second total cleanup reserve. Allocate
+    it exactly as the architecture's 15-second create settlement, 10-second mutually exclusive
+    other-active-child or post-settlement exact-name-recovery slot with the fixed five/two/three
+    normal/TERM/KILL-reap split, 80-second two-ID/two-remove recovery, 10-second preliminary
+    pre-CLOSE census,
+    10-second watcher settlement,
+    10-second post-CLOSE census/socket check, 15-second permission-restoring path-helper including
+    final absence, and 10-second scheduling reserve. Never issue more than two removes for one exact
+    ID, require an absence inspection after the first attempt and after any required retry, preserve
+    an in-flight cleanup operation/result across the latch without restarting its state, and settle
+    any final event learned during watcher closure before the one final census.
     Latch the first signal, pre-establish the exact same-daemon event stream and route success and
     every refusal through one outer cleanup `finally`. Any unconfirmed child, container or pathname residue
     refuses and cannot emit success.
@@ -264,14 +273,28 @@ WP-201 does not:
    installation-authorization codecs/trust checks, state-root installer, bootstrap lease,
    super-lock, signed registry generation one, empty v2 journal storage and durable
    no-feature/feature v1-invariance work. That portion is not accepted until the remaining
-   root/container composition proof passes. Before implementing the container wrapper, amend this
-   brief and the architecture to freeze the invocation-directory prefix, Docker label keys and role
-   values, acquisition network, container mount destinations, vendor-ledger byte framing,
-   event-helper descriptor/control protocol, pinned proof-image digest and per-manifest Cargo
-   command matrix. Independently review that exact documentation hash, then implement and prove the
-   remaining container-wrapper portion. This step exposes only internal installation and inspection;
-   the remaining operation authorization, record, transition, policy and preparation-machine
-   contracts belong to step 4.
+   root/container composition proof passes. The architecture's step-3 exactness amendment freezes
+   the `openspell-wp201-root-proof-` invocation prefix, `com.openspell.wp201.*` labels, versioned
+   acquisition/proof roles, fixed temporary parents, tracked regular-file-only source snapshot plus
+   its four exact compile-time JSON inputs, built-in `bridge` acquisition network, `linux/amd64`
+   platform manifest/config/rootfs, exact index create reference and two allowed Docker
+   content-store inspection-ID representations, exact Docker-client and not-found classifications,
+   nine pre-network Cargo-input hashes, a hard-1-GiB acquisition tmpfs and bounded USTAR decoder,
+   closed Docker operation/create-argv tables, complete mount/namespace/security/resource layouts
+   plus the host/container namespace gate,
+   independently pinned Rustfmt/Clippy toolchain and controller bytes, the 4,853-record LF/TSV
+   source-directory-vendor-toolchain-control ledger, request-flushed OPEN/CLOSE event-helper
+   protocol with explicit global-backlog limits and cleanup-only exact-name recovery, no-argument
+   identity-bound three-state permission-restoring path-cleanup protocol,
+   two-remove exact-ID recovery under the 160-second cleanup reserve, a pure sealed fault model and
+   a mandatory smaller real-Docker compatibility suite, and
+   one fresh proof container for each of the
+   28 ordered Cargo/positive-marker rows. Independently review the exact architecture-and-brief hash, then
+   implement only that fixed container-wrapper portion. First regenerate the stale coordinator lock
+   with the pinned toolchain: its package/registry/checksum counts remain `68/65/65`, while its root-
+   authority entry gains the already-declared `zeroize` edge so acquisition can pass `cargo fetch
+   --locked`. This step exposes only internal installation and inspection; the remaining operation
+   authorization, record, transition, policy and preparation-machine contracts belong to step 4.
 4. Commit and independently review the exact remaining v2 record/transition/domain contract, then
    implement private canonical records, fixed policies and preparation machine.
 5. Implement target/credential/gateway/egress/observer/history/dry-run models.

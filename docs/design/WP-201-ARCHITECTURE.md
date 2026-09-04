@@ -2,7 +2,7 @@
 
 Status: selected for implementation on 2026-09-04.
 
-Base: `origin/main` at `51a56b392ab524dc140e343fe1dc87b58e17c42f`.
+Reconciled base: `origin/main` at `560d5e28615ea023f020f1a3d0944dff96213981`.
 
 ## Outcome
 
@@ -143,7 +143,12 @@ tools/hosted-migration-preparation-proof/
   package.json
   tsconfig.json
   scripts/cargo.mjs
+  scripts/acquisition-archive.mjs
+  scripts/docker-integration.mjs
   scripts/docker-event-helper.mjs
+  scripts/interruption-harness.mjs
+  scripts/path-cleanup-helper.mjs
+  scripts/proof-engine.mjs
   scripts/test.mjs
   src/lib.rs
   src/canonical.rs
@@ -158,10 +163,14 @@ tools/hosted-migration-preparation-proof/
   src/observer.rs
   src/history.rs
   src/dry_run.rs
+  src/interruption.test.ts
   src/model_tests.rs
   src/adversarial_tests.rs
   src/boundary.test.ts
   src/composition.test.ts
+docs/design/wp201-controller-fixtures/
+  acquisition-controller.sh
+  proof-controller.sh
   fixtures/preparation-v2.golden.json
 pnpm-lock.yaml
 ```
@@ -2194,65 +2203,1039 @@ logs, panic output or cleanup errors.
 
 ## Source-only versus external proof
 
-Before implementing the container wrapper, amend this architecture and the brief to freeze the
-invocation-directory prefix, Docker label keys and role values, acquisition network, container
-mount destinations, vendor-ledger byte framing, event-helper descriptor/control protocol, pinned
-proof-image digest and per-manifest Cargo command matrix. The constraints below are mandatory but
-do not yet supply those concrete values. Independently review the exact amendment hash before code.
+### Step-3 root-container exactness amendment
 
-WP-201 test behavior uses only synthetic assets, fake gateways, fake credentials and disposable
-local files. It opens no external network and contacts no Supabase project, browser, database,
+This amendment closes the step-3 values that were intentionally left open. It is the implementation
+contract for the source-only root proof; later code may not substitute a different image, endpoint,
+network, label, mount, ledger, helper protocol or Cargo row without first amending and independently
+reviewing this document and the brief again.
+
+#### Problem, use and selected shape
+
+The coordinator needs one executable root/procfs composition proof without becoming a reusable
+Docker runner or a seed for the later external adapter. Turborepo may invoke only the coordinator's
+fixed `scripts/test.mjs`. That script accepts no image, endpoint, path, network, command, feature,
+timeout, environment map or credential. It owns one dependency-acquisition container and one fresh
+root-proof container for each of the 28 frozen Cargo rows and unconditionally runs the package's
+pure Vitest fault/boundary suite plus its closed real-Docker integration suite. No proof container
+is reused, so root-executed build scripts or tests cannot carry
+writable `/dev`, shared-memory, tmp, home, Cargo or target state into a later row. The Rust
+coordinator remains a private `rlib` with no process or network API.
+
+Three independent candidates agreed on this two-phase boundary. This contract selects the
+strongest credential isolation and exact-ID custody design, the single union vendor tree, and the
+bounded cleanup mechanics. It rejects separate vendor copies, a generic Docker abstraction,
+Python as a ledger dependency, label/name-based deletion and any claim that a read-only host bind
+is immutable against a hostile host peer.
+
+#### Fixed identity, endpoint and image
+
+The exact values are:
+
+```text
+invocation directory prefix: openspell-wp201-root-proof-
+invocation value:            32 random bytes encoded as 64 lowercase hex
+invocation record:           INVOCATION
+invocation record bytes:     openspell.wp201.invocation.v1\n<invocation-value>\n
+temporary parents, in order: /tmp, /var/tmp
+
+Docker binary:               /usr/bin/docker
+Docker binary metadata:      root:root, mode 0755, link count 1, 45570321 bytes
+Docker binary SHA-256:       dbf7fd0c0ae54d208314ee5c19a97a12d966dab039b7d94872ca91cbe490373c
+Docker client tuple:         Platform.Name="Docker Engine - Community", Version=29.7.2
+                           ApiVersion=1.55, DefaultAPIVersion=1.55, GitCommit=a7dcaa6
+                           GoVersion=go1.26.5, Os=linux, Arch=amd64
+                           BuildTime="Wed Aug  5 18:28:40 2026", Context=default
+Docker endpoint:             unix:///var/run/docker.sock
+Engine API version:          v1.47
+container platform:          linux/amd64
+
+invocation label:            com.openspell.wp201.invocation
+role label:                  com.openspell.wp201.role
+acquisition role:            dependency-acquisition-v1
+proof role:                  root-bridge-proof-v1
+acquisition container name:  openspell-wp201-<invocation-value>-acquisition
+proof container name:        openspell-wp201-<invocation-value>-proof-<row-id>
+
+acquisition network:         bridge
+proof network:               none
+
+proof image:
+docker.io/library/rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97
+```
+
+`TMPDIR`, `TMP`, and `TEMP` are refused rather than consulted. Each parent must resolve to its literal
+path, be a root-owned mode-`1777` directory outside the workspace, and have no symlink ancestry. The
+wrapper tries them in the stated order and creates exactly
+`<parent>/openspell-wp201-root-proof-<invocation-value>` with exclusive mode `0700`; it does not use
+an additional random suffix. The mode-`0600`, link-count-one `INVOCATION` record is synced before
+network or Docker access.
+
+Before network access the wrapper stages only regular, stage-zero Git inputs from the three exact
+package roots. `/usr/bin/git ls-files --stage -z -- <three fixed roots>` is the sole inventory
+command. Accepted paths are each package's `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`,
+regular `src/**/*.rs`, and exactly these four compile-time inputs:
+
+```text
+tools/hosted-migration-root-authority/src/grant-ticket-v1.golden.json
+tools/hosted-migration-root-authority/src/preparation-policy-v1.golden.json
+tools/hosted-migration-root-authority/src/transition-v1.golden.json
+tools/hosted-migration-runtime-proof/fixtures/wp199-grant-ticket-v1.golden.json
+```
+
+Every accepted filesystem path must be tracked, and every tracked path must have index mode
+`100644`. Anything untracked under `src` or `fixtures`, any other accepted-package file matching
+an `include_bytes!` or `include_str!` literal, any other index mode, link, special file, duplicate,
+non-UTF-8 path, nested mount or identity change across open/read closes the proof. The
+wrapper copies those bytes with no-follow opens into `<invocation>/source` under the same
+`tools/<package>` layout, then fixes proof-bound directories to `0555` and regular files to `0444`.
+The enclosing invocation directory remains invoking-user-owned mode `0700`, so these immutable
+read/execute bits do not expose the snapshot outside that private parent. Neither
+container ever receives the workspace, `.git`, ignored files, `_local`, environment files,
+1Password state, package scripts, `node_modules`, a socket, FIFO or device.
+
+After construction settles, the invocation directory has exactly this relative tree and no other
+entry:
+
+```text
+INVOCATION
+source/<the complete frozen snapshot>
+control/acquisition.sh
+control/proof.sh
+control/hostname
+control/hosts
+control/resolv.conf
+docker/home/
+docker/config/config.json
+acquisition/vendor/<the complete normalized vendor tree>
+acquisition/toolchain/<the complete normalized toolchain tree>
+acquisition/vendor-ledger.v1
+```
+
+The invocation root and `acquisition` directory are invoking-user-owned mode `0700`.
+`source`, every source directory, `control`, and every normalized vendor/toolchain directory are
+mode `0555`; their regular files and all five control files are mode `0444`, except the ledger-bound
+toolchain executables which are mode `0555`. `docker` and `docker/config` are mode `0500`,
+`docker/config/config.json` is link-count-one mode `0400` with exact bytes `{}`, and the empty
+`docker/home` is mode `0700`. `INVOCATION` is link-count-one mode `0600` with the bytes above, and
+`acquisition/vendor-ledger.v1` is link-count-one mode `0444`. All entries are owned by the invoking
+uid/gid, stay on the captured invocation filesystem, and have no nested mount. The transient
+construction states are covered separately by the three-state cleanup protocol; no scratch,
+archive, cache, FIFO or temporary ledger remains before `ledger-backed` is entered.
+
+The configured image digest is an OCI index. Its exact selected runtime identity is the following
+concatenation table; `+` means byte concatenation with no separator:
+
+```text
+index = "sha256:" + "0e2bcaef56d041a4" + "86784e54104a81ae" +
+        "be0da44bd03019bd" + "70bc0401e42e4a97"
+amd64 manifest = "sha256:" + "408fe88047cef61a" + "2087653b0c5255fa" +
+                 "51c0f2d6d94ddedd" + "7a2562a9b91a46f6"
+config = "sha256:" + "897e260d0a1a5a51" + "46433bdb73f62bd8" +
+         "4f5f47e846d3485e" + "5f70f63912b5917d"
+```
+
+The selected manifest's five ordered compressed layer digests are:
+
+```text
+"sha256:" + "3af9207d37990175" + "f61d5ce9faa0c737" + "3ffcd2d6da1b6ba0" + "a9ca9d61f8f47cc9"
+"sha256:" + "6b02178232c403d8" + "a6d5b460ad955dab" + "a177c38e178ed7dd" + "417e5c4d748e948d"
+"sha256:" + "c5a4625b533197ab" + "b25ea2a32be06c59" + "c984d97c3c2dc995" + "2e0b76f2e81ee0d2"
+"sha256:" + "d32ed818f20fae82" + "5717c40dbc77cd4e" + "d4bcefad6ba95a83" + "f8c4f3c1f8631c31"
+"sha256:" + "a6c1a23a6280781f" + "0cf3b6b3a43fc594" + "62763953c4285dd4" + "addc7d4963cc923f"
+```
+
+Their exact descriptor sizes are `48497091`, `24044139`, `64408267`, `211659733` and `217852857`
+in that order; the config descriptor size is `4547`. The manifest schema version is `2`, its media
+type is `application/vnd.oci.image.manifest.v1+json`, the config media type is
+`application/vnd.oci.image.config.v1+json`, and every layer media type is
+`application/vnd.oci.image.layer.v1.tar+gzip`.
+
+The selected image's five ordered uncompressed rootfs diff IDs are:
+
+```text
+"sha256:" + "63ecca237e30aca8" + "ae79232ae01dddab" + "7d8b42302f654f34" + "3f7cc7ddae60d57c"
+"sha256:" + "e62aadfda549a23e" + "76f5bb43a9a5c652" + "f9e7312aba9edf5c" + "1411f7d0aed54eed"
+"sha256:" + "3acdb7d9b7ebcd7f" + "62d99a996099a57b" + "8367821f4d9a3f4b" + "52239934425a7b98"
+"sha256:" + "b33c96ad98497423" + "9102a1fe15e6427a" + "3510f13aa320227b" + "371c10bb40063356"
+"sha256:" + "0bfd9a65e13cc272" + "6159178398201f52" + "cd4e5bd1c187584f" + "6953c839438af7d5"
+```
+
+Image pull, inspect and create all specify `--platform linux/amd64`. Client and server Engine API
+versions must each be at least `1.49`. Platform-aware image inspection must return `Os=linux`,
+`Architecture=amd64` and the ordered diff IDs above. Docker has two reviewed content-store
+representations: its local `.Id` is either the selected manifest digest above (containerd store) or
+the config digest above (classic graphdriver store). The wrapper accepts only those two full values
+as `<local-inspect-ID>`; this inspection identity is never used as a create operand because the
+containerd manifest ID is not independently addressable. When `.Descriptor` is present its digest,
+media type, size `1940` and
+platform must exactly equal the selected manifest values; an optional bounded string-only
+annotations map is non-authoritative and ignored. No other descriptor field is accepted. When
+`.Descriptor` is absent, `.Id` must be the config digest. Any other or mixed variant refuses. Every
+create instead uses the exact immutable `<index-reference>` with `--platform linux/amd64 --pull
+never`. Post-create inspection requires `.Config.Image` to equal that complete index reference. It
+also binds the store representation: containerd's manifest-valued `<local-inspect-ID>` requires
+container `.Image` to equal the index digest and `.ImageManifestDescriptor` to contain exactly the
+selected manifest media type, digest, size `1940`, and platform `{architecture:"amd64",os:"linux"}`.
+Its optional bounded string-only annotations map is non-authoritative. Classic's config-valued
+`<local-inspect-ID>` requires container `.Image` to equal the config digest and
+`.ImageManifestDescriptor` to be absent or null. Any other, cross-store or incomplete pairing
+refuses start and success.
+
+The image's `Config` object has exactly the keys `Env`, `Cmd` and `Labels`: no
+`Entrypoint`, `User`, `WorkingDir` or `Volumes` key is present, so each has its OCI empty
+default. `Cmd=["bash"]`; `Labels` contains only
+`org.opencontainers.image.source=https://github.com/rust-lang/docker-rust`; and `Env` is exactly
+these four entries in order:
+
+```text
+PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUSTUP_HOME=/usr/local/rustup
+CARGO_HOME=/usr/local/cargo
+RUST_VERSION=1.97.1
+```
+
+The content-addressed platform-manifest request must return exactly the config digest and ordered
+compressed-layer descriptors above. The separately observed image descriptor, where the store
+exposes it, supplies the selected manifest digest; the manifest command's reformatted JSON is not
+misrepresented as raw digest evidence. The local runtime check binds the ordered expanded diff IDs
+and effective config. `RepoDigests` is not compared to
+the tag-bearing configured string. Instead, each entry is parsed, repository aliases are normalized
+to `docker.io/library/rust`, and exactly one entry must have that repository plus the index digest.
+Every create uses only `<index-reference>` plus `--platform linux/amd64 --pull never`.
+
+The wrapper creates only the two deterministic, invocation-randomized container-name forms above;
+they are recovery keys and are never deletion operands. It creates no images, tags, named volumes
+or custom networks.
+Every Docker CLI argument vector begins with `/usr/bin/docker --host
+unix:///var/run/docker.sock --config <private-empty-config>`. The mode-`0500` config directory
+contains only a mode-`0400` `config.json` with exact bytes `{}`. Docker children receive only a
+private `HOME`, `PATH=/usr/bin:/bin`, `LANG=C` and `LC_ALL=C`; Engine API `v1.47` belongs only to the
+socket helper. The wrapper refuses ambient `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_TLS`,
+`DOCKER_TLS_VERIFY`, `DOCKER_CERT_PATH`, `DOCKER_CONFIG`, `DOCKER_API_VERSION`, proxy variables,
+registry/auth variables, `NODE_OPTIONS`, `NODE_PATH`, `NODE_EXTRA_CA_CERTS`,
+`NODE_TLS_REJECT_UNAUTHORIZED`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `BASH_ENV`, `ENV`, `SHELLOPTS`,
+`CDPATH` and Git configuration variables. The already-running Node executable and invoking uid are
+explicit trusted-computing-base inputs; no claim is made against code loaded before the refusal
+checks.
+
+The resolved Docker binary must equal the fixed path, metadata, SHA-256 and complete client tuple
+above. The wrapper opens and hashes it before Docker access, retains its device/inode identity, and
+revalidates path, type, owner, mode, link count, size, device and inode before and after every client
+operation. The empty-config context must be `default` with the fixed endpoint, and the server API
+must support platform inspection. Before and after every client operation the wrapper likewise
+revalidates the anchored real path, socket type, root owner, exact mode `0660`, device and inode of
+`/var/run/docker.sock`. The event helper opens that fixed socket literal itself.
+
+The complete allowed Docker operation table is below. `P` means the common prefix above; every
+argument position, template, stdout/stderr cap and parser is a source constant covered by boundary
+tests. No other Docker verb is reachable.
+
+| Operation | Exact suffix after `P` | Success output |
+|---|---|---|
+| context name | `context show` | exact `default\n`, 64-byte cap |
+| context endpoint | `context inspect default --format {{json .Endpoints.docker.Host}}` | exact JSON string `"unix:///var/run/docker.sock"` plus LF, 4 KiB cap |
+| API support | `version --format {{json .}}` | one bounded duplicate-key-free JSON object plus LF, 16 KiB cap; `Client` equals the frozen tuple and `Server.ApiVersion` parses to at least `1.49` |
+| platform manifest | `manifest inspect <repository-at-manifest-digest>` | one duplicate-key-free JSON object plus LF with the exact schema/config/layer descriptors above, 1 MiB per stream |
+| cached image | `image inspect --platform linux/amd64 <index-reference>` | one-element duplicate-key-free JSON array plus LF, 1 MiB per stream |
+| image setup | `image pull --platform linux/amd64 <index-reference>` | exit zero, continuously drained 16 MiB per stream |
+| label census | `container ls --all --no-trunc --filter <invocation-label> --format {{.ID}}` | zero or bounded full-ID-plus-LF rows, 1 MiB per stream |
+| exact-name preflight/recovery | `container inspect <exact-container-name>` | one-element duplicate-key-free JSON array for recovery or the fixed exact-name not-found classification, 1 MiB per stream |
+| create | exact role-specific arguments below | one full lowercase ID plus LF, empty stderr, 4 KiB per stream |
+| inspect | `container inspect <owned-full-ID>` | one-element duplicate-key-free JSON array plus LF, 1 MiB per stream |
+| acquisition start/attach | `container start --attach <owned-full-ID>` | exact acquisition marker plus one bounded USTAR stream on stdout, at most 768 MiB; continuously drained 16 MiB stderr |
+| proof start/attach | `container start --attach --interactive <owned-full-ID>` | exact namespace-ready/gate protocol then bounded row output, 16 MiB per stream |
+| remove | `container rm --force --volumes <owned-full-ID>` | exact full ID plus LF, empty stderr, 4 KiB per stream |
+| absence | `container inspect <owned-full-ID>` | fixed not-found classification only; all other failures refuse |
+
+`<repository-at-manifest-digest>` is exactly `docker.io/library/rust@` plus the selected amd64
+manifest digest. The manifest operation is networked, credential-free acquisition evidence and is
+run after a successful pull; the content-addressed response must match every execution-relevant
+descriptor above. `<index-reference>` is the exact proof-image string above. Its sole accepted
+cache-miss result is status `1`, stdout exactly `[]\n`, and stderr exactly `Error response from
+daemon: No such image: rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97\n`;
+only that classification authorizes the fixed image-pull operation. Container absence is status
+`1`, stdout exactly `[]\n`, and stderr exactly `Error response from daemon: No such container:
+<owned-full-ID>\n`. Exact-name absence is the same status and stdout with stderr exactly `Error
+response from daemon: No such container: <exact-container-name>\n`. The frozen client bytes and
+tuple are part of all three parsers' authority; status alone or localized/free-form stderr is never
+accepted. `<invocation-label>` is the single token
+`label=com.openspell.wp201.invocation=<invocation-value>`. The table statically excludes `run`,
+`exec`, `cp`, `commit`, build operations, image removal,
+container restart, network/volume mutation and label/name/list-derived deletion. Output overflow
+latches cleanup, kills/reaps the client group and can never be success. The fixed create suffix is
+the common security/resource sequence plus the role's exact mounts, entrypoint and command described
+next; boundary tests compare the complete resulting argv rather than checking a subset.
+
+There is no semantic-to-CLI translation left to implementation. After `P`, acquisition create is
+exactly this ordered token vector. Angle-bracket fields are single tokens derived only from the
+already validated invocation record, invocation-owned paths, invoking numeric uid/gid, the exact
+index reference and the controller digest frozen below:
+
+```text
+container create
+--platform linux/amd64 --pull never
+--label com.openspell.wp201.invocation=<invocation-value>
+--label com.openspell.wp201.role=dependency-acquisition-v1
+--name openspell-wp201-<invocation-value>-acquisition
+--read-only --cap-drop ALL
+--security-opt no-new-privileges --security-opt seccomp=builtin
+--security-opt apparmor=docker-default
+--ipc private --cgroupns private --userns host --runtime runc
+--restart no --init=false --log-driver none
+--hostname wp201-acquisition --user <uid>:<gid> --network bridge
+--pids-limit 128 --memory 2g --memory-swap 2g --cpus 2
+--ulimit nofile=1024:1024 --shm-size 256m
+--mount type=bind,src=<source>,dst=/input/source,readonly,bind-propagation=rprivate,bind-recursive=readonly
+--mount type=bind,src=<acquisition-controller>,dst=/input/control.sh,readonly,bind-propagation=rprivate
+--tmpfs /output:rw,nodev,nosuid,exec,size=1073741824,mode=0700,uid=<uid>,gid=<gid>
+--tmpfs /tmp:rw,nodev,nosuid,noexec,size=1073741824,mode=0700,uid=<uid>,gid=<gid>
+--tmpfs /wp201-home:rw,nodev,nosuid,noexec,size=16777216,mode=0700,uid=<uid>,gid=<gid>
+--workdir /tmp --entrypoint /usr/bin/env
+<index-reference>
+-i PATH=/usr/local/cargo/bin:/usr/bin:/bin HOME=/wp201-home CARGO_HOME=/output/cargo-home TMPDIR=/tmp
+RUSTUP_HOME=/usr/local/rustup RUSTUP_NO_UPDATE_CHECK=1 CARGO_TERM_COLOR=never LANG=C LC_ALL=C
+/bin/bash --noprofile --norc -euo pipefail -c <acquisition-bootstrap>
+wp201-acquisition-bootstrap
+```
+
+`<acquisition-bootstrap>` is one token containing the exact script
+`test "$(/usr/bin/sha256sum /input/control.sh)" = "72290e827399c5e6eb4c597312a65fbd6402c2d8ad87993c7e336a27f6d48258  /input/control.sh"; exec /bin/bash --noprofile --norc -euo pipefail /input/control.sh`.
+It contains no newline.
+
+Each proof create is exactly the following ordered token vector. `<ledger-sha256>` is the full-file
+SHA-256 of the already written and host-verified ledger; `<row-id>` is one member of the frozen
+28-row list below. Neither is caller input.
+
+```text
+container create
+--interactive
+--platform linux/amd64 --pull never
+--label com.openspell.wp201.invocation=<invocation-value>
+--label com.openspell.wp201.role=root-bridge-proof-v1
+--name openspell-wp201-<invocation-value>-proof-<row-id>
+--read-only --cap-drop ALL
+--security-opt no-new-privileges --security-opt seccomp=builtin
+--security-opt apparmor=docker-default
+--ipc private --cgroupns private --userns host --runtime runc
+--restart no --init=false --log-driver none
+--hostname wp201-proof --user 0:0 --network none
+--pids-limit 512 --memory 6g --memory-swap 6g --cpus 4
+--ulimit nofile=1024:1024 --ulimit nproc=512:512 --shm-size 2g
+--mount type=bind,src=<source>,dst=/input/source,readonly,bind-propagation=rprivate,bind-recursive=readonly
+--mount type=bind,src=<vendor>,dst=/input/vendor,readonly,bind-propagation=rprivate,bind-recursive=readonly
+--mount type=bind,src=<toolchain>,dst=/input/toolchain,readonly,bind-propagation=rprivate,bind-recursive=readonly
+--mount type=bind,src=<ledger>,dst=/input/vendor-ledger.v1,readonly,bind-propagation=rprivate
+--mount type=bind,src=<proof-controller>,dst=/input/control.sh,readonly,bind-propagation=rprivate
+--mount type=bind,src=<proof-hostname>,dst=/etc/hostname,readonly,bind-propagation=rprivate
+--mount type=bind,src=<proof-hosts>,dst=/etc/hosts,readonly,bind-propagation=rprivate
+--mount type=bind,src=<proof-resolver>,dst=/etc/resolv.conf,readonly,bind-propagation=rprivate
+--tmpfs /cargo:rw,nodev,nosuid,noexec,size=268435456,mode=0700
+--tmpfs /target:rw,nodev,nosuid,exec,size=4294967296,mode=0700
+--tmpfs /tmp:rw,nodev,nosuid,noexec,size=1073741824,mode=0700
+--tmpfs /fixtures:rw,nodev,nosuid,noexec,size=2147483648,mode=0700
+--tmpfs /wp201-home:rw,nodev,nosuid,noexec,size=16777216,mode=0700
+--workdir /tmp --entrypoint /usr/bin/env
+<index-reference>
+-i PATH=/usr/local/cargo/bin:/usr/bin:/bin HOME=/wp201-home CARGO_HOME=/cargo CARGO_TARGET_DIR=/target/current TMPDIR=/fixtures
+RUSTUP_HOME=/input/toolchain RUSTUP_TOOLCHAIN=1.97.1-x86_64-unknown-linux-gnu
+RUSTUP_NO_UPDATE_CHECK=1 CARGO_NET_OFFLINE=true CARGO_TERM_COLOR=never LANG=C LC_ALL=C
+/bin/bash --noprofile --norc -euo pipefail -c <proof-bootstrap>
+wp201-proof-bootstrap <ledger-sha256> <row-id>
+```
+
+`<proof-bootstrap>` is one newline-free token containing exactly
+`test "$(/usr/bin/sha256sum /input/control.sh)" = "914feaa7cece86e66a81a4dd8595d7efc2ae2e7be241d6190aee97c5c213bfcb  /input/control.sh"; test "$(/usr/bin/sha256sum /input/vendor-ledger.v1)" = "$1  /input/vendor-ledger.v1"; exec /bin/bash --noprofile --norc -euo pipefail /input/control.sh "$2"`.
+The image-resident Bash and SHA-256 utility therefore validate the independently pinned controller
+and the host-bound complete ledger before controller execution. Complete argv fixtures expand every
+field and reject omission, reordering, alternate flag spelling or an additional token.
+
+#### Exact container layouts
+
+Both creates specify `--platform linux/amd64`, `--read-only`, `--cap-drop ALL`,
+`--security-opt no-new-privileges`, `--security-opt seccomp=builtin`,
+`--security-opt apparmor=docker-default`, `--ipc private`, `--cgroupns private`, `--userns host`,
+`--runtime runc`, `--restart no`, `--init=false`, `--log-driver none`, the fixed hostname and resource
+limits below. PID and UTS modes are left at Docker's private defaults and must inspect as empty;
+privileged mode is false, `CapAdd`, supplementary groups, devices and device-cgroup rules are empty,
+and restart count is zero. Any unavailable or normalized-away setting refuses rather than relaxing.
+
+| Setting | Acquisition | Root proof |
+|---|---:|---:|
+| user | invoking uid/gid | exact `0:0` |
+| hostname | `wp201-acquisition` | `wp201-proof` |
+| network | `bridge` | `none` |
+| PIDs | 128 | 512 |
+| memory and memory-swap | 2 GiB each | 6 GiB each |
+| CPUs | 2 | 4 |
+| `nofile` soft/hard | 1,024/1,024 | 1,024/1,024 |
+| `nproc` soft/hard | not set; the PIDs cgroup is the bound because host-user accounting is shared | 512/512 |
+| `/dev/shm` | 256 MiB | 2 GiB |
+
+Every bind uses `bind-propagation=rprivate`; directory input binds additionally require
+`bind-recursive=readonly`. Before create, `/proc/self/mountinfo` must prove no mountpoint at or below
+any input/output source other than its containing system filesystem. The acquisition container has
+exactly these configured mounts:
+
+| Host/source | Destination | Access |
+|---|---|---|
+| `<invocation>/source` | `/input/source` | recursive read-only bind |
+| `<invocation>/control/acquisition.sh` | `/input/control.sh` | read-only file bind |
+| private tmpfs | `/output` | read-write, nodev, nosuid, exec, mode `0700`, invoking uid/gid, 1 GiB |
+| private tmpfs | `/tmp` | read-write, nodev, nosuid, noexec, mode `0700`, invoking uid/gid |
+| private tmpfs | `/wp201-home` | read-write, nodev, nosuid, noexec, mode `0700`, invoking uid/gid |
+
+The networked acquisition container also has Docker's private `/proc`, `/dev`, `/dev/pts`,
+`/dev/mqueue`, `/dev/shm`, `/sys`, cgroup and generated `/etc/hostname`, `/etc/hosts` and
+`/etc/resolv.conf` mounts. Those three `/etc` binds are daemon-owned and writable inside this
+unprivileged setup container only; they are never evidence and disappear with exact-ID removal.
+Inspection must show no other configured bind, tmpfs, volume or device.
+`/output` is executable only because the frozen Rustup proxy must invoke the independently pinned
+copied toolchain while components are acquired; no crate source, build script, proc macro or test is
+executed in this phase. Its hard 1 GiB tmpfs and the exact archive decoder below bound all bytes that
+can reach the host. Docker volumes and writable host binds remain absent.
+
+The root proof has exactly these configured mounts:
+
+| Host/source | Destination | Access |
+|---|---|---|
+| `<invocation>/source` | `/input/source` | recursive read-only bind |
+| `<invocation>/acquisition/vendor` | `/input/vendor` | recursive read-only bind |
+| `<invocation>/acquisition/toolchain` | `/input/toolchain` | recursive read-only bind |
+| `<invocation>/acquisition/vendor-ledger.v1` | `/input/vendor-ledger.v1` | read-only file bind |
+| `<invocation>/control/proof.sh` | `/input/control.sh` | read-only file bind |
+| fixed mode-`0444` proof hostname | `/etc/hostname` | read-only file bind |
+| fixed mode-`0444` loopback hosts | `/etc/hosts` | read-only file bind |
+| fixed empty mode-`0444` resolver | `/etc/resolv.conf` | read-only file bind |
+| private tmpfs | `/cargo` | read-write, nodev, nosuid, noexec, mode `0700`, 256 MiB |
+| private tmpfs | `/target` | read-write, nodev, nosuid, exec, mode `0700`, 4 GiB |
+| private tmpfs | `/tmp` | read-write, nodev, nosuid, noexec, mode `0700`, 1 GiB |
+| private tmpfs | `/fixtures` | read-write, nodev, nosuid, noexec, mode `0700`, 2 GiB |
+| private tmpfs | `/wp201-home` | read-write, nodev, nosuid, noexec, mode `0700`, 16 MiB |
+| Docker-private shared-memory tmpfs | `/dev/shm` | read-write, nodev, nosuid, noexec, mode `1777`, 2 GiB |
+
+The proof's fixed `/etc/hostname` bytes are `wp201-proof\n`; `/etc/hosts` bytes are exactly
+`127.0.0.1 localhost\n::1 localhost\n`; `/etc/resolv.conf` is zero bytes. Its complete accepted writable-mount
+destinations are:
+
+```text
+/cargo /target /tmp /fixtures /wp201-home
+/dev /dev/pts /dev/mqueue /dev/shm
+/proc /proc/interrupts /proc/kcore /proc/keys /proc/latency_stats /proc/timer_list
+```
+
+The first row is the explicit tmpfs set. The remaining paths are Docker/kernel-private pseudo
+filesystems; none is a writable host bind or survives container deletion. The controller parses its
+own duplicate-free `/proc/self/mountinfo`, requires that exact writable set, and also requires
+read-only sysfs and cgroup2 plus the architecture's exact procfs topology, including the distinct
+read-only `/proc/sys` mount. Any additional writable mount refuses before source execution.
+Namespace inode comparisons require private mount, PID, IPC, UTS, network and cgroup namespaces;
+the explicitly selected host user namespace is the sole same-namespace exception.
+
+Proof-container inspection additionally requires `AttachStdin=true`, `OpenStdin=true`,
+`StdinOnce=true`, `AttachStdout=true`, `AttachStderr=true` and `Tty=false`; all three stdin fields are
+false for acquisition. Immediately before proof start, the wrapper reads its own fixed procfs
+namespace links for `cgroup`, `ipc`, `mnt`, `net`, `pid`, `user` and `uts`. The proof controller
+first validates the empty private mounts and complete mount table, then proves its namespace links
+equal PID 1's links, and emits exactly
+`openspell.wp201.namespace-ready.v1\n`. Only after receiving that first complete stdout line may the
+wrapper write this exact LF-terminated frame to the attached stdin and then close it:
+
+```text
+openspell.wp201.namespace-gate.v1
+cgroup:[<host-decimal-inode>]
+ipc:[<host-decimal-inode>]
+mnt:[<host-decimal-inode>]
+net:[<host-decimal-inode>]
+pid:[<host-decimal-inode>]
+user:[<host-decimal-inode>]
+uts:[<host-decimal-inode>]
+```
+
+The controller accepts EOF immediately after the last LF, requires its user namespace to equal the
+host value and all other listed namespaces to differ, then re-reads every saved proof namespace
+identity after Cargo and requires it unchanged. A missing, reordered, duplicated, malformed or
+trailing byte, a readiness marker emitted before the mount/namespace checks, or Cargo progress
+before readiness refuses the row.
+
+The controller performs byte-preserving validation rather than parsing directly into Bash
+variables: it reads at most 513 stdin bytes into a link-count-one mode-`0600` root-owned file on the
+fresh `/fixtures` tmpfs, requires a size no greater than 512, rejects any `00` byte in the complete
+hex inventory, requires the last byte to be LF and exactly eight LF-terminated lines, and only then
+loads the lines and applies the fixed labels plus one-to-20-digit inode grammar. It deletes the
+frame before Cargo. An embedded NUL, an unterminated trailing fragment, a 513th byte or a ninth line
+therefore cannot be lost by Bash `read` semantics.
+
+Both containers have working directory `/tmp`, entrypoint `/usr/bin/env`, the frozen base
+`Config.Env` only, and command `-i` followed by the exact environment assignments, `/bin/bash`,
+`--noprofile`, `--norc`, `-euo`, `pipefail`, and `/input/control.sh`. The acquisition assignments are
+`HOME=/wp201-home`, `CARGO_HOME=/output/cargo-home`, `TMPDIR=/tmp`,
+`RUSTUP_HOME=/usr/local/rustup`, `RUSTUP_NO_UPDATE_CHECK=1`, `CARGO_TERM_COLOR=never`, `LANG=C` and
+`LC_ALL=C`. Both acquisition and proof Cargo/Rustup children include the exact
+`PATH=/usr/local/cargo/bin:/usr/bin:/bin`, which is required for Cargo to invoke the pinned Rust
+tools and the base-image linker. The remaining proof assignments are exactly
+`HOME=/wp201-home`, `CARGO_HOME=/cargo`,
+`CARGO_TARGET_DIR=/target/current`, `TMPDIR=/fixtures`, `RUSTUP_HOME=/input/toolchain`,
+`RUSTUP_TOOLCHAIN=` plus `1.97.1-` + `x86_64-unknown-linux-gnu`, `RUSTUP_NO_UPDATE_CHECK=1`,
+`CARGO_NET_OFFLINE=true`, `CARGO_TERM_COLOR=never`, `LANG=C` and `LC_ALL=C` in that order. Every
+Cargo/rustup child is itself launched through `/usr/bin/env -i` with
+only its exact row variables, so Bash-maintained `PWD`, `SHLVL` and `_` are not inherited. The proof
+receives neither the Docker socket nor a writable host bind.
+
+#### Exact dependency acquisition and vendor ledger
+
+The pinned base image contains only Cargo, Rustc and the standard library; it does not contain
+Rustfmt or Clippy. Acquisition therefore runs these fixed setup operations once, in order, and no
+repository compiler, build script, proc macro, test or proof:
+
+Before its first output creation or network-capable command, the acquisition controller requires
+these nine dependency-authority inputs to be link-count-one mode-`0444` regular files with exact
+size and SHA-256:
+
+| Relative path | Bytes | SHA-256 |
+|---|---:|---|
+| `tools/hosted-migration-preparation-proof/Cargo.toml` | 558 | `5c89e16cac4721f4a968b2089efcea8fb9c1fe98225d6979166e2c2a3461bad9` |
+| `tools/hosted-migration-preparation-proof/Cargo.lock` | 15,208 | `f3455774926880919588246bc9fc422e3ece13c29250862b4249b91b55ecbc86` |
+| `tools/hosted-migration-preparation-proof/rust-toolchain.toml` | 86 | `8e390d6a0838315f972690f46ef8bae8b7ecc9ee6c1ed70140ef852869c2482e` |
+| `tools/hosted-migration-root-authority/Cargo.toml` | 787 | `7639e2f59bb0c745b54a192478d86bba1ab1a046066ea490efa6b783e4e2860a` |
+| `tools/hosted-migration-root-authority/Cargo.lock` | 13,741 | `bd460b4ca9b06241a393eb9d4b5bcc05b68a6d6af844fab1f9a683826979f6f5` |
+| `tools/hosted-migration-root-authority/rust-toolchain.toml` | 86 | `8e390d6a0838315f972690f46ef8bae8b7ecc9ee6c1ed70140ef852869c2482e` |
+| `tools/hosted-migration-runtime-proof/Cargo.toml` | 1,047 | `cfca33ad8a621f30fd54c4a9843eb1dd2add8a91cb4d785c60cabd4ccb945364` |
+| `tools/hosted-migration-runtime-proof/Cargo.lock` | 15,493 | `58e3c00b558af03db96516e7e62f5df170630a28a9c29395b1e1de477a82f6aa` |
+| `tools/hosted-migration-runtime-proof/rust-toolchain.toml` | 86 | `8e390d6a0838315f972690f46ef8bae8b7ecc9ee6c1ed70140ef852869c2482e` |
+
+```text
+/bin/mkdir -p /output/toolchain /output/rustup-cargo /output/cargo-home
+/bin/cp -R /usr/local/rustup/. /output/toolchain/
+/usr/bin/env -i PATH=/usr/local/cargo/bin:/usr/bin:/bin HOME=/wp201-home CARGO_HOME=/output/rustup-cargo \
+  RUSTUP_HOME=/output/toolchain RUSTUP_NO_UPDATE_CHECK=1 LANG=C LC_ALL=C \
+  /usr/local/cargo/bin/rustup component add \
+  --toolchain 1.97.1-x86_64-unknown-linux-gnu rustfmt clippy
+/usr/bin/env -i PATH=/usr/local/cargo/bin:/usr/bin:/bin HOME=/wp201-home CARGO_HOME=/output/cargo-home \
+  RUSTUP_HOME=/output/toolchain RUSTUP_TOOLCHAIN=1.97.1-x86_64-unknown-linux-gnu \
+  CARGO_TERM_COLOR=never LANG=C LC_ALL=C /usr/local/cargo/bin/cargo fetch \
+  --manifest-path /input/source/tools/hosted-migration-preparation-proof/Cargo.toml --locked
+/usr/bin/env -i PATH=/usr/local/cargo/bin:/usr/bin:/bin HOME=/wp201-home CARGO_HOME=/output/cargo-home \
+  RUSTUP_HOME=/output/toolchain RUSTUP_TOOLCHAIN=1.97.1-x86_64-unknown-linux-gnu \
+  CARGO_TERM_COLOR=never LANG=C LC_ALL=C /usr/local/cargo/bin/cargo fetch \
+  --manifest-path /input/source/tools/hosted-migration-root-authority/Cargo.toml --locked
+/usr/bin/env -i PATH=/usr/local/cargo/bin:/usr/bin:/bin HOME=/wp201-home CARGO_HOME=/output/cargo-home \
+  RUSTUP_HOME=/output/toolchain RUSTUP_TOOLCHAIN=1.97.1-x86_64-unknown-linux-gnu \
+  CARGO_TERM_COLOR=never LANG=C LC_ALL=C /usr/local/cargo/bin/cargo fetch \
+  --manifest-path /input/source/tools/hosted-migration-runtime-proof/Cargo.toml --locked
+/usr/bin/env -i PATH=/usr/local/cargo/bin:/usr/bin:/bin HOME=/wp201-home CARGO_HOME=/output/cargo-home \
+  RUSTUP_HOME=/output/toolchain RUSTUP_TOOLCHAIN=1.97.1-x86_64-unknown-linux-gnu \
+  CARGO_TERM_COLOR=never LANG=C LC_ALL=C /usr/local/cargo/bin/cargo vendor \
+  --manifest-path /input/source/tools/hosted-migration-preparation-proof/Cargo.toml \
+  --sync /input/source/tools/hosted-migration-root-authority/Cargo.toml \
+  --sync /input/source/tools/hosted-migration-runtime-proof/Cargo.toml \
+  --locked --versioned-dirs /output/vendor
+```
+
+The generated controller contains those complete literal argument vectors and no eval,
+interpolation or generic runner. It caps and deletes Cargo's vendor instruction output, deletes
+`cargo-home` and `rustup-cargo` inside `/output`, requires the only remaining top-level names to be
+`toolchain` and `vendor`, validates their exact counts/bytes/ownership/types, normalizes directories
+to `0555`, vendor files to `0444`, and toolchain files to `0444` or `0555` according to their
+pre-normalization execute bits, then revalidates the final toolchain authority digest.
+
+The container then writes exactly `openspell.wp201.acquisition-archive.v1\n` followed by a GNU tar
+1.34 USTAR stream created with the source-constant vector `--create --file=- --format=ustar
+--blocking-factor=1 --sort=name --numeric-owner --owner=0 --group=0 --mtime=@0
+--directory=/output toolchain vendor`. The archive is exactly 724,207,616 bytes after the 39-byte
+marker and contains only normalized regular-file and directory entries. The host's narrow streaming
+decoder accepts only checksum-valid USTAR headers, type `0` regular files or type `5` directories,
+zero uid/gid/mtime, empty link/device fields, exact normalized modes, unique grammar-valid paths
+under those two roots, the frozen entry counts and byte totals, two terminal zero blocks and EOF.
+It rejects extension/PAX/GNU/long-name/sparse/link entries and writes through exclusive no-follow
+opens beneath the pre-opened empty mode-`0700` acquisition directory. It never invokes host tar,
+never buffers the archive as a pathname, caps the stream at its exact size, and normalizes and
+revalidates the extracted tree independently before ledger creation. Thus both container storage
+and bytes written to the host are bounded even though Docker cannot copy data from a stopped tmpfs.
+The acquisition container may exit only after the complete archive is emitted; its `/output`,
+`/tmp` and `/wp201-home` then disappear with exact-ID removal.
+
+USTAR pathname decoding is canonical rather than normalizing aliases. The decoder first obtains the
+raw archive name as `name` when `prefix` is empty, otherwise exactly `prefix + "/" + name`; both
+fields must have canonical NUL padding and the split must equal GNU tar's rule: use an empty prefix
+when the complete raw name is at most 100 bytes, otherwise split at the rightmost nonterminal slash
+that leaves a nonempty name of at most 100 bytes and a prefix of at most 155 bytes. A type-`5` raw
+name must end in exactly one `/`, a type-`0` name must not end in `/`, and the decoder removes only
+that one required directory terminator before applying the logical path grammar. Duplicate logical
+paths, a file/directory type conflict, a file used as an ancestor, a missing directory ancestor, a
+leading/doubled slash, or an empty, `.` or `..` logical component refuses before any conflicting
+write. Header magic/version, octal number encodings, checksum spacing, empty uname/gname/linkname,
+zero device fields and all unused/padding bytes must equal the one GNU tar 1.34 USTAR encoding; a
+semantically equivalent alternate header is not accepted.
+
+The exact LF-terminated acquisition controller is the 9,956-byte reviewed fixture
+`docs/design/wp201-controller-fixtures/acquisition-controller.sh`, with SHA-256
+`72290e827399c5e6eb4c597312a65fbd6402c2d8ad87993c7e336a27f6d48258`; the exact LF-terminated proof
+controller is the 30,322-byte reviewed fixture
+`docs/design/wp201-controller-fixtures/proof-controller.sh`, with SHA-256
+`914feaa7cece86e66a81a4dd8595d7efc2ae2e7be241d6190aee97c5c213bfcb`. Both are also immutable
+source constants in `scripts/test.mjs`; it writes them without transformation to link-count-one
+mode-`0444` files before network access. Boundary fixtures byte-compare the source constants to
+these reviewed preimages, byte lengths and hashes,
+and the image-resident bootstrap checks each hash before controller execution. A controller-byte
+change therefore requires an architecture amendment and cannot be blessed only by changing a test.
+
+The three lockfiles are independent inputs. Their frozen package/registry/checksum counts are
+respectively `68/65/65`, `61/60/60` and `69/68/68` for coordinator, root authority and runtime
+proof. The coordinator lock correction is exactly the addition of its already-declared
+root-authority `zeroize` dependency edge and changes none of those counts. Every non-path source
+must be the checksummed crates.io registry; Git sources, alternate registries, source replacement,
+patch, credential provider and unchecksummed packages refuse.
+
+The reviewed union vendor contains 3,657 regular files, 941 directories and 67,159,121 regular-file
+bytes. The reviewed source snapshot has 45 regular files and 10 directories. The reviewed
+Rustfmt/Clippy toolchain contains 168 regular files, 28 directories and 653,573,520 regular-file
+bytes. All have zero links and no path outside the grammar below. With four control files, the full
+ledger has exactly 4,853 records. A future count difference is a review-requiring input change, not
+an accepted platform variation.
+
+Root execution does not authorize whichever toolchain happened to arrive. Before component
+acquisition, the exact base-image Rustup tree must produce this separate canonical authority-ledger
+tuple: 156 files, 26 directories, 620,842,587 regular-file bytes, 182 records, 28,579 ledger bytes,
+body hash `5a353a8d1309676d09d5c12af80150c617455ea7bac22086acb3f7c0391f1c48`, and full-ledger SHA-256
+`a77010df3812df474f968ff3b7e85ec0f23d6e819f4f6d7ea5b95b276efdc8a6`. The copied tree must match
+that tuple before Rustup runs. After adding exactly Rustfmt and Clippy, it must produce: 168 files,
+28 directories, 653,573,520 bytes, 196 records, 30,553 ledger bytes, body hash
+`1dcabbf3617ff9821771b09f430a636af81077b643bf32385aadd3c0b9fc1274`, and full-ledger SHA-256
+`6078f49e711c3a7059e11a8a7b37f5f49837c792523bd914e0592b42d8f087a4`. Two independent clean
+acquisitions produced the same final tuple. This simultaneously proves every base Cargo/Rustc/
+Rustup byte remained exact outside the reviewed component delta.
+
+The authority ledger has magic `openspell.wp201.toolchain-authority.v1`, then the same `records`,
+`D`, `T` and `end` grammar below. It contains only the `D` rows whose path is `toolchain` or begins
+`toolchain/` and all `T` rows. Acquisition constructs and validates the base and final versions;
+the host and every proof container independently reconstruct and require the final fixed digest.
+The reviewed Rust distribution manifest digest is
+`03569b1886ceb5c05276b50c8431ab111de944cd6140fe1fa7d821dd8e0f29cf`; its x86-64 Linux Clippy
+gzip/xz archive digests are `66f93a616bc84939e116e960599b3bc122be7b51f6562bad71011a64a9293dc3` /
+`3441df8fb54db985f8c8a3e8356b8874a3f92cc8cca8565cfe36f1dc15935e72`, and Rustfmt gzip/xz
+digests are `810f7dcfe64bdaf3e10cbe942274f76cdab2ffca813bfafc75e9d86a6809f039` /
+`907fe97d6afbde1eca1b34c992c76e1406d422e2e6f137813d382acec7eb4d14`.
+
+The mode-`0444` ledger has this exact LF-terminated UTF-8 grammar and EOF immediately after the end
+row's LF:
+
+```text
+openspell.wp201.vendor-ledger.v1
+records<TAB><shortest-unsigned-decimal>
+D<TAB>0555<TAB><logical-directory-path>
+...
+S<TAB>0444<TAB><size><TAB><64-lowercase-hex-sha256><TAB><source-relative-path>
+...
+V<TAB>0444<TAB><size><TAB><64-lowercase-hex-sha256><TAB><vendor-relative-path>
+...
+T<TAB><0444-or-0555><TAB><size><TAB><64-lowercase-hex-sha256><TAB><toolchain-relative-path>
+...
+C<TAB>0444<TAB><size><TAB><64-lowercase-hex-sha256><TAB><fixed-control-path>
+...
+end<TAB><64-lowercase-hex-sha256-of-every-byte-before-the-end-row>
+```
+
+`records` counts every `D`, `S`, `V`, `T` and `C` row. `D` paths have an exact tree discriminator:
+the root rows are `source`, `vendor` and `toolchain`, and every descendant is that root plus `/` plus
+its relative path. All three roots, every descendant directory and every empty directory receive a
+row. `S` paths begin `tools/` and are relative to the source snapshot root; they cover every staged
+Cargo manifest, all three raw lockfiles, three toolchain declarations, every staged Rust source/test
+file and the four exact JSON inputs above. `V` paths are relative to `vendor` and cover every regular
+file, including each `.cargo-checksum.json`. `T` paths are relative to `toolchain` and cover its
+complete acquired contents. `C` path is exactly one of `control/proof.sh`, `etc/hostname`,
+`etc/hosts` or `etc/resolv.conf`, mapped respectively to the four individual proof file binds. Rows
+sort by unsigned bytes of `tag || TAB || path`; duplicates refuse. The host writer and image-resident
+verifier use exactly these same logical-to-mounted-path mappings.
+Paths are relative UTF-8 of at most 1,024 bytes matching `[A-Za-z0-9._+@/-]+`, with no empty,
+absolute, repeated-slash, `.` or `..` component. Decimal fields have no sign or leading zero except
+`0`. CR, NUL, blank lines, extra fields, trailing spaces or trailing bytes refuse. Bounds are
+131,072 records, 16 MiB ledger bytes, 256 MiB per regular file and 2 GiB total regular-file bytes.
+The directory set must equal all observed directories, not merely the parents derivable from files.
+
+Before normalization, every acquired entry must belong to the invoking uid/gid and stay on the
+invocation filesystem. A directory must have owner `rwx`, no special bit and no group/other write;
+a regular file must have owner `rw`, link count one, no special bit and no group/other write. Links,
+special files, nested mounts and any other mode refuse. Proof-bound directories normalize to
+`0555`; source, vendor and control files normalize to `0444`. A toolchain regular file normalizes
+to `0555` iff its accepted pre-normalization mode had any execute bit, otherwise `0444`; the resulting mode is in its
+`T` row. Every Cargo checksum map must have exact membership and matching contents.
+
+A host-side implementation writes the mode-`0444`, link-count-one ledger. Before and after the one
+Cargo process in every fresh proof container, a separate fixed POSIX-shell/coreutils implementation from the pinned image
+enumerates directories and regular files, regenerates the complete ledger into `/fixtures` and
+byte-compares it. The verifier also checks the three lock inventories, exact path-package set,
+toolchain component list and executable modes. No Python, Node, compiled repository source or
+fetched executable participates in that independent check.
+Before any Cargo process it also proves that the complete success-marker byte string is absent from
+the acquisition controller, proof controller, vendor and toolchain. It is expected only in the
+staged root-authority test source that emits it.
+
+#### Exact event-helper protocol and create custody
+
+`scripts/docker-event-helper.mjs` has no caller-selected argument. The wrapper launches it with the
+already-running process's captured `process.execPath`, the fixed resolved script path, and no later
+argument, in an owned process group with an environment containing only `LANG=C` and `LC_ALL=C`.
+Its descriptor table is:
+
+| Descriptor | Direction | Contract |
+|---:|---|---|
+| `0` | none | `/dev/null` |
+| `1` | none | `/dev/null` |
+| `2` | helper to parent | private diagnostic pipe capped at 4,096 bytes |
+| `3` | parent to helper | exact OPEN then CLOSE control frames |
+| `4` | helper to parent | exact ready frame, then EOF |
+| `5` | helper to parent | zero or one exact event-ID frame, then EOF |
+
+Control opens with exact ASCII bytes
+`openspell.wp201.docker-event-open.v1\n<invocation-value>\n<role>\n`. The parent writes exactly
+`openspell.wp201.docker-event-close.v1\n` only after every identity known before the preliminary
+census has been removed and proved absent and that census has been classified under the fixed
+deferred-event rule below. On receiving the complete CLOSE frame, the helper parses and emits any complete
+matching event frame already decoded before that control-frame linearization point, closes its
+Engine socket, closes the event and ready pipes and settles; it does not emit an event after event
+pipe EOF. Arbitrary pipe chunking is
+accepted, but an incomplete frame at EOF, duplicate, trailing or out-of-order frame, unknown role,
+or EOF before CLOSE refuses. The ready frame is exactly
+`openspell.wp201.docker-event-ready.v1\n`. It is emitted only after the helper connected to the
+revalidated fixed Unix socket, wrote and flushed every byte of the complete HTTP request, and parsed
+a complete valid HTTP 200 response header block. The reviewed daemon emits those headers before any
+matching event; if it does not, the readiness deadline refuses before create. The event frame is exactly
+the byte concatenation `openspell.wp201.docker-event-id.v1\n` +
+`<64-lowercase-hex-ID>\n`. The helper exits zero only after CLOSE, socket closure, all output EOFs
+and internal settlement; the parent must reap it inside the existing ten-second watcher allocation.
+
+The helper sends one fixed HTTP request to `/v1.47/events?since=0&filters=<encoded-filter>`.
+The literal `since=0` requests the daemon's retained global backlog from the Unix epoch before
+continuing as a live stream. It narrows the request-flush/subscriber-registration race, but is not
+claimed lossless: the pinned daemon flushes `200` before subscription and retains only 256 global
+events, so unrelated churn can evict a matching create. Exact-name recovery below closes cleanup
+custody for that case without turning a missing event into proof success. Canonical filter JSON is
+`{"event":["create"],"label":["com.openspell.wp201.invocation=<value>"],"type":["container"]}`.
+It is compactly encoded and canonically percent-encoded in the request target. Only the random
+invocation label is filtered server-side, avoiding Docker's OR semantics for repeated values. The
+helper independently requires the exact role label in the decoded event; an event carrying the
+invocation label with a missing/wrong role is a collision and refuses. Existing duplicate-key
+rejection and raw `timeNano` rules remain mandatory. Headers cap at 8,192 bytes, each decoded HTTP
+chunk/event frame at 65,536 bytes, and the complete stream before CLOSE at 1 MiB. Redirect, upgrade,
+content encoding, ambiguous content-length/transfer-encoding, a non-200 response once bytes arrive,
+EOF before CLOSE, trailing bytes in a
+JSON frame, or a second exact-invocation event refuse. A syntactically valid frame with a different
+invocation value is ignored but counts toward the cumulative cap; a matching-invocation frame with
+a missing or wrong role is a collision and refuses. Such nonmatching frames cannot arrive from a
+compliant daemon after the server-side filter, but fixtures place them before and after the matching
+event to prove they cannot be adopted by the decoder path.
+
+Before starting the watcher, the parent requires the exact generated container name to have the
+frozen exact-name absence result. It then receives the daemon-acknowledged ready frame before
+create. Parsed HTTP 200 headers prove daemon receipt, while the fixed `since=0` replay cursor reduces
+the local-flush/subscriber-registration race. Normal proof success still requires the matching
+event. Exact stdout framing `<64-lowercase-hex-ID>\n` from this one create client establishes
+immutable cleanup custody after the client is reaped even if it later exits nonzero, emits bounded
+stderr or must be killed. Exit zero, empty stderr and equality with the event remain start/success
+gates. The event ID independently establishes cleanup custody. A response/event conflict refuses
+success and cleanup removes and absence-checks the unique union of both channel-bound IDs. A second
+event is cleanup-uncertain. Neither channel yielding an ID after create may have been issued is the
+pre-recovery unresolved state. A present result from the one exact-name recovery below may add valid
+cleanup custody; an absent, ambiguous, hung or identity-invalid recovery cannot close the already-
+issued mutation and is terminally cleanup-uncertain. Label
+inventories are bounded diagnostics only and never confer identity or deletion authority.
+
+Configuration validity is a separate, stricter gate. An owned ID is inspected for image, labels,
+argv, uid, network, mounts, namespace/security/resource settings, environment and pre-start state.
+A mismatch refuses start and success but still removes and absence-checks that response/event-owned
+full ID. Cleanup never adopts a label-census/list-only candidate and never deletes by label, name,
+image, prefix or list result.
+
+If neither response nor event yields an ID after the bounded create-settlement interval, the parent
+performs one exact-name recovery inspect. Exact name absence proves no current container under that
+recovery key at that observation, but is not a daemon-side barrier for the already-issued create and
+therefore remains cleanup-uncertain; it cannot make the operation or cleanup successful. A present result becomes cleanup custody
+only when its one full lowercase ID, `.Name` equal to `/` plus the exact generated name, exact
+invocation and role labels, and immutable configured image reference all match; configuration
+details still gate start separately. The parent then removes only the recovered full ID, never the
+name. An absent or ambiguous/hung recovery or any identity mismatch is cleanup-uncertain. The name path is
+not used when response or event has already yielded custody. A late event observed after name
+recovery joins the cleanup union; therefore the one-create union remains bounded to two IDs. Name
+recovery can restore cleanup authority only by adopting a present identity-valid full ID; absence
+never replaces missing response/event custody or turns an interrupted create or cleanup into success.
+This recovery inspect consumes the cleanup reserve's mutually exclusive ten-second
+other-child/name-recovery slot: five seconds for normal settlement, two after `SIGTERM` and three
+after `SIGKILL` for reap, all capped by the one outer deadline. The branch cannot borrow an ID,
+census, watcher, path-helper or scheduling slot. When cleanup latches around a child other than
+create, that slot settles the other active child and no name recovery is reachable; after an
+ID-less create has consumed its dedicated 15-second settlement slice, there can be no other active
+non-watcher child and the same slot is reassigned exactly once to this recovery inspect.
+
+#### Exact Cargo matrix and positive bridge row
+
+The proof controller invokes `/usr/local/cargo/bin/cargo` through `/usr/bin/env -i`. Every
+dependency-using row includes `--locked --offline --config net.offline=true --config
+'source.crates-io.replace-with="vendored-sources"' --config
+'source.vendored-sources.directory="/input/vendor"'` plus its absolute snapshot
+`--manifest-path`. Its fixed child environment contains only
+`PATH=/usr/local/cargo/bin:/usr/bin:/bin`, `HOME=/wp201-home`, a freshly empty
+`CARGO_HOME=/cargo`, a freshly empty `CARGO_TARGET_DIR=/target/current`, `TMPDIR=/fixtures`,
+`RUSTUP_HOME=/input/toolchain`, the exact `RUSTUP_TOOLCHAIN`, `RUSTUP_NO_UPDATE_CHECK=1`,
+`CARGO_NET_OFFLINE=true`, `CARGO_TERM_COLOR=never`, `LANG=C` and `LC_ALL=C`. Commands run from
+`/tmp`, so repository configuration is absent and no source directory is a working directory.
+
+Every Cargo command runs in a newly created proof container. Before the controller writes even its
+verification scratch files, it proves `/cargo`, `/target`, `/tmp`, `/fixtures` and `/wp201-home` are
+all empty. It then creates only its bounded `/fixtures` verifier files and `/target/current`, and
+verifies all writable mount identities and modes before the one Cargo command.
+Docker's new private `/dev`, `/dev/shm` and `/dev/mqueue` also belong only to that row. Thus a build
+script, proc macro or test cannot leave a Cargo config, wrapper, runner, executable, device
+replacement, shared-memory object or queue for a later row. The controller itself uses only
+absolute base-image tool paths and never executes from writable mounts. `fmt --all -- --check` runs
+once for each manifest with its exact absolute manifest path.
+
+Root authority runs `check --all-targets`, `clippy --all-targets -- -D warnings`,
+`rustdoc --lib -- -D warnings` and `test --all-targets` for each feature row:
+
+```text
+--no-default-features
+--no-default-features --features wp201-internal
+```
+
+Runtime proof runs the same check, clippy and rustdoc verbs, plus `test --lib`, for each row:
+
+```text
+--no-default-features
+--no-default-features --features wp201-internal
+--all-features
+```
+
+The all-feature all-target check compiles but does not execute the separate WP-200 privileged
+kernel harness. Command order is root `fmt`, then the listed root feature rows in order with
+check/clippy/rustdoc/test inside each row; runtime `fmt`, then its listed feature rows with
+check/clippy/rustdoc/test; coordinator `fmt`, then `check --all-targets`,
+`clippy --all-targets -- -D warnings`, `rustdoc --lib -- -D warnings` and `test --all-targets`.
+The named positive row below is last.
+
+The exact row IDs, in that order, are:
+
+```text
+root-fmt
+root-check-none
+root-clippy-none
+root-rustdoc-none
+root-test-none
+root-check-internal
+root-clippy-internal
+root-rustdoc-internal
+root-test-internal
+runtime-fmt
+runtime-check-none
+runtime-clippy-none
+runtime-rustdoc-none
+runtime-test-none
+runtime-check-internal
+runtime-clippy-internal
+runtime-rustdoc-internal
+runtime-test-internal
+runtime-check-all
+runtime-clippy-all
+runtime-rustdoc-all
+runtime-test-all
+coordinator-fmt
+coordinator-check
+coordinator-clippy
+coordinator-rustdoc
+coordinator-test
+root-positive
+```
+
+The proof controller has a closed literal case for exactly those values. Each case executes one
+complete fixed Cargo argv directly; it has no array, eval, command string or caller-selected
+argument beyond that finite row ID. A second or unknown argument refuses.
+
+The root-authority feature test owns the synthetic policy/bootstrap/state/signature fixtures and
+the sole positive uid-zero call chain. Its exact six calls are first policy inspection, first
+bootstrap inspection, state-root installation, then after dropping the installed capability,
+second policy inspection, second bootstrap inspection and fresh-root inspection. These are the
+public `inspect_installed_preparation_policy`, `inspect_preparation_bootstrap`,
+`install_preparation_state_root`, `inspect_installed_preparation_policy`,
+`inspect_preparation_bootstrap`, `inspect_fresh_preparation_state_root` functions in that order. It
+may not call the crate-private owner override or `install_owned`.
+
+After the ordinary root test rows, the controller runs this additional exact row:
+
+```text
+cargo test --locked --offline --config net.offline=true \
+  --config 'source.crates-io.replace-with="vendored-sources"' \
+  --config 'source.vendored-sources.directory="/input/vendor"' \
+  --manifest-path /input/source/tools/hosted-migration-root-authority/Cargo.toml \
+  --no-default-features --features wp201-internal \
+  authority_registry_tests::wp201_root_container_bridge_success \
+  -- --ignored --exact --nocapture
+```
+
+The positive test has the exact Rust attribute
+`#[ignore = "WP-201 root-container bridge row only"]`, so the ordinary
+`root-test-internal` row does not execute it. Only `root-positive` supplies `--ignored`; the six-call
+chain and marker therefore execute once.
+
+The success line is the byte concatenation `openspell.wp201.` +
+`root-bridge-success.v1\n`. It travels only on the bounded attached container stdout. The wrapper
+requires the exact named test, exit zero and exactly one complete success line; an absent, partial,
+duplicate or stderr marker refuses. A non-root local invocation skips that test without a marker,
+so it cannot satisfy this row. The test also exercises the public sampler check that `/proc` and
+the fixed `/proc/sys` component have distinct statx mount IDs.
+
+The coordinator wrapper accepts the root proof only when this marker, all feature/reverse-dependency
+rows, every row's two independent full-ledger comparisons, exact post-run state, process settlement and cleanup
+all succeed. Step 4, not this checkpoint, adds the coordinator's actual preparation machine.
+
+#### Trust boundary, cleanup and no-go
+
+A read-only Docker bind prevents writes from a proof container. It cannot prevent a hostile
+process sharing the invoking host uid from modifying and restoring the backing source snapshot,
+vendor, toolchain, controller or ledger, and a Docker-socket writer is root-equivalent. Therefore
+this source proof explicitly trusts the invoking uid, its already-loaded Node runtime and the local
+Docker daemon and requires that no untrusted same-uid or Docker-socket writer run concurrently.
+Pre/post ledgers detect ordinary one-way drift but do not claim to defeat write-and-restore. If
+either hostile peer is in scope, this design is a no-go: stop and amend the architecture to use an
+independently hashed derived image with no host input bind rather than weakening the claim.
+
+One outer `try/finally` owns the acquisition container, the ordered proof-container sequence, the
+current event helper, every asynchronous process group and every invocation path. It reads the same
+held `/proc/uptime` descriptor with bounded positional reads at offset zero, requires exactly two
+shortest unsigned decimal second fields with bounded fractional digits plus LF and EOF, converts the
+first field into boot-time nanoseconds, samples before and after every state transition, and while a child is live polls it on
+a fixed 50-millisecond timer. Host suspend may delay the first post-resume callback by at most that
+poll interval, but the fresh boot-time sample latches expiry before any later start or success can be
+accepted. This is an acceptance deadline, not a claim that the credential-free setup child performs
+no instruction during that interval.
+
+The existing 300-second acquisition and one 900-second deadline for the complete ordered proof
+matrix remain exact. Each hard deadline has one 160-second cleanup reserve sized for the two-ID
+conflict case and bounded retry protocol. Signals or deadline latch cleanup; no later start is
+allowed. Each container has one
+issued start/attach command and no retry. Pre-start inspection requires `created`, PID zero,
+`RestartCount=0` and restart policy `no`. Success requires the same owned ID to inspect `exited`,
+exit code zero, PID zero, `Running/Restarting/Paused/Dead/OOMKilled=false`, empty state error and
+unchanged restart count. A lost start-client result is refusal even if terminal inspection later
+shows zero; it is never retried.
+
+Unknown creation without response, event or valid exact-name recovery custody remains
+cleanup-uncertain and is never reported absent. Any response/event-owned full ID is removal
+authority even if its configuration is invalid; the exact-name path has the narrower identity gate
+above. Configuration validity gates start and success, not response/event cleanup. After each row,
+its response/event/name identities settle, every then-held exact ID is removed and proved absent,
+the preliminary pre-CLOSE census is classified under the deferred-event rule, and only then does
+its watcher close. Any final event
+emitted before watcher EOF joins the bounded union and is removed/proved absent before the final
+census and the next create.
+Final success waits for zero owned
+process groups, every exact-ID container absent, an empty exact-label census,
+watcher/socket/pipe settlement and absence of every tracked invocation path. Abrupt host loss or uncatchable `SIGKILL`
+is not claimed recoverable.
+
+Path removal belongs only to `scripts/path-cleanup-helper.mjs`. It is launched through the captured
+`process.execPath`, its fixed resolved script path and no argument, with cwd `/`, environment only
+`LANG=C`/`LC_ALL=C`, and this descriptor contract:
+
+| Descriptor | Direction | Contract |
+|---:|---|---|
+| `0` | none | `/dev/null` |
+| `1` | none | `/dev/null` |
+| `2` | helper to parent | private diagnostic pipe capped at 4,096 bytes |
+| `3` | parent to helper | one cleanup control frame, then EOF |
+| `4` | helper to parent | one completion frame, then EOF |
+
+The control bytes are
+`openspell.wp201.path-cleanup.v2\n<tmp-or-var-tmp-token>\n<invocation-value>\n<directory-device>\n<directory-inode>\n<cleanup-state>\n`.
+The parent token is exactly `tmp` or `var-tmp` and maps only to the two fixed temporary parents;
+it is not a pathname. Device and inode are shortest unsigned decimals captured immediately after
+the exclusive `mkdir`. Cleanup state is exactly `pre-record`, `partial-acquisition` or
+`ledger-backed`. The outer cleanup obligation begins as soon as `mkdir` succeeds, before record
+creation; it advances to `partial-acquisition` only after the complete synced `INVOCATION` record,
+and to `ledger-backed` only after all setup scratch/cache trees are gone and the complete ledger was
+independently verified. Completion is exactly `openspell.wp201.path-cleanup-complete.v2\n`.
+
+The helper reconstructs the one exact directory, opens and revalidates its fixed parent and the
+captured directory device/inode, invoking uid/gid and mode `0700`. `pre-record` accepts only an
+absent `INVOCATION` or a link-count-one mode-`0600` partial regular file at that exact name; the
+other states require the exact valid record. `ledger-backed` additionally requires the complete
+inventory/ledger relation before deletion: every source/vendor/toolchain directory and file is
+represented by its exact `D`/`S`/`V`/`T` row; the four proof-bound files match their `C` rows; and
+the only structural exceptions are the already authenticated `INVOCATION`, fixed-hash
+`control/acquisition.sh`, `control` directory, `acquisition` directory and ledger itself, plus the
+exact empty `docker/home`, `docker/config`, `{}` config and their parent. `control/proof.sh`,
+`control/hostname`, `control/hosts` and `control/resolv.conf` map respectively to ledger paths
+`control/proof.sh`, `etc/hostname`, `etc/hosts` and `etc/resolv.conf`. The helper requires every
+mode, owner, link count, byte count and digest described by the settled tree above, validates the
+ledger's own grammar/body digest, and rejects any missing or additional relative path. For
+`pre-record` and `partial-acquisition`, where a
+killed Rustup/fetch/vendor or ledger writer can leave arbitrary partial cache entries, the helper
+uses a bounded no-follow walk of only this identity-bound directory: at most 131,072 entries, depth
+64, 16 MiB total relative-path bytes and 1,024 bytes per path; no nested mount; every entry remains
+on the captured filesystem and is owned by the invoking uid/gid. It may unlink regular files,
+hardlinks, symlinks, FIFOs or sockets without opening or following them; an unexpected device or
+ownership/mount boundary refuses. It changes each verified directory to mode `0700` in postorder,
+revalidates the invocation root immediately before fixed recursive removal, removes the directory,
+syncs the parent and proves absence. This explicitly covers partial `cargo-home`, `rustup-cargo`,
+`vendor`, `toolchain`, source/controller/config construction and ledger scratch. The same-uid
+rename/write race is excluded by the explicit trust boundary above; no fd-relative safety claim is
+made for Node's recursive removal API. It has no glob, path, environment-selected root, generic
+cleanup mode or other deletion operation. The parent repeats the exact-path absence check after
+helper EOF and reap.
+
+The next implementation step is limited to the stale lock correction, this fixed coordinator
+wrapper/helper and boundary/interruption tests, plus the root-owned positive public-bridge test.
+It does not add a live target, credential, external adapter, deployable service or write path.
+
+WP-201 proof behavior uses only synthetic assets, fake gateways, fake credentials and disposable
+local files. Only the credential-free acquisition container contacts the public crates.io and Rust
+component services. No proof container contacts a network, Supabase project, browser, database,
 service or Amazon endpoint. The repository's ambient CI may provision PostgreSQL for unrelated
-packages. The coordinator package owns its Rust wrapper and routes every cross-crate bridge-success
-test through the reviewed root proof container even when the pinned toolchain is installed locally.
-Feature compile checks and pure/refusal tests may use the prior crates' existing entry points; merely
-building `wp201-internal` does not satisfy a bridge-success row. The proof container runs as uid/gid
-zero by omitting `--user`, uses the pinned local image ID as described below, has `--network none`,
-`--read-only`, `--cap-drop ALL` and `--security-opt no-new-privileges`, has no writable host mount
-or Docker socket, and creates all ownership-sensitive fixtures under private tmpfs mounts. Its
-complete writable mount allowlist is `CARGO_HOME`, `CARGO_TARGET_DIR`/`OUT_DIR`, `TMPDIR`/test
-fixtures and a minimal home, all separate tmpfs mounts; the image root and toolchain remain
-read-only. The no-feature root-authority checks retain their pinned local fast path, but they do not
-satisfy a bridge-success row.
+packages. The coordinator package owns its wrapper and routes every bridge-success test through the
+reviewed root proof containers even when a local toolchain is installed. Feature compile checks and
+pure/refusal tests may use the prior crates' existing entry points; merely building `wp201-internal`
+does not satisfy a bridge-success row. Every proof container explicitly uses uid/gid `0:0`, the
+exact index reference, `--network none`, read-only rootfs, no capabilities, NNP, the fixed
+seccomp/AppArmor boundary and no writable host mount or Docker socket. Ownership-sensitive fixtures
+use private tmpfs. Its complete writable mount set, including Docker/kernel pseudo-filesystems, is
+frozen above; image root, staged source, vendor, toolchain, controller, ledger and fixed `/etc`
+files remain read-only. The no-feature root-authority checks retain their local fast path, but they
+do not satisfy bridge success.
 
-Before a cold container proof, the wrapper creates one fresh mode-`0700` invocation directory owned
-by the invoking uid/gid in a resolved system temporary directory outside the workspace. It first
-inspects the exact digest reference without pull. If absent, a separately bounded setup command may
-pull only that digest; the resulting shared image/layers are intentionally retained as an immutable
-cache, not treated as proof output. The wrapper then inspects the digest reference, requires its
-repo-digest set to contain the exact configured digest and captures its full `sha256:<64-hex>` local
-image ID once. Every later `docker create` uses only that captured ID plus `--pull never`; neither
-the acquisition nor proof create may perform an implicit pull.
+Before a cold proof, the wrapper selects only `/tmp` then `/var/tmp`, creates and syncs the exact
+invocation path/record, and constructs the regular-file-only tracked source snapshot and fixed
+controllers described above. It first performs platform-aware inspection of the exact index without
+pull. If absent, a separately bounded setup command may pull only that index for `linux/amd64`; the
+resulting shared layers are intentionally retained as immutable cache, not proof output. The wrapper
+then requires the normalized repo digest, exact selected manifest/config relation, allowed local
+inspection ID, platform, config and ordered rootfs graph. Every create uses only the exact index reference
+with explicit platform and `--pull never`; no container may pull implicitly.
 
-A first acquisition container runs as the invoking uid/gid and may use only the package network, a
-read-only source mount, that invocation directory and a fresh Cargo home. It also uses `--read-only`,
-`--cap-drop ALL` and `--security-opt no-new-privileges`. It runs exactly `cargo fetch --locked`
-followed by `cargo vendor --locked --versioned-dirs`; it may not compile, run a build script or
-execute a proof. Every non-workspace/non-path lock entry must be a checksummed registry source, and
-the boundary test separately pins the exact local path-package set. After acquisition, the wrapper
-requires every output to be owned by its invoking uid/gid, rejects links and special files, and
-normalizes the vendor tree to mode `0500` directories and mode `0400` regular files; source execute
-bits confer no authority because Cargo compiles build scripts into the separate target tmpfs. It
-then validates every Cargo `.cargo-checksum.json` mapping and records a canonical sorted
-path/size/SHA-256 ledger over `Cargo.lock` and every vendored regular file. The ledger is a
-mode-`0400` regular file. The networked acquisition operation is not proof evidence. Its ledger-
-bound vendor bytes are explicit build inputs.
+A first acquisition container runs as the invoking uid/gid and receives only the read-only staged
+source/controller plus private bounded tmpfs. It copies the base toolchain,
+acquires exactly Rustfmt and Clippy, performs the three locked fetches and creates the single synced
+vendor tree. It may not compile, run a build script/proc macro/test or execute proof source. Every
+non-path lock entry is a checksummed crates.io source, and boundary tests pin the exact path-package
+set. Before acquisition exits, its controller removes setup caches, enforces the frozen
+ownership/mode/mount predicates, and emits only the fixed bounded USTAR stream. The wrapper's narrow
+decoder reconstructs that stream beneath the exact empty acquisition directory, independently
+validates every Cargo checksum mapping and writes the complete source/directory/vendor/toolchain/
+control ledger. Networked setup is not proof evidence; its ledger-bound results are explicit
+read-only build inputs.
 
-The separate root proof container receives the source, vendor tree and ledger as read-only bind
-mounts. Before Cargo starts, it independently recomputes and matches the ledger. It sets
-`CARGO_NET_OFFLINE=true`, replaces crates.io with that exact directory source, and uses writable
-tmpfs only for `CARGO_HOME`, `CARGO_TARGET_DIR`, `TMPDIR` and test fixtures; procfs is its own
-container procfs. The vendor mount remains immutable during dependency expansion, proc-macro/build-
-script compilation and proof execution. No fetched cache is copied into writable storage. Boundary
-tests assert the exact image digest/ID and `--pull never`, exact commands and path-package set,
-acquisition/proof separation, root proof identity, `--read-only`, capability/no-new-privileges
-restrictions, `--network none`, offline replacement, read-only source/vendor/ledger mounts, writable-
-tmpfs allowlist, independent ledger match and absence of any proof command from the acquisition
-container.
+Each separate row proof receives the staged source, vendor, toolchain, ledger, proof controller and
+fixed `/etc` files as recursive read-only inputs. Before its one Cargo process and after it exits, the
+base-image verifier independently regenerates and matches the complete ledger. Each Cargo row gets
+fresh private writable mounts, forced offline directory replacement and the exact
+environment/matrix above. No fetched cache is copied into writable storage. Boundary tests compare
+the complete platform/image/config, Docker operation and create argv tables; source inventory,
+commands and package graph; network/root separation; namespace/security/resource state; read-only
+input mounts; complete writable pseudo/tmpfs set; independent ledger matches; and absence of proof
+execution from acquisition.
 
 Each container is created, then started, as two operations rather than through `docker run`. Before
 create, the wrapper generates a 32-byte random invocation value, durably stores it in its private
-directory and requires an exact Docker list by that immutable invocation/role label to be empty.
+directory and requires both an exact Docker list by that immutable invocation/role label and an
+exact inspect of the generated role/row container name to report absent.
 The wrapper refuses `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_TLS_VERIFY` or `DOCKER_CERT_PATH`,
 requires the Docker context name `default`, requires its endpoint to be exactly
 `unix:///var/run/docker.sock`, records that root-owned mode-`0660` Unix socket's device/inode and
@@ -2261,10 +3244,11 @@ Every Docker client argv places `--host unix:///var/run/docker.sock` immediately
 Docker executable, so context mutation cannot retarget list, pull, create, start, inspect or remove;
 boundary tests reject any client invocation without that exact endpoint. Before sending
 create it spawns the owned `scripts/docker-event-helper.mjs`, which connects directly to that Unix
-socket and requests the fixed Engine API `/v1.47/events` stream with only `type=container`,
-`event=create` and both exact invocation/role label filters. The helper caps headers at 8,192 bytes,
-event framing at 65,536 bytes total and accepts at most one matching Engine-event JSON frame with
-one full 64-hex actor ID. Engine events are external protocol frames, explicitly not WP-201
+socket and requests the fixed Engine API `/v1.47/events` stream with literal `since=0` and only `type=container`,
+`event=create` and the exact random invocation-label filter. The helper caps headers at 8,192
+bytes, each frame at 65,536 bytes and the cumulative stream at 1 MiB, then post-filters the exact
+role. It accepts at most one matching Engine-event JSON frame with one full 64-hex actor ID. Engine
+events are external protocol frames, explicitly not WP-201
 canonical-record JSON. The duplicate-key-rejecting decoder ignores object key order but allows only
 the top-level keys `status`, `id`, `from`, `Type`, `Action`, `Actor`, `scope`, `time` and `timeNano`;
 `status`, `id` and `from` may be absent, while all other keys are required. `Type`, `Action` and
@@ -2275,68 +3259,278 @@ must contain the two exact requested labels; `from` plus every attribute key/val
 UTF-8 bytes. `time` is a nonnegative JSON safe integer. Because real Engine nanosecond timestamps
 exceed JavaScript's safe range, the duplicate-aware raw decoder accepts `timeNano` only as a
 canonical unsigned one-to-19-digit JSON integer token without converting it through `Number`.
-Neither time is used as identity or deadline evidence. Arbitrary HTTP chunk splits are accepted, but the decoded
-event must be one JSON object followed by LF with no trailing bytes; duplicate, unknown, missing,
-non-string, over-limit or second frames refuse. A fixed real-shaped Engine API fixture covers this
-decoder. Only after parsing an HTTP 200 response and complete headers does it write the
-fixed frame `openspell.wp201.docker-event-ready.v1\n` to its private ready pipe; its separate event
-pipe carries only the bounded validated ID. The wrapper must receive that exact ready frame before
-create. This is the independent same-daemon settlement channel. The create request contains those
-labels. A valid create response is exactly one full 64-hex
-container ID. A caught wrapper signal is latched but may not sever an in-flight mutation client
-before that client returns its response-bound ID; no later start is permitted after the latch. On
+Neither time is used as identity or deadline evidence. Arbitrary HTTP chunk splits are accepted;
+each LF-delimited frame contains exactly one JSON object with no trailing bytes inside that frame.
+Valid different-invocation frames are ignored under the bounded cumulative stream, while a second
+matching-invocation frame, duplicate/unknown/missing field, non-string value or over-limit frame
+refuses. A fixed real-shaped Engine API fixture covers this
+decoder. After connecting to the fixed socket, writing and flushing the complete HTTP request, and
+parsing and requiring HTTP 200 plus complete valid headers, the helper writes
+`openspell.wp201.docker-event-ready.v1\n` to its private ready pipe. The wrapper must receive that
+daemon-acknowledged frame before create; the fixed backlog cursor narrows but does not claim to
+eliminate the daemon's header-to-subscription/global-retention race. After the create event arrives,
+the helper emits the bounded validated ID on its
+separate event pipe. This is the independent
+same-daemon settlement channel. The create request contains those labels. Exact full-ID-plus-LF
+stdout from the one create client is captured as cleanup custody after that client is reaped;
+status zero and empty stderr are additional start/success predicates, not deletion-authority
+predicates. A caught wrapper signal is latched; it does not interrupt an in-flight create client
+during the first five-second settlement slice, after which the fixed TERM/KILL/reap rule applies
+even without a response. No later start is permitted after the latch. On
 response loss or a malformed response, the wrapper boundedly continues the already-established
 event stream after the client is reaped. An exact create event supplies its full daemon-issued ID;
 the wrapper cross-checks that ID against repeated exact-label inventories. It never treats a
 momentarily empty query as proof of nonoccurrence. If neither the create response nor the event
 stream supplies an ID by the end of the 15-second create settle/TERM/KILL-reap slice, capped by the
-common hard deadline, the result is permanently cleanup-uncertain and
-cannot emit success. Label listings alone are absence diagnostics only. When an exact response- or
-event-bound ID exists, `docker inspect` must match the
-immutable invocation/role labels, captured image ID, exact argv, network/security/capability/mount
-configuration and expected start count before deletion. Cleanup and all later operations address
-only that verified immutable full ID, never a name or label. A mismatch or multiple diagnostic
-candidates is likewise cleanup-uncertain with no deletion authority. Deterministic test-only shims
-write the exact ID from the real create response into a mode-`0600` side channel before holding that
-response at the after-acceptance and before-delivery cuts, transferring cleanup custody to the
-interruption harness. The before-acceptance cut proves the create request was not sent. Tests never
-claim zero residue after an ID-less mutation timeout; they require a cleanup-uncertain refusal. A
-delayed-acceptance cut makes an initial inventory return empty, then publishes the daemon event and
-container; the wrapper must capture, validate, remove and prove absent that exact late ID.
+common hard deadline, the exact-name recovery inspect above either proves that name absent or
+adopts its fully identity-validated ID for cleanup only; an ambiguous recovery remains
+cleanup-uncertain. None of those outcomes can emit success. Label listings alone are absence
+diagnostics only. Every unique response-, event- or valid name-recovery-bound ID is exact cleanup
+ownership; a conflict refuses success and every held ID is removed and proved absent. `docker
+inspect` must match the immutable
+invocation/role labels, the representation-bound container image identity, exact argv, network/security/resource/mount
+configuration and created state before start or success; mismatch refuses those gates but does not
+discard exact-ID removal authority. Cleanup and all later mutation address only the bounded set of
+at most two custodied full IDs, never a name or label. Multiple inventory-only diagnostic
+candidates refuse success without being adopted.
 
-The wrapper opens and validates `/proc/uptime` on procfs and derives one absolute Linux boot-time
-deadline per image-acquisition, dependency-acquisition and proof operation. Active budgets are 300
-seconds for either acquisition and 900 seconds for proof; each hard deadline adds exactly 55 seconds
-of cleanup reserve. Every child, including pull, create, start, list, inspect and remove, is an
-asynchronous owned process group capped to the remaining absolute deadline. At active-budget expiry
-or the first caught `SIGINT`, `SIGTERM` or `SIGHUP`, cleanup is latched and later signals cannot
+The deterministic interruption seam is internal and closed. This package has no production or
+deployable entrypoint: `scripts/test.mjs` is the sole no-argument, nondeployable proof orchestrator.
+It accepts no CLI, environment or descriptor-selected case and unconditionally runs both the pure
+Vitest fault-model suite and the smaller real-Docker integration suite. Docker unavailability or a
+failed real suite is a proof failure, never a skip or fallback into a fake path.
+
+The pure suite drives the same state machine, argv builders, parsers, custody logic, deadlines and
+cleanup-budget reducer through one sealed test-only driver selected solely by a closed
+source-literal case enum. It covers delayed HTTP headers while request bytes are already flushed,
+and proves READY/create remain blocked until valid complete `200` headers; it also covers status
+`500`, malformed headers, EOF-before-headers, lost/malformed/overflowing create responses,
+missing/duplicate/wrong-role/conflicting/delayed events, empty census followed by late acceptance,
+global-backlog eviction followed by exact-name cleanup recovery, exact-name absence/identity/
+ambiguity outcomes, namespace-gate embedded NUL, unterminated tail, over-cap, missing/reordered/
+duplicate line and trailing-byte frames,
+every hung/error child in pull, fetch, proof, list, inspect, start, remove, watcher and path cleanup,
+signal/deadline races, the exact-ID removal retry and cleanup-budget exhaustion. The fake supplies
+only finite typed operation outcomes and virtual boot-time advances: it cannot inject a pathname,
+executable, argv, callback, parser or alternate implementation.
+
+`scripts/docker-integration.mjs`, invoked unconditionally by `test.mjs` outside Vitest, uses the
+hardcoded real driver and actual `/usr/bin/docker`. It covers one normal full lifecycle through
+HTTP-200-before-READY, equal response/event custody, inspect, start/attach, removal, exact absence,
+empty pre-CLOSE census, CLOSE/helper reap and final census/socket check; actual image/container
+inspect representations, event JSON, create/remove stdout and both not-found classifications; a
+no-create watcher that proves the daemon's real header/close behavior; and the three real create
+cuts: before issue, after daemon acceptance and full-ID capture but before parent delivery, and
+after parent custody but before inspect/start. The closed `scripts/interruption-harness.mjs` owns
+those three pause points. `scripts/docker-integration.mjs` is the outer supervisor and starts one
+fresh harness process group per source-literal case with this exact descriptor table; none of fds
+`3` through `6` is inherited by a Docker client, event helper, path helper or container:
+
+| Descriptor | Direction | Contract and total cap |
+|---:|---|---|
+| `0` | none | `/dev/null` |
+| `1` | harness to supervisor | terminal stdout, 64 bytes |
+| `2` | harness to supervisor | terminal stderr, 128 bytes |
+| `3` | supervisor to harness | one release frame, 160 bytes, then EOF |
+| `4` | harness to supervisor | one identity frame, 256 bytes, then EOF |
+| `5` | harness to supervisor | one accepted-ID frame, 128 bytes, then EOF |
+| `6` | harness to supervisor | operation-audit stream, 512 bytes, then EOF |
+
+The three exact case tokens are `before-issue`, `after-daemon-accept-before-delivery` and
+`after-parent-custody-before-start`. The release frame is
+`openspell.wp201.real-cut-release.v1\n<case>\n`. The harness emits the accepted-ID frame and then the
+identity frame only after its event watcher has produced READY and the source-fixed case-specific
+pause point has been reached; the complete identity frame is the reached-cut attestation:
+`openspell.wp201.real-cut-identity.v1\n<case>\n<invocation-value>\n<tmp-or-var-tmp-token>\n<watcher-pid>\n<watcher-proc-starttime>\n`.
+The PID and Linux `/proc/<pid>/stat` field-22 start time are shortest unsigned decimals; the parent
+token is exactly `tmp` or `var-tmp`. The accepted-ID frame is
+`openspell.wp201.real-cut-accepted-id.v1\n<value>\n`, where value is exactly `none` for
+`before-issue` and the daemon-issued 64-lowercase-hex ID for the two accepting cuts. For an
+accepting cut the harness completes and flushes that whole frame before its reached-cut identity
+frame. At `after-daemon-accept-before-delivery`, the interception seam has captured the full ID but
+has not delivered it to the wrapper state machine. At `after-parent-custody-before-start`, delivery
+and immutable custody recording have completed but no inspect or start/attach dispatch has begun.
+At `before-issue`, the exact `none` frame is flushed after READY while create remains unissued.
+Partial, duplicate, reordered, unknown, over-cap or trailing bytes in
+any of these single frames fail the cut. The supervisor continuously drains fds `1`, `2`, `4`, `5`
+and `6`, requires the complete audit-open frame, validates the watcher PID/start-time identity in
+`/proc`, requires the case-appropriate accepted-ID frame to precede the reached-cut identity frame,
+and derives the one invocation path, exact name and label solely from the authenticated identity
+frame. It then sends exactly one `SIGTERM` to the still-unreaped harness PID whose child identity it
+recorded at spawn. The installed production signal handler first atomically latches the same cleanup
+and no-later-dispatch state used outside tests, then synchronously writes and flushes
+`openspell.wp201.real-cut-signal-latched.v1\nSIGTERM\n` on fd `6`. Only after the supervisor receives
+that complete acknowledgment may it write the matching release frame and close fd `3`; consuming
+release merely unblocks the case pause and cleanup must observe the already-latched state. Signal
+delivery failure, harness exit before acknowledgment, missing/duplicate/wrong-signal acknowledgment,
+release before acknowledgment or release consumed without the latch fails the cut.
+For `before-issue`, release leaves create unissued. For
+`after-daemon-accept-before-delivery`, release transfers the already captured immutable full ID into
+response cleanup custody only, with every configuration/start/success gate permanently false. For
+`after-parent-custody-before-start`, the existing custody is preserved and cleanup resumes at its
+next monotone state. No release path discards an accepted ID or re-enters normal execution.
+
+All three cases exercise exactly the proof role `root-bridge-proof-v1` and row `root-fmt`; no
+acquisition container is reachable in the interruption harness. The supervisor therefore derives
+the sole name as `openspell-wp201-<invocation-value>-proof-root-fmt` and the sole role filter from
+that source-fixed case mapping rather than from harness-selected telemetry.
+
+The audit stream opens with exact bytes `openspell.wp201.real-cut-audit-open.v1\n`. Immediately
+before either allowed start/attach child spawn, the single Docker dispatcher must synchronously
+write and flush
+`openspell.wp201.real-cut-start-attach.v1\n<role>\n<owned-full-ID>\n`; a partial/failed write latches
+refusal and makes the spawn unreachable. `<role>` is the exact role label already selected for that
+container. Once the signal latch is set, the dispatcher makes create, configuration-inspect and
+start/attach spawns unreachable. Any attempted post-latch call must synchronously emit respectively
+`openspell.wp201.real-cut-forbidden-create.v1\n`,
+`openspell.wp201.real-cut-forbidden-config-inspect.v1\n` or
+`openspell.wp201.real-cut-forbidden-start-attach.v1\n` and refuse without spawning; cleanup remove,
+absence and census operations remain reachable through their separate closed cases. After cleanup
+has settled every child including the event watcher, the harness writes
+`openspell.wp201.real-cut-audit-close.v1\n`, closes fd `6`, then closes fds `4` and `5`, emits its
+terminal streams and exits. Unknown, duplicate, out-of-order, partial, over-cap or trailing audit
+frames, close before watcher settlement, or EOF before the close frame fail. Each interruption cut
+requires exactly audit-open, signal-latched and audit-close with zero start/attach or forbidden
+frames. Static boundary tests prove every
+allowed start/attach argv reaches only this dispatcher and that no alternate child-spawn site can
+issue it. They also prove the three reached-cut frames are emitted at distinct closed source sites
+with the exact before-create, captured-not-delivered and delivered-custody predicates above; a case
+token cannot be relabeled at runtime, and every create/configuration-inspect/start spawn checks the
+same signal latch before child construction.
+
+For each cut, the required terminal vector is exit status `73`, empty stdout and stderr exactly
+`openspell.wp201.interrupted-before-start.v1\n`; the exact bridge-success marker must be absent from
+both streams. After reaping the harness, the supervisor requires EOF on all five harness-output
+pipes (fds `1`, `2`, `4`, `5` and `6`), the original
+watcher PID/start-time identity absent (a reused PID with a different start time does not match), the
+harness process group absent, the accepted ID absent when supplied, both independently queried
+exact-name and label censuses empty, and the derived invocation path absent under both fixed parents.
+The before-issue cut instead requires the exact name and label to have remained absent. Every
+ID-owning cut must have the harness itself remove and prove absent that exact ID. Only after one of
+these pass assertions fails may fixed supervisor teardown remove the recorded ID; teardown is
+reported separately and can never convert that cut to success. Thus a harness that ignores the cut,
+starts the container and later removes all residue still fails its exact terminal vector and audit.
+Delayed subscription remains in the deterministic driver because a compliant real daemon cannot be
+forced reproducibly into that scheduling race.
+
+Static boundary tests prove the real no-argument path constructs only the real driver, cannot import
+or select a fake case, and does not read CLI arguments, test environment or the harness descriptor.
+Path-cleanup cases use the actual filesystem and fixed helper against test-owned invocation
+directories. Tests never claim zero residue after an ID-less mutation timeout; they require the
+cleanup-uncertain refusal.
+
+The watcher lifecycle has one sequence on success, refusal and interruption: establish the socket
+connection and flush the request; receive READY; issue at most one create; reap the create client;
+settle response/event identities; if both are absent, run the one exact-name recovery inspect in its
+branch-reassigned slot and keep the watcher open so any late matching event joins the bounded union;
+inspect and, only when every success gate holds, start/attach and reap the container; remove and
+absence-check every then-known unique response-, event- or valid name-recovery-custodied full ID;
+run the preliminary exact-label census; send CLOSE; accept any one final matching event emitted
+before helper EOF into the same at-most-two-ID union; require helper/event/ready pipe
+EOF and reap the helper; remove and absence-check any newly learned final ID; then perform the final
+empty exact-label census and socket identity check. CLOSE is the event-custody linearization point:
+the helper parses and emits every complete matching frame already received before processing CLOSE,
+then closes the socket and can emit no event after its event pipe EOF. A newly emitted ID after the
+preliminary census consumes the remaining per-ID slots before the one post-CLOSE census; the
+preliminary census is not rerun. If the preliminary census is empty, it passes. If it contains only
+an ID supplied by the sole matching event after that census started, that event—not the list row—
+confers custody and the ID is deferred until watcher closure. Any other nonempty row latches
+cleanup uncertainty, never deletion authority; the watcher is still closed and final checks still
+run, but success is impossible. A second matching event at any time refuses and is cleanup-uncertain.
+Paths that never issue create still close and reap their established
+watcher with zero events. No row starts a later watcher until the prior watcher, all IDs and both
+censuses have settled. The ten-second final check runs only after watcher reap and all final-ID
+cleanup and also revalidates the socket.
+
+The wrapper holds and strictly parses `/proc/uptime` through bounded positional reads at offset zero,
+derives one absolute Linux boot-time deadline per image acquisition, dependency acquisition and the
+complete proof matrix, samples around every transition
+and polls at most every 50 milliseconds while a child is live. Active budgets are 300 seconds for
+either acquisition and 900 seconds for proof; each hard deadline adds exactly 160 seconds of cleanup
+reserve. Every child from the closed operation table is an asynchronous owned process group capped
+to the remaining absolute deadline. At active-budget expiry or the first caught `SIGINT`, `SIGTERM`
+or `SIGHUP`, cleanup is latched and later signals cannot
 reenter or bypass it. A Docker create client is first allowed at most five seconds to settle so its
 response-bound immutable ID is not discarded; it then receives `SIGTERM`, at most five seconds,
 `SIGKILL`, and at most five more seconds to reap. Other active children begin with that same five-
-second TERM interval and five-second KILL/reap interval. An ID-less create after forced settlement
-is classified cleanup-uncertain, never absent. For an exact held ID, the wrapper has at most ten further
-seconds, capped by the same absolute deadline, for verified-ID force removal and an exact absent
-inspection; those Docker clients use the same owned-group TERM/KILL/reap rule. It then has ten
-seconds to close the event helper's control pipe and await socket/ready/event EOF plus child reap:
-five seconds for graceful closure, three after `SIGTERM` and two after `SIGKILL`. The helper is an
-owned process group under the same deadline; early EOF, disconnect, framing overflow, header hang or
-failure to settle refuses. It has at most 15
-further seconds for target/test tmpfs lifetimes to end and to remove the Cargo home, vendor tree,
-ledger, label record and invocation directory, then confirms every tracked pathname absent. Five
-seconds remain only as scheduling reserve. No phase receives a fresh cleanup deadline.
+second normal-settlement interval, then receive `SIGTERM`, at most two seconds, `SIGKILL`, and at
+most three seconds to reap. An ID-less create after forced settlement
+is unresolved until the one exact-name recovery inspect. Only a present, identity-valid result can
+add cleanup custody; absent, ambiguous, hung or identity-invalid recovery is terminally
+cleanup-uncertain because no client-side watcher close, name inspect or census is a daemon-side
+completion barrier for the already-issued create.
+
+The reserve is a non-overlapping sum: 15 seconds for create settlement/TERM/KILL/reap, 10 for the
+mutually exclusive other-active-child or post-settlement exact-name-recovery inspect, 80 for at most
+two exact IDs, 10 for the pre-CLOSE label census, 10 for watcher
+closure, 10 for the post-CLOSE census plus socket revalidation, 15 for the path helper including the
+parent's final absence check, and 10 seconds scheduling reserve. Each ID receives at most four
+ten-second Docker slots. Slot one issues force-remove attempt 1 to that exact ID; slot two always
+runs an exact absence inspect. If and only if that inspect reports present or is ambiguous/hung,
+slot three issues force-remove attempt 2 to the same ID and slot four performs the mandatory final
+absence inspect. No ID receives a third remove. A first removal failure cannot suppress the first
+absence probe, and a first absence ambiguity cannot suppress the retry. Only the frozen exact
+not-found classification after attempt 1 or the final probe releases custody; otherwise cleanup
+fails. Each ten-second Docker slot allows five seconds normal settlement, two after `SIGTERM`, and
+three after `SIGKILL` for reap, always capped by the one outer deadline.
+
+The shared ten-second child/recovery slot has the same five/two/three normal/TERM/KILL-reap split.
+It is spent once: on the active non-create child when cleanup first latches, or, only after the
+15-second create slice ends with neither response nor event custody and no other non-watcher child
+live, on the one exact-name recovery inspect. A hung recovery therefore cannot consume any of the
+80-second two-ID allocation or displace later census, watcher, socket, path or scheduling work.
+
+Cleanup preserves the active operation, exact ID, removal-attempt number and any completely parsed
+result when it latches. Settling an already-active attempt-1 removal in the shared slot advances to
+its mandatory first absence probe; it never restarts attempt 1. Settling the first absence probe
+releases custody on exact not-found or advances to attempt 2 on present/ambiguous. Settling attempt
+2 advances only to the mandatory final absence probe, and settling that final probe either releases
+custody on exact not-found or fails cleanup. The same carry-forward rule applies when the child
+settles normally during the latch transition. No completed result is discarded, no state regresses,
+and the remaining per-ID allocation starts at the next state, so a signal during normal cleanup
+cannot authorize a third removal or repeat an already-completed slot.
+The same monotone cleanup cursor records preliminary census, CLOSE sent, watcher EOF/reap, final-ID
+settlement, final census/socket check, path-helper launch/completion and parent absence check.
+Latching during one of those children spends the shared slot settling that exact operation and then
+continues at its successor; it never resends CLOSE, restarts a census already completed, relaunches
+the production path helper or discards a parsed result. An ambiguous/hung nonrepeatable operation
+marks cleanup failed while later independently safe absence/settlement steps still run within their
+remaining fixed slots.
+
+After every identity known before census launch has reached exact absence, the wrapper spends the
+dedicated preliminary-census ten-second slot on one exact-label census while it continues draining
+the event pipe. Empty output passes. A nonempty output may be deferred only when every listed ID is
+the same one full ID supplied by the sole matching event after census launch; custody comes only
+from that event, and every other nonempty result latches cleanup uncertainty. It then has ten
+seconds to send CLOSE and await socket/ready/event EOF plus child reap: five seconds for graceful
+closure, three after `SIGTERM` and two after `SIGKILL`. The helper is an owned process group under
+the same deadline; early EOF, disconnect, framing overflow, header hang or failure to settle
+refuses. A sole final event emitted before EOF joins the at-most-two-ID union and is processed from
+the still-reserved per-ID slots after watcher reap; an already-processed duplicate ID consumes no
+new slot, while a second matching event refuses as cleanup-uncertain. Only after every such final ID
+has reached exact absence does the wrapper spend ten seconds on the one final empty exact-label
+census and socket device/inode revalidation while the private Docker config still exists. A
+nonempty final census without corresponding cleanup custody is terminally cleanup-uncertain and
+does not authorize label- or name-based deletion. The path helper then has 15 seconds to
+restore verified directory owner-write bits, remove the source/vendor/toolchain/control/config/
+ledger/record tree and invocation directory, sync its fixed parent and confirm every tracked
+pathname absent: at most four seconds normal work, three after `SIGTERM`, three after `SIGKILL` for
+reap, and five for the parent's exact final `lstat` absence check. Ten seconds remain only as
+scheduling reserve. No phase receives a fresh cleanup deadline.
 
 From successful invocation-directory creation onward, one outer `try/finally` latches this cleanup
 path for every normal success, ordinary nonzero exit, validation refusal, setup exception, deadline
-and caught signal. Every post-create outcome with an exact response/event ID removes and absence-
-checks that ID. The original success or refusal is emitted only after child reap, container absence
+and caught signal. Every post-create outcome removes and absence-checks the unique union of exact
+response/event/name IDs. The original success or refusal is emitted only after child reap, container absence
 watcher settlement and pathname absence are all confirmed; cleanup failure replaces any pending success.
-Path removal runs in a separate asynchronous owned process group by reinvoking the pinned Node
-executable in a private cleanup mode. That helper accepts only the one fully resolved invocation
-path already recorded in memory, after the parent and child each revalidate its system-temp parent,
-fixed prefix, no-symlink ancestry, mode `0700`, invoking uid/gid and matching durable label record.
-Its complete 15-second allocation includes at most five seconds of normal work, five after
-`SIGTERM`, and five after `SIGKILL` for reap; the parent then performs the final `lstat`-absence check
-within that same allocation. No glob, environment-selected root or synchronous recursive removal
+Path removal runs in a separate asynchronous owned process group through the fixed
+`scripts/path-cleanup-helper.mjs` descriptor protocol above. It accepts only the fixed parent token,
+invocation value, captured directory device/inode and cleanup-state enum needed to reconstruct and
+authenticate the one directory. Parent and child each revalidate the literal system-temp parent,
+fixed prefix, no-symlink ancestry, mode `0700`, invoking uid/gid and the state-appropriate record
+rule.
+Its complete 15-second allocation uses the exact four/three/three/five split above. No glob,
+environment-selected root or synchronous recursive removal
 is allowed.
 
 A deadline, image mismatch, ambiguous creation, child-reap failure, cleanup failure or unconfirmed
@@ -2346,8 +3540,12 @@ outside the repository and no interrupted invocation has a success result. Inter
 the three create-response cuts, delayed daemon acceptance after an empty inventory, ID-less mutation
 uncertainty, normal success, every setup/refusal checkpoint, implicit-pull refusal, first plus
 repeated signals, event-header hang/disconnect/overflow/close hang, and hung
-pull/fetch/proof/list/inspect/remove/path-cleanup children, and require
-absence whenever exact cleanup custody exists. Unrelated ambient CI is not an input to a WP-201
+pull/fetch/proof/list/inspect/remove/path-cleanup children, and require container absence whenever
+exact container cleanup custody exists. A deliberately hung path helper must yield the fixed
+cleanup-failed result after TERM/KILL/reap; the test harness then reruns the same fixed helper with
+the unchanged authenticated directory identity solely as teardown and requires pathname absence
+before the test returns. That teardown cannot convert the production refusal to success. Unrelated
+ambient CI is not an input to a WP-201
 proof case.
 
 A separately authorized external proof additionally requires committed, independently reviewed
