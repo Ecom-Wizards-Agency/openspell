@@ -15,8 +15,10 @@ exact 41-file hosted history fetch and exact five-item migration dry run on one 
 disposable target, while structurally excluding apply, raw hosted credentials in the CLI cell,
 broad credentials, direct CLI egress, mutation, reusable readiness and production authority.
 
-Ordinary implementation and CI are offline and synthetic. No actual target, credential, official
-download, hosted query or dry run is authorized by this brief or by merging its source.
+Source behavior and proof execution are offline and synthetic. Networked dependency acquisition is
+setup rather than proof evidence; its checksum-locked vendored bytes are explicit immutable build
+inputs under the architecture's custody rules. No actual target, credential,
+official download, hosted query or dry run is authorized by this brief or by merging its source.
 No adapter candidate may be written until a reviewed read-only discovery-policy addendum, one
 separately authorized disposable discovery run and a reviewed adapter-candidate architecture
 addendum have fixed the observed topology, exact ignored path and deny-live boundary. The staged
@@ -202,9 +204,21 @@ live wrapper. Status and handover update only after reviewed merge and exact-mai
     tagged session, guard, credential, egress namespace, watcher and ephemeral-root residue.
 38. Keep source proof cases synthetic and offline. They must not contact Supabase, a browser, a real
     database, a service, production data, a provider or Amazon. Ambient repository CI may run its
-    unrelated PostgreSQL suites, and the reviewed toolchain wrapper may use a network-disabled
-    Docker build container when the pinned local Rust toolchain is unavailable; neither may become
-    proof-case evidence or an external adapter.
+    unrelated PostgreSQL suites. For a cold container run, the reviewed wrapper uses the exact
+    bounded acquisition and proof-container protocol in the architecture;
+    any `wp201-internal` bridge-success or coordinator-success run must use its root, network-disabled
+    proof container even when the local toolchain exists. The networked operation is not evidence, while
+    its checksum-locked vendored dependency bytes are explicit ledger-bound, read-only build inputs.
+    Neither phase may become an external adapter. Use exact-ID preinspection plus `--pull never`,
+    root proof `--read-only`/capability/no-new-privileges isolation and the architecture's immutable-
+    label create-response reconciliation. Enforce its absolute boot-time deadlines: 300-second
+    acquisition or 900-second proof active budget plus one 55-second total cleanup reserve, with a
+    five-second create-response settlement interval, five-second TERM and KILL/reap intervals,
+    ten-second verified-ID container removal/inspection, ten-second bounded watcher settlement,
+    15-second inclusive path-helper run/TERM/KILL/reap/absence and five-second scheduling reserve.
+    Latch the first signal, pre-establish the exact same-daemon event stream and route success and
+    every refusal through one outer cleanup `finally`. Any unconfirmed child, container or pathname residue
+    refuses and cannot emit success.
 39. Keep the external proof adapter absent from this source slice. Later, land and use the separately
     reviewed non-writing discovery policy, then land an adapter-candidate architecture addendum that
     fixes the ignored path and deny-live boundary before staging the exact inert candidate. Measure
@@ -277,7 +291,8 @@ WP-201 does not:
 - pinned `cargo fmt --check`, `cargo check --locked`, clippy with warnings denied, rustdoc with
   warnings denied and `cargo test --locked` for all three crates and bridge feature combinations;
 - root-authority CI separately runs no-default-feature and `wp201-internal` check, clippy, rustdoc
-  and test commands through its reviewed pinned-toolchain wrapper;
+  and test commands through its reviewed pinned-toolchain wrapper; wrapper boundary tests prove an
+  acquisition-only locked fetch and a distinct network-disabled/offline proof container;
 - exact module, dependency, feature and reverse-dependency inventories;
 - deterministic golden regeneration comparison;
 - exhaustive pure transition/effect/cut/resource accounting;

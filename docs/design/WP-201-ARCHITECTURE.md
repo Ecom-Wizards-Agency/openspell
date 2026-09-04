@@ -16,7 +16,9 @@ The coordinator has no apply phase, apply ticket, apply argv, write approval, de
 service, listener or production target. Its successful result is a closed, non-authorizing
 observation. It never produces a reusable readiness token or carries live custody into WP-202.
 
-Source implementation and ordinary CI are completely synthetic, credential-free and offline. This
+Source behavior and proof execution are completely synthetic, credential-free and offline. The
+networked dependency-acquisition operation described below is setup rather than proof evidence;
+the checksum-locked vendored dependency bytes it produces are explicit, immutable build inputs. This
 document authorizes only that source slice. It deliberately contains no live external adapter. The
 external work is ordered: a reviewed read-only discovery-policy addendum; one separately authorized
 disposable discovery run; a reviewed adapter-candidate architecture addendum; the exact inert,
@@ -140,6 +142,9 @@ tools/hosted-migration-preparation-proof/
   rust-toolchain.toml
   package.json
   tsconfig.json
+  scripts/cargo.mjs
+  scripts/docker-event-helper.mjs
+  scripts/test.mjs
   src/lib.rs
   src/canonical.rs
   src/policy.rs
@@ -241,7 +246,7 @@ pub mod wp201_internal {
     pub fn install_preparation_state_root(bootstrap: PreparationBootstrapLeaseV1,
         empty_state_root: std::os::fd::OwnedFd,
         registry_signing_key: std::os::fd::OwnedFd,
-        trusted_clock: std::os::fd::OwnedFd,
+        trusted_clock_procfs_root: std::os::fd::OwnedFd,
         installation_authorization_bytes: &[u8],
         installation_authorization_signature: &[u8; 64])
         -> Result<StateRootInstallationOutcomeV1, PreparationRefusal>;
@@ -372,8 +377,59 @@ For this source-only slice, `inspect_installed_preparation_policy` accepts one r
 and compares its complete synthetic-deny canonical bytes to the crate's compile-time SHA-256 before
 parsing the root issuer key, clock/entropy identities, runtime-custodian key and executable-policy
 digest. No journal, authorization or caller field selects that fixture digest. This constructor is
-not the future external trust path. The root and runtime source golden copies are byte-identical
-canonical JSON with this exact key order:
+not the future external trust path. The descriptor must have `FD_CLOEXEC`, be opened read-only, and
+identify one root-owned mode-`0600`, link-count-one, 2,508-byte regular file. It is consumed on every
+outcome and read to exact EOF with offset-independent `pread`. The root and runtime source golden
+copies are byte-identical canonical JSON whose SHA-256 is exactly
+`12b01e77e84cb81a15fc66e3c32a58a45f5715bd8b81d897c68a29d58b0fe654`:
+
+```json
+{
+  "schemaVersion": "openspell.preparation-installed-root-policy.v1",
+  "policyClass": "synthetic_deny_live",
+  "sourceRevision": "0000000000000000000000000000000000000000",
+  "proofBootstrapVerifierIdentitySha256": "78d763e84d10a60c977a5b897c00907abebc4b5d164fa2f97b97338182d4d477",
+  "proofBootstrapManifestSha256": "8f6f509889310fb71ea2422be4278ae30ac318e37964c532bccc1054b09c176c",
+  "proofBootstrapActivationPublicKeyHex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+  "rootIssuerPublicKeyHex": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+  "runtimeCustodianPublicKeyHex": "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+  "credentialBrokerSignerPublicKeyHex": "d759793bbc13a2819a827c76adb6fba8a49aee007f49f2d0992d99b825ad2c48",
+  "credentialBrokerRequestVerifierPublicKeyHex": "0d7550754e0800a5d237eef5826035766b9b3e5a15868a940ab289958788e3b0",
+  "credentialBrokerRequestDomainSha256": "ce5bef764464d6c79aca51320bb575c9f91288dd46dcd64c0c128be582de2b35",
+  "credentialBrokerRuntimeIdentitySha256": "fcbcaff38227f86150d35497f0c5ea24fa4e6932d0cfa757b6acc485cac58617",
+  "credentialBrokerProtocolSha256": "92312c2bc3d8a57c5a4fb8ca00099e3836920dd2da03efa4b1dd9ecec5f50590",
+  "credentialBrokerPeerPolicySha256": "f7f881314db9d3a9c6cda258ceb914da92f00906c4bf90dbdcf67ec297aaac84",
+  "credentialStoreResourceMapSha256": "423fd97685af7c769fdc5ebee5bd56120ea36e8bc96579a2dac52f39a981789a",
+  "credentialStoreRoutePolicySha256": "7567c1b00916b6ace1fbf1c5efb81ce6603a01d98e02d238a079325cda1145e1",
+  "credentialStoreDnsPolicySha256": "30e20bca1f656f501b11cb74cdbc1a159f89fb05e1751a951bbe12e0f9f17827",
+  "credentialStoreTlsServerPolicySha256": "f3b6137d28617f6423352e4a7a2df599d1caaefb5528c63fadbb1d4e5f01bfaf",
+  "credentialStoreProtocolSha256": "6e31c19be2d85a8d2c9c30311e13500498365dce6b628b2235a214d16ef57901",
+  "trustedClockProviderSha256": "e0a8afcfcc7276f426b72790ff4175985431820d84b71ca0069de5c14a87c944",
+  "entropyProviderSha256": "83761a698cb6f300add9c12415f4877650b53c6b75136c66f24759d7e01ba539",
+  "sourcePolicySha256": "b938043cfaedfd235b7b2f46ee0f73c1ecb29c7d94632ccb8cff9d94824d0891",
+  "runtimePolicySha256": "b8531e4533e88898cdc0cc1aa932e3259af2ff435ae523e6569269b8c606567f",
+  "privilegedExecutablePolicySha256": "105bd1ce5e4669985b22082904d2cd5796f62841d30a9468b91960f00f752cf2",
+  "privilegedExecutablePolicyGeneration": 0,
+  "targetClass": "synthetic_only",
+  "externalCapability": false,
+  "liveAdapterAllowed": false
+}
+```
+
+The all-zero revision is an explicit non-live sentinel. For source proof signing only, the public,
+non-secret Ed25519 seeds are `[0x11; 32]` for bootstrap activation, `[0x22; 32]` for the root issuer,
+`[0x33; 32]` for runtime custody, `[0x44; 32]` for the broker signer and `[0x5a; 32]` for registry/
+broker-request verification. Their public keys are the five values above in the same order. These
+seeds may exist only in coordinator `cfg(test)` fixtures or the already defined sealed synthetic
+registry memfd; no other constructor or future live policy accepts a raw seed. This fixes the
+exact valid bootstrap and installation-authorization signatures without creating a live trust root.
+Every positive-generation or live-policy constructor must also reject the all-zero source revision
+and reject any role public key that equals any of these five synthetic public keys, including reuse
+under a different role. Negative tests cover every live role against every synthetic key and every
+cross-role reuse; accepting an ordinary signature under a published fixture key is never a live
+trust path.
+
+The canonical JSON has this exact key order:
 
 ```text
 schemaVersion, policyClass, sourceRevision,
@@ -401,6 +457,22 @@ Unknown/reordered fields, a nonzero source generation or a digest mismatch refus
 access.
 The source slice compiles only a deny-live synthetic policy whose keys and target class cannot
 authorize an external route.
+
+For this source slice, `trustedClockProviderSha256` is exactly
+`e0a8afcfcc7276f426b72790ff4175985431820d84b71ca0069de5c14a87c944`, the SHA-256 of these exact
+canonical bytes:
+
+```json
+{
+  "schemaVersion": "openspell.linux-trusted-clock-provider.v1",
+  "realtimeClock": "CLOCK_REALTIME",
+  "monotonicClock": "CLOCK_BOOTTIME",
+  "bootIdRelativePath": "sys/kernel/random/boot_id",
+  "timeNamespaceOffsetsPathTemplate": "<decimal-getpid>/timens_offsets",
+  "timeNamespacePolicy": "current_process_zero_offsets",
+  "procfsMagicHex": "00009fa0"
+}
+```
 
 The policy deliberately does not contain the current bootstrap-record digest or its physical lock
 identity. The signed bootstrap record contains `currentPolicySha256`, so including the reciprocal
@@ -503,6 +575,56 @@ generation and exact reviewed values. `maximumDurationSeconds` is 300. The three
 operation authorization's canonical millisecond UTC form and ordering/freshness rules, with
 `0 < expiresAt - issuedAt <= 300 seconds`. The nonce is lowercase 64-hex and the authorization is
 bound to one state-root identity, so it cannot initialize a second root.
+
+The source-only `registry_signing_key` descriptor is a synthetic sealed Linux memfd containing
+exactly one fixed, public, non-secret 32-byte Ed25519 test seed and no framing. Every seed byte is
+`0x5a`; its Ed25519 public key is
+`0d7550754e0800a5d237eef5826035766b9b3e5a15868a940ab289958788e3b0`. It proves parsing,
+key matching, signing and storage mechanics only; it does not prove exclusive signer custody and
+any holder or duplicate may read the public fixture bytes. Before reading it, the installer must already have
+verified `policyClass: synthetic_deny_live`, `targetClass: synthetic_only` and both capability
+booleans false. The descriptor must have `FD_CLOEXEC`, `O_RDWR`, tmpfs magic, size 32, link count
+zero, mode `0600`, production uid/gid zero and at least `F_SEAL_WRITE | F_SEAL_GROW |
+F_SEAL_SHRINK | F_SEAL_SEAL`; additional kernel hardening seals are allowed. It is read exactly once
+with offset-independent `pread`, the Ed25519 public component must equal
+`credentialBrokerRequestVerifierPublicKeyHex`, and its raw-seed digest must never appear in a record.
+The installer performs one `pread`; only its local seed buffer and signing object are zeroized on
+every outcome. The sealed memfd itself is immutable and intentionally not claimed to be erased,
+single-reader or unreadable to the supplying test harness. EOF, short/long content, missing seals,
+path-backed files, wrong flags/metadata/filesystem or key mismatch refuses before the first
+state-root child. A crate-private `cfg(test)` expected-owner override permits only the current test
+uid/gid for this descriptor and the synthetic filesystem fixtures; it cannot compile into a
+dependency build, cannot be selected through the bridge and leaves production validation fixed at
+uid/gid zero. `cfg(test)` may construct this exact memfd from the fixed public seed. Cross-crate
+bridge success is instead accepted only in the isolated root proof container defined below: that
+container runs without a user override, has no writable host mount, opens its actual container
+procfs and creates every signer and state-root fixture inside its private tmpfs. A local non-root invocation may run pure
+and refusal tests, but it cannot claim the bridge-success acceptance row. No live
+policy or external constructor may accept this raw-seed format; the adapter-candidate addendum must
+define a distinct signer capability and entry point.
+
+The source-only `trusted_clock_procfs_root` descriptor is an already-open `O_RDONLY | O_DIRECTORY |
+O_CLOEXEC` fd for procfs as observed by the current root-authority process. The installer verifies
+`FD_CLOEXEC`, directory type, procfs filesystem magic `0x00009fa0`, root ownership and absence of
+writable/append flags, then obtains a positive `getpid()` and formats it as unsigned base-ten ASCII
+with no sign or leading zeroes. `readlinkat(procfs_root, "self")` must return exactly that decimal
+component; this checks the procfs view without following its magic link. A second `getpid()` must
+match. The installer uses guarded
+`openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV)` for the
+fixed boot-ID path `sys/kernel/random/boot_id` and the internally constructed
+`<decimal-getpid>/timens_offsets` path. It never resolves `self`. It parses the time-
+namespace offsets semantically and requires exactly `monotonic 0 0` and `boottime 0 0`, refusing
+missing, extra, nonzero or malformed rows. Each sample reads exactly one lowercase canonical UUID
+plus line feed, reads `CLOCK_REALTIME` and `CLOCK_BOOTTIME` directly with `clock_gettime`, then
+reopens and rereads boot ID plus offsets and requires both unchanged. This is explicitly the current
+process's zero-offset time namespace, not a claim about an initial host user/PID namespace.
+Realtime is retained at nanosecond precision for
+authorization comparisons and floored to milliseconds only when a canonical timestamp is stored;
+boottime is a nonnegative nanosecond count. Initial and pre-final-transition samples must have the
+same boot ID, nondecreasing clocks and exact provider-identity digest above. There is no IPC frame,
+network, caller timestamp, timeout or fallback clock. The descriptor is consumed on every outcome.
+Crate-private `cfg(test)` clock traits may provide deterministic unit samples but cannot construct a
+bridge capability or compile into non-test code.
 
 `boundStateRootIdentitySha256` is SHA-256 of
 `openspell.hosted-migration-state-root-identity.v1\n<canonical-identity>\n`. Its canonical key order
@@ -1528,7 +1650,9 @@ The external disposable proof requires a newly provisioned isolated proof host/r
 selects `preparation_v2` and proves v1 absent. Initialization is a distinct root installation
 capability that may act only on an already-open, completely empty, root-owned mode-`0700` directory
 on the approved local filesystem. Production ownership is fixed to uid/gid zero; alternate
-ownership exists only in `cfg(test)` synthetic constructors and cannot reach the bridge. The
+ownership exists only in `cfg(test)` synthetic constructors and cannot reach the bridge. Source
+acceptance exercises the unrelaxed bridge-success path only as uid/gid zero inside the isolated
+root proof container defined below; ordinary local non-root tests do not satisfy that row. The
 installer validates the complete installed policy, held bootstrap lease/current tuple, canonical
 installation authorization and root-issuer signature, registry-signing public component,
 state-root identity and trusted-clock identity before it creates the first child. Its initial
@@ -2042,8 +2166,152 @@ logs, panic output or cleanup errors.
 WP-201 test behavior uses only synthetic assets, fake gateways, fake credentials and disposable
 local files. It opens no external network and contacts no Supabase project, browser, database,
 service or Amazon endpoint. The repository's ambient CI may provision PostgreSQL for unrelated
-packages, and the reviewed Rust toolchain wrapper may use a network-disabled Docker build container
-when the pinned local toolchain is unavailable; neither is an input to a WP-201 proof case.
+packages. The coordinator package owns its Rust wrapper and routes every cross-crate bridge-success
+test through the reviewed root proof container even when the pinned toolchain is installed locally.
+Feature compile checks and pure/refusal tests may use the prior crates' existing entry points; merely
+building `wp201-internal` does not satisfy a bridge-success row. The proof container runs as uid/gid
+zero by omitting `--user`, uses the pinned local image ID as described below, has `--network none`,
+`--read-only`, `--cap-drop ALL` and `--security-opt no-new-privileges`, has no writable host mount
+or Docker socket, and creates all ownership-sensitive fixtures under private tmpfs mounts. Its
+complete writable mount allowlist is `CARGO_HOME`, `CARGO_TARGET_DIR`/`OUT_DIR`, `TMPDIR`/test
+fixtures and a minimal home, all separate tmpfs mounts; the image root and toolchain remain
+read-only. The no-feature root-authority checks retain their pinned local fast path, but they do not
+satisfy a bridge-success row.
+
+Before a cold container proof, the wrapper creates one fresh mode-`0700` invocation directory owned
+by the invoking uid/gid in a resolved system temporary directory outside the workspace. It first
+inspects the exact digest reference without pull. If absent, a separately bounded setup command may
+pull only that digest; the resulting shared image/layers are intentionally retained as an immutable
+cache, not treated as proof output. The wrapper then inspects the digest reference, requires its
+repo-digest set to contain the exact configured digest and captures its full `sha256:<64-hex>` local
+image ID once. Every later `docker create` uses only that captured ID plus `--pull never`; neither
+the acquisition nor proof create may perform an implicit pull.
+
+A first acquisition container runs as the invoking uid/gid and may use only the package network, a
+read-only source mount, that invocation directory and a fresh Cargo home. It also uses `--read-only`,
+`--cap-drop ALL` and `--security-opt no-new-privileges`. It runs exactly `cargo fetch --locked`
+followed by `cargo vendor --locked --versioned-dirs`; it may not compile, run a build script or
+execute a proof. Every non-workspace/non-path lock entry must be a checksummed registry source, and
+the boundary test separately pins the exact local path-package set. After acquisition, the wrapper
+requires every output to be owned by its invoking uid/gid, rejects links and special files, and
+normalizes the vendor tree to mode `0500` directories and mode `0400` regular files; source execute
+bits confer no authority because Cargo compiles build scripts into the separate target tmpfs. It
+then validates every Cargo `.cargo-checksum.json` mapping and records a canonical sorted
+path/size/SHA-256 ledger over `Cargo.lock` and every vendored regular file. The ledger is a
+mode-`0400` regular file. The networked acquisition operation is not proof evidence. Its ledger-
+bound vendor bytes are explicit build inputs.
+
+The separate root proof container receives the source, vendor tree and ledger as read-only bind
+mounts. Before Cargo starts, it independently recomputes and matches the ledger. It sets
+`CARGO_NET_OFFLINE=true`, replaces crates.io with that exact directory source, and uses writable
+tmpfs only for `CARGO_HOME`, `CARGO_TARGET_DIR`, `TMPDIR` and test fixtures; procfs is its own
+container procfs. The vendor mount remains immutable during dependency expansion, proc-macro/build-
+script compilation and proof execution. No fetched cache is copied into writable storage. Boundary
+tests assert the exact image digest/ID and `--pull never`, exact commands and path-package set,
+acquisition/proof separation, root proof identity, `--read-only`, capability/no-new-privileges
+restrictions, `--network none`, offline replacement, read-only source/vendor/ledger mounts, writable-
+tmpfs allowlist, independent ledger match and absence of any proof command from the acquisition
+container.
+
+Each container is created, then started, as two operations rather than through `docker run`. Before
+create, the wrapper generates a 32-byte random invocation value, durably stores it in its private
+directory and requires an exact Docker list by that immutable invocation/role label to be empty.
+The wrapper refuses `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_TLS_VERIFY` or `DOCKER_CERT_PATH`,
+requires the Docker context name `default`, requires its endpoint to be exactly
+`unix:///var/run/docker.sock`, records that root-owned mode-`0660` Unix socket's device/inode and
+revalidates the socket before every client operation and after watcher closure.
+Every Docker client argv places `--host unix:///var/run/docker.sock` immediately after the resolved
+Docker executable, so context mutation cannot retarget list, pull, create, start, inspect or remove;
+boundary tests reject any client invocation without that exact endpoint. Before sending
+create it spawns the owned `scripts/docker-event-helper.mjs`, which connects directly to that Unix
+socket and requests the fixed Engine API `/v1.47/events` stream with only `type=container`,
+`event=create` and both exact invocation/role label filters. The helper caps headers at 8,192 bytes,
+event framing at 65,536 bytes total and accepts at most one matching Engine-event JSON frame with
+one full 64-hex actor ID. Engine events are external protocol frames, explicitly not WP-201
+canonical-record JSON. The duplicate-key-rejecting decoder ignores object key order but allows only
+the top-level keys `status`, `id`, `from`, `Type`, `Action`, `Actor`, `scope`, `time` and `timeNano`;
+`status`, `id` and `from` may be absent, while all other keys are required. `Type`, `Action` and
+`scope` must be `container`, `create` and `local`; optional `status` must be `create`; optional `id`
+must equal `Actor.ID`; optional `from` is a bounded string. `Actor` has exactly `ID` and `Attributes`;
+its ID is full lowercase 64-hex and its string-to-string attribute map has at most 32 entries and
+must contain the two exact requested labels; `from` plus every attribute key/value is at most 4,096
+UTF-8 bytes. `time` is a nonnegative JSON safe integer. Because real Engine nanosecond timestamps
+exceed JavaScript's safe range, the duplicate-aware raw decoder accepts `timeNano` only as a
+canonical unsigned one-to-19-digit JSON integer token without converting it through `Number`.
+Neither time is used as identity or deadline evidence. Arbitrary HTTP chunk splits are accepted, but the decoded
+event must be one JSON object followed by LF with no trailing bytes; duplicate, unknown, missing,
+non-string, over-limit or second frames refuse. A fixed real-shaped Engine API fixture covers this
+decoder. Only after parsing an HTTP 200 response and complete headers does it write the
+fixed frame `openspell.wp201.docker-event-ready.v1\n` to its private ready pipe; its separate event
+pipe carries only the bounded validated ID. The wrapper must receive that exact ready frame before
+create. This is the independent same-daemon settlement channel. The create request contains those
+labels. A valid create response is exactly one full 64-hex
+container ID. A caught wrapper signal is latched but may not sever an in-flight mutation client
+before that client returns its response-bound ID; no later start is permitted after the latch. On
+response loss or a malformed response, the wrapper boundedly continues the already-established
+event stream after the client is reaped. An exact create event supplies its full daemon-issued ID;
+the wrapper cross-checks that ID against repeated exact-label inventories. It never treats a
+momentarily empty query as proof of nonoccurrence. If neither the create response nor the event
+stream supplies an ID by the end of the 15-second create settle/TERM/KILL-reap slice, capped by the
+common hard deadline, the result is permanently cleanup-uncertain and
+cannot emit success. Label listings alone are absence diagnostics only. When an exact response- or
+event-bound ID exists, `docker inspect` must match the
+immutable invocation/role labels, captured image ID, exact argv, network/security/capability/mount
+configuration and expected start count before deletion. Cleanup and all later operations address
+only that verified immutable full ID, never a name or label. A mismatch or multiple diagnostic
+candidates is likewise cleanup-uncertain with no deletion authority. Deterministic test-only shims
+write the exact ID from the real create response into a mode-`0600` side channel before holding that
+response at the after-acceptance and before-delivery cuts, transferring cleanup custody to the
+interruption harness. The before-acceptance cut proves the create request was not sent. Tests never
+claim zero residue after an ID-less mutation timeout; they require a cleanup-uncertain refusal. A
+delayed-acceptance cut makes an initial inventory return empty, then publishes the daemon event and
+container; the wrapper must capture, validate, remove and prove absent that exact late ID.
+
+The wrapper opens and validates `/proc/uptime` on procfs and derives one absolute Linux boot-time
+deadline per image-acquisition, dependency-acquisition and proof operation. Active budgets are 300
+seconds for either acquisition and 900 seconds for proof; each hard deadline adds exactly 55 seconds
+of cleanup reserve. Every child, including pull, create, start, list, inspect and remove, is an
+asynchronous owned process group capped to the remaining absolute deadline. At active-budget expiry
+or the first caught `SIGINT`, `SIGTERM` or `SIGHUP`, cleanup is latched and later signals cannot
+reenter or bypass it. A Docker create client is first allowed at most five seconds to settle so its
+response-bound immutable ID is not discarded; it then receives `SIGTERM`, at most five seconds,
+`SIGKILL`, and at most five more seconds to reap. Other active children begin with that same five-
+second TERM interval and five-second KILL/reap interval. An ID-less create after forced settlement
+is classified cleanup-uncertain, never absent. For an exact held ID, the wrapper has at most ten further
+seconds, capped by the same absolute deadline, for verified-ID force removal and an exact absent
+inspection; those Docker clients use the same owned-group TERM/KILL/reap rule. It then has ten
+seconds to close the event helper's control pipe and await socket/ready/event EOF plus child reap:
+five seconds for graceful closure, three after `SIGTERM` and two after `SIGKILL`. The helper is an
+owned process group under the same deadline; early EOF, disconnect, framing overflow, header hang or
+failure to settle refuses. It has at most 15
+further seconds for target/test tmpfs lifetimes to end and to remove the Cargo home, vendor tree,
+ledger, label record and invocation directory, then confirms every tracked pathname absent. Five
+seconds remain only as scheduling reserve. No phase receives a fresh cleanup deadline.
+
+From successful invocation-directory creation onward, one outer `try/finally` latches this cleanup
+path for every normal success, ordinary nonzero exit, validation refusal, setup exception, deadline
+and caught signal. Every post-create outcome with an exact response/event ID removes and absence-
+checks that ID. The original success or refusal is emitted only after child reap, container absence
+watcher settlement and pathname absence are all confirmed; cleanup failure replaces any pending success.
+Path removal runs in a separate asynchronous owned process group by reinvoking the pinned Node
+executable in a private cleanup mode. That helper accepts only the one fully resolved invocation
+path already recorded in memory, after the parent and child each revalidate its system-temp parent,
+fixed prefix, no-symlink ancestry, mode `0700`, invoking uid/gid and matching durable label record.
+Its complete 15-second allocation includes at most five seconds of normal work, five after
+`SIGTERM`, and five after `SIGKILL` for reap; the parent then performs the final `lstat`-absence check
+within that same allocation. No glob, environment-selected root or synchronous recursive removal
+is allowed.
+
+A deadline, image mismatch, ambiguous creation, child-reap failure, cleanup failure or unconfirmed
+container/pathname absence is a fixed nonzero refusal and can never emit proof success. Abrupt host
+loss or uncatchable `SIGKILL` is not claimed recoverable by this source wrapper; any residue is
+outside the repository and no interrupted invocation has a success result. Interruption tests cover
+the three create-response cuts, delayed daemon acceptance after an empty inventory, ID-less mutation
+uncertainty, normal success, every setup/refusal checkpoint, implicit-pull refusal, first plus
+repeated signals, event-header hang/disconnect/overflow/close hang, and hung
+pull/fetch/proof/list/inspect/remove/path-cleanup children, and require
+absence whenever exact cleanup custody exists. Unrelated ambient CI is not an input to a WP-201
+proof case.
 
 A separately authorized external proof additionally requires committed, independently reviewed
 discovery evidence, an inert pre-staged candidate and a final executable policy whose one-way
