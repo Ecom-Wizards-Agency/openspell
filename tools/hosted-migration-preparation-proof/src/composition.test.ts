@@ -1,12 +1,14 @@
 import { Buffer } from "node:buffer";
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { once } from "node:events";
 import {
   appendFileSync,
   chmodSync,
   closeSync,
   constants,
   copyFileSync,
+  fstatSync,
   fsyncSync,
   existsSync,
   lstatSync,
@@ -14,6 +16,7 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
+  readlinkSync,
   readdirSync,
   realpathSync,
   renameSync,
@@ -30,12 +33,22 @@ import { describe, expect, it } from "vitest";
 
 import {
   SOURCE_ROOTS,
+  advanceFreshRootCopyBudget,
   assertCompileTimeInputs,
   assertNoFixedWorkspaceMountpoints,
   buildSourceLedgerRows,
+  createFreshRootCopyBudget,
   parseSourceIndex,
   stageFixedSourceSnapshot,
   verifySourceLedgerRows,
+} from "../scripts/cargo.mjs";
+import type {
+  abandonFreshRootHandoff,
+  launchAfterDaemonAcceptBeforeDeliveryFreshRoot,
+  launchAfterParentCustodyBeforeStartFreshRoot,
+  launchBeforeIssueFreshRoot,
+  prepareFreshLedgerBackedRoot,
+  settleFreshRootHandoffClose,
 } from "../scripts/cargo.mjs";
 
 const packageDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -56,6 +69,18 @@ function sourceIndexBytes(): Buffer {
     ["ls-files", "--stage", "-z", "--", ...SOURCE_ROOTS],
     { cwd: workspaceDirectory, maxBuffer: 1024 * 1024 },
   );
+}
+
+function openBootClockDescriptors(): number {
+  let total = 0;
+  for (const name of readdirSync("/proc/self/fd")) {
+    try {
+      if (readlinkSync(`/proc/self/fd/${name}`) === "/proc/uptime") total += 1;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  return total;
 }
 
 function makeTreeWritable(path: string): void {
@@ -112,12 +137,41 @@ function createInvocationDestination(): {
   return { invocation, source };
 }
 
-async function copiedCargoModule(index: Buffer): Promise<{
-  readonly directory: string;
-  readonly module: {
-    readonly assertNoFixedWorkspaceMountpoints: typeof assertNoFixedWorkspaceMountpoints;
-    readonly stageFixedSourceSnapshot: typeof stageFixedSourceSnapshot;
+type CargoModule = {
+  readonly abandonFreshRootHandoff: typeof abandonFreshRootHandoff;
+  readonly assertNoFixedWorkspaceMountpoints: typeof assertNoFixedWorkspaceMountpoints;
+  readonly launchAfterDaemonAcceptBeforeDeliveryFreshRoot: typeof launchAfterDaemonAcceptBeforeDeliveryFreshRoot;
+  readonly launchAfterParentCustodyBeforeStartFreshRoot: typeof launchAfterParentCustodyBeforeStartFreshRoot;
+  readonly launchBeforeIssueFreshRoot: typeof launchBeforeIssueFreshRoot;
+  readonly prepareFreshLedgerBackedRoot: typeof prepareFreshLedgerBackedRoot;
+  readonly settleFreshRootHandoffClose: typeof settleFreshRootHandoffClose;
+  readonly stageFixedSourceSnapshot: typeof stageFixedSourceSnapshot;
+  readonly fixtureClassifyCleanupChildPoll?: (
+    closed: boolean,
+    sampleNanoseconds: bigint,
+    slotDeadlineNanoseconds: bigint,
+  ) => "closed" | "expired" | "waiting";
+  readonly fixtureSettlePrivateDescriptor?: (
+    descriptor: number,
+    expected: Readonly<Record<string, bigint | string>>,
+  ) => { readonly identityMismatch?: boolean; readonly settled: boolean };
+  readonly fixtureSettlePrivateDescriptorIdentity?: (
+    expected: Readonly<Record<string, bigint | string>>,
+    protectedDescriptors?: readonly number[],
+  ) => {
+    readonly observedMatches: number;
+    readonly protectedMatches: number;
+    readonly remainingMatches: number;
+    readonly settled: boolean;
   };
+};
+
+async function copiedCargoModule(
+  index: Buffer,
+  transform: (source: string) => string = (source) => source,
+): Promise<{
+  readonly directory: string;
+  readonly module: CargoModule;
 }> {
   const directory = mkdtempSync(join(tmpdir(), "wp201-source-workspace-"));
   const records = parseSourceIndex(index);
@@ -132,11 +186,403 @@ async function copiedCargoModule(index: Buffer): Promise<{
     "tools/hosted-migration-preparation-proof/scripts/cargo.mjs",
   );
   mkdirSync(dirname(modulePath), { mode: 0o700, recursive: true });
-  copyFileSync(join(packageDirectory, "scripts/cargo.mjs"), modulePath);
+  copyFileSync(
+    join(packageDirectory, "scripts/path-cleanup-helper.mjs"),
+    join(dirname(modulePath), "path-cleanup-helper.mjs"),
+  );
+  writeFileSync(
+    modulePath,
+    transform(readFileSync(join(packageDirectory, "scripts/cargo.mjs"), "utf8")),
+  );
   const module = await import(
     `${pathToFileURL(modulePath).href}?fixture=${randomBytes(8).toString("hex")}`
-  );
+  ) as CargoModule;
   return { directory, module };
+}
+
+type CompactCompleteFixture = {
+  readonly acquisitionController: Buffer;
+  readonly counts: {
+    readonly controlFiles: number;
+    readonly sourceDirectories: number;
+    readonly sourceFiles: number;
+    readonly toolchainBytes: bigint;
+    readonly toolchainDirectories: number;
+    readonly toolchainFiles: number;
+    readonly vendorBytes: bigint;
+    readonly vendorDirectories: number;
+    readonly vendorFiles: number;
+  };
+  readonly ledger: Buffer;
+  readonly proofController: Buffer;
+  readonly registryPackages: ReadonlyMap<string, string>;
+  readonly toolchainAuthority: {
+    readonly bodyDigest: string;
+    readonly digest: string;
+    readonly length: number;
+    readonly records: number;
+  };
+  readonly toolchainBytes: Buffer;
+};
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function compactCompleteFixture(): CompactCompleteFixture {
+  const index = sourceIndexBytes();
+  const records = parseSourceIndex(index);
+  const sourceBytes = new Map(
+    records.map(({ path }) => [path, readFileSync(join(workspaceDirectory, path))]),
+  );
+  const rows = buildSourceLedgerRows(records, sourceBytes).ledgerRows
+    .split("\n")
+    .filter((row) => row.length > 0);
+  const registryPackages = new Map<string, string>();
+  for (const packageName of [
+    "hosted-migration-preparation-proof",
+    "hosted-migration-root-authority",
+    "hosted-migration-runtime-proof",
+  ]) {
+    const lock = read(join(workspaceDirectory, "tools", packageName, "Cargo.lock"));
+    for (const block of lock.split("[[package]]").slice(1)) {
+      const field = (name: string): string | undefined =>
+        new RegExp(`^${name} = "([^"]+)"$`, "mu").exec(block)?.[1];
+      const source = field("source");
+      if (source === undefined) continue;
+      expect(source).toBe("registry+https://github.com/rust-lang/crates.io-index");
+      const name = field("name");
+      const version = field("version");
+      const checksum = field("checksum");
+      if (name === undefined || version === undefined || checksum === undefined) {
+        throw new Error("compact fixture Cargo lock is incomplete");
+      }
+      const directory = `${name}-${version}`;
+      expect(registryPackages.get(directory) ?? checksum).toBe(checksum);
+      registryPackages.set(directory, checksum);
+    }
+  }
+  expect(registryPackages.size).toBe(70);
+
+  rows.push("D\t0555\tvendor");
+  let vendorBytes = 0n;
+  for (const [directory, checksum] of [...registryPackages].sort(([left], [right]) =>
+    Buffer.compare(Buffer.from(left), Buffer.from(right)),
+  )) {
+    const bytes = Buffer.from(JSON.stringify({ files: {}, package: checksum }));
+    vendorBytes += BigInt(bytes.length);
+    rows.push(`D\t0555\tvendor/${directory}`);
+    rows.push(
+      ["V", "0444", bytes.length, sha256(bytes), `${directory}/.cargo-checksum.json`].join(
+        "\t",
+      ),
+    );
+  }
+
+  const toolchainBytes = Buffer.alloc(1024 * 1024 + 17, 0xa5);
+  rows.push("D\t0555\ttoolchain");
+  rows.push("D\t0555\ttoolchain/bin");
+  rows.push(
+    ["T", "0555", toolchainBytes.length, sha256(toolchainBytes), "bin/rustc"].join("\t"),
+  );
+
+  const proofController = Buffer.from("#!/bin/sh\nexit 0\n");
+  const controls = new Map([
+    ["control/proof.sh", proofController],
+    ["etc/hostname", Buffer.from("wp201-proof\n")],
+    ["etc/hosts", Buffer.from("127.0.0.1 localhost\n::1 localhost\n")],
+    ["etc/resolv.conf", Buffer.alloc(0)],
+  ]);
+  for (const [path, bytes] of controls) {
+    rows.push(`C\t0444\t${bytes.length}\t${sha256(bytes)}\t${path}`);
+  }
+  rows.sort((left, right) => {
+    const leftFields = left.split("\t");
+    const rightFields = right.split("\t");
+    return Buffer.compare(
+      Buffer.from(`${leftFields[0]}\t${leftFields.at(-1)}`),
+      Buffer.from(`${rightFields[0]}\t${rightFields.at(-1)}`),
+    );
+  });
+  const body = Buffer.from(
+    `openspell.wp201.vendor-ledger.v1\nrecords\t${rows.length}\n${rows.join("\n")}\n`,
+  );
+  const ledger = Buffer.concat([body, Buffer.from(`end\t${sha256(body)}\n`)]);
+  const authorityRows = rows.filter((row) =>
+    row.startsWith("T\t") || row === "D\t0555\ttoolchain" || row.startsWith("D\t0555\ttoolchain/"),
+  );
+  const authorityBody = Buffer.from(
+    `openspell.wp201.toolchain-authority.v1\nrecords\t${authorityRows.length}\n${authorityRows.join("\n")}\n`,
+  );
+  const authority = Buffer.concat([
+    authorityBody,
+    Buffer.from(`end\t${sha256(authorityBody)}\n`),
+  ]);
+  return {
+    acquisitionController: Buffer.from("#!/bin/sh\nexit 0\n"),
+    counts: {
+      controlFiles: 4,
+      sourceDirectories: 10,
+      sourceFiles: 45,
+      toolchainBytes: BigInt(toolchainBytes.length),
+      toolchainDirectories: 2,
+      toolchainFiles: 1,
+      vendorBytes,
+      vendorDirectories: registryPackages.size + 1,
+      vendorFiles: registryPackages.size,
+    },
+    ledger,
+    proofController,
+    registryPackages,
+    toolchainAuthority: {
+      bodyDigest: sha256(authorityBody),
+      digest: sha256(authority),
+      length: authority.length,
+      records: authorityRows.length,
+    },
+    toolchainBytes,
+  };
+}
+
+function replaceExactly(source: string, expected: string, replacement: string): string {
+  const first = source.indexOf(expected);
+  if (first === -1 || source.indexOf(expected, first + expected.length) !== -1) {
+    throw new Error(`fixture transform expected one source occurrence: ${expected.slice(0, 48)}`);
+  }
+  return `${source.slice(0, first)}${replacement}${source.slice(first + expected.length)}`;
+}
+
+function compactFixtureTransform(
+  fixture: CompactCompleteFixture,
+  injections: {
+    readonly afterDirectoryCreate?: string;
+    readonly afterInvocationSync?: string;
+    readonly beforeSettledSourceVerification?: string;
+    readonly exposeCleanupPollClassifier?: boolean;
+    readonly exposeDescriptorSettlement?: boolean;
+    readonly firstDescriptorCloseFailure?: boolean;
+    readonly initialFailure?: "random" | "sample";
+  } = {},
+): (source: string) => string {
+  return (input) => {
+    let source = input;
+    source = replaceExactly(
+      source,
+      "const completeLedgerRecords = 4_853;",
+      `const completeLedgerRecords = ${fixture.counts.sourceDirectories + fixture.counts.sourceFiles + fixture.counts.vendorDirectories + fixture.counts.vendorFiles + fixture.counts.toolchainDirectories + fixture.counts.toolchainFiles + fixture.counts.controlFiles};`,
+    );
+    source = replaceExactly(
+      source,
+      `const expectedTreeCounts = Object.freeze({\n  sourceDirectories: 10,\n  sourceFiles: 45,\n  vendorDirectories: 941,\n  vendorFiles: 3_657,\n  vendorBytes: 67_159_121n,\n  toolchainDirectories: 28,\n  toolchainFiles: 168,\n  toolchainBytes: 653_573_520n,\n  controlFiles: 4,\n});`,
+      `const expectedTreeCounts = Object.freeze(${JSON.stringify({
+        ...fixture.counts,
+        toolchainBytes: undefined,
+        vendorBytes: undefined,
+      }).replace(/\}$/u, `,"vendorBytes":${fixture.counts.vendorBytes}n,"toolchainBytes":${fixture.counts.toolchainBytes}n}`)});`,
+    );
+    source = replaceExactly(
+      source,
+      `const expectedToolchainAuthoritySha256 =\n  "6078f49e711c3a7059e11a8a7b37f5f49837c792523bd914e0592b42d8f087a4";`,
+      `const expectedToolchainAuthoritySha256 = "${fixture.toolchainAuthority.digest}";`,
+    );
+    source = replaceExactly(
+      source,
+      `const acquisitionController = Object.freeze({\n  size: 9_956,\n  digest: "72290e827399c5e6eb4c597312a65fbd6402c2d8ad87993c7e336a27f6d48258",\n});`,
+      `const acquisitionController = Object.freeze({ size: ${fixture.acquisitionController.length}, digest: "${sha256(fixture.acquisitionController)}" });`,
+    );
+    source = replaceExactly(
+      source,
+      `const proofController = Object.freeze({\n  size: 30_322,\n  digest: "914feaa7cece86e66a81a4dd8595d7efc2ae2e7be241d6190aee97c5c213bfcb",\n});`,
+      `const proofController = Object.freeze({ size: ${fixture.proofController.length}, digest: "${sha256(fixture.proofController)}" });`,
+    );
+    source = replaceExactly(source, "authorityRows.length !== 196", `authorityRows.length !== ${fixture.toolchainAuthority.records}`);
+    source = replaceExactly(source, "authority.length !== 30_553", `authority.length !== ${fixture.toolchainAuthority.length}`);
+    source = replaceExactly(
+      source,
+      `authorityEnd !== "1dcabbf3617ff9821771b09f430a636af81077b643bf32385aadd3c0b9fc1274"`,
+      `authorityEnd !== "${fixture.toolchainAuthority.bodyDigest}"`,
+    );
+    if ((injections.afterDirectoryCreate?.length ?? 0) > 0) {
+      const obligation = `destination = Object.freeze({ cleanupKind: "identity-uncertain", destinationPath: path, parent });\n      advanceHeldFreshRootBudget(budgetState, "work", clock);\n      const reached = lstatSync(path, { bigint: true });`;
+      source = replaceExactly(
+        source,
+        obligation,
+        `destination = Object.freeze({ cleanupKind: "identity-uncertain", destinationPath: path, parent });\n      ${injections.afterDirectoryCreate}\n      advanceHeldFreshRootBudget(budgetState, "work", clock);\n      const reached = lstatSync(path, { bigint: true });`,
+      );
+    }
+    if ((injections.afterInvocationSync?.length ?? 0) > 0) {
+      const transition = `advanceHeldFreshRootBudget(budgetState, "record-synced", clock);`;
+      source = replaceExactly(source, transition, `${transition}\n    ${injections.afterInvocationSync}`);
+    }
+    if ((injections.beforeSettledSourceVerification?.length ?? 0) > 0) {
+      const verification = `const settledSourceProof = await verifyCompleteInvocation(source, budgetState, clock);`;
+      source = replaceExactly(source, verification, `${injections.beforeSettledSourceVerification}\n    ${verification}`);
+    }
+    if (injections.firstDescriptorCloseFailure === true) {
+      const settlement = `function settlePrivateDescriptor(descriptor, expected) {\n  let observedBefore;`;
+      source = replaceExactly(
+        source,
+        settlement,
+        `let fixtureDescriptorCloseFailure = true;\n\n${settlement}`,
+      );
+      const close = `try {\n    closeSync(descriptor);\n  } catch (error) {\n    closeError = error;\n  }`;
+      source = replaceExactly(
+        source,
+        close,
+        `try {\n    if (fixtureDescriptorCloseFailure) {\n      fixtureDescriptorCloseFailure = false;\n      throw new Error("fixture descriptor close failure");\n    }\n    closeSync(descriptor);\n  } catch (error) {\n    closeError = error;\n  }`,
+      );
+    }
+    if (injections.initialFailure === "sample") {
+      source = replaceExactly(
+        source,
+        `budgetState = { signal, value: createFreshRootCopyBudget(clock.sample()) };`,
+        `budgetState = { signal, value: createFreshRootCopyBudget((() => { throw new Error("fixture initial sample failure"); })()) };`,
+      );
+    }
+    if (injections.initialFailure === "random") {
+      source = replaceExactly(
+        source,
+        `invocation = randomBytes(32).toString("hex");`,
+        `throw new Error("fixture invocation entropy failure");`,
+      );
+    }
+    if (injections.exposeCleanupPollClassifier === true) {
+      const classifier = "function classifyCleanupChildPoll(closed, sampleNanoseconds, slotDeadlineNanoseconds) {";
+      source = replaceExactly(
+        source,
+        classifier,
+        `export ${classifier.replace("classifyCleanupChildPoll", "fixtureClassifyCleanupChildPoll")}`,
+      );
+      source = source.replaceAll(
+        "classifyCleanupChildPoll(",
+        "fixtureClassifyCleanupChildPoll(",
+      );
+    }
+    if (injections.exposeDescriptorSettlement === true) {
+      const identitySettlement =
+        "function settlePrivateDescriptorIdentity(expected, protectedDescriptors = []) {";
+      source = replaceExactly(
+        source,
+        identitySettlement,
+        `export ${identitySettlement.replace("settlePrivateDescriptorIdentity", "fixtureSettlePrivateDescriptorIdentity")}`,
+      );
+      source = source.replaceAll(
+        "settlePrivateDescriptorIdentity(",
+        "fixtureSettlePrivateDescriptorIdentity(",
+      );
+      const settlement = "function settlePrivateDescriptor(descriptor, expected) {";
+      source = replaceExactly(
+        source,
+        settlement,
+        `export ${settlement.replace("settlePrivateDescriptor", "fixtureSettlePrivateDescriptor")}`,
+      );
+      source = source.replaceAll(
+        "settlePrivateDescriptor(",
+        "fixtureSettlePrivateDescriptor(",
+      );
+    }
+    return source;
+  };
+}
+
+async function createCompleteInvocationFixture(
+  module: CargoModule,
+  fixture: CompactCompleteFixture,
+): Promise<{ readonly invocation: string; readonly sourceHandle: Awaited<ReturnType<typeof open>> }> {
+  const destination = createInvocationDestination();
+  const stagingHandle = await open(
+    destination.source,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    await module.stageFixedSourceSnapshot({
+      indexBytes: sourceIndexBytes(),
+      sourceDirectory: stagingHandle,
+    });
+  } finally {
+    await stagingHandle.close();
+  }
+  const acquisition = join(destination.invocation, "acquisition");
+  const vendor = join(acquisition, "vendor");
+  const toolchain = join(acquisition, "toolchain");
+  mkdirSync(vendor, { mode: 0o700, recursive: true });
+  for (const [directory, checksum] of fixture.registryPackages) {
+    const packageDirectory = join(vendor, directory);
+    mkdirSync(packageDirectory, { mode: 0o700 });
+    writeFileSync(
+      join(packageDirectory, ".cargo-checksum.json"),
+      JSON.stringify({ files: {}, package: checksum }),
+      { mode: 0o444 },
+    );
+    chmodSync(packageDirectory, 0o555);
+  }
+  mkdirSync(join(toolchain, "bin"), { mode: 0o700, recursive: true });
+  writeFileSync(join(toolchain, "bin/rustc"), fixture.toolchainBytes, { mode: 0o555 });
+  chmodSync(join(toolchain, "bin"), 0o555);
+  chmodSync(toolchain, 0o555);
+  chmodSync(vendor, 0o555);
+  writeFileSync(join(acquisition, "vendor-ledger.v1"), fixture.ledger, { mode: 0o444 });
+
+  const control = join(destination.invocation, "control");
+  mkdirSync(control, { mode: 0o700 });
+  writeFileSync(join(control, "acquisition.sh"), fixture.acquisitionController, { mode: 0o444 });
+  writeFileSync(join(control, "proof.sh"), fixture.proofController, { mode: 0o444 });
+  writeFileSync(join(control, "hostname"), "wp201-proof\n", { mode: 0o444 });
+  writeFileSync(join(control, "hosts"), "127.0.0.1 localhost\n::1 localhost\n", { mode: 0o444 });
+  writeFileSync(join(control, "resolv.conf"), Buffer.alloc(0), { mode: 0o444 });
+  chmodSync(control, 0o555);
+
+  const docker = join(destination.invocation, "docker");
+  mkdirSync(join(docker, "home"), { mode: 0o700, recursive: true });
+  mkdirSync(join(docker, "config"), { mode: 0o700 });
+  writeFileSync(join(docker, "config/config.json"), "{}", { mode: 0o400 });
+  chmodSync(join(docker, "config"), 0o500);
+  chmodSync(docker, 0o500);
+  const sourceHandle = await open(
+    destination.invocation,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  return { invocation: destination.invocation, sourceHandle };
+}
+
+function completeTreeSnapshot(root: string): ReadonlyMap<string, {
+  readonly digest?: string;
+  readonly inode: bigint;
+  readonly kind: "directory" | "file";
+  readonly mode: number;
+  readonly size?: number;
+}> {
+  const result = new Map<string, {
+    readonly digest?: string;
+    readonly inode: bigint;
+    readonly kind: "directory" | "file";
+    readonly mode: number;
+    readonly size?: number;
+  }>();
+  const visit = (directory: string, prefix: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = prefix.length === 0 ? entry.name : `${prefix}/${entry.name}`;
+      const absolute = join(directory, entry.name);
+      const status = lstatSync(absolute, { bigint: true });
+      if (entry.isDirectory() && status.isDirectory()) {
+        result.set(path, { inode: status.ino, kind: "directory", mode: Number(status.mode & 0o7777n) });
+        visit(absolute, path);
+      } else if (entry.isFile() && status.isFile()) {
+        const bytes = readFileSync(absolute);
+        result.set(path, {
+          digest: sha256(bytes),
+          inode: status.ino,
+          kind: "file",
+          mode: Number(status.mode & 0o7777n),
+          size: bytes.length,
+        });
+      } else {
+        throw new Error(`unexpected compact fixture entry: ${path}`);
+      }
+    }
+  };
+  visit(root, "");
+  return result;
 }
 
 function normalizedManifestText(contents: string): string {
@@ -632,6 +1078,639 @@ describe("WP-201 composition boundary", () => {
     } finally {
       await handle.close();
       removeFixture(destination.invocation);
+    }
+  });
+
+  it("enforces the branded 300-plus-25-second fresh-root construction budget", () => {
+    const start = 41_000_000_000n;
+    const initial = createFreshRootCopyBudget(start);
+    expect(initial).toEqual({
+      activeDeadlineNanoseconds: start + 300_000_000_000n,
+      cleanupDeadlineNanoseconds: start + 315_000_000_000n,
+      cleanupState: "uncreated",
+      hardDeadlineNanoseconds: start + 325_000_000_000n,
+      lastNanoseconds: start,
+      phase: "active",
+      startNanoseconds: start,
+    });
+    const created = advanceFreshRootCopyBudget(initial, "directory-created", start + 1n);
+    const recorded = advanceFreshRootCopyBudget(created, "record-synced", start + 2n);
+    const verified = advanceFreshRootCopyBudget(recorded, "ledger-verified", start + 3n);
+    expect([created.cleanupState, recorded.cleanupState, verified.cleanupState]).toEqual([
+      "pre-record",
+      "partial-acquisition",
+      "ledger-backed",
+    ]);
+    expect(() => advanceFreshRootCopyBudget({ ...initial }, "work", start + 1n)).toThrow(
+      "unbranded fresh-root copy budget",
+    );
+    expect(() => advanceFreshRootCopyBudget(initial, "record-synced", start + 1n)).toThrow(
+      "invalid fresh-root construction transition",
+    );
+    expect(() => advanceFreshRootCopyBudget(initial, "work", start - 1n)).toThrow(
+      "CLOCK_BOOTTIME regressed",
+    );
+    expect(() =>
+      advanceFreshRootCopyBudget(initial, "work", initial.activeDeadlineNanoseconds),
+    ).toThrow("active deadline reached");
+    const cleanup = advanceFreshRootCopyBudget(
+      initial,
+      "cleanup-start",
+      initial.activeDeadlineNanoseconds + 1n,
+    );
+    expect(cleanup.phase).toBe("cleanup");
+    const cleaning = advanceFreshRootCopyBudget(
+      cleanup,
+      "cleanup-work",
+      cleanup.cleanupDeadlineNanoseconds - 2n,
+    );
+    const reserve = advanceFreshRootCopyBudget(
+      cleaning,
+      "cleanup-settled",
+      cleanup.cleanupDeadlineNanoseconds - 1n,
+    );
+    expect(reserve.phase).toBe("reserve");
+    expect(
+      advanceFreshRootCopyBudget(
+        reserve,
+        "reserve",
+        reserve.hardDeadlineNanoseconds - 1n,
+      ).phase,
+    ).toBe("reserve");
+    expect(() =>
+      advanceFreshRootCopyBudget(cleanup, "cleanup-work", cleanup.cleanupDeadlineNanoseconds),
+    ).toThrow("cleanup deadline reached");
+    expect(() =>
+      advanceFreshRootCopyBudget(initial, "work", initial.hardDeadlineNanoseconds),
+    ).toThrow("hard deadline reached");
+  });
+
+  it("samples the held boot clock after mkdir and around both exact EOF probes", () => {
+    const source = readFileSync(join(packageDirectory, "scripts/cargo.mjs"), "utf8");
+    expect(source).toContain(
+      `destination = Object.freeze({ cleanupKind: "identity-uncertain", destinationPath: path, parent });\n      advanceHeldFreshRootBudget(budgetState, "work", clock);\n      const reached = lstatSync(path, { bigint: true });`,
+    );
+    expect(source).toContain(
+      `advanceHeldFreshRootBudget(budgetState, "work", clock);\n    if ((await handle.read(probe, 0, 1, expected.size)).bytesRead !== 0) {\n      throw new Error("ledger-backed source grew during read");\n    }\n    advanceHeldFreshRootBudget(budgetState, "work", clock);`,
+    );
+    expect(source).toContain(
+      `advanceHeldFreshRootBudget(budgetState, "work", clock);\n  if (readSync(descriptor, buffer, 0, 1, expected.size) !== 0)`,
+    );
+    expect(source).toContain(
+      `throw new Error("fresh-root retained ledger grew during read");\n  }\n  advanceHeldFreshRootBudget(budgetState, "work", clock);`,
+    );
+  });
+
+  it("refuses a helper close first observed at or beyond its exact slot boundary", async () => {
+    const compact = compactCompleteFixture();
+    const fixtureModule = await copiedCargoModule(
+      sourceIndexBytes(),
+      compactFixtureTransform(compact, { exposeCleanupPollClassifier: true }),
+    );
+    try {
+      const classify = fixtureModule.module.fixtureClassifyCleanupChildPoll;
+      expect(classify).toBeTypeOf("function");
+      expect(classify?.(false, 3_999_999_999n, 4_000_000_000n)).toBe("waiting");
+      expect(classify?.(true, 3_999_999_999n, 4_000_000_000n)).toBe("closed");
+      expect(classify?.(true, 4_000_000_000n, 4_000_000_000n)).toBe("expired");
+      expect(classify?.(true, 4_000_000_001n, 4_000_000_000n)).toBe("expired");
+    } finally {
+      removeFixture(fixtureModule.directory);
+    }
+  });
+
+  it("settles the held boot clock when initial sampling or entropy fails", async () => {
+    const compact = compactCompleteFixture();
+    for (const initialFailure of ["sample", "random"] as const) {
+      const fixtureModule = await copiedCargoModule(
+        sourceIndexBytes(),
+        compactFixtureTransform(compact, { initialFailure }),
+      );
+      try {
+        const before = openBootClockDescriptors();
+        await expect(fixtureModule.module.prepareFreshLedgerBackedRoot()).rejects.toThrow(
+          initialFailure === "sample" ? "initial sample failure" : "entropy failure",
+        );
+        expect(openBootClockDescriptors()).toBe(before);
+      } finally {
+        removeFixture(fixtureModule.directory);
+      }
+    }
+  });
+
+  it("copies and independently re-proves one compact authenticated complete tree", async () => {
+    const compact = compactCompleteFixture();
+    const fixtureModule = await copiedCargoModule(
+      sourceIndexBytes(),
+      compactFixtureTransform(compact),
+    );
+    const source = await createCompleteInvocationFixture(fixtureModule.module, compact);
+    let copiedPath: string | undefined;
+    let reusedCallerDescriptor: number | undefined;
+    let sourceCallerClosed = false;
+    const descriptors: number[] = [];
+    let launchedChild: ReturnType<typeof fixtureModule.module.launchBeforeIssueFreshRoot>["child"];
+    try {
+      const pending = fixtureModule.module.prepareFreshLedgerBackedRoot({
+        sourceDirectory: source.sourceHandle,
+      });
+      const callerDescriptor = source.sourceHandle.fd;
+      closeSync(callerDescriptor);
+      sourceCallerClosed = true;
+      reusedCallerDescriptor = openSync(
+        fixtureModule.directory,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      expect(reusedCallerDescriptor).toBe(callerDescriptor);
+      const token = await pending;
+      const launch = fixtureModule.module.launchBeforeIssueFreshRoot(token);
+      launchedChild = launch.child;
+      const handoff = { ...launch.cleanup, ...launch.custody };
+      const verifiedCopiedPath = launch.cleanup.path;
+      copiedPath = verifiedCopiedPath;
+      descriptors.push(handoff.custodyRoot, handoff.ledgerDescriptor);
+      expect(Object.isFrozen(token)).toBe(true);
+      expect(Object.isFrozen(launch)).toBe(true);
+      expect(launch.outcome).toBe("spawned");
+      expect(launch.child?.spawnfile).toBe(process.execPath);
+      expect(launch.child?.spawnargs).toEqual([
+        process.execPath,
+        "--input-type=module",
+        "--eval",
+        'import{runBeforeIssueCut}from"./scripts/interruption-harness.mjs";await runBeforeIssueCut()',
+      ]);
+      expect(handoff).toMatchObject({
+        ledgerDigest: sha256(compact.ledger),
+        ledgerSize: compact.ledger.length,
+        parentToken: "tmp",
+      });
+      expect(handoff.invocation).not.toBe(source.invocation.slice(source.invocation.lastIndexOf("-") + 1));
+      expect(readFileSync(join(verifiedCopiedPath, "INVOCATION"), "ascii")).toBe(
+        `openspell.wp201.invocation.v1\n${handoff.invocation}\n`,
+      );
+      expect(readFileSync(join(verifiedCopiedPath, "acquisition/vendor-ledger.v1"))).toEqual(
+        compact.ledger,
+      );
+
+      const sourceSnapshot = completeTreeSnapshot(source.invocation);
+      const copiedSnapshot = completeTreeSnapshot(verifiedCopiedPath);
+      expect(sourceSnapshot.size).toBe(212);
+      expect(copiedSnapshot.size).toBe(sourceSnapshot.size);
+      expect([...copiedSnapshot.keys()]).toEqual([...sourceSnapshot.keys()]);
+      for (const [path, expected] of sourceSnapshot) {
+        const actual = copiedSnapshot.get(path);
+        expect(actual).toBeDefined();
+        expect(actual?.kind).toBe(expected.kind);
+        expect(actual?.mode).toBe(expected.mode);
+        expect(actual?.size).toBe(expected.size);
+        if (path === "INVOCATION") {
+          expect(actual?.digest).not.toBe(expected.digest);
+        } else {
+          expect(actual?.digest).toBe(expected.digest);
+        }
+        expect(actual?.inode).not.toBe(expected.inode);
+      }
+      expect("handoffRoot" in launch.custody).toBe(false);
+      expect(() => fixtureModule.module.launchBeforeIssueFreshRoot(token)).toThrow(
+        "invalid or consumed",
+      );
+      expect(() =>
+        fixtureModule.module.launchAfterDaemonAcceptBeforeDeliveryFreshRoot(token),
+      ).toThrow("invalid or consumed");
+      expect(() =>
+        fixtureModule.module.launchAfterParentCustodyBeforeStartFreshRoot(token),
+      ).toThrow("invalid or consumed");
+      await expect(fixtureModule.module.abandonFreshRootHandoff(token)).rejects.toThrow(
+        "invalid or consumed",
+      );
+    } finally {
+      if (launchedChild !== undefined) {
+        for (const stream of launchedChild.stdio) stream?.destroy();
+        if (launchedChild.exitCode === null && launchedChild.signalCode === null) {
+          await once(launchedChild, "exit");
+        }
+      }
+      for (const descriptor of descriptors.reverse()) closeSync(descriptor);
+      if (reusedCallerDescriptor !== undefined) closeSync(reusedCallerDescriptor);
+      if (sourceCallerClosed) await source.sourceHandle.close().catch(() => undefined);
+      else await source.sourceHandle.close();
+      if (copiedPath !== undefined) removeFixture(copiedPath);
+      removeFixture(source.invocation);
+      removeFixture(fixtureModule.directory);
+    }
+  });
+
+  it("rejects complete-tree links, special files, mode drift, and digest drift", async () => {
+    const compact = compactCompleteFixture();
+    const fixtureModule = await copiedCargoModule(
+      sourceIndexBytes(),
+      compactFixtureTransform(compact),
+    );
+    const source = await createCompleteInvocationFixture(fixtureModule.module, compact);
+    const acquisition = join(source.invocation, "acquisition");
+    try {
+      const link = join(acquisition, "unexpected-link");
+      symlinkSync("vendor", link);
+      await expect(
+        fixtureModule.module.prepareFreshLedgerBackedRoot({ sourceDirectory: source.sourceHandle }),
+      ).rejects.toThrow("link or special ledger-backed entry");
+      rmSync(link);
+
+      const fifo = join(acquisition, "unexpected-fifo");
+      execFileSync("/usr/bin/mkfifo", [fifo]);
+      await expect(
+        fixtureModule.module.prepareFreshLedgerBackedRoot({ sourceDirectory: source.sourceHandle }),
+      ).rejects.toThrow("link or special ledger-backed entry");
+      rmSync(fifo);
+
+      const controller = join(source.invocation, "control/proof.sh");
+      chmodSync(controller, 0o544);
+      await expect(
+        fixtureModule.module.prepareFreshLedgerBackedRoot({ sourceDirectory: source.sourceHandle }),
+      ).rejects.toThrow("ledger-backed file identity mismatch");
+      chmodSync(controller, 0o444);
+      const original = readFileSync(controller);
+      chmodSync(controller, 0o644);
+      writeFileSync(controller, Buffer.concat([original.subarray(0, -1), Buffer.from("x")]));
+      chmodSync(controller, 0o444);
+      await expect(
+        fixtureModule.module.prepareFreshLedgerBackedRoot({ sourceDirectory: source.sourceHandle }),
+      ).rejects.toThrow("ledger-backed file digest mismatch");
+    } finally {
+      await source.sourceHandle.close();
+      removeFixture(source.invocation);
+      removeFixture(fixtureModule.directory);
+    }
+  });
+
+  it("abandons a fresh-root token exactly once and returns its cleanup identity", async () => {
+    const compact = compactCompleteFixture();
+    const fixtureModule = await copiedCargoModule(
+      sourceIndexBytes(),
+      compactFixtureTransform(compact),
+    );
+    const source = await createCompleteInvocationFixture(fixtureModule.module, compact);
+    let copiedPath: string | undefined;
+    try {
+      const token = await fixtureModule.module.prepareFreshLedgerBackedRoot({
+        sourceDirectory: source.sourceHandle,
+      });
+      const cleanup = await fixtureModule.module.abandonFreshRootHandoff(token);
+      copiedPath = cleanup.path;
+      expect(cleanup).toMatchObject({ parentToken: "tmp", state: "ledger-backed" });
+      expect(lstatSync(cleanup.path, { bigint: true })).toMatchObject({
+        dev: cleanup.device,
+        ino: cleanup.inode,
+      });
+      await expect(fixtureModule.module.abandonFreshRootHandoff(token)).rejects.toThrow(
+        "invalid or consumed",
+      );
+      expect(() => fixtureModule.module.launchBeforeIssueFreshRoot(token)).toThrow(
+        "invalid or consumed",
+      );
+    } finally {
+      await source.sourceHandle.close();
+      if (copiedPath !== undefined) removeFixture(copiedPath);
+      removeFixture(source.invocation);
+      removeFixture(fixtureModule.directory);
+    }
+  });
+
+  it("retains an abandonment token until every private descriptor settles", async () => {
+    const compact = compactCompleteFixture();
+    const fixtureModule = await copiedCargoModule(
+      sourceIndexBytes(),
+      compactFixtureTransform(compact, { firstDescriptorCloseFailure: true }),
+    );
+    const source = await createCompleteInvocationFixture(fixtureModule.module, compact);
+    let copiedPath: string | undefined;
+    try {
+      const token = await fixtureModule.module.prepareFreshLedgerBackedRoot({
+        sourceDirectory: source.sourceHandle,
+      });
+      let failure: unknown;
+      try {
+        await fixtureModule.module.abandonFreshRootHandoff(token);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(AggregateError);
+      const settlement = failure as AggregateError & {
+        readonly cleanup: { readonly path: string; readonly state: string };
+        readonly unsettled: readonly { readonly name: string; readonly settled: boolean }[];
+      };
+      copiedPath = settlement.cleanup.path;
+      expect(settlement.cleanup.state).toBe("ledger-backed");
+      expect(settlement.unsettled).toMatchObject([
+        { name: "ledgerDescriptor", settled: false },
+      ]);
+      await expect(fixtureModule.module.abandonFreshRootHandoff(token)).resolves.toMatchObject({
+        path: copiedPath,
+        state: "ledger-backed",
+      });
+      await expect(fixtureModule.module.abandonFreshRootHandoff(token)).rejects.toThrow(
+        "invalid or consumed",
+      );
+    } finally {
+      await source.sourceHandle.close();
+      if (copiedPath !== undefined) removeFixture(copiedPath);
+      removeFixture(source.invocation);
+      removeFixture(fixtureModule.directory);
+    }
+  });
+
+  it("never closes an unrelated descriptor that reused an ambiguously closed fd", async () => {
+    const compact = compactCompleteFixture();
+    const fixtureModule = await copiedCargoModule(
+      sourceIndexBytes(),
+      compactFixtureTransform(compact, { exposeDescriptorSettlement: true }),
+    );
+    const firstPath = join(fixtureModule.directory, "first-descriptor");
+    const secondPath = join(fixtureModule.directory, "second-descriptor");
+    writeFileSync(firstPath, "first", { mode: 0o600 });
+    writeFileSync(secondPath, "second", { mode: 0o600 });
+    const firstDescriptor = openSync(firstPath, constants.O_RDONLY);
+    const firstIdentity = fstatSync(firstDescriptor, { bigint: true });
+    const firstMount = readFileSync(`/proc/self/fdinfo/${firstDescriptor}`, "ascii")
+      .match(/^mnt_id:\s+(?<mount>[0-9]+)$/mu)?.groups?.mount;
+    expect(firstMount).toBeDefined();
+    closeSync(firstDescriptor);
+    let matchingA: number | undefined;
+    let matchingB: number | undefined;
+    let reusedDescriptor: number | undefined;
+    try {
+      reusedDescriptor = openSync(secondPath, constants.O_RDONLY);
+      expect(reusedDescriptor).toBe(firstDescriptor);
+      matchingA = openSync(firstPath, constants.O_RDONLY);
+      matchingB = openSync(firstPath, constants.O_RDONLY);
+      const settle = fixtureModule.module.fixtureSettlePrivateDescriptorIdentity;
+      expect(settle).toBeTypeOf("function");
+      const expected = {
+        device: firstIdentity.dev,
+        gid: firstIdentity.gid,
+        inode: firstIdentity.ino,
+        mountId: firstMount ?? "0",
+        uid: firstIdentity.uid,
+      };
+      expect(settle?.(expected, [matchingA])).toMatchObject({
+        observedMatches: 2,
+        protectedMatches: 1,
+        remainingMatches: 0,
+        settled: true,
+      });
+      expect(readFileSync(`/proc/self/fd/${matchingA}`, "utf8")).toBe("first");
+      expect(() => fstatSync(matchingB ?? -1)).toThrow();
+      expect(readFileSync(`/proc/self/fd/${reusedDescriptor}`, "utf8")).toBe("second");
+      const finalSettlement = settle?.(expected);
+      expect(finalSettlement).toMatchObject({
+        observedMatches: 1,
+        protectedMatches: 0,
+        remainingMatches: 0,
+        settled: true,
+      });
+      expect(() => fstatSync(matchingA ?? -1)).toThrow();
+      const absentSettlement = settle?.(expected);
+      expect(absentSettlement).toMatchObject({
+        observedMatches: 0,
+        protectedMatches: 0,
+        remainingMatches: 0,
+        settled: true,
+      });
+      expect(readFileSync(`/proc/self/fd/${reusedDescriptor}`, "utf8")).toBe("second");
+    } finally {
+      if (matchingB !== undefined) {
+        try { closeSync(matchingB); } catch { /* identity settlement already closed it */ }
+      }
+      if (matchingA !== undefined) {
+        try { closeSync(matchingA); } catch { /* identity settlement already closed it */ }
+      }
+      if (reusedDescriptor !== undefined) closeSync(reusedDescriptor);
+      removeFixture(fixtureModule.directory);
+    }
+  });
+
+  it("settles a failed handoff close without consuming retained custody", async () => {
+    const compact = compactCompleteFixture();
+    const fixtureModule = await copiedCargoModule(
+      sourceIndexBytes(),
+      compactFixtureTransform(compact, { firstDescriptorCloseFailure: true }),
+    );
+    const source = await createCompleteInvocationFixture(fixtureModule.module, compact);
+    let copiedPath: string | undefined;
+    let child: ReturnType<typeof fixtureModule.module.launchBeforeIssueFreshRoot>["child"];
+    let custodyRoot: number | undefined;
+    let ledgerDescriptor: number | undefined;
+    try {
+      const token = await fixtureModule.module.prepareFreshLedgerBackedRoot({
+        sourceDirectory: source.sourceHandle,
+      });
+      let failure: unknown;
+      try {
+        fixtureModule.module.launchBeforeIssueFreshRoot(token);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      const handoffFailure = failure as Error & {
+        readonly child: ReturnType<typeof fixtureModule.module.launchBeforeIssueFreshRoot>["child"];
+        readonly cleanup: { readonly path: string };
+        readonly custody: { readonly custodyRoot: number; readonly ledgerDescriptor: number };
+        readonly handoffSettlementToken: object;
+      };
+      child = handoffFailure.child;
+      copiedPath = handoffFailure.cleanup.path;
+      custodyRoot = handoffFailure.custody.custodyRoot;
+      ledgerDescriptor = handoffFailure.custody.ledgerDescriptor;
+      const settlement = fixtureModule.module.settleFreshRootHandoffClose(
+        handoffFailure.handoffSettlementToken,
+      );
+      expect(settlement).toMatchObject({
+        observedMatches: 2,
+        protectedMatches: 1,
+        remainingMatches: 0,
+        settled: true,
+      });
+      expect(settlement).not.toHaveProperty("descriptor");
+      expect(settlement).not.toHaveProperty("observed");
+      expect(settlement).not.toHaveProperty("remaining");
+      expect(fstatSync(custodyRoot, { bigint: true }).isDirectory()).toBe(true);
+      expect(readFileSync(`/proc/self/fd/${ledgerDescriptor}`)).toEqual(compact.ledger);
+    } finally {
+      for (const stream of child?.stdio ?? []) stream?.destroy();
+      if (child !== undefined && child.exitCode === null && child.signalCode === null) {
+        await once(child, "exit");
+      }
+      if (ledgerDescriptor !== undefined) closeSync(ledgerDescriptor);
+      if (custodyRoot !== undefined) closeSync(custodyRoot);
+      await source.sourceHandle.close();
+      if (copiedPath !== undefined) removeFixture(copiedPath);
+      removeFixture(source.invocation);
+      removeFixture(fixtureModule.directory);
+    }
+  });
+
+  it("reports authenticated partial-acquisition cleanup state after a post-record failure", async () => {
+    const compact = compactCompleteFixture();
+    const fixtureModule = await copiedCargoModule(
+      sourceIndexBytes(),
+      compactFixtureTransform(compact, {
+        afterInvocationSync: 'throw new Error("fixture post-record failure");',
+      }),
+    );
+    const source = await createCompleteInvocationFixture(fixtureModule.module, compact);
+    try {
+      let failure: unknown;
+      try {
+        await fixtureModule.module.prepareFreshLedgerBackedRoot({
+          sourceDirectory: source.sourceHandle,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain("fixture post-record failure");
+      const cleanup = (failure as Error & {
+        readonly cleanup?: { readonly outcome: string; readonly path: string; readonly state: string };
+      }).cleanup;
+      expect(cleanup).toMatchObject({
+        outcome: "helper-complete-and-parent-absent",
+        state: "partial-acquisition",
+      });
+      expect(cleanup?.path).toMatch(/^\/tmp\/openspell-wp201-root-proof-[0-9a-f]{64}$/u);
+      expect(existsSync(cleanup?.path ?? "missing")).toBe(false);
+    } finally {
+      await source.sourceHandle.close();
+      removeFixture(source.invocation);
+      removeFixture(fixtureModule.directory);
+    }
+  });
+
+  it("latches a post-create signal and removes the authenticated partial tree", async () => {
+    const compact = compactCompleteFixture();
+    const fixtureModule = await copiedCargoModule(
+      sourceIndexBytes(),
+      compactFixtureTransform(compact, {
+        afterInvocationSync: "globalThis.wp201FixtureAbort.abort();",
+      }),
+    );
+    const source = await createCompleteInvocationFixture(fixtureModule.module, compact);
+    const controller = new AbortController();
+    (globalThis as unknown as { wp201FixtureAbort: AbortController }).wp201FixtureAbort = controller;
+    try {
+      let failure: unknown;
+      try {
+        await fixtureModule.module.prepareFreshLedgerBackedRoot({
+          signal: controller.signal,
+          sourceDirectory: source.sourceHandle,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain("signal latched");
+      const cleanup = (failure as Error & {
+        readonly cleanup?: { readonly outcome: string; readonly path: string; readonly state: string };
+      }).cleanup;
+      expect(cleanup).toMatchObject({
+        outcome: "helper-complete-and-parent-absent",
+        state: "partial-acquisition",
+      });
+      expect(existsSync(cleanup?.path ?? "missing")).toBe(false);
+    } finally {
+      delete (globalThis as unknown as { wp201FixtureAbort?: AbortController }).wp201FixtureAbort;
+      await source.sourceHandle.close();
+      removeFixture(source.invocation);
+      removeFixture(fixtureModule.directory);
+    }
+  });
+
+  it("records and safely settles pre-record cleanup immediately after mkdir", async () => {
+    const compact = compactCompleteFixture();
+    const fixtureModule = await copiedCargoModule(
+      sourceIndexBytes(),
+      compactFixtureTransform(compact, {
+        afterDirectoryCreate: 'throw new Error("fixture post-mkdir failure");',
+      }),
+    );
+    const source = await createCompleteInvocationFixture(fixtureModule.module, compact);
+    try {
+      let failure: unknown;
+      try {
+        await fixtureModule.module.prepareFreshLedgerBackedRoot({
+          sourceDirectory: source.sourceHandle,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain("fixture post-mkdir failure");
+      const cleanup = (failure as Error & {
+        readonly cleanup?: {
+          readonly helperUsable: boolean;
+          readonly kind: string;
+          readonly path: string;
+          readonly state: string;
+        };
+      }).cleanup;
+      expect(cleanup).toMatchObject({
+        helperUsable: false,
+        kind: "settled-pre-record",
+        state: "pre-record",
+      });
+      expect(cleanup?.path).toMatch(/^\/tmp\/openspell-wp201-root-proof-[0-9a-f]{64}$/u);
+      expect(existsSync(cleanup?.path ?? "missing")).toBe(false);
+      expect(cleanup).not.toHaveProperty("device");
+      expect(cleanup).not.toHaveProperty("inode");
+      expect(cleanup).not.toHaveProperty("mountId");
+    } finally {
+      await source.sourceHandle.close();
+      removeFixture(source.invocation);
+      removeFixture(fixtureModule.directory);
+    }
+  });
+
+  it("re-verifies the authenticated source after the destination copy completes", async () => {
+    const compact = compactCompleteFixture();
+    const fixtureModule = await copiedCargoModule(
+      sourceIndexBytes(),
+      compactFixtureTransform(compact, {
+        beforeSettledSourceVerification:
+          'await chmod(join(source.descriptorPath, "control/proof.sh"), 0o544);',
+      }),
+    );
+    const source = await createCompleteInvocationFixture(fixtureModule.module, compact);
+    try {
+      let failure: unknown;
+      try {
+        await fixtureModule.module.prepareFreshLedgerBackedRoot({
+          sourceDirectory: source.sourceHandle,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain("ledger-backed file identity mismatch");
+      const cleanup = (failure as Error & {
+        readonly cleanup?: {
+          readonly helperUsable: boolean;
+          readonly kind: string;
+          readonly outcome: string;
+          readonly path: string;
+          readonly state: string;
+        };
+      }).cleanup;
+      expect(cleanup).toMatchObject({
+        helperUsable: true,
+        kind: "authenticated",
+        outcome: "helper-complete-and-parent-absent",
+        state: "partial-acquisition",
+      });
+      expect(existsSync(cleanup?.path ?? "missing")).toBe(false);
+    } finally {
+      chmodSync(join(source.invocation, "control/proof.sh"), 0o444);
+      await source.sourceHandle.close();
+      removeFixture(source.invocation);
+      removeFixture(fixtureModule.directory);
     }
   });
 
