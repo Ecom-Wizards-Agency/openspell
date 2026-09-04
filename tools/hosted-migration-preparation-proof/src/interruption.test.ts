@@ -5,19 +5,39 @@ import {
   IMAGE,
   PROOF_ROLE,
   ROW_IDS,
+  PLATFORM_MANIFEST_REFERENCE,
   acquisitionContainerName,
   acquisitionCreateArguments,
   advanceIdCleanup,
   assertCleanEnvironment,
   createCleanupCursor,
+  dockerOperationArguments,
+  expectedCleanupOperation,
   invocationRecord,
   proofContainerName,
   proofCreateArguments,
+  reduceCleanupCursor,
 } from "../scripts/proof-engine.mjs";
 
 const invocation = "1".repeat(64);
 const ledgerSha256 = "2".repeat(64);
 const invocationDirectory = `/tmp/openspell-wp201-root-proof-${invocation}`;
+const labelNamespace = ["com", "openspell", "wp201"].join(".");
+
+function settle(
+  cursor: ReturnType<typeof createCleanupCursor>,
+  operation: string,
+  outcome: string,
+  id?: string,
+): ReturnType<typeof createCleanupCursor> {
+  const active = reduceCleanupCursor(cursor, {
+    type: "begin-operation",
+    operation,
+    ...(id === undefined ? {} : { id }),
+  });
+  const recorded = reduceCleanupCursor(active, { type: "record-result", outcome });
+  return reduceCleanupCursor(recorded, { type: "advance" });
+}
 
 describe("WP-201 sealed proof engine", () => {
   it("freezes the ordered 28-row proof matrix and deterministic identities", () => {
@@ -76,9 +96,9 @@ describe("WP-201 sealed proof engine", () => {
       "--pull",
       "never",
       "--label",
-      `com.openspell.wp201.invocation=${invocation}`,
+      `${labelNamespace}.invocation=${invocation}`,
       "--label",
-      `com.openspell.wp201.role=${ACQUISITION_ROLE}`,
+      `${labelNamespace}.role=${ACQUISITION_ROLE}`,
       "--name",
       `openspell-wp201-${invocation}-acquisition`,
       "--read-only",
@@ -126,11 +146,38 @@ describe("WP-201 sealed proof engine", () => {
       "--mount",
       `type=bind,src=${invocationDirectory}/control/acquisition.sh,dst=/input/control.sh,readonly,bind-propagation=rprivate`,
       "--tmpfs",
-      "/output:rw,nodev,nosuid,exec,size=1073741824,mode=0700,uid=123,gid=456",
+      [
+        "/output:rw",
+        "nodev",
+        "nosuid",
+        "exec",
+        "size=1073741824",
+        "mode=0700",
+        "uid=123",
+        "gid=456",
+      ].join(","),
       "--tmpfs",
-      "/tmp:rw,nodev,nosuid,noexec,size=1073741824,mode=0700,uid=123,gid=456",
+      [
+        "/tmp:rw",
+        "nodev",
+        "nosuid",
+        "noexec",
+        "size=1073741824",
+        "mode=0700",
+        "uid=123",
+        "gid=456",
+      ].join(","),
       "--tmpfs",
-      "/wp201-home:rw,nodev,nosuid,noexec,size=16777216,mode=0700,uid=123,gid=456",
+      [
+        "/wp201-home:rw",
+        "nodev",
+        "nosuid",
+        "noexec",
+        "size=16777216",
+        "mode=0700",
+        "uid=123",
+        "gid=456",
+      ].join(","),
       "--workdir",
       "/tmp",
       "--entrypoint",
@@ -206,6 +253,133 @@ describe("WP-201 sealed proof engine", () => {
     ).toThrow("WP-201 invocation path identity mismatch");
   });
 
+  it("constructs every closed Docker operation suffix without caller-selected names", () => {
+    const id = "a".repeat(64);
+    const expectedImage = [
+      "docker.io/library/rust",
+      ":1.97.1-bookworm@sha256:",
+      "0e2bcaef56d041a4",
+      "86784e54104a81ae",
+      "be0da44bd03019bd",
+      "70bc0401e42e4a97",
+    ].join("");
+    expect(IMAGE).toBe(expectedImage);
+    expect(PLATFORM_MANIFEST_REFERENCE).toBe(
+      [
+        "docker.io/library/rust@sha256:",
+        "408fe88047cef61a",
+        "2087653b0c5255fa",
+        "51c0f2d6d94ddedd",
+        "7a2562a9b91a46f6",
+      ].join(""),
+    );
+    expect(dockerOperationArguments("context-name")).toEqual(["context", "show"]);
+    expect(dockerOperationArguments("context-endpoint")).toEqual([
+      "context",
+      "inspect",
+      "default",
+      "--format",
+      "{{json .Endpoints.docker.Host}}",
+    ]);
+    expect(dockerOperationArguments("api-support")).toEqual([
+      "version",
+      "--format",
+      "{{json .}}",
+    ]);
+    expect(dockerOperationArguments("platform-manifest")).toEqual([
+      "manifest",
+      "inspect",
+      PLATFORM_MANIFEST_REFERENCE,
+    ]);
+    expect(dockerOperationArguments("cached-image")).toEqual([
+      "image",
+      "inspect",
+      "--platform",
+      "linux/amd64",
+      IMAGE,
+    ]);
+    expect(dockerOperationArguments("image-pull")).toEqual([
+      "image",
+      "pull",
+      "--platform",
+      "linux/amd64",
+      IMAGE,
+    ]);
+    expect(dockerOperationArguments("label-census", { invocation })).toEqual([
+      "container",
+      "ls",
+      "--all",
+      "--no-trunc",
+      "--filter",
+      `label=${labelNamespace}.invocation=${invocation}`,
+      "--format",
+      "{{.ID}}",
+    ]);
+    expect(
+      dockerOperationArguments("exact-name-acquisition", { invocation }),
+    ).toEqual([
+      "container",
+      "inspect",
+      `openspell-wp201-${invocation}-acquisition`,
+    ]);
+    expect(
+      dockerOperationArguments("exact-name-proof", {
+        invocation,
+        rowId: "root-fmt",
+      }),
+    ).toEqual([
+      "container",
+      "inspect",
+      `openspell-wp201-${invocation}-proof-root-fmt`,
+    ]);
+    expect(dockerOperationArguments("inspect", { id })).toEqual([
+      "container",
+      "inspect",
+      id,
+    ]);
+    expect(dockerOperationArguments("acquisition-start-attach", { id })).toEqual([
+      "container",
+      "start",
+      "--attach",
+      id,
+    ]);
+    expect(dockerOperationArguments("proof-start-attach", { id })).toEqual([
+      "container",
+      "start",
+      "--attach",
+      "--interactive",
+      id,
+    ]);
+    expect(dockerOperationArguments("remove", { id })).toEqual([
+      "container",
+      "rm",
+      "--force",
+      "--volumes",
+      id,
+    ]);
+    expect(dockerOperationArguments("absence", { id })).toEqual([
+      "container",
+      "inspect",
+      id,
+    ]);
+    expect(() =>
+      dockerOperationArguments("exact-name-proof", {
+        invocation,
+        rowId: "root-fmt",
+        name: "caller-name",
+      }),
+    ).toThrow("invalid Docker operation options");
+    expect(() =>
+      dockerOperationArguments("proof-start-attach", {
+        id,
+        role: PROOF_ROLE,
+      }),
+    ).toThrow("invalid Docker operation options");
+    expect(() => dockerOperationArguments("run", {})).toThrow(
+      "unsupported Docker operation",
+    );
+  });
+
   it("carries cleanup state forward and cannot authorize a third removal", () => {
     const id = "a".repeat(64);
     const cursor = createCleanupCursor([id, id]);
@@ -222,5 +396,114 @@ describe("WP-201 sealed proof engine", () => {
     expect(() => advanceIdCleanup(failed, "remove-1", "ok")).toThrow(
       "cleanup operation replay or reorder",
     );
+  });
+
+  it("preserves an active parsed result across latch and never replays a slot", () => {
+    const id = "b".repeat(64);
+    const initial = createCleanupCursor([id]);
+    const active = reduceCleanupCursor(initial, {
+      type: "begin-operation",
+      operation: "remove-1",
+      id,
+    });
+    const parsed = reduceCleanupCursor(active, {
+      type: "record-result",
+      outcome: "error",
+    });
+    const latched = reduceCleanupCursor(parsed, { type: "latch" });
+    expect(latched.latched).toBe(true);
+    expect(latched.active).toEqual({ operation: "remove-1", id, result: "error" });
+    expect(reduceCleanupCursor(latched, { type: "latch" })).toBe(latched);
+
+    const advanced = reduceCleanupCursor(latched, { type: "advance" });
+    expect(advanced.ids).toEqual([{ id, state: "absence-1" }]);
+    expect(expectedCleanupOperation(advanced)).toEqual({
+      operation: "absence-1",
+      id,
+    });
+    expect(() =>
+      reduceCleanupCursor(advanced, {
+        type: "begin-operation",
+        operation: "remove-1",
+        id,
+      }),
+    ).toThrow("cleanup operation replay or reorder");
+    expect(() => reduceCleanupCursor(parsed, { type: "record-result", outcome: "error" }))
+      .toThrow("cleanup result replay or reorder");
+  });
+
+  it("adopts one late final event and advances the complete cleanup sequence once", () => {
+    const responseId = "c".repeat(64);
+    const finalEventId = "d".repeat(64);
+    let cursor = createCleanupCursor([responseId]);
+    cursor = settle(cursor, "remove-1", "removed", responseId);
+    cursor = settle(cursor, "absence-1", "absent", responseId);
+    expect(cursor.phase).toBe("preliminary-census");
+
+    cursor = reduceCleanupCursor(cursor, {
+      type: "begin-operation",
+      operation: "preliminary-census",
+    });
+    cursor = reduceCleanupCursor(cursor, {
+      type: "adopt-event-id",
+      id: finalEventId,
+    });
+    expect(cursor.finalIds).toEqual([{ id: finalEventId, state: "remove-1" }]);
+    cursor = reduceCleanupCursor(cursor, {
+      type: "record-result",
+      outcome: "deferred-event",
+    });
+    cursor = reduceCleanupCursor(cursor, { type: "advance" });
+    expect(cursor.phase).toBe("close");
+
+    cursor = settle(cursor, "send-close", "sent");
+    cursor = settle(cursor, "settle-watcher", "reaped");
+    expect(cursor.phase).toBe("final-ids");
+    expect(cursor.closeSent).toBe(true);
+    expect(cursor.watcherReaped).toBe(true);
+    cursor = settle(cursor, "remove-1", "error", finalEventId);
+    cursor = settle(cursor, "absence-1", "present", finalEventId);
+    cursor = settle(cursor, "remove-2", "removed", finalEventId);
+    cursor = settle(cursor, "absence-2", "absent", finalEventId);
+    expect(cursor.phase).toBe("final-census");
+
+    cursor = settle(cursor, "final-census", "empty");
+    cursor = settle(cursor, "path-helper", "complete");
+    cursor = settle(cursor, "parent-absence", "absent");
+    expect(cursor).toMatchObject({
+      phase: "complete",
+      failed: false,
+      preliminaryCensus: true,
+      finalCensus: true,
+      pathCleanup: true,
+      parentAbsence: true,
+    });
+    expect(expectedCleanupOperation(cursor)).toBeNull();
+    expect(() =>
+      reduceCleanupCursor(cursor, {
+        type: "begin-operation",
+        operation: "parent-absence",
+      }),
+    ).toThrow("cleanup operation replay or reorder");
+  });
+
+  it("marks a second event or a third unique identity uncertain without adopting it", () => {
+    const first = "e".repeat(64);
+    const second = "f".repeat(64);
+    const third = "0".repeat(64);
+    let cursor = createCleanupCursor([first]);
+    cursor = reduceCleanupCursor(cursor, { type: "adopt-event-id", id: second });
+    expect(cursor.ids).toHaveLength(2);
+    cursor = reduceCleanupCursor(cursor, { type: "adopt-event-id", id: third });
+    expect(cursor).toMatchObject({ failed: true, eventCount: 2 });
+    expect(cursor.ids.map(({ id }: { id: string }) => id)).toEqual([first, second]);
+
+    const full = createCleanupCursor([first, second]);
+    const refused = reduceCleanupCursor(full, { type: "adopt-event-id", id: third });
+    expect(refused).toMatchObject({ failed: true, eventCount: 1 });
+    expect(refused.ids.map(({ id }: { id: string }) => id)).toEqual([
+      first,
+      second,
+    ]);
   });
 });
