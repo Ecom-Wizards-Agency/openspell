@@ -481,7 +481,7 @@ describe("WP-201 path cleanup helper boundary", () => {
     }
   });
 
-  it("removes a bounded partial cache without following an outward symlink", async () => {
+  it("restores and removes a mode-0000 partial cache without following an outward symlink", async () => {
     const roots: OwnedTestRoot[] = [];
     try {
       const fixture = createInvocationFixture();
@@ -505,7 +505,8 @@ describe("WP-201 path cleanup helper boundary", () => {
         stdio: "ignore",
       });
       symlinkSync(sentinel.path, join(cache, "outward"));
-      chmodSync(cache, 0o500);
+      chmodSync(cache, 0o000);
+      expect(Number(lstatSync(cache, { bigint: true }).mode & 0o7777n)).toBe(0o000);
 
       expectCleanupSuccess(
         await runCleanupHelper({

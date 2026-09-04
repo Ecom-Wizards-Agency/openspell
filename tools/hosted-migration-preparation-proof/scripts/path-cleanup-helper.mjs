@@ -155,6 +155,18 @@ function sameDirectoryIdentity(left, right) {
   );
 }
 
+function sameDirectoryAfterPermissionRestore(before, after) {
+  return (
+    sameDirectoryIdentity(before, after) &&
+    before.nlink === after.nlink &&
+    before.rdev === after.rdev &&
+    before.size === after.size &&
+    before.mtimeNs === after.mtimeNs &&
+    after.ctimeNs >= before.ctimeNs &&
+    modeBits(after) === 0o700
+  );
+}
+
 function sameUnlinkIdentity(expected, observed, linksAlreadyRemoved) {
   return (
     expected.dev === observed.dev &&
@@ -294,13 +306,35 @@ function assertPartialEntryType(stat) {
   );
 }
 
-function walkInvocation(rootPath, expectedUid, expectedGid, expectedDevice, requireTextPaths) {
+function walkInvocation(
+  rootPath,
+  rootIdentity,
+  expectedUid,
+  expectedGid,
+  expectedDevice,
+  requireTextPaths,
+) {
   const entries = [];
   const directories = [];
   let totalPathBytes = 0;
 
-  function visit(directoryPath, relativeDirectory, depth) {
+  function visit(directoryPath, relativeDirectory, depth, expectedIdentity) {
     requireThat(depth <= MAX_DEPTH);
+    const before = lstatSync(directoryPath, { bigint: true });
+    requireThat(
+      sameIdentity(expectedIdentity, before) &&
+        before.isDirectory() &&
+        before.uid === expectedUid &&
+        before.gid === expectedGid &&
+        before.dev === expectedDevice,
+    );
+    if (modeBits(before) !== 0o700) chmodSync(directoryPath, 0o700);
+    const restored = lstatSync(directoryPath, { bigint: true });
+    requireThat(
+      modeBits(before) === 0o700
+        ? sameIdentity(before, restored)
+        : sameDirectoryAfterPermissionRestore(before, restored),
+    );
     const directory = opendirSync(directoryPath, { encoding: "buffer" });
     try {
       for (;;) {
@@ -334,16 +368,17 @@ function walkInvocation(rootPath, expectedUid, expectedGid, expectedDevice, requ
         const entry = { absolute, relative, relativeText, stat };
         entries.push(entry);
         if (stat.isDirectory()) {
-          visit(absolute, relative, entryDepth);
-          directories.push(entry);
+          const restoredStat = visit(absolute, relative, entryDepth, stat);
+          directories.push({ ...entry, restoredStat });
         }
       }
     } finally {
       directory.closeSync();
     }
+    return restored;
   }
 
-  visit(Buffer.from(rootPath), Buffer.alloc(0), 0);
+  visit(Buffer.from(rootPath), Buffer.alloc(0), 0, rootIdentity);
   return { entries, directories };
 }
 
@@ -703,23 +738,19 @@ function validateLedgerBackedTree(entries, invocation) {
   }
 }
 
-function restoreDirectoryPermissions(directories, rootPath, rootDescriptor, rootIdentity) {
+function revalidateDirectoryPermissions(directories, rootPath, rootDescriptor, rootIdentity) {
   assertNoNestedMounts(rootPath);
   for (const directory of directories) {
-    const before = lstatSync(directory.absolute, { bigint: true });
-    requireThat(sameIdentity(directory.stat, before) && before.isDirectory());
-    chmodSync(directory.absolute, 0o700);
-    const after = lstatSync(directory.absolute, { bigint: true });
+    const observed = lstatSync(directory.absolute, { bigint: true });
     requireThat(
-      sameDirectoryIdentity(before, after) && modeBits(after) === 0o700,
+      sameIdentity(directory.restoredStat, observed) && observed.isDirectory(),
     );
   }
-  chmodSync(rootPath, 0o700);
   const pathAfter = lstatSync(rootPath, { bigint: true });
   const descriptorAfter = fstatSync(rootDescriptor, { bigint: true });
   requireThat(
-    sameDirectoryIdentity(rootIdentity, pathAfter) &&
-      sameDirectoryIdentity(pathAfter, descriptorAfter) &&
+    sameIdentity(rootIdentity, pathAfter) &&
+      sameIdentity(pathAfter, descriptorAfter) &&
       modeBits(pathAfter) === 0o700,
   );
 }
@@ -866,6 +897,7 @@ function cleanup() {
     const requireTextPaths = control.cleanupState === "ledger-backed";
     const { entries, directories } = walkInvocation(
       targetPath,
+      rootIdentity,
       expectedUid,
       expectedGid,
       rootIdentity.dev,
@@ -882,7 +914,7 @@ function cleanup() {
       validateLedgerBackedTree(entries, control.invocation);
     }
 
-    restoreDirectoryPermissions(directories, targetPath, rootDescriptor, rootIdentity);
+    revalidateDirectoryPermissions(directories, targetPath, rootDescriptor, rootIdentity);
     const parentBeforeRemoval = lstatSync(parentPath, { bigint: true });
     const openedParentBeforeRemoval = fstatSync(parentDescriptor, { bigint: true });
     requireThat(
