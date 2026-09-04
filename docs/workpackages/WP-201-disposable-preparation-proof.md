@@ -235,6 +235,9 @@ product, implementation or security requirement, claim WP-201 acceptance or comp
     ID, require an absence inspection after the first attempt and after any required retry, preserve
     an in-flight cleanup operation/result across the latch without restarting its state, and settle
     any final event learned during watcher closure before the one final census.
+    Bind each epoch-backlog watcher to OPEN v2's closed invocation/role/exact-name tuple, one
+    invocation-label filter value and a separate exact-name `container` filter; treat that daemon
+    filter only as narrowing and require exact client-side role/name identity before custody.
     Latch the first signal, pre-establish the exact same-daemon event stream and route success and
     every refusal through one outer cleanup `finally`. Any unconfirmed child, container or pathname residue
     refuses and cannot emit success.

@@ -24,8 +24,38 @@ const allowedRoles = new Set([
   "dependency-acquisition-v1",
   "root-bridge-proof-v1",
 ]);
+const proofRowIds = new Set([
+  "root-fmt",
+  "root-check-none",
+  "root-clippy-none",
+  "root-rustdoc-none",
+  "root-test-none",
+  "root-check-internal",
+  "root-clippy-internal",
+  "root-rustdoc-internal",
+  "root-test-internal",
+  "runtime-fmt",
+  "runtime-check-none",
+  "runtime-clippy-none",
+  "runtime-rustdoc-none",
+  "runtime-test-none",
+  "runtime-check-internal",
+  "runtime-clippy-internal",
+  "runtime-rustdoc-internal",
+  "runtime-test-internal",
+  "runtime-check-all",
+  "runtime-clippy-all",
+  "runtime-rustdoc-all",
+  "runtime-test-all",
+  "coordinator-fmt",
+  "coordinator-check",
+  "coordinator-clippy",
+  "coordinator-rustdoc",
+  "coordinator-test",
+  "root-positive",
+]);
 const openPrefix = Buffer.from(
-  "openspell.wp201.docker-event-open.v1\n",
+  "openspell.wp201.docker-event-open.v2\n",
   "ascii",
 );
 const closeFrame = Buffer.from(
@@ -282,9 +312,84 @@ function validateRole(role) {
   if (!allowedRoles.has(role)) protocolError("event-role");
 }
 
-export function parseDockerCreateEventFrame(frame, invocation, role) {
+function validateContainerName(invocation, role, containerName) {
   validateInvocation(invocation);
   validateRole(role);
+  if (typeof containerName !== "string") protocolError("event-container-name");
+  const acquisitionName = `openspell-wp201-${invocation}-acquisition`;
+  if (role === "dependency-acquisition-v1") {
+    if (containerName !== acquisitionName) protocolError("event-container-name");
+    return;
+  }
+  const prefix = `openspell-wp201-${invocation}-proof-`;
+  const rowId = containerName.startsWith(prefix) ? containerName.slice(prefix.length) : "";
+  if (!proofRowIds.has(rowId) || containerName !== `${prefix}${rowId}`) {
+    protocolError("event-container-name");
+  }
+}
+
+export function buildDockerEventOpenFrame(invocation, role, containerName) {
+  validateContainerName(invocation, role, containerName);
+  const frame = Buffer.from(
+    `openspell.wp201.docker-event-open.v2\n${invocation}\n${role}\n${containerName}\n`,
+    "ascii",
+  );
+  if (frame.length > maximumControlBytes) protocolError("control-cap");
+  return frame;
+}
+
+export class DockerEventOpenControlParser {
+  constructor() {
+    this.buffer = Buffer.alloc(0);
+    this.complete = false;
+  }
+
+  accept(bytes) {
+    if (this.complete) protocolError("control-order");
+    this.buffer = appendBounded(
+      this.buffer,
+      bytes,
+      maximumControlBytes,
+      "control-cap",
+    );
+    const comparable = Math.min(this.buffer.length, openPrefix.length);
+    if (!this.buffer.subarray(0, comparable).equals(openPrefix.subarray(0, comparable))) {
+      protocolError("control-open");
+    }
+    let newline = -1;
+    for (let index = 0; index < 4; index += 1) {
+      newline = this.buffer.indexOf(0x0a, newline + 1);
+      if (newline < 0) return undefined;
+    }
+    if (newline + 1 !== this.buffer.length) protocolError("control-order");
+    let text;
+    try {
+      text = fatalUtf8.decode(this.buffer);
+    } catch {
+      protocolError("control-utf8");
+    }
+    const lines = text.split("\n");
+    if (
+      lines.length !== 5 ||
+      lines[0] !== "openspell.wp201.docker-event-open.v2" ||
+      lines[4] !== ""
+    ) {
+      protocolError("control-open");
+    }
+    validateContainerName(lines[1], lines[2], lines[3]);
+    this.complete = true;
+    return Object.freeze({
+      invocation: lines[1],
+      role: lines[2],
+      containerName: lines[3],
+    });
+  }
+}
+
+export function parseDockerCreateEventFrame(frame, invocation, role, containerName) {
+  validateInvocation(invocation);
+  validateRole(role);
+  validateContainerName(invocation, role, containerName);
   const bytes = byteBuffer(frame, "event-frame");
   if (bytes.length === 0 || bytes.length > maximumEventFrameBytes) {
     protocolError("event-frame-cap");
@@ -354,7 +459,11 @@ export function parseDockerCreateEventFrame(frame, invocation, role) {
       protocolError("event-attribute-value");
     }
   }
-  if (!attributes.has(invocationAttribute) || !attributes.has(roleAttribute)) {
+  if (
+    !attributes.has(invocationAttribute) ||
+    !attributes.has(roleAttribute) ||
+    !attributes.has("name")
+  ) {
     protocolError("event-attribute-missing");
   }
 
@@ -377,6 +486,9 @@ export function parseDockerCreateEventFrame(frame, invocation, role) {
   if (attributes.get(invocationAttribute) !== invocation) return undefined;
   if (attributes.get(roleAttribute) !== role) {
     protocolError("event-role-collision");
+  }
+  if (attributes.get("name") !== containerName) {
+    protocolError("event-name-collision");
   }
   return actorId;
 }
@@ -435,9 +547,9 @@ function parseHeaders(bytes) {
   }
 }
 
-export function buildDockerEventRequest(invocation) {
-  validateInvocation(invocation);
-  const filter = `{"event":["create"],"label":["${invocationAttribute}=${invocation}"],"type":["container"]}`;
+export function buildDockerEventRequest(invocation, role, containerName) {
+  validateContainerName(invocation, role, containerName);
+  const filter = `{"container":["${containerName}"],"event":["create"],"label":["${invocationAttribute}=${invocation}"],"type":["container"]}`;
   const target =
     "/v1.47/events" + "?since=0&filters=" + encodeURIComponent(filter);
   return Buffer.from(
@@ -447,11 +559,11 @@ export function buildDockerEventRequest(invocation) {
 }
 
 export class DockerEventHttpStreamParser {
-  constructor(invocation, role) {
-    validateInvocation(invocation);
-    validateRole(role);
+  constructor(invocation, role, containerName) {
+    validateContainerName(invocation, role, containerName);
     this.invocation = invocation;
     this.role = role;
+    this.containerName = containerName;
     this.phase = "headers";
     this.requestFlushed = false;
     this.headersAccepted = false;
@@ -618,6 +730,7 @@ export class DockerEventHttpStreamParser {
         frame,
         this.invocation,
         this.role,
+        this.containerName,
       );
       if (id === undefined) continue;
       if (this.matchingEventId !== undefined) {
@@ -668,6 +781,7 @@ function runDockerEventHelper() {
   let terminal = false;
   let controlEnded = false;
   let controlBuffer = Buffer.alloc(0);
+  const openControlParser = new DockerEventOpenControlParser();
   let socket;
   let socketClosed = false;
   let streamParser;
@@ -750,10 +864,10 @@ function runDockerEventHelper() {
     finishIfSettled();
   }
 
-  function connectToEngine(invocation, role) {
+  function connectToEngine(invocation, role, containerName) {
     phase = "connecting";
     try {
-      streamParser = new DockerEventHttpStreamParser(invocation, role);
+      streamParser = new DockerEventHttpStreamParser(invocation, role, containerName);
     } catch (error) {
       refuse(
         error instanceof DockerEventProtocolError
@@ -761,7 +875,7 @@ function runDockerEventHelper() {
           : "event-parser",
       );
     }
-    const request = buildDockerEventRequest(invocation);
+    const request = buildDockerEventRequest(invocation, role, containerName);
     socket = createConnection({ path: socketPath });
     socket.on("connect", () => {
       if (terminal || phase !== "connecting") return;
@@ -811,48 +925,6 @@ function runDockerEventHelper() {
     });
   }
 
-  function parseOpenControl() {
-    if (controlBuffer.length > maximumControlBytes) refuse("control-cap");
-    const firstNewline = controlBuffer.indexOf(0x0a);
-    if (firstNewline < 0) {
-      const comparable = Math.min(controlBuffer.length, openPrefix.length);
-      if (
-        !controlBuffer
-          .subarray(0, comparable)
-          .equals(openPrefix.subarray(0, comparable))
-      ) {
-        refuse("control-open");
-      }
-      return;
-    }
-    const secondNewline = controlBuffer.indexOf(0x0a, firstNewline + 1);
-    const thirdNewline =
-      secondNewline < 0
-        ? -1
-        : controlBuffer.indexOf(0x0a, secondNewline + 1);
-    if (thirdNewline < 0) return;
-    const open = controlBuffer.subarray(0, thirdNewline + 1);
-    let text;
-    try {
-      text = fatalUtf8.decode(open);
-    } catch {
-      refuse("control-utf8");
-    }
-    const lines = text.split("\n");
-    if (
-      lines.length !== 4 ||
-      lines[0] !== "openspell.wp201.docker-event-open.v1" ||
-      !/^[0-9a-f]{64}$/u.test(lines[1]) ||
-      !allowedRoles.has(lines[2]) ||
-      lines[3] !== ""
-    ) {
-      refuse("control-open");
-    }
-    controlBuffer = Buffer.from(controlBuffer.subarray(thirdNewline + 1));
-    if (controlBuffer.length !== 0) refuse("control-order");
-    connectToEngine(lines[1], lines[2]);
-  }
-
   function parseCloseControl() {
     if (controlBuffer.length > closeFrame.length) {
       refuse("control-trailing");
@@ -871,6 +943,20 @@ function runDockerEventHelper() {
   function handleControlBytes(bytes) {
     if (terminal) return;
     if (phase === "closing") refuse("control-trailing");
+    if (phase === "open") {
+      let target;
+      try {
+        target = openControlParser.accept(bytes);
+      } catch (error) {
+        refuse(
+          error instanceof DockerEventProtocolError ? error.code : "control-open",
+        );
+      }
+      if (target !== undefined) {
+        connectToEngine(target.invocation, target.role, target.containerName);
+      }
+      return;
+    }
     try {
       controlBuffer = appendBounded(
         controlBuffer,
@@ -882,10 +968,6 @@ function runDockerEventHelper() {
       refuse(
         error instanceof DockerEventProtocolError ? error.code : "control-cap",
       );
-    }
-    if (phase === "open") {
-      parseOpenControl();
-      return;
     }
     if (phase !== "streaming") refuse("control-order");
     parseCloseControl();

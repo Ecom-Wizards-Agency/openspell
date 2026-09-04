@@ -2925,7 +2925,10 @@ Its descriptor table is:
 | `5` | helper to parent | zero or one exact event-ID frame, then EOF |
 
 Control opens with exact ASCII bytes
-`openspell.wp201.docker-event-open.v1\n<invocation-value>\n<role>\n`. The parent writes exactly
+`openspell.wp201.docker-event-open.v2\n<invocation-value>\n<role>\n<exact-container-name>\n`.
+The helper validates before socket connection that the name is exactly the acquisition name for the
+acquisition role or the exact proof name for one member of the frozen 28-row set. All 29 possible
+OPEN frames are unique and no more than 256 bytes. The parent writes exactly
 `openspell.wp201.docker-event-close.v1\n` only after every identity known before the preliminary
 census has been removed and proved absent and that census has been classified under the fixed
 deferred-event rule below. On receiving the complete CLOSE frame, the helper parses and emits any complete
@@ -2948,20 +2951,23 @@ continuing as a live stream. It narrows the request-flush/subscriber-registratio
 claimed lossless: the pinned daemon flushes `200` before subscription and retains only 256 global
 events, so unrelated churn can evict a matching create. Exact-name recovery below closes cleanup
 custody for that case without turning a missing event into proof success. Canonical filter JSON is
-`{"event":["create"],"label":["com.openspell.wp201.invocation=<value>"],"type":["container"]}`.
-It is compactly encoded and canonically percent-encoded in the request target. Only the random
-invocation label is filtered server-side, avoiding Docker's OR semantics for repeated values. The
-helper independently requires the exact role label in the decoded event; an event carrying the
-invocation label with a missing/wrong role is a collision and refuses. Existing duplicate-key
+`{"container":["<exact-container-name>"],"event":["create"],"label":["com.openspell.wp201.invocation=<value>"],"type":["container"]}`.
+It is compactly encoded and canonically percent-encoded in the request target; the longest request
+is 425 bytes. Docker combines distinct filter keys, while multiple values for one key are OR, so
+there is exactly one invocation-label value and the exact name is a separate `container` key. The
+daemon's container matcher accepts exact values or prefixes, making this filter a narrowing aid and
+never custody. The helper independently requires the decoded event's exact invocation label, role
+label and `Actor.Attributes.name`; an event carrying the invocation label with a missing/wrong role
+or non-exact name is a collision and refuses. Existing duplicate-key
 rejection and raw `timeNano` rules remain mandatory. Headers cap at 8,192 bytes, each decoded HTTP
 chunk/event frame at 65,536 bytes, and the complete stream before CLOSE at 1 MiB. Redirect, upgrade,
 content encoding, ambiguous content-length/transfer-encoding, a non-200 response once bytes arrive,
 EOF before CLOSE, trailing bytes in a
-JSON frame, or a second exact-invocation event refuse. A syntactically valid frame with a different
+JSON frame, or a second exact-target event refuse. A syntactically valid frame with a different
 invocation value is ignored but counts toward the cumulative cap; a matching-invocation frame with
-a missing or wrong role is a collision and refuses. Such nonmatching frames cannot arrive from a
-compliant daemon after the server-side filter, but fixtures place them before and after the matching
-event to prove they cannot be adopted by the decoder path.
+a missing or wrong role or non-exact `Actor.Attributes.name` is a collision and refuses. Such
+nonmatching frames cannot arrive from a compliant daemon after the server-side filter, but fixtures
+place them before and after the matching event to prove they cannot be adopted by the decoder path.
 
 Before starting the watcher, the parent requires the exact generated container name to have the
 frozen exact-name absence result. It then receives the daemon-acknowledged ready frame before
@@ -3281,11 +3287,12 @@ revalidates the socket before every client operation and after watcher closure.
 Every Docker client argv places `--host unix:///var/run/docker.sock` immediately after the resolved
 Docker executable, so context mutation cannot retarget list, pull, create, start, inspect or remove;
 boundary tests reject any client invocation without that exact endpoint. Before sending
-create it spawns the owned `scripts/docker-event-helper.mjs`, which connects directly to that Unix
-socket and requests the fixed Engine API `/v1.47/events` stream with literal `since=0` and only `type=container`,
-`event=create` and the exact random invocation-label filter. The helper caps headers at 8,192
+create it spawns the owned `scripts/docker-event-helper.mjs`, which validates its closed OPEN-v2
+invocation/role/exact-name tuple, connects directly to that Unix socket and requests the fixed Engine
+API `/v1.47/events` stream with literal `since=0`, `type=container`, `event=create`, one exact random
+invocation-label filter and the separate exact-name `container` filter. The helper caps headers at 8,192
 bytes, each frame at 65,536 bytes and the cumulative stream at 1 MiB, then post-filters the exact
-role. It accepts at most one matching Engine-event JSON frame with one full 64-hex actor ID. Engine
+role and name. It accepts at most one matching Engine-event JSON frame with one full 64-hex actor ID. Engine
 events are external protocol frames, explicitly not WP-201
 canonical-record JSON. The duplicate-key-rejecting decoder ignores object key order but allows only
 the top-level keys `status`, `id`, `from`, `Type`, `Action`, `Actor`, `scope`, `time` and `timeNano`;
@@ -3293,7 +3300,7 @@ the top-level keys `status`, `id`, `from`, `Type`, `Action`, `Actor`, `scope`, `
 `scope` must be `container`, `create` and `local`; optional `status` must be `create`; optional `id`
 must equal `Actor.ID`; optional `from` is a bounded string. `Actor` has exactly `ID` and `Attributes`;
 its ID is full lowercase 64-hex and its string-to-string attribute map has at most 32 entries and
-must contain the two exact requested labels; `from` plus every attribute key/value is at most 4,096
+must contain the two exact requested labels plus string `name`; `from` plus every attribute key/value is at most 4,096
 UTF-8 bytes. `time` is a nonnegative JSON safe integer. Because real Engine nanosecond timestamps
 exceed JavaScript's safe range, the duplicate-aware raw decoder accepts `timeNano` only as a
 canonical unsigned one-to-19-digit JSON integer token without converting it through `Number`.

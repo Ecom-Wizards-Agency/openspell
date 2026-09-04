@@ -5,6 +5,8 @@ import type { CUT_CASES } from "../scripts/proof-engine.mjs";
 import {
   DOCKER_EVENT_LIMITS,
   DockerEventHttpStreamParser,
+  DockerEventOpenControlParser,
+  buildDockerEventOpenFrame,
   buildDockerEventRequest,
   parseDockerCreateEventFrame,
 } from "../scripts/docker-event-helper.mjs";
@@ -65,6 +67,7 @@ import {
 const invocation = "1".repeat(64);
 const ledgerSha256 = "2".repeat(64);
 const invocationDirectory = `/tmp/openspell-wp201-root-proof-${invocation}`;
+const proofName = proofContainerName(invocation, "root-fmt");
 const labelNamespace = ["com", "openspell", "wp201"].join(".");
 const secondNs = 1_000_000_000n;
 const activeDeadlineNs = 300n * secondNs;
@@ -74,17 +77,19 @@ function dockerCreateEventFrame({
   id = "a".repeat(64),
   invocationValue = invocation,
   role = PROOF_ROLE,
+  name = proofContainerName(invocationValue, "root-fmt"),
   time = "1788541000",
   timeNano = "1788541000123456789",
 }: {
   readonly id?: string;
   readonly invocationValue?: string;
   readonly role?: string;
+  readonly name?: string;
   readonly time?: string;
   readonly timeNano?: string;
 } = {}) {
   return Buffer.from(
-    `{"status":"create","id":"${id}","from":"rust:1.97.1-bookworm","Type":"container","Action":"create","Actor":{"ID":"${id}","Attributes":{"com.openspell.wp201.invocation":"${invocationValue}","com.openspell.wp201.role":"${role}","image":"rust:1.97.1-bookworm","name":"openspell-proof"}},"scope":"local","time":${time},"timeNano":${timeNano}}`,
+    `{"status":"create","id":"${id}","from":"rust:1.97.1-bookworm","Type":"container","Action":"create","Actor":{"ID":"${id}","Attributes":{"com.openspell.wp201.invocation":"${invocationValue}","com.openspell.wp201.role":"${role}","image":"rust:1.97.1-bookworm","name":"${name}"}},"scope":"local","time":${time},"timeNano":${timeNano}}`,
     "utf8",
   );
 }
@@ -115,24 +120,68 @@ function paddedEventFrame(size: number) {
 }
 
 describe("WP-201 Docker event helper protocol", () => {
+  it("closes all 29 OPEN v2 targets and keeps every frame within its fixed cap", () => {
+    const targets = [
+      [ACQUISITION_ROLE, acquisitionContainerName(invocation)],
+      ...ROW_IDS.map((rowId) => [PROOF_ROLE, proofContainerName(invocation, rowId)]),
+    ] as const;
+    expect(new Set(targets.map(([, name]) => name)).size).toBe(29);
+    for (const [role, name] of targets) {
+      const frame = buildDockerEventOpenFrame(invocation, role, name);
+      expect(frame.length).toBeLessThanOrEqual(256);
+      expect(buildDockerEventRequest(invocation, role, name).length).toBeLessThanOrEqual(425);
+      const parser = new DockerEventOpenControlParser();
+      let parsed;
+      for (const byte of frame) parsed = parser.accept(Buffer.of(byte)) ?? parsed;
+      expect(parsed).toEqual({ invocation, role, containerName: name });
+      expect(() => parser.accept(Buffer.alloc(0))).toThrow("control-order");
+    }
+    expect(() =>
+      buildDockerEventOpenFrame(
+        invocation,
+        PROOF_ROLE,
+        `openspell-wp201-${invocation}-proof-not-a-row`,
+      ),
+    ).toThrow("event-container-name");
+  });
+
+  it("refuses malformed OPEN v2 control before it can select a target", () => {
+    const exact = buildDockerEventOpenFrame(invocation, PROOF_ROLE, proofName);
+    for (const frame of [
+      exact.subarray(0, -1),
+      Buffer.concat([exact, Buffer.from("extra", "ascii")]),
+      Buffer.from(exact.toString("ascii").replace(PROOF_ROLE, ACQUISITION_ROLE), "ascii"),
+      Buffer.from(exact.toString("ascii").replace(proofName, `${proofName}-suffix`), "ascii"),
+      Buffer.concat([exact.subarray(0, 1), Buffer.of(0xff), exact.subarray(2)]),
+      Buffer.alloc(257, 0x61),
+    ]) {
+      const parser = new DockerEventOpenControlParser();
+      if (frame.equals(exact.subarray(0, -1))) {
+        expect(parser.accept(frame)).toBeUndefined();
+      } else {
+        expect(() => parser.accept(frame)).toThrow();
+      }
+    }
+  });
+
   it("builds the fixed epoch-backlog request and accepts a real-shaped Engine event", () => {
-    const request = buildDockerEventRequest(invocation).toString("ascii");
+    const request = buildDockerEventRequest(invocation, PROOF_ROLE, proofName).toString("ascii");
     expect(request).toBe(
-      `GET /v1.47/events?since=0&filters=%7B%22event%22%3A%5B%22create%22%5D%2C%22label%22%3A%5B%22com.openspell.wp201.invocation%3D${invocation}%22%5D%2C%22type%22%3A%5B%22container%22%5D%7D HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n`,
+      `GET /v1.47/events?since=0&filters=%7B%22container%22%3A%5B%22${proofName}%22%5D%2C%22event%22%3A%5B%22create%22%5D%2C%22label%22%3A%5B%22com.openspell.wp201.invocation%3D${invocation}%22%5D%2C%22type%22%3A%5B%22container%22%5D%7D HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n`,
     );
-    expect(parseDockerCreateEventFrame(dockerCreateEventFrame(), invocation, PROOF_ROLE)).toBe(
+    expect(parseDockerCreateEventFrame(dockerCreateEventFrame(), invocation, PROOF_ROLE, proofName)).toBe(
       "a".repeat(64),
     );
   });
 
   it("keeps READY blocked until both the request flush and complete 200 headers", () => {
-    const headersFirst = new DockerEventHttpStreamParser(invocation, PROOF_ROLE);
+    const headersFirst = new DockerEventHttpStreamParser(invocation, PROOF_ROLE, proofName);
     const headers = acceptedHeaders();
     expect(headersFirst.acceptSocketBytes(headers.subarray(0, headers.length - 1))).toEqual([]);
     expect(headersFirst.acceptSocketBytes(headers.subarray(headers.length - 1))).toEqual([]);
     expect(headersFirst.markRequestFlushed()).toEqual([{ type: "ready" }]);
 
-    const flushFirst = new DockerEventHttpStreamParser(invocation, PROOF_ROLE);
+    const flushFirst = new DockerEventHttpStreamParser(invocation, PROOF_ROLE, proofName);
     expect(flushFirst.markRequestFlushed()).toEqual([]);
     expect(flushFirst.acceptSocketBytes(headers.subarray(0, headers.length - 1))).toEqual([]);
     expect(flushFirst.acceptSocketBytes(headers.subarray(headers.length - 1))).toEqual([
@@ -141,7 +190,7 @@ describe("WP-201 Docker event helper protocol", () => {
   });
 
   it("decodes arbitrary HTTP and chunk splits without losing the accepted ID", () => {
-    const parser = new DockerEventHttpStreamParser(invocation, PROOF_ROLE);
+    const parser = new DockerEventHttpStreamParser(invocation, PROOF_ROLE, proofName);
     expect(parser.markRequestFlushed()).toEqual([]);
     const response = Buffer.concat([
       acceptedHeaders(),
@@ -165,18 +214,19 @@ describe("WP-201 Docker event helper protocol", () => {
       "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\ntransfer-encoding: chunked\r\n\r\n",
       "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n",
     ]) {
-      const parser = new DockerEventHttpStreamParser(invocation, PROOF_ROLE);
+      const parser = new DockerEventHttpStreamParser(invocation, PROOF_ROLE, proofName);
       parser.markRequestFlushed();
       expect(() => parser.acceptSocketBytes(Buffer.from(response, "ascii"))).toThrow();
     }
   });
 
-  it("ignores a different invocation and refuses a matching wrong-role collision", () => {
+  it("ignores a different invocation and refuses matching role or exact-name collisions", () => {
     expect(
       parseDockerCreateEventFrame(
         dockerCreateEventFrame({ invocationValue: "b".repeat(64), role: ACQUISITION_ROLE }),
         invocation,
         PROOF_ROLE,
+        proofName,
       ),
     ).toBeUndefined();
     expect(() =>
@@ -184,12 +234,49 @@ describe("WP-201 Docker event helper protocol", () => {
         dockerCreateEventFrame({ role: ACQUISITION_ROLE }),
         invocation,
         PROOF_ROLE,
+        proofName,
       ),
     ).toThrow("event-role-collision");
+    expect(() =>
+      parseDockerCreateEventFrame(
+        dockerCreateEventFrame({ name: acquisitionContainerName(invocation) }),
+        invocation,
+        PROOF_ROLE,
+        proofName,
+      ),
+    ).toThrow("event-name-collision");
+    for (const name of [
+      proofName.slice(0, -1),
+      `${proofName}-suffix`,
+      proofContainerName(invocation, "root-check-none"),
+      acquisitionContainerName(invocation),
+    ]) {
+      expect(() =>
+        parseDockerCreateEventFrame(
+          dockerCreateEventFrame({ name }),
+          invocation,
+          PROOF_ROLE,
+          proofName,
+        ),
+      ).toThrow("event-name-collision");
+    }
+    for (const serialized of [
+      dockerCreateEventFrame().toString("utf8").replace(`,"name":"${proofName}"`, ""),
+      dockerCreateEventFrame().toString("utf8").replace(`"name":"${proofName}"`, '"name":false'),
+    ]) {
+      expect(() =>
+        parseDockerCreateEventFrame(
+          Buffer.from(serialized, "utf8"),
+          invocation,
+          PROOF_ROLE,
+          proofName,
+        ),
+      ).toThrow();
+    }
   });
 
   it("rejects duplicate matching events and duplicate JSON keys", () => {
-    const parser = new DockerEventHttpStreamParser(invocation, PROOF_ROLE);
+    const parser = new DockerEventHttpStreamParser(invocation, PROOF_ROLE, proofName);
     parser.markRequestFlushed();
     parser.acceptSocketBytes(acceptedHeaders());
     const event = Buffer.concat([dockerCreateEventFrame(), Buffer.from("\n")]);
@@ -201,7 +288,7 @@ describe("WP-201 Docker event helper protocol", () => {
       .toString("utf8")
       .replace('"Type":"container"', '"Type":"container","Type":"container"');
     expect(() =>
-      parseDockerCreateEventFrame(Buffer.from(duplicateKey), invocation, PROOF_ROLE),
+      parseDockerCreateEventFrame(Buffer.from(duplicateKey), invocation, PROOF_ROLE, proofName),
     ).toThrow("event-json-duplicate-key");
   });
 
@@ -211,6 +298,7 @@ describe("WP-201 Docker event helper protocol", () => {
         dockerCreateEventFrame({ time: `${Number.MAX_SAFE_INTEGER}`, timeNano: "9999999999999999999" }),
         invocation,
         PROOF_ROLE,
+        proofName,
       ),
     ).toBe("a".repeat(64));
     for (const timeNano of [
@@ -225,6 +313,7 @@ describe("WP-201 Docker event helper protocol", () => {
           dockerCreateEventFrame({ timeNano }),
           invocation,
           PROOF_ROLE,
+          proofName,
         ),
       ).toThrow();
     }
@@ -233,13 +322,14 @@ describe("WP-201 Docker event helper protocol", () => {
         dockerCreateEventFrame({ time: `${Number.MAX_SAFE_INTEGER + 1}` }),
         invocation,
         PROOF_ROLE,
+        proofName,
       ),
     ).toThrow("event-time");
   });
 
   it("accepts exactly 65,536 event bytes plus LF and refuses the next byte", () => {
     const exact = paddedEventFrame(DOCKER_EVENT_LIMITS.eventFrameBytes);
-    const parser = new DockerEventHttpStreamParser(invocation, PROOF_ROLE);
+    const parser = new DockerEventHttpStreamParser(invocation, PROOF_ROLE, proofName);
     parser.markRequestFlushed();
     parser.acceptSocketBytes(acceptedHeaders());
     expect(parser.acceptSocketBytes(chunkedFrame(exact))).toEqual([]);
@@ -247,7 +337,7 @@ describe("WP-201 Docker event helper protocol", () => {
       { type: "event", id: "a".repeat(64) },
     ]);
 
-    const overCap = new DockerEventHttpStreamParser(invocation, PROOF_ROLE);
+    const overCap = new DockerEventHttpStreamParser(invocation, PROOF_ROLE, proofName);
     overCap.markRequestFlushed();
     overCap.acceptSocketBytes(acceptedHeaders());
     expect(overCap.acceptSocketBytes(chunkedFrame(exact))).toEqual([]);
@@ -257,14 +347,14 @@ describe("WP-201 Docker event helper protocol", () => {
   });
 
   it("enforces HTTP-chunk and total-stream caps", () => {
-    const oversizedChunk = new DockerEventHttpStreamParser(invocation, PROOF_ROLE);
+    const oversizedChunk = new DockerEventHttpStreamParser(invocation, PROOF_ROLE, proofName);
     oversizedChunk.markRequestFlushed();
     oversizedChunk.acceptSocketBytes(acceptedHeaders());
     expect(() => oversizedChunk.acceptSocketBytes(Buffer.from("10001\r\n", "ascii"))).toThrow(
       "event-chunk-cap",
     );
 
-    const oversizedStream = new DockerEventHttpStreamParser(invocation, PROOF_ROLE);
+    const oversizedStream = new DockerEventHttpStreamParser(invocation, PROOF_ROLE, proofName);
     oversizedStream.markRequestFlushed();
     oversizedStream.acceptSocketBytes(acceptedHeaders());
     expect(() =>
@@ -273,12 +363,12 @@ describe("WP-201 Docker event helper protocol", () => {
   });
 
   it("rejects CLOSE while headers, chunks, or event frames remain partial", () => {
-    const beforeReady = new DockerEventHttpStreamParser(invocation, PROOF_ROLE);
+    const beforeReady = new DockerEventHttpStreamParser(invocation, PROOF_ROLE, proofName);
     beforeReady.markRequestFlushed();
     beforeReady.acceptSocketBytes(Buffer.from("HTTP/1.1 200 OK\r\n", "ascii"));
     expect(() => beforeReady.closeAtControlLinearization()).toThrow("event-close-order");
 
-    const partialChunk = new DockerEventHttpStreamParser(invocation, PROOF_ROLE);
+    const partialChunk = new DockerEventHttpStreamParser(invocation, PROOF_ROLE, proofName);
     partialChunk.markRequestFlushed();
     partialChunk.acceptSocketBytes(acceptedHeaders());
     partialChunk.acceptSocketBytes(Buffer.from("5\r\n{", "ascii"));
@@ -286,7 +376,7 @@ describe("WP-201 Docker event helper protocol", () => {
       "event-incomplete-at-close",
     );
 
-    const partialFrame = new DockerEventHttpStreamParser(invocation, PROOF_ROLE);
+    const partialFrame = new DockerEventHttpStreamParser(invocation, PROOF_ROLE, proofName);
     partialFrame.markRequestFlushed();
     partialFrame.acceptSocketBytes(acceptedHeaders());
     partialFrame.acceptSocketBytes(chunkedFrame(dockerCreateEventFrame()));
