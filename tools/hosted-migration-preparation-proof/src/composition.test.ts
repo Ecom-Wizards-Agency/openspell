@@ -1,8 +1,15 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+
+import {
+  SOURCE_ROOTS,
+  assertCompileTimeInputs,
+  parseSourceIndex,
+} from "../scripts/cargo.mjs";
 
 const packageDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
 const workspaceDirectory = dirname(dirname(packageDirectory));
@@ -62,6 +69,27 @@ function workspaceManifests(): readonly string[] {
 }
 
 describe("WP-201 composition boundary", () => {
+  it("selects exactly the tracked stage-zero Rust proof snapshot", () => {
+    const index = execFileSync(
+      "/usr/bin/git",
+      ["ls-files", "--stage", "-z", "--", ...SOURCE_ROOTS],
+      { cwd: workspaceDirectory, maxBuffer: 1024 * 1024 },
+    );
+    const records = parseSourceIndex(index);
+    expect(records).toHaveLength(45);
+    const bytes = new Map(
+      records.map(({ path }) => [path, readFileSync(join(workspaceDirectory, path))]),
+    );
+    expect(assertCompileTimeInputs(records, bytes)).toEqual([
+      "tools/hosted-migration-root-authority/src/grant-ticket-v1.golden.json",
+      "tools/hosted-migration-root-authority/src/preparation-policy-v1.golden.json",
+      "tools/hosted-migration-root-authority/src/preparation_v2.rs",
+      "tools/hosted-migration-root-authority/src/transition-v1.golden.json",
+      "tools/hosted-migration-runtime-proof/fixtures/wp199-grant-ticket-v1.golden.json",
+      "tools/hosted-migration-runtime-proof/src/machine.rs",
+    ]);
+  });
+
   it("normalizes manifest escapes before dependency-boundary checks", () => {
     expect(
       normalizedManifestText(
