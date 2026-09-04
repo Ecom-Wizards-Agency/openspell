@@ -294,6 +294,15 @@ WP-201 does not:
   and test commands through its reviewed pinned-toolchain wrapper; wrapper boundary tests prove an
   acquisition-only locked fetch and a distinct network-disabled/offline proof container;
 - exact module, dependency, feature and reverse-dependency inventories;
+- executable root-container proof that the trusted procfs root and fixed root-owned, mode-`0555`
+  `/proc/sys` directory have distinct statx mount IDs; only that single fixed component may cross a
+  mount, while `kernel/random/boot_id` is a root-owned, mode-`0444`, link-count-one, size-zero,
+  read-only regular procfs file opened below it with mount crossing forbidden and the numeric-PID
+  time-namespace read also forbids mount crossing;
+- negative boot-ID proofs for a mount below `sys`, final-component bind substitution, symlinks or
+  magic links, non-procfs descriptors, pathname-to-fd identity replacement, wrong device/inode/
+  mount identity, type, owner, mode, link count, size, access/append flags or missing `FD_CLOEXEC`,
+  with both clock samples exercising complete reopen and revalidation;
 - deterministic golden regeneration comparison;
 - exhaustive pure transition/effect/cut/resource accounting;
 - credential, target, egress, DNS/TLS, gateway, session, output, privacy and mutation deny matrices;

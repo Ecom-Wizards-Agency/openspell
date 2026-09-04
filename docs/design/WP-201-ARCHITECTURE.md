@@ -381,7 +381,7 @@ not the future external trust path. The descriptor must have `FD_CLOEXEC`, be op
 identify one root-owned mode-`0600`, link-count-one, 2,508-byte regular file. It is consumed on every
 outcome and read to exact EOF with offset-independent `pread`. The root and runtime source golden
 copies are byte-identical canonical JSON whose SHA-256 is exactly
-`12b01e77e84cb81a15fc66e3c32a58a45f5715bd8b81d897c68a29d58b0fe654`:
+`692216120478fce4caa82e569767ec872b36ec7fccbf4c9430eb7f11e433fcdb`:
 
 ```json
 {
@@ -404,7 +404,7 @@ copies are byte-identical canonical JSON whose SHA-256 is exactly
   "credentialStoreDnsPolicySha256": "30e20bca1f656f501b11cb74cdbc1a159f89fb05e1751a951bbe12e0f9f17827",
   "credentialStoreTlsServerPolicySha256": "f3b6137d28617f6423352e4a7a2df599d1caaefb5528c63fadbb1d4e5f01bfaf",
   "credentialStoreProtocolSha256": "6e31c19be2d85a8d2c9c30311e13500498365dce6b628b2235a214d16ef57901",
-  "trustedClockProviderSha256": "e0a8afcfcc7276f426b72790ff4175985431820d84b71ca0069de5c14a87c944",
+  "trustedClockProviderSha256": "bb4c27585d7712adb4a8d5c0973a3123a42a67995964b0510ffdb21d9e1cadb2",
   "entropyProviderSha256": "83761a698cb6f300add9c12415f4877650b53c6b75136c66f24759d7e01ba539",
   "sourcePolicySha256": "b938043cfaedfd235b7b2f46ee0f73c1ecb29c7d94632ccb8cff9d94824d0891",
   "runtimePolicySha256": "b8531e4533e88898cdc0cc1aa932e3259af2ff435ae523e6569269b8c606567f",
@@ -459,7 +459,7 @@ The source slice compiles only a deny-live synthetic policy whose keys and targe
 authorize an external route.
 
 For this source slice, `trustedClockProviderSha256` is exactly
-`e0a8afcfcc7276f426b72790ff4175985431820d84b71ca0069de5c14a87c944`, the SHA-256 of these exact
+`bb4c27585d7712adb4a8d5c0973a3123a42a67995964b0510ffdb21d9e1cadb2`, the SHA-256 of these exact
 canonical bytes:
 
 ```json
@@ -467,8 +467,16 @@ canonical bytes:
   "schemaVersion": "openspell.linux-trusted-clock-provider.v1",
   "realtimeClock": "CLOCK_REALTIME",
   "monotonicClock": "CLOCK_BOOTTIME",
-  "bootIdRelativePath": "sys/kernel/random/boot_id",
+  "bootIdSysComponent": "sys",
+  "bootIdSysResolveFlags": "RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS",
+  "bootIdSysMountPolicy": "single_fixed_component_xdev_allowed",
+  "bootIdSysMetadata": "procfs,root:root,directory,mode=0555,nlink=1,size=0,readonly,noappend,cloexec",
+  "bootIdLeafRelativePath": "kernel/random/boot_id",
+  "bootIdLeafResolveFlags": "RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS|RESOLVE_NO_XDEV",
+  "bootIdLeafMetadata": "procfs,root:root,regular,mode=0444,nlink=1,size=0,readonly,noappend,cloexec",
+  "bootIdRevalidation": "reopen_exact_device_inode_statx_mount_id_and_path_identity",
   "timeNamespaceOffsetsPathTemplate": "<decimal-getpid>/timens_offsets",
+  "timeNamespaceResolveFlags": "RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS|RESOLVE_NO_XDEV",
   "timeNamespacePolicy": "current_process_zero_offsets",
   "procfsMagicHex": "00009fa0"
 }
@@ -609,10 +617,25 @@ O_CLOEXEC` fd for procfs as observed by the current root-authority process. The 
 writable/append flags, then obtains a positive `getpid()` and formats it as unsigned base-ten ASCII
 with no sign or leading zeroes. `readlinkat(procfs_root, "self")` must return exactly that decimal
 component; this checks the procfs view without following its magic link. A second `getpid()` must
-match. The installer uses guarded
-`openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV)` for the
-fixed boot-ID path `sys/kernel/random/boot_id` and the internally constructed
-`<decimal-getpid>/timens_offsets` path. It never resolves `self`. It parses the time-
+match. The installer opens the internally constructed `<decimal-getpid>/timens_offsets` path with
+`openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV)`.
+Container runtimes commonly mount `/proc/sys` as a distinct read-only procfs mount. For the boot-ID
+read only, the installer therefore opens the single fixed component `sys` relative to the trusted
+procfs root with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS`, deliberately
+omitting `RESOLVE_NO_XDEV` for that one component. It requires the resulting descriptor to be an
+`O_RDONLY | O_DIRECTORY | O_CLOEXEC` root-owned procfs directory with no writable or append status,
+mode `0555`, link count one and size zero. It records the descriptor's device, inode and statx mount
+ID and proves that reopening the procfs-root pathname `sys` resolves to that same identity. From
+that held, validated descriptor it opens only `kernel/random/boot_id` with
+`RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV`. The boot-ID
+descriptor must be an `O_RDONLY | O_CLOEXEC` root-owned procfs regular file with no writable or
+append status, mode `0444`, link count one and size zero. Each sample reopens both descriptors,
+checks their complete metadata, filesystem magic, device/inode/mount identities and pathname-to-fd
+identity, and refuses if either identity changed. The isolated root-container positive proof must
+also establish that its trusted procfs root and `sys` descriptors have distinct statx mount IDs;
+thus the accepted crossing is exactly the fixed `sys` component. A mount below that descriptor is
+rejected by restored `RESOLVE_NO_XDEV`. This exception does not apply to the PID path or any
+caller-selected path. The installer never resolves `self`. It parses the time-
 namespace offsets semantically and requires exactly `monotonic 0 0` and `boottime 0 0`, refusing
 missing, extra, nonzero or malformed rows. Each sample reads exactly one lowercase canonical UUID
 plus line feed, reads `CLOCK_REALTIME` and `CLOCK_BOOTTIME` directly with `clock_gettime`, then
