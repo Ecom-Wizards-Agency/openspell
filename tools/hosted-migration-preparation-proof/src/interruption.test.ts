@@ -11,7 +11,9 @@ import {
   advanceIdCleanup,
   assertCleanEnvironment,
   createCleanupCursor,
+  dockerEnvironment,
   dockerOperationArguments,
+  dockerPrefix,
   expectedCleanupOperation,
   invocationRecord,
   proofContainerName,
@@ -250,6 +252,25 @@ describe("WP-201 sealed proof engine", () => {
         uid: 123,
         gid: 456,
       }),
+    ).toThrow("WP-201 invocation path identity mismatch");
+    expect(dockerEnvironment(invocation, invocationDirectory)).toEqual({
+      HOME: `${invocationDirectory}/docker/home`,
+      PATH: "/usr/bin:/bin",
+      LANG: "C",
+      LC_ALL: "C",
+    });
+    expect(dockerPrefix(invocation, invocationDirectory)).toEqual([
+      "/usr/bin/docker",
+      "--host",
+      "unix:///var/run/docker.sock",
+      "--config",
+      `${invocationDirectory}/docker/config`,
+    ]);
+    expect(() =>
+      dockerEnvironment(invocation, `/tmp/not-the-prefix-${invocation}`),
+    ).toThrow("WP-201 invocation path identity mismatch");
+    expect(() =>
+      dockerPrefix("0".repeat(64), invocationDirectory),
     ).toThrow("WP-201 invocation path identity mismatch");
   });
 

@@ -177,23 +177,31 @@ export function invocationRecord(invocation) {
   return `openspell.wp201.invocation.v1\n${requireInvocation(invocation)}\n`;
 }
 
-export function dockerEnvironment(invocationDirectory) {
+export function dockerEnvironment(invocation, invocationDirectory) {
+  const root = requireInvocationDirectory(
+    invocationDirectory,
+    requireInvocation(invocation),
+  );
   return Object.freeze({
-    HOME: join(invocationDirectory, "docker/home"),
+    HOME: join(root, "docker/home"),
     PATH: "/usr/bin:/bin",
     LANG: "C",
     LC_ALL: "C",
   });
 }
 
-export function dockerPrefix(invocationDirectory) {
-  return [
+export function dockerPrefix(invocation, invocationDirectory) {
+  const root = requireInvocationDirectory(
+    invocationDirectory,
+    requireInvocation(invocation),
+  );
+  return Object.freeze([
     DOCKER_BINARY,
     "--host",
     DOCKER_ENDPOINT,
     "--config",
-    join(invocationDirectory, "docker/config"),
-  ];
+    join(root, "docker/config"),
+  ]);
 }
 
 function commonCreate(invocation, role, name) {
