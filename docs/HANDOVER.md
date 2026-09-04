@@ -16,8 +16,9 @@ application and complete multi-product campaign creation remain later implementa
 
 Current stage:
 
-- [x] WP-200 and all preceding source through current `origin/main` are merged and exact-main CI is
-  green at `51a56b392ab524dc140e343fe1dc87b58e17c42f`.
+- [x] WP-200 and all preceding source are merged. WP-206 safely recovered the only two useful
+  legacy-branch behaviors without importing its lineage, and exact-main CI is green at current
+  `origin/main` `560d5e28615ea023f020f1a3d0944dff96213981`.
 - [x] WP-201's initial architecture plus the root-authority implementation checkpoint culminate at
   `c36b680e0ee7a4f5e71382c011c613902db2cdfa`; this later commit is documentation-only.
 - [ ] Before more step-3 implementation, commit and independently review an architecture-and-brief
@@ -80,8 +81,8 @@ each verified checkpoint.
 1. Read `AGENTS.md`, this file, `docs/workpackages/WP-201-disposable-preparation-proof.md` and
    `docs/design/WP-201-ARCHITECTURE.md` completely.
 2. Run `git worktree list --porcelain`. Use the worktree whose `branch` field is
-   `refs/heads/wp-201-disposable-preparation`; do not switch, reset or clean the protected dirty
-   `codex/onepassword-secrets` worktree.
+   `refs/heads/wp-201-disposable-preparation`. The original worktree should remain clean on `main`;
+   the obsolete `codex/onepassword-secrets` ref was safely removed by WP-206.
 3. Verify the WP-201 branch contains `c36b680e0ee7a4f5e71382c011c613902db2cdfa` and the worktree
    is clean, fetch and reconcile `origin/main`, the current set of open PRs and exact-main CI, and
    recheck live health before trusting the counts below.
@@ -135,7 +136,7 @@ each verified checkpoint.
 
 At the time this handover was reconciled:
 
-- WP-200 is merged and closed out through current main
+- WP-200 is merged and closed out at
   `51a56b392ab524dc140e343fe1dc87b58e17c42f`. PR #131 added the
   fixed official-release policy, descriptor-only custody verifier and synthetic Linux
   namespace/cgroup/pidfd/ptrace/exec-map and process-protection proof. PR #132 fixed deterministic
@@ -149,7 +150,12 @@ At the time this handover was reconciled:
   external target, credential, listener, service, database connection, Supabase operation or apply
   capability. Official CLI acquisition and complete official runtime/release provenance remain
   later gates. Exact-main CI run `33821396062` and trusted-kernel run `33822223884` passed on
-  `51a56b392ab524dc140e343fe1dc87b58e17c42f`.
+  `51a56b392ab524dc140e343fe1dc87b58e17c42f`. WP-206 then merged through PR #134 at current main
+  `560d5e28615ea023f020f1a3d0944dff96213981`: it manually reimplemented API-key timestamp
+  normalization and Roadmap overflow containment, added ignore boundaries for operator-local
+  metadata, and imported no obsolete runtime lineage. Exact-head CI run `33856798694` and
+  exact-main CI run `33857804641` passed; the triggered trusted-kernel run `33859029788` also
+  passed on that exact main revision.
 - WP-201 is local and unmerged on branch `wp-201-disposable-preparation`. Six implementation
   commits culminate at `c36b680e0ee7a4f5e71382c011c613902db2cdfa`, defining the initial
   architecture and implementing the root-authority portion of step 3; this later standalone
@@ -164,9 +170,9 @@ At the time this handover was reconciled:
   hosted query, dry run or apply capability. The branch is not pushed, has no PR or hosted CI, and
   must not be described as merged.
 - Production web health returns `ok` at
-  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 175 commits behind current main. No later
+  `44da7ac32e5a0503993e567c41aaccffd5c39b06`, 177 commits behind current main. No later
   package deployed or promoted a candidate, so its newer source artifacts are not live evidence.
-- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 315 commits behind
+- Production MCP health identifies `b5c210dca2c28576180223dbe853e61ae7092e73`, 317 commits behind
   current main, and still returns the
   legacy `wizard-ads` service shape.
 - The new Evo report-worker and recommendation-worker units are not installed, so their loopback
@@ -182,7 +188,7 @@ At the time this handover was reconciled:
   not describe post-deployment main features as live until a revision-stamped candidate is promoted
   and checked.
 - `docs/STATUS.md` records WP-179 through WP-200, but its reconciliation header still names
-  `f06efea` rather than current main `51a56b3`, and the implementation-wave table remains incomplete
+  `f06efea` rather than current main `560d5e2`, and the implementation-wave table remains incomplete
   between WP-149 and WP-178. WP-201 must not be added until it is merged and exact-main CI passes.
   Use Git, CI, code, the migration ledger and live health as evidence before updating status prose.
 
@@ -308,11 +314,11 @@ These are source outcomes, not blanket claims of live behavior.
 Reconcile heads and checks again before acting.
 
 There are no open pull requests. PR #131 merged WP-200 at `9d932f5`, PR #132 merged its
-trusted-runner cold-start correction at `f06efea`, and PR #133 closed WP-200 at current main
-`51a56b3`. The local WP-201 branch is not pushed and therefore has no PR or hosted CI. PR #24
-remains closed unmerged at archival head `78e718b` after WP-191 preserved its remaining
-token-fenced ownership/recovery lesson on accepted current main. Its superseded source was not
-rebased, cherry-picked or merged.
+trusted-runner cold-start correction at `f06efea`, PR #133 closed WP-200 at `51a56b3`, and PR #134
+merged the narrow WP-206 safe recovery at current main `560d5e2`. The local WP-201 branch is not
+pushed and therefore has no PR or hosted CI. PR #24 remains closed unmerged at archival head
+`78e718b` after WP-191 preserved its remaining token-fenced ownership/recovery lesson on accepted
+current main. Its superseded source was not rebased, cherry-picked or merged.
 
 Do not keep stale pull requests merely as storage. Preserve useful design in a current brief,
 replace or rebase live work, and close branches that are proven superseded.
@@ -321,25 +327,18 @@ replace or rebase live work, and close branches that are proven superseded.
 
 Only two worktrees remain:
 
-- the active WP-201 worktree on `wp-201-disposable-preparation`, containing the implementation
-  checkpoint `c36b680`; and
-- the original operator worktree on `codex/onepassword-secrets` at `9e59587`.
+- the active WP-201 worktree on `wp-201-disposable-preparation`, containing the reviewed
+  implementation checkpoint `c36b680`, the handover checkpoint and the merge of current main; and
+- the original operator worktree, clean on `main` at `560d5e2`.
 
-Do not merge or delete `codex/onepassword-secrets` wholesale. It diverged from current main at an
-old base, has 18 graph commits outside main, conflicts with current policy/runtime files in a
-read-only merge simulation, and currently has uncommitted operator changes. The nine runtime
-commits from `737f4bf` through `9e59587` are obsolete, equivalent or partly superseded by the
-current immutable MCP/report-worker installers; none is safe to cherry-pick. The only independently
-portable dirty change found is a two-line roadmap layout fix, which should be reapplied and reviewed
-on a fresh current-main UI branch. The dirty Evo files are historical integration-worker design
-evidence, not transplantable source. `supabase/.temp/cli-latest` is generated cache;
-`supabase/.temp/linked-project.json` is local project-binding metadata and must never be committed.
-
-The safe eventual disposition is to classify the remaining dirty operator edits, reapply only the
-roadmap fix and any newly designed integration-worker behavior on fresh current-main branches, then
-preserve or close the old branch and remove its worktree only after every commit and dirty file is
-accounted for. Never reset, checkout, clean or remove that protected worktree merely to reduce the
-branch list.
+WP-206 fully resolved the obsolete `codex/onepassword-secrets` branch. Independent inventory found
+two useful behaviors: Roadmap overflow containment and MCP raw-timestamp normalization. Both were
+manually reimplemented on current main with focused and real-database tests; no legacy commit was
+merged, cherry-picked or pushed. One High and two Extra-High reviews accepted the exact patch,
+exact-head and exact-main CI passed, and the local legacy ref was removed with atomic
+expected-object compare-and-delete. The merged WP-206 topic ref was also removed. Operator-local
+`.1password/` and `supabase/.temp/` contents remain in place and are ignored; obsolete `ops/evo`
+runtime work was intentionally discarded. Do not recreate or publish the legacy lineage.
 
 ## Hosted migration gates
 
