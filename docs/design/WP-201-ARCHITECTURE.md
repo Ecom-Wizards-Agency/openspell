@@ -2823,7 +2823,9 @@ must be the checksummed crates.io registry; Git sources, alternate registries, s
 patch, credential provider and unchecksummed packages refuse.
 
 The reviewed union vendor contains 3,657 regular files, 941 directories and 67,159,121 regular-file
-bytes. The reviewed source snapshot has 45 regular files and 10 directories. The reviewed
+bytes. The reviewed source snapshot has 45 regular files, 10 directories and 1,281,046 regular-file
+bytes. Its 55-row source ledger is 6,533 bytes with SHA-256
+`14b09ed879bbdf0758345d49fc184792f2145749d1e864ba3a854916dada7892`. The reviewed
 Rustfmt/Clippy toolchain contains 168 regular files, 28 directories and 653,573,520 regular-file
 bytes. All have zero links and no path outside the grammar below. With four control files, the full
 ledger has exactly 4,853 records. A future count difference is a review-requiring input change, not
@@ -3420,6 +3422,15 @@ partially established process burns the token; when no Docker create has yet bee
 reserve's otherwise unused 15-second create-settlement slice belongs to exact harness process-group
 TERM/KILL/reap settlement before state-specific path cleanup. No harness owns normal cleanup until
 spawn identity is positively established, and no failed spawn can be retried with that root.
+
+The outer no-argument test orchestrator gives the complete Docker integration child exactly 7,150
+seconds. That is the non-overlapping sum of 460 seconds for initial source staging, 460 seconds for
+image authentication, 460 seconds for dependency acquisition, 1,060 seconds for the normal matrix,
+three times 325 seconds for fresh-copy construction plus 1,110 seconds for a cut plus 130 seconds
+for mandatory failed-cut teardown, and 15 seconds for final path cleanup. A clean run can consume at
+most 6,760 seconds of those internal allocations; the remaining fixed difference is failure-only
+teardown, not a phase budget and cannot be borrowed by an inner operation. Ordinary CI invokes this
+package separately with no forwarded Vitest argument.
 
 For each completed case root the supervisor opens and authenticates the root twice with
 `O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`: one retained custody descriptor and one handoff

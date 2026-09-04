@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "node scripts/test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.1"

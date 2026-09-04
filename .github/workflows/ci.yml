@@ -63,11 +63,13 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
 
       - name: Test
-        # Turbo serializes package tasks; arguments after `--` are forwarded to
-        # each Vitest task so test files cannot contend for the one Postgres service.
+        # Turbo serializes Vitest package tasks; arguments after `--` are forwarded
+        # so test files cannot contend for the one Postgres service. The closed
+        # WP-201 orchestrator accepts no arguments and therefore runs separately.
         # UI keeps its own dedicated, single-worker performance-test invocation.
         run: |
-          pnpm exec turbo run test --filter=!@wizard-ads/ui --concurrency=1 -- --maxWorkers=1
+          pnpm exec turbo run test --filter=!@wizard-ads/ui --filter=!@wizard-ads/hosted-migration-preparation-proof --concurrency=1 -- --maxWorkers=1
+          pnpm --filter @wizard-ads/hosted-migration-preparation-proof run test
           pnpm --filter @wizard-ads/ui run test
         env:
           DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres

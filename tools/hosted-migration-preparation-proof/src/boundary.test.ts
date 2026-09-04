@@ -668,6 +668,9 @@ describe("private preparation-proof package boundary", () => {
         "  activeChildControl?.requestTermination();\n" +
         "  activeOutputControl?.requestTermination();",
     );
+    expect(orchestrator).toContain(
+      "const DOCKER_INTEGRATION_DEADLINE_MILLISECONDS = 7_150_000;",
+    );
     expect(
       orchestrator.indexOf("await verifyControllerFixtures();"),
     ).toBeLessThan(
@@ -683,7 +686,7 @@ describe("private preparation-proof package boundary", () => {
       type: "module",
       scripts: {
         typecheck: "tsc --noEmit",
-        test: "vitest run",
+        test: "node scripts/test.mjs",
       },
       devDependencies: { "@types/node": "^22.20.1" },
     });

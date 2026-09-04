@@ -64,7 +64,7 @@ const fixedSourceObjects = new Map([
   ["tools/hosted-migration-root-authority/src/authority_registry.rs", "d8c1ad93f8d3f7f1c2cefcd46f076741a68c607f"],
   ["tools/hosted-migration-root-authority/src/authority_registry_tests.rs", "2bc2416f00b255ce48121d71b4470d5c481a5329"],
   ["tools/hosted-migration-root-authority/src/canonical.rs", "1e76e4032fda57f1fd295184d49e461eecfa0393"],
-  ["tools/hosted-migration-root-authority/src/corruption_tests.rs", "5433d0add00d0b8a1c970b1a688cd00c27bcd17d"],
+  ["tools/hosted-migration-root-authority/src/corruption_tests.rs", "6b12315e7297c9ae57a6b51010e1ba0c410341d1"],
   ["tools/hosted-migration-root-authority/src/cross_version_tests.rs", "f6704a0503f31dc14f2e0e2583ec26612bdad607"],
   ["tools/hosted-migration-root-authority/src/crypto.rs", "225528242e861ddec841f74461edc5c3dce06182"],
   ["tools/hosted-migration-root-authority/src/grant-ticket-v1.golden.json", "b81971ff9ac4f28477b17645682ef9d1e63aab7f"],
@@ -114,7 +114,7 @@ const fixedSourceDirectories = Object.freeze([
   "source/tools/hosted-migration-runtime-proof/src",
 ]);
 
-const SOURCE_REGULAR_FILE_BYTES = 1_281_104;
+const SOURCE_REGULAR_FILE_BYTES = 1_281_046;
 const workspaceDirectory = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
 const proofPackageDirectory = resolve(fileURLToPath(new URL("../", import.meta.url)));
 const capturedNodeExecutable = process.execPath;

@@ -298,8 +298,8 @@ fn bad_format_lock_and_expected_owner_fail_before_state_is_available() {
     let root = directory.path();
     let metadata = fs::metadata(root).expect("root metadata");
     let before = snapshot_tree(root);
-    let wrong_uid = metadata.uid().checked_add(1).unwrap_or(metadata.uid() - 1);
-    let wrong_gid = metadata.gid().checked_add(1).unwrap_or(metadata.gid() - 1);
+    let wrong_uid = metadata.uid().wrapping_add(1);
+    let wrong_gid = metadata.gid().wrapping_add(1);
     assert!(matches!(
         open_store(root, public_key, wrong_uid, metadata.gid()),
         Err(OpenError::Root)
