@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
 
+import type { CUT_CASES } from "../scripts/proof-engine.mjs";
+
 import {
   ACQUISITION_ROLE,
   CLEANUP_RESERVE_NS,
+  CUT_ACTIVE_NS,
+  CUT_INNER_CLEANUP_NS,
+  CUT_OUTER_RESERVE_NS,
+  CUT_POST_REAP_NS,
+  FAILED_CUT_TEARDOWN_NS,
   IMAGE,
   PROOF_ROLE,
   ROW_IDS,
@@ -13,15 +20,39 @@ import {
   assertCleanEnvironment,
   createBootTimeSample,
   createCleanupCursor,
+  createCutHarnessReapReceipt,
+  createCutSupervisorCursor,
   createOwnedChildToken,
+  createPreReadyWatcherCustody,
   dockerEnvironment,
   dockerOperationArguments,
   dockerPrefix,
   expectedCleanupOperation,
+  expectedCutSupervisorOperation,
   invocationRecord,
   proofContainerName,
   proofCreateArguments,
+  classifyDockerCachedImage,
+  classifyDockerExactName,
+  parseCutAcceptedIdFrame,
+  parseCutAuditStream,
+  parseCutIdentityFrame,
+  parseCutTerminalResult,
+  parseDockerAbsence,
+  parseDockerApiSupport,
+  parseDockerContainerInspection,
+  parseDockerContextEndpoint,
+  parseDockerContextName,
+  parseDockerCreatedId,
+  parseDockerEventIdFrame,
+  parseDockerEventReadyFrame,
+  parseDockerLabelCensus,
+  parseDockerPlatformManifest,
+  parseDockerRemove,
+  reduceCutSupervisorCursor,
   reduceCleanupCursor,
+  reducePreReadyWatcherCustody,
+  requireCutIdentityAgreement,
 } from "../scripts/proof-engine.mjs";
 
 const invocation = "1".repeat(64);
@@ -1785,5 +1816,1870 @@ describe("WP-201 sealed proof engine", () => {
       failed: true,
       watcher: { eofObserved: true, reaped: true, capReached: true },
     });
+  });
+});
+
+function dockerResult(status: number, stdout: string | Buffer, stderr: string | Buffer = "") {
+  return {
+    status,
+    stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout, "utf8"),
+    stderr: Buffer.isBuffer(stderr) ? stderr : Buffer.from(stderr, "utf8"),
+  };
+}
+
+function inspectionHostConfig(kind: "acquisition" | "proof") {
+  const proof = kind === "proof";
+  const mounts = proof
+    ? [
+        ["source", "/input/source", true],
+        ["acquisition/vendor", "/input/vendor", true],
+        ["acquisition/toolchain", "/input/toolchain", true],
+        ["acquisition/vendor-ledger.v1", "/input/vendor-ledger.v1", false],
+        ["control/proof.sh", "/input/control.sh", false],
+        ["control/hostname", "/etc/hostname", false],
+        ["control/hosts", "/etc/hosts", false],
+        ["control/resolv.conf", "/etc/resolv.conf", false],
+      ] as const
+    : [
+        ["source", "/input/source", true],
+        ["control/acquisition.sh", "/input/control.sh", false],
+      ] as const;
+  return {
+    Binds: null,
+    ContainerIDFile: "",
+    LogConfig: { Type: "none", Config: {} },
+    NetworkMode: proof ? "none" : "bridge",
+    PortBindings: {},
+    RestartPolicy: { Name: "no", MaximumRetryCount: 0 },
+    AutoRemove: false,
+    VolumeDriver: "",
+    VolumesFrom: null,
+    ConsoleSize: [0, 0],
+    CapAdd: null,
+    CapDrop: ["ALL"],
+    CgroupnsMode: "private",
+    Dns: null,
+    DnsOptions: [],
+    DnsSearch: [],
+    ExtraHosts: null,
+    GroupAdd: null,
+    IpcMode: "private",
+    Cgroup: "",
+    Links: null,
+    OomScoreAdj: 0,
+    PidMode: "",
+    Privileged: false,
+    PublishAllPorts: false,
+    ReadonlyRootfs: true,
+    SecurityOpt: ["no-new-privileges", "seccomp=builtin", "apparmor=docker-default"],
+    Tmpfs: proof
+      ? {
+          "/cargo": "rw,nodev,nosuid,noexec,size=268435456,mode=0700",
+          "/target": "rw,nodev,nosuid,exec,size=4294967296,mode=0700",
+          "/tmp": "rw,nodev,nosuid,noexec,size=1073741824,mode=0700",
+          "/fixtures": "rw,nodev,nosuid,noexec,size=2147483648,mode=0700",
+          "/wp201-home": "rw,nodev,nosuid,noexec,size=16777216,mode=0700",
+        }
+      : {
+          "/output": "rw,nodev,nosuid,exec,size=1073741824,mode=0700,uid=123,gid=456",
+          "/tmp": "rw,nodev,nosuid,noexec,size=1073741824,mode=0700,uid=123,gid=456",
+          "/wp201-home": "rw,nodev,nosuid,noexec,size=16777216,mode=0700,uid=123,gid=456",
+        },
+    UTSMode: "",
+    UsernsMode: "host",
+    ShmSize: proof ? 2_147_483_648 : 268_435_456,
+    Runtime: "runc",
+    Isolation: "",
+    CpuShares: 0,
+    Memory: proof ? 6_442_450_944 : 2_147_483_648,
+    NanoCpus: proof ? 4_000_000_000 : 2_000_000_000,
+    CgroupParent: "",
+    BlkioWeight: 0,
+    BlkioWeightDevice: [],
+    BlkioDeviceReadBps: [],
+    BlkioDeviceWriteBps: [],
+    BlkioDeviceReadIOps: [],
+    BlkioDeviceWriteIOps: [],
+    CpuPeriod: 0,
+    CpuQuota: 0,
+    CpuRealtimePeriod: 0,
+    CpuRealtimeRuntime: 0,
+    CpusetCpus: "",
+    CpusetMems: "",
+    Devices: [],
+    DeviceCgroupRules: null,
+    DeviceRequests: null,
+    MemoryReservation: 0,
+    MemorySwap: proof ? 6_442_450_944 : 2_147_483_648,
+    MemorySwappiness: null,
+    Init: false,
+    OomKillDisable: false,
+    PidsLimit: proof ? 512 : 128,
+    Ulimits: proof
+      ? [
+          { Name: "nofile", Hard: 1_024, Soft: 1_024 },
+          { Name: "nproc", Hard: 512, Soft: 512 },
+        ]
+      : [{ Name: "nofile", Hard: 1_024, Soft: 1_024 }],
+    CpuCount: 0,
+    CpuPercent: 0,
+    IOMaximumIOps: 0,
+    IOMaximumBandwidth: 0,
+    Mounts: mounts.map(([source, target, recursive]) => ({
+      Type: "bind",
+      Source: `${invocationDirectory}/${source}`,
+      Target: target,
+      ReadOnly: true,
+      BindOptions: recursive
+        ? { Propagation: "rprivate", ReadOnlyForceRecursive: true }
+        : { Propagation: "rprivate" },
+    })),
+    MaskedPaths: [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware",
+    ],
+    ReadonlyPaths: ["/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"],
+  };
+}
+
+function jsonResult(value: unknown) {
+  return dockerResult(0, `${JSON.stringify(value)}\n`);
+}
+
+function dockerReceiptSource(operation: string, token = createOwnedChildToken()) {
+  return { token, operation };
+}
+
+const indexDigest = IMAGE.slice(IMAGE.lastIndexOf("@") + 1);
+const manifestDigest =
+  "sha256:408fe88047cef61a2087653b0c5255fa51c0f2d6d94ddedd7a2562a9b91a46f6";
+const configDigest =
+  "sha256:897e260d0a1a5a5146433bdb73f62bd84f5f47e846d3485e5f70f63912b5917d";
+const layerDescriptors = [
+  ["sha256:3af9207d37990175f61d5ce9faa0c7373ffcd2d6da1b6ba0a9ca9d61f8f47cc9", 48_497_091],
+  ["sha256:6b02178232c403d8a6d5b460ad955daba177c38e178ed7dd417e5c4d748e948d", 24_044_139],
+  ["sha256:c5a4625b533197abb25ea2a32be06c59c984d97c3c2dc9952e0b76f2e81ee0d2", 64_408_267],
+  ["sha256:d32ed818f20fae825717c40dbc77cd4ed4bcefad6ba95a83f8c4f3c1f8631c31", 211_659_733],
+  ["sha256:a6c1a23a6280781f0cf3b6b3a43fc59462763953c4285dd4addc7d4963cc923f", 217_852_857],
+] as const;
+const diffIds = [
+  "sha256:63ecca237e30aca8ae79232ae01dddab7d8b42302f654f343f7cc7ddae60d57c",
+  "sha256:e62aadfda549a23e76f5bb43a9a5c652f9e7312aba9edf5c1411f7d0aed54eed",
+  "sha256:3acdb7d9b7ebcd7f62d99a996099a57b8367821f4d9a3f4b52239934425a7b98",
+  "sha256:b33c96ad984974239102a1fe15e6427a3510f13aa320227b371c10bb40063356",
+  "sha256:0bfd9a65e13cc2726159178398201f52cd4e5bd1c187584f6953c839438af7d5",
+] as const;
+
+function acquisitionInspection(state: "created" | "exited") {
+  const create = acquisitionCreateArguments({
+    invocation,
+    invocationDirectory,
+    uid: 123,
+    gid: 456,
+  });
+  return {
+    Id: "a".repeat(64),
+    Name: `/openspell-wp201-${invocation}-acquisition`,
+    Image: configDigest,
+    RestartCount: 0,
+    Config: {
+      Hostname: "wp201-acquisition",
+      Domainname: "",
+      User: "123:456",
+      AttachStdin: false,
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: false,
+      OpenStdin: false,
+      StdinOnce: false,
+      Image: IMAGE,
+      Volumes: null,
+      Labels: {
+        "com.openspell.wp201.invocation": invocation,
+        "com.openspell.wp201.role": ACQUISITION_ROLE,
+        "org.opencontainers.image.source": "https://github.com/rust-lang/docker-rust",
+      },
+      Entrypoint: ["/usr/bin/env"],
+      Cmd: create.slice(create.indexOf(IMAGE) + 1),
+      Env: [
+        "PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "RUSTUP_HOME=/usr/local/rustup",
+        "CARGO_HOME=/usr/local/cargo",
+        "RUST_VERSION=1.97.1",
+      ],
+      WorkingDir: "/tmp",
+    },
+    HostConfig: inspectionHostConfig("acquisition"),
+    State: {
+      Status: state,
+      Running: false,
+      Restarting: false,
+      Paused: false,
+      Dead: false,
+      OOMKilled: false,
+      ExitCode: 0,
+      Error: "",
+      Pid: 0,
+    },
+  };
+}
+
+function proofInspection() {
+  const create = proofCreateArguments({
+    invocation,
+    invocationDirectory,
+    rowId: "root-fmt",
+    ledgerSha256,
+  });
+  return {
+    Id: "b".repeat(64),
+    Name: `/openspell-wp201-${invocation}-proof-root-fmt`,
+    Image: configDigest,
+    RestartCount: 0,
+    Config: {
+      Hostname: "wp201-proof",
+      Domainname: "",
+      User: "0:0",
+      AttachStdin: true,
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: false,
+      OpenStdin: true,
+      StdinOnce: true,
+      Image: IMAGE,
+      Volumes: null,
+      Labels: {
+        "com.openspell.wp201.invocation": invocation,
+        "com.openspell.wp201.role": PROOF_ROLE,
+        "org.opencontainers.image.source": "https://github.com/rust-lang/docker-rust",
+      },
+      Entrypoint: ["/usr/bin/env"],
+      Cmd: create.slice(create.indexOf(IMAGE) + 1),
+      Env: [
+        "PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "RUSTUP_HOME=/usr/local/rustup",
+        "CARGO_HOME=/usr/local/cargo",
+        "RUST_VERSION=1.97.1",
+      ],
+      WorkingDir: "/tmp",
+    },
+    HostConfig: inspectionHostConfig("proof"),
+    State: {
+      Status: "created",
+      Running: false,
+      Restarting: false,
+      Paused: false,
+      Dead: false,
+      OOMKilled: false,
+      ExitCode: 0,
+      Error: "",
+      Pid: 0,
+    },
+  };
+}
+
+function parsedCutIdentity(cutCase: (typeof CUT_CASES)[number], token: object) {
+  return parseCutIdentityFrame(
+    Buffer.from(
+      [
+        "openspell.wp201.real-cut-identity.v2",
+        cutCase,
+        invocation,
+        "tmp",
+        "10",
+        "20",
+        "30",
+        ledgerSha256,
+        "40",
+        "50",
+        "",
+      ].join("\n"),
+    ),
+    token,
+  );
+}
+
+function parsedCutAudit(token: object) {
+  const prefix = ["openspell", "wp201", "real-cut"].join(".");
+  return parseCutAuditStream(
+    Buffer.from(
+      `${prefix}-audit-open.v1\n` +
+        `${prefix}-signal-latched.v1\nSIGTERM\n` +
+        `${prefix}-audit-close.v1\n`,
+    ),
+    token,
+  );
+}
+
+function cutReapReceipt(
+  cutCase: (typeof CUT_CASES)[number],
+  acceptedId: string | null,
+  token: object,
+  valid = true,
+) {
+  return createCutHarnessReapReceipt({
+    cutCase,
+    token,
+    terminal: valid
+      ? parseCutTerminalResult({
+          status: 73,
+          stdout: Buffer.alloc(0),
+          stderr: Buffer.from("openspell.wp201.interrupted-before-start.v1\n"),
+        }, token)
+      : null,
+    accepted: parseCutAcceptedIdFrame(
+      Buffer.from(
+        `openspell.wp201.real-cut-accepted-id.v1\n${acceptedId ?? "none"}\n`,
+      ),
+      cutCase,
+      token,
+    ),
+    identity: valid ? parsedCutIdentity(cutCase, token) : null,
+    audit: valid ? parsedCutAudit(token) : null,
+    pipesEof: true,
+    groupAbsent: true,
+  });
+}
+
+function exactProofNameAbsent(token: object, operation: string) {
+  return classifyDockerExactName(
+    dockerResult(
+      1,
+      "[]\n",
+      `Error response from daemon: No such container: openspell-wp201-${invocation}-proof-root-fmt\n`,
+    ),
+    { kind: "proof", invocation, rowId: "root-fmt" },
+    { token, operation },
+  );
+}
+
+function inspectedProof(id: string, token: object, operation: string) {
+  return parseDockerContainerInspection(jsonResult([{ ...proofInspection(), Id: id }]), {
+    kind: "proof",
+    invocation,
+    invocationDirectory,
+    rowId: "root-fmt",
+    ledgerSha256,
+    localImageId: configDigest,
+    state: "created",
+  }, { token, operation });
+}
+
+describe("WP-201 strict Docker and interruption protocols", () => {
+  it("accepts only the frozen context, endpoint, API tuple, and manifest", () => {
+    expect(parseDockerContextName(dockerResult(0, "default\n"))).toBe("default");
+    expect(parseDockerContextEndpoint(jsonResult("unix:///var/run/docker.sock"))).toBe(
+      "unix:///var/run/docker.sock",
+    );
+    expect(
+      parseDockerApiSupport(
+        jsonResult({
+          Client: {
+            Platform: { Name: "Docker Engine - Community" },
+            Version: "29.7.2",
+            ApiVersion: "1.55",
+            DefaultAPIVersion: "1.55",
+            GitCommit: "a7dcaa6",
+            GoVersion: "go1.26.5",
+            Os: "linux",
+            Arch: "amd64",
+            BuildTime: "Wed Aug  5 18:28:40 2026",
+            Context: "default",
+          },
+          Server: { ApiVersion: "1.49" },
+        }),
+      ),
+    ).toEqual({ clientApiVersion: "1.55", serverApiVersion: "1.49" });
+    const manifest = {
+      schemaVersion: 2,
+      mediaType: "application/vnd.oci.image.manifest.v1+json",
+      config: {
+        mediaType: "application/vnd.oci.image.config.v1+json",
+        digest: configDigest,
+        size: 4_547,
+      },
+      layers: layerDescriptors.map(([digest, size]) => ({
+        mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+        digest,
+        size,
+      })),
+    };
+    expect(parseDockerPlatformManifest(jsonResult(manifest))).toEqual({
+      manifestDigest,
+      configDigest,
+    });
+
+    expect(() => parseDockerContextName(dockerResult(0, "default\nextra"))).toThrow();
+    expect(() => parseDockerContextEndpoint(dockerResult(0, '"tcp://peer"\n'))).toThrow();
+    expect(() =>
+      parseDockerContextEndpoint(dockerResult(0, ' "unix:///var/run/docker.sock"\n')),
+    ).toThrow("endpoint mismatch");
+    expect(() =>
+      parseDockerContextEndpoint(
+        dockerResult(0, `${String.raw`"unix:\/\/\/var\/run\/docker.sock"`}\n`),
+      ),
+    ).toThrow("endpoint mismatch");
+    expect(() =>
+      parseDockerApiSupport(
+        dockerResult(0, '{"Client":{"ApiVersion":"1.55","ApiVersion":"1.55"},"Server":{}}\n'),
+      ),
+    ).toThrow("JSON duplicate key");
+    expect(() =>
+      parseDockerPlatformManifest(jsonResult({ ...manifest, layers: [...manifest.layers].reverse() })),
+    ).toThrow();
+    expect(() =>
+      parseDockerApiSupport(
+        jsonResult({
+          Client: {
+            Platform: { Name: "Docker Engine - Community" },
+            Version: "29.7.2",
+            ApiVersion: "1.55",
+            DefaultAPIVersion: "1.55",
+            GitCommit: "a7dcaa6",
+            GoVersion: "go1.26.5",
+            Os: "linux",
+            Arch: "amd64",
+            BuildTime: "Wed Aug  5 18:28:40 2026",
+            Context: "default",
+          },
+          Server: { ApiVersion: `1.${"9".repeat(100)}` },
+        }),
+      ),
+    ).toThrow("API is too old");
+  });
+
+  it("classifies the two image stores and only the frozen cache miss", () => {
+    const image = {
+      Id: configDigest,
+      RepoDigests: [`rust@${indexDigest}`],
+      Os: "linux",
+      Architecture: "amd64",
+      RootFS: { Type: "layers", Layers: diffIds },
+      Config: {
+        Env: [
+          "PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "RUSTUP_HOME=/usr/local/rustup",
+          "CARGO_HOME=/usr/local/cargo",
+          "RUST_VERSION=1.97.1",
+        ],
+        Cmd: ["bash"],
+        Labels: {
+          "org.opencontainers.image.source": "https://github.com/rust-lang/docker-rust",
+        },
+      },
+    };
+    expect(classifyDockerCachedImage(jsonResult([image]))).toEqual({
+      outcome: "present",
+      localImageId: configDigest,
+      store: "classic",
+    });
+    expect(
+      classifyDockerCachedImage(
+        jsonResult([
+          {
+            ...image,
+            Id: manifestDigest,
+            Descriptor: {
+              mediaType: "application/vnd.oci.image.manifest.v1+json",
+              digest: manifestDigest,
+              size: 1_940,
+              platform: { architecture: "amd64", os: "linux" },
+            },
+          },
+        ]),
+      ),
+    ).toEqual({ outcome: "present", localImageId: manifestDigest, store: "containerd" });
+    expect(
+      classifyDockerCachedImage(
+        dockerResult(
+          1,
+          "[]\n",
+          `Error response from daemon: No such image: rust:1.97.1-bookworm@${indexDigest}\n`,
+        ),
+      ),
+    ).toEqual({ outcome: "missing" });
+    expect(() => classifyDockerCachedImage(jsonResult([{ ...image, Id: indexDigest }]))).toThrow();
+  });
+
+  it("parses exact create, remove, absence, census, name, and container-state results", () => {
+    const id = "a".repeat(64);
+    expect(parseDockerCreatedId(dockerResult(0, `${id}\n`))).toBe(id);
+    expect(
+      parseDockerRemove(dockerResult(0, `${id}\n`), id, dockerReceiptSource("remove")),
+    ).toMatchObject({ outcome: "removed", id, operation: "remove" });
+    expect(
+      parseDockerAbsence(
+        dockerResult(1, "[]\n", `Error response from daemon: No such container: ${id}\n`),
+        id,
+        dockerReceiptSource("absence"),
+      ),
+    ).toMatchObject({ outcome: "absent", id, operation: "absence" });
+    expect(
+      parseDockerLabelCensus(
+        dockerResult(0, `${id}\n${"b".repeat(64)}\n`),
+        invocation,
+        dockerReceiptSource("label-census"),
+      ),
+    ).toMatchObject({
+      invocation,
+      operation: "label-census",
+      ids: [id, "b".repeat(64)],
+    });
+    expect(
+      classifyDockerExactName(
+        dockerResult(
+          1,
+          "[]\n",
+          `Error response from daemon: No such container: openspell-wp201-${invocation}-acquisition\n`,
+        ),
+        { kind: "acquisition", invocation },
+        dockerReceiptSource("exact-name-acquisition"),
+      ),
+    ).toMatchObject({ outcome: "absent", kind: "acquisition", invocation });
+    expect(
+      classifyDockerExactName(jsonResult([acquisitionInspection("created")]), {
+        kind: "acquisition",
+        invocation,
+      }, dockerReceiptSource("exact-name-acquisition")),
+    ).toMatchObject({ outcome: "present", id, kind: "acquisition", invocation });
+    expect(
+      parseDockerContainerInspection(jsonResult([acquisitionInspection("created")]), {
+        kind: "acquisition",
+        invocation,
+        invocationDirectory,
+        uid: 123,
+        gid: 456,
+        localImageId: configDigest,
+        state: "created",
+      }, dockerReceiptSource("configuration-inspect")),
+    ).toMatchObject({ id, store: "classic", state: "created", kind: "acquisition" });
+    expect(
+      parseDockerContainerInspection(jsonResult([acquisitionInspection("exited")]), {
+        kind: "acquisition",
+        invocation,
+        invocationDirectory,
+        uid: 123,
+        gid: 456,
+        localImageId: configDigest,
+        state: "exited-zero",
+      }, dockerReceiptSource("configuration-inspect")),
+    ).toMatchObject({ id, store: "classic", state: "exited-zero", kind: "acquisition" });
+    expect(
+      parseDockerContainerInspection(jsonResult([proofInspection()]), {
+        kind: "proof",
+        invocation,
+        invocationDirectory,
+        rowId: "root-fmt",
+        ledgerSha256,
+        localImageId: configDigest,
+        state: "created",
+      }, dockerReceiptSource("configuration-inspect")),
+    ).toMatchObject({
+      id: "b".repeat(64),
+      store: "classic",
+      state: "created",
+      kind: "proof",
+      rowId: "root-fmt",
+    });
+    const containerdProof = {
+      ...proofInspection(),
+      Image: indexDigest,
+      ImageManifestDescriptor: {
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        digest: manifestDigest,
+        size: 1_940,
+        platform: { architecture: "amd64", os: "linux" },
+      },
+    };
+    expect(
+      parseDockerContainerInspection(jsonResult([containerdProof]), {
+        kind: "proof",
+        invocation,
+        invocationDirectory,
+        rowId: "root-fmt",
+        ledgerSha256,
+        localImageId: manifestDigest,
+        state: "created",
+      }, dockerReceiptSource("configuration-inspect")),
+    ).toMatchObject({
+      id: "b".repeat(64),
+      store: "containerd",
+      state: "created",
+      kind: "proof",
+      rowId: "root-fmt",
+    });
+
+    expect(() => parseDockerCreatedId(dockerResult(0, id))).toThrow();
+    expect(() =>
+      parseDockerLabelCensus(
+        dockerResult(0, `${id}\n${id}\n`),
+        invocation,
+        dockerReceiptSource("label-census"),
+      ),
+    ).toThrow();
+    expect(() =>
+      parseDockerAbsence(
+        dockerResult(1, "[]\n", "localized error\n"),
+        id,
+        dockerReceiptSource("absence"),
+      ),
+    ).toThrow();
+    expect(() =>
+      parseDockerContainerInspection(jsonResult([{ ...acquisitionInspection("created"), Name: "/wrong" }]), {
+        kind: "acquisition",
+        invocation,
+        invocationDirectory,
+        uid: 123,
+        gid: 456,
+        localImageId: configDigest,
+        state: "created",
+      }, dockerReceiptSource("configuration-inspect")),
+    ).toThrow("container name mismatch");
+  });
+
+  it("rejects missing, weakened, extra, reordered, and duplicate container authority", () => {
+    const options = {
+      kind: "acquisition" as const,
+      invocation,
+      invocationDirectory,
+      uid: 123,
+      gid: 456,
+      localImageId: configDigest,
+      state: "created" as const,
+    };
+    const missing = acquisitionInspection("created");
+    const missingHost: Record<string, unknown> = { ...missing.HostConfig };
+    Reflect.deleteProperty(missingHost, "ReadonlyRootfs");
+    expect(() =>
+      parseDockerContainerInspection(
+        jsonResult([{ ...missing, HostConfig: missingHost }]),
+        options,
+        dockerReceiptSource("configuration-inspect"),
+      ),
+    ).toThrow("HostConfig keys");
+
+    const weakened = acquisitionInspection("created");
+    expect(() =>
+      parseDockerContainerInspection(
+        jsonResult([
+          {
+            ...weakened,
+            HostConfig: { ...weakened.HostConfig, ReadonlyRootfs: false },
+          },
+        ]),
+        options,
+        dockerReceiptSource("configuration-inspect"),
+      ),
+    ).toThrow("ReadonlyRootfs mismatch");
+
+    const unknownHostKey = acquisitionInspection("created");
+    expect(() =>
+      parseDockerContainerInspection(
+        jsonResult([
+          {
+            ...unknownHostKey,
+            HostConfig: { ...unknownHostKey.HostConfig, InjectedAuthority: true },
+          },
+        ]),
+        options,
+        dockerReceiptSource("configuration-inspect"),
+      ),
+    ).toThrow("HostConfig keys");
+
+    for (const hostChange of [
+      { VolumesFrom: ["foreign:rw"] },
+      { PortBindings: { "80/tcp": [{ HostPort: "8080" }] } },
+      { PublishAllPorts: true },
+    ]) {
+      const authority = acquisitionInspection("created");
+      expect(() =>
+        parseDockerContainerInspection(
+          jsonResult([
+            {
+              ...authority,
+              HostConfig: { ...authority.HostConfig, ...hostChange },
+            },
+          ]),
+          options,
+          dockerReceiptSource("configuration-inspect"),
+        ),
+      ).toThrow();
+    }
+
+    const extra = acquisitionInspection("created");
+    expect(() =>
+      parseDockerContainerInspection(
+        jsonResult([
+          {
+            ...extra,
+            HostConfig: {
+              ...extra.HostConfig,
+              Mounts: [
+                ...extra.HostConfig.Mounts,
+                {
+                  Type: "bind",
+                  Source: `${invocationDirectory}/source`,
+                  Target: "/unexpected",
+                  ReadOnly: true,
+                  BindOptions: { Propagation: "rprivate", ReadOnlyForceRecursive: true },
+                },
+              ],
+            },
+          },
+        ]),
+        options,
+        dockerReceiptSource("configuration-inspect"),
+      ),
+    ).toThrow("configured mounts mismatch");
+
+    const reordered = acquisitionInspection("created");
+    expect(() =>
+      parseDockerContainerInspection(
+        jsonResult([
+          {
+            ...reordered,
+            HostConfig: {
+              ...reordered.HostConfig,
+              Mounts: [...reordered.HostConfig.Mounts].reverse(),
+            },
+          },
+        ]),
+        options,
+        dockerReceiptSource("configuration-inspect"),
+      ),
+    ).toThrow("configured mount mismatch");
+
+    const duplicate = acquisitionInspection("created");
+    expect(() =>
+      parseDockerContainerInspection(
+        jsonResult([
+          {
+            ...duplicate,
+            HostConfig: {
+              ...duplicate.HostConfig,
+              Mounts: [duplicate.HostConfig.Mounts[0], duplicate.HostConfig.Mounts[0]],
+            },
+          },
+        ]),
+        options,
+        dockerReceiptSource("configuration-inspect"),
+      ),
+    ).toThrow("configured mount mismatch");
+
+    const wrongTmpfs = acquisitionInspection("created");
+    expect(() =>
+      parseDockerContainerInspection(
+        jsonResult([
+          {
+            ...wrongTmpfs,
+            HostConfig: {
+              ...wrongTmpfs.HostConfig,
+              Tmpfs: { ...wrongTmpfs.HostConfig.Tmpfs, "/tmp": "rw" },
+            },
+          },
+        ]),
+        options,
+        dockerReceiptSource("configuration-inspect"),
+      ),
+    ).toThrow("Tmpfs mismatch");
+
+    const wrongSecurity = acquisitionInspection("created");
+    expect(() =>
+      parseDockerContainerInspection(
+        jsonResult([
+          {
+            ...wrongSecurity,
+            HostConfig: { ...wrongSecurity.HostConfig, CapDrop: [] },
+          },
+        ]),
+        options,
+        dockerReceiptSource("configuration-inspect"),
+      ),
+    ).toThrow("CapDrop");
+
+    const wrongResource = acquisitionInspection("created");
+    expect(() =>
+      parseDockerContainerInspection(
+        jsonResult([
+          {
+            ...wrongResource,
+            HostConfig: { ...wrongResource.HostConfig, Memory: 1_073_741_824 },
+          },
+        ]),
+        options,
+        dockerReceiptSource("configuration-inspect"),
+      ),
+    ).toThrow("Memory mismatch");
+
+    const wrongUlimit = acquisitionInspection("created");
+    expect(() =>
+      parseDockerContainerInspection(
+        jsonResult([
+          {
+            ...wrongUlimit,
+            HostConfig: {
+              ...wrongUlimit.HostConfig,
+              Ulimits: [{ Name: "nofile", Hard: 2_048, Soft: 1_024 }],
+            },
+          },
+        ]),
+        options,
+        dockerReceiptSource("configuration-inspect"),
+      ),
+    ).toThrow("Ulimits mismatch");
+
+    const wrongCommand = acquisitionInspection("created");
+    expect(() =>
+      parseDockerContainerInspection(
+        jsonResult([
+          {
+            ...wrongCommand,
+            Config: { ...wrongCommand.Config, Cmd: [...wrongCommand.Config.Cmd, "extra"] },
+          },
+        ]),
+        options,
+        dockerReceiptSource("configuration-inspect"),
+      ),
+    ).toThrow("container command");
+
+    const wrongStore = {
+      ...proofInspection(),
+      Image: indexDigest,
+    };
+    expect(() =>
+      parseDockerContainerInspection(jsonResult([wrongStore]), {
+        kind: "proof",
+        invocation,
+        invocationDirectory,
+        rowId: "root-fmt",
+        ledgerSha256,
+        localImageId: manifestDigest,
+        state: "created",
+      }, dockerReceiptSource("configuration-inspect")),
+    ).toThrow("container image descriptor");
+
+    const volume = acquisitionInspection("created");
+    expect(() =>
+      parseDockerContainerInspection(
+        jsonResult([{ ...volume, Config: { ...volume.Config, Volumes: { "/data": {} } } }]),
+        options,
+        dockerReceiptSource("configuration-inspect"),
+      ),
+    ).toThrow("volumes mismatch");
+
+    for (const extraConfig of [
+      { Healthcheck: { Test: ["NONE"] } },
+      { MacAddress: "02:42:ac:11:00:02" },
+      { StopSignal: "SIGKILL" },
+      { UnknownConfigAuthority: true },
+    ]) {
+      const config = acquisitionInspection("created");
+      expect(() =>
+        parseDockerContainerInspection(
+          jsonResult([{ ...config, Config: { ...config.Config, ...extraConfig } }]),
+          options,
+          dockerReceiptSource("configuration-inspect"),
+        ),
+      ).toThrow("container Config keys");
+    }
+  });
+
+  it("parses and cross-checks READY, event, accepted-ID, identity-v2, and audit frames", () => {
+    const id = "c".repeat(64);
+    const harnessToken = createOwnedChildToken();
+    const auditPrefix = ["openspell", "wp201", "real-cut"].join(".");
+    expect(parseDockerEventReadyFrame(Buffer.from("openspell.wp201.docker-event-ready.v1\n"))).toBe(true);
+    expect(
+      parseDockerEventIdFrame(
+        Buffer.from(`openspell.wp201.docker-event-id.v1\n${id}\n`),
+      ),
+    ).toBe(id);
+    expect(
+      parseCutAcceptedIdFrame(
+        Buffer.from("openspell.wp201.real-cut-accepted-id.v1\nnone\n"),
+        "before-issue",
+        harnessToken,
+      ),
+    ).toMatchObject({ token: harnessToken, cutCase: "before-issue", acceptedId: null });
+    expect(
+      parseCutAcceptedIdFrame(
+        Buffer.from(`openspell.wp201.real-cut-accepted-id.v1\n${id}\n`),
+        "after-parent-custody-before-start",
+        harnessToken,
+      ),
+    ).toMatchObject({
+      token: harnessToken,
+      cutCase: "after-parent-custody-before-start",
+      acceptedId: id,
+    });
+    const identityBytes = Buffer.from(
+      [
+        "openspell.wp201.real-cut-identity.v2",
+        "before-issue",
+        invocation,
+        "tmp",
+        "10",
+        "20",
+        "30",
+        ledgerSha256,
+        "40",
+        "50",
+        "",
+      ].join("\n"),
+    );
+    const identity = parseCutIdentityFrame(identityBytes, harnessToken);
+    expect(
+      requireCutIdentityAgreement(identity, {
+        cutCase: "before-issue",
+        invocation,
+        parent: "tmp",
+        directoryDevice: "10",
+        directoryInode: "20",
+        directoryMountId: "30",
+        ledgerSha256,
+      }),
+    ).toEqual(identity);
+    expect(
+      parseCutAuditStream(
+        Buffer.from(
+          `${auditPrefix}-audit-open.v1\n` +
+            `${auditPrefix}-signal-latched.v1\nSIGTERM\n` +
+            `${auditPrefix}-audit-close.v1\n`,
+        ),
+        harnessToken,
+      ),
+    ).toMatchObject({
+      token: harnessToken,
+      open: true,
+      signalLatched: true,
+      close: true,
+      dispatches: 0,
+    });
+    expect(
+      parseCutTerminalResult({
+        status: 73,
+        stdout: Buffer.alloc(0),
+        stderr: Buffer.from("openspell.wp201.interrupted-before-start.v1\n"),
+      }, harnessToken),
+    ).toMatchObject({ token: harnessToken, status: 73, interruptedBeforeStart: true });
+
+    expect(() => parseDockerEventReadyFrame(Buffer.from("ready\n"))).toThrow();
+    expect(() =>
+      parseCutAcceptedIdFrame(
+        Buffer.from(`openspell.wp201.real-cut-accepted-id.v1\n${id}\n`),
+        "before-issue",
+        harnessToken,
+      ),
+    ).toThrow("case mismatch");
+    expect(() =>
+      parseCutAcceptedIdFrame(Buffer.alloc(129, 0x61), "before-issue", harnessToken),
+    ).toThrow("frame cap");
+    expect(() => parseCutIdentityFrame(Buffer.alloc(321, 0x61), harnessToken)).toThrow("frame cap");
+    expect(() => parseCutAuditStream(Buffer.alloc(513, 0x61), harnessToken)).toThrow("framing");
+    expect(() =>
+      parseCutAuditStream(
+        Buffer.from(
+          `${auditPrefix}-audit-open.v1\n` +
+            `${auditPrefix}-start-attach.v1\n${PROOF_ROLE}\n${id}\n` +
+            `${auditPrefix}-signal-latched.v1\nSIGTERM\n` +
+            `${auditPrefix}-audit-close.v1\n`,
+        ),
+        harnessToken,
+      ),
+    ).toThrow("terminal sequence mismatch");
+    expect(() =>
+      parseCutTerminalResult({
+        status: 0,
+        stdout: Buffer.alloc(0),
+        stderr: Buffer.from("openspell.wp201.interrupted-before-start.v1\n"),
+      }, harnessToken),
+    ).toThrow("status mismatch");
+    expect(() =>
+      parseCutTerminalResult({
+        status: 73,
+        stdout: Buffer.from("openspell.wp201.bridge-success.v1\n"),
+        stderr: Buffer.from("openspell.wp201.interrupted-before-start.v1\n"),
+      }, harnessToken),
+    ).toThrow("stdout mismatch");
+    expect(() =>
+      requireCutIdentityAgreement(
+        { ...identity },
+        {
+          cutCase: "before-issue",
+          invocation,
+          parent: "tmp",
+          directoryDevice: "10",
+          directoryInode: "20",
+          directoryMountId: "30",
+          ledgerSha256,
+        },
+      ),
+    ).toThrow("unparsed cut identity");
+  });
+
+  it("owns and settles an established watcher before READY without lending its suffix", () => {
+    const token = createOwnedChildToken();
+    let watcher = createPreReadyWatcherCustody({
+      token,
+      sample: clock(0n),
+      activeDeadlineNs,
+      hardDeadlineNs,
+    });
+    watcher = reducePreReadyWatcherCustody(watcher, { type: "latch" }, clock(activeDeadlineNs));
+    expect(watcher).toMatchObject({ phase: "settling", failed: true, stage: "settle" });
+    expect(watcher.cleanupWindow?.endNs).toBe(activeDeadlineNs + 10n * secondNs);
+    watcher = reducePreReadyWatcherCustody(
+      watcher,
+      { type: "advance-stage", stage: "term" },
+      clock(activeDeadlineNs + 5n * secondNs),
+    );
+    watcher = reducePreReadyWatcherCustody(
+      watcher,
+      { type: "advance-stage", stage: "kill" },
+      clock(activeDeadlineNs + 7n * secondNs),
+    );
+    watcher = reducePreReadyWatcherCustody(
+      watcher,
+      { type: "reap" },
+      clock(activeDeadlineNs + 10n * secondNs - 1n),
+    );
+    expect(watcher).toMatchObject({ phase: "reaped", reaped: true, failed: true });
+    expect(() =>
+      createPreReadyWatcherCustody({
+        token,
+        sample: clock(0n),
+        activeDeadlineNs,
+        hardDeadlineNs,
+      }),
+    ).toThrow("owned child token replay");
+  });
+
+  it("admits harness reap only through parsed receipts and positive EOF/group facts", () => {
+    const harnessToken = createOwnedChildToken();
+    expect(() =>
+      createCutHarnessReapReceipt({
+        cutCase: "before-issue",
+        token: harnessToken,
+        terminal: null,
+        accepted: null,
+        identity: null,
+        audit: null,
+        pipesEof: false,
+        groupAbsent: true,
+      }),
+    ).toThrow("not fully reaped");
+
+    const cursor = createCutSupervisorCursor({
+      cutCase: "before-issue",
+      harnessToken,
+      invocation,
+      sample: clock(0n),
+    });
+    expect(() =>
+      reduceCutSupervisorCursor(
+        cursor,
+        {
+          type: "harness-reaped",
+          valid: false,
+          pipesEof: true,
+          groupAbsent: true,
+          acceptedId: null,
+        },
+        clock(1n),
+      ),
+    ).toThrow("harness-reaped transition");
+    expect(() =>
+      reduceCutSupervisorCursor(
+        cursor,
+        {
+          type: "harness-reaped",
+          receipt: {
+            cutCase: "before-issue",
+            valid: false,
+            acceptedId: null,
+            pipesEof: true,
+            groupAbsent: true,
+          },
+        },
+        clock(1n),
+      ),
+    ).toThrow("invalid cut harness reap receipt");
+
+    const failedReceipt = cutReapReceipt("before-issue", null, harnessToken, false);
+    const failed = reduceCutSupervisorCursor(
+      cursor,
+      {
+        type: "harness-reaped",
+        receipt: failedReceipt,
+      },
+      clock(1n),
+    );
+    expect(failed).toMatchObject({ harnessReaped: true, phase: "failed-ready", failed: true });
+    expect(() =>
+      reduceCutSupervisorCursor(
+        cursor,
+        { type: "harness-reaped", receipt: failedReceipt },
+        clock(1n),
+      ),
+    ).toThrow("invalid cut harness reap receipt");
+
+    const first = createOwnedChildToken();
+    const second = createOwnedChildToken();
+    expect(() =>
+      createCutHarnessReapReceipt({
+        cutCase: "before-issue",
+        token: first,
+        terminal: parseCutTerminalResult(
+          {
+            status: 73,
+            stdout: Buffer.alloc(0),
+            stderr: Buffer.from("openspell.wp201.interrupted-before-start.v1\n"),
+          },
+          first,
+        ),
+        accepted: parseCutAcceptedIdFrame(
+          Buffer.from("openspell.wp201.real-cut-accepted-id.v1\nnone\n"),
+          "before-issue",
+          second,
+        ),
+        identity: parsedCutIdentity("before-issue", first),
+        audit: parsedCutAudit(first),
+        pipesEof: true,
+        groupAbsent: true,
+      }),
+    ).toThrow("mixed cut harness process receipts");
+  });
+
+  it("freezes the 900+160 inner, 50 post-reap, 900+210 outer, and separate 130 teardown", () => {
+    expect(CUT_ACTIVE_NS).toBe(900n * secondNs);
+    expect(CUT_INNER_CLEANUP_NS).toBe(160n * secondNs);
+    expect(CUT_POST_REAP_NS).toBe(50n * secondNs);
+    expect(CUT_OUTER_RESERVE_NS).toBe(210n * secondNs);
+    expect(FAILED_CUT_TEARDOWN_NS).toBe(130n * secondNs);
+
+    const id = "d".repeat(64);
+    const cutHarnessToken = createOwnedChildToken();
+    let cut = createCutSupervisorCursor({
+      cutCase: "after-daemon-accept-before-delivery",
+      harnessToken: cutHarnessToken,
+      invocation,
+      sample: clock(0n),
+    });
+    expect(cut).toMatchObject({
+      activeDeadlineNs: 900n * secondNs,
+      innerDeadlineNs: 1_060n * secondNs,
+      outerDeadlineNs: 1_110n * secondNs,
+    });
+    cut = reduceCutSupervisorCursor(
+      cut,
+      {
+        type: "harness-reaped",
+        receipt: cutReapReceipt(
+          "after-daemon-accept-before-delivery",
+          id,
+          cutHarnessToken,
+        ),
+      },
+      clock(1_060n * secondNs - 1n),
+    );
+    expect(cut.postReapStartNs).toBe(1_060n * secondNs - 1n);
+    expect(cut.postReapDeadlineNs).toBe(1_110n * secondNs - 1n);
+    expect(expectedCutSupervisorOperation(cut)).toBe("accepted-id-absence");
+    const expected = [
+      "accepted-id-absence",
+      "exact-name-census",
+      "label-census",
+      "local-absence",
+      "custody",
+    ];
+    for (const operation of expected) {
+      const local = ["local-absence", "custody"].includes(operation);
+      cut = reduceCutSupervisorCursor(
+        cut,
+        local
+          ? { type: "begin-slot", operation }
+          : {
+              type: "begin-slot",
+              operation,
+              token: createOwnedChildToken(),
+              ...(operation === "accepted-id-absence" ? { id } : {}),
+            },
+        clock(cut.lastBootNs),
+      );
+      const childToken = cut.active?.token;
+      const receipt = operation === "accepted-id-absence"
+        ? parseDockerAbsence(
+            dockerResult(1, "[]\n", `Error response from daemon: No such container: ${id}\n`),
+            id,
+            dockerReceiptSource(operation, childToken),
+          )
+        : operation === "exact-name-census"
+          ? exactProofNameAbsent(childToken, operation)
+          : operation === "label-census"
+            ? parseDockerLabelCensus(
+                dockerResult(0, ""),
+                invocation,
+                dockerReceiptSource(operation, childToken),
+              )
+            : null;
+      cut = reduceCutSupervisorCursor(
+        cut,
+        local
+          ? { type: "complete-slot", operation, outcome: "pass" }
+          : {
+              type: "complete-slot",
+              operation,
+              outcome: "pass",
+              reaped: true,
+              token: cut.active!.token,
+              receipt,
+              ...(operation === "accepted-id-absence" ? { id } : {}),
+            },
+        clock(cut.lastBootNs),
+      );
+    }
+    expect(cut).toMatchObject({ phase: "complete", failed: false, slotIndex: 5 });
+
+    const failedHarnessToken = createOwnedChildToken();
+    let failed = createCutSupervisorCursor({
+      cutCase: "before-issue",
+      harnessToken: failedHarnessToken,
+      invocation,
+      sample: clock(0n),
+    });
+    failed = reduceCutSupervisorCursor(
+      failed,
+      {
+        type: "harness-reaped",
+        receipt: cutReapReceipt("before-issue", null, failedHarnessToken, false),
+      },
+      clock(1n),
+    );
+    failed = reduceCutSupervisorCursor(failed, { type: "begin-failed-teardown" }, clock(2n));
+    expect(failed.teardownDeadlineNs).toBe(2n + 130n * secondNs);
+    expect(
+      failed.slots.reduce(
+        (sum: bigint, slot: { readonly budgetNs: bigint }) => sum + slot.budgetNs,
+        0n,
+      ),
+    ).toBe(
+      105n * secondNs,
+    );
+    expect(expectedCutSupervisorOperation(failed)).toBe("accepted-id-validation");
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "skip-slot", operation: "accepted-id-validation" },
+      clock(failed.lastBootNs),
+    );
+    const noIdOperations = [
+      "exact-name-recovery",
+      "final-exact-name-census",
+      "final-label-census",
+    ] as const;
+    for (const operation of noIdOperations) {
+      while (expectedCutSupervisorOperation(failed) !== operation) {
+        failed = reduceCutSupervisorCursor(
+          failed,
+          { type: "skip-slot", operation: expectedCutSupervisorOperation(failed)! },
+          clock(failed.lastBootNs),
+        );
+      }
+      failed = reduceCutSupervisorCursor(
+        failed,
+        { type: "begin-slot", operation, token: createOwnedChildToken() },
+        clock(failed.lastBootNs),
+      );
+      const childToken = failed.active!.token;
+      const receipt = operation === "final-label-census"
+        ? parseDockerLabelCensus(
+            dockerResult(0, ""),
+            invocation,
+            dockerReceiptSource(operation, childToken),
+          )
+        : exactProofNameAbsent(childToken, operation);
+      failed = reduceCutSupervisorCursor(
+        failed,
+        {
+          type: "complete-slot",
+          operation,
+          outcome: "pass",
+          reaped: true,
+          token: failed.active!.token,
+          receipt,
+        },
+        clock(failed.lastBootNs),
+      );
+    }
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "begin-slot", operation: "failed-path-helper", token: createOwnedChildToken() },
+      clock(failed.lastBootNs),
+    );
+    failed = reduceCutSupervisorCursor(
+      failed,
+      {
+        type: "complete-slot",
+        operation: "failed-path-helper",
+        outcome: "pass",
+        reaped: true,
+        token: failed.active!.token,
+      },
+      clock(failed.lastBootNs),
+    );
+    for (const operation of ["parent-absence", "descriptor-settlement"]) {
+      failed = reduceCutSupervisorCursor(
+        failed,
+        { type: "begin-slot", operation },
+        clock(failed.lastBootNs),
+      );
+      failed = reduceCutSupervisorCursor(
+        failed,
+        { type: "complete-slot", operation, outcome: "pass" },
+        clock(failed.lastBootNs),
+      );
+    }
+    expect(failed).toMatchObject({ phase: "failed-complete", failed: true });
+    expect(failed.teardownDeadlineNs! - failed.lastBootNs).toBeGreaterThanOrEqual(
+      25n * secondNs,
+    );
+
+    const earlyHarnessToken = createOwnedChildToken();
+    let early = createCutSupervisorCursor({
+      cutCase: "after-parent-custody-before-start",
+      harnessToken: earlyHarnessToken,
+      invocation,
+      sample: clock(0n),
+    });
+    early = reduceCutSupervisorCursor(
+      early,
+      {
+        type: "harness-reaped",
+        receipt: cutReapReceipt(
+          "after-parent-custody-before-start",
+          id,
+          earlyHarnessToken,
+        ),
+      },
+      clock(1n),
+    );
+    expect(() =>
+      reduceCutSupervisorCursor(
+        early,
+        {
+          type: "begin-slot",
+          operation: "accepted-id-absence",
+          token: createOwnedChildToken(),
+          id,
+        },
+        clock(1n + 50n * secondNs),
+      ),
+    ).toThrow("post-reap deadline");
+
+    const beforeHarnessToken = createOwnedChildToken();
+    let before = createCutSupervisorCursor({
+      cutCase: "before-issue",
+      harnessToken: beforeHarnessToken,
+      invocation,
+      sample: clock(0n),
+    });
+    before = reduceCutSupervisorCursor(
+      before,
+      {
+        type: "harness-reaped",
+        receipt: cutReapReceipt("before-issue", null, beforeHarnessToken),
+      },
+      clock(1n),
+    );
+    expect(before).toMatchObject({
+      postReapBudgetNs: 40n * secondNs,
+      postReapDeadlineNs: 1n + 40n * secondNs,
+    });
+    expect(() =>
+      reduceCutSupervisorCursor(
+        before,
+        {
+          type: "begin-slot",
+          operation: "exact-name-census",
+          token: createOwnedChildToken(),
+        },
+        clock(1n + 14n * secondNs),
+      ),
+    ).toThrow("suffix exhausted");
+  });
+
+  it("enforces five/two/three Docker and four/three/three helper child slots", () => {
+    const id = "e".repeat(64);
+    const cutHarnessToken = createOwnedChildToken();
+    let cut = createCutSupervisorCursor({
+      cutCase: "after-parent-custody-before-start",
+      harnessToken: cutHarnessToken,
+      invocation,
+      sample: clock(0n),
+    });
+    cut = reduceCutSupervisorCursor(
+      cut,
+      {
+        type: "harness-reaped",
+        receipt: cutReapReceipt("after-parent-custody-before-start", id, cutHarnessToken),
+      },
+      clock(1n),
+    );
+    const token = createOwnedChildToken();
+    cut = reduceCutSupervisorCursor(
+      cut,
+      { type: "begin-slot", operation: "accepted-id-absence", token, id },
+      clock(1n),
+    );
+    expect(cut.active).toMatchObject({
+      normalEndNs: 1n + 5n * secondNs,
+      termEndNs: 1n + 7n * secondNs,
+      endNs: 1n + 10n * secondNs,
+    });
+    expect(() =>
+      reduceCutSupervisorCursor(
+        cut,
+        {
+          type: "complete-slot",
+          operation: "accepted-id-absence",
+          outcome: "pass",
+          reaped: true,
+          token,
+          id,
+          receipt: parseDockerAbsence(
+            dockerResult(1, "[]\n", `Error response from daemon: No such container: ${id}\n`),
+            id,
+            dockerReceiptSource("accepted-id-absence", token),
+          ),
+        },
+        clock(1n + 5n * secondNs),
+      ),
+    ).toThrow("child stage missing");
+    cut = reduceCutSupervisorCursor(
+      cut,
+      { type: "advance-slot-stage", operation: "accepted-id-absence", stage: "term", token },
+      clock(1n + 5n * secondNs),
+    );
+    cut = reduceCutSupervisorCursor(
+      cut,
+      { type: "advance-slot-stage", operation: "accepted-id-absence", stage: "kill", token },
+      clock(1n + 7n * secondNs),
+    );
+    cut = reduceCutSupervisorCursor(
+      cut,
+      {
+        type: "complete-slot",
+        operation: "accepted-id-absence",
+        outcome: "pass",
+        reaped: true,
+        token,
+        id,
+        receipt: parseDockerAbsence(
+          dockerResult(1, "[]\n", `Error response from daemon: No such container: ${id}\n`),
+          id,
+          dockerReceiptSource("accepted-id-absence", token),
+        ),
+      },
+      clock(1n + 10n * secondNs - 1n),
+    );
+    expect(cut.slotIndex).toBe(1);
+
+    const failedHarnessToken = createOwnedChildToken();
+    let failed = createCutSupervisorCursor({
+      cutCase: "before-issue",
+      harnessToken: failedHarnessToken,
+      invocation,
+      sample: clock(0n),
+    });
+    failed = reduceCutSupervisorCursor(
+      failed,
+      {
+        type: "harness-reaped",
+        receipt: cutReapReceipt("before-issue", null, failedHarnessToken, false),
+      },
+      clock(1n),
+    );
+    failed = reduceCutSupervisorCursor(failed, { type: "begin-failed-teardown" }, clock(2n));
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "skip-slot", operation: "accepted-id-validation" },
+      clock(failed.lastBootNs),
+    );
+    for (const operation of [
+      "exact-name-recovery",
+      "final-exact-name-census",
+      "final-label-census",
+    ] as const) {
+      while (expectedCutSupervisorOperation(failed) !== operation) {
+        failed = reduceCutSupervisorCursor(
+          failed,
+          { type: "skip-slot", operation: expectedCutSupervisorOperation(failed)! },
+          clock(failed.lastBootNs),
+        );
+      }
+      failed = reduceCutSupervisorCursor(
+        failed,
+        { type: "begin-slot", operation, token: createOwnedChildToken() },
+        clock(failed.lastBootNs),
+      );
+      const childToken = failed.active!.token;
+      const receipt = operation === "final-label-census"
+        ? parseDockerLabelCensus(
+            dockerResult(0, ""),
+            invocation,
+            dockerReceiptSource(operation, childToken),
+          )
+        : exactProofNameAbsent(childToken, operation);
+      failed = reduceCutSupervisorCursor(
+        failed,
+        {
+          type: "complete-slot",
+          operation,
+          outcome: "pass",
+          reaped: true,
+          token: failed.active!.token,
+          receipt,
+        },
+        clock(failed.lastBootNs),
+      );
+    }
+    const helperToken = createOwnedChildToken();
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "begin-slot", operation: "failed-path-helper", token: helperToken },
+      clock(failed.lastBootNs),
+    );
+    expect(failed.active).toMatchObject({
+      normalEndNs: failed.lastBootNs + 4n * secondNs,
+      termEndNs: failed.lastBootNs + 7n * secondNs,
+      endNs: failed.lastBootNs + 10n * secondNs,
+    });
+    expect(() =>
+      reduceCutSupervisorCursor(
+        failed,
+        {
+          type: "complete-slot",
+          operation: "failed-path-helper",
+          outcome: "pass",
+          reaped: false,
+          token: helperToken,
+        },
+        clock(failed.lastBootNs),
+      ),
+    ).toThrow("unreaped cut supervisor child cannot pass");
+    failed = reduceCutSupervisorCursor(
+      failed,
+      {
+        type: "advance-slot-stage",
+        operation: "failed-path-helper",
+        stage: "term",
+        token: helperToken,
+      },
+      clock(failed.lastBootNs + 4n * secondNs),
+    );
+    failed = reduceCutSupervisorCursor(
+      failed,
+      {
+        type: "advance-slot-stage",
+        operation: "failed-path-helper",
+        stage: "kill",
+        token: helperToken,
+      },
+      clock(failed.lastBootNs + 3n * secondNs),
+    );
+    expect(() =>
+      reduceCutSupervisorCursor(
+        failed,
+        { type: "expire-slot", operation: "failed-path-helper", token: helperToken },
+        clock(failed.lastBootNs + 3n * secondNs - 1n),
+      ),
+    ).toThrow("has not expired after KILL");
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "expire-slot", operation: "failed-path-helper", token: helperToken },
+      clock(failed.lastBootNs + 3n * secondNs),
+    );
+    expect(expectedCutSupervisorOperation(failed)).toBe("parent-absence");
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "begin-slot", operation: "parent-absence" },
+      clock(failed.lastBootNs),
+    );
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "complete-slot", operation: "parent-absence", outcome: "fail" },
+      clock(failed.lastBootNs),
+    );
+    expect(expectedCutSupervisorOperation(failed)).toBe("descriptor-settlement");
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "begin-slot", operation: "descriptor-settlement" },
+      clock(failed.lastBootNs),
+    );
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "complete-slot", operation: "descriptor-settlement", outcome: "pass" },
+      clock(failed.lastBootNs),
+    );
+    expect(failed).toMatchObject({ phase: "failed-complete", failed: true });
+  });
+
+  it("adopts only an identity-valid full ID and binds every removal and absence to it", () => {
+    const id = "f".repeat(64);
+    const otherId = "a".repeat(64);
+    const failedHarnessToken = createOwnedChildToken();
+    let failed = createCutSupervisorCursor({
+      cutCase: "after-daemon-accept-before-delivery",
+      harnessToken: failedHarnessToken,
+      invocation,
+      sample: clock(0n),
+    });
+    failed = reduceCutSupervisorCursor(
+      failed,
+      {
+        type: "harness-reaped",
+        receipt: cutReapReceipt(
+          "after-daemon-accept-before-delivery",
+          id,
+          failedHarnessToken,
+          false,
+        ),
+      },
+      clock(1n),
+    );
+    failed = reduceCutSupervisorCursor(failed, { type: "begin-failed-teardown" }, clock(2n));
+
+    const validationToken = createOwnedChildToken();
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "begin-slot", operation: "accepted-id-validation", token: validationToken },
+      clock(2n),
+    );
+    expect(() =>
+      reduceCutSupervisorCursor(
+        failed,
+        {
+          type: "complete-slot",
+          operation: "accepted-id-validation",
+          outcome: "pass",
+          reaped: true,
+          token: validationToken,
+          receipt: inspectedProof(otherId, validationToken, "accepted-id-validation"),
+        },
+        clock(2n),
+      ),
+    ).toThrow("accepted-ID validation receipt");
+    const validationCursor = failed;
+    const validationReceipt = inspectedProof(id, validationToken, "accepted-id-validation");
+    failed = reduceCutSupervisorCursor(
+      validationCursor,
+      {
+        type: "complete-slot",
+        operation: "accepted-id-validation",
+        outcome: "pass",
+        reaped: true,
+        token: validationToken,
+        receipt: validationReceipt,
+      },
+      clock(2n),
+    );
+    expect(() =>
+      reduceCutSupervisorCursor(
+        validationCursor,
+        {
+          type: "complete-slot",
+          operation: "accepted-id-validation",
+          outcome: "pass",
+          reaped: true,
+          token: validationToken,
+          receipt: validationReceipt,
+        },
+        clock(2n),
+      ),
+    ).toThrow("provenance mismatch or replay");
+    expect(failed.adoptedId).toBe(id);
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "skip-slot", operation: "exact-name-recovery" },
+      clock(2n),
+    );
+
+    expect(() =>
+      reduceCutSupervisorCursor(
+        failed,
+        { type: "begin-slot", operation: "remove-1", token: createOwnedChildToken(), id: otherId },
+        clock(2n),
+      ),
+    ).toThrow("cleanup identity mismatch");
+    const removeToken = createOwnedChildToken();
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "begin-slot", operation: "remove-1", token: removeToken, id },
+      clock(2n),
+    );
+    expect(() =>
+      reduceCutSupervisorCursor(
+        failed,
+        {
+          type: "complete-slot",
+          operation: "remove-1",
+          outcome: "pass",
+          reaped: true,
+          token: removeToken,
+          id,
+          receipt: parseDockerRemove(
+            dockerResult(0, `${otherId}\n`),
+            otherId,
+            dockerReceiptSource("remove-1", removeToken),
+          ),
+        },
+        clock(2n),
+      ),
+    ).toThrow("removal receipt");
+    failed = reduceCutSupervisorCursor(
+      failed,
+      {
+        type: "complete-slot",
+        operation: "remove-1",
+        outcome: "pass",
+        reaped: true,
+        token: removeToken,
+        id,
+        receipt: parseDockerRemove(
+          dockerResult(0, `${id}\n`),
+          id,
+          dockerReceiptSource("remove-1", removeToken),
+        ),
+      },
+      clock(2n),
+    );
+
+    const absenceToken = createOwnedChildToken();
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "begin-slot", operation: "absence-1", token: absenceToken, id },
+      clock(2n),
+    );
+    failed = reduceCutSupervisorCursor(
+      failed,
+      {
+        type: "complete-slot",
+        operation: "absence-1",
+        outcome: "pass",
+        reaped: true,
+        token: absenceToken,
+        id,
+        receipt: parseDockerAbsence(
+          dockerResult(1, "[]\n", `Error response from daemon: No such container: ${id}\n`),
+          id,
+          dockerReceiptSource("absence-1", absenceToken),
+        ),
+      },
+      clock(2n),
+    );
+    expect(failed.absenceProved).toBe(true);
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "skip-slot", operation: "remove-2" },
+      clock(2n),
+    );
+    failed = reduceCutSupervisorCursor(
+      failed,
+      { type: "skip-slot", operation: "absence-2" },
+      clock(2n),
+    );
+    expect(expectedCutSupervisorOperation(failed)).toBe("final-exact-name-census");
+    const finalNameToken = createOwnedChildToken();
+    failed = reduceCutSupervisorCursor(
+      failed,
+      {
+        type: "begin-slot",
+        operation: "final-exact-name-census",
+        token: finalNameToken,
+      },
+      clock(2n),
+    );
+    expect(() =>
+      reduceCutSupervisorCursor(
+        failed,
+        {
+          type: "complete-slot",
+          operation: "final-exact-name-census",
+          outcome: "pass",
+          reaped: true,
+          token: finalNameToken,
+          receipt: exactProofNameAbsent(finalNameToken, "exact-name-recovery"),
+        },
+        clock(2n),
+      ),
+    ).toThrow("provenance mismatch or replay");
+    failed = reduceCutSupervisorCursor(
+      failed,
+      {
+        type: "complete-slot",
+        operation: "final-exact-name-census",
+        outcome: "pass",
+        reaped: true,
+        token: finalNameToken,
+        receipt: exactProofNameAbsent(finalNameToken, "final-exact-name-census"),
+      },
+      clock(2n),
+    );
+    expect(expectedCutSupervisorOperation(failed)).toBe("final-label-census");
+
+    const recoveredHarnessToken = createOwnedChildToken();
+    let recovered = createCutSupervisorCursor({
+      cutCase: "before-issue",
+      harnessToken: recoveredHarnessToken,
+      invocation,
+      sample: clock(0n),
+    });
+    recovered = reduceCutSupervisorCursor(
+      recovered,
+      {
+        type: "harness-reaped",
+        receipt: cutReapReceipt("before-issue", null, recoveredHarnessToken, false),
+      },
+      clock(1n),
+    );
+    recovered = reduceCutSupervisorCursor(
+      recovered,
+      { type: "begin-failed-teardown" },
+      clock(2n),
+    );
+    recovered = reduceCutSupervisorCursor(
+      recovered,
+      { type: "skip-slot", operation: "accepted-id-validation" },
+      clock(2n),
+    );
+    const recoveryToken = createOwnedChildToken();
+    recovered = reduceCutSupervisorCursor(
+      recovered,
+      { type: "begin-slot", operation: "exact-name-recovery", token: recoveryToken },
+      clock(2n),
+    );
+    recovered = reduceCutSupervisorCursor(
+      recovered,
+      {
+        type: "complete-slot",
+        operation: "exact-name-recovery",
+        outcome: "pass",
+        reaped: true,
+        token: recoveryToken,
+        receipt: inspectedProof(id, recoveryToken, "exact-name-recovery"),
+      },
+      clock(2n),
+    );
+    expect(recovered).toMatchObject({ adoptedId: id, absenceProved: false });
+    expect(expectedCutSupervisorOperation(recovered)).toBe("remove-1");
   });
 });
