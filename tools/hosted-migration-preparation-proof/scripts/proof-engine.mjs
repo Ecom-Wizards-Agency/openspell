@@ -2992,6 +2992,9 @@ export function reduceCleanupCursor(cursor, transition, sample) {
 
 const cutTerminalReceipts = new WeakSet();
 const cutAcceptedReceipts = new WeakSet();
+const cutSignalAcknowledgementReceipts = new WeakSet();
+const cutSignalAcknowledgementsByToken = new WeakMap();
+const usedCutSignalAcknowledgementReceipts = new WeakSet();
 const cutAuditReceipts = new WeakSet();
 const cutHarnessReapReceipts = new WeakSet();
 const usedCutHarnessReapReceipts = new WeakSet();
@@ -3117,8 +3120,65 @@ export function requireCutIdentityAgreement(identity, expected) {
   return identity;
 }
 
-export function parseCutAuditStream(bytes, token) {
+export function parseCutSignalAcknowledgement(bytes, cutCase, token) {
+  const acknowledgedCase = requireCutCase(cutCase);
+  const processToken = requireKnownChildToken(token, "cut signal acknowledgment");
+  if (cutSignalAcknowledgementsByToken.has(processToken)) {
+    throw new Error("cut signal acknowledgment token replay");
+  }
+  const value = byteBuffer(bytes, "cut signal acknowledgment");
+  if (value.length !== 155 || value.at(-1) !== 0x0a) {
+    throw new Error("cut signal acknowledgment framing");
+  }
+  let text;
+  try {
+    text = fatalUtf8.decode(value);
+  } catch {
+    throw new Error("cut signal acknowledgment UTF-8");
+  }
+  const match = /^openspell\.wp201\.real-cut-audit-open\.v1\nopenspell\.wp201\.real-cut-signal-latched\.v2\nSIGTERM\n(?<challenge>[0-9a-f]{64})\n$/u.exec(text);
+  if (match?.groups?.challenge === undefined) {
+    throw new Error("invalid cut signal acknowledgment");
+  }
+  const receipt = freezeReceipt(cutSignalAcknowledgementReceipts, {
+    token: processToken,
+    cutCase: acknowledgedCase,
+    signalLatched: true,
+    challenge: match.groups.challenge,
+  });
+  cutSignalAcknowledgementsByToken.set(processToken, receipt);
+  return receipt;
+}
+
+export function buildCutReleaseFrame(acknowledgement, token) {
+  const processToken = requireKnownChildToken(token, "cut release");
+  if (
+    !cutSignalAcknowledgementReceipts.has(acknowledgement) ||
+    cutSignalAcknowledgementsByToken.get(processToken) !== acknowledgement ||
+    usedCutSignalAcknowledgementReceipts.has(acknowledgement) ||
+    acknowledgement.token !== processToken
+  ) {
+    throw new Error("invalid cut signal acknowledgment receipt");
+  }
+  const frame = Buffer.from(
+    `openspell.wp201.real-cut-release.v2\n${acknowledgement.cutCase}\n${acknowledgement.challenge}\n`,
+    "ascii",
+  );
+  if (frame.length > 160) throw new Error("cut release frame cap");
+  usedCutSignalAcknowledgementReceipts.add(acknowledgement);
+  return frame;
+}
+
+export function parseCutAuditStream(bytes, acknowledgement, token) {
   const processToken = requireKnownChildToken(token, "cut audit");
+  if (
+    !cutSignalAcknowledgementReceipts.has(acknowledgement) ||
+    cutSignalAcknowledgementsByToken.get(processToken) !== acknowledgement ||
+    !usedCutSignalAcknowledgementReceipts.has(acknowledgement) ||
+    acknowledgement.token !== processToken
+  ) {
+    throw new Error("invalid cut audit acknowledgment receipt");
+  }
   const value = byteBuffer(bytes, "cut audit");
   if (value.length === 0 || value.length > 512 || value.at(-1) !== 0x0a) {
     throw new Error("cut audit framing");
@@ -3146,10 +3206,16 @@ export function parseCutAuditStream(bytes, token) {
       index += 1;
       continue;
     }
-    if (magic === "openspell.wp201.real-cut-signal-latched.v1") {
-      if (lines[index + 1] !== "SIGTERM") throw new Error("cut audit signal mismatch");
+    if (magic === "openspell.wp201.real-cut-signal-latched.v2") {
+      if (
+        lines[index + 1] !== "SIGTERM" ||
+        !digestPattern.test(lines[index + 2]) ||
+        lines[index + 2] !== acknowledgement.challenge
+      ) {
+        throw new Error("cut audit signal mismatch");
+      }
       frames.push(Object.freeze({ magic, signal: "SIGTERM" }));
-      index += 2;
+      index += 3;
       continue;
     }
     if (magic === "openspell.wp201.real-cut-start-attach.v1") {
@@ -3166,7 +3232,7 @@ export function parseCutAuditStream(bytes, token) {
   }
   const expected = [
     "openspell.wp201.real-cut-audit-open.v1",
-    "openspell.wp201.real-cut-signal-latched.v1",
+    "openspell.wp201.real-cut-signal-latched.v2",
     "openspell.wp201.real-cut-audit-close.v1",
   ];
   if (

@@ -1,3 +1,10 @@
+import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Readable, Writable } from "node:stream";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import type { CUT_CASES } from "../scripts/proof-engine.mjs";
@@ -43,9 +50,11 @@ import {
   classifyDockerCachedImage,
   classifyDockerCreateResult,
   classifyDockerExactName,
+  buildCutReleaseFrame,
   parseCutAcceptedIdFrame,
   parseCutAuditStream,
   parseCutIdentityFrame,
+  parseCutSignalAcknowledgement,
   parseCutTerminalResult,
   parseDockerAbsence,
   parseDockerApiSupport,
@@ -72,6 +81,154 @@ const labelNamespace = ["com", "openspell", "wp201"].join(".");
 const secondNs = 1_000_000_000n;
 const activeDeadlineNs = 300n * secondNs;
 const hardDeadlineNs = activeDeadlineNs + CLEANUP_RESERVE_NS;
+const protocolReady = Buffer.from("wp201-protocol-fixture-ready\n", "ascii");
+const protocolAccepted = Buffer.from("wp201-protocol-fixture-accepted\n", "ascii");
+const protocolRefused = Buffer.from("wp201-protocol-fixture-refused\n", "ascii");
+
+function writeProtocolFixture(directory: string, entropyFailure = false): string {
+  const harnessPath = fileURLToPath(
+    new URL("../scripts/interruption-harness.mjs", import.meta.url),
+  );
+  const eventHelperPath = fileURLToPath(
+    new URL("../scripts/docker-event-helper.mjs", import.meta.url),
+  );
+  const source = readFileSync(harnessPath, "utf8");
+  const relativeImport = 'from "./docker-event-helper.mjs";';
+  expect(source.split(relativeImport)).toHaveLength(2);
+  const entropyCapture = "const capturedRandomBytes = randomBytes;";
+  expect(source.split(entropyCapture)).toHaveLength(2);
+  const transformed = source
+    .replace(relativeImport, `from ${JSON.stringify(pathToFileURL(eventHelperPath).href)};`)
+    .replace(
+      entropyCapture,
+      entropyFailure
+        ? "const capturedRandomBytes = () => Buffer.alloc(31);"
+        : entropyCapture,
+    );
+  const fixture = `${transformed}\n
+export async function wp201RunProtocolFixture(cutCase, auditMode) {
+  const clock = Object.freeze({ sample: () => process.hrtime.bigint() });
+  const startedAtNs = clock.sample();
+  const signalControl = installSignalLatch(clock);
+  const context = {
+    activeDeadlineNs: startedAtNs + 1_000_000_000n,
+    asyncFailure: undefined,
+    cleanupCursor: undefined,
+    clock,
+    hardDeadlineNs: startedAtNs + 1_000_000_000n,
+    release: installReleaseReader(),
+    releaseAccepted: false,
+    signalControl,
+    signalState: signalControl.state,
+  };
+  writeAllSync(AUDIT_FD, AUDIT_OPEN);
+  if (auditMode === "closed") closeSync(AUDIT_FD);
+  process.stdout.write("wp201-protocol-fixture-ready\\n");
+  try {
+    await awaitSignalAndRelease(context, cutCase);
+    process.stdout.write("wp201-protocol-fixture-accepted\\n");
+  } catch {
+    process.stdout.write("wp201-protocol-fixture-refused\\n");
+    process.exitCode = 73;
+  } finally {
+    signalControl.uninstall();
+    if (auditMode !== "closed") closeIgnoringErrors(AUDIT_FD);
+  }
+}
+`;
+  const path = join(directory, entropyFailure ? "entropy-failure.mjs" : "protocol.mjs");
+  writeFileSync(path, fixture, { encoding: "utf8", mode: 0o600 });
+  return pathToFileURL(path).href;
+}
+
+function launchProtocolFixture(
+  moduleUrl: string,
+  cutCase: (typeof CUT_CASES)[number] = "before-issue",
+  auditMode = "open",
+) {
+  const command =
+    `const fixture = await import(${JSON.stringify(moduleUrl)});` +
+    `await fixture.wp201RunProtocolFixture(${JSON.stringify(cutCase)},${JSON.stringify(auditMode)});`;
+  const child = spawn(
+    process.execPath,
+    ["--input-type=module", "--eval", command],
+    { stdio: ["ignore", "pipe", "pipe", "pipe", "ignore", "ignore", "pipe"] },
+  );
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  const audit: Buffer[] = [];
+  if (child.stdout === null || child.stderr === null) {
+    throw new Error("protocol terminal streams missing");
+  }
+  const auditStream = (child.stdio as unknown as readonly (Readable | Writable | null)[])[6];
+  if (auditStream === undefined || auditStream === null || !("read" in auditStream)) {
+    throw new Error("protocol audit stream missing");
+  }
+  child.stdout.on("data", (bytes: Buffer) => stdout.push(Buffer.from(bytes)));
+  child.stderr.on("data", (bytes: Buffer) => stderr.push(Buffer.from(bytes)));
+  auditStream.on("data", (bytes: Buffer) => audit.push(Buffer.from(bytes)));
+  return {
+    audit: () => Buffer.concat(audit),
+    child,
+    release: child.stdio[3],
+    stderr: () => Buffer.concat(stderr),
+    stdout: () => Buffer.concat(stdout),
+  };
+}
+
+async function waitForProtocol(
+  predicate: () => boolean,
+  label: string,
+  milliseconds = 3_000,
+): Promise<void> {
+  const deadline = Date.now() + milliseconds;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`protocol fixture ${label} timeout`);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
+}
+
+async function settleProtocolFixture(
+  fixture: ReturnType<typeof launchProtocolFixture>,
+): Promise<{ readonly status: number | null; readonly signal: NodeJS.Signals | null }> {
+  await waitForProtocol(
+    () => fixture.child.exitCode !== null || fixture.child.signalCode !== null,
+    "exit",
+  );
+  return { status: fixture.child.exitCode, signal: fixture.child.signalCode };
+}
+
+function protocolChallenge(bytes: Buffer): string {
+  const match = /^openspell\.wp201\.real-cut-audit-open\.v1\nopenspell\.wp201\.real-cut-signal-latched\.v2\nSIGTERM\n(?<challenge>[0-9a-f]{64})\n$/u.exec(
+    bytes.toString("ascii"),
+  );
+  if (match?.groups?.challenge === undefined) throw new Error("protocol challenge missing");
+  return match.groups.challenge;
+}
+
+function protocolReleaseStream(fixture: ReturnType<typeof launchProtocolFixture>) {
+  const stream = fixture.release as Writable | null;
+  if (stream === null || typeof stream.write !== "function" || typeof stream.end !== "function") {
+    throw new Error("protocol release stream missing");
+  }
+  return stream;
+}
+
+function writeProtocolRelease(
+  fixture: ReturnType<typeof launchProtocolFixture>,
+  bytes: Buffer,
+  end: boolean,
+): Promise<void> {
+  const stream = protocolReleaseStream(fixture);
+  return new Promise((resolvePromise, rejectPromise) => {
+    const callback = (error?: Error | null) => {
+      if (error !== undefined && error !== null) rejectPromise(error);
+      else resolvePromise();
+    };
+    if (end) stream.end(bytes, callback);
+    else stream.write(bytes, callback);
+  });
+}
 
 function dockerCreateEventFrame({
   id = "a".repeat(64),
@@ -2432,14 +2589,41 @@ function parsedCutIdentity(cutCase: (typeof CUT_CASES)[number], token: object) {
   );
 }
 
+function cutSignalAcknowledgementBytes(challenge: string) {
+  const prefix = ["openspell", "wp201", "real-cut"].join(".");
+  return Buffer.from(
+    `${prefix}-audit-open.v1\n` +
+      `${prefix}-signal-latched.v2\nSIGTERM\n${challenge}\n`,
+  );
+}
+
+function usedCutSignalAcknowledgement(
+  token: object,
+  cutCase: (typeof CUT_CASES)[number],
+  challenge = "3".repeat(64),
+) {
+  const acknowledgement = parseCutSignalAcknowledgement(
+    cutSignalAcknowledgementBytes(challenge),
+    cutCase,
+    token,
+  );
+  const release = buildCutReleaseFrame(acknowledgement, token);
+  return { acknowledgement, challenge, release };
+}
+
 function parsedCutAudit(token: object) {
   const prefix = ["openspell", "wp201", "real-cut"].join(".");
+  const { acknowledgement, challenge } = usedCutSignalAcknowledgement(
+    token,
+    "before-issue",
+  );
   return parseCutAuditStream(
     Buffer.from(
       `${prefix}-audit-open.v1\n` +
-        `${prefix}-signal-latched.v1\nSIGTERM\n` +
+        `${prefix}-signal-latched.v2\nSIGTERM\n${challenge}\n` +
         `${prefix}-audit-close.v1\n`,
     ),
+    acknowledgement,
     token,
   );
 }
@@ -3183,14 +3367,30 @@ describe("WP-201 strict Docker and interruption protocols", () => {
       }),
     ).toEqual(identity);
     expect(
-      parseCutAuditStream(
-        Buffer.from(
-          `${auditPrefix}-audit-open.v1\n` +
-            `${auditPrefix}-signal-latched.v1\nSIGTERM\n` +
-            `${auditPrefix}-audit-close.v1\n`,
-        ),
-        harnessToken,
-      ),
+      (() => {
+        const challenge = "d".repeat(64);
+        const { acknowledgement, release } = usedCutSignalAcknowledgement(
+          harnessToken,
+          "before-issue",
+          challenge,
+        );
+        expect(cutSignalAcknowledgementBytes(challenge)).toHaveLength(155);
+        expect(release).toEqual(
+          Buffer.from(
+            `${auditPrefix}-release.v2\nbefore-issue\n${challenge}\n`,
+          ),
+        );
+        expect(release).toHaveLength(114);
+        return parseCutAuditStream(
+          Buffer.from(
+            `${auditPrefix}-audit-open.v1\n` +
+              `${auditPrefix}-signal-latched.v2\nSIGTERM\n${challenge}\n` +
+              `${auditPrefix}-audit-close.v1\n`,
+          ),
+          acknowledgement,
+          harnessToken,
+        );
+      })(),
     ).toMatchObject({
       token: harnessToken,
       open: true,
@@ -3218,16 +3418,31 @@ describe("WP-201 strict Docker and interruption protocols", () => {
       parseCutAcceptedIdFrame(Buffer.alloc(129, 0x61), "before-issue", harnessToken),
     ).toThrow("frame cap");
     expect(() => parseCutIdentityFrame(Buffer.alloc(321, 0x61), harnessToken)).toThrow("frame cap");
-    expect(() => parseCutAuditStream(Buffer.alloc(513, 0x61), harnessToken)).toThrow("framing");
+    const overCapToken = createOwnedChildToken();
+    const overCapAcknowledgement = usedCutSignalAcknowledgement(
+      overCapToken,
+      "before-issue",
+      "4".repeat(64),
+    ).acknowledgement;
+    expect(() =>
+      parseCutAuditStream(Buffer.alloc(513, 0x61), overCapAcknowledgement, overCapToken),
+    ).toThrow("framing");
+    const dispatchedToken = createOwnedChildToken();
+    const dispatchedAcknowledgement = usedCutSignalAcknowledgement(
+      dispatchedToken,
+      "before-issue",
+      "5".repeat(64),
+    ).acknowledgement;
     expect(() =>
       parseCutAuditStream(
         Buffer.from(
           `${auditPrefix}-audit-open.v1\n` +
             `${auditPrefix}-start-attach.v1\n${PROOF_ROLE}\n${id}\n` +
-            `${auditPrefix}-signal-latched.v1\nSIGTERM\n` +
+            `${auditPrefix}-signal-latched.v2\nSIGTERM\n${"5".repeat(64)}\n` +
             `${auditPrefix}-audit-close.v1\n`,
         ),
-        harnessToken,
+        dispatchedAcknowledgement,
+        dispatchedToken,
       ),
     ).toThrow("terminal sequence mismatch");
     expect(() =>
@@ -3259,6 +3474,272 @@ describe("WP-201 strict Docker and interruption protocols", () => {
       ),
     ).toThrow("unparsed cut identity");
   });
+
+  it("binds the one-use cut release to the post-latch freshness challenge", () => {
+    const prefix = ["openspell", "wp201", "real-cut"].join(".");
+    const cases = [
+      ["before-issue", 114],
+      ["after-daemon-accept-before-delivery", 137],
+      ["after-parent-custody-before-start", 135],
+    ] as const;
+    for (const [index, [cutCase, expectedBytes]] of cases.entries()) {
+      const token = createOwnedChildToken();
+      const challenge = index.toString(16).padStart(64, "0");
+      const acknowledgementBytes = cutSignalAcknowledgementBytes(challenge);
+      expect(acknowledgementBytes).toHaveLength(155);
+      expect(
+        acknowledgementBytes.length -
+          Buffer.byteLength(`${prefix}-audit-open.v1\n`, "ascii"),
+      ).toBe(116);
+      const acknowledgement = parseCutSignalAcknowledgement(
+        acknowledgementBytes,
+        cutCase,
+        token,
+      );
+      const release = buildCutReleaseFrame(acknowledgement, token);
+      expect(release).toHaveLength(expectedBytes);
+      expect(release).toEqual(
+        Buffer.from(`${prefix}-release.v2\n${cutCase}\n${challenge}\n`, "ascii"),
+      );
+      expect(() => buildCutReleaseFrame(acknowledgement, token)).toThrow(
+        "acknowledgment receipt",
+      );
+      expect(() =>
+        parseCutSignalAcknowledgement(acknowledgementBytes, cutCase, token),
+      ).toThrow("token replay");
+      const otherCase = cutCase === "before-issue"
+        ? "after-parent-custody-before-start"
+        : "before-issue";
+      expect(() =>
+        parseCutSignalAcknowledgement(acknowledgementBytes, otherCase, token),
+      ).toThrow("token replay");
+      const auditBytes = Buffer.from(
+        `${prefix}-audit-open.v1\n` +
+          `${prefix}-signal-latched.v2\nSIGTERM\n${challenge}\n` +
+          `${prefix}-audit-close.v1\n`,
+        "ascii",
+      );
+      expect(auditBytes).toHaveLength(195);
+      const audit = parseCutAuditStream(auditBytes, acknowledgement, token);
+      expect(audit).toEqual({
+        token,
+        open: true,
+        signalLatched: true,
+        close: true,
+        dispatches: 0,
+      });
+      expect(Object.hasOwn(audit, "challenge")).toBe(false);
+    }
+
+    const malformedToken = createOwnedChildToken();
+    const validChallenge = "a".repeat(64);
+    const validBytes = cutSignalAcknowledgementBytes(validChallenge);
+    for (const malformed of [
+      validBytes.subarray(0, validBytes.length - 1),
+      Buffer.concat([validBytes, Buffer.from("\n")]),
+      Buffer.from(validBytes.toString("ascii").replace("latched.v2", "latched.v1")),
+      Buffer.from(validBytes.toString("ascii").replace("SIGTERM", "SIGINT ")),
+      Buffer.from(validBytes.toString("ascii").replace(validChallenge, "A".repeat(64))),
+      Buffer.from(validBytes.toString("ascii").replace(validChallenge, `${"a".repeat(63)}\0`)),
+      Buffer.concat([validBytes, validBytes]),
+    ]) {
+      expect(() =>
+        parseCutSignalAcknowledgement(malformed, "before-issue", malformedToken),
+      ).toThrow();
+    }
+
+    const unusedToken = createOwnedChildToken();
+    const unused = parseCutSignalAcknowledgement(
+      cutSignalAcknowledgementBytes("b".repeat(64)),
+      "before-issue",
+      unusedToken,
+    );
+    const unusedAudit = Buffer.from(
+      `${prefix}-audit-open.v1\n` +
+        `${prefix}-signal-latched.v2\nSIGTERM\n${"b".repeat(64)}\n` +
+        `${prefix}-audit-close.v1\n`,
+    );
+    expect(() => parseCutAuditStream(unusedAudit, unused, unusedToken)).toThrow(
+      "acknowledgment receipt",
+    );
+    expect(() =>
+      buildCutReleaseFrame({ ...unused }, unusedToken),
+    ).toThrow("acknowledgment receipt");
+
+    const mismatchToken = createOwnedChildToken();
+    expect(() => buildCutReleaseFrame(unused, mismatchToken)).toThrow(
+      "acknowledgment receipt",
+    );
+    const mismatch = usedCutSignalAcknowledgement(
+      mismatchToken,
+      "before-issue",
+      "c".repeat(64),
+    ).acknowledgement;
+    const mismatchAudit = Buffer.from(
+      `${prefix}-audit-open.v1\n` +
+        `${prefix}-signal-latched.v2\nSIGTERM\n${"d".repeat(64)}\n` +
+        `${prefix}-audit-close.v1\n`,
+    );
+    expect(() => parseCutAuditStream(mismatchAudit, mismatch, mismatchToken)).toThrow(
+      "signal mismatch",
+    );
+  });
+
+  it("enforces freshness, signal, write, EOF, and cap gates at the real pipe boundary", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "wp201-cut-protocol-"));
+    const launched: ReturnType<typeof launchProtocolFixture>[] = [];
+    const start = (
+      moduleUrl: string,
+      cutCase: (typeof CUT_CASES)[number] = "before-issue",
+      auditMode = "open",
+    ) => {
+      const fixture = launchProtocolFixture(moduleUrl, cutCase, auditMode);
+      launched.push(fixture);
+      return fixture;
+    };
+    const ready = async (fixture: ReturnType<typeof launchProtocolFixture>) => {
+      await waitForProtocol(() => fixture.stdout().includes(protocolReady), "ready");
+    };
+    const acknowledged = async (fixture: ReturnType<typeof launchProtocolFixture>) => {
+      await waitForProtocol(() => fixture.audit().length >= 155, "acknowledgment");
+      expect(fixture.audit()).toHaveLength(155);
+      return protocolChallenge(fixture.audit());
+    };
+    const terminal = async (
+      fixture: ReturnType<typeof launchProtocolFixture>,
+      expected: Buffer,
+      status: number,
+    ) => {
+      const result = await settleProtocolFixture(fixture);
+      expect(result).toEqual({ status, signal: null });
+      expect(fixture.stderr()).toEqual(Buffer.alloc(0));
+      expect(fixture.stdout()).toEqual(Buffer.concat([protocolReady, expected]));
+    };
+    try {
+      const normalModule = writeProtocolFixture(directory);
+      const entropyFailureModule = writeProtocolFixture(directory, true);
+
+      const accepted = start(normalModule);
+      await ready(accepted);
+      expect(accepted.child.kill("SIGTERM")).toBe(true);
+      const acceptedChallenge = await acknowledged(accepted);
+      await writeProtocolRelease(
+        accepted,
+        Buffer.from(
+          `openspell.wp201.real-cut-release.v2\nbefore-issue\n${acceptedChallenge}\n`,
+          "ascii",
+        ),
+        true,
+      );
+      await terminal(accepted, protocolAccepted, 0);
+
+      const repeated = start(normalModule, "after-parent-custody-before-start");
+      await ready(repeated);
+      expect(repeated.child.kill("SIGTERM")).toBe(true);
+      const repeatedChallenge = await acknowledged(repeated);
+      expect(repeated.child.kill("SIGTERM")).toBe(true);
+      await writeProtocolRelease(
+        repeated,
+        Buffer.from(
+          `openspell.wp201.real-cut-release.v2\nafter-parent-custody-before-start\n${repeatedChallenge}\n`,
+          "ascii",
+        ),
+        true,
+      );
+      await terminal(repeated, protocolAccepted, 0);
+      expect(repeated.audit()).toHaveLength(155);
+
+      const prequeued = start(normalModule);
+      await ready(prequeued);
+      await writeProtocolRelease(
+        prequeued,
+        Buffer.from(
+          `openspell.wp201.real-cut-release.v2\nbefore-issue\n${"g".repeat(64)}\n`,
+          "ascii",
+        ),
+        true,
+      );
+      expect(prequeued.child.kill("SIGTERM")).toBe(true);
+      await terminal(prequeued, protocolRefused, 73);
+
+      const combined = start(normalModule);
+      await ready(combined);
+      await writeProtocolRelease(combined, Buffer.from("prequeued\n", "ascii"), false);
+      expect(combined.child.kill("SIGTERM")).toBe(true);
+      const combinedChallenge = await acknowledged(combined);
+      await writeProtocolRelease(
+        combined,
+        Buffer.from(
+          `openspell.wp201.real-cut-release.v2\nbefore-issue\n${combinedChallenge}\n`,
+          "ascii",
+        ),
+        true,
+      );
+      await terminal(combined, protocolRefused, 73);
+
+      const overflow = start(normalModule);
+      await ready(overflow);
+      await writeProtocolRelease(overflow, Buffer.alloc(161, 0x61), true);
+      expect(overflow.child.kill("SIGTERM")).toBe(true);
+      await terminal(overflow, protocolRefused, 73);
+
+      const wrongSignal = start(normalModule);
+      await ready(wrongSignal);
+      expect(wrongSignal.child.kill("SIGINT")).toBe(true);
+      await writeProtocolRelease(wrongSignal, Buffer.alloc(0), true);
+      await terminal(wrongSignal, protocolRefused, 73);
+      expect(wrongSignal.audit()).toEqual(
+        Buffer.from("openspell.wp201.real-cut-audit-open.v1\n", "ascii"),
+      );
+
+      const entropyFailure = start(entropyFailureModule);
+      await ready(entropyFailure);
+      expect(entropyFailure.child.kill("SIGTERM")).toBe(true);
+      await writeProtocolRelease(entropyFailure, Buffer.alloc(0), true);
+      await terminal(entropyFailure, protocolRefused, 73);
+      expect(entropyFailure.audit()).toEqual(
+        Buffer.from("openspell.wp201.real-cut-audit-open.v1\n", "ascii"),
+      );
+
+      const writeFailure = start(normalModule, "before-issue", "closed");
+      await ready(writeFailure);
+      expect(writeFailure.child.kill("SIGTERM")).toBe(true);
+      await writeProtocolRelease(writeFailure, Buffer.alloc(0), true);
+      await terminal(writeFailure, protocolRefused, 73);
+      expect(writeFailure.audit()).toEqual(
+        Buffer.from("openspell.wp201.real-cut-audit-open.v1\n", "ascii"),
+      );
+
+      const missingEof = start(normalModule);
+      await ready(missingEof);
+      expect(missingEof.child.kill("SIGTERM")).toBe(true);
+      const missingEofChallenge = await acknowledged(missingEof);
+      await writeProtocolRelease(
+        missingEof,
+        Buffer.from(
+          `openspell.wp201.real-cut-release.v2\nbefore-issue\n${missingEofChallenge}\n`,
+          "ascii",
+        ),
+        false,
+      );
+      await waitForProtocol(
+        () => missingEof.stdout().includes(protocolRefused),
+        "missing EOF refusal",
+        2_000,
+      );
+      protocolReleaseStream(missingEof).end();
+      await terminal(missingEof, protocolRefused, 73);
+    } finally {
+      for (const fixture of launched) {
+        protocolReleaseStream(fixture).destroy();
+        if (fixture.child.exitCode === null && fixture.child.signalCode === null) {
+          fixture.child.kill("SIGKILL");
+          await settleProtocolFixture(fixture).catch(() => undefined);
+        }
+      }
+      rmSync(directory, { force: true, recursive: true });
+    }
+  }, 20_000);
 
   it("owns and settles an established watcher before READY without lending its suffix", () => {
     const token = createOwnedChildToken();
