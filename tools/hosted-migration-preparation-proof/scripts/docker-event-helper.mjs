@@ -586,7 +586,7 @@ function beginClose() {
 function connectToEngine() {
   phase = "connecting";
   const filter = `{"event":["create"],"label":["${invocationAttribute}=${invocationValue}"],"type":["container"]}`;
-  const target = `/v1.47/events?since=0&filters=${encodeURIComponent(filter)}`;
+  const target = "/v1.47/events" + "?since=0&filters=" + encodeURIComponent(filter);
   const request = Buffer.from(
     `GET ${target} HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n`,
     "ascii",

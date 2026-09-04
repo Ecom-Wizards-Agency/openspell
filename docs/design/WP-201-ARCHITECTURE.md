@@ -3381,7 +3381,14 @@ and derives the one invocation path, exact name and label solely from the authen
 frame. It then sends exactly one `SIGTERM` to the still-unreaped harness PID whose child identity it
 recorded at spawn. The installed production signal handler first atomically latches the same cleanup
 and no-later-dispatch state used outside tests, then synchronously writes and flushes
-`openspell.wp201.real-cut-signal-latched.v1\nSIGTERM\n` on fd `6`. Only after the supervisor receives
+this exact frame on fd `6`:
+
+```text
+openspell.wp201.real-cut-signal-latched.v1
+SIGTERM
+```
+
+Only after the supervisor receives
 that complete acknowledgment may it write the matching release frame and close fd `3`; consuming
 release merely unblocks the case pause and cleanup must observe the already-latched state. Signal
 delivery failure, harness exit before acknowledgment, missing/duplicate/wrong-signal acknowledgment,
