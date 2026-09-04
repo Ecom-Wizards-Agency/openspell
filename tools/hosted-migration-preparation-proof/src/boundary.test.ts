@@ -662,6 +662,7 @@ describe("private preparation-proof package boundary", () => {
     });
 
     const orchestrator = read("scripts/test.mjs");
+    const integration = read("scripts/docker-integration.mjs");
     expect(orchestrator).not.toContain("process.hrtime");
     expect(orchestrator).toContain(
       "caughtSignal = signal;\n" +
@@ -669,8 +670,12 @@ describe("private preparation-proof package boundary", () => {
         "  activeOutputControl?.requestTermination();",
     );
     expect(orchestrator).toContain(
-      "const DOCKER_INTEGRATION_DEADLINE_MILLISECONDS = 7_150_000;",
+      "const DOCKER_INTEGRATION_DEADLINE_MILLISECONDS = 7_490_000;",
     );
+    expect(integration).toContain("const MATRIX_ACTIVE_NS = 1_500n * SECOND_NS;");
+    expect(integration).toContain("const INNER_RESERVE_NS = 160n * SECOND_NS;");
+    expect(3 * 460 + 1_660 + 3 * (325 + 1_110) + 130 + 15).toBe(7_490);
+    expect(3 * 460 + 1_660 + 3 * (325 + 1_110) + 15).toBe(7_360);
     expect(
       orchestrator.indexOf("await verifyControllerFixtures();"),
     ).toBeLessThan(
