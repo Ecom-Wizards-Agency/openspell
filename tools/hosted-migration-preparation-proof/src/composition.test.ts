@@ -1,4 +1,6 @@
+import { Buffer } from "node:buffer";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +10,9 @@ import { describe, expect, it } from "vitest";
 import {
   SOURCE_ROOTS,
   assertCompileTimeInputs,
+  buildSourceLedger,
   parseSourceIndex,
+  verifySourceLedger,
 } from "../scripts/cargo.mjs";
 
 const packageDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -21,6 +25,14 @@ const runtimeProofCargoName = "openspell-hosted-migration-runtime-proof";
 
 function read(path: string): string {
   return readFileSync(path, "utf8");
+}
+
+function sourceIndexBytes(): Buffer {
+  return execFileSync(
+    "/usr/bin/git",
+    ["ls-files", "--stage", "-z", "--", ...SOURCE_ROOTS],
+    { cwd: workspaceDirectory, maxBuffer: 1024 * 1024 },
+  );
 }
 
 function normalizedManifestText(contents: string): string {
@@ -70,11 +82,7 @@ function workspaceManifests(): readonly string[] {
 
 describe("WP-201 composition boundary", () => {
   it("selects exactly the tracked stage-zero Rust proof snapshot", () => {
-    const index = execFileSync(
-      "/usr/bin/git",
-      ["ls-files", "--stage", "-z", "--", ...SOURCE_ROOTS],
-      { cwd: workspaceDirectory, maxBuffer: 1024 * 1024 },
-    );
+    const index = sourceIndexBytes();
     const records = parseSourceIndex(index);
     expect(records).toHaveLength(45);
     const bytes = new Map(
@@ -88,6 +96,38 @@ describe("WP-201 composition boundary", () => {
       "tools/hosted-migration-runtime-proof/fixtures/wp199-grant-ticket-v1.golden.json",
       "tools/hosted-migration-runtime-proof/src/machine.rs",
     ]);
+
+    const sourceLedger = buildSourceLedger(records, bytes);
+    expect(sourceLedger).toMatchObject({
+      files: 45,
+      directories: 10,
+      regularFileBytes: 1_281_104,
+      records: 55,
+    });
+    expect(Buffer.byteLength(sourceLedger.ledgerRows, "utf8")).toBe(6_533);
+    expect(createHash("sha256").update(sourceLedger.ledgerRows).digest("hex")).toBe(
+      "6a224a221f053899905985486de42b986e551f014c0e758a8efb6f50256c2289",
+    );
+    expect(
+      verifySourceLedger(records, bytes, Buffer.from(sourceLedger.ledgerRows, "utf8")),
+    ).toEqual(sourceLedger);
+    const ledgerRows = sourceLedger.ledgerRows.split("\n").filter(Boolean);
+    expect(ledgerRows).toHaveLength(55);
+    expect(ledgerRows.slice(0, 10)).toEqual([
+      "D\t0555\tsource",
+      "D\t0555\tsource/tools",
+      "D\t0555\tsource/tools/hosted-migration-preparation-proof",
+      "D\t0555\tsource/tools/hosted-migration-preparation-proof/src",
+      "D\t0555\tsource/tools/hosted-migration-root-authority",
+      "D\t0555\tsource/tools/hosted-migration-root-authority/src",
+      "D\t0555\tsource/tools/hosted-migration-root-authority/src/journal",
+      "D\t0555\tsource/tools/hosted-migration-runtime-proof",
+      "D\t0555\tsource/tools/hosted-migration-runtime-proof/fixtures",
+      "D\t0555\tsource/tools/hosted-migration-runtime-proof/src",
+    ]);
+    expect(ledgerRows.slice(10).every((row) => row.startsWith("S\t0444\t"))).toBe(
+      true,
+    );
 
     const adversarial = new Map(bytes);
     const rootLibrary = records.find(
@@ -103,6 +143,82 @@ describe("WP-201 composition boundary", () => {
     );
     expect(() => assertCompileTimeInputs(records, adversarial)).toThrow(
       "unsupported compile-time include form",
+    );
+  });
+
+  it("refuses source index, object, byte, and ledger substitutions", () => {
+    const index = sourceIndexBytes();
+    const records = parseSourceIndex(index);
+    const bytes = new Map(
+      records.map(({ path }) => [path, readFileSync(join(workspaceDirectory, path))]),
+    );
+    const first = records[0];
+    if (first === undefined) throw new Error("missing fixed source record");
+    const firstRecord = `100644 ${first.object} 0\t${first.path}\0`;
+    const indexText = index.toString("utf8");
+
+    expect(() =>
+      parseSourceIndex(Buffer.from(indexText.replace(firstRecord, ""))),
+    ).toThrow("source input count mismatch");
+    expect(() =>
+      parseSourceIndex(
+        Buffer.from(
+          indexText.replace(firstRecord, firstRecord.replace("100644", "120000")),
+        ),
+      ),
+    ).toThrow("source input mode is not 100644");
+    expect(() =>
+      parseSourceIndex(
+        Buffer.from(
+          indexText.replace(firstRecord, firstRecord.replace(" 0\t", " 1\t")),
+        ),
+      ),
+    ).toThrow("non-stage-zero source input");
+    expect(() =>
+      parseSourceIndex(
+        Buffer.from(
+          indexText.replace(
+            firstRecord,
+            firstRecord.replace(first.object, "0".repeat(40)),
+          ),
+        ),
+      ),
+    ).toThrow("source input object mismatch");
+    expect(() =>
+      parseSourceIndex(
+        Buffer.concat([
+          index,
+          Buffer.from(
+            `100644 ${"0".repeat(40)} 0\ttools/hosted-migration-preparation-proof/src/extra.rs\0`,
+          ),
+        ]),
+      ),
+    ).toThrow("extra source input");
+
+    const changedBytes = new Map(bytes);
+    changedBytes.set(
+      first.path,
+      Buffer.concat([changedBytes.get(first.path) ?? Buffer.alloc(0), Buffer.of(0)]),
+    );
+    expect(() => buildSourceLedger(records, changedBytes)).toThrow(
+      "source bytes do not match indexed object",
+    );
+    const missingBytes = new Map(bytes);
+    missingBytes.delete(first.path);
+    expect(() => buildSourceLedger(records, missingBytes)).toThrow(
+      "source byte inventory mismatch",
+    );
+    const extraBytes = new Map(bytes);
+    extraBytes.set("tools/hosted-migration-root-authority/src/extra.rs", Buffer.alloc(0));
+    expect(() => buildSourceLedger(records, extraBytes)).toThrow(
+      "source byte inventory mismatch",
+    );
+
+    const sourceLedger = buildSourceLedger(records, bytes);
+    const changedLedger = Buffer.from(sourceLedger.ledgerRows, "utf8");
+    changedLedger[0] = (changedLedger[0] ?? 0) ^ 1;
+    expect(() => verifySourceLedger(records, bytes, changedLedger)).toThrow(
+      "source ledger byte mismatch",
     );
   });
 
