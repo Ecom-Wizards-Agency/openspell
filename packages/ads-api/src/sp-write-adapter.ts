@@ -51,7 +51,7 @@ export type SpWriteAdapterOptions = Readonly<{
 }>;
 
 export interface SpWriteAdapter {
-  preparePlan(plan: SpWritePlan): readonly SpWritePreparedCall[];
+  preparePlan(plan: SpWritePlan, actionIds?: readonly string[]): readonly SpWritePreparedCall[];
 
   observeCurrent(
     input: { plan: SpWritePlan; call: SpWritePreparedCall },
@@ -251,19 +251,19 @@ class DefaultSpWriteAdapter implements SpWriteAdapter {
     this.now = dependencies.now ?? options.now ?? (() => Date.now());
   }
 
-  private compile(plan: SpWritePlan): readonly SpWriteCompiledCall[] {
+  private compile(plan: SpWritePlan, actionIds?: readonly string[]): readonly SpWriteCompiledCall[] {
     try {
       if (plan.providerScope.region !== this.options.region) {
         throw adapterRefusal('client_region_mismatch');
       }
-      return prepareSpWriteCalls(plan, this.dependencies.hasher);
+      return prepareSpWriteCalls(plan, this.dependencies.hasher, actionIds);
     } catch {
       throw adapterRefusal('invalid_plan_or_provider_scope');
     }
   }
 
-  preparePlan(plan: SpWritePlan): readonly SpWritePreparedCall[] {
-    return Object.freeze(this.compile(plan).map(publicCall));
+  preparePlan(plan: SpWritePlan, actionIds?: readonly string[]): readonly SpWritePreparedCall[] {
+    return Object.freeze(this.compile(plan, actionIds).map(publicCall));
   }
 
   async observeCurrent(
@@ -271,7 +271,7 @@ class DefaultSpWriteAdapter implements SpWriteAdapter {
     options: SpWriteAdapterOptions = {},
   ): Promise<readonly SpWriteObservedAction[]> {
     try {
-      const call = findCall(this.compile(input.plan), input.call);
+      const call = findCall(this.compile(input.plan, input.call.positions.map((row) => row.actionId)), input.call);
       const request = requestOptions(options);
       const rows: Record<string, unknown>[] = [];
       const seenTokens = new Set<string>();
@@ -323,7 +323,8 @@ class DefaultSpWriteAdapter implements SpWriteAdapter {
     },
     options: SpWriteAdapterOptions = {},
   ): Promise<SpWriteProviderResultType> {
-    const calls = this.compile(input.plan);
+    const parsedIntent = SpWriteProviderCallIntent.parse(input.intent);
+    const calls = this.compile(input.plan, parsedIntent.positions.map((row) => row.actionId));
     const { intent, call } = verifyIntent(
       input.intent,
       input.plan,

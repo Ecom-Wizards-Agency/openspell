@@ -14,7 +14,19 @@ const APPLICATION_CONSUMERS = [
   'apps/web/app/api/sp-writes/preview/route.ts',
   'apps/web/app/api/sp-writes/status/route.ts',
   'apps/web/src/writes/http.ts',
+  'apps/worker/src/sp-write-outbox/loop.test.ts',
 ].map((path) => `${REPO_ROOT}${path}`);
+const WORKER_CONSUMERS = [
+  'apps/worker/src/sp-write-outbox/artifacts.ts',
+  'apps/worker/src/sp-write-outbox/loop.test.ts',
+  'apps/worker/src/sp-write-outbox/loop.ts',
+].map((path) => `${REPO_ROOT}${path}`);
+const INERT_WORKER_MARKERS: Record<string, readonly string[]> = {
+  'artifacts.ts': ['sp-write-adapter', '@wizard-ads/db/sp-write-persistence', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence'],
+  'providers.ts': ['sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter'],
+  'loop.ts': ['sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence', '@wizard-ads/db/sp-write-persistence', 'createSpWriteOutboxLedger', 'createSpWriteRuntimeLedger'],
+  'loop.test.ts': ['sp_write_', 'sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence', '@wizard-ads/db/sp-write-persistence', 'createSpWriteOutboxLedger', 'createSpWriteRuntimeLedger'],
+};
 
 async function sourceFiles(directory: string): Promise<string[]> {
   const files: string[] = [];
@@ -79,7 +91,7 @@ describe('SP write persistence facade blast radius', () => {
     expect(syncJobType.enumValues.some((value) => value.startsWith('sp_write.'))).toBe(false);
   });
 
-  it('has no current app consumer or provider/runtime dependency', async () => {
+  it('allows only declared inert app consumers and no provider dependency in persistence', async () => {
     const appRoots = ['apps/worker', 'apps/web', 'apps/mcp', 'apps/analyst']
       .map((path) => `${REPO_ROOT}${path}`);
     const appFiles = (await Promise.all(appRoots.map(sourceFiles))).flat();
@@ -91,7 +103,7 @@ describe('SP write persistence facade blast radius', () => {
       if (text.includes('@wizard-ads/db/sp-write-persistence')) consumers.push(path);
       if (text.includes('@wizard-ads/db/sp-write-application')) applicationConsumers.push(path);
     }
-    expect(consumers).toEqual([]);
+    expect(consumers.sort()).toEqual(WORKER_CONSUMERS);
     expect(applicationConsumers.sort()).toEqual(APPLICATION_CONSUMERS);
 
     const productionFiles = [
@@ -160,6 +172,9 @@ describe('SP write persistence facade blast radius', () => {
       for (const marker of activationMarkers) {
         if (marker === '@wizard-ads/db/sp-write-application' && APPLICATION_CONSUMERS.includes(path)) continue;
         if (marker === 'sp_write_' && path === `${REPO_ROOT}apps/web/src/writes/http.test.ts`) continue;
+        const workerRelative = path.startsWith(`${REPO_ROOT}apps/worker/src/sp-write-outbox/`)
+          ? path.slice(`${REPO_ROOT}apps/worker/src/sp-write-outbox/`.length) : '';
+        if (INERT_WORKER_MARKERS[workerRelative]?.includes(marker)) continue;
         if (source.includes(marker)) matches.push({ path, marker });
       }
     }

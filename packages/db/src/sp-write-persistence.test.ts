@@ -8039,7 +8039,14 @@ describe('SP write runtime blast radius', () => {
       'apps/web/app/api/sp-writes/preview/route.ts',
       'apps/web/app/api/sp-writes/status/route.ts',
       'apps/web/src/writes/http.ts',
+      'apps/worker/src/sp-write-outbox/loop.test.ts',
     ];
+    const inertWorkerImports: Record<string, readonly string[]> = {
+      'apps/worker/src/sp-write-outbox/artifacts.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter'],
+      'apps/worker/src/sp-write-outbox/loop.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter'],
+      'apps/worker/src/sp-write-outbox/providers.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter'],
+      'apps/worker/src/sp-write-outbox/loop.test.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter'],
+    };
     const seenApplicationConsumers: string[] = [];
     const forbidden = [
       '@wizard-ads/shared/sp-writes',
@@ -8067,6 +8074,7 @@ describe('SP write runtime blast radius', () => {
             seenApplicationConsumers.push(path.slice(REPO_ROOT.length));
             continue;
           }
+          if (inertWorkerImports[path.slice(REPO_ROOT.length)]?.includes(token)) continue;
           if (source.includes(token)) hits.push(`${path.slice(REPO_ROOT.length)}: ${token}`);
         }
       }

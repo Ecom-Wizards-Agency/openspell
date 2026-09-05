@@ -230,6 +230,26 @@ function allRoutePlan(): SpWritePlanType {
 }
 
 describe('SP write preparation and wire compilation', () => {
+  it('selects unchanged plan actions canonically and rejects missing or repeated identities', () => {
+    const plan = planFor([1, 2, 3].map((serial) => moneyAction('sp.v3.keywords.update', '0.9', '0.7', 'USD', serial)));
+    const original = JSON.stringify(plan);
+    const whole = prepareSpWriteCalls(plan, sha256)[0]!;
+    const selected = prepareSpWriteCalls(plan, sha256, [uuid(3), uuid(1)]);
+    expect(selected).toHaveLength(1);
+    expect(selected[0]!.positions.map((row) => row.actionId)).toEqual([uuid(1), uuid(3)]);
+    expect(selected[0]!.positions.map((row) => row.requestIndex)).toEqual([0, 1]);
+    expect(selected[0]!.positions.map((row) => row.actionRequestFingerprint))
+      .toEqual([whole.positions[0]!.actionRequestFingerprint, whole.positions[2]!.actionRequestFingerprint]);
+    expect(JSON.parse(selected[0]!.mutation.body)).toEqual({ keywords: [{ keywordId: 'keyword-1', bid: 0.7 }, { keywordId: 'keyword-3', bid: 0.7 }] });
+    expect(JSON.stringify(plan)).toBe(original);
+    expect(prepareSpWriteCalls(plan, sha256, [])).toEqual([]);
+    expect(() => prepareSpWriteCalls(plan, sha256, [uuid(1), uuid(1)])).toThrow();
+    expect(() => prepareSpWriteCalls(plan, sha256, [uuid(9)])).toThrow();
+    const corrupted = structuredClone(plan);
+    corrupted.actions[1]!.fingerprint = sha('f');
+    expect(() => prepareSpWriteCalls(corrupted, sha256, [uuid(1)])).toThrow();
+  });
+
   it('groups all five routes deterministically and compiles exact route bodies', () => {
     const calls = prepareSpWriteCalls(allRoutePlan(), sha256);
     expect(calls.map((call) => call.routeKey)).toEqual([

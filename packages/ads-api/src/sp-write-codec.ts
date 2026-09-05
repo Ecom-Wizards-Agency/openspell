@@ -289,9 +289,15 @@ export type SpWrite207ParseResult =
 export function prepareSpWriteCalls(
   rawPlan: unknown,
   hasher: SpWriteSha256Hasher,
+  actionIds?: readonly string[],
 ): readonly SpWriteCompiledCall[] {
   const plan = verifySpWritePlanFingerprints(rawPlan, hasher);
   assertProviderScope(plan.providerScope);
+  const selected = actionIds === undefined ? null : new Set(actionIds);
+  if (selected !== null && (selected.size !== actionIds?.length
+    || [...selected].some((id) => !plan.actions.some((action) => action.actionId === id)))) {
+    throw new Error('SP write selection must contain unique actions from the immutable plan');
+  }
 
   const calls: SpWriteCompiledCall[] = [];
   let group: SpWriteAction[] = [];
@@ -299,6 +305,13 @@ export function prepareSpWriteCalls(
 
   const flush = (): void => {
     if (routeKey === null || group.length === 0) return;
+    // Predispatch evidence orders the complete entity/action key by code point.
+    // Locale collation differs for prefix IDs such as "kw-1" and "kw-10".
+    group.sort((left, right) => {
+      const a = `${entityId(left)}:${left.actionId}`;
+      const b = `${entityId(right)}:${right.actionId}`;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
     for (let offset = 0; offset < group.length; offset += MAX_CALL_SIZE) {
       calls.push(compileCall(plan, routeKey, group.slice(offset, offset + MAX_CALL_SIZE), hasher));
     }
@@ -306,6 +319,7 @@ export function prepareSpWriteCalls(
   };
 
   for (const action of plan.actions) {
+    if (selected !== null && !selected.has(action.actionId)) continue;
     if (routeKey !== action.routeKey) {
       flush();
       routeKey = action.routeKey;

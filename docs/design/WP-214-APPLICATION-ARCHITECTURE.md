@@ -142,6 +142,29 @@ return its identity even if the approval has since expired; this is a read of ea
 
 ### Worker and recovery
 
+The inert worker source slice owns `apps/worker/src/sp-write-outbox/{artifacts,providers,loop}.ts`
+and their tests. Add `packages/db/src/sp-write-worker.ts` as an explicit subpath over
+`queries/sp-write-worker.ts`: read candidate plans, current dispatch authority, database time
+and deadline-qualified recovery results. These reads return existing shared artifacts and
+primitive values; they expose no custody tokens and do not grant execution authority. Test
+the real loop against disposable PostgreSQL with a fake provider. Declare exact source imports
+in the two blast tests while retaining their worker-entrypoint and deployment prohibitions.
+
+Candidate preparation resolves refresh credentials before claiming. Provider observation warms
+the access token before reservation. Use a bounded observation read, and calculate the dispatch
+budget conservatively from a monotonic timestamp taken before the reservation round trip.
+Current dispatch gates are checked before any provider access and again by SQL reservation.
+Closed gates leave an undispatched wake recoverable; no fabricated provider observation is used
+to manufacture a terminal refusal. Recovery remains available when dispatch is disabled.
+
+The ledger can refuse only the stale rows of a provider call. The original adapter compiled
+fixed whole-plan chunks, which would strand the remaining rows after that refusal. Declare
+`packages/ads-api/src/sp-write-{adapter,codec}.ts` and their existing tests for exact action
+selection: verify the entire immutable plan, then compile a canonical, unique subset of its
+unchanged actions. Observation and execution must reproduce those exact selected positions.
+The worker selects only unresolved action IDs from verified ledger evidence. SQL still prevents
+any resolved row from obtaining a second intent. No plan fingerprint or approved value changes.
+
 Claim one wake per tick and keep the loop single-flight. Profile allowlisting and runtime
 enablement fail closed. Warm provider credentials before reservation; the global claim API
 does not select by profile, so an unowned claim is deferred without provider access. Only a

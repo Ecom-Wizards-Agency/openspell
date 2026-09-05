@@ -11,6 +11,7 @@
     "./recommendation-worker": "./src/recommendation-worker.ts",
     "./sp-write-persistence": "./src/sp-write-persistence.ts",
     "./sp-write-application": "./src/sp-write-application.ts",
+    "./sp-write-worker": "./src/sp-write-worker.ts",
     "./testing": "./src/testing/index.ts",
     "./testing/sp-write": "./src/testing/sp-write-synthetic-execution.ts",
     "./worker": "./src/worker.ts"

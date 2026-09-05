@@ -38,16 +38,21 @@ deployment, credential store or Amazon account was accessed.
 | UI HTTP backend | `apps/web/app/api/sp-writes/{preview,approve,inverse-preview,status}/route.ts` and `apps/web/src/writes/http.ts`. Uses the existing session/assurance gate, owner/admin capability, fixed-origin JSON POSTs, bounded bodies, strict shared inputs, sanitized error codes and uncached responses. | Local HTTP tests pass preview→approval→status→inverse using the real request database, with no MCP process. Client presentation remains with Claude. |
 | Database client compatibility | JSON text parameters in preview persistence, inverse reads and the existing staging facade now use `::text::jsonb`. Plain request connections otherwise encode serialized proof arrays twice; Drizzle-backed tests did not expose this. | The real HTTP request-database test caught the mismatch and passes after the fix. |
 | Older database and lost-response safety | Migration `20260905020000_sp_write_application_entry.sql` adds `app.approve_sp_write_preview_v1`. Both initial approval and recovery use that versioned entry with the same immutable confirmation identity. | Review reproduced an unsafe fallback when a connection loss masked the missing-function error. The table-based recovery was removed. PostgreSQL regressions now prove zero enqueue both for an absent entry and a masked error, even with a matching existing receipt. |
+| Inert worker orchestration | `apps/worker/src/sp-write-outbox/{artifacts,providers,loop}.ts` and explicit `@wizard-ads/db/sp-write-worker` reads. Resolves credentials before claim, checks current dispatch gates before provider access, admits attempts only with a fresh reservation ticket, and keeps reconciliation available when dispatch closes. | **13 real-ledger/fake-HTTP tests passed**, including recovery after both real deadlines, durable recovery with unavailable credentials, and later observation after the real delivery backoff. Mirror persistence is a required callback and is not implemented by this slice; no entrypoint registration. |
+| Partial refusal and large batches | The ledger may refuse only stale positions. Adapter compilation now accepts a unique selection of unchanged actions from the verified full plan; the worker selects unresolved actions from ledger evidence and preserves the original plan fingerprint. | Mixed-batch and 101-row probes passed: one stale row remains untouched while the valid row completes; 101 accepted and observed rows reconcile across exactly two provider calls. The larger probe exposed different collation between plan ordering and predispatch evidence; provider calls now use the evidence contract's exact entity/action ordering. |
 
 Latest complete database verification: **478 tests in 48 files passed** with `--maxWorkers=1`.
 After HTTP integration and JSON transport fixes, the affected database suites also passed
 **78 tests**, and HTTP/role/assurance suites passed **15 tests**. Web and DB typechecks and
 targeted lint passed.
+The later worker slice passed **13 integration tests** in 98 seconds, **335 Ads API tests**
+(including 64 adapter/codec tests), and **53 persistence/blast tests**. Worker typecheck and targeted lint passed. The recovery test
+uses real database deadlines and delivery backoff; it does not alter immutable timestamps.
 These are local source checks, not hosted or live Amazon proof. The WP-188 raw-plan facade suite
 still runs against its preceding admission contract; new application/HTTP suites exercise current
 migrations and source-backed admission. No lifecycle or custody assertion was removed.
 
-Remaining: worker orchestration and counted mirror reconciliation, native Time Machine projection
+Remaining: counted mirror reconciliation and worker composition, native Time Machine projection
 and exact observation links, delegated MCP policy/contracts/persistence/transport, proposal revision
 and completeness handoff, immutable release/activation artifacts, and scoped live proof. The
 current operation links are backend evidence, not a claim that MCP or the Time Machine screen is
