@@ -28,10 +28,13 @@ export async function POST(request: Request): Promise<Response> {
     const actor = await requestActor(request.headers);
     await requireCapability(database, actor, 'editTargets');
     const body = await readOptimizerPreviewRequest(request);
+    // Fresh evidence on every request: legacy mode is admitted only while the
+    // database authority is still legacy, so an unset flag after the fenced
+    // cutover fails closed with its reason instead of re-opening the old lane.
     const readiness = await resolveOptimizerPreviewReadiness(database);
     if (!readiness.ready) {
       return Response.json(
-        { error: OPTIMIZER_PREVIEW_UNAVAILABLE_MESSAGE },
+        { error: OPTIMIZER_PREVIEW_UNAVAILABLE_MESSAGE, reason: readiness.reason },
         { status: 503 },
       );
     }
@@ -43,7 +46,7 @@ export async function POST(request: Request): Promise<Response> {
         clientRequestId: body.clientRequestId,
         scope: body.scope,
       });
-    return Response.json(accepted, { status: 202 });
+    return Response.json({ ...accepted, mode: readiness.mode }, { status: 202 });
   } catch (error) {
     return previewErrorResponse(error);
   } finally {

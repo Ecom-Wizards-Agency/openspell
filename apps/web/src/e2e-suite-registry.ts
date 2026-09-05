@@ -42,8 +42,8 @@ export const E2E_SUITE_DEFINITIONS = [
     kind: 'authenticated-dev',
     config: 'playwright.profile-context.config.ts',
     project: 'profile-context',
-    expectedSpecFiles: ['profile-context.spec.ts'],
-    expectedTests: 3,
+    expectedSpecFiles: ['profile-context.spec.ts', 'sidebar-layout.spec.ts'],
+    expectedTests: 8,
   },
   {
     name: 'auth-guards-anonymous',
