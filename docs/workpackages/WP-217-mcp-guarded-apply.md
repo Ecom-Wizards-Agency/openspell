@@ -11,10 +11,12 @@ D1/WP-207 and D2/WP-216 remain with Claude.
 ## Current source checkpoint, 2026-09-06
 
 See [the architecture and file scope](../design/WP-217-DELEGATED-WRITES.md). Shared delegated
-v2 receipts and MCP request/status/actor contracts are implemented locally and tested; the
+v2 receipts and MCP request/status/actor contracts are committed at `707cf6e` and tested; the
 coordinated policy amendment accompanies them. Human v1 bytes and human-only confirmation
 input remain supported. SQL admission, proposal evidence v2, tools and activation are still
-pending. Two later additive migrations are planned for enum addition then authority/admission;
+pending. The first additive migration is implemented: `20260906000000_mcp_write_delegation_mode.sql`
+adds only the enum label, verified by a PostgreSQL commit-boundary proof and 27 checks. It
+commits before the later authority/admission migration can consume that label;
 no WP-207 window or live target is changed. Detailed test/review evidence is in the replan audit.
 
 ## Objective

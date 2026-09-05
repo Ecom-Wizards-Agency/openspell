@@ -106,6 +106,8 @@ being compared before the delegated authorization contracts. No MCP write key is
 
 ### MCP authorization contract checkpoint, 2026-09-06
 
+The reviewed policy and shared contract slice is committed at `707cf6e`.
+
 [The delegated write design](../design/WP-217-DELEGATED-WRITES.md) records three independent
 candidates and the selected separate application facade. The alternative shared application
 kernel would relocate human orchestration; it was rejected for the unnecessary wider change.
@@ -131,6 +133,20 @@ live key, so revoked-key history remains readable. Final review reran the invers
 refusal. It also proved old/current parser byte parity for manual and bounded receipts. DB,
 worker and web typechecks pass; staged hygiene passes with the private denylist active. Database delegation/admission, MCP HTTP tools, proposal evidence v2,
 Time Machine server attribution and runtime activation remain unimplemented.
+
+### MCP enum prerequisite, 2026-09-06
+
+The additive `20260906000000_mcp_write_delegation_mode.sql` adds only the delegated approval
+mode. It creates no key, gate, grant, receipt or work item. The DB enum mirror now uses the
+shared execution-mode schema; human confirmation schemas still accept only their old modes.
+The new migration is outside WP-207 and must commit before the later admission migration uses
+its label. The current migration inventory and inert-source scan were updated explicitly.
+
+Twenty-seven disposable PostgreSQL checks passed across the new enum proof, migrations and
+activation boundaries. The proof first attempts enum use in the adding transaction, confirms
+PostgreSQL refuses and rolls the label back, then commits the migration and verifies later use.
+It also counts zero keys, grants, gates, receipts and outbox wakes afterward. DB typecheck and
+targeted lint passed. Delegated issuance and admission are the next source slice.
 
 ### Source progress
 

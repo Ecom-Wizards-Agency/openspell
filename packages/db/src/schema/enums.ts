@@ -40,7 +40,7 @@ import {
   WorkerReportType,
 } from '@wizard-ads/shared';
 import {
-  SpWriteApprovalMode,
+  SpWriteExecutionApprovalMode,
   SpWriteObservationOutcome,
   SpWriteProviderPositionOutcome,
   SpWriteRefusalReason,
@@ -229,7 +229,7 @@ export const spWritePlanDirection = pgEnum('sp_write_plan_direction', [
 ]);
 export const spWriteApprovalMode = pgEnum(
   'sp_write_approval_mode',
-  tuple(SpWriteApprovalMode.options),
+  tuple(SpWriteExecutionApprovalMode.options),
 );
 export const spWriteActionResolutionKind = pgEnum(
   'sp_write_action_resolution_kind',

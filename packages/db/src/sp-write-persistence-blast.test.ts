@@ -197,6 +197,7 @@ describe('SP write persistence facade blast radius', () => {
       '/20260905020000_sp_write_application_entry.sql',
       '/20260905030000_sp_write_mirror_observations.sql',
       '/20260905040000_recommendation_proposal_revisions.sql',
+      '/20260906000000_mcp_write_delegation_mode.sql',
     ];
     const inertSpWriteMigrations = migrations.filter((path) =>
       inertSpWriteMigrationSuffixes.some((suffix) => path.endsWith(suffix)));
