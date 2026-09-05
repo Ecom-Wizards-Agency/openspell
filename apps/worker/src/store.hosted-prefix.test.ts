@@ -104,6 +104,9 @@ describe.skipIf(!available)('hosted 41-version prefix rehearsal', () => {
     return Number(rows[0]?.count ?? 'NaN');
   }
 
+  /** Resolved by the first test from the repository listing; the upgrade test replays it. */
+  let upgradeFiles: readonly string[] = [];
+
   beforeAll(async () => {
     refuseHostedTarget(adminConnectionString());
     // The tenant fixture seeds tables that only exist after later migrations,
@@ -124,7 +127,7 @@ describe.skipIf(!available)('hosted 41-version prefix rehearsal', () => {
     const files = await migrationFiles();
     expect(files.length).toBeGreaterThanOrEqual(46);
     expect(files[40]).toBe(HOSTED_PREFIX_41_TERMINAL);
-    const upgradeFiles = PREFIX_44_UPGRADE_VERSIONS.map((version) => migrationFileForVersion(files, version));
+    upgradeFiles = PREFIX_44_UPGRADE_VERSIONS.map((version) => migrationFileForVersion(files, version));
     expect(files.slice(41, 44)).toEqual(upgradeFiles);
     expect(await claimTokenColumnCount()).toBe(0);
   });
@@ -161,6 +164,7 @@ describe.skipIf(!available)('hosted 41-version prefix rehearsal', () => {
   });
 
   it('applying 020000, 030000 and 040000 in order reaches the 44-file prefix without touching the row', async () => {
+    expect(upgradeFiles).toHaveLength(3);
     for (const file of upgradeFiles) {
       await applySqlFile(database, `${MIGRATIONS_DIR}${file}`);
     }
