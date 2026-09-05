@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { KeywordMirrorMergeCounts, SpWriteMirrorCounts, SpWriteMirrorReceipt } from './sp-write-mirror.js';
+import { KeywordMirrorMergeCounts, KeywordMirrorMergeRequest, SpWriteMirrorCounts, SpWriteMirrorReceipt } from './sp-write-mirror.js';
 
 const id = '00000000-0000-4000-8000-000000000001';
 const observedAt = '2026-09-05T10:00:00.000Z';
@@ -40,11 +40,23 @@ describe('mirror evidence contracts', () => {
   it('reconciles every observation and every ordinary sync input exactly once', () => {
     expect(SpWriteMirrorCounts.safeParse({ observations: 4, promoted: 1, alreadyCurrent: 1, superseded: 1, missing: 1 }).success).toBe(true);
     expect(SpWriteMirrorCounts.safeParse({ observations: 4, promoted: 1, alreadyCurrent: 1, superseded: 0, missing: 1 }).success).toBe(false);
-    const merge = { listed: 10, upserted: 10, currentBidInputs: 7, staleBidInputs: 3, bidChanges: 2,
+    const merge = { listed: 10, upserted: 10, currentBidInputs: 7, staleBidInputs: 3, bidChanges: 2, changes: 3,
       tombstonesOffered: 4, tombstoned: 1, staleTombstones: 3 };
     expect(KeywordMirrorMergeCounts.safeParse(merge).success).toBe(true);
     expect(KeywordMirrorMergeCounts.safeParse({ ...merge, bidChanges: 8 }).success).toBe(false);
     expect(KeywordMirrorMergeCounts.safeParse({ ...merge, staleBidInputs: 2 }).success).toBe(false);
     expect(KeywordMirrorMergeCounts.safeParse({ ...merge, staleTombstones: 0 }).success).toBe(false);
+    expect(KeywordMirrorMergeCounts.safeParse({ ...merge, changes: 2 }).success).toBe(false);
+  });
+
+  it('rejects duplicate or mixed-scope keyword inputs before a mirror transaction', () => {
+    const row = { entityType: 'keyword', profileId: id, amazonId: 'synthetic-keyword', adProduct: 'SP', name: null,
+      state: 'enabled', campaignId: 'synthetic-campaign', adGroupId: 'synthetic-group', keywordText: 'synthetic',
+      matchType: 'exact', bid: 0.7 };
+    const request = { orgId: id, profileId: id, adProduct: 'SP', readStartedAt: observedAt, full: true, rows: [row] };
+    expect(KeywordMirrorMergeRequest.safeParse(request).success).toBe(true);
+    expect(KeywordMirrorMergeRequest.safeParse({ ...request, rows: [row, row] }).success).toBe(false);
+    expect(KeywordMirrorMergeRequest.safeParse({ ...request, adProduct: 'SB' }).success).toBe(false);
+    expect(KeywordMirrorMergeRequest.safeParse({ ...request, rows: [{ ...row, bid: -1 }] }).success).toBe(false);
   });
 });

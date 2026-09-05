@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { AmazonId, Uuid } from './primitives.js';
+import { KeywordRow } from './entities.js';
 import { SpMoney, SpWriteObservationOutcome, SpWriteSha256 } from './sp-writes.js';
 
 /** A provider observation and its mirror promotion are separate durable facts. */
@@ -83,18 +84,40 @@ export const SpWriteMirrorCounts = z.object({
 export type SpWriteMirrorCounts = z.infer<typeof SpWriteMirrorCounts>;
 
 /** Ordinary keyword sync counts stale field inputs separately from actual row upserts. */
+export const KeywordMirrorMergeRequest = z.object({
+  orgId: Uuid,
+  profileId: Uuid,
+  adProduct: z.enum(['SP', 'SB', 'SD']).optional(),
+  readStartedAt: z.iso.datetime(),
+  full: z.boolean(),
+  rows: z.array(KeywordRow),
+}).strict().superRefine((value, context) => {
+  const identities = new Set<string>();
+  for (const row of value.rows) {
+    if (row.profileId !== value.profileId || (value.adProduct !== undefined && row.adProduct !== value.adProduct)
+      || identities.has(row.amazonId) || (row.bid !== null && row.bid < 0)) {
+      context.addIssue({ code: 'custom', message: 'keyword merge requires unique rows in the requested scope' });
+    }
+    identities.add(row.amazonId);
+  }
+});
+export type KeywordMirrorMergeRequest = z.infer<typeof KeywordMirrorMergeRequest>;
+
 export const KeywordMirrorMergeCounts = z.object({
   listed: count,
   upserted: count,
   currentBidInputs: count,
   staleBidInputs: count,
   bidChanges: count,
+  /** All actual keyword diffs, including initial discovery and non-bid fields. */
+  changes: count,
   tombstonesOffered: count,
   tombstoned: count,
   staleTombstones: count,
 }).strict().superRefine((value, context) => {
   if (value.listed !== value.upserted || value.listed !== value.currentBidInputs + value.staleBidInputs
-    || value.bidChanges > value.currentBidInputs || value.tombstonesOffered !== value.tombstoned + value.staleTombstones) {
+    || value.bidChanges > value.currentBidInputs || value.changes < value.bidChanges + value.tombstoned
+    || value.tombstonesOffered !== value.tombstoned + value.staleTombstones) {
     context.addIssue({ code: 'custom', message: 'keyword mirror inputs and outputs do not close' });
   }
 });
