@@ -25,6 +25,7 @@ import {
   type SqpCategorizeJob,
 } from '@wizard-ads/shared';
 import { SpApiAuthError, SpApiError, SpApiParseError } from '@wizard-ads/sp-api';
+import { KeywordMirrorMergeCounts } from '@wizard-ads/shared/sp-write-mirror';
 import { isPermanentCrosscheckError, type CrosscheckIngest } from './crosscheck.js';
 import {
   AdsApiRetryableError,
@@ -686,6 +687,7 @@ export class SyncWorker {
     payload: Extract<JobPayload, { type: 'entity.sync' }>,
   ): Promise<Record<string, unknown>> {
     const adsApi = this.requireAdsApi();
+    const readStartedAt = await this.store.beginEntityRead?.();
     const listing = await this.buckets.run(profile.region, () => adsApi.listEntities(profile, payload.full));
 
     // A product-scoped job cares only about its own product; an unscoped job
@@ -705,6 +707,7 @@ export class SyncWorker {
     }
 
     const totals = { listed: 0, upserted: 0, duplicates: 0, changes: 0, tombstoned: 0 };
+    let keywordMirror: KeywordMirrorMergeCounts | undefined;
     for (const product of succeeded) {
       const productRows = listing.rows.filter((row) => row.adProduct === product);
       // Scope the mirror to this product so tombstoning stays within it and a
@@ -712,6 +715,7 @@ export class SyncWorker {
       const counts = await this.store.syncEntities(profile, productRows, {
         adProduct: product,
         full: payload.full,
+        ...(readStartedAt === undefined ? {} : { readStartedAt }),
       });
       // Program rule 4: the artifact, not the exit code. A listing that
       // upserted fewer rows than it listed lost some — unless the shortfall is
@@ -727,6 +731,14 @@ export class SyncWorker {
       totals.duplicates += counts.duplicates;
       totals.changes += counts.changes;
       totals.tombstoned += counts.tombstoned;
+      if (counts.keywordMirror !== undefined) {
+        const incoming = KeywordMirrorMergeCounts.parse(counts.keywordMirror);
+        if (keywordMirror === undefined) keywordMirror = incoming;
+        else {
+          for (const key of Object.keys(incoming) as Array<keyof KeywordMirrorMergeCounts>) keywordMirror[key] += incoming[key];
+          KeywordMirrorMergeCounts.parse(keywordMirror);
+        }
+      }
     }
 
     const failureSummary = failures.map((failure) => ({ adProduct: failure.adProduct, error: failure.message }));
@@ -742,7 +754,7 @@ export class SyncWorker {
       throw partialSyncError(succeeded, failures);
     }
     this.logger.info('entity sync', { profileId: profile.id, succeeded, ...totals });
-    return { ...totals, succeeded, failures: failureSummary };
+    return { ...totals, succeeded, failures: failureSummary, ...(keywordMirror === undefined ? {} : { keywordMirror }) };
   }
 
   /**

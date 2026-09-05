@@ -1,7 +1,13 @@
 import type { DbHandle } from '@wizard-ads/db';
-import { reconcileSpWriteObservation } from '@wizard-ads/db/sp-write-worker';
+import { mergeKeywordMirror, readKeywordMirrorStart, reconcileSpWriteObservation } from '@wizard-ads/db/sp-write-worker';
+import type { KeywordMirrorCapability } from '../store.js';
 import { createSpWriteOutboxLoop } from './loop.js';
 import { createSpWriteProviderPreparation } from './providers.js';
+
+/** Configure on every entity-sync owner before enabling the first native bid write. */
+export function createKeywordMirrorCapability(database: DbHandle): KeywordMirrorCapability {
+  return { readStartedAt: () => readKeywordMirrorStart(database), merge: (request) => mergeKeywordMirror(database, request) };
+}
 
 /** Default capabilities, still inert: the activation slice alone registers and ticks this worker. */
 export function createSpWriteWorker(

@@ -44,7 +44,9 @@ deployment, credential store or Amazon account was accessed.
 | Ordinary sync merge contract | Shared `KeywordMirrorMergeRequest` validates unique keywords within one tenant/profile/product and records the database read-start time. Counts include every input, stale bid/tombstone and actual diff. | Five focused shared tests and shared typecheck passed before dependent implementation. |
 | Mirror contracts | `packages/shared/src/sp-write-mirror.ts` defines separate promotion/current/superseded/missing receipts, exact decimal and bigint transport, attribution of actual diffs, and reconciled ordinary-sync counts. | All **107 shared tests** passed, plus shared typecheck and targeted lint. Dependent persistence is implemented in the following slice. |
 
-| Native mirror persistence and inert composition | Migration `20260905030000_sp_write_mirror_observations.sql`, `packages/db/src/queries/sp-write-mirror.ts` and `apps/worker/src/sp-write-outbox/composition.ts`. Atomically records an observation receipt, updates the keyword bid when current evidence permits it, and links the exact entity-change ID. Conflicting observations retain separate attribution. | Local tests prove concurrent replay creates one diff, receipt-storage failure rolls back the bid/diff together, and a forward/inverse pair creates two distinct diffs and restores the starting bid. Current-schema parity, RLS, immutability and worker-only RPC permissions passed alongside 53 persistence/blast checks (55 tests total). Ordinary sync fencing and Time Machine projection still need their dependent implementations. |
+| Native mirror persistence and inert composition | Migration `20260905030000_sp_write_mirror_observations.sql`, `packages/db/src/queries/sp-write-mirror.ts` and `apps/worker/src/sp-write-outbox/composition.ts`. Atomically records an observation receipt, updates the keyword bid when current evidence permits it, and links the exact entity-change ID. Conflicting observations retain separate attribution. | Local tests prove concurrent replay creates one diff, receipt-storage failure rolls back the bid/diff together, and a forward/inverse pair creates two distinct diffs and restores the starting bid. Current-schema parity, RLS, immutability and worker-only RPC permissions passed alongside 53 persistence/blast checks (55 tests total). Time Machine projection remains pending; ordinary sync integration is recorded below. |
+
+| Ordinary keyword-sync fencing | `queries/keyword-mirror.ts` captures database time before provider listing, serializes mirror promotion with native observations, and atomically writes actual keyword diffs. The optional worker-store capability counts stale bids and tombstones, preserves newer full-entity evidence, and passes counts into the durable sync-job result. | Four PostgreSQL tests passed for stale values, tombstones/resurrection, precision/scope refusal and rollback on lost diff rows. Two real-worker tests passed for a concurrent native observation and for a write that completes during an ordinary listing. Worker typecheck and targeted lint passed. The capability remains unconfigured in runtime entrypoints. The broader regressions passed **122 worker tests in three files** and **76 DB tests in four files**, including the existing ordinary-sync cases and persistence boundaries. |
 
 Latest complete database verification: **478 tests in 48 files passed** with `--maxWorkers=1`.
 After HTTP integration and JSON transport fixes, the affected database suites also passed
@@ -59,13 +61,13 @@ These are local source checks, not hosted or live Amazon proof. The WP-188 raw-p
 still runs against its preceding admission contract; new application/HTTP suites exercise current
 migrations and source-backed admission. No lifecycle or custody assertion was removed.
 
-Remaining: ordinary keyword-sync freshness/counting, mirror status projection, native Time Machine projection
+Remaining: mirror status projection, native Time Machine projection
 and exact observation links, delegated MCP policy/contracts/persistence/transport, proposal revision
 and completeness handoff, immutable release/activation artifacts, and scoped live proof. The
 current operation links are backend evidence, not a claim that MCP or the Time Machine screen is
 finished. Worker registration and production write enablement have not occurred.
 
-The four new WP-214 migrations (the fourth currently in source review) are additional source dependencies. They are not silently added
+The four new WP-214 migrations are additional source dependencies. They are not silently added
 to Claude's original D1 operational window. Deployment must account for them before exposing the
 new write flow; hosted migration state has not been inspected. The version-specific entrypoint
 refuses admission when its database implementation is absent.

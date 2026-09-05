@@ -201,9 +201,9 @@ overwrite a newer observed bid. Include a narrow sync integration in this source
 capability and a database read-start timestamp captured before listing. The capability stays
 unconfigured until activation. Add `keywords.bid_observed_at` for field freshness; do not advance
 the full-entity `synced_at` merely because a bid was observed. Generic mirror upserts preserve
-this field. The keyword merge capability owns bid diffs and compares read-start time under the
+this field. The keyword merge capability owns all keyword diffs atomically, including bid diffs, and compares read-start time under the
 same row lock as the native observation writer; it counts stale bid inputs instead of silently
-applying them. Keep older full listings from tombstoning a keyword with newer bid evidence.
+applying them. It takes the tenant lock before a profile update lock, then keyword row locks; native observation takes the same tenant/profile order. No provider request runs while these locks are held. This also serializes newly discovered keyword identities. Keep older full listings from tombstoning a keyword with newer bid evidence.
 Protect established field evidence from unfenced bid updates, while leaving pre-activation rows
 compatible. Any trigger/context mechanism must be transaction-local and tested for cleanup.
 Declare the exact `queries/entities.ts` change for generic column preservation and its tests.

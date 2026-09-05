@@ -5,11 +5,16 @@ import { exportAcceptedRecommendations } from '@wizard-ads/db';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
 import { approveAndQueueSpWrite, previewSpWrite, previewSpWriteInverse, readSpWriteOperation } from '@wizard-ads/db/sp-write-application';
 import { createSpWriteOutboxLedger, createSpWriteRuntimeLedger } from '@wizard-ads/db/sp-write-persistence';
-import { listSpWriteProviderPlans, readSpWriteDatabaseTime, readSpWriteRecoveryResult, reconcileSpWriteObservation } from '@wizard-ads/db/sp-write-worker';
+import { listSpWriteProviderPlans, mergeKeywordMirror, readKeywordMirrorStart, readSpWriteDatabaseTime, readSpWriteRecoveryResult, reconcileSpWriteObservation } from '@wizard-ads/db/sp-write-worker';
+import { KeywordRow } from '@wizard-ads/shared';
 import type { SpWriteAdmission, SpWritePreview } from '@wizard-ads/shared/sp-write-application';
 import { SpWriteObservation, type SpWritePlan } from '@wizard-ads/shared/sp-writes';
 import { hasher, makeReservationArtifacts, providerKey, remainingAttemptMs } from './artifacts.js';
 import { createSpWriteOutboxLoop } from './loop.js';
+import { createKeywordMirrorCapability } from './composition.js';
+import { PostgresWorkerStore } from '../store.js';
+import { SyncWorker } from '../worker.js';
+import type { AdsApiClient } from '../ads-api.js';
 
 const available = await databaseAvailable();
 const OWNER = '31313131-3131-4131-8131-313131313131';
@@ -134,6 +139,69 @@ describe.skipIf(!available)('inert SP write worker with real ledger and fake HTT
     const [row] = await database.sql<{ artifact: unknown }[]>`select artifact from public.sp_write_observations where plan_id = ${preview.plan.id}`;
     return SpWriteObservation.parse(row!.artifact);
   }
+
+  it('races an older ordinary listing against a native observation without losing the bid or tombstoning it', async () => {
+    const readStartedAt = await readKeywordMirrorStart(database);
+    const [baseline] = await database.sql<{ count: number }[]>`select count(*)::int from public.entity_changes
+      where profile_id = ${profileId} and amazon_id = 'kw-1' and field = 'bid'`;
+    const [listed] = await database.sql<{ artifact: unknown }[]>`select jsonb_build_object(
+      'entityType', 'keyword', 'profileId', profile_id, 'amazonId', amazon_id, 'adProduct', ad_product,
+      'name', name, 'state', state, 'campaignId', campaign_id, 'adGroupId', ad_group_id,
+      'keywordText', keyword_text, 'matchType', match_type, 'bid', bid
+    ) as artifact from public.keywords where profile_id = ${profileId} and amazon_id = 'kw-1'`;
+    const row = KeywordRow.parse(listed!.artifact);
+    const observation = await unmirroredObservation();
+    const request = { orgId, profileId, adProduct: 'SP' as const, readStartedAt, full: false, rows: [row] };
+    const [receipt, merged] = await Promise.all([
+      reconcileSpWriteObservation(database, observation), mergeKeywordMirror(database, request),
+    ]);
+    expect(receipt.outcome).toBe('promoted');
+    expect(merged).toMatchObject({ listed: 1, upserted: 1, bidChanges: 0 });
+    expect(await mergeKeywordMirror(database, request)).toMatchObject({ staleBidInputs: 1, changes: 0 });
+    expect(await mergeKeywordMirror(database, { ...request, full: true, rows: [] }))
+      .toMatchObject({ staleTombstones: 1, tombstoned: 0 });
+    const [mirrorState] = await database.sql<{ bid: string; live: boolean; diffs: number }[]>`
+      select bid::text, deleted_at is null as live,
+        (select count(*)::int from public.entity_changes where profile_id = ${profileId} and amazon_id = 'kw-1' and field = 'bid') as diffs
+      from public.keywords where profile_id = ${profileId} and amazon_id = 'kw-1'`;
+    expect(mirrorState).toEqual({ bid: '0.7000', live: true, diffs: baseline!.count + 1 });
+  });
+
+  it('captures the read window before listing and persists stale-input counts in the real sync job', async () => {
+    const capability = createKeywordMirrorCapability(database);
+    let readStartedAt: string | undefined;
+    const store = new PostgresWorkerStore(database, { info: () => {} }, { keywordMirror: {
+      ...capability, readStartedAt: async () => (readStartedAt = await capability.readStartedAt()),
+    } });
+    const api: AdsApiClient = {
+      listProfiles: async () => [],
+      createReport: async () => { throw new Error('unexpected report call'); },
+      getReport: async () => { throw new Error('unexpected report call'); },
+      downloadReport: async () => { throw new Error('unexpected report call'); },
+      listEntities: async () => {
+        expect(readStartedAt).toBeDefined();
+        const [listed] = await database.sql<{ artifact: unknown }[]>`select jsonb_build_object(
+          'entityType', 'keyword', 'profileId', profile_id, 'amazonId', amazon_id, 'adProduct', ad_product,
+          'name', name, 'state', state, 'campaignId', campaign_id, 'adGroupId', ad_group_id,
+          'keywordText', keyword_text, 'matchType', match_type, 'bid', bid
+        ) as artifact from public.keywords where profile_id = ${profileId} and amazon_id = 'kw-1'`;
+        await reconcileSpWriteObservation(database, await unmirroredObservation());
+        return { rows: [KeywordRow.parse(listed!.artifact)], succeeded: ['SP'], failures: [] };
+      },
+    };
+    const [job] = await database.sql<{ id: string }[]>`insert into public.sync_jobs
+      (org_id, profile_id, job_type, payload, dedupe_key)
+      values (${orgId}, ${profileId}, 'entity.sync', ${JSON.stringify({ type: 'entity.sync', orgId, profileId, full: false, adProduct: 'SP' })}::text::jsonb,
+        'synthetic-fenced-keyword-sync') returning id`;
+    const worker = new SyncWorker({ workerId: 'synthetic-keyword-sync', store, adsApi: api,
+      jobTypes: ['entity.sync'], logger: { info: () => {}, error: () => {} } });
+    expect(await worker.drainOnce()).toBe(1);
+    const [completed] = await database.sql<{ status: string; result: unknown }[]>`select status, result from public.sync_jobs where id = ${job!.id}`;
+    expect(completed).toMatchObject({ status: 'succeeded', result: { listed: 1, upserted: 1, changes: 0,
+      keywordMirror: { currentBidInputs: 0, staleBidInputs: 1, changes: 0 } } });
+    const [state] = await database.sql<{ bid: string }[]>`select bid::text from public.keywords where profile_id = ${profileId} and amazon_id = 'kw-1'`;
+    expect(state!.bid).toBe('0.7000');
+  });
 
   it('races mirror receipt creation and refuses unfenced bid writes without leaking transaction context', async () => {
     const observation = await unmirroredObservation();
