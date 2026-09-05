@@ -11,6 +11,18 @@
 # `pnpm hygiene` skips this check with a warning when the real file is absent,
 # so a fresh clone is not blocked, but a machine that does client work should
 # have one.
+#
+# What belongs here, at minimum:
+# - every client, brand, and seller-account label that has ever appeared in a
+#   profile switcher, audit note, QA log, or work-package brief;
+# - provider-side account identifiers that pin a client (numeric seller ids,
+#   selling-partner ids, profile ids), written as the full digit string;
+# - each spelling variant that word-bounded, case-insensitive matching would
+#   not already cover (a name joined into one word versus written as two).
+#
+# Keep the term list in this gitignored file only. Neutral placeholders such as
+# "the pilot account" or "Client A" are what tracked docs use instead, and
+# those placeholders must never be listed here.
 
 # Example Brand Ltd
 # Northwind Trading
