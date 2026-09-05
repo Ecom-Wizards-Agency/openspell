@@ -57,3 +57,76 @@ summaries, so links inside closed `details` are unreachable in rail mode.
 
 Out of scope: a mobile drawer under 960 pixels and a pre-paint script for the rail state; both
 are listed as follow-ups, not built here.
+
+## Close-out
+
+Delivered on branch `wp-208-sidebar-layout`. This section is the evidence the WP-207/WP-213
+document owner needs to close `docs/HANDOVER.md` "Known UX and performance follow-ups" item 1 and
+"Recommended continuation order" item 12; this package did not edit `docs/HANDOVER.md`.
+
+### Corrected mechanism for HANDOVER item 1
+
+The HANDOVER diagnosis ("the entire sidebar owns scrolling while the footer is also pushed with
+auto margin") named the symptom, not the cause. The cause was `.wa-sidebar-main { min-height: 0 }`
+with no overflow rule: on a short viewport the flex algorithm shrank the nav box below its
+content, and the rows spilled in normal paint order under `footer.wa-sidebar-utilities`. The
+footer has no background, so nothing looked wrong, but it is later in the DOM and hit-tests over
+the spilled rows, so it took the clicks. Playwright's own actionability diagnostic on the
+unmodified CSS reads: the footer's `Bugs` link "intercepts pointer events" on the `Verify`
+summary.
+
+The fix makes the column three flex items with exactly one flexible, scrolling member:
+
+- `.wa-brand` and `.wa-sidebar-utilities` are `flex: none`;
+- `.wa-sidebar-main` is `flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  overscroll-behavior: contain; scrollbar-gutter: stable`;
+- `.wa-sidebar` is `overflow: hidden` at desktop widths, so the column can never scroll and the
+  footer's `margin-top: auto` pins it inside the viewport.
+
+"Simplify the active marker" resolved to deleting the dead `.wa-navlink-dot` rules; the active
+marker is the left border on `.wa-navlink[aria-current='page']` and is unchanged. `.wa-frame` and
+every `.wa-sidebar-foot` selector were also dead and are gone. The narrow block (`max-width:
+60rem`) now resets `.wa-sidebar-main { flex: none; overflow: visible }`, styles
+`.wa-sidebar-utilities` as one wrapped row, hides the no-op `.wa-nav-collapse`, and no longer
+inflates closed groups with `.wa-navgroup { flex: 1 1 10rem }`.
+
+Rail: with `DEFAULT_CLOSED` covering all three workflow groups and the rail hiding group
+summaries, links inside a closed `<details>` were unreachable. `display: flex !important` on the
+list never helped, because a closed `<details>` does not render its content at all. The
+component now renders `open={collapsed || holdsCurrent || !closed.includes(group.id)}` and skips
+`remember()` while collapsed, so the forced-open state is never written into the operator's
+stored closed set; the CSS hack is deleted.
+
+### Regression evidence for HANDOVER item 12
+
+`apps/web/e2e/sidebar-layout.spec.ts` runs in the `profile-context` process
+(`pnpm --filter @wizard-ads/web test:e2e:profile-context`). Three tests: 1280x720 and 1440x1000
+with every `details.wa-navgroup` forced open, plus the icon rail. Occlusion is asserted with
+`document.elementFromPoint` at each link's centre after `scrollIntoViewIfNeeded`, the footer's box
+must end inside the viewport, no link box may intersect the footer box, the nav is the only scroll
+container (the column's `scrollTop` cannot move), and at 720 the nav must actually scroll. The
+rail case collapses through the real control and requires a visible link for every `NAV_LINKS`
+entry with `localStorage` untouched.
+
+Proof the spec fails on the old behavior and passes on the branch, from the same runner command
+with `--grep sidebar-layout`:
+
+- unmodified `theme.css`, new component: 1280x720 fails at the `Sync status` hit test
+  (`elementFromPoint` returns the footer); 1440x1000 fails because `.wa-sidebar-main` computes
+  `overflow-y: visible`; rail passes.
+- unmodified `theme.css` and `sidebar.tsx`: both viewports fail as above and the rail case fails
+  because `/optimizer` has no visible link.
+- branch: all three pass; the whole `profile-context` suite is 6 of 6.
+
+One measured fact worth carrying: at 1440x1000 with every group open the nav box is 730px and the
+current nav fits inside it, so the original bug did not reproduce at 1000px tall and the spec does
+not demand overflow there. 720 tall is the case that reproduces it.
+
+### Not done here
+
+- `docs/HANDOVER.md` items 1 and 12 remain for the document owner to close with the text above.
+- `apps/web/src/e2e-suite-registry.ts` still lists `profile-context` as owning only
+  `profile-context.spec.ts` with 3 tests; it is outside this package's scope and its unit test
+  checks only internal consistency, so nothing breaks, but the owner should add
+  `sidebar-layout.spec.ts` and move the count to 6 (total 73).
+- The mobile drawer under 960px and a pre-paint script for the rail state remain follow-ups.
