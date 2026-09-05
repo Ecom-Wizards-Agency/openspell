@@ -33,6 +33,16 @@ deployment, credential store or Amazon account was accessed.
 
 ### Delegated admission identity correction, 2026-09-06
 
+The next implementation design is selected from three independent candidates and recorded in
+[the delegated design](../design/WP-217-DELEGATED-WRITES.md). It keeps one immutable admission
+and UTC charge, atomic audit/enqueue, and the existing executor. Shared
+`SpWriteAuthoritySettlement` supports claim-bound refusal before worker preflight; otherwise
+expired/closed delegated rows would stay queued before reaching canonical reservation.
+Local process pauses defer this bookkeeping until dispatch resumes. SQL admission/settlement
+is declared in `20260906030000_mcp_write_admissions.sql`, and atomic legacy/inverse preview
+mapping in `20260906040000_mcp_write_preview_sources.sql`. Both are under implementation and
+outside WP-207. No database admission or MCP connection result is claimed yet.
+
 The controlled source checkpoint is committed at `605548e`. All three admission design
 reviews identified the same mismatch: external apply request IDs are scoped by org/key,
 but `sp_write_approval_requests.approval_request_id` is a global primary key. Delegated v2

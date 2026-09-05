@@ -103,6 +103,54 @@ for v1. Keep MCP drafts out of legacy downloads, direct/list reversion paths, sy
 legacy timeline/facets and export summaries. Native history derives actor from the receipt and
 does not invent a legacy export descriptor for v2.
 
+## Admission implementation decision, 2026-09-06
+
+Three independent candidates compared the smallest facade, SQL authority and durable history.
+Retain the separate facade and one immutable `mcp.write_admissions` row as both request mapping
+and UTC row charge. A mutable daily counter adds another recovery state; a shared human/MCP
+orchestration kernel changes working UI approval boundaries. Neither is needed here.
+
+Service-only `app.admit_mcp_sp_write_v1(org,key,hash,requestText)` constructs the delegated
+receipt from saved facts and returns it after request, receipt, charge, key audit and existing
+`start_sp_write_execution` commit together. It accepts no caller-supplied authority artifact.
+Exact replay checks the current bearer and stored request, returns the same receipt, and never
+takes a delivery-head lock or starts execution again. A second identity for the same plan
+refuses. Separate `mcp_write_read_context` authenticates a current key and exact delegated
+profile for status/replay even after issuer downgrade or execution gate closure; revoked or
+expired keys refuse. MCP reuses only the private operation projection after this authorization;
+the public human reader retains its owner/admin check.
+
+New admission takes org key-share, scoped request and shared per-plan advisory locks, then
+issuer membership share, environment/profile-grant update, MCP gate share, profile/connection
+update and key update directly. It never upgrades a prior key share lock. Sample UTC time after
+blocking locks and sum immutable charges as a wide integer. Canonical reservation retains its
+claim prefix and final intent/refusal decision; a private delegated predicate acquires its
+compatible authority prefix before the existing block, whose later locks are reentrant.
+
+Worker preflight currently defers some expired or closed plans before canonical reservation.
+Add claim-bound, provider-free authority settlement before adapter/current checks and on later
+dispatch passes. Existing dispositions and action resolutions close only unresolved rows;
+intended calls retain result/observation recovery. The shared `SpWriteAuthoritySettlement`
+result is unchanged, refused with a counted total, or stale claim. It grants no dispatch
+authority. Existing refusal reasons and null provider observations suffice. The database switch
+governs queued authority without deployment. A locally paused or stopped dispatcher settles
+refusals when it resumes; this slice adds no separate cleanup scheduler.
+
+Transport exposes the three tools only for write credentials with explicit startup enablement,
+which defaults off. A sanitized attempt audit precedes SDK validation, including invalid or
+unregistered write-tool calls. Successful source/admission audit stays atomic in SQL. Unknown
+outcomes retain the original client request identity and never claim that nothing changed.
+
+Declare `20260906030000_mcp_write_admissions.sql` for authority, capacity, canonical reservation
+and claim settlement, followed by `20260906040000_mcp_write_preview_sources.sql` for atomic
+legacy/inverse preview mapping. Both are additive source-window files outside WP-207. The
+facade owns new `queries/mcp-write-application.ts`, its explicit export, and narrow private
+extractions in `sp-write-{plan-builder,inverse-preview,operation-read}.ts`. Worker integration
+owns `queries/sp-write-worker.ts`, its explicit export and `apps/worker/src/sp-write-outbox/loop.ts`.
+New admission, facade, actual HTTP and worker/history suites must prove replay, atomic failure,
+forced lock waits, all three sources, scoped client IDs and mixed human/MCP inverse history.
+These claims remain unproven until executed; design review alone is not acceptance evidence.
+
 ## Database locks and migration sequence
 
 The current claim wrapper locks org then delivery head before canonical reservation. Retain

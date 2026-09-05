@@ -1719,6 +1719,14 @@ export const SpWriteRefusalReason = z.enum([
 ]);
 export type SpWriteRefusalReason = z.infer<typeof SpWriteRefusalReason>;
 
+/** Existing worker custody may close invalid delegated authority without a provider call. */
+export const SpWriteAuthoritySettlement = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('unchanged') }).strict(),
+  z.object({ kind: z.literal('refused'), refusedRows: z.number().int().min(1).max(500) }).strict(),
+  z.object({ kind: z.literal('stale_claim') }).strict(),
+]);
+export type SpWriteAuthoritySettlement = z.infer<typeof SpWriteAuthoritySettlement>;
+
 export const SpWritePreDispatchDisposition = z.object({
   schemaVersion: z.literal('openspell.sp-write-predispatch-disposition.v1'),
   dispositionId: SpWriteUuid,
