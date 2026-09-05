@@ -33,6 +33,11 @@ deployment, credential store or Amazon account was accessed.
 
 ### Current MCP admission, connection and history checkpoint, 2026-09-06
 
+Source implementation is committed at `e9c6411` and published for review in
+[draft PR #141](https://github.com/Ecom-Wizards-Agency/openspell/pull/141). Required CI and review
+status are tracked on that PR; it is not merged or enabled. Plain ESLint also passes from a clean
+committed checkout, without excluding any source path or changing lint rules.
+
 **Implemented and verified locally:** atomic delegated admission, permanent UTC row charges,
 exact request replay, legacy/direct/inverse previews and all three authenticated MCP tools.
 `queries/mcp-write-application.ts` exposes preview/apply/status through the explicit MCP DB
