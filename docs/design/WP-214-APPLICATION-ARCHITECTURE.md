@@ -65,6 +65,7 @@ cycle. `startExecution` returns an outbox id, while the execution id comes from 
 | `queries/authenticated-actor.ts` and tests | One transaction with validated identity and local authenticated role/claims |
 | `queries/sp-write-approval.ts` and tests | Human approval, exact request replay and recoverable execution admission |
 | `queries/sp-write-operation-read.ts` and tests | Tenant-bound verified evidence, original/inverse links and status |
+| `queries/sp-write-inverse-preview.ts` and application tests | Complete observed source, current mirror comparison, exact inverse and replay |
 | `apps/web/src/writes/**`, `app/api/sp-writes/**` | Session authentication, HTTP validation and response adaptation |
 | Apply preview server loader and Time Machine server loader | Data wiring and synthetic props for Claude's client work |
 | `apps/worker/src/sp-write-outbox/**` | One-attempt dispatch, bounded observation, recovery and shutdown |
@@ -106,6 +107,15 @@ the marketplace binding absent from `ad_profiles`. Guardrail and provenance fing
 from actual frozen source, strategy and grant facts, with no constant or caller-provided hash.
 
 Human approval runs the existing authenticated RPC under transaction-local claims and role.
+The additive `20260905010000_sp_write_preview_approval.sql` migration wraps that RPC and
+revokes direct access to its former implementation. This makes source revalidation, actor-bound
+request replay and one admission per immutable plan database rules, including direct RPC callers.
+It reuses the preview migration's private source checker; inverse approval verifies the complete
+source cycle, exact inverse pair and current keyword mirror. No worker is registered by this slice.
+The WP-188 facade integration fixtures predate source exports and mirrored entities. Pin their
+database at the immediately preceding migration; keep every lifecycle/custody assertion. Add the
+current source-backed approval and execution proof in `queries/sp-write-approval.test.ts`, using
+`testing/sp-write-synthetic-execution.ts` for fake provider evidence through the real ledger.
 Serialize admission per plan and recover the exact prior approval request; a new request must
 not open another execution for an already approved immutable plan. Approval and enqueue are
 two durable stages in WP-214. Return `approved_pending_start` if approval is known but enqueue
@@ -147,6 +157,9 @@ Each inverse has its own plan/approval and history entry linked to the original 
 Preserve the current full-plan inverse contract: all forward actions must be observed at their
 requested values and still match current state. Partial, ambiguous or conflicting plans remain
 visible and cannot use a subset inverse. A failed inverse never marks the original restored.
+An ambiguous provider response whose every requested value was subsequently observed is eligible:
+the existing `observed_after_ambiguous` state provides the observation evidence required by the
+shared dispatch verifier. Unresolved ambiguous rows remain ineligible.
 
 ### Delegated admission slice
 

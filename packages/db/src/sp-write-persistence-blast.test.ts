@@ -157,6 +157,7 @@ describe('SP write persistence facade blast radius', () => {
       '/20260901020000_sp_write_persistence_ledger.sql',
       '/20260901030000_sp_write_outbox_delivery.sql',
       '/20260905000000_sp_write_preview_evidence.sql',
+      '/20260905010000_sp_write_preview_approval.sql',
     ];
     const inertSpWriteMigrations = migrations.filter((path) =>
       inertSpWriteMigrationSuffixes.some((suffix) => path.endsWith(suffix)));
