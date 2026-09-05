@@ -10,15 +10,21 @@ const PreviewPolicy = z.object({
   applyRowId: Uuid,
   recommendationId: Uuid,
   runId: Uuid,
-  strategySnapshot: TenantStrategy,
+  strategySnapshotText: z.string().refine((text) => {
+    try { return TenantStrategy.safeParse(JSON.parse(text)).success; } catch { return false; }
+  }, 'expected the exact stored tenant strategy JSON'),
   strategyGoal: z.string().min(1),
   groupId: Uuid.nullable(),
-  groupSnapshot: OptimizationGroupSnapshot.nullable(),
+  groupSnapshotText: z.string().refine((text) => {
+    try { return OptimizationGroupSnapshot.safeParse(JSON.parse(text)).success; } catch { return false; }
+  }, 'expected the exact stored group snapshot JSON').nullable(),
 }).strict().superRefine((value, context) => {
-  if ((value.groupId === null) !== (value.groupSnapshot === null)
-    || (value.groupSnapshot !== null
-      && normalizeOptimizationGroupSnapshot(value.groupSnapshot).group.id !== value.groupId)) {
-    context.addIssue({ code: 'custom', path: ['groupSnapshot'], message: 'policy group snapshot differs from its identity' });
+  let groupId: string | null = null;
+  try {
+    if (value.groupSnapshotText !== null) groupId = normalizeOptimizationGroupSnapshot(JSON.parse(value.groupSnapshotText)).group.id;
+  } catch { /* The field refinement reports malformed snapshots. */ }
+  if (groupId !== value.groupId || (value.groupId === null) !== (value.groupSnapshotText === null)) {
+    context.addIssue({ code: 'custom', path: ['groupSnapshotText'], message: 'policy group snapshot differs from its identity' });
   }
 });
 

@@ -16,10 +16,10 @@ function fixture() {
       providerScope: { amazonProfileId: 'synthetic-profile', connectionId: id('4'), region: 'NA',
         marketplaceId: 'synthetic-market', currencyCode: 'USD', apiDialect: 'sp_v3' },
       maximumProviderRows: 500, requireCurrentValueMatch: true,
-      policies: [{ ...row, strategySnapshot: {
+      policies: [{ ...row, strategySnapshotText: JSON.stringify({
         schema: 'wizard-ads.tenant-strategy.v1', pacing: {}, opt_groups: {}, rank_lifecycle: {},
         staged_apply: {}, bids: {}, sv_bands: {}, caps: {}, pat_split: {}, naming: {},
-      }, strategyGoal: 'neutral', groupId: null, groupSnapshot: null }],
+      }), strategyGoal: 'neutral', groupId: null, groupSnapshotText: null }],
     },
     provenance: { applyBatchId: id('8'), artifactText: '[{"entity_type":"keyword","entity_id":"kw-1","field":"bid","old":"0.9","new":"0.7"}]\n', artifactSha256: 'a'.repeat(64),
       exportedAt: '2026-09-05T12:00:00.000Z', tag: 'synthetic', optGroup: 'synthetic',
@@ -49,7 +49,7 @@ describe('frozen SP preview evidence', () => {
       ...evidence.provenance, rows: [{ ...evidence.provenance.rows[0], recommendationId: id('99') }],
     } }).success).toBe(false);
     expect(SpWritePreviewEvidence.safeParse({ ...evidence, guardrails: {
-      ...evidence.guardrails, policies: [{ ...evidence.guardrails.policies[0], strategySnapshot: null }],
+      ...evidence.guardrails, policies: [{ ...evidence.guardrails.policies[0], strategySnapshotText: null }],
     } }).success).toBe(false);
   });
 
