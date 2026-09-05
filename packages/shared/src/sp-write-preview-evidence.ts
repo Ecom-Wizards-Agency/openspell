@@ -155,7 +155,8 @@ export function serializeSpWritePreviewProvenance(raw: SpWriteSourceEvidence): s
 export function verifyMcpWritePreviewEvidenceArtifacts(rawPlan: unknown, rawEvidence: unknown, hasher: SpWriteSha256Hasher) {
   const plan = verifySpWritePlanFingerprints(rawPlan, hasher);
   const evidence = SpMcpWritePreviewEvidenceV2.parse(rawEvidence);
-  if (plan.direction !== 'forward' || plan.source.kind !== 'apply_batch'
+  if (plan.schemaVersion !== 'openspell.sp-write-plan.v2'
+    || plan.direction !== 'forward' || plan.source.kind !== 'apply_batch'
     || evidence.planId !== plan.id || evidence.provenance.applyBatchId !== plan.source.applyBatchId
     || evidence.provenance.rows.length !== plan.counts.providerRows
     || JSON.stringify(evidence.guardrails.providerScope) !== JSON.stringify(plan.providerScope)
@@ -175,11 +176,11 @@ export function verifyMcpWritePreviewEvidenceArtifacts(rawPlan: unknown, rawEvid
       || Date.parse(plan.generatedAt) >= Date.parse(delegation.expiresAt)
       || Date.parse(plan.frozenAt) >= Date.parse(delegation.expiresAt)
       || Date.parse(plan.expiresAt) > Date.parse(delegation.expiresAt)
-      || artifact.rows.some((row) => {
-        const action = plan.actions.find((candidate) => candidate.sources.some((source) =>
-          source.kind === 'apply_row' && source.applyRowId === row.applyRowId));
+      || artifact.rows.some((row, index) => {
+        const action = plan.actions[index];
         return action === undefined || action.routeKey !== 'sp.v3.keywords.update'
-          || action.sources.length !== 1 || action.entity.keywordId !== row.keywordId
+          || action.sources.length !== 1 || action.sources[0]?.kind !== 'apply_row'
+          || action.sources[0].applyRowId !== row.applyRowId || action.entity.keywordId !== row.keywordId
           || action.changes.bid?.expected.amount !== row.expectedBid
           || action.changes.bid.requested.amount !== row.requestedBid;
       })) throw new Error('MCP proposal differs from its exact plan and authority');

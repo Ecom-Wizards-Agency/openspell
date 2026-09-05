@@ -31,6 +31,28 @@ deployment, credential store or Amazon account was accessed.
 
 ## Implementation progress, 2026-09-05
 
+### MCP producer review and sequence correction, 2026-09-06
+
+The controlled source producer now checks current key/issuer/profile authority and atomically
+records request, source rows, plan, evidence and key-attributed preview audit. Its 32-test local
+DB checkpoint passed, including 22 raw service SQL cases, eight application cases and two
+forced source-ownership races. Injected audit failure leaves no source or execution residue;
+replay and recovery after a lost committed response return the same plan. A human-approved
+fake-provider forward/inverse cycle remains available after source-key revocation. This does
+not prove delegated MCP admission or execution, which remain unimplemented.
+
+Independent raw SQL review found malformed notes, nested JSON shapes and noncanonical
+fingerprint preimages that could commit but fail reload. The producer now validates the exact
+bounded serialization and rejects those cases atomically. Multi-row review additionally found
+that SQL preserved an array the v1 parser rejected under its locale-dependent ordering. The
+[selected sequence design](../design/WP-217-PLAN-SEQUENCE.md) adds explicit keyword plan v2;
+old v1 fingerprint hashes were captured before editing. Shared contracts precede dependent
+SQL/inverse changes. Full v2 source and inverse proof remains pending at this checkpoint.
+
+All tests use disposable loopback PostgreSQL and synthetic data. The implementation remains
+unmerged and inactive. These changes add no hosted migration, frontend component or live
+Amazon action. The source migration remains outside Claude's WP-207 window.
+
 ### Confirmed supervisor parking and scope, 2026-09-05
 
 The operator explicitly decided to park WP-201–205. No work on that program was performed
@@ -233,6 +255,27 @@ native history with receipt-derived actors. No client component or protected Cla
 to this scope.
 
 ### Source progress
+
+MCP source boundary checkpoint, 2026-09-06: `20260906020000` now separates source counts,
+protects source identity and private request/artifact rows, and requires the batch, every apply
+row and every normalized plan action to agree at transaction commit. Independent review found
+the original legacy export-count constraint contradicted MCP counts and reproduced an extra
+normalized-action gap; both are corrected. Creator/prepared time, plan source, exact values and
+row counts are checked. Normal legacy updates and organization purge still work.
+
+Legacy download/reversion getters, timeline/facets, sync linker/cooldown and dashboard/strategy
+server summaries now distinguish the source kind. Exact-string sync events remain visible
+without native attribution; null recommendation ancestry still permits legacy inverse exports.
+The native history projection derives actors from receipts and omits legacy export metadata for
+v2. Delegated history through actual MCP admission remains unproven until that path exists.
+
+Evidence: 12 new DB boundary tests pass; the earlier six-file regression run passed 72 checks;
+11 web tests include all three direct download formats and legacy inverse refusal. DB typecheck
+and targeted lint pass. Independent disposable DB probes force both native/legacy ownership
+race orders, observe PostgreSQL lock waits and assert only the winning path commits. The source
+fixture is explicitly root-only synthetic setup, not proof of the pending controlled producer.
+The new filtered web queries require `20260906020000` before deployment even with MCP writes
+disabled. This file remains outside WP-207; producer, admission and transport work continues.
 
 Proposal revision persistence is implemented on the source branch. The new additive
 `20260905040000_recommendation_proposal_revisions.sql` is a fifth WP-214 migration, outside

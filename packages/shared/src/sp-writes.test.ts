@@ -587,9 +587,49 @@ function executionEvidence(
 }
 
 describe('guarded Sponsored Products write contracts', () => {
+  it('preserves historical v1 forward, inverse and mixed-route fingerprint bytes', () => {
+    const forward = keywordPlan();
+    expect([forward.fingerprint, inverseKeywordPlan(forward).fingerprint, fullForwardPlan().fingerprint])
+      .toMatchInlineSnapshot(`
+        [
+          "2609bfe841c35accf4c7410b257a777ebb2589e7c0745f1dc5781a1c86bc56bb",
+          "acbf9b122b56e42daef3c1bbf81aef255bb92c0ce22c1536ee616a92dfbab0ba",
+          "a027131af3f0bd8baa52b2dbb7fc891afb0ac0c6ff9ce1c206a68dc22b942e8c",
+        ]
+      `);
+  });
   it('exposes write contracts only through the explicit package subpath', () => {
     expect(ExportedSpWritePlan).toBe(SpWritePlan);
     expect('SpWritePlan' in sharedRoot).toBe(false);
+  });
+
+  it('binds v2 keyword sequences and inverses while retaining the v1 ordering rule', () => {
+    const base = keywordPlan();
+    const second = withActionFingerprint({ ...base.actions[0], actionId: uuid(305),
+      entity: { keywordId: 'keyword-two' },
+      sources: [{ kind: 'apply_row', applyRowId: uuid(306), changeKey: 'keyword.bid' }] });
+    const actions = [second, base.actions[0]!];
+    const forward = fingerprintedPlan(actions, { schemaVersion: 'openspell.sp-write-plan.v2', actions });
+    expect(verifySpWritePlanFingerprints(forward, sha256).actions).toEqual(actions);
+    expect(SpWritePlan.safeParse({ ...forward, schemaVersion: 'openspell.sp-write-plan.v1' }).success).toBe(false);
+    expect(SpWritePlan.safeParse({ ...fullForwardPlan(), schemaVersion: 'openspell.sp-write-plan.v2' }).success).toBe(false);
+
+    const inverseActions = actions.map((action, index) => {
+      if (action.routeKey !== 'sp.v3.keywords.update' || !action.changes.bid) throw new Error('keyword fixture required');
+      return withActionFingerprint({ ...action, actionId: uuid(310 + index),
+        sources: [{ kind: 'inverse_action', sourceActionId: action.actionId, changeKey: 'keyword.bid' }],
+        changes: { bid: { expected: action.changes.bid.requested, requested: action.changes.bid.expected } } });
+    });
+    const inverse = fingerprintedPlan(inverseActions, { ...inverseKeywordPlan(base),
+      schemaVersion: forward.schemaVersion, actions: inverseActions, counts: forward.counts,
+      source: { kind: 'inverse_execution', sourceExecutionId: EXECUTION_ID,
+        sourcePlanId: forward.id, sourcePlanFingerprint: forward.fingerprint } });
+    expect(verifySpWriteInversePair(forward, inverse, sha256)).toEqual({ forward, inverse });
+    const reordered = fingerprintedPlan(inverseActions, { ...inverse, actions: [...inverseActions].reverse() });
+    expect(() => verifySpWriteInversePair(forward, reordered, sha256)).toThrow('source sequence');
+    const downgraded = fingerprintedPlan(inverseActions, { ...inverse,
+      schemaVersion: 'openspell.sp-write-plan.v1', actions: orderSpWriteActions(inverseActions) });
+    expect(() => verifySpWriteInversePair(forward, downgraded, sha256)).toThrow('scope or counts');
   });
 
   it('uses canonical exact decimals instead of JavaScript numbers or fixed minor units', () => {

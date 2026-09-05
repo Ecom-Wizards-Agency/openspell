@@ -7,6 +7,7 @@ import {
   serializeSpWritePlanFingerprint, spWriteAuthorizationActor, spWritePlanBinding,
   verifyDelegatedSpWriteReceiptArtifacts, verifyMcpPlanLimits, verifyMcpWriteDelegationFingerprint,
   verifySpWriteAuthorizationReceiptArtifacts, verifySpWriteExecutionEvidence, verifySpWriteJobArtifacts,
+  verifySpWritePlanFingerprints,
 } from './sp-writes.js';
 import {
   McpBidPreviewRequest, McpWriteStatus, McpWriteStatusRequest, McpKeyTokenDigest,
@@ -85,6 +86,7 @@ function execution() {
 
 function proposalEvidence() {
   const p = plan(); const d = delegation();
+  p.schemaVersion = 'openspell.sp-write-plan.v2';
   if (p.source.kind !== 'apply_batch') throw new Error('fixture must be a source batch');
   const artifact = McpBidProposalArtifact.parse({ schemaVersion: 'openspell.mcp-bid-proposal.v1',
     orgId: p.orgId, profileId: p.profileId, applyBatchId: p.source.applyBatchId,
@@ -103,7 +105,56 @@ function proposalEvidence() {
   return { p, e, artifact };
 }
 
+function twoRowProposalEvidence() {
+  const { p, e, artifact } = proposalEvidence();
+  if (p.source.kind !== 'apply_batch') throw new Error('fixture must be a source batch');
+  const secondRow = { ...artifact.rows[0]!, applyRowId: id('81'), keywordId: 'z-synthetic-keyword' };
+  const secondAction = SpWriteAction.parse({ ...p.actions[0]!, actionId: id('82'),
+    entity: { keywordId: secondRow.keywordId },
+    sources: [{ kind: 'apply_row', applyRowId: secondRow.applyRowId, changeKey: 'keyword.bid' }] });
+  secondAction.fingerprint = hash(serializeSpWriteActionFingerprint(secondAction));
+  artifact.rows = [secondRow, ...artifact.rows];
+  const artifactText = serializeMcpBidProposalArtifact(artifact);
+  e.provenance = { ...e.provenance, artifactText, artifactSha256: hash(artifactText), rows: artifact.rows };
+  p.actions = [secondAction, ...p.actions];
+  p.counts = { logicalChanges: 2, providerRows: 2, uniqueEntities: 2,
+    byRoute: { ...p.counts.byRoute, 'sp.v3.keywords.update': 2 } };
+  p.source.provenanceSnapshotFingerprint = hash(serializeSpWritePreviewProvenance(e));
+  p.fingerprint = hash(serializeSpWritePlanFingerprint(p));
+  return { p, e, artifact };
+}
+
 describe('bounded MCP write contracts', () => {
+  it('binds a two-row v2 plan to proposal sequence instead of legacy locale order', () => {
+    const { p, e, artifact } = twoRowProposalEvidence();
+    expect(p.actions.map((action) => action.entity)).toEqual(
+      artifact.rows.map((row) => ({ keywordId: row.keywordId })),
+    );
+    expect(p.actions.map((action) => action.entity)).toEqual([
+      { keywordId: 'z-synthetic-keyword' }, { keywordId: 'synthetic-keyword' },
+    ]);
+    expect(SpWritePlan.safeParse({ ...p, schemaVersion: 'openspell.sp-write-plan.v1' }).success).toBe(false);
+    expect(verifyMcpWritePreviewEvidenceArtifacts(p, e, hasher)).toEqual({ plan: p, evidence: e });
+  });
+
+  it('refuses a freshly fingerprinted v2 action permutation against unchanged proposal evidence', () => {
+    const { p, e } = twoRowProposalEvidence();
+    const reordered = SpWritePlan.parse({ ...p, actions: [...p.actions].reverse() });
+    reordered.fingerprint = hash(serializeSpWritePlanFingerprint(reordered));
+    expect(verifySpWritePlanFingerprints(reordered, hasher)).toEqual(reordered);
+    expect(() => verifyMcpWritePreviewEvidenceArtifacts(reordered, e, hasher))
+      .toThrow('MCP proposal differs from its exact plan and authority');
+  });
+
+  it('refuses rehashed v1 plans as the source of new MCP proposal evidence', () => {
+    const { p, e } = proposalEvidence();
+    const downgraded = SpWritePlan.parse({ ...p, schemaVersion: 'openspell.sp-write-plan.v1' });
+    downgraded.fingerprint = hash(serializeSpWritePlanFingerprint(downgraded));
+    expect(verifySpWritePlanFingerprints(downgraded, hasher)).toEqual(downgraded);
+    expect(() => verifyMcpWritePreviewEvidenceArtifacts(downgraded, e, hasher))
+      .toThrow('preview evidence differs from the plan');
+  });
+
   it('records exact decimal proposal provenance without claiming a legacy recommendation export', () => {
     const { p, e, artifact } = proposalEvidence();
     expect(SpWriteSourceEvidence.parse(e)).toEqual(e);

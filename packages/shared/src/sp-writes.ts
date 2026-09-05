@@ -7,7 +7,7 @@ import {
   Uuid,
 } from './primitives.js';
 
-export const SpWriteSchemaVersion = z.literal('openspell.sp-write-plan.v1');
+export const SpWriteSchemaVersion = z.enum(['openspell.sp-write-plan.v1', 'openspell.sp-write-plan.v2']);
 export type SpWriteSchemaVersion = z.infer<typeof SpWriteSchemaVersion>;
 
 export const SpWriteSha256 = z.string().regex(/^[a-f0-9]{64}$/);
@@ -504,9 +504,18 @@ export const SpWritePlan = z.object({
     context.addIssue({ code: 'custom', message: 'plan timestamps must be generated, frozen, then unexpired' });
   }
 
-  const ordered = orderSpWriteActions(plan.actions);
-  if (JSON.stringify(ordered.map(actionOrderKey)) !== JSON.stringify(plan.actions.map(actionOrderKey))) {
-    context.addIssue({ code: 'custom', path: ['actions'], message: 'plan actions must use canonical order' });
+  if (plan.schemaVersion === 'openspell.sp-write-plan.v1') {
+    const ordered = orderSpWriteActions(plan.actions);
+    if (JSON.stringify(ordered.map(actionOrderKey)) !== JSON.stringify(plan.actions.map(actionOrderKey))) {
+      context.addIssue({ code: 'custom', path: ['actions'], message: 'plan actions must use canonical order' });
+    }
+  } else if (plan.actions.some((action) => action.routeKey !== 'sp.v3.keywords.update'
+    || action.changes.bid === undefined || action.changes.state !== undefined
+    || !SpKeywordBidDecimal.safeParse(action.changes.bid.expected.amount).success
+    || !SpKeywordBidDecimal.safeParse(action.changes.bid.requested.amount).success
+    || action.changes.bid.expected.amount === action.changes.bid.requested.amount
+    || action.sources.length !== 1 || action.sources[0]?.changeKey !== 'keyword.bid')) {
+    context.addIssue({ code: 'custom', path: ['actions'], message: 'v2 plans support keyword bids in source sequence only' });
   }
   if (new Set(plan.actions.map((action) => action.actionId)).size !== plan.actions.length) {
     context.addIssue({ code: 'custom', path: ['actions'], message: 'plan repeats an action ID' });
@@ -573,7 +582,7 @@ function digestSha256(preimage: string, hasher: SpWriteSha256Hasher): SpWriteSha
 export function serializeSpWritePlanFingerprint(rawPlan: SpWritePlan): string {
   const plan = SpWritePlan.parse(rawPlan);
   const { fingerprint: _fingerprint, ...preimage } = plan;
-  return JSON.stringify(['openspell.sp-write-plan.v1', preimage]);
+  return JSON.stringify([plan.schemaVersion, preimage]);
 }
 
 export function verifySpWritePlanFingerprints(
@@ -645,13 +654,20 @@ export function verifySpWriteInversePair(
     || inverse.source.kind !== 'inverse_execution') {
     throw new Error('SP write inverse pairing requires forward and inverse plans');
   }
-  if (inverse.source.sourcePlanId !== forward.id
+  if (inverse.schemaVersion !== forward.schemaVersion
+    || inverse.source.sourcePlanId !== forward.id
     || inverse.source.sourcePlanFingerprint !== forward.fingerprint
     || inverse.orgId !== forward.orgId
     || inverse.profileId !== forward.profileId
     || JSON.stringify(inverse.providerScope) !== JSON.stringify(forward.providerScope)
     || JSON.stringify(inverse.counts) !== JSON.stringify(forward.counts)) {
     throw new Error('SP write inverse plan scope or counts do not match the forward plan');
+  }
+
+  if (forward.schemaVersion === 'openspell.sp-write-plan.v2'
+    && inverse.actions.some((action, index) => action.sources[0]?.kind !== 'inverse_action'
+      || action.sources[0].sourceActionId !== forward.actions[index]?.actionId)) {
+    throw new Error('SP write v2 inverse must preserve the forward source sequence');
   }
 
   const inverseBySource = new Map<string, SpWriteAction>();
