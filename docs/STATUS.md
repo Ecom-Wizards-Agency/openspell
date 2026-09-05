@@ -165,6 +165,13 @@ implementation brief in `docs/workpackages/`.
 | 198 | Hosted migration conformance oracle | merged; source-only | pure verification of the eight WP-197 signed record families, canonical signatures, phase tags, official CLI topology, runtime chains and legal transcripts merged through PR #127 at `3c190ba`; no CLI, external I/O, signing, launcher, authorization or apply capability exists |
 | 199 | Private root journal and fixed IPC | merged; source-only | private immutable journal custody, separate fixed operator/supervisor IPC, exact grant/ticket signing, one-use consumption and recovery-only restart behavior merged through PR #129 at `b0a6b0c`; no binary, listener, launcher, network, database, credential, deployment or apply capability exists |
 | 200 | Official policy and synthetic runtime proof | merged; source-only | fixed official-release policy and descriptor-only verifier plus complete synthetic Linux namespace, cgroup, pidfd, ptrace/exec-map, interruption and zero-residue proofs merged through PR #131 at `9d932f5`; PR #132 fixed trusted fresh-runner proof-builder acquisition at `f06efea`, whose exact-main CI and trusted kernel workflow passed; official acquisition and complete official provenance remain open, and no production launcher, target, credential, database connection, deployment or apply capability exists |
+| 201 | Disposable target-scoped preparation | parked | unmerged `wp-201-disposable-preparation` branch and worktree left untouched; decision D1 in `docs/workpackages/REPLAN-2026-09-05.md` parked the WP-201 to WP-205 private-supervisor program in favor of the rehearsed attended window; no hosted, credential or apply capability exists |
+| 202 | Disposable apply and lock-handoff proof | parked | not started; parked by decision D1 |
+| 203 | Immutable supervisor deployment artifact | parked | not started; parked by decision D1 |
+| 204 | Production prerequisites and operation window | parked | not started; parked by decision D1 |
+| 205 | Production apply through the private supervisor | parked | not started; parked by decision D1; the merged `tools/hosted-migration-*` packages remain optional verification only |
+| 206 | Safe branch recovery | merged | recovered the safe legacy branch behavior through PR #134 at `560d5e2`; no migration or hosted change |
+| 207 | Hosted migration window and program re-baseline | in-progress; window gated | disposable rehearsal `apps/worker/src/store.hosted-prefix.test.ts` (41-file claim failure and committed row, in-order upgrade to the 44-file prefix, explicit recovery count 1, tokenless reclaim), runbook `docs/deploy/hosted-migration-attended-window.md` and read-only `docs/deploy/hosted-migration-preflight-checks.sql` rehearsed against a disposable PostgreSQL 17 database with probe/prefix-41/probe and probe/prefix-46/probe passing; the trusted kernel-proof workflow disabled in repository Actions settings, file unchanged; the hosted ledger remains at 41 versions and the window itself awaits the scoped operator authorization |
 
 ## Milestone gates
 
@@ -658,6 +665,12 @@ implementation brief in `docs/workpackages/`.
       release policy, a descriptor-only verifier and complete synthetic Linux runtime containment;
       official acquisition and complete official runtime/release provenance remain open. None
       queried or changed hosted state, and none grants apply authority.
+- [ ] WP-207 attended five-file window: rehearsed on a disposable database on 2026-09-05
+      (`store.hosted-prefix.test.ts` 5 of 5, `migrations.test.ts` 22 of 22, probe/prefix-41/probe
+      and probe/prefix-46/probe with 109 of 109 prefix-46 rows passing, all preflight and postflight
+      queries recorded in `docs/deploy/hosted-migration-attended-window.md`). The hosted dry run,
+      apply and postflight have not run; they require the scoped window authorization named in the
+      WP-207 brief. WP-201 to WP-205 are parked by decision D1.
 - [ ] Live coverage matrix and source precedence verified without client data entering Git.
 - [x] Full authenticated Wizard Ads route/state click-through at `bfce504`.
 - [x] Authenticated click-through at `b5c210d`: 21 of 21 production routes returned HTTP 200 with

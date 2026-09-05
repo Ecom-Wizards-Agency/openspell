@@ -272,6 +272,23 @@ schedule, command, database, user and active state; the worker
 was manually restarted and reconnected. That postflight saw `NRestarts=0`; the current snapshot
 above records the later automatic restart.
 
+WP-207 (2026-09-05) selected the attended, scoped five-file window as the path for those five
+files and rehearsed it on a disposable PostgreSQL 17 database:
+`apps/worker/src/store.hosted-prefix.test.ts` proves that current main's legacy claim against the
+41-file schema throws `invalid claim capability` after committing one `running` row with one
+attempt consumed, that applying `20260901020000`, `030000` and `040000` in order reaches the
+44-file prefix, that `requeue_stale_sync_jobs(interval '0 seconds')` recovers exactly that row, and
+that the reclaim returns exactly one tokenless job with the same identity. The full 46-file replay
+(`migrations.test.ts`, 22 tests) passed on the same cluster. The runbook
+`docs/deploy/hosted-migration-attended-window.md` and its read-only
+`docs/deploy/hosted-migration-preflight-checks.sql` were rehearsed end to end (probe, prefix-41,
+probe; five files applied one transaction each with ledger rows; probe, prefix-46 with 109 of 109
+passing, probe; all preflight and postflight queries) and record those outputs as expected shapes.
+The hosted ledger is still at 41 versions: no hosted query, dry run or apply has occurred, and the
+window itself runs only under the scoped authorization the WP-207 brief describes. The four WP-214
+migrations `20260905000000` through `20260905030000` live on a separate branch and are not part of
+that window.
+
 Do not repair migration history, pull hosted schema into the repository, replay an applied file, or
 deploy code that assumes a schema until its exact source and postflight are proven. Guarded broker,
 browser and authenticated project-scoped CLI routes are the normal access paths; direct secret
@@ -356,11 +373,13 @@ authorized, deployed and verified. No Amazon apply path was added.
 
 ## Known UX and performance follow-ups
 
-1. When every navigation group is expanded, the active marker and utility footer collide because
-   the entire sidebar owns scrolling while the footer is also pushed with auto margin. Fix in a
-   fresh serialized web package: keep brand/footer non-shrinking, give only the main
-   navigation `min-height: 0` plus vertical overflow, simplify the active marker, and add a browser
-   regression at the affected viewport with every group open.
+1. Closed by WP-208 (branch `wp-208-sidebar-layout`, pull request pending): the collision was the
+   main navigation shrinking under `min-height: 0` with no overflow rule, so its rows spilled under
+   the utility footer, which took the clicks. The fix gives only the navigation a scroll box, keeps
+   brand and footer non-shrinking, restores every link in the collapsed icon rail, hides the
+   collapse control at narrow widths, and adds a browser regression that asserts occlusion with
+   `elementFromPoint` at 1280x720, 1440x860 and 1440x1000 plus rail and narrow cases. The
+   `.wa-navlink-dot` active marker was dead CSS and is removed.
 2. Production Grid and Time Machine first loads remain above the intended targets. Use the closed
    `Server-Timing` spans to choose the next bottleneck; do not hide the delay with optimistic copy
    or weaken complete-row/count behavior.
@@ -375,62 +394,40 @@ authorized, deployed and verified. No Amazon apply path was added.
 
 ## Recommended continuation order
 
-This sequence orders source design and disposable proof packages only; it grants no external
-authority. Target or project creation, credential provision or rotation, hosted query, dry run or
-apply, authenticated acquisition, real-host staging, activation or service mutation, and deployment
-each require a fresh exact action-specific authorization before that action occurs.
+The sequence, ownership split, verified findings and decisions now live in
+`docs/workpackages/REPLAN-2026-09-05.md`; read it before choosing work. This section only records
+the selection and the ordering constraints that follow from it. It grants no external authority:
+hosted apply, deployment, service change, credential operation, activation and every Amazon call
+still require the exact action-specific authorization named in the relevant brief.
 
-1. Use WP-201 to implement the disposable target-scoped credential, egress, hosted-history and
-   dry-run preparation boundary with apply absent. Any actual disposable target, credential or
-   hosted preparation requires its own exact disposable-only authorization. WP-202 then proves
-   disposable apply, the two-stage lock handoff, crash/lost-response reconciliation and every valid
-   41-through-46 prefix, again only under a fresh exact disposable-target authorization.
-2. Use WP-203 for the immutable deployment artifact and source or synthetic-harness proof of
-   disabled-unit stage/activate/rollback behavior. That package work does not authorize staging,
-   activating or mutating a real host unit. Then use WP-204 for separately authorized production
-   prerequisites, read-only preparation, operation window and enqueue freeze without apply.
-3. Only through WP-205 and authorization for that exact database action, apply only the
-   WP-197-reviewed artifact and prove ledger, schema, privileges, preserved state and queue
-   postflight. Database approval does not authorize staging, service, queue-ownership or deployment
-   changes.
-4. With separate exact authorization, provision or rotate only the narrow recommendation-worker
-   database credential through an allowlisted Writer operation. Do not expose a broad
-   service-account token or reuse `service_role`; credential custody does not authorize staging or
-   activation.
-5. With separate action-specific staging authorization for each exact target, stage the clean-main
-   Evo report worker and the independently proven recommendation claimant. Staging must leave
-   current service enablement, claim authority and web enqueue unchanged.
-6. With separate action-specific activation authorization for each exact handoff, block new
-   recommendation enqueue; move report ownership and recommendation ownership independently; prove
-   each old claimant retired, each new claimant exclusively healthy, and zero incompatible active
-   work; then retain the exact rollback/custody evidence. Never allow overlapping consumers or
-   strand `recommendations.run` jobs.
-7. With separate candidate-deployment authorization, deploy a revision-stamped candidate from the
-   same proven main only after the recommendation claimant is exclusively healthy. Prove its exact
-   revision and route artifacts while admission remains blocked; do not create a preview or promote
-   the candidate under staging or deployment authority alone.
-8. With separate scoped-admission authorization, use only the guarded transition and exact
-   pre/postflight to move the proven authority tuple from blocked to scoped. Reconcile a lost
-   response by exact tuple readback; never retry blind. This gate does not authorize QA job creation
-   or web promotion.
-9. With separate bounded-QA authorization, test the candidate's Run preview, cross-page campaign
-   selection, reload/resume, refusal and terminal states, and reconcile exact immutable proposal
-   counts with zero Amazon action.
-10. Only with separate web-promotion authorization, promote the already verified candidate and
-   confirm its live revision and route artifacts. Release the optimizer-edit/job-creation freeze
-   only after every consumer and the web are revision-matched and weekday-aware.
-11. Replace or revision-stamp the MCP deployment from the same proven release and repeat its
-   read-only health, tool and audit verification before claiming runtime coherence.
-12. Implement the sidebar-scroll regression as the next independent source-only UI slice.
-13. Activate the bounded Creative pilot and reconcile authoritative Asset IDs and every count.
-14. Keep the merged Unified Reporting dual-run off until its binding, deployment revision, consumer
-   ownership, bounded deployment allowlist, exact five-type Evo health contract, and separately
-   authorized read-only provider probe are proven. Do not add download or promotion behavior from
-   request-status parity alone.
-15. Keep WP-184's distinctive release evidence and the contextual-negative rescue separate from
-   their remaining deployment and live-verification gates.
-16. Reconcile status, deployed revisions, migrations, open PRs, branches, and worktrees again; then
-   remove only clean, merged, obsolete worktrees after proving their branch and dirty state.
+Selected path for the hosted schema (decision D1): the **rehearsed, scoped attended window** in
+`docs/deploy/hosted-migration-attended-window.md`, applying the five reviewed files
+`20260901020000` through `20260901060000` from a fetched-history workdir in one operator-authorized
+window, with `docs/deploy/hosted-migration-preflight-checks.sql` as its read-only pre/postflight and
+`apps/worker/src/store.hosted-prefix.test.ts` as its disposable-database rehearsal. The WP-201 to
+WP-205 private-supervisor program is parked; the merged `tools/hosted-migration-*` packages remain
+as optional verification only, and the 230-minute trusted kernel-proof workflow is disabled in the
+repository's Actions settings. Its file is unchanged so the WP-200 boundary test, which forbids a
+manual-dispatch trigger for the privileged proof, still holds; re-enable it there if the program
+is resumed.
+
+1. WP-207 window (operator attended, one scoped authorization): hosted ledger from 41 to 46
+   versions, postflight recorded here and in `docs/STATUS.md`. Until postflight passes, nothing built
+   after 2026-08-30 may run against the hosted database (finding F1), and no web deploy from `main`
+   may happen.
+2. In parallel and independent of the window: WP-208 sidebar, WP-209 tables, WP-211 brand and
+   hygiene scrub, WP-212 repository overview, WP-216 optimizer preview fallback, and WP-210 creative
+   pilot preparation with a pinned pre-WP-194 worker. Design-owned files listed in the re-plan are
+   not edited by implementer packages.
+3. WP-213 deploys current `main` to Vercel and the MCP to Evo only after WP-207 reports 46 ledger
+   versions and WP-216 is merged. The optimizer edit and job-creation freeze lifts once web and
+   Vercel cron are on the same `main` revision.
+4. WP-214 first live Sponsored Products bid write as two pull requests (source, then activation),
+   then WP-215 campaign creation, WP-217 MCP-triggered guarded apply and WP-218 Sponsored Display
+   creative attribution, in the order and under the gates the re-plan states.
+5. Reconcile status, deployed revisions, migrations, open PRs, branches and worktrees again after
+   each external step; remove only clean, merged, obsolete worktrees after proving their branch and
+   dirty state. Leave the `wp-201-disposable-preparation` branch and its worktree untouched.
 
 If an external gate blocks one lane, continue with the next independent source-only package. Do
 not reinterpret waiting as authorization to mutate production.
