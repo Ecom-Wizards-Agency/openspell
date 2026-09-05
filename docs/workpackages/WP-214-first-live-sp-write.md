@@ -178,7 +178,9 @@ authorization for a second window containing these additional WP-214 migrations 
 Each begins with `set local lock_timeout = '5s'` and the shared transaction-scoped advisory
 DDL lock. Keep changes in new migration files and preserve existing evidence. Rehearsal
 must cover the stricter approval behavior and mirror triggers as well as creation of new
-objects. The versioned application entry must exist before exposing approval. Every ordinary
+objects. Apply all four before deploying any web revision containing the native Time Machine
+queries; that existing page also reads their evidence tables. The versioned application entry
+must exist before exposing approval. Every ordinary
 entity-sync owner must receive the keyword-mirror capability before enabling native writes.
 Do not mix this second window into WP-207 or use source tests as hosted-application evidence.
 

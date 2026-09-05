@@ -68,6 +68,8 @@ Claude's active branches/worktrees were inspected. This build will not edit WP-2
 their protected program documents/workflow, or the WP-208/WP-211 frontend scopes. All four
 new WP-214 migrations were checked for the five-second lock timeout and shared advisory DDL
 lock; their exact identities and compatibility considerations are now in the WP-214 brief.
+The second window must precede deployment of a web revision containing native Time Machine:
+its read queries require the new evidence tables even when write execution is disabled.
 
 ### Source progress
 
@@ -112,6 +114,15 @@ runs only. No new population source file was reported. These protected documents
 edited here; the current branch's hygiene gate remains failing until the scrub is integrated.
 The local decision trail's initial population checkpoint incorrectly said staged hygiene
 passed; a subsequent correction records the nonzero result and existing-document findings.
+
+Proposal revision design is now grounded and synthesized from three independent candidates in
+[the declared design](../design/WP-214-PROPOSAL-REVISIONS.md). It preserves original recommendation
+and run identities, appends immutable revisions and uses exact content references for review
+and export. Replacement proposal rows would conflict with existing run custody. The Python
+export validator skips string-valued money, so the chosen bounded numeric export boundary must
+prove an exact decimal JSON round trip. Four representative serializer boundaries passed a
+local probe; the edit/export lifecycle is not yet implemented. One additional source migration
+is planned beyond the four committed WP-214 migrations, outside Claude's original window.
 
 The main replan now contains a current Claude handoff, including the locally verified
 native-history slice. It documents the four UI HTTP

@@ -293,6 +293,11 @@ Export downloads use the counted loader and refuse a truncated proposal populati
 returning a partial workbook would lose create rows. Proposal revision/editing is a separate
 contract/persistence slice and remains outstanding.
 
+The next edit slice is specified in [Proposal revisions](WP-214-PROPOSAL-REVISIONS.md).
+It preserves existing run/proposal identity, appends an immutable content revision, resets
+review state and freezes the exact selected revision at export. Its additional migration is
+planned separately from the four committed write-path migrations and Claude's original window.
+
 ### Delegated admission slice
 
 WP-217 first lands the coordinated policy/shared authorization amendment, then a new additive
