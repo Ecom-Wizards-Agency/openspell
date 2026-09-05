@@ -3280,6 +3280,14 @@ frozen above; image root, staged source, vendor, toolchain, controller, ledger a
 files remain read-only. The no-feature root-authority checks retain their local fast path, but they
 do not satisfy bridge success.
 
+The root-authority package's ordinary `scripts/cargo.mjs test` command always uses its pinned
+container fallback, even when the host has the exact pinned Rust toolchain. Installation-path tests
+exercise the production clock sampler and therefore require `/proc/sys` to be a distinct mount from
+`/proc`; a host toolchain version cannot attest that topology, and common CI hosts expose both paths
+on one mount. The package `check` command may retain its isolated local-toolchain fast path because
+it does not execute the sampler. This routing does not relax the Rust invariant or count as the
+separate root-bridge acceptance row.
+
 Before a cold proof, the wrapper selects only `/tmp` then `/var/tmp`, creates and syncs the exact
 invocation path/record, and constructs the regular-file-only tracked source snapshot and fixed
 controllers described above. It first performs platform-aware inspection of the exact index without

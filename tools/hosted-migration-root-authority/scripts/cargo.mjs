@@ -83,7 +83,11 @@ export function runCargo(mode) {
   const script = commands[mode];
   if (script === undefined) throw new Error("unsupported cargo mode");
 
-  if (hasPinnedLocalToolchain()) {
+  // The installation-path tests require the same fixed procfs topology as the
+  // reviewed proof container: /proc/sys must be a distinct mount from /proc.
+  // A pinned host toolchain does not prove that invariant (GitHub-hosted Linux
+  // runners use a same-mount layout), so only compile/check work may use it.
+  if (mode === "check" && hasPinnedLocalToolchain()) {
     const cargoTargetDirectory = createCargoTargetDirectory();
     try {
       return run("bash", ["-c", script], {

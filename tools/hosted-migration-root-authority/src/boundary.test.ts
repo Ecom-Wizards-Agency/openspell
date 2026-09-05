@@ -264,6 +264,74 @@ describe("private root-authority package boundary", () => {
     );
   });
 
+  it("runs installation-path tests only in the fixed container procfs topology", () => {
+    const wrapper = read("scripts/cargo.mjs");
+    expect(wrapper).toContain('if (mode === "check" && hasPinnedLocalToolchain())');
+    expect(wrapper).not.toContain("if (hasPinnedLocalToolchain()) {");
+    expect(wrapper).toContain("process.exitCode = runCargo(mode)");
+  });
+
+  it("routes ordinary Rust tests through the exact pinned container invocation", () => {
+    const fixtureDirectory = mkdtempSync(join(tmpdir(), "openspell-root-test-routing-"));
+    try {
+      const binaryDirectory = join(fixtureDirectory, "bin");
+      const dockerArgumentsPath = join(fixtureDirectory, "docker-arguments");
+      const hostCalledPath = join(fixtureDirectory, "host-called");
+      mkdirSync(binaryDirectory);
+      for (const binary of ["rustc", "cargo"]) {
+        writeFileSync(
+          join(binaryDirectory, binary),
+          [
+            "#!/bin/sh",
+            'printf "%s\\n" "$0 $*" >> "$HOST_CALLED_PROBE"',
+            `printf '${binary} 1.97.1 (fixture)\\n'`,
+            "exit 91",
+            "",
+          ].join("\n"),
+          { mode: 0o700 },
+        );
+      }
+      writeFileSync(
+        join(binaryDirectory, "docker"),
+        ["#!/bin/sh", 'printf "%s\\n" "$@" > "$DOCKER_ARGUMENTS_PROBE"', "exit 0", ""].join(
+          "\n",
+        ),
+        { mode: 0o700 },
+      );
+
+      const result = spawnSync(
+        process.execPath,
+        [join(packageDirectory, "scripts/cargo.mjs"), "test"],
+        {
+          cwd: packageDirectory,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            DOCKER_ARGUMENTS_PROBE: dockerArgumentsPath,
+            HOST_CALLED_PROBE: hostCalledPath,
+            PATH: `${binaryDirectory}:${process.env.PATH ?? ""}`,
+          },
+        },
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(existsSync(hostCalledPath)).toBe(false);
+      const arguments_ = readFileSync(dockerArgumentsPath, "utf8").trimEnd().split("\n");
+      expect(arguments_.slice(0, 3)).toEqual(["run", "--rm", "--user"]);
+      expect(arguments_).toContain(`${packageDirectory}${sep}:/workspace:ro`);
+      expect(arguments_.slice(-4)).toEqual([
+        rustImage,
+        "bash",
+        "-c",
+        "cargo test --locked --all-targets --no-default-features && cargo test --locked --all-targets --no-default-features --features wp201-internal",
+      ]);
+      expect(readdirSync(packageDirectory)).not.toContain("target");
+    } finally {
+      rmSync(fixtureDirectory, { force: true, recursive: true });
+    }
+  });
+
   it("pins the exact synthetic deny-live installation policy", () => {
     const policy = readFileSync(join(sourceDirectory, "preparation-policy-v1.golden.json"));
     expect(policy).toHaveLength(2_508);
