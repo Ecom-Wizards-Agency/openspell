@@ -31,6 +31,46 @@ deployment, credential store or Amazon account was accessed.
 
 ## Implementation progress, 2026-09-05
 
+### Confirmed supervisor parking and scope, 2026-09-05
+
+The operator explicitly decided to park WP-201–205. No work on that program was performed
+by this build. [PR #135](https://github.com/Ecom-Wizards-Agency/openspell/pull/135) was still
+open when checked and is now closed without merging. The branch remains at `6f86ffd` and
+its worktree is retained, including its existing uncommitted `ci.yml` and `HANDOVER.md`
+changes. No deletion, reset or rebase was performed. WP-202–205 are not being started.
+
+Remote main and merged [PR #136](https://github.com/Ecom-Wizards-Agency/openspell/pull/136)
+were verified at `fc29fb9`. The claim that this merge commit is already an ancestor of the
+implementation branch is technically incorrect: their common ancestor is the brief commit
+`1e62a92`, which the implementation branch does contain. The audited documents remain on
+`wp-214-sp-write-source`; no history rewrite is needed to preserve their work.
+
+The supervisor tradeoff supports parking, with these evidence corrections:
+
+- `230` is the workflow timeout, not measured cost per push. The latest four successful
+  trusted-kernel runs lasted roughly 2–2.5 minutes; the latest was
+  [run 33971635117](https://github.com/Ecom-Wizards-Agency/openspell/actions/runs/33971635117).
+  On checked main, it runs after successful CI for a main push. Claude owns changing this
+  workflow in WP-207.
+- The four retained tool packages contain 52,116 tracked lines including tests, fixtures
+  and documentation. PR #135 adds 41,056 lines and removes 127 across 48 files. These counts
+  establish substantial scope; they do not establish a remaining duration of weeks.
+- WP-201's source brief explicitly provides an offline, synthetic preparation proof with
+  no apply capability or authorized live target. Isolation and formal recovery are design
+  benefits, not proof of a deployed production supervisor or elimination of human error.
+- Availability of the required narrowly scoped credentials remains unverified here.
+  The supervisor would still require a rehearsed, authorized operational window.
+- Nine refers to five previously reported unapplied merged migrations plus four local
+  WP-214 source migrations. Hosted state was not freshly queried. The latter require a
+  second window after WP-214 source review/merge and are not part of WP-207's five-file scope.
+
+Claude's active branches/worktrees were inspected. This build will not edit WP-207, WP-216,
+their protected program documents/workflow, or the WP-208/WP-211 frontend scopes. All four
+new WP-214 migrations were checked for the five-second lock timeout and shared advisory DDL
+lock; their exact identities and compatibility considerations are now in the WP-214 brief.
+
+### Source progress
+
 | Change | Verified source and behavior | State |
 |---|---|---|
 | Shared application and immutable source contracts | `packages/shared/src/sp-write-application.ts` and `sp-write-preview-evidence.ts`; exact operation identity includes execution and plan IDs, and frozen evidence retains original export bytes and strategy/group snapshot text. | Committed before dependent implementation. |

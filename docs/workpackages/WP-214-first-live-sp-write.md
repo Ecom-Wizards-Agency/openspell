@@ -163,6 +163,25 @@ reviewed contract/persistence slice before dependent source.
 
 ### Activation and live proof (scoped authorization)
 
+Deployment has two separate schema windows. Claude owns WP-207's original five migrations
+`20260901020000` through `20260901060000`; this package does not modify that scope or execute
+that window. After this source PR is reviewed and merged, rehearse and obtain scoped
+authorization for a second window containing these additional WP-214 migrations in order:
+
+| Migration | Dependency introduced |
+|---|---|
+| `20260905000000_sp_write_preview_evidence.sql` | Immutable reconstructable source and policy evidence |
+| `20260905010000_sp_write_preview_approval.sql` | Frozen-source checks around the existing approval function; tighter function permissions |
+| `20260905020000_sp_write_application_entry.sql` | Version-specific authenticated application approval entrypoint |
+| `20260905030000_sp_write_mirror_observations.sql` | Exact observation/diff links, keyword bid freshness and guarded mirror updates |
+
+Each begins with `set local lock_timeout = '5s'` and the shared transaction-scoped advisory
+DDL lock. Keep changes in new migration files and preserve existing evidence. Rehearsal
+must cover the stricter approval behavior and mirror triggers as well as creation of new
+objects. The versioned application entry must exist before exposing approval. Every ordinary
+entity-sync owner must receive the keyword-mirror capability before enabling native writes.
+Do not mix this second window into WP-207 or use source tests as hosted-application evidence.
+
 15. Seed one environment gate version plus head and one profile grant version plus head for the
     single profile with the template SQL, run by the authorized executor using the migration-
     owner role. Values stay in `_local/`.
