@@ -11,10 +11,14 @@ path. No hosted database, deployment, credential store or Amazon account was acc
 - Claude Fable 5.1 owns frontend design, including the new write-preview client components.
 - The operator expects to work with Claude on D1/WP-207 and D2/WP-216. GPT provides the
   corrected handoff and does not begin those implementations.
-- The operator clarified that "API writes without MCP" means changing values through the
-  OpenSpell UI and having OpenSpell send approved changes to Amazon. WP-214 supplies that
-  flow first. WP-217 later adds bounded MCP access to the same worker service. A separate
-  HTTP integration API for external scripts is out of scope. HTTP tests cover the UI backend.
+- Both write entrypoints are required: changes submitted through the OpenSpell UI and
+  programmatic changes through its authenticated MCP connection. WP-214 proves UI-driven
+  Amazon writes first; WP-217 completes MCP discovery, preview, apply and status against the
+  same backend. The MCP path must work without browser cookies or a per-change UI action
+  within its operator-issued delegation. A separate REST service is not a prerequisite.
+  HTTP tests cover the UI backend and the actual MCP connection.
+- Goal-mode building is now authorized. Every MCP change and linked reversion must be recorded
+  and visible in Time Machine; add execution-ledger projection and real reversion support.
 - Source work, testing and review can proceed autonomously. A tested operational window can
   receive one scoped authorization for its exact targets and restoration steps; attendance and
   per-command confirmations are not technical requirements. Live bounds are not invented here.
@@ -162,4 +166,6 @@ was changed to make it pass. Typecheck, lint, skill lint, staged diff checks and
 Hygiene scanned 1461 of 1462 tracked files, with one existing exemption. The private denylist
 is absent, so client-name checking was skipped; the documented WP-211 scrub is still required.
 All 12 handoff brief links and 32 audited source citation paths/line bounds were checked.
-Exactly 16 Markdown documents changed; runtime source and active deployment state are unchanged.
+The initial audit changed 16 Markdown documents. A subsequent four-document clarification
+made the MCP submission requirement and connection-level acceptance explicit. Runtime source
+and active deployment state are unchanged; the clarification does not claim implemented tools.

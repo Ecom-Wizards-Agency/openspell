@@ -18,9 +18,10 @@ does not work yet. It is the first write priority, starting with keyword bids.
 
 Claude Fable 5.1 owns the preview/status interaction and visual design. The implementer owns
 the authenticated backend endpoints, plan/approval logic and worker execution. Those endpoints
-serve the OpenSpell UI; a separately supported HTTP integration API for external scripts is out
-of scope following the operator's clarification. WP-217 later adds MCP as a second caller of
-the same application service. Ordinary UI changes retain one exact-plan approval step.
+serve the OpenSpell UI. The application service must also support programmatic submission by
+MCP in WP-217; keep its planning, execution and status logic independent of browser state.
+Both entrypoints are required. A separate external integration API is not needed to deliver
+the MCP connection. Ordinary UI changes retain one exact-plan approval step.
 
 ## Owned files
 
@@ -41,7 +42,11 @@ Source PR:
 - `packages/db/src/sp-write-persistence.test.ts` runtime blast block and
   `packages/db/src/sp-write-persistence-blast.test.ts`: allow the exact new inert application
   modules and runbook in the source PR, while asserting zero worker entrypoint registration;
-- HTTP integration tests proving the full lifecycle with a fake provider and no MCP server.
+- HTTP integration tests proving the full lifecycle with a fake provider and no MCP server;
+- Shared Time Machine write/reversion contracts, DB projection/query tests and server data
+  wiring, after declaring exact files. Claude owns client presentation. Expose plan/execution
+  identity, actor, old/requested/observed values and inverse links; preserve existing export
+  history and avoid duplicate sync entries. WP-217 extends this same projection for MCP.
 
 Related backend handoff for WP-209, implemented as a separate source commit before its UI:
 

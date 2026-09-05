@@ -11,10 +11,13 @@ D1/WP-207 and D2/WP-216 remain with Claude.
 ## Objective
 
 Allow an operator-issued write key to apply bounded keyword bid changes through the same
-application service, durable ledger and worker as WP-214. MCP is an additional caller after
-the UI write flow works. A key delegates authority within recorded limits; no per-plan UI
+application service, durable ledger and worker as WP-214. A working authenticated MCP
+connection that can submit changes is required, not an optional future integration. UI writes
+are proven first; MCP then invokes the same backend programmatically. A key delegates authority within recorded limits; no per-plan UI
 confirmation is required within that delegation. Read-only keys stay read-only. MCP never calls
-Amazon or grants itself more authority. A separate external HTTP integration API is out of scope.
+Amazon or grants itself more authority. Implement the programmatic interface needed by MCP.
+The existing Streamable HTTP MCP server is the client connection; it may invoke the shared
+application service directly. A separate REST service is not required for that connection.
 
 ## Verified starting point
 
@@ -111,6 +114,29 @@ The policy change does not enable a key, deploy code or authorize a live provide
    Read-only audit behavior remains covered by its existing tests.
 9. Read-only keys cannot preview write proposals or apply them. They retain existing analytical
    reads. Existing UI writes use WP-214's human approval path and are unaffected by delegation.
+10. Expose discoverable MCP tools `preview_bid_changes`, `apply_bid_changes` and
+    `get_write_status` with shared request/response contracts. Test tool discovery and calls
+    through the authenticated Streamable HTTP connection using a fake provider, not just direct
+    calls to internal handlers. The returned plan/execution identities must match the UI status.
+    A write-scoped caller must complete the flow without browser cookies or a manual UI step.
+
+## Time Machine and reversion
+
+Every MCP write must appear in Time Machine, with the key and owning user, profile/entity,
+old/requested/observed values, timestamps, exact counts and execution state. Link each entry to
+its immutable plan and execution. A matching synchronization observation must enrich that
+entry rather than create a duplicate action. Pending, refused, partial and failed outcomes must
+not be presented as successfully applied changes.
+
+Time Machine must offer a guarded inverse of an eligible MCP change against current synchronized
+state. UI-triggered reversion uses human approval; MCP-triggered reversion uses its active bounded
+delegation. Record the inverse as its own plan/execution linked to the original. Both directions
+and the inverse's pending/accepted/observed/failed state remain visible. Refuse stale/conflicting
+inversions; never erase or rewrite the original event.
+
+Declare shared timeline/reversion contracts, DB projection/queries and tests as implementation
+scope. Claude Fable 5.1 owns Time Machine's client presentation and interaction design; provide
+synthetic fixtures and server data wiring for that handoff.
 
 ## Acceptance
 
@@ -124,7 +150,15 @@ The policy change does not enable a key, deploy code or authorize a live provide
    or revocation between preview/apply and before dispatch, stale plan, delta/row cap refusal,
    kill switch after enqueue, and key/owning-user provenance in audit and status.
 4. After WP-214 proves the UI path, one exact live-test authorization permits a bounded key
-   to perform one MCP bid-change cycle. Reconcile accepted/observed counts and inverse
-   restoration using the same worker path.
+   to perform one bid-change cycle through the actual authenticated MCP connection. Verify
+   discovery, preview, apply and status from an MCP client without using the UI to submit or
+   approve the change. Reconcile accepted/observed counts and inverse restoration using the
+   same worker path; the execution is also visible in the UI.
 5. `AGENTS.md`, UI/MCP guidance and implementation agree; `pnpm check`, hygiene and skill lint
    pass. Record live evidence only when it has actually been observed.
+
+6. Through the actual MCP connection, a synthetic write and its inverse appear in the Time
+   Machine query/page data with the original actor, exact values, execution states and mutual
+   links. Assert tenant isolation, one entry per logical change after resync, retained original
+   history, and visible partial/failed reversion outcomes. Live proof repeats the same checks
+   only within its exact authorization.
