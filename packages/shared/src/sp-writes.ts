@@ -503,6 +503,10 @@ export const SpWritePlan = z.object({
     || Date.parse(plan.frozenAt) >= Date.parse(plan.expiresAt)) {
     context.addIssue({ code: 'custom', message: 'plan timestamps must be generated, frozen, then unexpired' });
   }
+  if (plan.schemaVersion === 'openspell.sp-write-plan.v2'
+    && [plan.generatedAt, plan.frozenAt, plan.expiresAt].some((at) => !/[.]\d{3}Z$/.test(at))) {
+    context.addIssue({ code: 'custom', message: 'v2 plan timestamps require canonical UTC milliseconds' });
+  }
 
   if (plan.schemaVersion === 'openspell.sp-write-plan.v1') {
     const ordered = orderSpWriteActions(plan.actions);

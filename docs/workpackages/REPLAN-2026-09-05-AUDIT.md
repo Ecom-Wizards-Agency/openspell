@@ -33,6 +33,11 @@ deployment, credential store or Amazon account was accessed.
 
 ### MCP producer review and sequence correction, 2026-09-06
 
+The later integrated review reproduced a raw v2 inverse that PostgreSQL could record with
+a one-microsecond validity window but JavaScript could not reload. V2 now specifies canonical
+UTC millisecond plan times, matching both actual producers; v1 timestamp handling is retained.
+The shared amendment precedes the SQL refusal and regression check.
+
 The controlled source producer now checks current key/issuer/profile authority and atomically
 records request, source rows, plan, evidence and key-attributed preview audit. Its 32-test local
 DB checkpoint passed, including 22 raw service SQL cases, eight application cases and two
