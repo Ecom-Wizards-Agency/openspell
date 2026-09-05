@@ -3425,6 +3425,34 @@ reserve's otherwise unused 15-second create-settlement slice belongs to exact ha
 TERM/KILL/reap settlement before state-specific path cleanup. No harness owns normal cleanup until
 spawn identity is positively established, and no failed spawn can be retried with that root.
 
+The supervisor resolves the fixed case launcher and samples the authoritative cut start before it
+marks the handoff `attempted`; once it enters the launcher, it never abandons or reuses the token.
+Before deleting the token, the launcher privately registers the complete child, cleanup, custody
+and handoff identity against the exact error object. It exposes no capability as an error property.
+The supervisor can consume that private claim exactly once; forged or replayed errors return no
+authority, and descriptor-settlement failure is returned as evidence without losing the claimed
+launch record. A pre-launch failure instead consumes the still-available token through a distinct
+private no-child cleanup claim.
+
+The supervisor installs the normal bounded five-pipe observer before inspecting process identity
+and waits for the exact `spawn` or `error` event. A returned child settles through the otherwise
+unused 15-second create slice: five seconds normal, five after `SIGTERM` and five after `SIGKILL`,
+capped by the cut's inner deadline. This failure occurs after an OS spawn may have run; it never
+proves that Docker create was unissued. Structural settlement is distinct from semantic validity:
+the authenticated reap receipt is either `not-created`, or it proves child close, process-group
+absence, parent fd-3 writer closure and EOF on stdout, stderr, identity, accepted-ID and audit
+pipes. If a primary error or receipt-transition clock failure has already made the run permanently
+failed, the one-use structural receipt is consumed by a distinct failed-reap transition. That
+transition can cross the expired normal outer boundary, never grants success, and enters only the
+separate 130-second failed-cut reducer. Recovery adopts a fresh boot-clock descriptor for the whole
+teardown and rotates that owned descriptor after a read failure. The reducer alone owns full-ID
+accepted-ID validation, exact-name recovery, bounded removal/absence, final censuses, the
+custody-bearing path helper, parent absence and descriptor settlement. Every child uses the exact
+reducer slot deadlines. An unreaped cleanup child records explicit residue, skips all remaining
+pathname or Docker authority, and advances only to the mandatory parent-descriptor settlement;
+completion remains `failed-residue`. Cleanup failure is retained alongside the exact original
+error; clean recovery rethrows that same object.
+
 The outer no-argument test orchestrator gives the complete Docker integration child exactly 7,490
 seconds. That is the non-overlapping sum of 460 seconds for initial source staging, 460 seconds for
 image authentication, 460 seconds for dependency acquisition, 1,660 seconds for the normal matrix,

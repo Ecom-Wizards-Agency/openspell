@@ -2653,7 +2653,21 @@ function cutReapReceipt(
     ),
     identity: valid ? parsedCutIdentity(cutCase, token) : null,
     audit: valid ? parsedCutAudit(token) : null,
-    pipesEof: true,
+    structural: reapedCutStructure(),
+  });
+}
+
+function reapedCutStructure() {
+  return Object.freeze({
+    kind: "reaped",
+    releaseWriterClosed: true,
+    eof: Object.freeze({
+      stdout: true,
+      stderr: true,
+      identity: true,
+      accepted: true,
+      audit: true,
+    }),
     groupAbsent: true,
   });
 }
@@ -2684,6 +2698,233 @@ function cleanupProofIdentity(id: string, token: object, operation: string) {
     { kind: "proof", invocation, rowId: "root-fmt" },
     { token, operation },
   );
+}
+
+function replaceFixtureExactly(source: string, expected: string, replacement: string): string {
+  expect(source.split(expected)).toHaveLength(2);
+  return source.replace(expected, replacement);
+}
+
+async function transformedCutObserverModule(): Promise<{
+  readonly directory: string;
+  readonly observeCutHarness: (...args: readonly unknown[]) => Promise<{
+    readonly error?: Error;
+    readonly outcome: string;
+    readonly receipt: object;
+  }>;
+}> {
+  const directory = mkdtempSync(join(tmpdir(), "wp201-cut-observer-"));
+  const integrationPath = fileURLToPath(
+    new URL("../scripts/docker-integration.mjs", import.meta.url),
+  );
+  let source = readFileSync(integrationPath, "utf8");
+  for (const specifier of [
+    "./acquisition-archive.mjs",
+    "./docker-event-helper.mjs",
+    "./cargo.mjs",
+    "./proof-engine.mjs",
+    "./test.mjs",
+  ]) {
+    const absolute = pathToFileURL(
+      fileURLToPath(new URL(`../scripts/${specifier.slice(2)}`, import.meta.url)),
+    ).href;
+    source = replaceFixtureExactly(
+      source,
+      `from ${JSON.stringify(specifier)};`,
+      `from ${JSON.stringify(absolute)};`,
+    );
+  }
+  source += "\nexport { observeCutHarness };\n";
+  const modulePath = join(directory, "docker-integration.mjs");
+  writeFileSync(modulePath, source, { mode: 0o600 });
+  const module = await import(`${pathToFileURL(modulePath).href}?observer=${Date.now()}`) as {
+    readonly observeCutHarness: (...args: readonly unknown[]) => Promise<{
+      readonly error?: Error;
+      readonly outcome: string;
+      readonly receipt: object;
+    }>;
+  };
+  return { directory, observeCutHarness: module.observeCutHarness };
+}
+
+async function transformedFailedTeardownModule(hooks: object): Promise<{
+  readonly directory: string;
+  readonly globalKey: string;
+  readonly runFailedCutTeardown: (...args: readonly unknown[]) => Promise<{
+    readonly cursor: { readonly phase: string };
+    readonly errors: readonly Error[];
+  }>;
+}> {
+  const directory = mkdtempSync(join(tmpdir(), "wp201-failed-teardown-"));
+  const globalKey = `__wp201_failed_teardown_${directory}`;
+  (globalThis as Record<string, unknown>)[globalKey] = hooks;
+  const integrationPath = fileURLToPath(
+    new URL("../scripts/docker-integration.mjs", import.meta.url),
+  );
+  let source = readFileSync(integrationPath, "utf8");
+  for (const specifier of [
+    "./acquisition-archive.mjs",
+    "./docker-event-helper.mjs",
+    "./cargo.mjs",
+    "./proof-engine.mjs",
+    "./test.mjs",
+  ]) {
+    const absolute = pathToFileURL(
+      fileURLToPath(new URL(`../scripts/${specifier.slice(2)}`, import.meta.url)),
+    ).href;
+    source = replaceFixtureExactly(
+      source,
+      `from ${JSON.stringify(specifier)};`,
+      `from ${JSON.stringify(absolute)};`,
+    );
+  }
+  for (const [declaration, name] of [
+    ["async function", "runDockerArguments"],
+    ["async function", "runFailedPathHelper"],
+    ["function", "requireFailedCutParentAbsence"],
+    ["function", "settleMatchingCustody"],
+  ] as const) {
+    source = replaceFixtureExactly(
+      source,
+      `${declaration} ${name}(`,
+      `${declaration} fixtureOriginal${name[0]!.toUpperCase()}${name.slice(1)}(`,
+    );
+  }
+  source = `const fixtureHooks = globalThis[${JSON.stringify(globalKey)}];
+const runDockerArguments = (...args) => fixtureHooks.runDockerArguments(...args);
+const runFailedPathHelper = (...args) => fixtureHooks.runFailedPathHelper(...args);
+const requireFailedCutParentAbsence = (...args) => fixtureHooks.requireFailedCutParentAbsence(...args);
+const settleMatchingCustody = (...args) => fixtureHooks.settleMatchingCustody(...args);
+${source}
+export { runFailedCutTeardown };
+`;
+  const modulePath = join(directory, "docker-integration.mjs");
+  writeFileSync(modulePath, source, { mode: 0o600 });
+  const module = await import(`${pathToFileURL(modulePath).href}?teardown=${Date.now()}`) as {
+    readonly runFailedCutTeardown: (...args: readonly unknown[]) => Promise<{
+      readonly cursor: { readonly phase: string };
+      readonly errors: readonly Error[];
+    }>;
+  };
+  return { directory, globalKey, runFailedCutTeardown: module.runFailedCutTeardown };
+}
+
+type RunCutFixtureModule = {
+  readonly wp201RequireCutLocalAbsenceFixture: (
+    cleanup: {
+      readonly invocation: string;
+      readonly parentToken: string;
+      readonly path: string;
+    },
+    identity: { readonly watcherPid: string; readonly watcherStartTime: string },
+  ) => void;
+  readonly wp201RunCutFixture: (
+    sourceDirectory: object,
+    cutCase: string,
+    clock: { readonly sample: () => bigint },
+    dockerAnchor: object,
+    signal: AbortSignal,
+  ) => Promise<void>;
+};
+
+async function transformedRunCutModule(hooks: object): Promise<{
+  readonly directory: string;
+  readonly globalKey: string;
+  readonly module: RunCutFixtureModule;
+}> {
+  const directory = mkdtempSync(join(tmpdir(), "wp201-run-cut-"));
+  const globalKey = `__wp201_run_cut_${directory}`;
+  (globalThis as Record<string, unknown>)[globalKey] = hooks;
+  const integrationPath = fileURLToPath(
+    new URL("../scripts/docker-integration.mjs", import.meta.url),
+  );
+  const proofEngineUrl = pathToFileURL(
+    fileURLToPath(new URL("../scripts/proof-engine.mjs", import.meta.url)),
+  ).href;
+  const hookSource = `const hooks = globalThis[${JSON.stringify(globalKey)}];
+export const claimFreshRootCleanup = (...args) => hooks.claimFreshRootCleanup(...args);
+export const claimFreshRootHandoffFailure = (...args) => hooks.claimFreshRootHandoffFailure(...args);
+export const launchAfterDaemonAcceptBeforeDeliveryFreshRoot = (...args) => hooks.launchFreshRoot(...args);
+export const launchAfterParentCustodyBeforeStartFreshRoot = (...args) => hooks.launchFreshRoot(...args);
+export const launchBeforeIssueFreshRoot = (...args) => hooks.launchFreshRoot(...args);
+export const parseCompleteLedger = (...args) => hooks.unexpected(...args);
+export const prepareFreshLedgerBackedRoot = (...args) => hooks.prepareFreshLedgerBackedRoot(...args);
+export const stageFixedSourceSnapshot = (...args) => hooks.unexpected(...args);
+export const runDockerArguments = (...args) => hooks.runDockerArguments(...args);
+export const observeCutHarness = (...args) => hooks.observeCutHarness(...args);
+export const settleRetainedCustody = (...args) => hooks.settleRetainedCustody(...args);
+export const runFailedCutTeardown = (...args) => hooks.runFailedCutTeardown(...args);
+`;
+  const proofSource = `export * from ${JSON.stringify(proofEngineUrl)};
+const hooks = globalThis[${JSON.stringify(globalKey)}];
+export const createBootTimeSample = (...args) => hooks.createBootTimeSample(...args);
+export const createCutSupervisorCursor = (...args) => hooks.createCutSupervisorCursor(...args);
+export const dockerOperationArguments = (...args) => hooks.dockerOperationArguments(...args);
+export const expectedCutSupervisorOperation = (...args) => hooks.expectedCutSupervisorOperation(...args);
+export const parseDockerLabelCensus = (...args) => hooks.parseDockerLabelCensus(...args);
+export const reduceCutSupervisorCursor = (...args) => hooks.reduceCutSupervisorCursor(...args);
+`;
+  writeFileSync(join(directory, "cargo.mjs"), hookSource, { mode: 0o600 });
+  writeFileSync(join(directory, "proof-engine.mjs"), proofSource, { mode: 0o600 });
+  writeFileSync(join(directory, "private-hooks.mjs"), hookSource, { mode: 0o600 });
+
+  let source = readFileSync(integrationPath, "utf8");
+  for (const relativeSpecifier of [
+    "./acquisition-archive.mjs",
+    "./docker-event-helper.mjs",
+    "./test.mjs",
+  ]) {
+    const absolute = pathToFileURL(
+      fileURLToPath(new URL(`../scripts/${relativeSpecifier.slice(2)}`, import.meta.url)),
+    ).href;
+    source = replaceFixtureExactly(
+      source,
+      `from ${JSON.stringify(relativeSpecifier)};`,
+      `from ${JSON.stringify(absolute)};`,
+    );
+  }
+  for (const [originalName, retainedName] of [
+    ["runDockerArguments", "fixtureOriginalRunDockerArguments"],
+    ["settleRetainedCustody", "fixtureOriginalSettleRetainedCustody"],
+    ["observeCutHarness", "fixtureOriginalObserveCutHarness"],
+    ["runFailedCutTeardown", "fixtureOriginalRunFailedCutTeardown"],
+  ]) {
+    const prefix = originalName === "settleRetainedCustody" ? "function" : "async function";
+    source = replaceFixtureExactly(
+      source,
+      `${prefix} ${originalName}(`,
+      `${prefix} ${retainedName}(`,
+    );
+  }
+source = `import {
+  observeCutHarness,
+  runDockerArguments,
+  runFailedCutTeardown,
+  settleRetainedCustody,
+} from "./private-hooks.mjs";
+${source}
+export {
+  requireCutLocalAbsence as wp201RequireCutLocalAbsenceFixture,
+  runCut as wp201RunCutFixture,
+};
+`;
+  const modulePath = join(directory, "docker-integration.mjs");
+  writeFileSync(modulePath, source, { mode: 0o600 });
+  try {
+    const module = await import(
+      `${pathToFileURL(modulePath).href}?fixture=${encodeURIComponent(globalKey)}`
+    ) as RunCutFixtureModule;
+    return { directory, globalKey, module };
+  } catch (error) {
+    delete (globalThis as Record<string, unknown>)[globalKey];
+    rmSync(directory, { force: true, recursive: true });
+    throw error;
+  }
+}
+
+function removeRunCutFixture(fixture: { readonly directory: string; readonly globalKey: string }) {
+  delete (globalThis as Record<string, unknown>)[fixture.globalKey];
+  rmSync(fixture.directory, { force: true, recursive: true });
 }
 
 describe("WP-201 strict Docker and interruption protocols", () => {
@@ -3778,7 +4019,563 @@ describe("WP-201 strict Docker and interruption protocols", () => {
     ).toThrow("owned child token replay");
   });
 
+  it("executes the real runCut clock and consumed-launch recovery boundaries", async () => {
+    const unreachable = () => {
+      throw new Error("unexpected runCut fixture operation");
+    };
+
+    let now = 0n;
+    const successClock = {
+      sample() {
+        now += secondNs;
+        return now;
+      },
+    };
+    const brands = new WeakSet<object>();
+    const brandedSamples: object[] = [];
+    const successEvents: string[] = [];
+    const successLaunch = Object.freeze({
+      child: undefined,
+      cleanup: Object.freeze({ invocation, path: invocationDirectory }),
+      custody: Object.freeze({}),
+      outcome: "spawned",
+    });
+    type FixtureCursor = {
+      readonly active: { readonly endNs: bigint };
+      readonly failed: boolean;
+      readonly index: number;
+      readonly operations: readonly string[];
+      readonly pending?: string;
+      readonly phase: string;
+    };
+    const successHooks = {
+      claimFreshRootCleanup: unreachable,
+      claimFreshRootHandoffFailure: () => undefined,
+      createBootTimeSample(value: bigint) {
+        const sample = Object.freeze({ nanoseconds: value });
+        brands.add(sample);
+        brandedSamples.push(sample);
+        successEvents.push("sample");
+        return sample;
+      },
+      createCutSupervisorCursor(options: { readonly sample: object }): FixtureCursor {
+        expect(brands.has(options.sample)).toBe(true);
+        expect(options.sample).toBe(brandedSamples[1]);
+        successEvents.push("cursor");
+        return Object.freeze({
+          active: Object.freeze({ endNs: 10_000n * secondNs }),
+          failed: false,
+          index: 0,
+          operations: Object.freeze(["label-census", "custody"]),
+          phase: "active",
+        });
+      },
+      createOwnedChildToken: () => Object.freeze({}),
+      dockerOperationArguments: () => Object.freeze([]),
+      expectedCutSupervisorOperation(cursor: FixtureCursor) {
+        return cursor.operations[cursor.index] ?? null;
+      },
+      launchFreshRoot() {
+        successEvents.push("launch");
+        successClock.sample();
+        return successLaunch;
+      },
+      observeCutHarness: async () => {
+        successEvents.push("observe");
+        return Object.freeze({
+          error: undefined,
+          identity: Object.freeze({}),
+          outcome: "passed",
+          receipt: Object.freeze({}),
+        });
+      },
+      parseDockerLabelCensus: () => Object.freeze({ ids: Object.freeze([]) }),
+      prepareFreshLedgerBackedRoot: async () => Object.freeze({}),
+      reduceCutSupervisorCursor(cursor: FixtureCursor, event: { readonly operation?: string; readonly type: string }, sample: object) {
+        expect(brands.has(sample)).toBe(true);
+        if (event.type === "harness-reaped") {
+          return Object.freeze({ ...cursor, phase: "post-reap" });
+        }
+        if (event.type === "begin-slot") {
+          return Object.freeze({
+            ...cursor,
+            active: Object.freeze({ endNs: 10_000n * secondNs }),
+            pending: event.operation,
+          });
+        }
+        expect(event.type).toBe("complete-slot");
+        expect(event.operation).toBe(cursor.pending);
+        const index = cursor.index + 1;
+        return Object.freeze({
+          ...cursor,
+          index,
+          pending: undefined,
+          phase: index === cursor.operations.length ? "complete" : cursor.phase,
+        });
+      },
+      async runDockerArguments() {
+        successEvents.push("docker");
+        return Object.freeze({ outcome: "completed", reaped: true, result: Object.freeze({}) });
+      },
+      runFailedCutTeardown: unreachable,
+      settleRetainedCustody() {
+        successEvents.push("custody");
+      },
+      unexpected: unreachable,
+    };
+    const successFixture = await transformedRunCutModule(successHooks);
+    try {
+      await successFixture.module.wp201RunCutFixture(
+        Object.freeze({}),
+        "before-issue",
+        successClock,
+        Object.freeze({}),
+        new AbortController().signal,
+      );
+      expect(brandedSamples.length).toBeGreaterThanOrEqual(6);
+      expect(successEvents.indexOf("sample")).toBeLessThan(successEvents.indexOf("launch"));
+      for (const event of ["launch", "cursor", "observe", "docker", "custody"]) {
+        expect(successEvents).toContain(event);
+      }
+      expect(successEvents.indexOf("launch")).toBeLessThan(successEvents.indexOf("observe"));
+      expect(successEvents.indexOf("observe")).toBeLessThan(successEvents.indexOf("docker"));
+      expect(successEvents.indexOf("docker")).toBeLessThan(successEvents.indexOf("custody"));
+
+      const reused = spawn(
+        process.execPath,
+        ["--input-type=module", "--eval", "setInterval(() => {}, 1000);"],
+        { detached: true, stdio: "ignore" },
+      );
+      try {
+        await new Promise<void>((resolvePromise, rejectPromise) => {
+          reused.once("spawn", resolvePromise);
+          reused.once("error", rejectPromise);
+        });
+        const stat = readFileSync(`/proc/${reused.pid}/stat`, "ascii");
+        const close = stat.lastIndexOf(")");
+        const watcherStartTime = stat.slice(close + 2).trimEnd().split(" ")[19]!;
+        expect(() => process.kill(-(reused.pid ?? 0), 0)).not.toThrow();
+        const pidInvocation = "9".repeat(64);
+        const cleanup = Object.freeze({
+          invocation: pidInvocation,
+          parentToken: "tmp",
+          path: `/tmp/openspell-wp201-root-proof-${pidInvocation}`,
+        });
+        expect(() =>
+          successFixture.module.wp201RequireCutLocalAbsenceFixture(
+            cleanup,
+            Object.freeze({
+              watcherPid: String(reused.pid),
+              watcherStartTime: String(BigInt(watcherStartTime) + 1n),
+            }),
+          ),
+        ).not.toThrow();
+        expect(() =>
+          successFixture.module.wp201RequireCutLocalAbsenceFixture(
+            cleanup,
+            Object.freeze({
+              watcherPid: String(reused.pid),
+              watcherStartTime,
+            }),
+          ),
+        ).toThrow("watcher identity remained live");
+      } finally {
+        try {
+          process.kill(-(reused.pid ?? 0), "SIGKILL");
+        } catch {
+          // The fixture child may already be gone.
+        }
+        if (reused.exitCode === null && reused.signalCode === null) {
+          await new Promise<void>((resolvePromise) => reused.once("close", resolvePromise));
+        }
+      }
+    } finally {
+      removeRunCutFixture(successFixture);
+    }
+
+    const preAttemptFailure = new Error("fixture pre-attempt clock failure");
+    const preAttemptEvents: string[] = [];
+    const preAttemptHooks = {
+      ...successHooks,
+      claimFreshRootCleanup: () => {
+        preAttemptEvents.push("claim-cleanup");
+      },
+      createBootTimeSample: () => {
+        throw preAttemptFailure;
+      },
+      launchFreshRoot: () => {
+        preAttemptEvents.push("launch");
+        return successLaunch;
+      },
+      prepareFreshLedgerBackedRoot: async () => Object.freeze({}),
+    };
+    const preAttemptFixture = await transformedRunCutModule(preAttemptHooks);
+    try {
+      let caught: unknown;
+      try {
+        await preAttemptFixture.module.wp201RunCutFixture(
+          Object.freeze({}),
+          "before-issue",
+          { sample: () => 0n },
+          Object.freeze({}),
+          new AbortController().signal,
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBe(preAttemptFailure);
+      expect(preAttemptEvents).toEqual([]);
+    } finally {
+      removeRunCutFixture(preAttemptFixture);
+    }
+
+    for (const mode of ["observed", "synchronous-spawn"] as const) {
+      const exactHarnessError = new Error(`fixture exact ${mode} failure`);
+      const receiptClockError = new Error(`fixture ${mode} receipt clock failure`);
+      const receiptEvents: string[] = [];
+      let receiptSamples = 0;
+      const receiptClock = {
+        sample() {
+          receiptSamples += 1;
+          if (receiptSamples === 3) throw receiptClockError;
+          return BigInt(receiptSamples) * secondNs;
+        },
+      };
+      const receiptHooks = {
+        ...successHooks,
+        createBootTimeSample: (value: bigint) => Object.freeze({ nanoseconds: value }),
+        createCutSupervisorCursor(): FixtureCursor {
+          return Object.freeze({
+            active: Object.freeze({ endNs: 10_000n * secondNs }),
+            failed: false,
+            index: 0,
+            operations: Object.freeze([]),
+            phase: "harness",
+          });
+        },
+        launchFreshRoot: () => mode === "synchronous-spawn"
+          ? Object.freeze({
+              child: undefined,
+              cleanup: Object.freeze({ invocation, path: invocationDirectory }),
+              custody: Object.freeze({}),
+              outcome: "synchronous-spawn-failure",
+              spawnError: exactHarnessError,
+            })
+          : successLaunch,
+        observeCutHarness: async () => {
+          if (mode !== "observed") throw new Error("unexpected synchronous-spawn observation");
+          receiptEvents.push("observed");
+          return Object.freeze({
+            error: exactHarnessError,
+            identity: null,
+            outcome: "failed",
+            receipt: Object.freeze({}),
+          });
+        },
+        reduceCutSupervisorCursor(cursor: FixtureCursor, event: { readonly type: string }) {
+          expect(event.type).toBe("harness-failed-reaped");
+          receiptEvents.push("reduced");
+          return Object.freeze({ ...cursor, phase: "failed-ready" });
+        },
+        async runFailedCutTeardown() {
+          receiptEvents.push("teardown");
+          return Object.freeze({
+            cursor: Object.freeze({ phase: "failed-complete" }),
+            errors: Object.freeze([]),
+          });
+        },
+      };
+      const receiptFixture = await transformedRunCutModule(receiptHooks);
+      try {
+        let caught: unknown;
+        try {
+          await receiptFixture.module.wp201RunCutFixture(
+            Object.freeze({}),
+            "before-issue",
+            receiptClock,
+            Object.freeze({}),
+            new AbortController().signal,
+          );
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(AggregateError);
+        expect((caught as AggregateError).cause).toBe(exactHarnessError);
+        expect((caught as AggregateError).errors).toEqual([
+          exactHarnessError,
+          receiptClockError,
+        ]);
+        expect(receiptEvents.filter((event) => event === "reduced")).toHaveLength(1);
+        expect(receiptEvents.at(-1)).toBe("teardown");
+      } finally {
+        removeRunCutFixture(receiptFixture);
+      }
+    }
+
+    let child: ReturnType<typeof spawn> | undefined;
+    const cleanup = Object.freeze({ invocation, path: invocationDirectory });
+    const custody = Object.freeze({});
+    const handoffFailure = new Error("fixture post-consumption handoff close failure");
+    const [bootWhole = "0", bootFraction = ""] = readFileSync("/proc/uptime", "ascii")
+      .split(" ")[0]!
+      .split(".");
+    let recoveryNow =
+      BigInt(bootWhole) * secondNs +
+      BigInt(bootFraction.slice(0, 9).padEnd(9, "0"));
+    const recoveryClock = {
+      sample() {
+        recoveryNow += 1_000_000n;
+        return recoveryNow;
+      },
+    };
+    const recoveryEvents: string[] = [];
+    const recoveryHooks = {
+      ...successHooks,
+      claimFreshRootHandoffFailure(error: unknown) {
+        recoveryEvents.push("claim");
+        expect(error).toBe(handoffFailure);
+        return Object.freeze({
+          handoffSettlement: Object.freeze({ settled: true }),
+          launch: Object.freeze({ child: child!, cleanup, custody, outcome: "spawned" }),
+        });
+      },
+      createBootTimeSample: (value: bigint) => Object.freeze({ nanoseconds: value }),
+      createCutSupervisorCursor(): FixtureCursor {
+        return Object.freeze({
+          active: Object.freeze({ endNs: 10_000n * secondNs }),
+          failed: false,
+          index: 0,
+          operations: Object.freeze([]),
+          phase: "harness",
+        });
+      },
+      reduceCutSupervisorCursor(cursor: FixtureCursor, event: { readonly type: string }) {
+        if (event.type === "harness-failed-reaped") {
+          return Object.freeze({ ...cursor, phase: "failed-ready" });
+        }
+        throw new Error(`unexpected recovery reducer event ${event.type}`);
+      },
+      async runFailedCutTeardown(
+        _cursor: object,
+        launch: {
+          readonly child: ReturnType<typeof spawn>;
+          readonly cleanup: object;
+          readonly custody: object;
+        },
+      ) {
+        recoveryEvents.push("teardown");
+        expect(launch).toMatchObject({ child: child!, cleanup, custody, outcome: "spawned" });
+        expect(launch.child.exitCode !== null || launch.child.signalCode !== null).toBe(true);
+        expect(launch.child.stdout?.readableEnded).toBe(true);
+        expect(launch.child.stderr?.readableEnded).toBe(true);
+        for (const index of [4, 5, 6]) {
+          const stream = launch.child.stdio[index] as Readable | null;
+          expect(stream?.readableEnded).toBe(true);
+        }
+        return Object.freeze({
+          cursor: Object.freeze({ phase: "failed-complete" }),
+          errors: Object.freeze([]),
+        });
+      },
+      launchFreshRoot: () => {
+        recoveryEvents.push("launch");
+        child = spawn(
+          process.execPath,
+          ["--input-type=module", "--eval", "setTimeout(() => {}, 20);"],
+          {
+            detached: true,
+            stdio: ["ignore", "pipe", "pipe", "pipe", "pipe", "pipe", "pipe"],
+          },
+        );
+        throw handoffFailure;
+      },
+      prepareFreshLedgerBackedRoot: async () => Object.freeze({}),
+    };
+    const recoveryFixture = await transformedRunCutModule(recoveryHooks);
+    try {
+      let caught: unknown;
+      try {
+        await recoveryFixture.module.wp201RunCutFixture(
+          Object.freeze({}),
+          "before-issue",
+          recoveryClock,
+          Object.freeze({}),
+          new AbortController().signal,
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBe(handoffFailure);
+      expect(recoveryEvents).toEqual(["launch", "claim", "teardown"]);
+    } finally {
+      if (child !== undefined && child.exitCode === null && child.signalCode === null) {
+        try {
+          process.kill(-(child.pid ?? 0), "SIGKILL");
+        } catch {
+          // The fixture child may have settled between the state check and signal.
+        }
+        await new Promise<void>((resolvePromise) => child!.once("close", () => resolvePromise()));
+      }
+      removeRunCutFixture(recoveryFixture);
+    }
+  }, 20_000);
+
+  it("preserves the exact asynchronous spawn error and emits a reaped failure receipt", async () => {
+    const fixture = await transformedCutObserverModule();
+    const token = createOwnedChildToken();
+    let now = 0n;
+    const observerClock = {
+      sample() {
+        now += 1_000_000n;
+        return now;
+      },
+    };
+    const cursor = createCutSupervisorCursor({
+      cutCase: "before-issue",
+      harnessToken: token,
+      invocation,
+      sample: clock(0n),
+    });
+    const child = spawn("/openspell-wp201-deliberately-missing", [], {
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe", "pipe", "pipe", "pipe", "pipe"],
+    });
+    const emitted = new Promise<Error>((resolvePromise) => child.once("error", resolvePromise));
+    try {
+      const [observed, exactError] = await Promise.all([
+        fixture.observeCutHarness(
+          Object.freeze({ child, outcome: "spawned" }),
+          cursor,
+          token,
+          "before-issue",
+          observerClock,
+        ),
+        emitted,
+      ]);
+      expect(observed.outcome).toBe("failed");
+      expect(observed.error).toBe(exactError);
+      expect(exactError).toMatchObject({ code: "ENOENT" });
+      expect(exactError.message).not.toContain("/proc/undefined");
+      const failed = reduceCutSupervisorCursor(
+        cursor,
+        { type: "harness-reaped", receipt: observed.receipt },
+        clock(1n),
+      );
+      expect(failed).toMatchObject({ phase: "failed-ready", harnessReaped: true });
+    } finally {
+      rmSync(fixture.directory, { force: true, recursive: true });
+    }
+  });
+
+  it("executes the production failed-teardown dispatcher in reducer order after a failed absence", async () => {
+    const id = "b".repeat(64);
+    const events: string[] = [];
+    const results = [
+      jsonResult([proofInspection()]),
+      dockerResult(0, `${id}\n`),
+      dockerResult(2, "", "fixture first absence failure\n"),
+      dockerResult(0, `${id}\n`),
+      dockerResult(
+        1,
+        "[]\n",
+        `Error response from daemon: No such container: ${id}\n`,
+      ),
+      dockerResult(
+        1,
+        "[]\n",
+        `Error response from daemon: No such container: openspell-wp201-${invocation}-proof-root-fmt\n`,
+      ),
+      dockerResult(0, ""),
+    ];
+    const fixture = await transformedFailedTeardownModule({
+      requireFailedCutParentAbsence() {
+        events.push("parent-absence");
+      },
+      async runDockerArguments() {
+        events.push(`docker-${events.filter((event) => event.startsWith("docker-")).length + 1}`);
+        const result = results.shift();
+        if (result === undefined) throw new Error("unexpected Docker cleanup call");
+        return Object.freeze({ outcome: "completed", reaped: true, result });
+      },
+      async runFailedPathHelper() {
+        events.push("failed-path-helper");
+        return Object.freeze({ error: undefined, reaped: true });
+      },
+      settleMatchingCustody() {
+        events.push("descriptor-settlement");
+      },
+    });
+    const harnessToken = createOwnedChildToken();
+    let cursor = createCutSupervisorCursor({
+      cutCase: "after-daemon-accept-before-delivery",
+      harnessToken,
+      invocation,
+      sample: clock(0n),
+    });
+    cursor = reduceCutSupervisorCursor(
+      cursor,
+      {
+        type: "harness-reaped",
+        receipt: cutReapReceipt(
+          "after-daemon-accept-before-delivery",
+          id,
+          harnessToken,
+          false,
+        ),
+      },
+      clock(1n),
+    );
+    let now = 1n;
+    const cleanupClock = {
+      sample() {
+        now += 1n;
+        return now;
+      },
+    };
+    try {
+      const result = await fixture.runFailedCutTeardown(
+        cursor,
+        Object.freeze({
+          child: undefined,
+          cleanup: Object.freeze({ invocation, parentToken: "tmp", path: invocationDirectory }),
+          custody: Object.freeze({}),
+          outcome: "not-created",
+        }),
+        cleanupClock,
+        Object.freeze({}),
+      );
+      expect(result.cursor.phase).toBe("failed-complete");
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]?.message).toContain("container absence not proved");
+      expect(results).toHaveLength(0);
+      expect(events).toEqual([
+        "docker-1",
+        "docker-2",
+        "docker-3",
+        "docker-4",
+        "docker-5",
+        "docker-6",
+        "docker-7",
+        "failed-path-helper",
+        "parent-absence",
+        "descriptor-settlement",
+      ]);
+    } finally {
+      delete (globalThis as Record<string, unknown>)[fixture.globalKey];
+      rmSync(fixture.directory, { force: true, recursive: true });
+    }
+  });
+
   it("admits harness reap only through parsed receipts and positive EOF/group facts", () => {
+    expect(() =>
+      createCutSupervisorCursor({
+        cutCase: "before-issue",
+        harnessToken: createOwnedChildToken(),
+        invocation,
+        sample: 0n,
+      }),
+    ).toThrow("unbranded CLOCK_BOOTTIME sample");
+
     const harnessToken = createOwnedChildToken();
     expect(() =>
       createCutHarnessReapReceipt({
@@ -3788,8 +4585,10 @@ describe("WP-201 strict Docker and interruption protocols", () => {
         accepted: null,
         identity: null,
         audit: null,
-        pipesEof: false,
-        groupAbsent: true,
+        structural: {
+          ...reapedCutStructure(),
+          eof: { ...reapedCutStructure().eof, audit: false },
+        },
       }),
     ).toThrow("not fully reaped");
 
@@ -3805,8 +4604,7 @@ describe("WP-201 strict Docker and interruption protocols", () => {
         {
           type: "harness-reaped",
           valid: false,
-          pipesEof: true,
-          groupAbsent: true,
+          structural: reapedCutStructure(),
           acceptedId: null,
         },
         clock(1n),
@@ -3821,8 +4619,7 @@ describe("WP-201 strict Docker and interruption protocols", () => {
             cutCase: "before-issue",
             valid: false,
             acceptedId: null,
-            pipesEof: true,
-            groupAbsent: true,
+            structural: reapedCutStructure(),
           },
         },
         clock(1n),
@@ -3843,6 +4640,32 @@ describe("WP-201 strict Docker and interruption protocols", () => {
       reduceCutSupervisorCursor(
         cursor,
         { type: "harness-reaped", receipt: failedReceipt },
+        clock(1n),
+      ),
+    ).toThrow("invalid cut harness reap receipt");
+
+    const lateToken = createOwnedChildToken();
+    const lateCursor = createCutSupervisorCursor({
+      cutCase: "before-issue",
+      harnessToken: lateToken,
+      invocation,
+      sample: clock(0n),
+    });
+    const lateReceipt = cutReapReceipt("before-issue", null, lateToken);
+    const lateFailure = reduceCutSupervisorCursor(
+      lateCursor,
+      { type: "harness-failed-reaped", receipt: lateReceipt },
+      clock(lateCursor.outerDeadlineNs + 1n),
+    );
+    expect(lateFailure).toMatchObject({
+      failed: true,
+      harnessReaped: true,
+      phase: "failed-ready",
+    });
+    expect(() =>
+      reduceCutSupervisorCursor(
+        lateCursor,
+        { type: "harness-reaped", receipt: lateReceipt },
         clock(1n),
       ),
     ).toThrow("invalid cut harness reap receipt");
@@ -3868,8 +4691,7 @@ describe("WP-201 strict Docker and interruption protocols", () => {
         ),
         identity: parsedCutIdentity("before-issue", first),
         audit: parsedCutAudit(first),
-        pipesEof: true,
-        groupAbsent: true,
+        structural: reapedCutStructure(),
       }),
     ).toThrow("mixed cut harness process receipts");
   });
@@ -4289,7 +5111,42 @@ describe("WP-201 strict Docker and interruption protocols", () => {
         },
         clock(failed.lastBootNs),
       ),
-    ).toThrow("unreaped cut supervisor child cannot pass");
+    ).toThrow("unreaped cut supervisor child cannot release cleanup authority");
+    expect(() =>
+      reduceCutSupervisorCursor(
+        failed,
+        {
+          type: "complete-slot",
+          operation: "failed-path-helper",
+          outcome: "fail",
+          reaped: false,
+          token: helperToken,
+        },
+        clock(failed.lastBootNs),
+      ),
+    ).toThrow("unreaped cut supervisor child cannot release cleanup authority");
+    let aborted = reduceCutSupervisorCursor(
+      failed,
+      {
+        type: "abort-slot",
+        operation: "failed-path-helper",
+        reaped: false,
+        token: helperToken,
+      },
+      clock(failed.lastBootNs),
+    );
+    expect(expectedCutSupervisorOperation(aborted)).toBe("descriptor-settlement");
+    aborted = reduceCutSupervisorCursor(
+      aborted,
+      { type: "begin-slot", operation: "descriptor-settlement" },
+      clock(aborted.lastBootNs),
+    );
+    aborted = reduceCutSupervisorCursor(
+      aborted,
+      { type: "complete-slot", operation: "descriptor-settlement", outcome: "pass" },
+      clock(aborted.lastBootNs),
+    );
+    expect(aborted).toMatchObject({ phase: "failed-residue", residue: true });
     failed = reduceCutSupervisorCursor(
       failed,
       {
@@ -4322,17 +5179,6 @@ describe("WP-201 strict Docker and interruption protocols", () => {
       { type: "expire-slot", operation: "failed-path-helper", token: helperToken },
       clock(failed.lastBootNs + 3n * secondNs),
     );
-    expect(expectedCutSupervisorOperation(failed)).toBe("parent-absence");
-    failed = reduceCutSupervisorCursor(
-      failed,
-      { type: "begin-slot", operation: "parent-absence" },
-      clock(failed.lastBootNs),
-    );
-    failed = reduceCutSupervisorCursor(
-      failed,
-      { type: "complete-slot", operation: "parent-absence", outcome: "fail" },
-      clock(failed.lastBootNs),
-    );
     expect(expectedCutSupervisorOperation(failed)).toBe("descriptor-settlement");
     failed = reduceCutSupervisorCursor(
       failed,
@@ -4344,7 +5190,8 @@ describe("WP-201 strict Docker and interruption protocols", () => {
       { type: "complete-slot", operation: "descriptor-settlement", outcome: "pass" },
       clock(failed.lastBootNs),
     );
-    expect(failed).toMatchObject({ phase: "failed-complete", failed: true });
+    expect(expectedCutSupervisorOperation(failed)).toBeNull();
+    expect(failed).toMatchObject({ phase: "failed-residue", failed: true });
   });
 
   it("adopts only an identity-valid full ID and binds every removal and absence to it", () => {
@@ -4394,9 +5241,26 @@ describe("WP-201 strict Docker and interruption protocols", () => {
     }
 
     const validationToken = createOwnedChildToken();
+    expect(() =>
+      reduceCutSupervisorCursor(
+        failed,
+        {
+          type: "begin-slot",
+          operation: "accepted-id-validation",
+          token: createOwnedChildToken(),
+          id: otherId,
+        },
+        clock(2n),
+      ),
+    ).toThrow("cleanup identity mismatch");
     failed = reduceCutSupervisorCursor(
       failed,
-      { type: "begin-slot", operation: "accepted-id-validation", token: validationToken },
+      {
+        type: "begin-slot",
+        operation: "accepted-id-validation",
+        token: validationToken,
+        id,
+      },
       clock(2n),
     );
     expect(() =>
@@ -4408,6 +5272,7 @@ describe("WP-201 strict Docker and interruption protocols", () => {
           outcome: "pass",
           reaped: true,
           token: validationToken,
+          id,
           receipt: cleanupProofIdentity(otherId, validationToken, "accepted-id-validation"),
         },
         clock(2n),
@@ -4423,6 +5288,7 @@ describe("WP-201 strict Docker and interruption protocols", () => {
         outcome: "pass",
         reaped: true,
         token: validationToken,
+        id,
         receipt: validationReceipt,
       },
       clock(2n),
@@ -4436,6 +5302,7 @@ describe("WP-201 strict Docker and interruption protocols", () => {
           outcome: "pass",
           reaped: true,
           token: validationToken,
+          id,
           receipt: validationReceipt,
         },
         clock(2n),

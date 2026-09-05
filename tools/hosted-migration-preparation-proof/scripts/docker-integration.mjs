@@ -26,7 +26,8 @@ import { fileURLToPath, pathToFileURL, URL } from "node:url";
 import { extractAcquisitionArchive } from "./acquisition-archive.mjs";
 import { buildDockerEventOpenFrame } from "./docker-event-helper.mjs";
 import {
-  abandonFreshRootHandoff,
+  claimFreshRootCleanup,
+  claimFreshRootHandoffFailure,
   launchAfterDaemonAcceptBeforeDeliveryFreshRoot,
   launchAfterParentCustodyBeforeStartFreshRoot,
   launchBeforeIssueFreshRoot,
@@ -36,7 +37,9 @@ import {
 } from "./cargo.mjs";
 import {
   ACQUISITION_ROLE,
+  CUT_ACTIVE_NS,
   CUT_CASES,
+  CUT_INNER_CLEANUP_NS,
   INVOCATION_PREFIX,
   PROOF_ROLE,
   ROW_IDS,
@@ -47,6 +50,7 @@ import {
   classifyDockerCachedImage,
   classifyDockerCreateResult,
   classifyDockerExactName,
+  createBootTimeSample,
   createCutHarnessReapReceipt,
   createCutSupervisorCursor,
   createOwnedChildToken,
@@ -236,6 +240,60 @@ function openBootClock() {
   });
 }
 
+function createRecoveryBootClock(originalClock, errors) {
+  let source;
+  let owned = false;
+  const record = (error) => {
+    if (!errors.includes(error)) errors.push(error);
+  };
+  const closeOwned = () => {
+    if (!owned || source === undefined) return;
+    try {
+      source.close();
+    } catch (error) {
+      record(error);
+    }
+    source = undefined;
+    owned = false;
+  };
+  try {
+    source = openBootClock();
+    owned = true;
+  } catch (error) {
+    record(error);
+    source = originalClock;
+  }
+  return Object.freeze({
+    sample() {
+      let lastError;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (source === undefined) {
+          try {
+            source = openBootClock();
+            owned = true;
+          } catch (error) {
+            record(error);
+            lastError = error;
+            continue;
+          }
+        }
+        try {
+          return source.sample();
+        } catch (error) {
+          record(error);
+          lastError = error;
+          if (owned) closeOwned();
+          else source = undefined;
+        }
+      }
+      throw lastError ?? new Error("recovery boot clock unavailable");
+    },
+    close() {
+      closeOwned();
+    },
+  });
+}
+
 function signalGroup(pid, signal) {
   if (!Number.isInteger(pid) || pid <= 0) return;
   try {
@@ -253,6 +311,21 @@ function groupAbsent(pid) {
   } catch (error) {
     if (error?.code === "ESRCH") return true;
     throw error;
+  }
+}
+
+function ownedChildTerminal(observation) {
+  try {
+    const channels = [observation.stdout, observation.stderr, ...observation.extra].filter(
+      (channel) => channel !== null,
+    );
+    return (
+      observation.state.closed &&
+      groupAbsent(observation.child.pid) &&
+      channels.every((channel) => channel.ended)
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -293,13 +366,38 @@ function capture(stream, cap) {
 }
 
 function observeChild(child, options = {}) {
-  const state = { closed: false, error: undefined, signal: null, status: null };
+  const state = {
+    closed: false,
+    error: undefined,
+    identityError: undefined,
+    signal: null,
+    spawned: false,
+    startTime: undefined,
+    status: null,
+  };
+  if (Number.isInteger(child.pid) && child.pid > 0) {
+    try {
+      state.startTime = processStartTime(child.pid);
+    } catch (error) {
+      state.identityError = error;
+    }
+  }
   let finish;
   const closed = new Promise((resolve) => {
     finish = resolve;
   });
   child.once("error", (error) => {
     state.error = error;
+  });
+  child.once("spawn", () => {
+    state.spawned = true;
+    if (state.startTime === undefined && state.identityError === undefined) {
+      try {
+        state.startTime = processStartTime(child.pid);
+      } catch (error) {
+        state.identityError = error;
+      }
+    }
   });
   child.once("close", (status, signal) => {
     state.closed = true;
@@ -319,6 +417,30 @@ function observeChild(child, options = {}) {
   });
 }
 
+function signalObservedGroup(observation, signal) {
+  if (
+    observation.state.closed ||
+    observation.child.exitCode !== null ||
+    observation.child.signalCode !== null
+  ) {
+    return;
+  }
+  if (observation.state.identityError !== undefined) throw observation.state.identityError;
+  if (observation.state.startTime === undefined) {
+    if (observation.state.error !== undefined) return;
+    refuse("owned child process identity unavailable");
+  }
+  try {
+    if (processStartTime(observation.child.pid) !== observation.state.startTime) {
+      refuse("owned child process identity changed");
+    }
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  signalGroup(observation.child.pid, signal);
+}
+
 async function writePipe(stream, bytes, end) {
   await new Promise((resolve, reject) => {
     stream.write(bytes, (error) => {
@@ -329,9 +451,21 @@ async function writePipe(stream, bytes, end) {
   if (end) stream.end();
 }
 
-async function waitUntil(clock, deadlineNs, predicate, reason) {
+async function writePipeBefore(stream, bytes, end, clock, deadlineNs, reason) {
+  let settled = false;
+  const write = writePipe(stream, bytes, end).finally(() => {
+    settled = true;
+  });
+  await Promise.race([
+    write,
+    waitUntil(clock, deadlineNs, () => settled, reason),
+  ]);
+  await write;
+}
+
+async function waitUntil(clock, deadlineNs, predicate, reason, ignoreSignal = false) {
   while (!predicate()) {
-    if (caughtSignal !== undefined) refuse("interrupted while waiting");
+    if (caughtSignal !== undefined && !ignoreSignal) refuse("interrupted while waiting");
     if (clock.sample() >= deadlineNs) refuse(reason);
     await delay(POLL_MS);
   }
@@ -349,34 +483,48 @@ async function settleObserved(observation, options) {
         ((caughtSignal !== undefined && options.ignoreSignal !== true) || now >= normalDeadlineNs) &&
         !termSent
       ) {
-        signalGroup(observation.child.pid, "SIGTERM");
+        options.onStage?.("term", clock);
+        signalObservedGroup(observation, "SIGTERM");
         termSent = true;
       }
       if (termSent && now >= termDeadlineNs && !killSent) {
-        signalGroup(observation.child.pid, "SIGKILL");
+        options.onStage?.("kill", clock);
+        signalObservedGroup(observation, "SIGKILL");
         killSent = true;
       }
       if (now >= killDeadlineNs) {
-        signalGroup(observation.child.pid, "SIGKILL");
+        signalObservedGroup(observation, "SIGKILL");
         refuse("owned child failed to reap");
       }
       await Promise.race([observation.closed, delay(POLL_MS)]);
     }
-    await waitUntil(clock, killDeadlineNs, () => groupAbsent(observation.child.pid), "process group residue");
-    await Promise.all(
-      [observation.stdout, observation.stderr, ...observation.extra]
-        .filter((channel) => channel !== null)
-        .map((channel) => channel.settled),
+    await waitUntil(
+      clock,
+      killDeadlineNs,
+      () => groupAbsent(observation.child.pid),
+      "process group residue",
+      options.ignoreSignal === true,
     );
     const channels = [observation.stdout, observation.stderr, ...observation.extra].filter(
       (channel) => channel !== null,
     );
-    if (
-      observation.state.error !== undefined ||
-      channels.some((channel) => channel.error !== undefined || channel.overflow)
-    ) {
-      refuse("owned child output or spawn");
+    await waitUntil(
+      clock,
+      killDeadlineNs,
+      () => channels.every((channel) => channel.ended),
+      "owned child output settlement deadline",
+      options.ignoreSignal === true,
+    );
+    if (observation.state.error !== undefined) throw observation.state.error;
+    const channelErrors = channels
+      .map((channel) => channel.error)
+      .filter((error) => error !== undefined);
+    if (channelErrors.length > 0) {
+      throw new AggregateError(channelErrors, "owned child output failed", {
+        cause: channelErrors[0],
+      });
     }
+    if (channels.some((channel) => channel.overflow)) refuse("owned child output cap");
     return Object.freeze({
       status: observation.state.status,
       stdout: observation.stdout?.bytes() ?? Buffer.alloc(0),
@@ -387,6 +535,39 @@ async function settleObserved(observation, options) {
   } finally {
     if (activeChild === observation) activeChild = undefined;
   }
+}
+
+async function settleObservedWithFallback(observation, options) {
+  let result;
+  const errors = [];
+  try {
+    result = await settleObserved(observation, options);
+  } catch (error) {
+    errors.push(error);
+  }
+  if (result === undefined && !ownedChildTerminal(observation)) {
+    let recoveryClock;
+    try {
+      recoveryClock = openBootClock();
+      result = await settleObserved(observation, {
+        ...options,
+        clock: recoveryClock,
+        ignoreSignal: true,
+      });
+    } catch (error) {
+      if (!errors.includes(error)) errors.push(error);
+    } finally {
+      try {
+        recoveryClock?.close();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+  }
+  if (result === undefined && ownedChildTerminal(observation)) {
+    result = observedChildResult(observation);
+  }
+  return Object.freeze({ errors: Object.freeze(errors), result });
 }
 
 function operationDeadlines(clock, hardDeadlineNs, cleanup = false) {
@@ -403,19 +584,47 @@ function operationDeadlines(clock, hardDeadlineNs, cleanup = false) {
 
 async function runProcess(executable, arguments_, options) {
   if (caughtSignal !== undefined && !options.cleanup) refuse("new child after signal");
-  const child = spawn(executable, arguments_, {
-    cwd: options.cwd,
-    detached: true,
-    env: options.env,
-    stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
-  });
+  const deadlines = options.deadlines ??
+    operationDeadlines(options.clock, options.hardDeadlineNs, options.cleanup);
+  let child;
+  try {
+    child = spawn(executable, arguments_, {
+      cwd: options.cwd,
+      detached: true,
+      env: options.env,
+      stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    if (options.captureFailure === true) {
+      return Object.freeze({ error, notCreated: true, reaped: true });
+    }
+    throw error;
+  }
   const observation = observeChild(child, options.capture);
+  if (options.captureFailure === true) {
+    const settled = await settleObservedWithFallback(observation, {
+      clock: options.clock,
+      ignoreSignal: options.cleanup === true,
+      onStage: options.onStage,
+      ...deadlines,
+    });
+    if (settled.errors.length > 0) {
+      return Object.freeze({
+        child,
+        error: cutFailure(settled.errors[0], settled.errors.slice(1)),
+        observation,
+        reaped: ownedChildTerminal(observation),
+      });
+    }
+    return Object.freeze({ child, observation, reaped: true, result: settled.result });
+  }
   const result = await settleObserved(observation, {
     clock: options.clock,
     ignoreSignal: options.cleanup === true,
-    ...operationDeadlines(options.clock, options.hardDeadlineNs, options.cleanup),
+    onStage: options.onStage,
+    ...deadlines,
   });
-  return Object.freeze({ child, observation, result });
+  return Object.freeze({ child, observation, reaped: true, result });
 }
 
 function isAtOrBelow(candidate, root) {
@@ -841,27 +1050,51 @@ async function stageInvocation(root, clock, hardDeadlineNs) {
 }
 
 async function runDockerArguments(context, arguments_, settings = {}) {
-  if (caughtSignal !== undefined && !settings.cleanup) refuse("Docker dispatch after signal");
-  revalidateDockerAnchor(context.dockerAnchor, context.clock);
-  requireNoMountBelow(context.rootPath);
-  const prefix = dockerPrefix(context.invocation, context.rootPath);
-  const run = await runProcess(prefix[0], [...prefix.slice(1), ...arguments_], {
-    capture: {
-      stderr: settings.stderrCap ?? 1024 * 1024,
-      stdout: settings.stdoutCap ?? 1024 * 1024,
-    },
-    cleanup: settings.cleanup === true,
-    clock: context.clock,
-    cwd: "/",
-    env: dockerEnvironment(context.invocation, context.rootPath),
-    hardDeadlineNs: context.hardDeadlineNs,
-  });
-  revalidateDockerAnchor(context.dockerAnchor, context.clock);
-  return Object.freeze({
-    status: run.result.status,
-    stdout: run.result.stdout,
-    stderr: run.result.stderr,
-  });
+  let run;
+  try {
+    if (caughtSignal !== undefined && !settings.cleanup) refuse("Docker dispatch after signal");
+    revalidateDockerAnchor(context.dockerAnchor, context.clock);
+    requireNoMountBelow(context.rootPath);
+    const prefix = dockerPrefix(context.invocation, context.rootPath);
+    run = await runProcess(prefix[0], [...prefix.slice(1), ...arguments_], {
+      capture: {
+        stderr: settings.stderrCap ?? 1024 * 1024,
+        stdout: settings.stdoutCap ?? 1024 * 1024,
+      },
+      captureFailure: settings.captureFailure === true,
+      cleanup: settings.cleanup === true,
+      clock: context.clock,
+      cwd: "/",
+      env: dockerEnvironment(context.invocation, context.rootPath),
+      hardDeadlineNs: context.hardDeadlineNs,
+      deadlines: settings.deadlines,
+      onStage: settings.onStage,
+    });
+    if (run.error !== undefined) {
+      if (settings.captureFailure === true) {
+        return Object.freeze({ error: run.error, outcome: "failed", reaped: run.reaped });
+      }
+      throw run.error;
+    }
+    revalidateDockerAnchor(context.dockerAnchor, context.clock);
+    const result = Object.freeze({
+      status: run.result.status,
+      stdout: run.result.stdout,
+      stderr: run.result.stderr,
+    });
+    return settings.captureFailure === true
+      ? Object.freeze({ outcome: "completed", reaped: true, result })
+      : result;
+  } catch (error) {
+    if (settings.captureFailure === true) {
+      return Object.freeze({
+        error,
+        outcome: "failed",
+        reaped: run?.reaped ?? true,
+      });
+    }
+    throw error;
+  }
 }
 
 function processStartTime(pid) {
@@ -942,9 +1175,9 @@ async function startWatcher(context, target) {
     revalidateDockerAnchor(context.dockerAnchor, context.clock);
     return watcher;
   } catch (error) {
-    signalGroup(child.pid, "SIGKILL");
     if (observation !== undefined) {
       try {
+        signalObservedGroup(observation, "SIGKILL");
         const now = context.clock.sample();
         await settleObserved(observation, {
           clock: context.clock,
@@ -1121,7 +1354,7 @@ async function startAcquisition(context, id, acquisitionHandle) {
       }),
     ]);
   } catch (error) {
-    signalGroup(child.pid, "SIGKILL");
+    signalObservedGroup(observation, "SIGKILL");
     throw error;
   }
   if (
@@ -1170,7 +1403,7 @@ async function startProof(context, id, rowId) {
     const complete = result.stdout.subarray(NAMESPACE_READY.length);
     requireRootBridgeMarker(rowId, complete, result.stderr);
   } catch (error) {
-    signalGroup(child.pid, "SIGKILL");
+    signalObservedGroup(observation, "SIGKILL");
     throw error;
   }
   revalidateDockerAnchor(context.dockerAnchor, context.clock);
@@ -1449,17 +1682,55 @@ async function runPathHelper(root, state, clock, hardDeadlineNs) {
     ].join("\n"),
     "ascii",
   );
-  await writePipe(child.stdio[3], control, true);
-  const now = clock.sample();
-  const result = await settleObserved(observation, {
-    clock,
+  let deadlineClock = clock;
+  let recoveryClock;
+  let now;
+  const settlementErrors = [];
+  try {
+    now = clock.sample();
+  } catch (error) {
+    settlementErrors.push(error);
+    recoveryClock = openBootClock();
+    deadlineClock = recoveryClock;
+    now = deadlineClock.sample();
+  }
+  const normalDeadlineNs = now + 4n * SECOND_NS;
+  const termDeadlineNs = now + 7n * SECOND_NS;
+  const killDeadlineNs = now + 10n * SECOND_NS < hardDeadlineNs
+    ? now + 10n * SECOND_NS
+    : hardDeadlineNs;
+  let writeError;
+  try {
+    await writePipeBefore(
+      child.stdio[3],
+      control,
+      true,
+      deadlineClock,
+      normalDeadlineNs,
+      "path cleanup helper control deadline",
+    );
+  } catch (error) {
+    writeError = error;
+    child.stdio[3].destroy();
+  }
+  const settled = await settleObservedWithFallback(observation, {
+    clock: deadlineClock,
     ignoreSignal: true,
-    normalDeadlineNs: now + 4n * SECOND_NS,
-    termDeadlineNs: now + 7n * SECOND_NS,
-    killDeadlineNs: now + 10n * SECOND_NS < hardDeadlineNs
-      ? now + 10n * SECOND_NS
-      : hardDeadlineNs,
+    normalDeadlineNs,
+    termDeadlineNs,
+    killDeadlineNs,
   });
+  settlementErrors.push(...settled.errors);
+  try {
+    recoveryClock?.close();
+  } catch (error) {
+    settlementErrors.push(error);
+  }
+  if (writeError !== undefined || settlementErrors.length > 0) {
+    const primary = writeError ?? settlementErrors.shift();
+    throw cutFailure(primary, settlementErrors);
+  }
+  const result = settled.result;
   if (
     result.status !== 0 ||
     result.signal !== null ||
@@ -1494,19 +1765,15 @@ function requireCutLocalAbsence(cleanup, identity) {
     cleanup.parentToken === "tmp" ? "/var/tmp" : "/tmp",
     `${INVOCATION_PREFIX}${cleanup.invocation}`,
   );
-  if (
-    !pathAbsent(cleanup.path) ||
-    !pathAbsent(alternate) ||
-    !groupAbsent(identity.watcherPid)
-  ) {
-    refuse("cut local absence");
-  }
+  if (!pathAbsent(cleanup.path) || !pathAbsent(alternate)) refuse("cut local absence");
   try {
     const observed = processStartTime(Number(identity.watcherPid));
     if (observed === identity.watcherStartTime) refuse("cut watcher identity remained live");
+    return;
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
+  if (!groupAbsent(Number(identity.watcherPid))) refuse("cut watcher process group remained live");
 }
 
 function identityRecord(descriptor) {
@@ -1679,21 +1946,26 @@ function settleMatchingCustody(cleanup, custody) {
   if (errors.length > 0) throw new AggregateError(errors, "retained custody settlement failed");
 }
 
-async function runFailedPathHelper(cleanup, custody, clock, hardDeadlineNs) {
-  const child = spawn(NODE_EXECUTABLE, [PATH_HELPER], {
-    cwd: "/",
-    detached: true,
-    env: { LANG: "C", LC_ALL: "C" },
-    stdio: [
-      "ignore",
-      "ignore",
-      "pipe",
-      "pipe",
-      "pipe",
-      custody.custodyRoot,
-      custody.ledgerDescriptor,
-    ],
-  });
+async function runFailedPathHelper(cleanup, custody, clock, deadlines, onStage) {
+  let child;
+  try {
+    child = spawn(NODE_EXECUTABLE, [PATH_HELPER], {
+      cwd: "/",
+      detached: true,
+      env: { LANG: "C", LC_ALL: "C" },
+      stdio: [
+        "ignore",
+        "ignore",
+        "pipe",
+        "pipe",
+        "pipe",
+        custody.custodyRoot,
+        custody.ledgerDescriptor,
+      ],
+    });
+  } catch (error) {
+    return Object.freeze({ error, reaped: true });
+  }
   const observation = observeChild(child, {
     stdout: false,
     stderr: 4_096,
@@ -1712,17 +1984,35 @@ async function runFailedPathHelper(cleanup, custody, clock, hardDeadlineNs) {
     ].join("\n"),
     "ascii",
   );
-  await writePipe(child.stdio[3], control, true);
-  const now = clock.sample();
-  const result = await settleObserved(observation, {
+  const errors = [];
+  try {
+    await writePipeBefore(
+      child.stdio[3],
+      control,
+      true,
+      clock,
+      deadlines.normalEndNs,
+      "failed-cut path helper control deadline",
+    );
+  } catch (error) {
+    errors.push(error);
+    child.stdio[3].destroy();
+  }
+  const settled = await settleObservedWithFallback(observation, {
     clock,
     ignoreSignal: true,
-    normalDeadlineNs: now + 4n * SECOND_NS,
-    termDeadlineNs: now + 7n * SECOND_NS,
-    killDeadlineNs: now + 10n * SECOND_NS < hardDeadlineNs
-      ? now + 10n * SECOND_NS
-      : hardDeadlineNs,
+    normalDeadlineNs: deadlines.normalEndNs,
+    termDeadlineNs: deadlines.termEndNs,
+    killDeadlineNs: deadlines.endNs,
+    onStage,
   });
+  errors.push(...settled.errors);
+  const result = settled.result;
+  const reaped = ownedChildTerminal(observation);
+  if (result === undefined) {
+    const primary = errors.shift() ?? new Error("failed-cut path helper did not settle");
+    return Object.freeze({ error: cutFailure(primary, errors), reaped });
+  }
   if (
     result.status !== 0 ||
     result.signal !== null ||
@@ -1730,8 +2020,12 @@ async function runFailedPathHelper(cleanup, custody, clock, hardDeadlineNs) {
     result.extra.length !== 1 ||
     !result.extra[0].equals(FAILED_PATH_COMPLETE)
   ) {
-    refuse("failed-cut path helper");
+    errors.push(new Error("failed-cut path helper refused its terminal result"));
   }
+  return Object.freeze({
+    error: errors.length === 0 ? undefined : cutFailure(errors[0], errors.slice(1)),
+    reaped,
+  });
 }
 
 function cutLauncher(cutCase) {
@@ -1752,13 +2046,8 @@ function cutFrameReady(channel, maximum) {
   return bytes.length > 0 && bytes.at(-1) === 0x0a;
 }
 
-async function observeCutHarness(launch, cursor, harnessToken, cutCase, clock) {
-  if (launch.outcome !== "spawned" || launch.child === undefined) {
-    refuse("cut harness spawn");
-  }
-  const child = launch.child;
-  const harnessStartTime = processStartTime(child.pid);
-  const observation = observeChild(child, {
+function observeCutChild(child) {
+  return observeChild(child, {
     stdout: 64,
     stderr: 128,
     extra: [
@@ -1767,19 +2056,78 @@ async function observeCutHarness(launch, cursor, harnessToken, cutCase, clock) {
       { index: 6, cap: 512 },
     ],
   });
+}
+
+function cutChildTerminal(observation) {
+  try {
+    return (
+      observation.state.closed &&
+      groupAbsent(observation.child.pid) &&
+      observation.child.stdio[3]?.destroyed === true &&
+      observation.stdout?.ended === true &&
+      observation.stderr?.ended === true &&
+      observation.extra.every((channel) => channel.ended)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function cutChildStructure(observation) {
+  if (!cutChildTerminal(observation)) return undefined;
+  return Object.freeze({
+    kind: "reaped",
+    releaseWriterClosed: true,
+    eof: Object.freeze({
+      stdout: true,
+      stderr: true,
+      identity: true,
+      accepted: true,
+      audit: true,
+    }),
+    groupAbsent: true,
+  });
+}
+
+function observedChildResult(observation) {
+  return Object.freeze({
+    status: observation.state.status,
+    signal: observation.state.signal,
+    stdout: observation.stdout?.bytes() ?? Buffer.alloc(0),
+    stderr: observation.stderr?.bytes() ?? Buffer.alloc(0),
+    extra: Object.freeze(observation.extra.map((channel) => channel.bytes())),
+  });
+}
+
+async function observeCutHarness(launch, cursor, harnessToken, cutCase, clock) {
+  if (launch.outcome !== "spawned" || launch.child === undefined) refuse("cut harness spawn");
+  const child = launch.child;
+  const observation = observeCutChild(child);
   activeChild = observation;
   const [identityChannel, acceptedChannel, auditChannel] = observation.extra;
-  await waitUntil(
-    clock,
-    cursor.activeDeadlineNs,
-    () => auditChannel.bytes().length >= AUDIT_OPEN.length || observation.state.closed,
-    "cut audit-open deadline",
-  );
-  if (!auditChannel.bytes().equals(AUDIT_OPEN)) refuse("cut audit-open frame");
-  let accepted;
-  let identity;
+  let accepted = null;
+  let audit = null;
+  let identity = null;
+  let primaryError;
+  const settlementErrors = [];
   let signalAcknowledgement;
   try {
+    await waitUntil(
+      clock,
+      cursor.activeDeadlineNs,
+      () => observation.state.spawned || observation.state.error !== undefined || observation.state.closed,
+      "cut harness spawn deadline",
+    );
+    if (observation.state.error !== undefined) throw observation.state.error;
+    if (!observation.state.spawned) refuse("cut harness closed before spawn");
+    const harnessStartTime = processStartTime(child.pid);
+    await waitUntil(
+      clock,
+      cursor.activeDeadlineNs,
+      () => auditChannel.bytes().length >= AUDIT_OPEN.length || observation.state.closed,
+      "cut audit-open deadline",
+    );
+    if (!auditChannel.bytes().equals(AUDIT_OPEN)) refuse("cut audit-open frame");
     await waitUntil(
       clock,
       cursor.activeDeadlineNs,
@@ -1831,36 +2179,41 @@ async function observeCutHarness(launch, cursor, harnessToken, cutCase, clock) {
       true,
     );
   } catch (error) {
-    if (!observation.state.closed) {
-      signalGroup(child.pid, "SIGKILL");
-      try {
-        await settleObserved(observation, {
-          clock,
-          normalDeadlineNs: clock.sample(),
-          termDeadlineNs: clock.sample(),
-          killDeadlineNs: cursor.innerDeadlineNs - SECOND_NS,
-        });
-      } catch {
-        // The reached-cut protocol error remains authoritative.
-      }
-    }
-    throw error;
+    primaryError = error;
   }
-  const result = await settleObserved(observation, {
+  if (child.stdio[3] !== null && child.stdio[3] !== undefined && !child.stdio[3].destroyed) {
+    child.stdio[3].destroy();
+  }
+  const settled = await settleObservedWithFallback(observation, {
     clock,
+    ignoreSignal: primaryError !== undefined,
     normalDeadlineNs: cursor.innerDeadlineNs - 5n * SECOND_NS,
     termDeadlineNs: cursor.innerDeadlineNs - 3n * SECOND_NS,
     killDeadlineNs: cursor.innerDeadlineNs - SECOND_NS,
   });
-  const terminal = parseCutTerminalResult(
-    { status: result.status, stdout: result.stdout, stderr: result.stderr },
-    harnessToken,
-  );
-  const audit = parseCutAuditStream(
-    result.extra[2],
-    signalAcknowledgement,
-    harnessToken,
-  );
+  let result = settled.result;
+  for (const error of settled.errors) {
+    if (primaryError === undefined) primaryError = error;
+    else if (error !== primaryError) settlementErrors.push(error);
+  }
+  const structural = cutChildStructure(observation);
+  if (structural === undefined) {
+    const failure = primaryError ?? new Error("cut harness structural settlement failed");
+    throw cutFailure(failure, settlementErrors);
+  }
+  result ??= observedChildResult(observation);
+  let terminal = null;
+  if (primaryError === undefined) {
+    try {
+      terminal = parseCutTerminalResult(
+        { status: result.status, stdout: result.stdout, stderr: result.stderr },
+        harnessToken,
+      );
+      audit = parseCutAuditStream(result.extra[2], signalAcknowledgement, harnessToken);
+    } catch (error) {
+      primaryError = error;
+    }
+  }
   const receipt = createCutHarnessReapReceipt({
     cutCase,
     token: harnessToken,
@@ -1868,166 +2221,536 @@ async function observeCutHarness(launch, cursor, harnessToken, cutCase, clock) {
     accepted,
     identity,
     audit,
-    pipesEof:
-      observation.stdout.ended &&
-      observation.stderr.ended &&
-      observation.extra.every((channel) => channel.ended),
-    groupAbsent: groupAbsent(child.pid),
+    structural,
   });
   if (activeChild === observation) activeChild = undefined;
-  return Object.freeze({ identity, receipt });
+  return Object.freeze({
+    error: primaryError === undefined ? undefined : cutFailure(primaryError, settlementErrors),
+    identity,
+    outcome: primaryError === undefined ? "passed" : "failed",
+    receipt,
+  });
+}
+
+function dockerSlotArguments(operation, context, options) {
+  if (operation === "accepted-id-validation") {
+    return dockerOperationArguments("inspect", { id: options.id });
+  }
+  if (["exact-name-recovery", "exact-name-census", "final-exact-name-census"].includes(operation)) {
+    return dockerOperationArguments("exact-name-proof", {
+      invocation: context.invocation,
+      rowId: "root-fmt",
+    });
+  }
+  if (["label-census", "final-label-census"].includes(operation)) {
+    return dockerOperationArguments("label-census", { invocation: context.invocation });
+  }
+  if (["accepted-id-absence", "absence-1", "absence-2"].includes(operation)) {
+    return dockerOperationArguments("absence", { id: options.id });
+  }
+  if (["remove-1", "remove-2"].includes(operation)) {
+    return dockerOperationArguments("remove", { id: options.id });
+  }
+  refuse("unexpected cut Docker slot");
+}
+
+function parseDockerSlotReceipt(operation, result, context, token, options) {
+  const provenance = { operation, token };
+  if (["accepted-id-validation", "exact-name-recovery", "exact-name-census", "final-exact-name-census"].includes(operation)) {
+    return classifyDockerExactName(
+      result,
+      { kind: "proof", invocation: context.invocation, rowId: "root-fmt" },
+      provenance,
+    );
+  }
+  if (["label-census", "final-label-census"].includes(operation)) {
+    return parseDockerLabelCensus(result, context.invocation, provenance);
+  }
+  if (["accepted-id-absence", "absence-1", "absence-2"].includes(operation)) {
+    return parseDockerAbsence(result, options.id, provenance);
+  }
+  if (["remove-1", "remove-2"].includes(operation)) {
+    return parseDockerRemove(result, options.id, provenance);
+  }
+  refuse("unexpected cut Docker receipt");
+}
+
+function dockerSlotPassed(operation, receipt, cursor) {
+  if (operation === "accepted-id-validation") {
+    return receipt.outcome === "present" && receipt.id === cursor.acceptedId;
+  }
+  if (["exact-name-census", "final-exact-name-census"].includes(operation)) {
+    return receipt.outcome === "absent";
+  }
+  if (["label-census", "final-label-census"].includes(operation)) {
+    return receipt.ids.length === 0;
+  }
+  return true;
 }
 
 async function completeDockerSlot(cursor, context, operation, options = {}) {
   const token = createOwnedChildToken();
+  const errors = [];
   const begin = {
     type: "begin-slot",
     operation,
     token,
     ...(options.id === undefined ? {} : { id: options.id }),
   };
-  cursor = reduceCutSupervisorCursor(cursor, begin, context.clock.sample());
-  const slotContext = { ...context, hardDeadlineNs: cursor.active.endNs };
-  let receipt;
-  if (operation === "accepted-id-absence") {
-    const result = await runDockerArguments(
-      slotContext,
-      dockerOperationArguments("absence", { id: options.id }),
-      { cleanup: true },
-    );
-    receipt = parseDockerAbsence(result, options.id, { operation, token });
-  } else if (operation === "exact-name-census") {
-    const result = await runDockerArguments(
-      slotContext,
-      dockerOperationArguments("exact-name-proof", {
-        invocation: context.invocation,
-        rowId: "root-fmt",
-      }),
-      { cleanup: true },
-    );
-    receipt = classifyDockerExactName(
-      result,
-      { kind: "proof", invocation: context.invocation, rowId: "root-fmt" },
-      { operation, token },
-    );
-  } else if (operation === "label-census") {
-    const result = await runDockerArguments(
-      slotContext,
-      dockerOperationArguments("label-census", { invocation: context.invocation }),
-      { cleanup: true },
-    );
-    receipt = parseDockerLabelCensus(result, context.invocation, { operation, token });
-  } else {
-    refuse("unexpected post-reap Docker slot");
-  }
-  return reduceCutSupervisorCursor(
+  cursor = reduceCutSupervisorCursor(
     cursor,
+    begin,
+    cutCleanupClockSample(context.clock, errors),
+  );
+  const slotContext = { ...context, hardDeadlineNs: cursor.active.endNs };
+  let receipt = null;
+  let outcome = "fail";
+  const onStage = (stage, stageClock = context.clock) => {
+    cursor = reduceCutSupervisorCursor(
+      cursor,
+      { type: "advance-slot-stage", operation, stage, token },
+      cutClockSample(stageClock),
+    );
+  };
+  const run = await runDockerArguments(
+    slotContext,
+    dockerSlotArguments(operation, context, options),
     {
-      type: "complete-slot",
-      operation,
-      outcome: "pass",
-      reaped: true,
-      token,
-      receipt,
-      ...(options.id === undefined ? {} : { id: options.id }),
+      captureFailure: true,
+      cleanup: true,
+      deadlines: Object.freeze({
+        normalDeadlineNs: cursor.active.normalEndNs,
+        termDeadlineNs: cursor.active.termEndNs,
+        killDeadlineNs: cursor.active.endNs,
+      }),
+      onStage,
+      ...(["remove-1", "remove-2"].includes(operation)
+        ? { stderrCap: 4_096, stdoutCap: 4_096 }
+        : {}),
     },
-    context.clock.sample(),
+  );
+  const reaped = run.reaped;
+  if (run.outcome === "failed") {
+    errors.push(run.error);
+  } else {
+    try {
+      receipt = parseDockerSlotReceipt(operation, run.result, context, token, options);
+      outcome = dockerSlotPassed(operation, receipt, cursor) ? "pass" : "fail";
+      if (outcome === "fail") {
+        errors.push(new Error(`cut Docker slot ${operation} did not prove its postcondition`));
+      }
+    } catch (error) {
+      errors.push(error);
+      receipt = null;
+    }
+  }
+  if (errors.length > 0) {
+    outcome = "fail";
+    receipt = null;
+  }
+  const completion = {
+    type: "complete-slot",
+    operation,
+    outcome,
+    reaped,
+    token,
+    receipt,
+    ...(options.id === undefined ? {} : { id: options.id }),
+  };
+  const sample = cutCleanupClockSample(context.clock, errors);
+  if (errors.length > 0) {
+    completion.outcome = "fail";
+    completion.receipt = null;
+  }
+  if (!reaped || sample.nanoseconds >= cursor.active.endNs) {
+    errors.push(new Error(
+      reaped
+        ? `cut Docker slot ${operation} exceeded its absolute cap`
+        : `cut Docker slot ${operation} retained child residue`,
+    ));
+    cursor = reduceCutSupervisorCursor(
+      cursor,
+      {
+        type: "abort-slot",
+        operation,
+        reaped,
+        token,
+        ...(options.id === undefined ? {} : { id: options.id }),
+      },
+      sample,
+    );
+  } else {
+    cursor = reduceCutSupervisorCursor(cursor, completion, sample);
+  }
+  return Object.freeze({ cursor, errors: Object.freeze(errors), residue: !reaped });
+}
+
+function cutClockSample(clock) {
+  return createBootTimeSample(clock.sample());
+}
+
+function cutCleanupClockSample(clock, errors) {
+  try {
+    return cutClockSample(clock);
+  } catch (error) {
+    if (!errors.includes(error)) errors.push(error);
+    const recoveryClock = openBootClock();
+    let recoveryError;
+    let sample;
+    try {
+      sample = cutClockSample(recoveryClock);
+    } catch (nextError) {
+      recoveryError = nextError;
+    }
+    try {
+      recoveryClock.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    if (recoveryError !== undefined) throw recoveryError;
+    return sample;
+  }
+}
+
+function incompleteHandoffSettlement(result) {
+  const failure = new AggregateError(
+    [result.closeError, result.probeError].filter((error) => error !== undefined),
+    "fresh-root handoff settlement incomplete",
+  );
+  Object.defineProperty(failure, "unsettled", {
+    configurable: false,
+    enumerable: true,
+    value: result,
+    writable: false,
+  });
+  return failure;
+}
+
+async function settleFailedCutLaunchChild(child, clock, startedAt, harnessToken, cutCase) {
+  const observation = observeCutChild(child);
+  const [, acceptedChannel] = observation.extra;
+  const errors = [];
+  const innerDeadlineNs = startedAt.nanoseconds + CUT_ACTIVE_NS + CUT_INNER_CLEANUP_NS;
+  const recoveryStartedNs = startedAt.nanoseconds;
+  const killDeadlineNs = recoveryStartedNs + 15n * SECOND_NS < innerDeadlineNs
+    ? recoveryStartedNs + 15n * SECOND_NS
+    : innerDeadlineNs;
+  const normalDeadlineNs = recoveryStartedNs + 5n * SECOND_NS < killDeadlineNs
+    ? recoveryStartedNs + 5n * SECOND_NS
+    : killDeadlineNs;
+  const termDeadlineNs = recoveryStartedNs + 10n * SECOND_NS < killDeadlineNs
+    ? recoveryStartedNs + 10n * SECOND_NS
+    : killDeadlineNs;
+  try {
+    await waitUntil(
+      clock,
+      normalDeadlineNs,
+      () => observation.state.spawned || observation.state.error !== undefined || observation.state.closed,
+      "failed cut harness spawn deadline",
+    );
+    if (observation.state.error !== undefined) errors.push(observation.state.error);
+  } catch (error) {
+    errors.push(error);
+  }
+  if (child.stdio[3] !== null && child.stdio[3] !== undefined && !child.stdio[3].destroyed) {
+    child.stdio[3].destroy();
+  }
+  const settled = await settleObservedWithFallback(observation, {
+    clock,
+    ignoreSignal: true,
+    normalDeadlineNs,
+    termDeadlineNs,
+    killDeadlineNs,
+  });
+  for (const error of settled.errors) {
+    if (!errors.includes(error)) errors.push(error);
+  }
+  const structural = cutChildStructure(observation);
+  if (structural === undefined) {
+    const primary = errors.shift() ?? new Error("failed cut launch child did not settle");
+    throw cutFailure(primary, errors);
+  }
+  let accepted = null;
+  try {
+    if (cutFrameReady(acceptedChannel, 128)) {
+      accepted = parseCutAcceptedIdFrame(acceptedChannel.bytes(), cutCase, harnessToken);
+    }
+  } catch (error) {
+    errors.push(error);
+  }
+  return Object.freeze({
+    errors: Object.freeze(errors),
+    receipt: createCutHarnessReapReceipt({
+      cutCase,
+      token: harnessToken,
+      terminal: null,
+      accepted,
+      identity: null,
+      audit: null,
+      structural,
+    }),
+  });
+}
+
+function cutFailure(primaryError, cleanupErrors) {
+  if (cleanupErrors.length === 0) return primaryError;
+  return new AggregateError(
+    [primaryError, ...cleanupErrors],
+    "cut execution and cleanup failed",
+    { cause: primaryError },
   );
 }
 
 function completeLocalSlot(cursor, operation, clock, callback) {
+  const errors = [];
   cursor = reduceCutSupervisorCursor(
     cursor,
     { type: "begin-slot", operation },
-    clock.sample(),
+    cutCleanupClockSample(clock, errors),
   );
-  callback();
-  return reduceCutSupervisorCursor(
+  try {
+    callback();
+  } catch (caught) {
+    errors.push(caught);
+  }
+  const completionSample = cutCleanupClockSample(clock, errors);
+  cursor = reduceCutSupervisorCursor(
     cursor,
-    { type: "complete-slot", operation, outcome: "pass" },
-    clock.sample(),
+    { type: "complete-slot", operation, outcome: errors.length === 0 ? "pass" : "fail" },
+    completionSample,
+  );
+  return Object.freeze({ cursor, errors: Object.freeze(errors) });
+}
+
+function failedCutSlotIsSkipped(cursor, operation) {
+  return (
+    (operation === "accepted-id-validation" && cursor.acceptedId === null) ||
+    (operation === "exact-name-recovery" && cursor.adoptedId !== null) ||
+    (["remove-1", "absence-1"].includes(operation) && cursor.adoptedId === null) ||
+    (["remove-2", "absence-2"].includes(operation) &&
+      (cursor.adoptedId === null || cursor.absenceProved))
   );
 }
 
-async function emergencyCutCleanup(launch, clock, dockerAnchor, hardDeadlineNs) {
-  const errors = [];
-  if (launch.child !== undefined && !groupAbsent(launch.child.pid)) {
-    try {
-      signalGroup(launch.child.pid, "SIGKILL");
-      while (!groupAbsent(launch.child.pid) && clock.sample() < hardDeadlineNs) {
-        await delay(POLL_MS);
-      }
-      if (!groupAbsent(launch.child.pid)) refuse("failed cut process group residue");
-    } catch (error) {
-      errors.push(error);
-    }
+function requireFailedCutParentAbsence(cleanup) {
+  const alternate = join(
+    cleanup.parentToken === "tmp" ? "/var/tmp" : "/tmp",
+    `${INVOCATION_PREFIX}${cleanup.invocation}`,
+  );
+  if (!pathAbsent(cleanup.path) || !pathAbsent(alternate)) {
+    refuse("failed cut invocation path residue");
   }
+}
+
+async function completeFailedPathHelperSlot(cursor, launch, clock) {
+  const operation = "failed-path-helper";
+  const token = createOwnedChildToken();
+  const errors = [];
+  cursor = reduceCutSupervisorCursor(
+    cursor,
+    { type: "begin-slot", operation, token },
+    cutCleanupClockSample(clock, errors),
+  );
+  const onStage = (stage, stageClock = clock) => {
+    cursor = reduceCutSupervisorCursor(
+      cursor,
+      { type: "advance-slot-stage", operation, stage, token },
+      cutClockSample(stageClock),
+    );
+  };
+  const result = await runFailedPathHelper(
+    launch.cleanup,
+    launch.custody,
+    clock,
+    cursor.active,
+    onStage,
+  );
+  if (result.error !== undefined) errors.push(result.error);
+  const sample = cutCleanupClockSample(clock, errors);
+  if (!result.reaped || sample.nanoseconds >= cursor.active.endNs) {
+    errors.push(new Error(
+      result.reaped
+        ? "failed-path helper exceeded its absolute cap"
+        : "failed-path helper retained child residue",
+    ));
+    cursor = reduceCutSupervisorCursor(
+      cursor,
+      { type: "abort-slot", operation, reaped: result.reaped, token },
+      sample,
+    );
+    return Object.freeze({
+      cursor,
+      errors: Object.freeze(errors),
+      residue: !result.reaped,
+    });
+  }
+  cursor = reduceCutSupervisorCursor(
+    cursor,
+    {
+      type: "complete-slot",
+      operation,
+      outcome: errors.length === 0 ? "pass" : "fail",
+      reaped: result.reaped,
+      token,
+    },
+    sample,
+  );
+  return Object.freeze({ cursor, errors: Object.freeze(errors), residue: !result.reaped });
+}
+
+async function runFailedCutTeardown(cursor, launch, clock, dockerAnchor) {
+  const errors = [];
+  cursor = reduceCutSupervisorCursor(
+    cursor,
+    { type: "begin-failed-teardown" },
+    cutCleanupClockSample(clock, errors),
+  );
   const context = {
     clock,
     dockerAnchor,
-    hardDeadlineNs,
+    hardDeadlineNs: cursor.teardownDeadlineNs,
     invocation: launch.cleanup.invocation,
     rootPath: launch.cleanup.path,
   };
-  try {
-    const recovered = await exactName(
-      context,
-      { kind: "proof", rowId: "root-fmt" },
+  while (expectedCutSupervisorOperation(cursor) !== null) {
+    const operation = expectedCutSupervisorOperation(cursor);
+    if (failedCutSlotIsSkipped(cursor, operation)) {
+      cursor = reduceCutSupervisorCursor(
+        cursor,
+        { type: "skip-slot", operation },
+        cutCleanupClockSample(clock, errors),
+      );
+      continue;
+    }
+    if ([
+      "accepted-id-validation",
       "exact-name-recovery",
-      true,
-    );
-    if (recovered.outcome === "present") await removeAndProveAbsent(context, recovered.id);
-  } catch (error) {
-    errors.push(error);
-  }
-  try {
-    const exact = await exactName(
-      context,
-      { kind: "proof", rowId: "root-fmt" },
+      "remove-1",
+      "absence-1",
+      "remove-2",
+      "absence-2",
       "final-exact-name-census",
-      true,
-    );
-    if (exact.outcome !== "absent") refuse("failed cut final exact-name census");
-    const labels = await labelCensus(context, "final-label-census", true);
-    if (labels.ids.length !== 0) refuse("failed cut final label census");
-  } catch (error) {
-    errors.push(error);
+      "final-label-census",
+    ].includes(operation)) {
+      const result = await completeDockerSlot(
+        cursor,
+        context,
+        operation,
+        ["accepted-id-validation"].includes(operation)
+          ? { id: cursor.acceptedId }
+          : ["remove-1", "absence-1", "remove-2", "absence-2"].includes(operation)
+          ? { id: cursor.adoptedId }
+          : {},
+      );
+      cursor = result.cursor;
+      errors.push(...result.errors);
+      continue;
+    }
+    if (operation === "failed-path-helper") {
+      const result = await completeFailedPathHelperSlot(cursor, launch, clock);
+      cursor = result.cursor;
+      errors.push(...result.errors);
+      continue;
+    }
+    if (operation === "parent-absence") {
+      const result = completeLocalSlot(cursor, operation, clock, () => {
+        requireFailedCutParentAbsence(launch.cleanup);
+      });
+      cursor = result.cursor;
+      errors.push(...result.errors);
+      continue;
+    }
+    if (operation === "descriptor-settlement") {
+      const result = completeLocalSlot(cursor, operation, clock, () => {
+        settleMatchingCustody(launch.cleanup, launch.custody);
+      });
+      cursor = result.cursor;
+      errors.push(...result.errors);
+      continue;
+    }
+    refuse("unexpected failed cut teardown slot");
   }
-  try {
-    await runFailedPathHelper(launch.cleanup, launch.custody, clock, hardDeadlineNs);
-  } catch (error) {
-    errors.push(error);
+  if (!["failed-complete", "failed-residue"].includes(cursor.phase)) {
+    errors.push(new Error(`failed cut teardown stopped in ${cursor.phase}`));
+  } else if (cursor.phase === "failed-residue") {
+    errors.push(new Error("failed cut teardown retained explicit child residue"));
   }
-  try {
-    settleMatchingCustody(launch.cleanup, launch.custody);
-  } catch (error) {
-    errors.push(error);
-  }
-  if (errors.length > 0) throw new AggregateError(errors, "failed cut cleanup did not settle");
+  return Object.freeze({ cursor, errors: Object.freeze(errors) });
 }
 
 async function runCut(sourceDirectory, cutCase, clock, dockerAnchor, signal) {
+  const harnessToken = createOwnedChildToken();
+  const launcher = cutLauncher(cutCase);
+  cutClockSample(clock);
   const freshToken = await prepareFreshLedgerBackedRoot({ sourceDirectory, signal });
   let launch;
-  let consumed = false;
-  let passed = false;
+  let cursor;
+  let primaryError;
+  let startedAt;
+  let harnessError;
+  let harnessReceipt;
+  let observationAttempted = false;
+  const cleanupErrors = [];
   try {
-    const harnessToken = createOwnedChildToken();
-    const startedAtNs = clock.sample();
-    launch = cutLauncher(cutCase)(freshToken);
-    consumed = true;
-    let cursor = createCutSupervisorCursor({
+    startedAt = cutClockSample(clock);
+    try {
+      launch = launcher(freshToken);
+    } catch (error) {
+      const claimed = claimFreshRootHandoffFailure(error);
+      if (claimed !== undefined) {
+        launch = claimed.launch;
+        if (!claimed.handoffSettlement.settled) {
+          cleanupErrors.push(incompleteHandoffSettlement(claimed.handoffSettlement));
+        }
+      }
+      throw error;
+    }
+    cursor = createCutSupervisorCursor({
       cutCase,
       harnessToken,
       invocation: launch.cleanup.invocation,
-      sample: startedAtNs,
+      sample: startedAt,
     });
+    if (launch.outcome === "synchronous-spawn-failure") {
+      harnessError = launch.spawnError;
+      harnessReceipt = createCutHarnessReapReceipt({
+        cutCase,
+        token: harnessToken,
+        terminal: null,
+        accepted: null,
+        identity: null,
+        audit: null,
+        structural: Object.freeze({ kind: "not-created" }),
+      });
+      try {
+        cursor = reduceCutSupervisorCursor(
+          cursor,
+          {
+            type: "harness-reaped",
+            receipt: harnessReceipt,
+          },
+          cutClockSample(clock),
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      throw harnessError;
+    }
+    observationAttempted = true;
     const observed = await observeCutHarness(launch, cursor, harnessToken, cutCase, clock);
-    cursor = reduceCutSupervisorCursor(
-      cursor,
-      { type: "harness-reaped", receipt: observed.receipt },
-      clock.sample(),
-    );
+    harnessError = observed.error;
+    harnessReceipt = observed.receipt;
+    try {
+      cursor = reduceCutSupervisorCursor(
+        cursor,
+        { type: "harness-reaped", receipt: harnessReceipt },
+        cutClockSample(clock),
+      );
+    } catch (error) {
+      if (harnessError === undefined) throw error;
+      cleanupErrors.push(error);
+    }
+    if (harnessError !== undefined) throw harnessError;
     const context = {
       clock,
       dockerAnchor,
@@ -2038,31 +2761,134 @@ async function runCut(sourceDirectory, cutCase, clock, dockerAnchor, signal) {
     while (expectedCutSupervisorOperation(cursor) !== null) {
       const operation = expectedCutSupervisorOperation(cursor);
       if (operation === "accepted-id-absence") {
-        cursor = await completeDockerSlot(cursor, context, operation, { id: cursor.acceptedId });
+        const result = await completeDockerSlot(cursor, context, operation, { id: cursor.acceptedId });
+        cursor = result.cursor;
+        if (result.errors.length > 0) throw cutFailure(result.errors[0], result.errors.slice(1));
       } else if (["exact-name-census", "label-census"].includes(operation)) {
-        cursor = await completeDockerSlot(cursor, context, operation);
+        const result = await completeDockerSlot(cursor, context, operation);
+        cursor = result.cursor;
+        if (result.errors.length > 0) throw cutFailure(result.errors[0], result.errors.slice(1));
       } else if (operation === "local-absence") {
-        cursor = completeLocalSlot(cursor, operation, clock, () => {
+        const result = completeLocalSlot(cursor, operation, clock, () => {
           requireCutLocalAbsence(launch.cleanup, observed.identity);
         });
+        cursor = result.cursor;
+        if (result.errors.length > 0) throw result.errors[0];
       } else if (operation === "custody") {
-        cursor = completeLocalSlot(cursor, operation, clock, () => {
+        const result = completeLocalSlot(cursor, operation, clock, () => {
           settleRetainedCustody(launch.cleanup, launch.custody, clock);
         });
+        cursor = result.cursor;
+        if (result.errors.length > 0) throw result.errors[0];
       } else {
         refuse("unexpected cut post-reap slot");
       }
     }
     if (cursor.phase !== "complete" || cursor.failed) refuse("cut supervisor completion");
-    passed = true;
-  } finally {
-    if (!consumed) {
-      await abandonFreshRootHandoff(freshToken);
-    } else if (!passed && launch !== undefined) {
-      const now = clock.sample();
-      await emergencyCutCleanup(launch, clock, dockerAnchor, now + 130n * SECOND_NS);
+    return;
+  } catch (error) {
+    primaryError = error;
+  }
+
+  const recoveryClock = createRecoveryBootClock(clock, cleanupErrors);
+  clock = recoveryClock;
+  if (launch === undefined) {
+    try {
+      const claimed = claimFreshRootCleanup(freshToken);
+      launch = claimed.launch;
+      if (!claimed.handoffSettlement.settled) {
+        cleanupErrors.push(incompleteHandoffSettlement(claimed.handoffSettlement));
+      }
+    } catch (error) {
+      cleanupErrors.push(error);
     }
   }
+  if (launch !== undefined && cursor === undefined) {
+    try {
+      if (startedAt === undefined) {
+        startedAt = cutClockSample(clock);
+      }
+      cursor = createCutSupervisorCursor({
+        cutCase,
+        harnessToken,
+        invocation: launch.cleanup.invocation,
+        sample: startedAt,
+      });
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (
+    launch !== undefined &&
+    cursor?.phase === "harness" &&
+    harnessReceipt === undefined &&
+    !observationAttempted
+  ) {
+    let settlement;
+    if (launch.child === undefined) {
+      settlement = Object.freeze({
+        errors: Object.freeze([]),
+        receipt: createCutHarnessReapReceipt({
+          cutCase,
+          token: harnessToken,
+          terminal: null,
+          accepted: null,
+          identity: null,
+          audit: null,
+          structural: Object.freeze({ kind: "not-created" }),
+        }),
+      });
+    } else {
+      try {
+        settlement = await settleFailedCutLaunchChild(
+          launch.child,
+          clock,
+          startedAt,
+          harnessToken,
+          cutCase,
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (settlement !== undefined) {
+      cleanupErrors.push(...settlement.errors);
+      harnessReceipt = settlement.receipt;
+    }
+  }
+  if (
+    cursor?.phase === "harness" &&
+    harnessReceipt !== undefined
+  ) {
+    try {
+      cursor = reduceCutSupervisorCursor(
+        cursor,
+        { type: "harness-failed-reaped", receipt: harnessReceipt },
+        cutCleanupClockSample(clock, cleanupErrors),
+      );
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (launch !== undefined && cursor?.phase === "failed-ready") {
+    try {
+      const teardown = await runFailedCutTeardown(cursor, launch, clock, dockerAnchor);
+      cursor = teardown.cursor;
+      cleanupErrors.push(...teardown.errors);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  } else if (launch === undefined) {
+    cleanupErrors.push(new Error("cut recovery authority unavailable"));
+  } else if (cursor?.phase !== "failed-complete") {
+    cleanupErrors.push(new Error(`cut teardown unavailable from ${cursor?.phase ?? "no-cursor"}`));
+  }
+  try {
+    recoveryClock.close();
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  throw cutFailure(primaryError, cleanupErrors);
 }
 
 async function main() {
@@ -2080,7 +2906,6 @@ async function main() {
       if (caughtSignal !== undefined) return;
       caughtSignal = signal;
       abortController.abort();
-      if (activeChild !== undefined) signalGroup(activeChild.child.pid, "SIGTERM");
     };
     handlers.set(signal, handler);
     process.on(signal, handler);

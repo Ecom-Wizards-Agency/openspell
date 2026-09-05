@@ -717,6 +717,41 @@ describe("private preparation-proof package boundary", () => {
     );
     expect(integration).toContain("const MATRIX_ACTIVE_NS = 1_500n * SECOND_NS;");
     expect(integration).toContain("const INNER_RESERVE_NS = 160n * SECOND_NS;");
+    expect(integration).toContain("  claimFreshRootCleanup,\n");
+    expect(integration).toContain("  claimFreshRootHandoffFailure,\n");
+    expect(integration).toContain("  CUT_ACTIVE_NS,\n");
+    expect(integration).toContain("  CUT_INNER_CLEANUP_NS,\n");
+    expect(integration).toContain("  createBootTimeSample,\n");
+    expect(integration).toContain(
+      "function cutClockSample(clock) {\n" +
+        "  return createBootTimeSample(clock.sample());\n" +
+        "}",
+    );
+    expect(integration.match(/cutClockSample\(/gu)?.length).toBeGreaterThan(7);
+    const cutWiring = integration.slice(
+      integration.indexOf("async function completeDockerSlot"),
+      integration.indexOf("async function runCut"),
+    ) + integration.slice(
+      integration.indexOf("async function runCut"),
+      integration.indexOf("async function main"),
+    );
+    expect(cutWiring).not.toContain("emergencyCutCleanup");
+    expect(cutWiring).toContain("async function runFailedCutTeardown");
+    expect(cutWiring).toContain('{ type: "begin-failed-teardown" }');
+    expect(cutWiring).toContain(
+      "const harnessToken = createOwnedChildToken();\n" +
+        "  const launcher = cutLauncher(cutCase);\n" +
+        "  cutClockSample(clock);\n" +
+        "  const freshToken = await prepareFreshLedgerBackedRoot({ sourceDirectory, signal });",
+    );
+    expect(cutWiring).toContain("sample: startedAt,\n");
+    expect(cutWiring).toContain("recoveryStartedNs + 5n * SECOND_NS");
+    expect(cutWiring).toContain("recoveryStartedNs + 10n * SECOND_NS");
+    expect(cutWiring).toContain("recoveryStartedNs + 15n * SECOND_NS");
+    expect(cutWiring).toContain("const claimed = claimFreshRootHandoffFailure(error);");
+    expect(cutWiring.indexOf("await settleFailedCutLaunchChild(")).toBeLessThan(
+      cutWiring.indexOf("await runFailedCutTeardown("),
+    );
     expect(3 * 460 + 1_660 + 3 * (325 + 1_110) + 130 + 15).toBe(7_490);
     expect(3 * 460 + 1_660 + 3 * (325 + 1_110) + 15).toBe(7_360);
     expect(

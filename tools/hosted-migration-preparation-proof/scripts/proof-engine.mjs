@@ -3253,13 +3253,54 @@ export function parseCutAuditStream(bytes, acknowledgement, token) {
 export function createCutHarnessReapReceipt(options) {
   exactObjectKeys(
     options,
-    ["cutCase", "token", "terminal", "accepted", "identity", "audit", "pipesEof", "groupAbsent"],
+    ["cutCase", "token", "terminal", "accepted", "identity", "audit", "structural"],
     "cut harness reap receipt options",
   );
   const cutCase = requireCutCase(options.cutCase);
   const processToken = requireKnownChildToken(options.token, "cut harness reap");
-  if (options.pipesEof !== true || options.groupAbsent !== true) {
-    throw new Error("cut harness not fully reaped");
+  if (options.structural === null || typeof options.structural !== "object") {
+    throw new Error("invalid cut harness structure");
+  }
+  exactObjectKeys(
+    options.structural,
+    options.structural.kind === "not-created"
+      ? ["kind"]
+      : ["kind", "releaseWriterClosed", "eof", "groupAbsent"],
+    "cut harness structure",
+  );
+  const notCreated = options.structural.kind === "not-created";
+  let structural;
+  if (!notCreated) {
+    if (options.structural.kind !== "reaped") throw new Error("invalid cut harness structure kind");
+    if (options.structural.eof === null || typeof options.structural.eof !== "object") {
+      throw new Error("invalid cut harness EOF structure");
+    }
+    exactObjectKeys(
+      options.structural.eof,
+      ["stdout", "stderr", "identity", "accepted", "audit"],
+      "cut harness EOF structure",
+    );
+    if (
+      options.structural.releaseWriterClosed !== true ||
+      options.structural.groupAbsent !== true ||
+      Object.values(options.structural.eof).some((value) => value !== true)
+    ) {
+      throw new Error("cut harness not fully reaped");
+    }
+    structural = Object.freeze({
+      kind: "reaped",
+      releaseWriterClosed: true,
+      eof: Object.freeze({
+        stdout: true,
+        stderr: true,
+        identity: true,
+        accepted: true,
+        audit: true,
+      }),
+      groupAbsent: true,
+    });
+  } else {
+    structural = Object.freeze({ kind: "not-created" });
   }
   for (const [receipt, receipts, label] of [
     [options.terminal, cutTerminalReceipts, "terminal"],
@@ -3280,7 +3321,16 @@ export function createCutHarnessReapReceipt(options) {
   ) {
     throw new Error("cut harness receipt case mismatch");
   }
+  if (
+    notCreated &&
+    [options.terminal, options.accepted, options.identity, options.audit].some(
+      (receipt) => receipt !== null,
+    )
+  ) {
+    throw new Error("not-created cut harness cannot carry process receipts");
+  }
   const valid =
+    !notCreated &&
     options.terminal !== null &&
     options.accepted !== null &&
     options.identity !== null &&
@@ -3291,8 +3341,7 @@ export function createCutHarnessReapReceipt(options) {
     valid,
     invocation: options.identity?.invocation ?? null,
     acceptedId: options.accepted?.acceptedId ?? null,
-    pipesEof: true,
-    groupAbsent: true,
+    structural,
   });
 }
 
@@ -3476,6 +3525,7 @@ export function createCutSupervisorCursor(options) {
     adoptedId: null,
     absenceProved: false,
     failed: false,
+    residue: false,
     slots: Object.freeze([]),
     slotIndex: 0,
     active: null,
@@ -3496,6 +3546,7 @@ function beginCutSlot(cursor, transition, nowNs) {
     throw new Error("cut supervisor slot reorder");
   }
   const idBound = new Set([
+    "accepted-id-validation",
     "accepted-id-absence",
     "remove-1",
     "absence-1",
@@ -3507,7 +3558,7 @@ function beginCutSlot(cursor, transition, nowNs) {
     : ["type", "operation", "token", ...(idBound ? ["id"] : [])];
   exactObjectKeys(transition, expectedKeys, "cut supervisor begin-slot");
   if (slot.kind !== "local") {
-    const targetId = slot.operation === "accepted-id-absence"
+    const targetId = ["accepted-id-validation", "accepted-id-absence"].includes(slot.operation)
       ? cursor.acceptedId
       : idBound
         ? cursor.adoptedId
@@ -3566,7 +3617,11 @@ function advanceSettledCutSlot(cursor, nowNs, failed, updates = {}) {
     phase: failed && cursor.phase === "post-reap"
       ? "failed-ready"
       : complete
-        ? cursor.phase === "post-reap" ? "complete" : "failed-complete"
+        ? cursor.phase === "post-reap"
+          ? "complete"
+          : cursor.residue
+            ? "failed-residue"
+            : "failed-complete"
         : cursor.phase,
   });
 }
@@ -3672,8 +3727,8 @@ function completeCutSlot(cursor, transition, nowNs) {
     if (typeof transition.reaped !== "boolean") {
       throw new Error("invalid cut supervisor reap result");
     }
-    if (!transition.reaped && transition.outcome !== "fail") {
-      throw new Error("unreaped cut supervisor child cannot pass");
+    if (!transition.reaped) {
+      throw new Error("unreaped cut supervisor child cannot release cleanup authority");
     }
   }
   if (nowNs >= cursor.active.endNs) throw new Error("cut supervisor slot cap");
@@ -3731,7 +3786,99 @@ function expireCutSlot(cursor, transition, nowNs) {
   if (cursor.active.stage !== "kill" || nowNs < cursor.active.endNs) {
     throw new Error("cut supervisor slot has not expired after KILL");
   }
+  if (cursor.active.kind !== "local") {
+    if (cursor.phase === "post-reap") {
+      return freezeCutSupervisor({
+        ...cursor,
+        active: null,
+        failed: true,
+        lastBootNs: nowNs,
+        phase: "failed-ready",
+        residue: true,
+      });
+    }
+    const descriptorIndex = cursor.slots.findIndex(
+      (slot) => slot.operation === "descriptor-settlement",
+    );
+    if (cursor.phase === "failed-teardown" && descriptorIndex >= 0) {
+      return freezeCutSupervisor({
+        ...cursor,
+        active: null,
+        failed: true,
+        lastBootNs: nowNs,
+        residue: true,
+        slotIndex: descriptorIndex,
+      });
+    }
+    return freezeCutSupervisor({
+      ...cursor,
+      active: null,
+      failed: true,
+      lastBootNs: nowNs,
+      phase: "failed-residue",
+      residue: true,
+    });
+  }
   return advanceSettledCutSlot(cursor, nowNs, true);
+}
+
+function abortCutSlot(cursor, transition, nowNs) {
+  if (cursor.active === null || cursor.active.kind === "local") {
+    throw new Error("no abortable cut supervisor slot");
+  }
+  const idBound = Object.hasOwn(cursor.active, "id");
+  exactObjectKeys(
+    transition,
+    ["type", "operation", "token", "reaped", ...(idBound ? ["id"] : [])],
+    "cut supervisor abort-slot",
+  );
+  if (
+    transition.operation !== cursor.active.operation ||
+    transition.token !== cursor.active.token ||
+    (idBound && transition.id !== cursor.active.id)
+  ) {
+    throw new Error("invalid cut supervisor abort target");
+  }
+  if (typeof transition.reaped !== "boolean") {
+    throw new Error("invalid cut supervisor abort reap result");
+  }
+  if (transition.reaped) {
+    if (nowNs < cursor.active.endNs) {
+      throw new Error("reaped cut supervisor slot cannot abort before its cap");
+    }
+    return advanceSettledCutSlot(cursor, nowNs, true);
+  }
+  if (cursor.phase === "post-reap") {
+    return freezeCutSupervisor({
+      ...cursor,
+      active: null,
+      failed: true,
+      lastBootNs: nowNs,
+      phase: "failed-ready",
+      residue: true,
+    });
+  }
+  const descriptorIndex = cursor.slots.findIndex(
+    (slot) => slot.operation === "descriptor-settlement",
+  );
+  if (cursor.phase === "failed-teardown" && descriptorIndex >= 0) {
+    return freezeCutSupervisor({
+      ...cursor,
+      active: null,
+      failed: true,
+      lastBootNs: nowNs,
+      residue: true,
+      slotIndex: descriptorIndex,
+    });
+  }
+  return freezeCutSupervisor({
+    ...cursor,
+    active: null,
+    failed: true,
+    lastBootNs: nowNs,
+    phase: "failed-residue",
+    residue: true,
+  });
 }
 
 export function reduceCutSupervisorCursor(cursor, transition, sample) {
@@ -3741,13 +3888,38 @@ export function reduceCutSupervisorCursor(cursor, transition, sample) {
   }
   const nowNs = requireSample(sample);
   if (nowNs < cursor.lastBootNs) throw new Error("cut supervisor clock regressed");
+  if (transition.type === "harness-failed-reaped") {
+    exactObjectKeys(transition, ["type", "receipt"], "failed harness-reaped transition");
+    if (
+      cursor.phase !== "harness" ||
+      !cutHarnessReapReceipts.has(transition.receipt) ||
+      usedCutHarnessReapReceipts.has(transition.receipt) ||
+      transition.receipt.token !== cursor.harnessToken ||
+      transition.receipt.cutCase !== cursor.cutCase
+    ) {
+      throw new Error("invalid failed harness reap receipt");
+    }
+    usedCutHarnessReapReceipts.add(transition.receipt);
+    return freezeCutSupervisor({
+      ...cursor,
+      lastBootNs: nowNs,
+      harnessReaped: true,
+      acceptedId: transition.receipt.acceptedId,
+      failed: true,
+      phase: "failed-ready",
+    });
+  }
   if (
     cursor.phase === "post-reap" &&
     (cursor.postReapDeadlineNs === null || nowNs >= cursor.postReapDeadlineNs)
   ) {
     throw new Error("cut supervisor post-reap deadline");
   }
-  if (cursor.phase !== "failed-teardown" && nowNs >= cursor.outerDeadlineNs) {
+  if (
+    transition.type !== "begin-failed-teardown" &&
+    cursor.phase !== "failed-teardown" &&
+    nowNs >= cursor.outerDeadlineNs
+  ) {
     throw new Error("cut supervisor outer deadline");
   }
   if (cursor.phase === "failed-teardown" && nowNs >= cursor.teardownDeadlineNs) {
@@ -3802,7 +3974,7 @@ export function reduceCutSupervisorCursor(cursor, transition, sample) {
       lastBootNs: nowNs,
       phase: "failed-teardown",
       slots: FAILED_TEARDOWN_SLOTS,
-      slotIndex: 0,
+      slotIndex: cursor.residue ? FAILED_TEARDOWN_SLOTS.length - 1 : 0,
       active: null,
       teardownDeadlineNs: nowNs + FAILED_CUT_TEARDOWN_NS,
     });
@@ -3836,5 +4008,6 @@ export function reduceCutSupervisorCursor(cursor, transition, sample) {
   }
   if (transition.type === "complete-slot") return completeCutSlot(cursor, transition, nowNs);
   if (transition.type === "expire-slot") return expireCutSlot(cursor, transition, nowNs);
+  if (transition.type === "abort-slot") return abortCutSlot(cursor, transition, nowNs);
   throw new Error("unsupported cut supervisor transition");
 }

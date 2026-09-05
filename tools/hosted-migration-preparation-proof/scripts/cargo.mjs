@@ -1300,7 +1300,7 @@ export async function stageFixedSourceSnapshot({ indexBytes, sourceDirectory } =
 
 const freshRootCopyBudgets = new WeakSet();
 const freshRootTokens = new WeakMap();
-const freshRootHandoffSettlements = new WeakMap();
+const freshRootHandoffFailures = new WeakMap();
 
 export function createFreshRootCopyBudget(startNanoseconds) {
   if (typeof startNanoseconds !== "bigint" || startNanoseconds < 0n) {
@@ -3005,29 +3005,81 @@ function settlePrivateDescriptor(descriptor, expected) {
   });
 }
 
-function attachHandoffFailure(error, state, child, settlementToken, result) {
-  const failure = error instanceof Error ? error : new Error("fresh-root handoff failed", { cause: error });
-  for (const [name, value] of [
-    ["child", child],
-    ["cleanup", freshRootCleanupFromState(state)],
-    ["handoffSettlementToken", settlementToken],
-    ["unsettled", result],
-    ["custody", Object.freeze({
-      custodyRoot: state.custodyRoot,
-      ledgerDescriptor: state.ledgerDescriptor,
-      ledgerDigest: state.ledgerDigest,
-      ledgerIdentity: state.ledgerIdentity,
-      ledgerSize: state.ledgerSize,
-    })],
-  ]) {
-    Object.defineProperty(failure, name, {
-      configurable: false,
-      enumerable: true,
-      value,
-      writable: false,
+function freshRootCustodyFromState(state) {
+  return Object.freeze({
+    custodyRoot: state.custodyRoot,
+    ledgerDescriptor: state.ledgerDescriptor,
+    ledgerDigest: state.ledgerDigest,
+    ledgerIdentity: state.ledgerIdentity,
+    ledgerSize: state.ledgerSize,
+  });
+}
+
+function freshRootLaunchFromRecovery(recovery, child, spawnError) {
+  return Object.freeze({
+    child,
+    cleanup: recovery.cleanup,
+    custody: recovery.custody,
+    outcome: spawnError === undefined
+      ? child === undefined ? "not-created" : "spawned"
+      : "synchronous-spawn-failure",
+    spawnError,
+  });
+}
+
+function handoffIdentityFromState(state) {
+  return descriptorIdentityRecord(
+    {
+      device: state.device,
+      gid: BigInt(process.getgid()),
+      inode: state.inode,
+      uid: BigInt(process.getuid()),
+    },
+    state.mountId,
+  );
+}
+
+function registerHandoffFailure(recovery, child, spawnError, handoffSettlement) {
+  const handoffError =
+    handoffSettlement.closeError ??
+    handoffSettlement.probeError ??
+    new Error("fresh-root handoff descriptor remained open");
+  const failure = spawnError === undefined
+    ? handoffError
+    : new AggregateError(
+      [spawnError, handoffError],
+      "fresh-root spawn and handoff settlement failed",
+      { cause: spawnError },
+    );
+  freshRootHandoffFailures.set(failure, Object.freeze({
+    expected: recovery.expected,
+    handoffSettlement,
+    launch: freshRootLaunchFromRecovery(recovery, child, spawnError),
+    protectedDescriptors: Object.freeze([recovery.custody.custodyRoot]),
+  }));
+  return failure;
+}
+
+function settleHandoffForClaim(state) {
+  const expected = handoffIdentityFromState(state);
+  try {
+    const initial = settlePrivateDescriptor(state.handoffRoot, expected);
+    state.descriptorSettlement.handoffRoot = initial.settled;
+    if (initial.settled && initial.closeError === undefined && initial.probeError === undefined) {
+      return initial;
+    }
+    const settlement = settlePrivateDescriptorIdentity(expected, [state.custodyRoot]);
+    state.descriptorSettlement.handoffRoot = settlement.settled;
+    return settlement;
+  } catch (error) {
+    state.descriptorSettlement.handoffRoot = false;
+    return Object.freeze({
+      closeError: undefined,
+      expected,
+      probeError: error,
+      settled: false,
     });
   }
-  return failure;
 }
 
 function launchFixedFreshRootCut(token, program) {
@@ -3035,6 +3087,11 @@ function launchFixedFreshRootCut(token, program) {
   if (state === undefined || state.phase !== "available") {
     throw new Error("fresh-root handoff token is invalid or consumed");
   }
+  const recovery = Object.freeze({
+    cleanup: freshRootCleanupFromState(state),
+    custody: freshRootCustodyFromState(state),
+    expected: handoffIdentityFromState(state),
+  });
   state.phase = "launching";
   freshRootTokens.delete(token);
   let child;
@@ -3053,40 +3110,26 @@ function launchFixedFreshRootCut(token, program) {
   } catch (error) {
     spawnError = error;
   }
-  const expectedHandoff = descriptorIdentityRecord(
-    { device: state.device, gid: BigInt(process.getgid()), inode: state.inode, uid: BigInt(process.getuid()) },
-    state.mountId,
-  );
-  const handoffSettlement = settlePrivateDescriptor(state.handoffRoot, expectedHandoff);
-  state.descriptorSettlement.handoffRoot = handoffSettlement.settled;
-  if (!handoffSettlement.settled) {
-    const settlementToken = Object.freeze({ kind: "openspell.wp201.handoff-settlement.v1" });
-    freshRootHandoffSettlements.set(settlementToken, {
-      expected: expectedHandoff,
-      protectedDescriptors: Object.freeze([state.custodyRoot]),
+  let handoffSettlement;
+  try {
+    handoffSettlement = settlePrivateDescriptor(state.handoffRoot, recovery.expected);
+  } catch (error) {
+    handoffSettlement = Object.freeze({
+      closeError: undefined,
+      expected: recovery.expected,
+      probeError: error,
+      settled: false,
     });
-    throw attachHandoffFailure(
-      handoffSettlement.closeError ?? handoffSettlement.probeError ?? new Error("fresh-root handoff descriptor remained open"),
-      state,
-      child,
-      settlementToken,
-      handoffSettlement,
-    );
   }
-  return Object.freeze({
-    child,
-    cleanup: freshRootCleanupFromState(state),
-    custody: Object.freeze({
-      custodyRoot: state.custodyRoot,
-      ledgerDescriptor: state.ledgerDescriptor,
-      ledgerDigest: state.ledgerDigest,
-      ledgerIdentity: state.ledgerIdentity,
-      ledgerSize: state.ledgerSize,
-    }),
-    handoffCloseError: handoffSettlement.closeError,
-    outcome: spawnError === undefined ? "spawned" : "synchronous-spawn-failure",
-    spawnError,
-  });
+  state.descriptorSettlement.handoffRoot = handoffSettlement.settled;
+  if (
+    !handoffSettlement.settled ||
+    handoffSettlement.closeError !== undefined ||
+    handoffSettlement.probeError !== undefined
+  ) {
+    throw registerHandoffFailure(recovery, child, spawnError, handoffSettlement);
+  }
+  return freshRootLaunchFromRecovery(recovery, child, spawnError);
 }
 
 export function launchBeforeIssueFreshRoot(token) {
@@ -3101,15 +3144,48 @@ export function launchAfterParentCustodyBeforeStartFreshRoot(token) {
   return launchFixedFreshRootCut(token, fixedCutPrograms.afterParentCustodyBeforeStart);
 }
 
-export function settleFreshRootHandoffClose(token) {
-  const state = freshRootHandoffSettlements.get(token);
-  if (state === undefined) throw new Error("fresh-root handoff settlement token is invalid or consumed");
-  const result = settlePrivateDescriptorIdentity(
-    state.expected,
-    state.protectedDescriptors,
-  );
-  if (result.settled) freshRootHandoffSettlements.delete(token);
-  return result;
+export function claimFreshRootHandoffFailure(error) {
+  const failure = freshRootHandoffFailures.get(error);
+  if (failure === undefined) return undefined;
+  freshRootHandoffFailures.delete(error);
+  let handoffSettlement = failure.handoffSettlement;
+  if (!handoffSettlement.settled) {
+    try {
+      handoffSettlement = settlePrivateDescriptorIdentity(
+        failure.expected,
+        failure.protectedDescriptors,
+      );
+    } catch (settlementError) {
+      handoffSettlement = Object.freeze({
+        closeError: failure.handoffSettlement.closeError,
+        expected: failure.expected,
+        probeError: settlementError,
+        settled: false,
+      });
+    }
+  }
+  return Object.freeze({ handoffSettlement, launch: failure.launch });
+}
+
+export function claimFreshRootCleanup(token) {
+  const state = freshRootTokens.get(token);
+  if (state === undefined || state.phase !== "available") {
+    throw new Error("fresh-root handoff token is invalid or consumed");
+  }
+  state.phase = "cleanup-claimed";
+  freshRootTokens.delete(token);
+  const handoffSettlement = settleHandoffForClaim(state);
+  return Object.freeze({
+    handoffSettlement,
+    launch: freshRootLaunchFromRecovery(
+      Object.freeze({
+        cleanup: freshRootCleanupFromState(state),
+        custody: freshRootCustodyFromState(state),
+      }),
+      undefined,
+      undefined,
+    ),
+  });
 }
 
 export async function abandonFreshRootHandoff(token) {
