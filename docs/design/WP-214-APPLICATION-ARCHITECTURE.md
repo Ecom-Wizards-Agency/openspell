@@ -236,6 +236,34 @@ An ambiguous provider response whose every requested value was subsequently obse
 the existing `observed_after_ambiguous` state provides the observation evidence required by the
 shared dispatch verifier. Unresolved ambiguous rows remain ineligible.
 
+### Native timeline read plan
+
+The next source slice owns `packages/shared/src/time-machine-writes.ts` and its test/export,
+new `packages/db/src/queries/time-machine-writes.ts`, the existing timeline query/tests,
+and server-only Time Machine page/cursor/data wiring. Claude retains client preview/confirmation
+presentation and frontend design. No worker registration or new database migration is required
+for this read projection: the exact mirror receipts are already in `20260905030000`.
+
+Project approved, source-backed keyword-bid operations from immutable plans/receipts and the
+existing public accounting/observation tables. A forward plan must carry its persisted preview
+source, and an inverse must link to that exact source plan. Keep legacy exports available.
+Use approval time as the immutable entry ordering key; provider/observation timestamps and
+current execution/mirror states are separate metadata. Preserve PostgreSQL microseconds in
+pagination cursors. Do not move an existing entry between pages when its status advances.
+
+Read legacy and native candidates inside one read-only repeatable-read transaction, apply the
+same filters and bounded keyset limit to each, and merge by the exact timestamp/ID ordering.
+Suppress a plain export row only when its exact apply-row provenance is represented by an
+approved native entry. Suppress a sync diff only when its exact mirror receipt attributes it to
+that native write. A native conflict read remains a separate sync event even if a legacy linker
+later attaches an export batch. No timestamp/value heuristics establish native attribution.
+
+Native metadata carries the approved actor, exact operation/action/change identity, phase,
+provider accounting, mirror reconciliation and original/inverse operation links. A failed or
+unobserved inverse does not mark its original restored. Tenant filters apply to every join.
+The row projection parses shared contracts; underlying immutable facts and accounting remain
+the authority, without a second mutable history/status table.
+
 ### Delegated admission slice
 
 WP-217 first lands the coordinated policy/shared authorization amendment, then a new additive

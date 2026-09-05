@@ -50,6 +50,8 @@ deployment, credential store or Amazon account was accessed.
 
 | Mirror status contract | `SpWriteOperationDetail` now requires separate mirror counts, including observations still awaiting a receipt. The observation total must match the verified provider ledger. | Eleven shared tests and shared typecheck passed before the status-query implementation. The query now verifies receipts only for observations in the ledger snapshot. Three worker tests, 12 DB tests and four HTTP tests passed; DB/web typechecks and targeted lint passed. The HTTP fixture truthfully reports one pending mirror receipt despite its synthetic direct mirror edit. |
 
+| Native Time Machine read plan | The application architecture now declares the exact projection and server wiring scope. Ordering uses immutable approval time and preserves timestamp microseconds; legacy/native candidates share one repeatable-read snapshot. Only exact provenance or attributed mirror IDs suppress duplicate entries. | Implementation is next. In particular, conflict observations must remain visible even if a legacy export linker later attaches a batch. |
+
 Latest complete database verification: **478 tests in 48 files passed** with `--maxWorkers=1`.
 After HTTP integration and JSON transport fixes, the affected database suites also passed
 **78 tests**, and HTTP/role/assurance suites passed **15 tests**. Web and DB typechecks and
