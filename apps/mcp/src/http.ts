@@ -17,7 +17,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createDb } from '@wizard-ads/db';
 import type { DbHandle } from '@wizard-ads/db';
 import { AuthError } from './errors.js';
-import { verifyApiKey } from './keys.js';
+import { hashToken, verifyApiKey } from './keys.js';
+import { recordMcpWriteToolAttempt } from './writes.js';
 import {
   createMcpServer,
   PRODUCT_NAME,
@@ -59,7 +60,7 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
   });
 
   const http = createServer((req, res) => {
-    void handle_(req, res).catch((error: unknown) => {
+    void handle_(req, res).catch(() => {
       if (!res.headersSent) {
         respond(res, 500, {
           jsonrpc: '2.0',
@@ -67,7 +68,7 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
           id: null,
         });
       }
-      console.error('[mcp] unhandled request error', error);
+      console.error('[mcp] unhandled request error');
     });
   });
 
@@ -100,8 +101,11 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
     }
 
     let key;
+    let tokenHash: string;
     try {
-      key = await verifyApiKey(handle, bearerToken(req));
+      const token = bearerToken(req);
+      key = await verifyApiKey(handle, token, { allowWrite: config.writeToolsEnabled === true });
+      tokenHash = hashToken(token);
     } catch (error) {
       const status = error instanceof AuthError ? error.status : 401;
       const reason = error instanceof AuthError ? error.reason : 'unauthorized';
@@ -115,6 +119,7 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
     }
 
     const body = await readBody(req);
+    await recordMcpWriteToolAttempt(handle, key.orgId, key.id, body);
     const orgSlug = await readOrgSlug(handle, key.orgId);
 
     const server = createMcpServer({
@@ -123,6 +128,8 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
       scope: { orgId: key.orgId, profileIds: key.profileIds },
       keyId: key.id,
       orgSlug,
+      writeCredential: key.scope === 'write' && config.writeToolsEnabled === true
+        ? { orgId: key.orgId, keyId: key.id, tokenHash } : undefined,
     });
 
     const transport = new StreamableHTTPServerTransport({

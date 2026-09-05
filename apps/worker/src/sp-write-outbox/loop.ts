@@ -76,6 +76,11 @@ export function createSpWriteOutboxLoop(dependencies: Dependencies) {
     let lease: { leaseId: string; expiresAt: string } | undefined;
     // Each pass must resolve at least one row. There can be no more passes than approved rows.
     for (let pass = 0; pass < initial.plan.actions.length; pass += 1) {
+      if (evidence.authorization.approvalMode === 'delegated_mcp') {
+        const settlement = await outbox.settleDelegatedAuthority(claim);
+        if (settlement.kind === 'stale_claim') return { kind: 'stale', attemptedCalls };
+        if (settlement.kind === 'refused') return settleClaim(claim, attemptedCalls);
+      }
       const remaining = unresolvedActionIds(evidence);
       const call = adapter.preparePlan(evidence.plan, remaining)[0];
       if (call === undefined) return settleClaim(claim, attemptedCalls);
@@ -212,6 +217,11 @@ export function createSpWriteOutboxLoop(dependencies: Dependencies) {
         const adapter = providers.get(providerKey(evidence.plan));
         if (claim.kind === 'observe_and_recover') return await observe(claim, evidence, adapter, signal);
         if (evidence.snapshot.accounting.pendingDispatch === 0) return await settleClaim(claim, 0);
+        if (evidence.authorization.approvalMode === 'delegated_mcp') {
+          const settlement = await outbox.settleDelegatedAuthority(claim);
+          if (settlement.kind === 'stale_claim') return { kind: 'stale', attemptedCalls: 0 };
+          if (settlement.kind === 'refused') return await settleClaim(claim, 0);
+        }
         if (adapter === undefined || !await isSpWriteDispatchCurrent(database, claim)) {
           await outbox.deferClaim(claim, 'shutdown');
           return { kind: 'deferred', attemptedCalls: 0 };

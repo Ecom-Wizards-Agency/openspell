@@ -141,8 +141,9 @@ function exportNumber(raw: string): number {
   return value;
 }
 
-async function buildPlan(
-  sql: QuerySql, actor: SpWriteActor, request: SpWritePreviewRequest,
+/** Package-private source builder. Callers own authorization and atomic persistence. */
+export async function buildSpWriteLegacyPreview(
+  sql: QuerySql, orgId: string, request: SpWritePreviewRequest,
 ): Promise<{ plan: SpWritePlan; evidence: SpWritePreviewEvidence }> {
   const batches = await sql<BatchSnapshot[]>`
     select b.tag, g.grant_id::text, g.version_id::text as grant_version,
@@ -159,7 +160,7 @@ async function buildPlan(
       join public.sp_write_profile_grant_versions g
         on g.org_id = h.org_id and g.profile_id = h.profile_id
        and g.grant_id = h.grant_id and g.version_id = h.version_id
-     where b.org_id = ${actor.orgId}::uuid and b.profile_id = ${request.profileId}::uuid
+     where b.org_id = ${orgId}::uuid and b.profile_id = ${request.profileId}::uuid
        and b.id = ${request.applyBatchId}::uuid
        and b.source_kind = 'legacy_export'
        and p.sync_enabled and c.status = 'active' and g.enabled
@@ -190,7 +191,7 @@ async function buildPlan(
         on rec.org_id = r.org_id and rec.profile_id = r.profile_id and rec.id = r.recommendation_id
       left join public.recommendation_runs run
         on run.org_id = rec.org_id and run.profile_id = rec.profile_id and run.id = rec.run_id
-     where r.org_id = ${actor.orgId}::uuid and r.profile_id = ${request.profileId}::uuid
+     where r.org_id = ${orgId}::uuid and r.profile_id = ${request.profileId}::uuid
        and r.batch_id = ${request.applyBatchId}::uuid
      order by rec.created_at, rec.id
   `;
@@ -255,7 +256,7 @@ async function buildPlan(
   const now = toDate(nowRows[0]!.now);
   const plan = SpWritePlan.parse({
     schemaVersion: 'openspell.sp-write-plan.v1', id: request.requestId,
-    orgId: actor.orgId, profileId: request.profileId, providerScope: scope, direction: 'forward',
+    orgId: orgId, profileId: request.profileId, providerScope: scope, direction: 'forward',
     source: {
       kind: 'apply_batch', applyBatchId: request.applyBatchId,
       guardrailSnapshotFingerprint: sha256(serializeSpWritePreviewGuardrails(evidence)),
@@ -285,7 +286,7 @@ export async function previewSpWrite(
     await requireOperator(sql, actor);
     const existing = await existingPreview(sql, actor, request);
     if (existing !== null) return { existing: true, preview: existing };
-    const { plan, evidence } = await buildPlan(sql, actor, request);
+    const { plan, evidence } = await buildSpWriteLegacyPreview(sql, actor.orgId, request);
     return { existing: false, preview: SpWritePreview.parse({ plan, binding: spWritePlanBinding(plan), evidence }) };
   });
   if (snapshot.existing) return snapshot.preview;

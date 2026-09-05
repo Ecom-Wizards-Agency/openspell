@@ -12,9 +12,8 @@
  * and a KDF would force a table scan on every request instead of an index hit.
  *
  * A key is scoped three ways, all enforced here and again in the tool layer:
- * read-only, a required profile allowlist, and a bounded expiry. That is the
- * AdLabs gap the recon named first — their key is unscoped, non-expiring and
- * read-write by default.
+ * explicit read or separately delegated write authority, a required profile
+ * allowlist, and a bounded expiry. Issuance defaults to read-only.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { DbHandle } from '@wizard-ads/db';
@@ -113,10 +112,7 @@ export async function issueApiKey(
 ): Promise<IssuedApiKey> {
   const scope = input.scope ?? 'read';
   if (scope !== 'read') {
-    // v1 has no write path at all. Issuing a write key would create a
-    // credential whose permission the server cannot honor, which is worse than
-    // refusing: it reads as capability that does not exist.
-    throw new Error('v1 issues read-only keys only. A write scope unlocks with WP-12.');
+    throw new Error('Write keys require separate operator-issued delegation.');
   }
 
   const label = input.label.trim();
@@ -198,7 +194,7 @@ export async function revokeApiKey(handle: DbHandle, keyId: string): Promise<boo
 }
 
 /**
- * Resolve a presented token to a read-only key, stamp its last-used time, or
+ * Resolve a presented token to an allowed key, stamp its last-used time, or
  * throw an `AuthError`.
  *
  * Every failure is a 401 with the same message. Distinguishing "no such key"
@@ -206,18 +202,28 @@ export async function revokeApiKey(handle: DbHandle, keyId: string): Promise<boo
  * once real, and tells a legitimate operator nothing they cannot read off the
  * key list.
  */
-export async function verifyApiKey(handle: DbHandle, token: string): Promise<ApiKeyRecord> {
+export async function verifyApiKey(
+  handle: DbHandle, token: string, options: { allowWrite?: boolean } = {},
+): Promise<ApiKeyRecord> {
   const unauthorized = new AuthError(401, 'invalid or revoked API key');
   if (!token.startsWith(TOKEN_PREFIX) || token.length < TOKEN_PREFIX.length + 20) {
     throw unauthorized;
   }
 
   const hash = hashToken(token);
+  // With write exposure off, existing read authentication has no dependency on
+  // the additive delegation schema. Write calls recheck authority in their RPC.
+  const scope = options.allowWrite === true
+    ? handle.sql`(scope = 'read' or (scope = 'write' and exists (
+        select 1 from mcp.write_delegations delegation
+        where delegation.org_id = mcp.api_keys.org_id and delegation.key_id = mcp.api_keys.id
+      )))`
+    : handle.sql`scope = 'read'`;
   const rows = await handle.sql<(KeyRow & { token_hash: string })[]>`
     update mcp.api_keys
        set last_used_at = now()
      where token_hash = ${hash}
-       and scope = 'read'
+       and ${scope}
        and revoked_at is null
        and profile_ids is not null
        and cardinality(profile_ids) > 0
@@ -233,7 +239,7 @@ export async function verifyApiKey(handle: DbHandle, token: string): Promise<Api
   // The lookup already matched on the hash; the constant-time compare is here
   // so the code does not depend on the index comparison being safe.
   if (!constantTimeEquals(row.token_hash, hash)) throw unauthorized;
-  if (row.scope !== 'read') throw unauthorized;
+  if (row.scope !== 'read' && !(options.allowWrite === true && row.scope === 'write')) throw unauthorized;
 
   return toRecord(row);
 }

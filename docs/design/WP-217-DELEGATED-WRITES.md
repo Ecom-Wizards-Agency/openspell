@@ -146,7 +146,10 @@ and claim settlement, followed by `20260906040000_mcp_write_preview_sources.sql`
 legacy/inverse preview mapping. Both are additive source-window files outside WP-207. The
 facade owns new `queries/mcp-write-application.ts`, its explicit export, and narrow private
 extractions in `sp-write-{plan-builder,inverse-preview,operation-read}.ts`. Worker integration
-owns `queries/sp-write-worker.ts`, its explicit export and `apps/worker/src/sp-write-outbox/loop.ts`.
+uses `outbox.settleDelegatedAuthority(claim)` in `queries/sp-write-persistence.ts` and
+`apps/worker/src/sp-write-outbox/loop.ts`. Grounding found that claim tokens live in the
+persistence module's private WeakMap; a separate query adapter would expose custody. The
+existing outbox boundary therefore owns the new method and keeps those tokens private.
 New admission, facade, actual HTTP and worker/history suites must prove replay, atomic failure,
 forced lock waits, all three sources, scoped client IDs and mixed human/MCP inverse history.
 These claims remain unproven until executed; design review alone is not acceptance evidence.
@@ -201,10 +204,13 @@ No key, grant, enabled gate or runtime worker registration is seeded.
    The key mutation wrapper is `apps/web/src/server/mcp-key-mutations.ts`; new issuance lives at
    `app/api/mcp-keys/write/route.ts`, with `src/mcp-write-keys-route.test.ts` synthetic coverage.
    No key-management client components. Worker execution uses existing outbox composition.
+   `apps/analyst/src/analyst.integration.test.ts` explicitly sets the new required config field
+   false; no analyst behavior changes. MCP registration is compiled behind the default-false
+   startup flag and verified write identity; HTTP catalog/call tests prove those guards.
 5. History: DB Time Machine projection, server timeline labels and synthetic fixtures must derive
    key/issuer from receipt. No live-key join may erase old history. Original and inverse each retain
    their own actor/state and reciprocal operation links.
-6. Activation remains separate: worker/config registration, every ordinary sync mirror owner,
+6. Operational activation remains separate: provider worker/config registration, every ordinary sync mirror owner,
    immutable release artifacts and a later scoped runbook. No hosted/Amazon action is authorized
    by this source design. Keep the main replan and audit current throughout.
 

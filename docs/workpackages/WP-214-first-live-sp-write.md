@@ -186,6 +186,13 @@ application entry must exist before exposing approval. Every ordinary
 entity-sync owner must receive the keyword-mirror capability before enabling native writes.
 Do not mix this second window into WP-207 or use source tests as hosted-application evidence.
 
+The same source branch also carries the five WP-217 migration files, `20260906000000`
+through `20260906040000`, explicitly inventoried in
+[WP-217](WP-217-mcp-guarded-apply.md). The enum file must commit before its consumers.
+The reviewed deployment bundle must account for those additional dependencies even if
+MCP exposure stays off; the key-management and filtered history/export consumers already
+require their earlier source migrations. This does not expand Claude's WP-207 window.
+
 15. Seed one environment gate version plus head and one profile grant version plus head for the
     single profile with the template SQL, run by the authorized executor using the migration-
     owner role. Values stay in `_local/`.

@@ -8032,9 +8032,11 @@ describe('SP write runtime blast radius', () => {
     }).success).toBe(false);
   });
 
-  it('adds no runtime, queue, deployment, hosted, Time Machine, or ApplyRow activation path', async () => {
+  it('confines application sources and adds no provider runtime or deployment activation path', async () => {
     const runtimeRoots = ['apps/worker', 'apps/web', 'apps/mcp', 'apps/analyst'];
     const applicationConsumers = [
+      'apps/mcp/src/writes-http.test.ts',
+      'apps/mcp/src/writes.ts',
       'apps/web/app/api/sp-writes/approve/route.ts',
       'apps/web/app/api/sp-writes/inverse-preview/route.ts',
       'apps/web/app/api/sp-writes/preview/route.ts',
@@ -8042,6 +8044,7 @@ describe('SP write runtime blast radius', () => {
       'apps/web/src/server/mcp-key-mutations.ts',
       'apps/web/src/writes/http.ts',
       'apps/worker/src/sp-write-outbox/loop.test.ts',
+      'apps/worker/src/sp-write-outbox/mcp-history.test.ts',
     ];
     const inertWorkerImports: Record<string, readonly string[]> = {
       'apps/worker/src/sp-write-outbox/artifacts.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter'],
@@ -8049,6 +8052,7 @@ describe('SP write runtime blast radius', () => {
       'apps/worker/src/sp-write-outbox/providers.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter', '@wizard-ads/db/sp-write-worker'],
       'apps/worker/src/sp-write-outbox/loop.test.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
       'apps/worker/src/sp-write-outbox/composition.ts': ['createSpWriteOutboxLoop', 'createSpWriteWorker', '@wizard-ads/db/sp-write-worker'],
+      'apps/worker/src/sp-write-outbox/mcp-history.test.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
     };
     const seenApplicationConsumers: string[] = [];
     const forbidden = [
@@ -8207,6 +8211,8 @@ describe('SP write runtime blast radius', () => {
       '/20260906000000_mcp_write_delegation_mode.sql',
       '/20260906010000_mcp_write_delegations.sql',
       '/20260906020000_mcp_bid_proposal_sources.sql',
+      '/20260906030000_mcp_write_admissions.sql',
+      '/20260906040000_mcp_write_preview_sources.sql',
     ];
     const migrationFiles = await sourceFiles(`${REPO_ROOT}supabase/migrations`);
     const spWriteSourceMigrations = migrationFiles.filter((path) =>

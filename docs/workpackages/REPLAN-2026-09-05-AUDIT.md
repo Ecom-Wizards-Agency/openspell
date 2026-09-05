@@ -31,6 +31,92 @@ deployment, credential store or Amazon account was accessed.
 
 ## Implementation progress, 2026-09-05
 
+### Current MCP admission, connection and history checkpoint, 2026-09-06
+
+**Implemented and verified locally:** atomic delegated admission, permanent UTC row charges,
+exact request replay, legacy/direct/inverse previews and all three authenticated MCP tools.
+`queries/mcp-write-application.ts` exposes preview/apply/status through the explicit MCP DB
+subpath; the transport does not call Amazon or impersonate human approval. External client
+request identity remains key-scoped; the internal approval identity is independently generated.
+The existing worker records provider results, observations, mirror updates and linked Time
+Machine entries for both human and MCP authority. Each inverse has its own actor and allowance.
+
+The last SQL review reproduced and fixed three artifact/authority defects:
+
+- A primed `REPEATABLE READ` transaction could spend a stale daily-cap snapshot after another
+  admission committed. The service admission RPC now requires `READ COMMITTED` (`25001`
+  otherwise); the production facade invokes it directly at that isolation. Forced key-lock
+  contention proves one admission/one refusal at the final available row, and the primed
+  snapshot regression proves one charge after refusing the second transaction.
+- Generic service-role audit insertion could forge a second admission event and poison exact
+  replay. A narrow invoker trigger reserves that event type for the controlled admission
+  owner; ordinary audit writes remain supported. Both insert and update spoofing refuse.
+- SQL microseconds could leave a receipt window that JavaScript considered empty. Admission
+  and receipt construction now compare the millisecond-normalized validity boundary while
+  preserving recorded timestamp precision. The deterministic real-constructor test rejects
+  equal-millisecond bounds and reloads an adjacent valid receipt. The new legacy/inverse
+  recorder also rejects noncanonical fingerprint preimages and samples one inverse clock.
+
+Authority settlement uses the existing outbox facade's private claim token. It rechecks custody
+following lock waits, returns zero changes for a stale claim, and rolls back partial bookkeeping
+if custody expires during insertion. Closed authority resolves only previously unresolved rows;
+committed intents/results/observations remain intact. Tests force both authority-lock orders,
+revocation before provider access and revocation after the first 100 positions of a 101-row plan.
+A locally paused/stopped dispatcher defers queued refusals until it resumes; there is no separate
+cleanup scheduler. The database MCP gate prevents new delegated intents without redeployment.
+
+**Deliberate source boundary:** the default-off transport registration in `apps/mcp/src/server.ts`
+and `writes.ts` is part of WP-217 source. It requires `OPENSPELL_MCP_WRITES_ENABLED=1` and a
+verified write credential. Exact static consumer/registration inventories now include those
+files, the operator key loader and the two synthetic HTTP/worker fixtures. Runtime HTTP tests
+prove read-key and flag-off denial. Provider worker registration, deployment scripts, seeded
+keys and enabled gate/config remain absent. No global scan or provider activation rule was removed.
+The analyst test fixture supplies the required false config field; no analyst behavior changes.
+
+Final local verification:
+
+| Check | Result |
+|---|---|
+| Full database suite, serial files | **593 tests passed in 62 files**, including all migrations, source boundaries and the five pilot-template checks |
+| MCP package through real HTTP/disposable PostgreSQL | **66 tests passed**, including seven write HTTP cases, discarded committed response, strict-input and audit-failure behavior |
+| Existing worker loop plus delegated history suite | **32 tests passed** with the real ledger and synthetic providers |
+| Selected UI write, Time Machine and key-management backend suites | **18 tests passed** |
+| Shared contract checkpoint | **137 tests passed** before the dependent implementation |
+| Workspace typecheck and product lint | **22 typechecks passed**; ESLint passed with gitignored exploratory scripts excluded |
+| Public hygiene and analytical skill declarations | Hygiene passed with all nine private denylist terms active; four read-only skill declarations passed |
+
+The preceding full DB run passed 587 and failed one stale latest-migration assertion; the exact
+inventory was corrected and the full run above passed. The new pilot test initially failed
+TypeScript's dictionary-value check; explicit case typing/value presence fixed it before the
+final 22-task pass. Staged hygiene first flagged a synthetic refresh-token literal and a
+dense SQL fragment; runtime assembly/spacing corrected those two findings without changing
+the checker or test values. The final staged scan is clean. Full root `pnpm check` is not certified green: earlier crosscheck/parallel DB
+and Claude-owned UI timing failures remain recorded below. Targeted results do not erase them.
+
+The two-row MCP cycle produces four native Time Machine entries, two provider result positions
+and two observed/mirrored rows in each direction, with both initial bids restored. Original-key
+revocation does not erase history; an inverse under a separately valid key or human approval
+retains reciprocal operation links. Lost-response HTTP recovery produces one admission and
+one permanent charge; admission audit/enqueue failures roll back the transaction. Failed
+pre-handler attempt audit prevents the handler from running. Error responses never claim an
+uncertain admission made no change.
+
+[The source activation preparation](../deploy/sp-write-activation.md) and
+`_local/sp-write-gate-seed.TEMPLATE.sql` are now present. The template refuses unresolved
+placeholders, unexpected existing environment authority, changed profile routing/grant or an
+expired seed window. Its default rollback is nonpersistent; a synthetic explicit-commit copy
+creates exactly one environment head and scoped grant with no MCP gate or approval. The seed
+window does not automatically expire those gate heads; the runbook requires explicit shutdown.
+All ten WP-214/WP-217 source migrations remain outside Claude's original five-file WP-207 window.
+
+Remaining delivery boundary: source PR/CI review, Claude's confirmation client, the separate
+worker activation and immutable release scripts, later reviewed schema window, and exact scoped
+live UI then MCP forward/inverse proof. No hosted database, credential store or Amazon action
+has occurred. WP-201–205 stay parked and PR #135 is closed without merging; its worktree remains.
+
+The checkpoints below are historical states, preserved with their verification limits. The
+current state above supersedes their former pending-work lists.
+
 ### Delegated admission identity correction, 2026-09-06
 
 The next implementation design is selected from three independent candidates and recorded in

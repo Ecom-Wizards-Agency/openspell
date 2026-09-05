@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  SpWriteActor, SpWriteInversePreviewRequest, SpWritePreview,
+  SpWriteActor, SpWriteInversePreviewRequest, SpWritePreview, type SpWriteOperationDetail,
 } from '@wizard-ads/shared/sp-write-application';
 import {
   SpWriteAction, SpWritePlan, orderSpWriteActions, serializeSpWriteActionFingerprint,
@@ -47,6 +47,28 @@ export async function previewSpWriteInverse(
   }
   const recorded = await replay();
   if (recorded !== null) return recorded;
+  const preview = await buildSpWriteInversePreview(handle, request, original, forward);
+  try { await createSpWriteStagingLedger(handle).recordPlan(preview.plan); }
+  catch {
+    const winner = await replay();
+    if (winner !== null) return winner;
+    throw new SpWriteApplicationError('outcome_unknown');
+  }
+  return preview;
+}
+
+/** Package-private inverse builder; authorization and persistence stay with each application caller. */
+export async function buildSpWriteInversePreview(
+  handle: Pick<DbHandle, 'sql'>, request: SpWriteInversePreviewRequest,
+  original: SpWriteOperationDetail, forward: SpWritePlan,
+): Promise<SpWritePreview> {
+  if (forward.direction !== 'forward' || original.original !== null
+    || original.operation.executionId !== request.original.executionId
+    || original.operation.planId !== request.original.planId || forward.id !== request.original.planId
+    || forward.profileId !== request.profileId
+    || JSON.stringify(original.receipt.plan) !== JSON.stringify(spWritePlanBinding(forward))) {
+    throw new SpWriteApplicationError('unsupported_source');
+  }
   if (original.snapshot.accounting.observedRequested !== forward.counts.providerRows
     || !['succeeded', 'observed_after_ambiguous'].includes(original.snapshot.status)) {
     throw new SpWriteApplicationError('source_changed');
@@ -57,11 +79,12 @@ export async function previewSpWriteInverse(
       || Object.keys(action.changes).length !== 1) throw new SpWriteApplicationError('unsupported_source');
     return { keyword_id: action.entity.keywordId, amount: action.changes.bid.requested.amount };
   });
+  // One database instant keeps the expiry exactly within the 15-minute preview window.
   const [mirror] = await handle.sql<{ matches: number; now: string; expires: string }[]>`
-    select count(*)::int as matches, app.sp_write_instant(clock_timestamp()) as now,
-      app.sp_write_instant(clock_timestamp() + interval '15 minutes') as expires
+    select count(*)::int as matches, app.sp_write_instant(statement_timestamp()) as now,
+      app.sp_write_instant(statement_timestamp() + interval '15 minutes') as expires
     from jsonb_to_recordset(${JSON.stringify(expected)}::text::jsonb) as expected(keyword_id text, amount text)
-    join public.keywords keyword on keyword.org_id = ${actor.orgId}::uuid
+    join public.keywords keyword on keyword.org_id = ${forward.orgId}::uuid
       and keyword.profile_id = ${request.profileId}::uuid and keyword.amazon_id = expected.keyword_id
       and keyword.bid = expected.amount::numeric and keyword.ad_product = 'SP'
       and keyword.deleted_at is null and keyword.state in ('enabled','paused')
@@ -95,11 +118,5 @@ export async function previewSpWriteInverse(
   });
   const plan = { ...base, fingerprint: digest(serializeSpWritePlanFingerprint(base)) };
   verifySpWriteInversePair(forward, plan, hasher);
-  try { await createSpWriteStagingLedger(handle).recordPlan(plan); }
-  catch {
-    const winner = await replay();
-    if (winner !== null) return winner;
-    throw new SpWriteApplicationError('outcome_unknown');
-  }
   return SpWritePreview.parse({ plan, binding: spWritePlanBinding(plan), evidence: null });
 }

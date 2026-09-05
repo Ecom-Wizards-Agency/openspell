@@ -10,37 +10,49 @@ D1/WP-207 and D2/WP-216 remain with Claude.
 
 ## Current source checkpoint, 2026-09-06
 
-See [the architecture and file scope](../design/WP-217-DELEGATED-WRITES.md). Shared delegated
-v2 receipts and MCP request/status/actor contracts are committed at `707cf6e` and tested; the
-coordinated policy amendment accompanies them. Human v1 bytes and human-only confirmation
-input remain supported. SQL admission, tools and activation are still
-pending. The first additive migration is implemented: `20260906000000_mcp_write_delegation_mode.sql`
-adds only the enum label, verified by a PostgreSQL commit-boundary proof and 27 checks. It
-commits before the later authority/admission migration can consume that label;
-no WP-207 window or live target is changed. The next file,
-`20260906010000_mcp_write_delegations.sql`, implements immutable owner/admin issuance and audited
-revocation. It independently validates canonical scope, limits, identity and fingerprint bytes;
-read credentials cannot be upgraded and write permissions cannot be expanded in place.
-It creates no key during migration. The new operator `POST /api/mcp-keys/write` issues a bounded
-key; `issueMcpWriteKey`/`listMcpWriteKeys` in `apps/web/src/data/mcp-keys.ts` expose Claude's
-server action/loader. Existing read/write revocation now uses the audited RPC. Its migration
-must precede deploying this web revision even if writes stay off; an old schema returns 503
-on revocation. Eight HTTP/data tests and independent atomicity/read-token probes pass.
-MCP write tools, admission and runtime activation are still pending; client components remain Claude-owned.
-Detailed test/review evidence is in the replan audit.
+See [the architecture and file scope](../design/WP-217-DELEGATED-WRITES.md) and
+[the implementation audit](REPLAN-2026-09-05-AUDIT.md). The source now implements operator-only
+bounded key issuance/revocation, direct keyword and legacy/inverse previews, atomic delegated
+admission and the authenticated MCP preview/apply/status tools. Human confirmation remains
+separate. Time Machine preserves key/issuer attribution and reciprocal original/inverse links.
+Local HTTP and worker tests prove counted two-row cycles, restored bids, lost-response recovery,
+revocation and closed-authority refusal. Final local checks pass 593 DB, 66 MCP, 32 worker and 18 selected web tests, plus 22 workspace
+typechecks. Source PR/CI review and operational activation remain pending.
 
-The third source migration, `20260906020000_mcp_bid_proposal_sources.sql`, implements controlled
-keyword-proposal preparation, immutable source records and legacy consumer boundaries. The
-private `queries/mcp-write-preview.ts` producer returns exact plan/evidence, recovers duplicate
-requests and records its preview audit atomically. New keyword plan v2 retains source order;
-its inverse retains the corresponding original action positions. Shared contracts are committed
-at `69af518`, with the timestamp compatibility correction at `a7ec15c`. V1 bytes are preserved.
-Direct legacy downloads/reversions refuse MCP proposals. Both source ownership race orders,
-a two-row human forward/inverse cycle after key revocation, and a counted 500-row source
-preparation have executable local proof. Delegated admission and MCP tools remain pending.
-Filtered web queries require this migration before deployment even when MCP writes stay
-disabled. It joins `20260906000000` and `20260906010000` in the later reviewed source window,
-separate from all five WP-207 files. See the audit for exact checks and remaining work.
+Shared contracts landed before consumers: delegated policy/receipts at `707cf6e`, ordered v2
+plans at `69af518` with timestamp correction `a7ec15c`, client request identity at `22b4132`,
+and claim-bound settlement at `8f31fce`. V1 compatibility remains covered. The controlled
+proposal producer is committed at `605548e`; the admission/transport slice follows it.
+
+`POST /api/mcp-keys/write` and `issueMcpWriteKey`/`listMcpWriteKeys` in
+`apps/web/src/data/mcp-keys.ts` expose operator issuance and Claude's server action/loader.
+Read-key revocation requires `20260906010000`; filtered history/export queries require
+`20260906020000`, even with MCP writes disabled. Client components remain Claude-owned.
+
+**Declared transport boundary:** `apps/mcp/src/writes.ts` registers exactly three tools only
+when the startup flag `OPENSPELL_MCP_WRITES_ENABLED=1` and verified write identity are present.
+The flag defaults off and malformed values refuse startup. HTTP tests verify write/read/default-off
+catalogs and calls. The exact source scans permit that conditional registration, its two new
+HTTP/worker fixtures and the existing operator key loader; they still forbid provider worker
+entrypoint/config/deployment activation. The analyst integration fixture explicitly supplies
+`writeToolsEnabled: false`; this is configuration compatibility, with no analyst behavior change.
+
+Exact migration inventory for this package, in commit order:
+
+| Migration | Purpose |
+|---|---|
+| `20260906000000_mcp_write_delegation_mode.sql` | Commit the delegated enum label before consumers |
+| `20260906010000_mcp_write_delegations.sql` | Immutable operator-issued key authority and audited revocation |
+| `20260906020000_mcp_bid_proposal_sources.sql` | Controlled keyword source, immutable mapping/evidence and legacy exclusions |
+| `20260906030000_mcp_write_admissions.sql` | Atomic authorization, UTC charges, audit/enqueue and counted worker refusal |
+| `20260906040000_mcp_write_preview_sources.sql` | Atomic legacy/inverse preview mapping under key scope |
+
+All five use the five-second lock timeout and advisory DDL lock. They follow WP-214's five
+source files in a later reviewed/rehearsed window, outside WP-207. Source tests do not authorize
+that window. The MCP database switch stops new delegated intents without a deployment;
+a paused or stopped dispatcher records queued refusals when it resumes. Existing intended
+calls retain result and observation recovery. The real HTTP and worker/history suites now exercise this behavior with a disposable database
+and synthetic providers. They do not establish hosted deployment or live Amazon behavior.
 
 ## Objective
 
@@ -53,7 +65,7 @@ Amazon or grants itself more authority. Implement the programmatic interface nee
 The existing Streamable HTTP MCP server is the client connection; it may invoke the shared
 application service directly. A separate REST service is not required for that connection.
 
-## Verified starting point
+## Historical starting point (before this implementation)
 
 - The SQL key-scope enum already contains `write`; `apps/mcp/src/keys.ts` issues/verifies read
   keys only. The missing work is issuance, verified scope propagation, bounds and revocation.
@@ -80,7 +92,7 @@ application service directly. A separate REST service is not required for that c
    and the shared server/application write helpers. MCP reuses the same plan/execution service
    and status contract as WP-214; its delegated admission has separate authorization. Existing
    UI writes retain human approval. Key-management UI client design is Claude-owned.
-4. Activation PR: worker/config registration and declaration-based blast tests; a scoped deploy
+4. Activation PR: provider worker/config registration and declaration-based blast tests; a scoped deploy
    runbook; relevant README/key guidance and this brief's close-out evidence. The current
    HANDOVER/STATUS owner integrates program updates. Skill docs change only where a tool is
    actually added; read-only analytical skills do not gain implicit mutation permission.

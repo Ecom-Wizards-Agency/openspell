@@ -37,7 +37,7 @@ const inverse = await previewSpWriteInverse(database, actor, {
 // Inverse preview also requires a separate approval.
 ```
 
-WP-217 adds a distinct `admitDelegatedSpWrite` operation. The verified MCP key context comes
+WP-217 adds a distinct `applyMcpBidChanges` operation on `@wizard-ads/db/mcp-writes`. The verified MCP key context comes
 from HTTP authentication. It binds an existing preview to an operator-issued delegation in
 one database transaction. It does not impersonate the human confirmation above. MCP tool
 discovery and calls use the existing authenticated Streamable HTTP server.

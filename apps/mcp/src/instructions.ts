@@ -13,20 +13,32 @@ import { ENTITY_LEVELS, LEVELS } from './catalog.js';
 import { ALL_METRICS, DERIVED_METRICS } from './metrics.js';
 import { FILTER_OPERATORS } from './sql.js';
 
-export function instructionsDocument(orgSlug: string, profileCount: number): string {
+export function instructionsDocument(orgSlug: string, profileCount: number, delegatedWrites = false): string {
   const levels = ENTITY_LEVELS.map((level) => `- \`${level}\` — ${LEVELS[level].description}`).join('\n');
   const ratios = Object.entries(DERIVED_METRICS)
     .map(([name, descriptor]) => `- \`${name}\` = ${descriptor.description}`)
     .join('\n');
 
-  return `# OpenSpell MCP — read-only
+  const authority = delegatedWrites
+    ? 'a key with separately operator-issued, bounded keyword bid authority'
+    : 'a read-only key';
+  const writes = delegatedWrites
+    ? `Use \`preview_bid_changes\` to save and review exact Sponsored Products keyword bids,
+then \`apply_bid_changes\` to queue that exact plan within the key's limits. Preview sends
+no change to Amazon. Queued is not applied: use \`get_write_status\` for attempted, accepted,
+observed and refused counts. Keep the apply requestId before sending; after an unknown outcome,
+look it up or retry the exact same request. Never use a new ID to recover an uncertain call.
+An inverse needs its own preview, apply request and allowance. Originals and inverses appear
+in Time Machine with their own actors and links. These tools cannot issue keys or enlarge authority.`
+    : `Nothing you can call changes an Amazon account or OpenSpell product data.
+This key's catalog contains analytical reads only.`;
 
-You are connected to **${orgSlug}** with a read-only key covering ${profileCount} profile${
+  return `# OpenSpell MCP${delegatedWrites ? '' : ' — read-only'}
+
+You are connected to **${orgSlug}** with ${authority} covering ${profileCount} profile${
     profileCount === 1 ? '' : 's'
   }.
-Every call you make is written to the audit log with its parameters. Nothing you can call
-changes an Amazon account or OpenSpell product data. The production catalog contains
-analytical reads only.
+Calls are audit-logged under this key. ${writes}
 
 ## The pipeline
 
