@@ -127,7 +127,7 @@ blocker for this hand path; the digests above are the acceptance check.
 
 ```bash
 cd "$WORKDIR"
-supabase db push --dry-run --project-ref "$PROJECT_REF"
+supabase db push --dry-run --skip-vault --project-ref "$PROJECT_REF"
 ```
 
 Required result: the CLI offers **exactly** the five versions `20260901020000`, `20260901030000`,
@@ -253,13 +253,15 @@ fingerprints from prefix-41 are the preflight leaf that postflight compares agai
 
 ```bash
 cd "$WORKDIR"
-supabase db push --project-ref "$PROJECT_REF"
+supabase db push --skip-vault --project-ref "$PROJECT_REF"
 ```
 
 Every file opens with `set local lock_timeout = '5s'` and takes the shared advisory DDL lock, and the
 CLI applies each file in its own transaction with its ledger row. **Rehearsed:** on the disposable
-database all five applied without error; `20260901060000` created both roles, validated both new
-foreign keys, and left both authorities `legacy`.
+database all five applied without error; `20260901050000` added `recommendation_runs_job_fkey`,
+`20260901060000` created both roles, added and validated `recommendations_tenant_run_fkey`
+against existing rows, and left both authorities `legacy`. `--skip-vault` keeps the push from
+touching Vault secrets declared in a local `config.toml`; the window changes schema only.
 
 ### If the push fails
 
@@ -277,7 +279,7 @@ write reverse SQL.
    a missing `CREATEROLE` (PRE-5), or a pre-created role with unsafe attributes.
 4. Fix the cause outside the migration files. Re-run the dry run: it must now offer exactly the
    remaining suffix, from `<N+1>` to 46, and nothing else.
-5. Resume forward only with `supabase db push`. Never re-apply a version already in the ledger.
+5. Resume forward only with `supabase db push --skip-vault --project-ref "$PROJECT_REF"`. Never re-apply a version already in the ledger.
 
 ## 8. Postflight
 

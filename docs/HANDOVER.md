@@ -373,11 +373,13 @@ authorized, deployed and verified. No Amazon apply path was added.
 
 ## Known UX and performance follow-ups
 
-1. When every navigation group is expanded, the active marker and utility footer collide because
-   the entire sidebar owns scrolling while the footer is also pushed with auto margin. Fix in a
-   fresh serialized web package: keep brand/footer non-shrinking, give only the main
-   navigation `min-height: 0` plus vertical overflow, simplify the active marker, and add a browser
-   regression at the affected viewport with every group open.
+1. Closed by WP-208 (branch `wp-208-sidebar-layout`, pull request pending): the collision was the
+   main navigation shrinking under `min-height: 0` with no overflow rule, so its rows spilled under
+   the utility footer, which took the clicks. The fix gives only the navigation a scroll box, keeps
+   brand and footer non-shrinking, restores every link in the collapsed icon rail, hides the
+   collapse control at narrow widths, and adds a browser regression that asserts occlusion with
+   `elementFromPoint` at 1280x720, 1440x860 and 1440x1000 plus rail and narrow cases. The
+   `.wa-navlink-dot` active marker was dead CSS and is removed.
 2. Production Grid and Time Machine first loads remain above the intended targets. Use the closed
    `Server-Timing` spans to choose the next bottleneck; do not hide the delay with optimistic copy
    or weaken complete-row/count behavior.
