@@ -222,12 +222,16 @@ then the `SECTION: preflight` block of `docs/deploy/hosted-migration-preflight-c
 ```
 
 **Rehearsed** prefix-41: 13 rows, one shared `prefixEvidenceSha256`, four named fingerprints
-present on every row. On the disposable cluster 10 of 13 passed; the three that did not
-(`catalog.later_roles` expected `0` observed `2`, and the derived `catalog.relevant_item_count` and
-`catalog.relevant_sha256`) failed only because another disposable database on the same cluster had
-already created the two cluster-wide WP-196 roles. That is exactly the condition precondition 6
-excludes. On the hosted project **all 13 rows must have `pass = true`**; a `catalog.later_roles`
-observation above zero means somebody pre-created the roles and the window stops.
+present on every row. On a fresh disposable cluster all 13 rows passed and the probe reported the
+pinned 41-file ledger digest. An earlier run on a shared disposable cluster passed 10 of 13: the
+three failures (`catalog.later_roles` expected `0` observed `2`, plus the derived
+`catalog.relevant_item_count` and `catalog.relevant_sha256`) came from another database on the same
+cluster that had already created the two cluster-wide WP-196 roles. That is exactly the condition
+precondition 6 excludes. On the hosted project **all 13 rows must have `pass = true`**; a
+`catalog.later_roles` observation above zero means somebody pre-created the roles and the window
+stops. The same fresh-cluster run then applied the five files, passed all 109 prefix-46 rows with
+the pinned 46-file ledger digest, restored the two paused producers, and claimed one job with
+`claim = null` on the legacy path.
 
 **Rehearsed** preflight section, expected values on a quiesced project:
 
