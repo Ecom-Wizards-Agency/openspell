@@ -17,16 +17,28 @@ import type { TestDatabase } from './harness.js';
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 const ZERO = '0'.repeat(64);
 
-/** Fake provider facts only, through the real claim, reservation, result and observation ledger. */
+/** One bounded fake provider call, through the real claim, reservation, result and observation ledger. */
 export async function executeSyntheticKeywordWrite(
   database: Pick<DbHandle, 'sql'>, plan: SpWritePlan, receipt: SpWriteAuthorizationReceipt,
   providerOutcome: 'accepted' | 'ambiguous' = 'accepted',
   mirrorMode: 'synthetic_direct' | 'native_receipt' = 'synthetic_direct',
 ): Promise<void> {
-  const action = plan.actions[0];
-  if (plan.actions.length !== 1 || action?.routeKey !== 'sp.v3.keywords.update' || action.changes.bid === undefined) {
-    throw new Error('synthetic execution requires one keyword bid');
-  }
+  // The provider protocol caps one call at 100 positions. Larger plans are the
+  // production worker's chunking responsibility, outside this fixture helper.
+  if (plan.actions.length < 1 || plan.actions.length > 100) throw new Error('synthetic execution requires 1 to 100 keyword bids');
+  const actions = plan.actions.map((action) => {
+    if (action.routeKey !== 'sp.v3.keywords.update' || action.changes.bid === undefined
+      || Object.keys(action.changes).length !== 1) throw new Error('synthetic execution requires only keyword bid changes');
+    return { ...action, bid: action.changes.bid };
+  }).sort((left, right) => {
+    // Provider observations use binary entity/action order independently of the
+    // immutable plan's source sequence, just like the real provider codec.
+    const a = `${left.entity.keywordId}:${left.actionId}`;
+    const b = `${right.entity.keywordId}:${right.actionId}`;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  const routeKey = 'sp.v3.keywords.update' as const;
+  assert.equal(plan.counts.providerRows, actions.length);
   const runtime = createSpWriteRuntimeLedger(database);
   const outbox = createSpWriteOutboxLedger(database);
   const batch = await outbox.claimAvailable({ claimantId: 'synthetic-application-test', kinds: ['dispatch'], limit: 10 });
@@ -36,7 +48,7 @@ export async function executeSyntheticKeywordWrite(
     if (item !== claim) assert.equal((await outbox.deferClaim(item, 'shutdown')).kind, 'deferred');
   }
   if (claim?.kind !== 'dispatch') throw new Error('synthetic dispatch missing');
-  const lease = await runtime.acquireDispatchLease({ claim, routeKey: action.routeKey });
+  const lease = await runtime.acquireDispatchLease({ claim, routeKey });
   if (lease.kind !== 'acquired') throw new Error('synthetic lease missing');
   const [clock] = await database.sql<{ now: string; until: string }[]>`
     select app.sp_write_instant(clock_timestamp()) as now,
@@ -45,19 +57,19 @@ export async function executeSyntheticKeywordWrite(
   if (clock === undefined) throw new Error('synthetic clock missing');
   const identity = { planId: plan.id, planFingerprint: plan.fingerprint, approvalId: receipt.approvalId,
     executionId: receipt.executionId, generation: receipt.generation };
-  const observedAction = { routeKey: action.routeKey, actionId: action.actionId, actionFingerprint: action.fingerprint,
-    amazonEntityId: action.entity.keywordId, values: { bid: action.changes.bid.expected } };
+  const observedActions = actions.map((action) => ({ routeKey, actionId: action.actionId, actionFingerprint: action.fingerprint,
+    amazonEntityId: action.entity.keywordId, values: { bid: action.bid.expected } }));
   const observationBase = SpWritePredispatchObservation.parse({ ...identity,
     schemaVersion: 'openspell.sp-write-predispatch-observation.v1', observationId: randomUUID(),
-    routeKey: action.routeKey, observedAt: clock.now, validUntil: clock.until, items: [observedAction], fingerprint: ZERO,
+    routeKey, observedAt: clock.now, validUntil: clock.until, items: observedActions, fingerprint: ZERO,
   });
   const observation = { ...observationBase, fingerprint: digest(serializeSpWritePredispatchObservationFingerprint(observationBase)) };
   const base = SpWriteProviderCallIntent.parse({ ...identity,
     schemaVersion: 'openspell.sp-write-provider-call-intent.v1', intentId: randomUUID(), providerCallId: randomUUID(),
-    routeKey: action.routeKey, attemptNumber: 1, dispatchLeaseId: lease.leaseId,
+    routeKey, attemptNumber: 1, dispatchLeaseId: lease.leaseId,
     providerObservationFingerprint: observation.fingerprint, requestFingerprint: ZERO, recordedAt: clock.now,
-    positions: [{ requestIndex: 0, actionId: action.actionId, actionFingerprint: action.fingerprint,
-      amazonEntityId: action.entity.keywordId, actionRequestFingerprint: digest(JSON.stringify(action.changes)) }], fingerprint: ZERO,
+    positions: actions.map((action, requestIndex) => ({ requestIndex, actionId: action.actionId, actionFingerprint: action.fingerprint,
+      amazonEntityId: action.entity.keywordId, actionRequestFingerprint: digest(JSON.stringify(action.changes)) })), fingerprint: ZERO,
   });
   base.requestFingerprint = digest(serializeSpWriteProviderRequestFingerprint(base));
   const intent = { ...base, fingerprint: digest(serializeSpWriteProviderCallIntentFingerprint(base)) };
@@ -69,40 +81,58 @@ export async function executeSyntheticKeywordWrite(
   const result = SpWriteProviderResult.parse({
     schemaVersion: 'openspell.sp-write-provider-result.v1', resultId: ticket.resultId, intentId: intent.intentId,
     intentFingerprint: intent.fingerprint, providerCallId: intent.providerCallId, requestFingerprint: intent.requestFingerprint,
-    completedAt: time!.now, positions: [{ requestIndex: 0, actionId: action.actionId,
-      actionFingerprint: action.fingerprint, actionRequestFingerprint: intent.positions[0]!.actionRequestFingerprint,
+    completedAt: time!.now, positions: actions.map((action, requestIndex) => ({ requestIndex, actionId: action.actionId,
+      actionFingerprint: action.fingerprint, actionRequestFingerprint: intent.positions[requestIndex]!.actionRequestFingerprint,
       outcome: providerOutcome, providerEntityId: providerOutcome === 'accepted' ? action.entity.keywordId : null,
-      code: null, message: null }], fingerprint: ZERO,
+      code: null, message: null })), fingerprint: ZERO,
   });
   result.fingerprint = digest(serializeSpWriteProviderResultFingerprint(result));
   assert.equal(await runtime.appendProviderResult(result), 'recorded');
   assert.equal(await runtime.appendProviderResult(result), 'already_recorded');
+  const recordedPositions = await database.sql<{ request_index: number; action_id: string; outcome: string }[]>`
+    select request_index, action_id, outcome::text from public.sp_write_provider_result_positions
+    where org_id = ${plan.orgId} and profile_id = ${plan.profileId} and result_id = ${result.resultId}
+    order by request_index
+  `;
+  assert.deepEqual([...recordedPositions], actions.map((action, request_index) => ({ request_index, action_id: action.actionId, outcome: providerOutcome })));
   const observedBatch = await outbox.claimAvailable({ claimantId: 'synthetic-application-observer', kinds: ['observe_and_recover'], limit: 10 });
   assert.equal(observedBatch.claimedCount, observedBatch.claims.length);
-  const observer = observedBatch.claims.find((item) => item.planId === plan.id);
+  const observer = observedBatch.claims.find((item) => item.planId === plan.id && item.intentId === intent.intentId);
   for (const item of observedBatch.claims) {
     if (item !== observer) assert.equal((await outbox.deferClaim(item, 'shutdown')).kind, 'deferred');
   }
   if (observer?.kind !== 'observe_and_recover') throw new Error('synthetic observer missing');
-  const [after] = await database.sql<{ now: string }[]>`select app.sp_write_instant(clock_timestamp()) as now`;
-  const observed = SpWriteObservation.parse({ ...identity,
-    schemaVersion: 'openspell.sp-write-observation.v1', observationId: randomUUID(), intentId: intent.intentId,
-    intentFingerprint: intent.fingerprint, providerCallId: intent.providerCallId, requestFingerprint: intent.requestFingerprint,
-    actionId: action.actionId, actionFingerprint: action.fingerprint, routeKey: action.routeKey,
-    sourceSyncJobId: observer.sourceSyncJobId, observedAt: after!.now, outcome: 'observed_requested',
-    observed: { ...observedAction, values: { bid: action.changes.bid.requested } }, fingerprint: ZERO,
-  });
-  observed.fingerprint = digest(serializeSpWriteObservationFingerprint(observed));
-  assert.equal(await runtime.appendObservation(observed), observed.observationId);
-  if (mirrorMode === 'native_receipt') {
-    assert.equal((await reconcileSpWriteObservation(database, observed)).outcome, 'promoted');
-    assert.equal((await outbox.completeClaim(observer)).kind, 'completed');
-    return;
+  for (const [index, action] of actions.entries()) {
+    const [after] = await database.sql<{ now: string }[]>`select app.sp_write_instant(clock_timestamp()) as now`;
+    const observed = SpWriteObservation.parse({ ...identity,
+      schemaVersion: 'openspell.sp-write-observation.v1', observationId: randomUUID(), intentId: intent.intentId,
+      intentFingerprint: intent.fingerprint, providerCallId: intent.providerCallId, requestFingerprint: intent.requestFingerprint,
+      actionId: action.actionId, actionFingerprint: action.fingerprint, routeKey,
+      sourceSyncJobId: observer.sourceSyncJobId, observedAt: after!.now, outcome: 'observed_requested',
+      observed: { ...observedActions[index]!, values: { bid: action.bid.requested } }, fingerprint: ZERO,
+    });
+    observed.fingerprint = digest(serializeSpWriteObservationFingerprint(observed));
+    assert.equal(await runtime.appendObservation(observed), observed.observationId);
+    if (mirrorMode === 'native_receipt') {
+      assert.equal((await reconcileSpWriteObservation(database, observed)).outcome, 'promoted');
+    } else {
+      // Simulate a mirror refresh explicitly. Observation alone is not sync evidence.
+      const refreshed = await database.sql<{ amazon_id: string }[]>`
+        update public.keywords set bid = ${action.bid.requested.amount}::numeric
+        where org_id = ${plan.orgId}::uuid and profile_id = ${plan.profileId}::uuid and amazon_id = ${action.entity.keywordId}
+        returning amazon_id
+      `;
+      assert.deepEqual([...refreshed], [{ amazon_id: action.entity.keywordId }]);
+    }
   }
+  const recordedObservations = await database.sql<{ action_id: string; outcome: string }[]>`
+    select action_id, outcome::text from public.sp_write_observations
+    where org_id = ${plan.orgId} and profile_id = ${plan.profileId} and intent_id = ${intent.intentId}
+    order by action_id
+  `;
+  assert.deepEqual([...recordedObservations], actions.map((action) => ({ action_id: action.actionId, outcome: 'observed_requested' }))
+    .sort((left, right) => left.action_id < right.action_id ? -1 : left.action_id > right.action_id ? 1 : 0));
   assert.equal((await outbox.completeClaim(observer)).kind, 'completed');
-  // Simulate a mirror refresh explicitly. Observation alone is not sync evidence.
-  await database.sql`update public.keywords set bid = ${action.changes.bid.requested.amount}::numeric
-    where org_id = ${plan.orgId}::uuid and profile_id = ${plan.profileId}::uuid and amazon_id = ${action.entity.keywordId}`;
 }
 
 /** Disposable browser fixture; no provider client, credentials or runtime registration. */

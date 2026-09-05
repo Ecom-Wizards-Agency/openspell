@@ -33,6 +33,33 @@ deployment, credential store or Amazon account was accessed.
 
 ### MCP producer review and sequence correction, 2026-09-06
 
+**Verified source result:** controlled keyword proposal preparation and its atomic audit,
+replay, private source closure and legacy export exclusions are implemented. The final
+targeted DB run passed 96 tests in five files, including the corrected timestamp refusal,
+raw service recorder boundaries, both source ownership races and existing human persistence.
+The final shared run passed 136 tests; the selected web/backend suites passed 19 tests.
+All 22 workspace typechecks passed. Product lint passed with gitignored `_local` review
+scripts excluded; plain repository lint also scans those exploratory scripts and reports
+their lint errors. One product type-only import error was fixed. No lint rule was relaxed.
+
+The full serial DB run passed 565 tests and failed one stale source-inventory assertion.
+That assertion now lists the declared key-mutation facade and all three MCP migrations;
+it and the other 48 legacy persistence checks pass in the final 96-test rerun. No runtime
+registration was added. This is not a claim that full `pnpm check` is green; the earlier
+crosscheck/DB timing and Claude-owned UI performance observations remain documented below.
+
+Independent final review checked 67 outcomes with no accepted/unreadable artifact. Its
+500-row producer run stored and reloaded all 500 actions in source order in 1.733 seconds
+locally, with exactly one preview/source/batch/plan/evidence/audit and no new approval or
+execution request. The two-row fake-provider cycle records one real provider call per
+direction, two result positions and two observed/mirrored rows per direction. Time Machine
+retains four native entries with operator attribution and reciprocal original/inverse links;
+the initial values are restored exactly after revocation of the source key. These are human
+approvals of an MCP-origin proposal; delegated execution remains pending.
+
+Shared source sequence is committed at `69af518`; timestamp handling is corrected at
+`a7ec15c`. SQL source work remains outside WP-207 and no hosted/Amazon operation was run.
+
 The later integrated review reproduced a raw v2 inverse that PostgreSQL could record with
 a one-microsecond validity window but JavaScript could not reload. The initial shared-only
 millisecond-format fix (`43ba21a`) was too narrow: the existing database formatter emits six

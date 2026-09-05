@@ -14,6 +14,7 @@
 import { pgEnum } from 'drizzle-orm/pg-core';
 import {
   AdProduct,
+  ApplyBatchSourceKind,
   CreativeAttributionState,
   EntityState,
   EntityType,
@@ -58,6 +59,7 @@ const tuple = <T extends string>(values: readonly T[]): [T, ...T[]] => {
 };
 
 export const orgRole = pgEnum('org_role', ['owner', 'admin', 'analyst', 'viewer']);
+export const applyBatchSourceKind = pgEnum('apply_batch_source_kind', tuple(ApplyBatchSourceKind.options));
 export const connectionStatus = pgEnum('connection_status', [
   'pending',
   'active',

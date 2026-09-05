@@ -69,6 +69,9 @@ async function existingPreview(
   });
   if (recorded === null) return null;
   const { plan, evidence } = recorded;
+  if (evidence.schemaVersion !== 'openspell.sp-write-preview-evidence.v1') {
+    throw new SpWriteApplicationError('unsupported_source');
+  }
   if (plan.source.kind !== 'apply_batch' || plan.source.applyBatchId !== request.applyBatchId) {
     throw new SpWriteApplicationError('identity_conflict');
   }
@@ -158,6 +161,7 @@ async function buildPlan(
        and g.grant_id = h.grant_id and g.version_id = h.version_id
      where b.org_id = ${actor.orgId}::uuid and b.profile_id = ${request.profileId}::uuid
        and b.id = ${request.applyBatchId}::uuid
+       and b.source_kind = 'legacy_export'
        and p.sync_enabled and c.status = 'active' and g.enabled
        and g.amazon_profile_id = p.amazon_profile_id and g.connection_id = p.connection_id
        and g.region = p.region and g.currency_code = p.currency_code and g.api_dialect = 'sp_v3'

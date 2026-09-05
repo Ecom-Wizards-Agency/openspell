@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import {
-  SpWritePreviewEvidence,
+  type SpWritePreviewEvidence,
+  SpWriteSourceEvidence,
+  verifyMcpWritePreviewEvidenceArtifacts,
   serializeSpWritePreviewGuardrails,
   serializeSpWritePreviewProvenance,
 } from '@wizard-ads/shared/sp-write-preview-evidence';
@@ -18,7 +20,10 @@ const hasher = { algorithm: 'sha256' as const, digest: hash };
 
 function verify(rawPlan: unknown, rawEvidence: unknown) {
   const plan = verifySpWritePlanFingerprints(rawPlan, hasher);
-  const evidence = SpWritePreviewEvidence.parse(rawEvidence);
+  const evidence = SpWriteSourceEvidence.parse(rawEvidence);
+  if (evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v2') {
+    return verifyMcpWritePreviewEvidenceArtifacts(plan, evidence, hasher);
+  }
   if (plan.direction !== 'forward' || plan.source.kind !== 'apply_batch'
     || evidence.planId !== plan.id || evidence.provenance.applyBatchId !== plan.source.applyBatchId
     || evidence.provenance.rows.length !== plan.counts.providerRows

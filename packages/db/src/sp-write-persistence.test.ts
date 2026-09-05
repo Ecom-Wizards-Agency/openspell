@@ -8039,6 +8039,7 @@ describe('SP write runtime blast radius', () => {
       'apps/web/app/api/sp-writes/inverse-preview/route.ts',
       'apps/web/app/api/sp-writes/preview/route.ts',
       'apps/web/app/api/sp-writes/status/route.ts',
+      'apps/web/src/server/mcp-key-mutations.ts',
       'apps/web/src/writes/http.ts',
       'apps/worker/src/sp-write-outbox/loop.test.ts',
     ];
@@ -8203,6 +8204,9 @@ describe('SP write runtime blast radius', () => {
       '/20260905020000_sp_write_application_entry.sql',
       '/20260905030000_sp_write_mirror_observations.sql',
       '/20260905040000_recommendation_proposal_revisions.sql',
+      '/20260906000000_mcp_write_delegation_mode.sql',
+      '/20260906010000_mcp_write_delegations.sql',
+      '/20260906020000_mcp_bid_proposal_sources.sql',
     ];
     const migrationFiles = await sourceFiles(`${REPO_ROOT}supabase/migrations`);
     const spWriteSourceMigrations = migrationFiles.filter((path) =>

@@ -1,7 +1,7 @@
 # WP-217 keyword plan sequence
 
-Status: shared contract checkpoint. Database producer and recording changes are under
-implementation; this document does not certify MCP execution or deployment.
+Status: shared contracts committed; controlled source producer, recording and inverse
+integration verified locally. Delegated admission, MCP tools and deployment remain pending.
 
 ## Caller usage
 
@@ -66,7 +66,9 @@ Ground and three-candidate sketch are complete. The operator authorized autonomo
 implementation, so this bounded decision does not require another checkpoint. Implement
 is active. The locale-order assumption for new MCP plans is discarded; v1 is preserved.
 
-Required evidence: old byte hashes, valid two-row source sequence, rehashed order-only
-tampering at raw SQL and direct-record boundaries, version downgrade refusal, full source
-counts, and a forward/inverse cycle with a fake provider after key revocation. No live
-Amazon write or hosted migration is covered by these checks.
+Local evidence covers old byte hashes, valid two-row source sequence, rehashed order-only
+tampering at raw SQL and direct-record boundaries, version downgrade refusal, all 500 source
+rows at the supported maximum, and a two-row forward/inverse cycle with a fake provider after
+key revocation. Original and inverse each retain their Time Machine row entries and links.
+The final independent SQL run checked 67 outcomes, including refusal of a submillisecond
+validity window. No live Amazon write or hosted migration is covered by these checks.

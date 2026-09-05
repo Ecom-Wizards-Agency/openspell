@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { SpWriteAccounting, SpWriteAction, SpWriteAuthorizationReceipt, SpWriteExecutionSnapshot,
-  serializeSpWriteActionFingerprint } from '@wizard-ads/shared/sp-writes';
+  serializeSpWriteActionFingerprint, spWriteAuthorizationActor } from '@wizard-ads/shared/sp-writes';
 import { TimeMachineInstant, TimeMachineNativeWrite } from '@wizard-ads/shared/time-machine-writes';
 import type { QuerySql } from '../client.js';
 import type { TimelineEntry, TimelineFilter } from './time-machine.js';
@@ -59,7 +59,7 @@ function toNativeEntry(row: NativeRow): TimelineEntry {
       admission: row.queued ? 'queued' : 'approved_pending_start', receipt, snapshot: snapshot(row.accounting), mirror: row.mirror_counts,
       original: row.source_execution_id === null ? null : { executionId: row.source_execution_id, planId: row.source_plan_id },
       inverses: inverseSummaries.map((inverse) => inverse.operation) },
-    actor: { kind: 'operator', userId: receipt.approvedBy }, actionId: row.action_id, direction: row.direction,
+    actor: spWriteAuthorizationActor(receipt), actionId: row.action_id, direction: row.direction,
     change: { key: 'keyword.bid', ...action.changes.bid }, provenance: action.sources[0], phase: row.phase, refusal: row.refusal,
     observation: row.observation, mirrorReceipt: row.mirror_receipt, inverseSummaries,
   });
@@ -125,7 +125,8 @@ export async function listNativeTimeline(sql: QuerySql, filter: TimelineFilter):
         'accounting', inverse.accounting, 'mirror', inverse.mirror_counts) order by inverse.approved_at, inverse.plan_id)
         from operations inverse where inverse.org_id = s.org_id and inverse.profile_id = s.profile_id
           and inverse.source_execution_id = s.execution_id and inverse.source_plan_id = s.plan_id), '[]'::jsonb) as inverse_summaries,
-      case when s.direction = 'forward' then jsonb_build_object('id', s.preview_artifact #>> '{provenance,applyBatchId}',
+      case when s.direction = 'forward' and s.preview_artifact ->> 'schemaVersion' = 'openspell.sp-write-preview-evidence.v1'
+        then jsonb_build_object('id', s.preview_artifact #>> '{provenance,applyBatchId}',
         'tag', s.preview_artifact #>> '{provenance,tag}', 'optGroup', s.preview_artifact #>> '{provenance,optGroup}',
         'lever', s.preview_artifact #>> '{provenance,lever}', 'note', s.preview_artifact #>> '{provenance,note}',
         'status', coalesce(batch.status::text, 'staged'), 'sourceBatchId', batch.source_batch_id,

@@ -35,7 +35,7 @@ import type {
   SpWriteProviderResult,
 } from '@wizard-ads/shared/sp-writes';
 import { ts } from './columns.js';
-import type { SpWritePreviewEvidence } from '@wizard-ads/shared/sp-write-preview-evidence';
+import type { SpWriteSourceEvidence } from '@wizard-ads/shared/sp-write-preview-evidence';
 import type { SpWriteMirrorReceipt } from '@wizard-ads/shared/sp-write-mirror';
 import { entityChanges } from './entities.js';
 import {
@@ -361,7 +361,7 @@ export const spWritePreviewEvidence = pgTable('sp_write_preview_evidence', {
   orgId: uuid('org_id').notNull(),
   profileId: uuid('profile_id').notNull(),
   artifactText: text('artifact_text').notNull(),
-  artifact: jsonb('artifact').$type<SpWritePreviewEvidence>().notNull(),
+  artifact: jsonb('artifact').$type<SpWriteSourceEvidence>().notNull(),
   guardrailPreimage: text('guardrail_preimage').notNull(),
   provenancePreimage: text('provenance_preimage').notNull(),
   persistedAt: dbClock('persisted_at'),

@@ -143,6 +143,7 @@ export async function readStrategyEvidence(
          and r.profile_id = ${input.profileId}
          and r.batch_id = b.id
        where b.org_id = ${input.orgId} and b.profile_id = ${input.profileId}
+         and b.source_kind = 'legacy_export'
        group by b.id
        order by b.exported_at desc, b.id desc
        limit 8

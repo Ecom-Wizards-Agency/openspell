@@ -867,6 +867,7 @@ export async function getExportBatch(
     select id, org_id, profile_id, tag, opt_group, lever, note, status::text as status, created_at
       from public.apply_batches
      where org_id = ${options.orgId} and id = ${options.batchId}
+       and source_kind = 'legacy_export'
   `;
   const batch = batches[0];
   if (!batch) return null;

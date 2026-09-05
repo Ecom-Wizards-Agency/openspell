@@ -13,7 +13,7 @@ D1/WP-207 and D2/WP-216 remain with Claude.
 See [the architecture and file scope](../design/WP-217-DELEGATED-WRITES.md). Shared delegated
 v2 receipts and MCP request/status/actor contracts are committed at `707cf6e` and tested; the
 coordinated policy amendment accompanies them. Human v1 bytes and human-only confirmation
-input remain supported. SQL admission, proposal evidence v2, tools and activation are still
+input remain supported. SQL admission, tools and activation are still
 pending. The first additive migration is implemented: `20260906000000_mcp_write_delegation_mode.sql`
 adds only the enum label, verified by a PostgreSQL commit-boundary proof and 27 checks. It
 commits before the later authority/admission migration can consume that label;
@@ -28,6 +28,19 @@ must precede deploying this web revision even if writes stay off; an old schema 
 on revocation. Eight HTTP/data tests and independent atomicity/read-token probes pass.
 MCP write tools, admission and runtime activation are still pending; client components remain Claude-owned.
 Detailed test/review evidence is in the replan audit.
+
+The third source migration, `20260906020000_mcp_bid_proposal_sources.sql`, implements controlled
+keyword-proposal preparation, immutable source records and legacy consumer boundaries. The
+private `queries/mcp-write-preview.ts` producer returns exact plan/evidence, recovers duplicate
+requests and records its preview audit atomically. New keyword plan v2 retains source order;
+its inverse retains the corresponding original action positions. Shared contracts are committed
+at `69af518`, with the timestamp compatibility correction at `a7ec15c`. V1 bytes are preserved.
+Direct legacy downloads/reversions refuse MCP proposals. Both source ownership race orders,
+a two-row human forward/inverse cycle after key revocation, and a counted 500-row source
+preparation have executable local proof. Delegated admission and MCP tools remain pending.
+Filtered web queries require this migration before deployment even when MCP writes stay
+disabled. It joins `20260906000000` and `20260906010000` in the later reviewed source window,
+separate from all five WP-207 files. See the audit for exact checks and remaining work.
 
 ## Objective
 

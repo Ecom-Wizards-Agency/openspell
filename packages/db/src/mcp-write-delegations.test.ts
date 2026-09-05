@@ -230,7 +230,7 @@ describe.skipIf(!available)('operator-issued MCP write authority', () => {
       database.sql`delete from mcp.write_delegations where version_id = ${d.versionId}`,
       database.sql`delete from public.audit_log where org_id = ${d.orgId} and action = 'mcp.write_key.issued'`,
       database.sql`update public.audit_log set payload = '{}'::jsonb where org_id = ${d.orgId} and action = 'mcp.key.revoked'`,
-      database.sql`truncate mcp.write_delegations`,
+      database.sql`truncate mcp.write_delegations cascade`,
     ]) await expect(statement).rejects.toMatchObject({ code: '55000' });
     await database.sql`delete from public.org_members where org_id = ${d.orgId}`;
     await expect(asUser(database, d.issuerUserId, (sql) => sql`select app.revoke_mcp_key_v1(${d.orgId},${d.keyId})`))

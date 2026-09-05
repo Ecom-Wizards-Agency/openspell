@@ -209,6 +209,9 @@ async function listLegacyTimeline(
         and ec.profile_id = ${filter.profileId}
         -- A legacy batch link does not establish native-write attribution.
         and (ec.apply_batch_id is null
+          or exists(select 1 from public.apply_batches b where b.org_id = ec.org_id
+            and b.profile_id = ec.profile_id and b.id = ec.apply_batch_id
+            and b.source_kind = 'mcp_keyword_proposals')
           or exists(select 1 from native_roots n where n.direction = 'forward'
             and n.org_id = ec.org_id and n.profile_id = ec.profile_id
             and n.preview_artifact #>> '{provenance,applyBatchId}' = ec.apply_batch_id::text)
@@ -251,6 +254,7 @@ async function listLegacyTimeline(
       where ar.org_id = ${filter.orgId}
         and ab.org_id = ${filter.orgId}
         and ab.profile_id = ${filter.profileId}
+        and ab.source_kind = 'legacy_export'
         and not exists(select 1 from native_roots n join public.sp_write_plan_actions a
           on a.org_id = n.org_id and a.profile_id = n.profile_id and a.plan_id = n.plan_id
           where n.direction = 'forward' and a.route_key = 'sp.v3.keywords.update'
@@ -295,7 +299,16 @@ export async function listTimelineFacets(
       from public.entity_changes ec
      where ec.org_id = ${input.orgId}
        and ec.profile_id = ${input.profileId}
-       and ec.apply_batch_id is null
+       and (ec.apply_batch_id is null
+         or exists(select 1 from public.apply_batches b where b.org_id = ec.org_id
+           and b.profile_id = ec.profile_id and b.id = ec.apply_batch_id
+           and b.source_kind = 'mcp_keyword_proposals')
+         or exists(select 1 from native_roots n where n.direction = 'forward'
+           and n.org_id = ec.org_id and n.profile_id = ec.profile_id
+           and n.preview_artifact #>> '{provenance,applyBatchId}' = ec.apply_batch_id::text)
+         or exists(select 1 from public.sp_write_mirror_observations m
+           where m.org_id = ec.org_id and m.profile_id = ec.profile_id
+             and m.entity_change_id = ec.id and m.change_attribution = 'observation'))
     union
     select ar.entity_type::text as entity_type, ar.field as field
       from public.apply_rows ar
@@ -303,6 +316,7 @@ export async function listTimelineFacets(
      where ar.org_id = ${input.orgId}
        and ab.org_id = ${input.orgId}
        and ab.profile_id = ${input.profileId}
+       and ab.source_kind = 'legacy_export'
     union
     select 'keyword' as entity_type, 'bid' as field from native_roots n
       join public.sp_write_plan_actions a on a.org_id = n.org_id and a.profile_id = n.profile_id and a.plan_id = n.plan_id
@@ -486,6 +500,7 @@ export async function listReversionBatches(
       from public.apply_batches
      where org_id = ${input.orgId}
        and profile_id = ${input.profileId}
+       and source_kind = 'legacy_export'
        and not exists(select 1 from native_roots n where n.direction = 'forward'
          and n.preview_artifact #>> '{provenance,applyBatchId}' = apply_batches.id::text)
      order by exported_at desc, id desc
@@ -525,6 +540,12 @@ export async function getReversionBatchPreview(
            exported_proposals, reversible_rows, unsupported_rows
       from public.apply_batches
      where org_id = ${input.orgId} and id = ${input.batchId}
+       and source_kind = 'legacy_export'
+       and not exists(select 1 from public.sp_write_plans p
+         join public.sp_write_authorization_receipts r on r.org_id = p.org_id
+           and r.profile_id = p.profile_id and r.plan_id = p.plan_id
+         where p.org_id = apply_batches.org_id and p.profile_id = apply_batches.profile_id
+           and p.direction = 'forward' and p.artifact #>> '{source,applyBatchId}' = apply_batches.id::text)
   `;
   if (header === undefined) return null;
 

@@ -73,7 +73,7 @@ export async function previewSpWriteInverse(
       and profile.region = ${forward.providerScope.region} and profile.currency_code = ${forward.providerScope.currencyCode}
   `;
   if (mirror?.matches !== forward.counts.providerRows) throw new SpWriteApplicationError('source_changed');
-  const actions = orderSpWriteActions(forward.actions.map((action) => {
+  const mapped = forward.actions.map((action) => {
     if (action.routeKey !== 'sp.v3.keywords.update' || action.changes.bid === undefined) {
       throw new SpWriteApplicationError('unsupported_source');
     }
@@ -84,7 +84,8 @@ export async function previewSpWriteInverse(
       fingerprint: '0'.repeat(64),
     });
     return { ...inverse, fingerprint: digest(serializeSpWriteActionFingerprint(inverse)) };
-  }));
+  });
+  const actions = forward.schemaVersion === 'openspell.sp-write-plan.v2' ? mapped : orderSpWriteActions(mapped);
   const base = SpWritePlan.parse({
     ...forward, id: request.requestId, direction: 'inverse',
     source: { kind: 'inverse_execution', sourceExecutionId: request.original.executionId,

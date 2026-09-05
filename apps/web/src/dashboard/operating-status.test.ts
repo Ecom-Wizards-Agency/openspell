@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { DbHandle } from '@wizard-ads/db';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
+import { seedSyntheticMcpProposal } from '@wizard-ads/db/testing/mcp-write';
+import { readStrategyEvidence } from '../strategy/overview.js';
 import { readDashboardOperatingStatus } from './operating-status.js';
 
 const available = await databaseAvailable();
@@ -62,6 +64,15 @@ describe.skipIf(!available)('readDashboardOperatingStatus integration', () => {
   let orgB: string;
   let profileA: string;
   let profileB: string;
+
+  it('does not count MCP drafts as staged exports or recent strategy exports', async () => {
+    const scope = { orgId: orgA, profileId: profileA };
+    const dashboard = await readDashboardOperatingStatus(database, scope);
+    const strategy = await readStrategyEvidence(database, scope);
+    await seedSyntheticMcpProposal(database, { orgId: orgA, userId: OWNER_A }, profileA);
+    expect((await readDashboardOperatingStatus(database, scope)).stagedBatch).toEqual(dashboard.stagedBatch);
+    expect((await readStrategyEvidence(database, scope)).batches).toEqual(strategy.batches);
+  });
 
   beforeAll(async () => {
     database = await createTestDatabase('wp166_dashboard_status');

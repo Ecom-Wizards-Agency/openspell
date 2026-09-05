@@ -19,7 +19,7 @@ import {
 import { sql } from 'drizzle-orm';
 import type { ApplyValue } from '@wizard-ads/shared';
 import { count, money, ts } from './columns.js';
-import { applyBatchStatus, applyEntityType, matchType } from './enums.js';
+import { applyBatchSourceKind, applyBatchStatus, applyEntityType, matchType } from './enums.js';
 import { adProfiles, authUsers, orgs } from './tenancy.js';
 
 export const applyBatches = pgTable(
@@ -39,6 +39,7 @@ export const applyBatches = pgTable(
     lever: text('lever').notNull(),
     note: text('note').notNull(),
     status: applyBatchStatus('status').notNull().default('staged'),
+    sourceKind: applyBatchSourceKind('source_kind').notNull().default('legacy_export'),
     appliedOn: date('applied_on'),
     cooldownDays: integer('cooldown_days').notNull().default(7),
     /** A reason, not a flag: "why was the cooldown overridden" is the question. */

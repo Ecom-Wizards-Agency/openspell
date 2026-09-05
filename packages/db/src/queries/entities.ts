@@ -81,6 +81,7 @@ export async function reconcileEntityChangeLinks(
              on ab.org_id = ar.org_id
             and ab.profile_id = ar.profile_id
             and ab.id = ar.batch_id
+            and ab.source_kind = 'legacy_export'
           where ar.org_id = ec.org_id
             and ar.profile_id = ec.profile_id
             and (case when ar.entity_type = 'placement' then 'campaign' else ar.entity_type::text end)

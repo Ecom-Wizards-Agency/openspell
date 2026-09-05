@@ -15,6 +15,7 @@
     "./sp-write-worker": "./src/sp-write-worker.ts",
     "./testing": "./src/testing/index.ts",
     "./testing/sp-write": "./src/testing/sp-write-synthetic-execution.ts",
+    "./testing/mcp-write": "./src/testing/mcp-write-source.ts",
     "./worker": "./src/worker.ts"
   },
   "scripts": {

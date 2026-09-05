@@ -12,6 +12,7 @@ import { createTestDatabase, databaseAvailable } from '../testing/harness.js';
 import type { TestDatabase } from '../testing/harness.js';
 import { seedSyntheticWriteHistory } from '../testing/sp-write-synthetic-execution.js';
 import { reconcileEntityChangeLinks, recordEntityChanges } from './entities.js';
+import { getExportBatch } from './recommendations.js';
 import {
   createReversionExport,
   getReversionBatchPreview,
@@ -34,6 +35,13 @@ it.skipIf(!available)('retains an ordinary sync event after legacy linking to a 
     const history = await seedSyntheticWriteHistory(database, { orgId, userId: USER_A }, profileId);
     const before = await listTimeline(database, { orgId, profileId });
     expect(before.filter((entry) => entry.write !== null)).toHaveLength(2);
+    expect(await getReversionBatchPreview(database, { orgId, batchId: history.sourceBatchId })).toBeNull();
+    expect((await listReversionBatches(database, { orgId, profileId })).some((batch) => batch.batchId === history.sourceBatchId)).toBe(false);
+    await expect(createReversionExport(database, { orgId, batchId: history.sourceBatchId,
+      actorId: USER_A, tag: 'refused-native-legacy-inverse', note: 'Synthetic native source must use guarded inverse' }))
+      .rejects.toThrow('Not found');
+    // The original reviewed recommendation artifact remains inspectable.
+    expect(await getExportBatch(database, { orgId, batchId: history.sourceBatchId })).not.toBeNull();
     const inserted = await database.sql<{ id: string }[]>`insert into public.entity_changes
       (org_id, profile_id, entity_type, amazon_id, entity_name, field, old_value, new_value, source, observed_at)
       select org_id, profile_id, entity_type::text::public.entity_type, entity_id, entity_name, field,
@@ -291,6 +299,8 @@ describe.skipIf(!available)('WP-30 Time Machine queries', () => {
     expect(inverse.rows).toHaveLength(1);
     expect(inverse.rows[0]).toMatchObject({ old: 0.71, new: 0.9 });
     expect(inverse.artifactSha256).toMatch(/^[a-f0-9]{64}$/);
+    // Null recommendation lineage is valid for a legacy inverse export.
+    expect((await getExportBatch(database, { orgId: orgA, batchId: inverse.batchId }))?.rows).toEqual(inverse.rows);
 
     const [stored] = await database.sql<{
       source_batch_id: string | null;

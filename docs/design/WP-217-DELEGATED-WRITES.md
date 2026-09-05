@@ -132,6 +132,16 @@ No key, grant, enabled gate or runtime worker registration is seeded.
 3. Persistence: new migrations; DB schema/enums, `queries/mcp-writes.ts`, `mcp-writes.ts`,
    current SP application/worker queries and explicit exports; migration/RLS/boundary tests.
    Inventory exact helper changes before implementation. No provider imports in DB.
+   The source slice uses `20260906020000_mcp_bid_proposal_sources.sql`,
+   `queries/mcp-write-preview.ts`, `schema/{apply,mcp}.ts`, and the existing
+   `queries/{time-machine,time-machine-writes,recommendations,entities,sp-write-plan-builder,sp-write-preview-evidence}.ts`.
+   Its server-only export filters are `apps/web/src/dashboard/operating-status.ts` and
+   `apps/web/src/strategy/overview.ts`; matching DB/server/HTTP fixtures verify direct-ID refusals.
+   Versioned plan sequence and inverse construction are defined in
+   [WP-217-PLAN-SEQUENCE.md](WP-217-PLAN-SEQUENCE.md), with
+   `queries/sp-write-inverse-preview.ts` preserving the source sequence. The disposable
+   fixtures are `testing/{mcp-write-source,sp-write-synthetic-execution}.ts`; the latter
+   uses one real ledger reservation for at most 100 synthetic provider positions.
 4. Transport: `apps/mcp/src/{keys,http,server,config,instructions,audit}.ts`, new write adapter/tests;
    web `src/data/mcp-keys.ts`, `app/api/mcp-keys/**`, shared server JSON helper and issuance fixtures.
    The key mutation wrapper is `apps/web/src/server/mcp-key-mutations.ts`; new issuance lives at
