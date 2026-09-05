@@ -69,7 +69,34 @@ jobs:
         # UI keeps its own dedicated, single-worker performance-test invocation.
         run: |
           pnpm exec turbo run test --filter=!@wizard-ads/ui --filter=!@wizard-ads/hosted-migration-preparation-proof --concurrency=1 -- --maxWorkers=1
-          pnpm --filter @wizard-ads/hosted-migration-preparation-proof run test
+          wp201_repo="$PWD"
+          cd tools/hosted-migration-preparation-proof
+          wp201_node="$(command -v node)"
+          wp201_user="$(id -un)"
+          wp201_group="$(id -gn)"
+          wp201_unit="openspell-wp201-ci.service"
+          wp201_cgroup="/sys/fs/cgroup/system.slice/$wp201_unit"
+          test -n "$wp201_node"
+          test -r /var/run/docker.sock
+          test -w /var/run/docker.sock
+          test ! -e "$wp201_cgroup"
+          set +e
+          sudo --non-interactive systemd-run --quiet --wait --collect --pipe --expand-environment=no --service-type=oneshot --unit=openspell-wp201-ci --slice=system.slice --property=Delegate= --property=KillMode=control-group --property=TimeoutStopSec=5s --uid="$wp201_user" --gid="$wp201_group" --same-dir /bin/sh -ceu 'wp201_record="$(/bin/cat /proc/self/cgroup)"; test "$wp201_record" = "0::/system.slice/openspell-wp201-ci.service"; test "$(/usr/bin/wc -l < /proc/self/cgroup)" -eq 1; wp201_current=/sys/fs/cgroup/system.slice/openspell-wp201-ci.service; test "$(/usr/bin/stat -f -c %t "$wp201_current")" = 63677270; wp201_owner="$(/usr/bin/id -u):$(/usr/bin/id -g)"; test "$(/usr/bin/stat -c %u:%g "$wp201_current")" = "$wp201_owner"; test "$(/usr/bin/stat -c %u:%g "$wp201_current/cgroup.procs")" = "$wp201_owner"; test -w "$wp201_current"; test -w "$wp201_current/cgroup.procs"; case "$1" in /*) ;; *) exit 125 ;; esac; test -x "$1"; exec "$1" scripts/test.mjs' wp201-ci "$wp201_node"
+          wp201_status="$?"
+          wp201_cleanup_status=0
+          if test -e "$wp201_cgroup"; then
+            sudo --non-interactive systemctl --no-block stop "$wp201_unit" || true
+            for wp201_cleanup_attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50; do
+              if test ! -e "$wp201_cgroup"; then break; fi
+              sleep 0.1
+            done
+            if test -e "$wp201_cgroup"; then wp201_cleanup_status=1; fi
+            sudo --non-interactive systemctl reset-failed "$wp201_unit" || true
+          fi
+          set -e
+          if test "$wp201_status" -ne 0; then exit "$wp201_status"; fi
+          if test "$wp201_cleanup_status" -ne 0; then exit "$wp201_cleanup_status"; fi
+          cd "$wp201_repo"
           pnpm --filter @wizard-ads/ui run test
         env:
           DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres

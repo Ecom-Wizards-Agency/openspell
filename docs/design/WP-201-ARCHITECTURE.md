@@ -106,6 +106,7 @@ WP-201 may edit only:
 ```text
 docs/design/WP-201-ARCHITECTURE.md
 docs/workpackages/WP-201-disposable-preparation-proof.md
+.github/workflows/ci.yml
 tools/hosted-migration-root-authority/
   Cargo.toml
   Cargo.lock
@@ -3287,6 +3288,32 @@ exercise the production clock sampler and therefore require `/proc/sys` to be a 
 on one mount. The package `check` command may retain its isolated local-toolchain fast path because
 it does not execute the sampler. This routing does not relax the Rust invariant or count as the
 separate root-bridge acceptance row.
+
+The ordinary GitHub Actions test step launches the closed no-argument coordinator through one
+transient `openspell-wp201-ci.service` with an empty `Delegate=` controller list, the invoking
+user/group, and that user's normal supplementary groups. `KillMode=control-group` remains explicit.
+`TimeoutStopSec=5s` bounds systemd's own fallback stop rather than inheriting host policy.
+The empty list delegates the cgroup directory and
+membership controls needed by the guardian without delegating CPU, memory or other resource
+controllers. Before proof execution, the service entry checks its exact one-line unified cgroup
+membership, cgroup2 filesystem magic, directory and `cgroup.procs` uid/gid and writability, then
+executes the already-selected absolute Node executable with only `scripts/test.mjs`. The service
+disables `systemd-run` argument environment expansion, inherits the proof package working directory
+selected by the CI shell, waits for the exact exit status and collects the
+transient unit. This
+supplies the same user-owned current-cgroup precondition as the developer harness without granting
+the coordinator uid zero. The transient unit is `Type=oneshot`, for which systemd classifies
+`SIGHUP`, `SIGINT`, `SIGTERM` and `SIGPIPE` termination as failure rather than implicit clean
+success; oneshot also leaves its start timeout disabled by default, so the coordinator's fixed
+internal deadlines remain authoritative. The step first proves the fixed Docker socket is readable and writable
+and the exact cgroup path is absent. After the waited command, it preserves any proof failure while
+issuing a nonblocking stop for only that exact unit if collection left its cgroup behind, then waits
+at most five seconds for exact-path absence before best-effort resetting the failed unit. The exact
+pathname is authoritative because `--collect` may unload the unit before either cleanup command;
+a nominal proof success fails only if that path remains after the bounded wait. Failure to create
+the delegated service,
+execute the coordinator, settle it, or collect a zero exit refuses CI. No production service,
+database or provider is touched.
 
 Before a cold proof, the wrapper selects only `/tmp` then `/var/tmp`, creates and syncs the exact
 invocation path/record, and constructs the regular-file-only tracked source snapshot and fixed

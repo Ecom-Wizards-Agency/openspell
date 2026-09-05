@@ -33,6 +33,7 @@ import { requireRootBridgeMarker } from "../scripts/docker-integration.mjs";
 
 const packageDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourceDirectory = join(packageDirectory, "src");
+const workspaceDirectory = dirname(dirname(packageDirectory));
 const cleanupHelper = join(packageDirectory, "scripts/path-cleanup-helper.mjs");
 const invocationPrefix = "openspell-wp201-root-proof-";
 const sentinelPrefix = "openspell-wp201-cleanup-sentinel-";
@@ -759,6 +760,70 @@ describe("private preparation-proof package boundary", () => {
     ).toBeLessThan(
       orchestrator.indexOf("const vitest = await runFixedVitest(clock);"),
     );
+  });
+
+  it("runs the exact CI coordinator in a waited disposable delegated service", () => {
+    const workflow = readFileSync(join(workspaceDirectory, ".github/workflows/ci.yml"), "utf8");
+    expect(workflow).toContain('wp201_repo="$PWD"');
+    expect(workflow).toContain("cd tools/hosted-migration-preparation-proof");
+    expect(workflow).toContain('wp201_node="$(command -v node)"');
+    expect(workflow).toContain('wp201_user="$(id -un)"');
+    expect(workflow).toContain('wp201_group="$(id -gn)"');
+    expect(workflow).toContain('wp201_unit="openspell-wp201-ci.service"');
+    expect(workflow).toContain(
+      'wp201_cgroup="/sys/fs/cgroup/system.slice/$wp201_unit"',
+    );
+    expect(workflow).toContain("test -r /var/run/docker.sock");
+    expect(workflow).toContain("test -w /var/run/docker.sock");
+    expect(workflow).toContain('test ! -e "$wp201_cgroup"');
+    expect(workflow).toContain(
+      'sudo --non-interactive systemd-run --quiet --wait --collect --pipe --expand-environment=no --service-type=oneshot --unit=openspell-wp201-ci --slice=system.slice --property=Delegate= --property=KillMode=control-group --property=TimeoutStopSec=5s --uid="$wp201_user" --gid="$wp201_group" --same-dir',
+    );
+    expect(workflow).not.toContain("--service-type=exec");
+    expect(workflow).not.toContain("--property=Delegate=yes");
+    expect(workflow).toContain(
+      'test "$wp201_record" = "0::/system.slice/openspell-wp201-ci.service"',
+    );
+    expect(workflow).toContain(
+      'test "$(/usr/bin/stat -f -c %t "$wp201_current")" = 63677270',
+    );
+    expect(workflow).toContain('test -w "$wp201_current/cgroup.procs"');
+    expect(workflow).toContain('exec "$1" scripts/test.mjs');
+    expect(workflow).toContain(
+      'sudo --non-interactive systemctl --no-block stop "$wp201_unit" || true',
+    );
+    expect(workflow).toContain(
+      'if test -e "$wp201_cgroup"; then wp201_cleanup_status=1; fi',
+    );
+    expect(workflow).toContain(
+      'sudo --non-interactive systemctl reset-failed "$wp201_unit" || true',
+    );
+    expect(workflow).not.toContain("wp201_stop_status");
+    expect(workflow).not.toContain("wp201_reset_status");
+    expect(workflow).toContain('if test "$wp201_status" -ne 0; then exit "$wp201_status"; fi');
+    const cleanupAttempts = Array.from({ length: 50 }, (_, index) => index + 1).join(" ");
+    const cleanupLoopStart = workflow.indexOf(
+      `for wp201_cleanup_attempt in ${cleanupAttempts}; do`,
+    );
+    const cleanupLoopEnd = workflow.indexOf("\n            done", cleanupLoopStart);
+    expect(cleanupLoopStart).toBeGreaterThan(-1);
+    expect(cleanupLoopEnd).toBeGreaterThan(cleanupLoopStart);
+    expect(
+      workflow.slice(cleanupLoopStart, cleanupLoopEnd).match(/\bsleep 0\.1\b/gu),
+    ).toHaveLength(1);
+    expect(workflow).toContain('cd "$wp201_repo"');
+    expect(workflow.indexOf("systemctl --no-block stop")).toBeLessThan(
+      cleanupLoopStart,
+    );
+    expect(cleanupLoopEnd).toBeLessThan(
+      workflow.indexOf('if test -e "$wp201_cgroup"; then wp201_cleanup_status=1; fi'),
+    );
+    expect(
+      workflow.indexOf('if test -e "$wp201_cgroup"; then wp201_cleanup_status=1; fi'),
+    ).toBeLessThan(
+      workflow.indexOf("systemctl reset-failed"),
+    );
+    expect(workflow.match(/scripts\/test\.mjs/gu)).toHaveLength(1);
   });
 
   it("is exactly one inert private rlib with no default feature or executable surface", () => {
