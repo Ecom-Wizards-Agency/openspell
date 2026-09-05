@@ -92,7 +92,13 @@ This branch has 51. The only fallback integration change is in
 `apps/worker/src/recommendations-run.test.ts`: require the actual custody migration needed
 by the test, while the harness continues to apply every migration. All 23 tests in that file
 and targeted lint passed; the initial run's three skipped lifecycle cases now execute and pass.
-The fallback runtime implementation is unchanged. Web and UI checks remain pending.
+The fallback runtime implementation is unchanged. The web counterpart in
+`apps/web/src/optimizer-runs-route.test.ts` had the same fixed-count assertion and received the
+same narrow correction; all 11 route tests and targeted lint passed. The preceding full web
+run passed 666 tests with only that fixture failing and skipping its 11 cases. Skill lint passes.
+UI functional checks passed; its separate performance suite passed nine tests and failed the
+50,000-option threshold at 146.8 ms against 125 ms. The UI package remains in Claude's active
+scope, so no threshold or implementation was changed here. Default `pnpm check` remains failing.
 
 WP-217 grounding now traces bearer verification, issuance, frozen source evidence, manual
 admission, final SQL provider reservation and Time Machine. Three architecture candidates are
