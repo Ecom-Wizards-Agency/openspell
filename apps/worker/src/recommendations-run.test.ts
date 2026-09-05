@@ -2,8 +2,10 @@
  * Runner orchestration tests. The bid engine's arithmetic belongs to
  * packages/core; these cases assert assembly, lifecycle, mapping and writes.
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ClaimRef, ClaimedJob, ClaimToken } from '@wizard-ads/db';
+import { createTestDatabase, databaseAvailable, migrationFiles } from '@wizard-ads/db/testing';
+import type { TestDatabase } from '@wizard-ads/db/testing';
 import type { RecommendationWorkerDatabase } from '@wizard-ads/db/recommendation-worker';
 import type { ScheduledOptimizationGroup, TenantStrategy } from '@wizard-ads/shared';
 import {
@@ -13,6 +15,10 @@ import {
   batchScopeFingerprint,
   databaseReason,
   FencedRecommendationRunStore,
+  PostgresRecommendationRunStore,
+  RECOMMENDATION_SCOPE_VERSION,
+  RECOMMENDATIONS_ENGINE_VERSION,
+  createRecommendationsRunner,
   recommendationWindow,
   runScopeFingerprint,
   runRecommendations,
@@ -30,6 +36,9 @@ import {
   RecommendationClaimantCustodyError,
   type RecommendationQueuePort,
 } from './recommendation-lane/claimant.js';
+import { DEFAULT_VERCEL_CRON_JOB_TYPES } from './deployment-role.js';
+import { PostgresWorkerStore } from './store.js';
+import { SyncWorker } from './worker.js';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const PROFILE_ID = '22222222-2222-4222-8222-222222222222';
@@ -863,4 +872,217 @@ describe('fenced recommendation run store', () => {
       await expect(claimant.shutdown()).resolves.toEqual({ released: 0, unresolved: 1 });
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// Legacy-mode enqueue on the complete schema (WP-216)
+// ---------------------------------------------------------------------------
+
+const databaseAvailableForLegacyStore = await databaseAvailable();
+
+describe.skipIf(!databaseAvailableForLegacyStore)('legacy-mode preview enqueue on the complete schema', () => {
+  const ACTOR = '78787878-7878-4878-8878-787878787878';
+  let database: TestDatabase;
+  let batchScope: { orgId: string; profileId: string };
+  let groupScope: { orgId: string; profileId: string; groupId: string };
+  let batchRun: { runId: string; jobId: string };
+  let groupRun: { runId: string; jobId: string };
+
+  async function seedTenant(slug: string): Promise<{ orgId: string; profileId: string; groupId: string }> {
+    const [org] = await database.sql<{ seed_tenant_fixture: string }[]>`
+      select app.seed_tenant_fixture(${slug}, ${ACTOR}::uuid, 'owner')
+    `;
+    if (org === undefined) throw new Error('tenant fixture is incomplete');
+    const [profile] = await database.sql<{ id: string }[]>`
+      select id from public.ad_profiles where org_id = ${org.seed_tenant_fixture}::uuid
+    `;
+    const [group] = await database.sql<{ id: string }[]>`
+      select id from public.optimization_groups where org_id = ${org.seed_tenant_fixture}::uuid
+    `;
+    if (profile === undefined || group === undefined) throw new Error('tenant fixture is incomplete');
+    return { orgId: org.seed_tenant_fixture, profileId: profile.id, groupId: group.id };
+  }
+
+  async function counts(orgId: string): Promise<{ batches: number; runs: number; scopes: number; jobs: number }> {
+    const [row] = await database.sql<{ batches: number; runs: number; scopes: number; jobs: number }[]>`
+      select
+        (select count(*)::integer from public.recommendation_preview_batches where org_id = ${orgId}::uuid) as batches,
+        (select count(*)::integer from public.recommendation_runs where org_id = ${orgId}::uuid) as runs,
+        (select count(*)::integer
+           from public.recommendation_run_campaigns scope
+           join public.recommendation_runs run on run.id = scope.run_id
+          where run.org_id = ${orgId}::uuid) as scopes,
+        (select count(*)::integer from public.sync_jobs
+          where org_id = ${orgId}::uuid and job_type = 'recommendations.run') as jobs
+    `;
+    if (row === undefined) throw new Error('count query returned no row');
+    return row;
+  }
+
+  async function readQueuedRun(runId: string) {
+    const [row] = await database.sql<{
+      status: string;
+      job_id: string;
+      job_status: string;
+      job_claim_token: string | null;
+      job_run_id: string;
+      scope_version: number;
+      scope_count: number;
+      scope_fingerprint: string;
+      campaign_count: number;
+      execution_lineage: string;
+      engine_version: string;
+    }[]>`
+      select run.status::text as status, run.job_id, job.status::text as job_status,
+             job.claim_token as job_claim_token, job.payload ->> 'runId' as job_run_id,
+             run.scope_version, run.scope_count, run.scope_fingerprint,
+             (select count(*)::integer from public.recommendation_run_campaigns scope
+               where scope.run_id = run.id) as campaign_count,
+             run.execution_lineage, run.engine_version
+        from public.recommendation_runs run
+        join public.sync_jobs job on job.id = run.job_id
+       where run.id = ${runId}::uuid
+    `;
+    return row;
+  }
+
+  beforeAll(async () => {
+    database = await createTestDatabase('wp216_legacy_store');
+    expect(await migrationFiles()).toHaveLength(46);
+    const [authority] = await database.sql<{ protocol: string; admission: string }[]>`
+      select protocol, admission from public.get_recommendation_claim_authority()
+    `;
+    expect(authority).toEqual({ protocol: 'legacy', admission: 'legacy' });
+    const alpha = await seedTenant('wp216-legacy-batch');
+    const bravo = await seedTenant('wp216-legacy-group');
+    // Tenant alpha previews an unassigned campaign; tenant bravo keeps its
+    // fixture group with c-1 assigned for the group producer.
+    await database.sql`
+      delete from public.campaign_optimization_assignments where org_id = ${alpha.orgId}::uuid
+    `;
+    batchScope = { orgId: alpha.orgId, profileId: alpha.profileId };
+    groupScope = bravo;
+  }, 60_000);
+
+  afterAll(async () => {
+    await database?.drop();
+  });
+
+  it('creates the run row and recommendations.run job in one transaction and the admission trigger accepts it', async () => {
+    const store = new PostgresRecommendationRunStore(database);
+    const before = await counts(batchScope.orgId);
+    const accepted = await store.enqueueRecommendationPreviewBatch({
+      ...batchScope,
+      actorId: ACTOR,
+      clientRequestId: '35353535-3535-4535-8535-353535353535',
+      scope: { mode: 'selected', campaignIds: ['c-1'] },
+    });
+    expect(accepted).toMatchObject({ status: 'queued', scope: { mode: 'selected', campaignCount: 1 }, childCount: 1 });
+    expect(await counts(batchScope.orgId)).toEqual({
+      batches: before.batches + 1, runs: before.runs + 1, scopes: before.scopes + 1, jobs: before.jobs + 1,
+    });
+    const [child] = await database.sql<{ id: string; job_id: string }[]>`
+      select id, job_id from public.recommendation_runs where batch_id = ${accepted.batchId}::uuid
+    `;
+    if (child === undefined) throw new Error('preview child run missing');
+    batchRun = { runId: child.id, jobId: child.job_id };
+    expect(await readQueuedRun(child.id)).toEqual({
+      status: 'queued',
+      job_id: child.job_id,
+      job_status: 'queued',
+      job_claim_token: null,
+      job_run_id: child.id,
+      scope_version: RECOMMENDATION_SCOPE_VERSION,
+      scope_count: 1,
+      scope_fingerprint: runScopeFingerprint(batchScope.profileId, null, ['c-1']),
+      campaign_count: 1,
+      execution_lineage: 'queue',
+      engine_version: RECOMMENDATIONS_ENGINE_VERSION,
+    });
+
+    const groupBefore = await counts(groupScope.orgId);
+    groupRun = await store.enqueueRecommendationRun({
+      orgId: groupScope.orgId,
+      profileId: groupScope.profileId,
+      groupId: groupScope.groupId,
+      source: 'web',
+    });
+    expect(await counts(groupScope.orgId)).toEqual({
+      batches: groupBefore.batches, runs: groupBefore.runs + 1,
+      scopes: groupBefore.scopes + 1, jobs: groupBefore.jobs + 1,
+    });
+    expect(await readQueuedRun(groupRun.runId)).toMatchObject({
+      status: 'queued',
+      job_id: groupRun.jobId,
+      job_status: 'queued',
+      job_claim_token: null,
+      job_run_id: groupRun.runId,
+      scope_version: RECOMMENDATION_SCOPE_VERSION,
+      scope_count: 1,
+      scope_fingerprint: runScopeFingerprint(groupScope.profileId, groupScope.groupId, ['c-1']),
+      campaign_count: 1,
+      execution_lineage: 'queue',
+    });
+  });
+
+  it('is claimed by the legacy cron job set, run, and persisted with a counted result', async () => {
+    const store = new PostgresRecommendationRunStore(database);
+    const worker = new SyncWorker({
+      workerId: 'legacy-cron-claimant',
+      store: new PostgresWorkerStore(database, { info: () => {} }),
+      jobTypes: DEFAULT_VERCEL_CRON_JOB_TYPES,
+      recommendationsRun: createRecommendationsRunner(store),
+      logger: { info: () => {}, error: () => {} },
+    });
+    expect(await worker.drainOnce()).toBe(2);
+    for (const { runId, jobId } of [batchRun, groupRun]) {
+      const [job] = await database.sql<{
+        status: string;
+        claimed_by: string | null;
+        claim_token: string | null;
+        result: { runId?: string; proposals?: number } | null;
+      }[]>`
+        select status::text as status, claimed_by, claim_token, result
+          from public.sync_jobs where id = ${jobId}::uuid
+      `;
+      const [run] = await database.sql<{ status: string; proposals_count: number }[]>`
+        select status::text as status, proposals_count
+          from public.recommendation_runs where id = ${runId}::uuid
+      `;
+      const [proposals] = await database.sql<{ count: number }[]>`
+        select count(*)::integer as count from public.recommendations where run_id = ${runId}::uuid
+      `;
+      expect(job).toMatchObject({ status: 'succeeded', claimed_by: 'legacy-cron-claimant', claim_token: null });
+      expect(job?.result?.runId).toBe(runId);
+      expect(job?.result?.proposals).toBe(proposals?.count);
+      expect(run).toEqual({ status: 'succeeded', proposals_count: proposals?.count });
+    }
+  });
+
+  it('rolls the whole enqueue back with zero artifacts when the same trigger refuses blocked admission', async () => {
+    // Runs after the drain, so the store's own active-run check cannot be the
+    // refusal: only the 20260901060000 admission trigger remains in the way.
+    const store = new PostgresRecommendationRunStore(database);
+    await database.sql`
+      update app.recommendation_claim_authority
+         set admission = 'blocked', epoch = epoch + 1, updated_at = now()
+       where singleton
+    `;
+    const before = await counts(batchScope.orgId);
+    try {
+      await expect(store.enqueueRecommendationPreviewBatch({
+        ...batchScope,
+        actorId: ACTOR,
+        clientRequestId: '36363636-3636-4636-8636-363636363636',
+        scope: { mode: 'selected', campaignIds: ['c-1'] },
+      })).rejects.toThrow(/recommendation admission is blocked/);
+    } finally {
+      await database.sql`
+        update app.recommendation_claim_authority
+           set admission = 'legacy', epoch = epoch + 1, updated_at = now()
+         where singleton
+      `;
+    }
+    expect(await counts(batchScope.orgId)).toEqual(before);
+  });
 });

@@ -75,3 +75,38 @@ Do not edit `apps/web/app/optimizer/page.tsx` or `campaign-workspace.tsx`; they 
 
 - Remove or weaken any fenced-mode check.
 - Add a hosted setting, deployment or activation; WP-213 owns the deploy.
+
+## Close-out (2026-09-05, for the STATUS owner to integrate)
+
+Landed on branch `wp-216-optimizer-preview-fallback`; no deploy, hosted setting or activation.
+
+- `packages/db/src/queries/recommendation-readiness.ts` now carries two decisions.
+  `resolveOptimizerPreviewReadiness` (manual routes) returns `{ ready: true, mode: 'legacy' }`
+  only for exactly one valid `legacy`/`legacy` authority row while the flag is unset or `0`,
+  `{ ready: true, mode: 'fenced' }` under the unchanged fenced checks when the flag is `1`,
+  and otherwise fails closed with `misconfigured`, `authority_unavailable`,
+  `authority_not_legacy` (flag reversed after the database cutover), `admission_not_legacy`,
+  `authority_not_fenced`, `admission_not_scoped` or `revision_mismatch`.
+  `resolveScheduledRecommendationReadiness` (schedulers) never returns legacy mode: unset or `0`
+  intent is `disabled` with no database read. `enqueueRecommendationSchedulesIfReady` uses the
+  scheduled decision, so the general worker (`createReadinessGatedRecommendationSchedules`) and
+  the cron door keep their prior gates.
+- Both manual routes return `mode` in the 202 body and `{ error, reason }` on 503; the 503
+  message is unchanged. No shared contract exists for these responses (the UI parser in
+  `apps/web/src/optimizer/campaigns.ts` ignores additional keys), so `packages/shared` was not
+  edited.
+- Claimant in legacy mode is Vercel cron: `cronSyncJobTypesFromEnv` keeps `recommendations.run`
+  for unset or `0` intent and removes it only for enabled intent; the deployed Evo
+  recommendation worker contract claims `recommendations.run` only under the fenced protocol.
+  Tests drain the legacy work with the exact cron job set and legacy (token-less) claims.
+- Proof on the 46-file schema (default legacy authority): route tests
+  (`apps/web/src/optimizer-runs-route.test.ts`) and store tests
+  (`apps/worker/src/recommendations-run.test.ts`) show one transaction creating the
+  `recommendation_runs` row, its `recommendations.run` job and scope rows with `scope_version`,
+  `scope_count`, `scope_fingerprint`, `job_id` and `execution_lineage` populated; the
+  `20260901060000` admission trigger accepts the commit and, with admission `blocked`, rejects
+  it with zero artifacts. Scheduler negatives live in
+  `apps/worker/src/recommendation-schedule-readiness.test.ts` and
+  `apps/web/app/api/cron/sync/route.test.ts`.
+- Not owned, untouched: `apps/web/app/optimizer/page.tsx` and `groups/page.tsx` (WP-209) keep
+  reading `readiness.ready` only, so the UI now shows "Run preview" enabled in legacy mode.

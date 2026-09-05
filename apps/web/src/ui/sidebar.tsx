@@ -17,7 +17,10 @@
  * whether or not the group is open, so nothing about navigation waits on
  * hydration. When the rail is collapsed to icons the labels stay in the DOM and
  * are hidden with CSS, so the same server markup carries both states and the
- * unit test sees every label.
+ * unit test sees every label. The rail also hides the group summaries, and a
+ * closed `<details>` with no visible summary is a dead end, so every group is
+ * forced open while collapsed; that forced state is never written back to the
+ * operator's remembered closed set.
  *
  * A client component for three reasons: marking the current page, remembering
  * the collapse/open state in `localStorage`, and carrying the active
@@ -99,8 +102,12 @@ export function SidebarNav(): ReactNode {
             <details
               key={group.id}
               className="wa-navgroup"
-              open={holdsCurrent || !closed.includes(group.id)}
-              onToggle={(event) => remember(group.id, event.currentTarget.open)}
+              open={collapsed || holdsCurrent || !closed.includes(group.id)}
+              onToggle={(event) => {
+                // The rail forces groups open; that toggle is ours, not the
+                // operator's, and must not overwrite their stored closed set.
+                if (!collapsed) remember(group.id, event.currentTarget.open);
+              }}
             >
               <summary title={group.label}>
                 <svg aria-hidden="true" className="wa-navgroup-caret" viewBox="0 0 8 8">
