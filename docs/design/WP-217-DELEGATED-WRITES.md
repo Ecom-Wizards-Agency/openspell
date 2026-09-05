@@ -89,6 +89,14 @@ export validated by the legacy Python path. Existing recommendation evidence byt
 assertions remain intact. Null recommendation IDs alone never identify an MCP proposal.
 The immutable preview mapping binds each key/request to its exact plan for all source variants.
 
+`apply_batches.source_kind` distinguishes `legacy_export` from `mcp_keyword_proposals` and is
+immutable. An MCP source row must bind the same tenant/profile/batch, key/request and artifact;
+null recommendation ancestry alone never selects this branch. V2 uses `preparedAt` and real
+decimal proposal rows. Its pure verifier is MCP-only; old recommendation SQL remains authoritative
+for v1. Keep MCP drafts out of legacy downloads, direct/list reversion paths, sync-link lifecycle,
+legacy timeline/facets and export summaries. Native history derives actor from the receipt and
+does not invent a legacy export descriptor for v2.
+
 ## Database locks and migration sequence
 
 The current claim wrapper locks org then delivery head before canonical reservation. Retain

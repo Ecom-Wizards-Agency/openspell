@@ -1,16 +1,17 @@
 import { z } from 'zod';
-import { AmazonId, Uuid } from './primitives.js';
+import { Uuid } from './primitives.js';
 import { SpWriteOperationDetail, SpWriteOperationId, SpWritePreview } from './sp-write-application.js';
 import {
-  McpBidLimits, McpWriteDelegation, McpWriteReservation, SpKeywordBidDecimal, SpWriteSha256, verifyMcpPlanLimits,
+  McpBidLimits, McpWriteDelegation, McpWriteReservation, McpKeywordBidProposal, SpWriteSha256, verifyMcpPlanLimits,
 } from './sp-writes.js';
 
 export { McpBidApplyRequest, McpBidLimits, McpWriteDelegation, McpWriteReservation } from './sp-writes.js';
 
 const id = Uuid.refine((value) => value === value.toLowerCase(), 'use canonical lowercase UUIDs');
-const proposal = z.object({ keywordId: AmazonId, expectedBid: SpKeywordBidDecimal,
-  requestedBid: SpKeywordBidDecimal }).strict().refine((value) => value.expectedBid !== value.requestedBid,
-  'a proposal must change the bid');
+
+/** Internal context from bearer verification, never an MCP tool's input or output. */
+export const McpWriteCredential = z.object({ orgId: id, keyId: id, tokenHash: SpWriteSha256 }).strict();
+export type McpWriteCredential = z.infer<typeof McpWriteCredential>;
 
 /** The server resolves every proposed entity and actor before storing real source rows. */
 export const McpBidPreviewRequest = z.object({
@@ -19,12 +20,16 @@ export const McpBidPreviewRequest = z.object({
   source: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('apply_batch'), applyBatchId: id }).strict(),
     z.object({ kind: z.literal('keyword_proposals'), note: z.string().trim().min(1).max(1_000),
-      rows: z.array(proposal).min(1).max(500).refine((rows) =>
+      rows: z.array(McpKeywordBidProposal).min(1).max(500).refine((rows) =>
         new Set(rows.map((row) => row.keywordId)).size === rows.length, 'duplicate keyword proposals') }).strict(),
     z.object({ kind: z.literal('inverse'), original: SpWriteOperationId }).strict(),
   ]),
 }).strict();
 export type McpBidPreviewRequest = z.infer<typeof McpBidPreviewRequest>;
+
+export function serializeMcpBidPreviewRequest(raw: McpBidPreviewRequest): string {
+  return JSON.stringify(['openspell.mcp-bid-preview-request.v1', McpBidPreviewRequest.parse(raw)]);
+}
 
 export const McpWriteStatusRequest = z.object({
   profileId: id,

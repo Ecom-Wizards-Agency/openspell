@@ -1068,6 +1068,11 @@ export const SpKeywordBidDecimal = SpCanonicalDecimal.refine((value) => {
   return value !== '0' && whole!.length <= 8 && fraction.length <= 4;
 }, 'bid must fit the keyword mirror without rounding');
 
+export const McpKeywordBidProposal = z.object({
+  keywordId: AmazonId, expectedBid: SpKeywordBidDecimal, requestedBid: SpKeywordBidDecimal,
+}).strict().refine((value) => value.expectedBid !== value.requestedBid, 'a proposal must change the bid');
+export type McpKeywordBidProposal = z.infer<typeof McpKeywordBidProposal>;
+
 export const McpBidLimits = z.object({
   action: z.literal('keyword.bid'),
   maximumRowsPerCall: z.number().int().min(1).max(500),

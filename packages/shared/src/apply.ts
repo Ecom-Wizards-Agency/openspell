@@ -21,6 +21,10 @@
  */
 import { z } from 'zod';
 
+/** A staged MCP proposal is not a file exported for the legacy apply workflow. */
+export const ApplyBatchSourceKind = z.enum(['legacy_export', 'mcp_keyword_proposals']);
+export type ApplyBatchSourceKind = z.infer<typeof ApplyBatchSourceKind>;
+
 /**
  * Entity kinds a staged change can address. `placement` is here and absent from
  * `EntityType` on purpose: a placement modifier is a field of a campaign, not a

@@ -10,10 +10,15 @@ import {
 } from './sp-writes.js';
 import {
   McpBidPreviewRequest, McpWriteStatus, McpWriteStatusRequest, McpKeyTokenDigest,
-  McpWriteKeyIssueRequest, McpWriteKeyIssued, McpWriteKeySummary,
+  McpWriteKeyIssueRequest, McpWriteKeyIssued, McpWriteKeySummary, McpWriteCredential, serializeMcpBidPreviewRequest,
 } from './mcp-writes.js';
 import { SpWriteManualApprovalRequest } from './sp-write-application.js';
 import { TimeMachineNativeWrite } from './time-machine-writes.js';
+import {
+  McpBidProposalArtifact, SpMcpWritePreviewEvidenceV2, SpWritePreviewEvidence, SpWriteSourceEvidence,
+  serializeMcpBidProposalArtifact, serializeSpWritePreviewGuardrails, serializeSpWritePreviewProvenance,
+  verifyMcpWritePreviewEvidenceArtifacts,
+} from './sp-write-preview-evidence.js';
 
 const id = (suffix: string) => `00000000-0000-4000-8000-${suffix.padStart(12, '0')}`;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -78,7 +83,76 @@ function execution() {
     original: null, inverses: [] };
 }
 
+function proposalEvidence() {
+  const p = plan(); const d = delegation();
+  if (p.source.kind !== 'apply_batch') throw new Error('fixture must be a source batch');
+  const artifact = McpBidProposalArtifact.parse({ schemaVersion: 'openspell.mcp-bid-proposal.v1',
+    orgId: p.orgId, profileId: p.profileId, applyBatchId: p.source.applyBatchId,
+    requestId: id('70'), keyId: d.keyId, issuerUserId: d.issuerUserId, delegationVersionId: d.versionId,
+    preparedAt: at, note: 'Synthetic direct proposal', rows: [{ applyRowId: id('13'), keywordId: 'synthetic-keyword',
+      expectedBid: '0.3', requestedBid: '0.33' }] });
+  const artifactText = serializeMcpBidProposalArtifact(artifact);
+  const e = SpMcpWritePreviewEvidenceV2.parse({ schemaVersion: 'openspell.sp-write-preview-evidence.v2', planId: p.id,
+    guardrails: { profileGrantId: id('21'), profileGrantVersion: id('22'), providerScope: p.providerScope,
+      maximumProviderRows: 500, requireCurrentValueMatch: true, delegation: d },
+    provenance: { kind: 'mcp_keyword_proposals', applyBatchId: artifact.applyBatchId, preparedAt: at,
+      artifactText, artifactSha256: hash(artifactText), rows: artifact.rows } });
+  p.source.guardrailSnapshotFingerprint = hash(serializeSpWritePreviewGuardrails(e));
+  p.source.provenanceSnapshotFingerprint = hash(serializeSpWritePreviewProvenance(e));
+  p.fingerprint = hash(serializeSpWritePlanFingerprint(p));
+  return { p, e, artifact };
+}
+
 describe('bounded MCP write contracts', () => {
+  it('records exact decimal proposal provenance without claiming a legacy recommendation export', () => {
+    const { p, e, artifact } = proposalEvidence();
+    expect(SpWriteSourceEvidence.parse(e)).toEqual(e);
+    expect(SpWritePreviewEvidence.safeParse(e).success).toBe(false);
+    expect(verifyMcpWritePreviewEvidenceArtifacts(p, e, hasher)).toEqual({ plan: p, evidence: e });
+    expect(serializeSpWritePreviewGuardrails(e)).toContain('openspell.sp-write-preview-guards.v2');
+    expect(serializeSpWritePreviewProvenance(e)).toContain('openspell.sp-write-preview-source.v2');
+    expect(JSON.parse(serializeMcpBidProposalArtifact(artifact)).rows[0]).toMatchObject({ expectedBid: '0.3', requestedBid: '0.33' });
+    expect(artifact.rows[0]).not.toHaveProperty('recommendationId');
+    expect(McpBidProposalArtifact.safeParse({ ...artifact, rows: [{ ...artifact.rows[0], recommendationId: id('80') }] }).success).toBe(false);
+    expect(McpBidProposalArtifact.safeParse({ ...artifact, rows: [{ ...artifact.rows[0], requestedBid: 0.33 }] }).success).toBe(false);
+    expect(SpMcpWritePreviewEvidenceV2.safeParse({ ...e, provenance: { ...e.provenance, artifactText: '[]' } }).success).toBe(false);
+  });
+
+  it('refuses proposal row, scope, key and value substitutions even when their hashes are refreshed', () => {
+    const { p, e, artifact } = proposalEvidence();
+    for (const changed of [
+      { ...artifact, keyId: id('90') }, { ...artifact, issuerUserId: id('90') },
+      { ...artifact, delegationVersionId: id('90') }, { ...artifact, orgId: id('90') },
+      { ...artifact, profileId: id('90') }, { ...artifact, rows: [...artifact.rows, ...artifact.rows] },
+      { ...artifact, rows: [{ ...artifact.rows[0], requestedBid: '0.31' }] },
+      { ...artifact, rows: [{ ...artifact.rows[0], keywordId: 'different-keyword' }] },
+      { ...artifact, rows: [{ ...artifact.rows[0], applyRowId: id('90') }] },
+      { ...artifact, preparedAt: '2026-09-06T00:01:00.000Z' },
+    ]) {
+      const artifactText = JSON.stringify(changed);
+      const candidate = { ...e, provenance: { ...e.provenance, preparedAt: changed.preparedAt,
+        artifactText, artifactSha256: hash(artifactText), rows: changed.rows } };
+      expect(() => {
+        const evidence = SpMcpWritePreviewEvidenceV2.parse(candidate);
+        const changedPlan = structuredClone(p);
+        if (changedPlan.source.kind !== 'apply_batch') throw new Error('fixture source');
+        changedPlan.source.provenanceSnapshotFingerprint = hash(serializeSpWritePreviewProvenance(evidence));
+        changedPlan.fingerprint = hash(serializeSpWritePlanFingerprint(changedPlan));
+        verifyMcpWritePreviewEvidenceArtifacts(changedPlan, evidence, hasher);
+      }).toThrow();
+    }
+    expect(SpMcpWritePreviewEvidenceV2.safeParse({ ...e, provenance: { ...e.provenance, rows: [] } }).success).toBe(false);
+    expect(() => verifyMcpWritePreviewEvidenceArtifacts(p, { ...e, provenance: { ...e.provenance, artifactSha256: 'f'.repeat(64) } }, hasher)).toThrow();
+    for (const change of [
+      { frozenAt: e.guardrails.delegation.expiresAt, expiresAt: '2026-09-07T00:01:00.000Z' },
+      { expiresAt: '2026-09-07T00:01:00.000Z' },
+    ]) {
+      const candidate = SpWritePlan.parse({ ...p, ...change });
+      candidate.fingerprint = hash(serializeSpWritePlanFingerprint(candidate));
+      expect(() => verifyMcpWritePreviewEvidenceArtifacts(candidate, e, hasher)).toThrow();
+    }
+  });
+
   it('keeps token material out of operator policy and persisted key summaries', () => {
     const d = delegation();
     const request = { label: d.keyLabel, profileIds: d.profiles.map((profile) => profile.profileId),
@@ -93,6 +167,16 @@ describe('bounded MCP write contracts', () => {
     const summary = { delegation: d, revokedAt: at, lastUsedAt: null };
     expect(McpWriteKeySummary.parse(summary)).toEqual(summary);
     expect(McpWriteKeySummary.safeParse({ ...summary, token }).success).toBe(false);
+    const credential = { orgId: d.orgId, keyId: d.keyId, tokenHash: digest.tokenHash };
+    expect(McpWriteCredential.parse(credential)).toEqual(credential);
+    expect(McpWriteCredential.safeParse({ ...credential, token }).success).toBe(false);
+    const preview = { requestId: id('70'), profileId: d.profiles[0]!.profileId,
+      source: { kind: 'keyword_proposals' as const, note: 'Synthetic', rows: [
+        { keywordId: 'synthetic-keyword', expectedBid: '0.3', requestedBid: '0.33' },
+      ] } };
+    expect(McpBidPreviewRequest.safeParse({ ...preview, credential }).success).toBe(false);
+    expect(serializeMcpBidPreviewRequest(preview)).not.toBe(serializeMcpBidPreviewRequest({ ...preview,
+      source: { ...preview.source, rows: [{ ...preview.source.rows[0]!, requestedBid: '0.31' }] } }));
   });
   it('preserves legacy human receipt bytes and refuses delegated authority through human approval', () => {
     const { p, d, request, receipt } = artifacts();

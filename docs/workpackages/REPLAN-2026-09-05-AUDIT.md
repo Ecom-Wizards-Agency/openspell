@@ -179,7 +179,7 @@ one-time plaintext response and persisted management summary. The web issue endp
 route, the existing revoke route and synthetic route/data tests. Claude retains all key-management
 client components. Shared contracts precede these consumers at `7fe1fe9` (128 shared tests passed).
 
-The operator key-management implementation now uses those contracts: an explicit DB facade
+Commit `80df51b` implements operator key management using those contracts: an explicit DB facade
 builds authority from authenticated identity, owned profile currencies and database time, then
 verifies the RPC result inside the transaction. A Drizzle mirror covers the private tables.
 The new HTTP endpoint uses the existing session/MFA actor gate, owner/admin capability,
@@ -201,6 +201,36 @@ that RPC is absent. Rehearse/apply the required source migrations before this we
 Claude's original five-file window is insufficient. If issuance loses its response, the plaintext
 cannot be recovered; inspect the key list and revoke the unused issuance before replacing it.
 Write admission, MCP tools, proposal evidence and Time Machine key attribution remain pending.
+
+### MCP direct-proposal evidence contract, 2026-09-06
+
+The shared source contract adds an explicit batch source kind, exact decimal MCP proposal rows,
+a versioned proposal artifact and v2 preview evidence bound to its creator and full delegation.
+The original v1 parser remains available; serializer labels branch by version without changing
+v1 bytes. The application preview contract accepts either source. Internal bearer context and
+canonical request preimages remain separate from tool input/output. No database producer or
+MCP tool exists in this checkpoint.
+
+Independent review reproduced two weaknesses in the new verifier: a generic name overstated
+its v1 value validation, and its preview window could extend beyond delegation expiry. The
+verifier now accepts MCP v2 only, validates exact row/action values, and bounds both frozen and
+expiry times. Legacy evidence retains its existing SQL validator. Final probes reject forged
+sources, rehashed over-cap plans and expired windows; six old/new comparisons preserve v1
+parser and fingerprint bytes, including revised proposals.
+
+Shared tests pass all 130 cases. DB/web typechecks exposed legacy consumers requiring explicit
+v1 narrowing; the recommendation builder and its fixtures now assert that branch. All 24
+preview/admission compatibility tests pass with those changes. Contracts are committed before
+the consumer adjustment. No legacy SQL source assertion is weakened.
+
+The consumer audit found MCP drafts would otherwise appear as bulk exports before admission,
+and direct download/reversion getters bypass list filtering. Next scope: additive
+`20260906020000_mcp_bid_proposal_sources.sql`; source/mirror/preview queries and tests; legacy
+Time Machine, export, sync-link, dashboard and strategy server filters. Markers and immutable
+source records must agree in the same transaction, including null recommendation ancestry.
+MCP drafts must not create export lifecycle states; admitted original/inverse operations use
+native history with receipt-derived actors. No client component or protected Claude file is added
+to this scope.
 
 ### Source progress
 
