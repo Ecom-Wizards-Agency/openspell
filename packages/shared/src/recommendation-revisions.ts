@@ -33,6 +33,19 @@ export const RecommendationRevisionSelection = z.array(RecommendationRevisionRef
   });
 export type RecommendationRevisionSelection = z.infer<typeof RecommendationRevisionSelection>;
 
+/** Every refused ID is retained, including an unavailable or stale reviewed row. */
+export const RecommendationDecisionResult = z.object({
+  updated: z.number().int().nonnegative().max(20_000),
+  refused: z.array(z.object({
+    id,
+    status: z.enum(['proposed', 'accepted', 'dismissed', 'exported', 'applied', 'superseded', 'unavailable', 'revision_changed']),
+  }).strict()).max(20_000),
+}).strict().refine((value) => value.updated + value.refused.length <= 20_000
+  && new Set(value.refused.map((row) => row.id)).size === value.refused.length, {
+  message: 'decision counts and refused identities must reconcile',
+});
+export type RecommendationDecisionResult = z.infer<typeof RecommendationDecisionResult>;
+
 export const RecommendationRevisionRequest = z.object({
   requestId: id,
   profileId: id,

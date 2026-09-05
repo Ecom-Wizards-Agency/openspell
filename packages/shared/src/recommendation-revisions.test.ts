@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { serializeApplyRows } from './apply.js';
-import { RecommendationBidDecimal, RecommendationRevisionReceipt, RecommendationRevisionRequest,
+import { RecommendationBidDecimal, RecommendationDecisionResult, RecommendationRevisionReceipt, RecommendationRevisionRequest,
   RecommendationRevisionSelection, recommendationBidNumber } from './recommendation-revisions.js';
 
 const id = (tail: string) => `aaaaaaaa-aaaa-4aaa-8aaa-${tail.padStart(12, '0')}`;
@@ -8,6 +8,12 @@ const request = { requestId: id('1'), profileId: id('2'), recommendationId: id('
   expectedRevisionId: null, proposedValue: '0.7', note: 'Reviewed bid' };
 
 describe('proposal revision contract', () => {
+  it('counts unavailable and stale refusals without duplicating identities', () => {
+    const result = { updated: 1, refused: [{ id: id('3'), status: 'revision_changed' }, { id: id('4'), status: 'unavailable' }] };
+    expect(RecommendationDecisionResult.parse(result)).toEqual(result);
+    expect(RecommendationDecisionResult.safeParse({ ...result, refused: [result.refused[0], result.refused[0]] }).success).toBe(false);
+    expect(RecommendationDecisionResult.safeParse({ ...result, updated: 20_000 }).success).toBe(false);
+  });
   it('normalizes entered decimals and identities without accepting a caller actor', () => {
     expect(RecommendationRevisionRequest.parse({ ...request, requestId: request.requestId.toUpperCase(),
       proposedValue: ' 000.7000 ', note: ' Reviewed bid ' })).toEqual(request);
