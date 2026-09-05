@@ -50,6 +50,14 @@ deployment, credential store or Amazon account was accessed.
 | Mirror status contract | `SpWriteOperationDetail` now requires separate mirror counts, including observations still awaiting a receipt. The observation total must match the verified provider ledger. | Eleven shared tests and shared typecheck passed before the status-query implementation. The query now verifies receipts only for observations in the ledger snapshot. Three worker tests, 12 DB tests and four HTTP tests passed; DB/web typechecks and targeted lint passed. The HTTP fixture truthfully reports one pending mirror receipt despite its synthetic direct mirror edit. |
 | Native Time Machine read plan | The application architecture now declares the exact projection and server wiring scope. Ordering uses immutable approval time and preserves timestamp microseconds; legacy/native candidates share one repeatable-read snapshot. Only exact provenance or attributed mirror IDs suppress duplicate entries. | The shared `time-machine-writes` contract is now defined, with exact cursors and actor/action/observation/inverse binding. Fourteen focused shared tests, shared typecheck and targeted lint passed. The feed now merges legacy and native entries within one read snapshot and returns exact original/inverse metadata. Eleven existing DB timeline tests and four real-worker history tests passed, including one-row pagination, stable ordering during execution, exact diff suppression, a refused inverse, and preservation of a conflict observation after legacy linking. Server labels/navigation/cursor wiring and all 10 production-build browser tests have passed. Independent review corrections and their regression evidence are recorded below. Conflict observations must remain visible even if a legacy export linker later attaches a batch; the MCP actor is added only with WP-217 delegated receipts. |
 
+The native Time Machine slice is committed at `d74c5de`.
+
+The recommendation population handoff now has a shared contract and declared file scope in
+the application architecture. Exact loaded/total/limit counts must reconcile with the
+truncation flag. Two focused contract tests and shared typecheck passed before dependent
+implementation. The DB loader and export-completeness guard are next; Claude-owned client
+files are unchanged.
+
 The main replan now contains a current Claude handoff, including the locally verified
 native-history slice. It documents the four UI HTTP
 contracts, separate provider/mirror states, exact history links, frontend ownership and the

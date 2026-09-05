@@ -271,6 +271,28 @@ unobserved inverse does not mark its original restored. Tenant filters apply to 
 The row projection parses shared contracts; underlying immutable facts and accounting remain
 the authority, without a second mutable history/status table.
 
+### Recommendation population handoff
+
+The existing `listRecommendations` query serves the recommendations page, optimizer loader
+and export downloads. Its default 20,000-row cap currently carries no completeness metadata.
+Add `RecommendationPopulation` to `packages/shared/src/recommendations.ts`, with focused
+`recommendation-population.test.ts`, before the dependent DB slice in
+`packages/db/src/queries/recommendations.ts` and new `recommendation-population.test.ts`.
+No migration or Claude-owned client/page edit is needed for this additive loader handoff.
+
+Claude's server integration can use
+`const { rows, population } = await listRecommendationWindow(database, filters)`.
+The population describes those database filters: exact `loaded`, `total`, `limit` and
+`truncated`. Client-side filtering over a truncated window cannot claim an exact total for
+the unseen filtered rows. Keep the legacy array-returning loader for existing callers.
+
+Use `count(*) over()` in the same SQL query, before its positive bounded limit. This avoids
+a second count query whose snapshot could disagree with the rows. Parse safe integer counts,
+assert unique row IDs and `loaded = min(total, limit)`, and report zero for an empty result.
+Export downloads use the counted loader and refuse a truncated proposal population, since
+returning a partial workbook would lose create rows. Proposal revision/editing is a separate
+contract/persistence slice and remains outstanding.
+
 ### Delegated admission slice
 
 WP-217 first lands the coordinated policy/shared authorization amendment, then a new additive
