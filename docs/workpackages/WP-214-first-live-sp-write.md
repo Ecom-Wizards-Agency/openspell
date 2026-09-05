@@ -72,7 +72,7 @@ Activation PR:
 
 The existing SP write contracts remain authoritative. The application/history contracts and
 query modules are declared in the [application architecture](../design/WP-214-APPLICATION-ARCHITECTURE.md); they reuse the
-existing SP artifacts. The separately declared proposal-revision and exact observation-link
+existing SP artifacts. The separately declared immutable preview-evidence, proposal-revision and exact observation-link
 slices may add their shared shapes and migrations before dependent code. `recommendations/review.tsx` and
 all approval-page client design belong to Claude. Other migration changes require a separate
 reviewed contract/persistence slice before dependent source.

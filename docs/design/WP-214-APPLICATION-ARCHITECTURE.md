@@ -76,6 +76,23 @@ low-level ledger methods. The worker alone owns provider orchestration.
 
 ### Preview and human approval
 
+Implementation review found that export rows remain editable and the SP plan retains only
+guardrail/provenance digests. Add a contract/persistence slice before the builder is accepted:
+`packages/shared/src/sp-write-preview-evidence.ts`, its explicit export and tests;
+`supabase/migrations/20260905000000_sp_write_preview_evidence.sql`; the matching DB schema,
+query and PostgreSQL tests; and synthetic tenant-fixture coverage. This migration identifier
+was unused when declared. Update only the exact inert-migration allowances and latest-migration
+assertion in the two persistence blast tests and migration suite.
+
+The slice stores immutable source and policy preimages alongside the plan in one transaction.
+It binds the actual export artifact, ordered source rows, current grant/version, recommendation
+run strategy, goal and group snapshot. Missing required source evidence refuses. Reconstruct
+and verify the legacy export digest; a syntax-valid hash is insufficient. Monetary values for
+the plan still come from SQL text. Compatibility serialization may reproduce the old numeric
+export representation only after proving a lossless decimal text round trip; it never supplies
+the plan's money. Exact decimal strings support values that the old numeric representation
+cannot preserve. Approval requires this evidence and rejects a changed source revision.
+
 Use the preview request UUID as the stable plan UUID. Replays return the recorded plan only
 when tenant, profile and source identity match. On concurrent insertion, reload the committed
 winner and verify that binding. Never rebuild a preview with different timestamps under an
