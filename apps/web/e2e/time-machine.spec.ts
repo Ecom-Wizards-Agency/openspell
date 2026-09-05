@@ -13,6 +13,7 @@
  */
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { SpWriteOperationId } from '@wizard-ads/shared/sp-write-application';
 
 const BRIDGE = process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET'] ?? '';
 const ORG_B = process.env['WIZARD_ADS_E2E_ORG_B'] ?? '';
@@ -80,6 +81,34 @@ test('the active account is compact and the roster is not rendered as link navig
   await expect(account.locator('a[href*="/time-machine?profile="]')).toHaveCount(0);
 });
 
+test('native changes retain exact original and observed reversion history links', async ({ page }) => {
+  const fixture = JSON.parse(process.env['WIZARD_ADS_E2E_NATIVE_HISTORY'] ?? '{}') as Record<string, unknown>;
+  const original = SpWriteOperationId.parse(fixture['original']);
+  const inverse = SpWriteOperationId.parse(fixture['inverse']);
+  await open(page, { execution: original.executionId, plan: original.planId });
+  const entries = page.getByTestId('timeline-entry');
+  await expect(entries).toHaveCount(1);
+  await expect(entries).toContainText('Native history keyword');
+  await expect(entries.getByTestId('entry-source')).toHaveText('Observed in Amazon');
+  await expect(entries.getByTestId('native-mirror-status')).toHaveText('Local copy updated');
+  await expect(entries.locator('code')).toHaveText(['0.9', '0.7']);
+  const inverseLink = entries.getByRole('link', { name: 'Reversion observed in Amazon' });
+  await expect(inverseLink).toHaveAttribute('href', url({ execution: inverse.executionId, plan: inverse.planId }));
+  await expect(page.getByTestId('time-machine-batch').filter({ hasText: 'synthetic-native-history' })).toHaveCount(0);
+  await inverseLink.click();
+  await expect(entries).toHaveCount(1);
+  await expect(entries.getByTestId('entry-source')).toHaveText('Reversion · Observed in Amazon');
+  await expect(entries.getByTestId('native-mirror-status')).toHaveText('Local copy updated');
+  await expect(entries.locator('code')).toHaveText(['0.7', '0.9']);
+  const originalLink = entries.getByRole('link', { name: 'Original change' });
+  await expect(originalLink).toHaveAttribute('href', url({ execution: original.executionId, plan: original.planId }));
+  if (process.env['WIZARD_ADS_NATIVE_VISUAL_PATH']) {
+    await page.screenshot({ path: process.env['WIZARD_ADS_NATIVE_VISUAL_PATH'], fullPage: true });
+  }
+  await originalLink.click();
+  await expect(entries.getByTestId('entry-source')).toHaveText('Observed in Amazon');
+});
+
 test('the initial response is bounded and older history remains reachable', async ({ page }) => {
   const response = await page.goto(url());
   if (response === null) throw new Error('Time Machine navigation returned no document response');
@@ -102,7 +131,7 @@ test('the initial response is bounded and older history remains reachable', asyn
 test('an exhausted history cursor offers a safe return to the newest changes', async ({ page }) => {
   await open(page, {
     before_at: '2000-01-01T00:00:00.000Z',
-    before_id: `change:${'0'.repeat(8)}-${'0'.repeat(4)}-4000-8000-${'0'.repeat(12)}`,
+    before_id: 'change:1',
   });
 
   await expect(page.getByTestId('timeline-empty-cursor')).toBeVisible();
@@ -137,7 +166,7 @@ test('reviews uniquely synchronized evidence and exports an exact inverse file',
   await expect(row).toHaveAttribute('data-state', 'ready');
   await expect(row).toContainText('0.9');
   await expect(row).toContainText('0.71');
-  await expect(preview).toContainText('OpenSpell does not update Amazon');
+  await expect(preview).toContainText('Creating this export does not change Amazon');
   if (process.env['WIZARD_ADS_VISUAL_PATH']) {
     await page.screenshot({ path: process.env['WIZARD_ADS_VISUAL_PATH'], fullPage: true });
   }

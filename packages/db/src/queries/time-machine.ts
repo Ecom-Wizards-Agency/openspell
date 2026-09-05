@@ -2,7 +2,7 @@
  * Time Machine (WP-30): the account's change history, read-only.
  *
  * AdLabs ships a per-account change log; this is ours, built over data we
- * already record and adding no table. Two sources feed one reverse-chronological
+ * already record and adding no history table. Three sources feed one reverse-chronological
  * timeline:
  *
  *  - `entity_changes` — every bid / budget / state diff the entity sync noticed.
@@ -10,12 +10,13 @@
  *    outside wizard-ads (`sync`); the latter is the point of recording it at all.
  *  - `apply_batches` / `apply_rows` — the operator's exported changes, one row
  *    per field per opt-group batch, carrying lifecycle evidence, note and lever.
+ *  - Native write plans, approvals and execution evidence — each approved
+ *    keyword-bid action and its independently recorded inverse.
  *
- * The two would double-count an exported change that the next sync also observes,
- * so the `entity_changes` branch is narrowed to rows with **no** `apply_batch_id`
- * (a sync-detected or otherwise unattributed change), and the apply branch owns
- * everything an operator batch touched. An entry is therefore attributed to
- * exactly one source.
+ * Legacy export history owns its linked sync changes. Native history replaces
+ * only its exact source rows and write-attributed mirror diffs. Ordinary sync
+ * events and native conflict observations remain visible even after the legacy
+ * linker attaches them to a batch; that link is not native attribution evidence.
  *
  * Every statement carries an explicit `org_id` and `profile_id` predicate. The
  * web tier connects as the application's own role, so RLS is the second fence,
@@ -38,6 +39,9 @@ import type { DbHandle, QuerySql } from '../client.js';
 import type { JsonValue } from './goto.js';
 import { lockCurrentApplyStates } from './apply-state.js';
 import { toDate, toDateOrNull } from './pg-time.js';
+import { TimeMachineCursor, TimeMachineInstant, compareTimeMachineCursors, type TimeMachineNativeWrite } from '@wizard-ads/shared/time-machine-writes';
+import { SpWriteOperationId } from '@wizard-ads/shared/sp-write-application';
+import { listNativeTimeline, nativeTimelineRoots } from './time-machine-writes.js';
 
 export type TimeMachineQueryHandle = Pick<DbHandle, 'sql'>;
 interface TimeMachineReadHandle {
@@ -48,7 +52,7 @@ interface TimeMachineReadHandle {
 export type ChangeSource = 'sync' | 'apply';
 
 export interface TimelineEntry {
-  /** Stable, unique across both sources — the React key and dedupe handle. */
+  /** Stable across all sources — the React key and dedupe handle. */
   id: string;
   source: ChangeSource;
   entityType: string;
@@ -58,6 +62,9 @@ export interface TimelineEntry {
   oldValue: JsonValue;
   newValue: JsonValue;
   observedAt: Date;
+  /** Exact keyset time; Date alone discards PostgreSQL microseconds. */
+  observedAtExact: string;
+  write: TimeMachineNativeWrite | null;
   /** Present only for an operator apply-batch entry. */
   batch: {
     id: string;
@@ -86,6 +93,8 @@ export interface TimelineFilter {
   limit?: number;
   /** Return entries strictly older than this stable `(observed_at, id)` key. */
   before?: { observedAt: string; id: string } | null;
+  /** Optional focus on one native operation, including its exact plan identity. */
+  operation?: SpWriteOperationId | null;
 }
 
 interface TimelineRow {
@@ -98,6 +107,7 @@ interface TimelineRow {
   old_value: JsonValue;
   new_value: JsonValue;
   observed_at: Date | string;
+  observed_at_exact: string;
   batch_id: string | null;
   batch_tag: string | null;
   batch_opt_group: string | null;
@@ -118,6 +128,8 @@ const toEntry = (row: TimelineRow): TimelineEntry => ({
   oldValue: row.old_value,
   newValue: row.new_value,
   observedAt: toDate(row.observed_at),
+  observedAtExact: TimeMachineInstant.parse(row.observed_at_exact),
+  write: null,
   batch:
     row.batch_id === null
       ? null
@@ -136,17 +148,35 @@ const toEntry = (row: TimelineRow): TimelineEntry => ({
 /**
  * The timeline for one profile, newest first.
  *
- * `entity_changes` (sync-detected, no batch) unioned with `apply_rows` (operator
- * batches). Filters bind as nullable parameters so a filtered and an unfiltered
- * call are the same statement, and the `source` filter selects a branch by
- * making the other contribute nothing.
+ * Native and legacy candidates use the same filters and one read snapshot.
+ * Approval time orders native actions; later execution evidence does not move
+ * those entries across page boundaries.
  */
 export async function listTimeline(
   handle: TimeMachineQueryHandle,
   filter: TimelineFilter,
 ): Promise<TimelineEntry[]> {
+  const limit = Math.min(Math.max(filter.limit ?? 500, 1), 2000);
+  const normalized = { ...filter, limit, field: filter.field?.trim() || null,
+    before: filter.before == null ? null : TimeMachineCursor.parse(filter.before),
+    operation: filter.operation == null ? null : SpWriteOperationId.parse(filter.operation) };
+  const result = await handle.sql.begin('isolation level repeatable read read only', async (sql) => {
+    const native = await listNativeTimeline(sql, normalized);
+    const legacy = normalized.operation === null ? await listLegacyTimeline({ sql }, normalized) : [];
+    const entries = [...legacy, ...native].sort((left, right) => compareTimeMachineCursors(
+      { observedAt: right.observedAtExact, id: right.id }, { observedAt: left.observedAtExact, id: left.id },
+    )).slice(0, limit);
+    if (new Set(entries.map((entry) => entry.id)).size !== entries.length) throw new Error('timeline entry identities do not close');
+    return { entries };
+  });
+  return result.entries;
+}
+
+async function listLegacyTimeline(
+  handle: TimeMachineReadHandle, filter: TimelineFilter,
+): Promise<TimelineEntry[]> {
   const entityTypes = filter.entityTypes?.length ? [...filter.entityTypes] : null;
-  const field = filter.field?.trim() || null;
+  const field = filter.field ?? null;
   const source = filter.source ?? null;
   const from = filter.from ?? null;
   const to = filter.to ?? null;
@@ -155,7 +185,7 @@ export async function listTimeline(
   const beforeId = filter.before?.id ?? null;
 
   const rows = await handle.sql<TimelineRow[]>`
-    with timeline as (
+    with native_roots as (${nativeTimelineRoots(handle.sql, filter)}), timeline as (
       select
         'change:' || ec.id::text                      as id,
         ec.source::text                               as source,
@@ -177,7 +207,21 @@ export async function listTimeline(
       from public.entity_changes ec
       where ec.org_id = ${filter.orgId}
         and ec.profile_id = ${filter.profileId}
-        and ec.apply_batch_id is null
+        -- A legacy batch link does not establish native-write attribution.
+        and (ec.apply_batch_id is null
+          or exists(select 1 from native_roots n where n.direction = 'forward'
+            and n.org_id = ec.org_id and n.profile_id = ec.profile_id
+            and n.preview_artifact #>> '{provenance,applyBatchId}' = ec.apply_batch_id::text)
+          or exists(select 1 from public.sp_write_mirror_observations m
+          where m.org_id = ec.org_id and m.profile_id = ec.profile_id and m.entity_change_id = ec.id
+            and m.change_attribution = 'observation'))
+        and not exists(select 1 from public.sp_write_mirror_observations m
+          join native_roots n on n.org_id = m.org_id and n.profile_id = m.profile_id
+            and n.execution_id = m.execution_id and n.plan_id = m.plan_id
+          join public.sp_write_plan_actions a on a.org_id = n.org_id and a.profile_id = n.profile_id
+            and a.plan_id = n.plan_id and a.action_id = m.action_id
+          where m.entity_change_id = ec.id and m.change_attribution = 'write'
+            and a.route_key = 'sp.v3.keywords.update' and a.artifact -> 'changes' ? 'bid')
         and (${entityTypes}::text[] is null or ec.entity_type::text = any(${entityTypes}::text[]))
         and (${field}::text is null or ec.field = ${field}::text)
         and (${source}::text is null or ec.source::text = ${source}::text)
@@ -207,6 +251,11 @@ export async function listTimeline(
       where ar.org_id = ${filter.orgId}
         and ab.org_id = ${filter.orgId}
         and ab.profile_id = ${filter.profileId}
+        and not exists(select 1 from native_roots n join public.sp_write_plan_actions a
+          on a.org_id = n.org_id and a.profile_id = n.profile_id and a.plan_id = n.plan_id
+          where n.direction = 'forward' and a.route_key = 'sp.v3.keywords.update'
+            and a.artifact -> 'changes' ? 'bid' and a.artifact -> 'sources' @> jsonb_build_array(
+              jsonb_build_object('kind', 'apply_row', 'applyRowId', ar.id::text, 'changeKey', 'keyword.bid')))
         and (${entityTypes}::text[] is null or ar.entity_type::text = any(${entityTypes}::text[]))
         and (${field}::text is null or ar.field = ${field}::text)
         and (${source}::text is null or ${source}::text = 'apply')
@@ -215,11 +264,11 @@ export async function listTimeline(
         and (${to}::timestamptz is null
              or coalesce(ab.applied_at, ab.exported_at, ab.created_at) <= ${to}::timestamptz)
     )
-    select *
+    select *, to_char(observed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as observed_at_exact
       from timeline
      where (${beforeObservedAt}::timestamptz is null
-            or (observed_at, id) < (${beforeObservedAt}::timestamptz, ${beforeId}::text))
-    order by observed_at desc, id desc
+            or (observed_at, id collate "C") < (${beforeObservedAt}::timestamptz, ${beforeId}::text collate "C"))
+    order by observed_at desc, id collate "C" desc
     limit ${limit}
   `;
   return rows.map(toEntry);
@@ -241,6 +290,7 @@ export async function listTimelineFacets(
   input: { orgId: string; profileId: string },
 ): Promise<TimelineFacets> {
   const rows = await handle.sql<{ entity_type: string; field: string }[]>`
+    with native_roots as (${nativeTimelineRoots(handle.sql, input)})
     select ec.entity_type::text as entity_type, ec.field as field
       from public.entity_changes ec
      where ec.org_id = ${input.orgId}
@@ -253,6 +303,10 @@ export async function listTimelineFacets(
      where ar.org_id = ${input.orgId}
        and ab.org_id = ${input.orgId}
        and ab.profile_id = ${input.profileId}
+    union
+    select 'keyword' as entity_type, 'bid' as field from native_roots n
+      join public.sp_write_plan_actions a on a.org_id = n.org_id and a.profile_id = n.profile_id and a.plan_id = n.plan_id
+      where a.route_key = 'sp.v3.keywords.update' and a.artifact -> 'changes' ? 'bid'
   `;
   const entityTypes = [...new Set(rows.map((row) => row.entity_type))].sort();
   const fields = [...new Set(rows.map((row) => row.field))].sort();
@@ -418,6 +472,7 @@ export async function listReversionBatches(
 ): Promise<ReversionBatchSummary[]> {
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
   const rows = await handle.sql<ReversionBatchHeaderRow[]>`
+    with native_roots as (${nativeTimelineRoots(handle.sql, input)})
     select id, source_batch_id,
            (select child.id from public.apply_batches child
              where child.org_id = apply_batches.org_id
@@ -431,6 +486,8 @@ export async function listReversionBatches(
       from public.apply_batches
      where org_id = ${input.orgId}
        and profile_id = ${input.profileId}
+       and not exists(select 1 from native_roots n where n.direction = 'forward'
+         and n.preview_artifact #>> '{provenance,applyBatchId}' = apply_batches.id::text)
      order by exported_at desc, id desc
      limit ${limit}
   `;

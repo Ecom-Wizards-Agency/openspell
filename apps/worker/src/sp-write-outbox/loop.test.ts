@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSpWriteAdapter, type SpWriteAdapter } from '@wizard-ads/ads-api/sp-write-adapter';
-import { exportAcceptedRecommendations } from '@wizard-ads/db';
+import { exportAcceptedRecommendations, listTimeline, reconcileEntityChangeLinks } from '@wizard-ads/db';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
 import { approveAndQueueSpWrite, previewSpWrite, previewSpWriteInverse, readSpWriteOperation } from '@wizard-ads/db/sp-write-application';
 import { createSpWriteOutboxLedger, createSpWriteRuntimeLedger } from '@wizard-ads/db/sp-write-persistence';
@@ -9,7 +9,7 @@ import { listSpWriteProviderPlans, mergeKeywordMirror, readKeywordMirrorStart, r
 import { KeywordRow } from '@wizard-ads/shared';
 import type { SpWriteAdmission, SpWritePreview } from '@wizard-ads/shared/sp-write-application';
 import { SpWriteObservation, type SpWritePlan } from '@wizard-ads/shared/sp-writes';
-import { hasher, makeReservationArtifacts, providerKey, remainingAttemptMs } from './artifacts.js';
+import { hasher, makeObservations, makeReservationArtifacts, providerKey, remainingAttemptMs } from './artifacts.js';
 import { createSpWriteOutboxLoop } from './loop.js';
 import { createKeywordMirrorCapability } from './composition.js';
 import { PostgresWorkerStore } from '../store.js';
@@ -271,11 +271,36 @@ describe.skipIf(!available)('inert SP write worker with real ledger and fake HTT
     ]);
     expect(new Set(receipts.map((row) => row.diff)).size).toBe(2);
     expect((await detail()).inverses).toContainEqual(inverseAdmission.operation);
+    const history = await listTimeline(database, { orgId, profileId });
+    const native = history.filter((entry) => entry.write !== null);
+    expect(native).toHaveLength(2);
+    expect(native.map((entry) => entry.write!.direction)).toEqual(['inverse', 'forward']);
+    expect(native[0]!.write!.execution.original).toEqual(admission.operation);
+    expect(native[1]!.write!.inverseSummaries).toMatchObject([{ operation: inverseAdmission.operation,
+      snapshot: { status: 'succeeded' }, mirror: { promoted: 1, pending: 0 } }]);
+    expect(history.some((entry) => receipts.some((receipt) => entry.id === `change:${receipt.diff}`))).toBe(false);
+    const pages: string[] = [];
+    let before: { observedAt: string; id: string } | undefined;
+    for (let index = 0; index <= history.length; index += 1) {
+      const page = await listTimeline(database, { orgId, profileId, limit: 1, ...(before ? { before } : {}) });
+      if (page.length === 0) break;
+      pages.push(page[0]!.id);
+      before = { observedAt: page[0]!.observedAtExact, id: page[0]!.id };
+    }
+    expect(pages).toEqual(history.map((entry) => entry.id));
     const [row] = await database.sql<{ bid: string }[]>`select bid::text from public.keywords where org_id = ${orgId} and amazon_id = 'kw-1'`;
     expect(row!.bid).toBe('0.9000'); expect(puts).toBe(2);
   });
 
   it('sends one attempt, observes it, reconciles counts and never dispatches it again', async () => {
+    const before = await listTimeline(database, { orgId, profileId });
+    expect(await listTimeline(database, { orgId, profileId, field: '  ' })).toEqual(before);
+    expect((await listTimeline(database, { orgId, profileId, field: ' bid ' })).map((entry) => entry.id))
+      .toEqual(before.filter((entry) => entry.field === 'bid').map((entry) => entry.id));
+    const queuedHistory = before.filter((entry) => entry.write !== null);
+    expect(queuedHistory).toHaveLength(1);
+    expect(queuedHistory[0]!.write!.phase).toBe('queued');
+    expect(before.filter((entry) => entry.batch?.id === preview.evidence!.provenance.applyBatchId)).toHaveLength(1);
     expect((await detail()).mirror).toEqual({ observations: 0, pending: 0, promoted: 0, alreadyCurrent: 0, superseded: 0, missing: 0 });
     expect((await listSpWriteProviderPlans(database, [profileId], true, true)).map((plan) => plan.id)).toEqual([preview.plan.id]);
     const worker = loop();
@@ -290,8 +315,87 @@ describe.skipIf(!available)('inert SP write worker with real ledger and fake HTT
       (select count(*)::int from public.sp_write_mirror_observations where plan_id = ${preview.plan.id} and change_attribution = 'write') as links
       from public.keywords where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = 'kw-1'`;
     expect(current).toEqual({ bid: '0.7000', links: 1 });
+    const after = await listTimeline(database, { orgId, profileId });
+    expect(after.map((entry) => entry.id)).toEqual(before.map((entry) => entry.id));
+    const applied = after.find((entry) => entry.write !== null)!;
+    expect(applied.observedAtExact).toBe(queuedHistory[0]!.observedAtExact);
+    expect(applied.write!.phase).toBe('observed_requested');
+    expect(applied.write!.mirrorReceipt!.entityChangeId).not.toBeNull();
+    expect((await listTimeline(database, { orgId, profileId, operation: admission.operation })).map((entry) => entry.id))
+      .toEqual([applied.id]);
+    // Same entity, values and timestamp are insufficient to suppress another diff.
+    const [external] = await database.sql<{ id: string }[]>`insert into public.entity_changes
+      (org_id, profile_id, entity_type, amazon_id, field, old_value, new_value, source, observed_at)
+      values (${orgId}, ${profileId}, 'keyword', 'kw-1', 'bid', '"0.9"'::jsonb, '"0.7"'::jsonb, 'sync',
+        ${applied.write!.observation!.observedAt}::timestamptz) returning id::text`;
+    const withExternal = await listTimeline(database, { orgId, profileId });
+    expect(withExternal).toHaveLength(after.length + 1);
+    expect(withExternal.find((entry) => entry.id === `change:${external!.id}`)?.source).toBe('sync');
     expect(await worker.tick()).toEqual({ kind: 'idle', attemptedCalls: 0 });
     expect(puts).toBe(1); expect(reads).toBe(2);
+  });
+
+  it('keeps a refused inverse visible without claiming that the original was restored', async () => {
+    const worker = loop();
+    await worker.tick(); await worker.tick();
+    const inverse = await previewSpWriteInverse(database, { orgId, userId: OWNER }, {
+      requestId: randomUUID(), profileId, original: admission.operation,
+    });
+    const inverseAdmission = await approveAndQueueSpWrite(database, { orgId, userId: OWNER }, { profileId, approval: {
+      approvalRequestId: randomUUID(), plan: inverse.binding, approvalMode: 'manual',
+      confirmationVersion: 'openspell.amazon-sp-write-confirmation.v1', boundedAuthorization: null, preapprovedInversePlan: null,
+    } });
+    providerBids.set('kw-1', 1.1);
+    expect((await worker.tick()).attemptedCalls).toBe(0);
+    const history = await listTimeline(database, { orgId, profileId });
+    const original = history.find((entry) => entry.write?.execution.operation.planId === preview.plan.id)!;
+    const refused = history.find((entry) => entry.write?.execution.operation.planId === inverse.plan.id)!;
+    expect(refused.write!.phase).toBe('refused');
+    expect(refused.write!.execution.original).toEqual(admission.operation);
+    expect(original.write!.inverseSummaries).toMatchObject([{ operation: inverseAdmission.operation,
+      snapshot: { status: 'refused', accounting: { observedRequested: 0, refusedBeforeDispatch: 1 } },
+      mirror: { observations: 0, promoted: 0 } }]);
+    expect(puts).toBe(1);
+  });
+
+  it('preserves a conflicting native observation as a sync event even after a legacy export link', async () => {
+    expect((await loop().tick()).attemptedCalls).toBe(1);
+    const runtime = createSpWriteRuntimeLedger(database);
+    const claimed = await createSpWriteOutboxLedger(database).claimAvailable({
+      claimantId: 'synthetic-conflict-observer', kinds: ['observe_and_recover'], limit: 1,
+    });
+    const claim = claimed.claims[0];
+    if (claim?.kind !== 'observe_and_recover') throw new Error('observation claim absent');
+    const evidence = await runtime.loadVerifiedExecution(claim);
+    if (evidence === null) throw new Error('observation evidence absent');
+    providerBids.set('kw-1', 0.8);
+    const call = adapter.preparePlan(evidence.plan)[0]!;
+    const items = await adapter.observeCurrent({ plan: evidence.plan, call });
+    // A direct ledger fixture exercises history attribution. Zero settlement
+    // delay is confined to this fixture; deployed loop policy remains unchanged.
+    const built = makeObservations(evidence, claim, evidence.providerCallIntents[0]!, evidence.providerResults[0]!, items,
+      await readSpWriteDatabaseTime(database), 0);
+    expect(built.observations).toHaveLength(1);
+    const observation = built.observations[0]!;
+    expect(observation.outcome).toBe('conflict');
+    await runtime.appendObservation(observation);
+    const receipt = await reconcileSpWriteObservation(database, observation);
+    expect(receipt.changeAttribution).toBe('observation');
+    const [legacy] = await database.sql<{ id: string }[]>`insert into public.apply_batches
+      (org_id, profile_id, tag, opt_group, lever, note, status, exported_at, artifact_sha256,
+       exported_proposals, reversible_rows, unsupported_rows)
+      values (${orgId}, ${profileId}, 'synthetic-conflict-export', 'synthetic', 'bid-down', 'Synthetic conflict', 'staged',
+        ${observation.observedAt}::timestamptz - interval '1 hour', ${'d'.repeat(64)}, 1, 1, 0) returning id::text`;
+    await database.sql`insert into public.apply_rows
+      (org_id, profile_id, batch_id, entity_type, entity_id, field, old_value, new_value)
+      values (${orgId}, ${profileId}, ${legacy!.id}, 'keyword', 'kw-1', 'bid', '"0.9"'::jsonb, '"0.8"'::jsonb)`;
+    await reconcileEntityChangeLinks(database, { orgId, profileId });
+    const [linked] = await database.sql<{ batch: string }[]>`select apply_batch_id::text as batch
+      from public.entity_changes where id = ${receipt.entityChangeId}::bigint`;
+    expect(linked!.batch).toBe(legacy!.id);
+    const history = await listTimeline(database, { orgId, profileId });
+    expect(history.find((entry) => entry.id === `change:${receipt.entityChangeId}`)?.source).toBe('sync');
+    expect(history.find((entry) => entry.write?.execution.operation.planId === preview.plan.id)?.write?.phase).toBe('conflict');
   });
 
   it.each(['environment', 'profile', 'sync'] as const)('makes zero provider calls when %s authority closes after approval', async (kind) => {

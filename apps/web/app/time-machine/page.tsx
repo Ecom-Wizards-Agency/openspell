@@ -31,6 +31,7 @@ import { requireOrgRole } from '../../src/server/org-role';
 import { can } from '../../src/auth/roles';
 import { ActiveAccountSelector } from './active-account-selector';
 import { ReversionPanel } from './reversion-panel';
+import { inverseHistoryLabel, nativeMirrorLabel, nativeWriteLabel, operationHistoryHref, timelineCursor, timelineOperation } from '../../src/time-machine/timeline';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -64,21 +65,6 @@ const ENTITY_LABEL: Record<string, string> = {
 
 function isDate(value: string | undefined): value is string {
   return value !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(value);
-}
-
-function timelineCursor(query: Record<string, string | string[] | undefined>): {
-  observedAt: string;
-  id: string;
-} | null {
-  const observedAt = one(query['before_at']);
-  const id = one(query['before_id']);
-  if (observedAt === undefined || id === undefined) return null;
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(observedAt)) return null;
-  if (observedAt.startsWith('0000-')) return null;
-  if (!/^(?:change|apply):(?:\d+|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.test(id)) return null;
-  const parsed = new Date(observedAt);
-  const canonical = observedAt.includes('.') ? observedAt : observedAt.replace('Z', '.000Z');
-  return Number.isNaN(parsed.getTime()) || parsed.toISOString() !== canonical ? null : { observedAt, id };
 }
 
 function formatValue(value: TimelineEntry['oldValue']): string {
@@ -159,6 +145,7 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
     const from = isDate(requestedFrom) ? requestedFrom : null;
     const toParam = isDate(requestedTo) ? requestedTo : null;
     const cursor = timelineCursor(query);
+    const operation = timelineOperation(query);
     // The `to` bound is a whole day: extend an end date to the end of that day.
     const toBound = toParam === null ? null : `${toParam}T23:59:59.999Z`;
 
@@ -172,6 +159,7 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
       to: toBound,
       limit: TIMELINE_PAGE_SIZE + 1,
       before: cursor,
+      operation,
     });
     const hasOlder = timelineWindow.length > TIMELINE_PAGE_SIZE;
     const entries = timelineWindow.slice(0, TIMELINE_PAGE_SIZE);
@@ -193,7 +181,7 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
           });
     const days = groupByDay(entries);
     const hasAnyHistory = facets.entityTypes.length > 0 || facets.fields.length > 0;
-    const filtersActive = entityType !== null || field !== null || source !== null || from !== null || toParam !== null;
+    const filtersActive = entityType !== null || field !== null || source !== null || from !== null || toParam !== null || operation !== null;
 
     const base = (extra: Record<string, string>): string => {
       const params = new URLSearchParams({ profile: profile.id, ...extra });
@@ -207,8 +195,9 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
       if (from !== null) params.set('from', from);
       if (toParam !== null) params.set('to', toParam);
       if (selectedBatch !== null) params.set('batch', selectedBatch.batchId);
+      if (operation !== null) { params.set('execution', operation.executionId); params.set('plan', operation.planId); }
       if (before !== null) {
-        params.set('before_at', before.observedAt.toISOString());
+        params.set('before_at', before.observedAtExact);
         params.set('before_id', before.id);
       }
       return `/time-machine?${params.toString()}`;
@@ -220,7 +209,7 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
           <div style={pageHeading}>
             <h1 style={heading}>Time Machine</h1>
             <p style={muted}>
-              Exported batches, synchronized evidence, and external account changes. Reviewing this
+              Amazon changes, reversions, exported batches, and synchronized evidence. Reviewing this
               history does not change Amazon.
             </p>
           </div>
@@ -298,7 +287,7 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
               <select name="source" defaultValue={source ?? ''} style={control} data-testid="filter-source">
                 <option value="">Any source</option>
                 <option value="sync">Sync detected</option>
-                <option value="apply">Operator export</option>
+                <option value="apply">OpenSpell changes and exports</option>
               </select>
             </label>
             <label style={fieldLabel}>
@@ -361,7 +350,7 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
                             style={entry.source === 'apply' ? applyBadge : syncBadge}
                             data-testid="entry-source"
                           >
-                            {entry.source === 'sync'
+                            {entry.write !== null ? nativeWriteLabel(entry.write) : entry.source === 'sync'
                               ? 'Sync'
                               : entry.batch?.sourceBatchId != null
                                 ? 'Reversion export'
@@ -384,6 +373,24 @@ export default async function TimeMachinePage({ searchParams }: { searchParams: 
                           <span aria-hidden="true" style={muted}>→</span>
                           <code style={newChip}>{formatValue(entry.newValue)}</code>
                           <span style={timeText}>{TIME_FORMAT.format(entry.observedAt)} UTC</span>
+                          {entry.write !== null ? (
+                            <>
+                              <span style={muted} data-testid="native-mirror-status">{nativeMirrorLabel(entry.write)}</span>
+                              {entry.write.observation?.outcome === 'conflict'
+                                && entry.write.observation.observed?.routeKey === 'sp.v3.keywords.update'
+                                && entry.write.observation.observed.values.bid ? (
+                                  <span style={muted}>Observed bid: {entry.write.observation.observed.values.bid.amount} {entry.write.observation.observed.values.bid.currencyCode}</span>
+                                ) : null}
+                              {entry.write.execution.original !== null ? (
+                                <a href={operationHistoryHref(profile.id, entry.write.execution.original)} style={gotoLink}>Original change</a>
+                              ) : null}
+                              {entry.write.inverseSummaries.map((inverse) => (
+                                <a key={inverse.operation.planId} href={operationHistoryHref(profile.id, inverse.operation)} style={gotoLink}>
+                                  {inverseHistoryLabel(inverse)}
+                                </a>
+                              ))}
+                            </>
+                          ) : null}
                           {entry.batch !== null && entry.batch.note ? (
                             <span style={muted} title={entry.batch.tag}>
                               · {entry.batch.note}

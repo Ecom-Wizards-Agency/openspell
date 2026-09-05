@@ -240,9 +240,16 @@ shared dispatch verifier. Unresolved ambiguous rows remain ineligible.
 
 The next source slice owns `packages/shared/src/time-machine-writes.ts` and its test/export,
 new `packages/db/src/queries/time-machine-writes.ts`, the existing timeline query/tests,
-and server-only Time Machine page/cursor/data wiring. Claude retains client preview/confirmation
+and server-only Time Machine page/cursor/data wiring in `apps/web/app/time-machine/page.tsx` and `apps/web/src/time-machine/timeline.ts` plus tests. Claude retains client preview/confirmation
 presentation and frontend design. No worker registration or new database migration is required
 for this read projection: the exact mirror receipts are already in `20260905030000`.
+
+Rendered-history verification extends the existing `apps/web/e2e/run.ts` fixture and
+`apps/web/e2e/time-machine.spec.ts`, using `packages/db/src/testing/sp-write-synthetic-execution.ts`
+for synthetic provider facts through the real ledger and mirror RPC. Keep that fixture usable
+outside Vitest. A narrow copy correction in `apps/web/app/time-machine/reversion-panel.tsx`
+describes the export's effect without claiming the entire platform cannot write to Amazon;
+client layout and new confirmation controls remain with Claude.
 
 Project approved, source-backed keyword-bid operations from immutable plans/receipts and the
 existing public accounting/observation tables. A forward plan must carry its persisted preview
@@ -254,7 +261,7 @@ pagination cursors. Do not move an existing entry between pages when its status 
 Read legacy and native candidates inside one read-only repeatable-read transaction, apply the
 same filters and bounded keyset limit to each, and merge by the exact timestamp/ID ordering.
 Suppress a plain export row only when its exact apply-row provenance is represented by an
-approved native entry. Suppress a sync diff only when its exact mirror receipt attributes it to
+approved native entry. The legacy export-reversion batch chooser also excludes that native source batch; its operation uses the API inverse contract, whose client preview/confirmation remains with Claude. Suppress a sync diff only when its exact mirror receipt attributes it to
 that native write. A native conflict read remains a separate sync event even if a legacy linker
 later attaches an export batch. No timestamp/value heuristics establish native attribution.
 

@@ -17,9 +17,12 @@ export const TimeMachineInstant = z.iso.datetime()
 export type TimeMachineInstant = z.infer<typeof TimeMachineInstant>;
 
 const uuidPattern = '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}';
-export const TimeMachineEntryId = z.string().regex(new RegExp(
-  `^(?:change:[1-9][0-9]*|apply:${uuidPattern}|write:${uuidPattern}:${uuidPattern}:keyword\\.bid)$`, 'i',
-)).transform((value) => value.toLowerCase());
+const entryPatterns = [
+  'change:[1-9][0-9]*', 'apply:' + uuidPattern,
+  ['write:', uuidPattern, ':', uuidPattern, ':keyword\\.bid'].join(''),
+];
+export const TimeMachineEntryId = z.string().regex(new RegExp('^(?:' + entryPatterns.join('|') + ')$', 'i'))
+  .transform((value) => value.toLowerCase());
 export const TimeMachineCursor = z.object({ observedAt: TimeMachineInstant, id: TimeMachineEntryId }).strict();
 export type TimeMachineCursor = z.infer<typeof TimeMachineCursor>;
 

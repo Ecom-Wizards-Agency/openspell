@@ -48,14 +48,36 @@ deployment, credential store or Amazon account was accessed.
 | Native mirror persistence and inert composition | Migration `20260905030000_sp_write_mirror_observations.sql`, `packages/db/src/queries/sp-write-mirror.ts` and `apps/worker/src/sp-write-outbox/composition.ts`. Atomically records an observation receipt, updates the keyword bid when current evidence permits it, and links the exact entity-change ID. Conflicting observations retain separate attribution. | Local tests prove concurrent replay creates one diff, receipt-storage failure rolls back the bid/diff together, and a forward/inverse pair creates two distinct diffs and restores the starting bid. Current-schema parity, RLS, immutability and worker-only RPC permissions passed alongside 53 persistence/blast checks (55 tests total). Time Machine projection and ordinary sync integration are recorded below. |
 | Ordinary keyword-sync fencing | `queries/keyword-mirror.ts` captures database time before provider listing, serializes mirror promotion with native observations, and atomically writes actual keyword diffs. The optional worker-store capability counts stale bids and tombstones, preserves newer full-entity evidence, and passes counts into the durable sync-job result. | Four PostgreSQL tests passed for stale values, tombstones/resurrection, precision/scope refusal and rollback on lost diff rows. Two real-worker tests passed for a concurrent native observation and for a write that completes during an ordinary listing. Worker typecheck and targeted lint passed. The capability remains unconfigured in runtime entrypoints. The broader regressions passed **122 worker tests in three files** and **76 DB tests in four files**, including the existing ordinary-sync cases and persistence boundaries. |
 | Mirror status contract | `SpWriteOperationDetail` now requires separate mirror counts, including observations still awaiting a receipt. The observation total must match the verified provider ledger. | Eleven shared tests and shared typecheck passed before the status-query implementation. The query now verifies receipts only for observations in the ledger snapshot. Three worker tests, 12 DB tests and four HTTP tests passed; DB/web typechecks and targeted lint passed. The HTTP fixture truthfully reports one pending mirror receipt despite its synthetic direct mirror edit. |
-| Native Time Machine read plan | The application architecture now declares the exact projection and server wiring scope. Ordering uses immutable approval time and preserves timestamp microseconds; legacy/native candidates share one repeatable-read snapshot. Only exact provenance or attributed mirror IDs suppress duplicate entries. | The shared `time-machine-writes` contract is now defined, with exact cursors and actor/action/observation/inverse binding. Fourteen focused shared tests, shared typecheck and targeted lint passed. The feed now merges legacy and native entries within one read snapshot and returns exact original/inverse metadata. Eleven existing DB timeline tests and four real-worker history tests passed, including one-row pagination, stable ordering during execution, exact diff suppression, a refused inverse, and preservation of a conflict observation after legacy linking. Server labels/navigation/cursor wiring is implemented; its final verification is in progress. Conflict observations must remain visible even if a legacy export linker later attaches a batch; the MCP actor is added only with WP-217 delegated receipts. |
+| Native Time Machine read plan | The application architecture now declares the exact projection and server wiring scope. Ordering uses immutable approval time and preserves timestamp microseconds; legacy/native candidates share one repeatable-read snapshot. Only exact provenance or attributed mirror IDs suppress duplicate entries. | The shared `time-machine-writes` contract is now defined, with exact cursors and actor/action/observation/inverse binding. Fourteen focused shared tests, shared typecheck and targeted lint passed. The feed now merges legacy and native entries within one read snapshot and returns exact original/inverse metadata. Eleven existing DB timeline tests and four real-worker history tests passed, including one-row pagination, stable ordering during execution, exact diff suppression, a refused inverse, and preservation of a conflict observation after legacy linking. Server labels/navigation/cursor wiring and all 10 production-build browser tests have passed. Independent review corrections and their regression evidence are recorded below. Conflict observations must remain visible even if a legacy export linker later attaches a batch; the MCP actor is added only with WP-217 delegated receipts. |
 
-The main replan now contains a current Claude handoff at committed checkpoint `7c4458b`,
-with the uncommitted native-history slice clearly identified. It documents the four UI HTTP
+The main replan now contains a current Claude handoff, including the locally verified
+native-history slice. It documents the four UI HTTP
 contracts, separate provider/mirror states, exact history links, frontend ownership and the
 four additional migration dependencies. It makes no claim that MCP or production activation
 is finished. Native-history server verification has passed five web helper tests, web/worker
-typechecks and targeted lint; 64 DB regression tests also passed. Rendered-page checks remain.
+typechecks and targeted lint; 64 DB regression tests also passed.
+
+Rendered-history verification passed **all 10 Time Machine browser tests** against a
+production Next build and the disposable database. The new fixture records synthetic forward
+and inverse results through the real ledger and native mirror RPC; the browser follows both
+operation links and verifies their exact values and observed states. The legacy export path,
+cursor handling, filters, bounded response and tenant isolation still pass. The captured page
+was visually inspected. This does not exercise Amazon or the unbuilt confirmation client.
+The fixture now uses Node assertions so both Vitest and the browser runner can use it; its
+older direct synthetic mirror mode remains explicitly distinct from native reconciliation.
+The affected existing callers passed **63 DB tests and eight HTTP/helper tests**. A cursor
+fixture was corrected to use an actual bigint change ID, and export-panel copy now describes
+that export's effect instead of claiming the whole platform cannot write to Amazon.
+
+Independent query review reproduced a history-loss bug: legacy linking could hide an ordinary
+sync event by attaching it to a native source batch, without a native mirror receipt. The
+committed regression failed with four visible rows instead of five before the query fix.
+Native source batches now preserve such sync evidence; only the exact write-attributed receipt
+suppresses its diff. **All 12 timeline DB tests passed** afterward. A smaller blank-field
+normalization inconsistency was also corrected and verified in the real-worker history test.
+The reviewer additionally verified tenant/profile isolation and seven-input/seven-output
+one-row pagination with distinct microsecond timestamps. Review source and reproduction
+remain in the gitignored decision-trail evidence.
 
 Latest complete database verification: **478 tests in 48 files passed** with `--maxWorkers=1`.
 After HTTP integration and JSON transport fixes, the affected database suites also passed
@@ -70,10 +92,10 @@ These are local source checks, not hosted or live Amazon proof. The WP-188 raw-p
 still runs against its preceding admission contract; new application/HTTP suites exercise current
 migrations and source-backed admission. No lifecycle or custody assertion was removed.
 
-Remaining: native Time Machine server verification and frontend handoff, delegated MCP policy/contracts/persistence/transport, proposal revision
+Remaining: Claude's native preview/confirmation client, delegated MCP policy/contracts/persistence/transport, proposal revision
 and completeness handoff, immutable release/activation artifacts, and scoped live proof. The
-current operation links are backend evidence, not a claim that MCP or the Time Machine screen is
-finished. Worker registration and production write enablement have not occurred.
+current history screen is locally tested, not a claim that MCP or the new confirmation client
+is finished. Worker registration and production write enablement have not occurred.
 
 The four new WP-214 migrations are additional source dependencies. They are not silently added
 to Claude's original D1 operational window. Deployment must account for them before exposing the

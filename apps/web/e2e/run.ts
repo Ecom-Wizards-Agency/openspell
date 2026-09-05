@@ -81,6 +81,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
+import { seedSyntheticWriteHistory } from '@wizard-ads/db/testing/sp-write';
 import { createGotoLink, recordEntityChanges } from '@wizard-ads/db';
 import { ROADMAP_ITEMS, seedRoadmap } from '../../../supabase/seed/seed-roadmap.js';
 import { parseE2EArgs } from '../src/e2e-args.js';
@@ -397,6 +398,7 @@ async function tagsGoto(
 
     // WP-30: the org-A-only change the Time Machine cross-tenant test looks for.
     await seedTimeMachine(database, orgA, profileA);
+    const nativeHistory = await seedSyntheticWriteHistory(database, { orgId: orgA, userId: USER_A }, profileA);
     const [profileBRow] = await database.sql<{ id: string }[]>`
       select id from public.ad_profiles where org_id = ${orgB} limit 1
     `;
@@ -450,6 +452,7 @@ async function tagsGoto(
         WIZARD_ADS_E2E_REC_RUN: recommendations.runId,
         WIZARD_ADS_E2E_REC_PROPOSALS: String(recommendations.proposals),
         WIZARD_ADS_E2E_REC_SEARCH_TERMS: String(recommendations.searchTerms),
+        WIZARD_ADS_E2E_NATIVE_HISTORY: JSON.stringify(nativeHistory),
       },
     );
   } finally {
