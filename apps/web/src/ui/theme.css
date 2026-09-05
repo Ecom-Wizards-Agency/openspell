@@ -368,11 +368,10 @@ button {
 
 /* ----------------------------------------------------------------- frame -- */
 
-.wa-frame {
-  display: block;
-  min-height: 100dvh;
-}
-
+/* The sidebar is a fixed column of three flex items: brand, the scrolling
+   navigation, and the pinned utility footer. Only the middle one may grow or
+   shrink, and only it scrolls; the column itself clips so a tall nav can never
+   push the footer off screen or spill under it. */
 .wa-sidebar {
   background: var(--wa-sidebar-bg);
   border-right: 1px solid var(--wa-border);
@@ -381,7 +380,7 @@ button {
   flex-direction: column;
   gap: 0.25rem;
   left: 0;
-  overflow-y: auto;
+  overflow: hidden;
   padding: 0.75rem 0.625rem 1.25rem;
   position: fixed;
   top: 0;
@@ -394,6 +393,7 @@ button {
   border-radius: var(--wa-radius);
   color: var(--wa-text);
   display: flex;
+  flex: none;
   font-size: var(--wa-fs-md);
   font-weight: 650;
   gap: 0.5rem;
@@ -425,10 +425,18 @@ button {
   border-radius: var(--wa-radius);
 }
 
+/* `min-height: 0` lets the flex algorithm shrink the nav below its content;
+   `overflow-y: auto` is what turns that shrink into a scroll instead of a
+   spill. The stable gutter reserves the scrollbar's width whether or not it is
+   showing, so labels do not shift when a group opens. */
 .wa-sidebar-main {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .wa-navlist--direct {
@@ -505,31 +513,13 @@ button {
   font-weight: 600;
 }
 
-.wa-navlink-dot {
-  background: currentColor;
-  border-radius: 999px;
-  flex: none;
-  height: 0.3125rem;
-  opacity: 0.4;
-  width: 0.3125rem;
-}
-
-.wa-navlink[aria-current='page'] .wa-navlink-dot {
-  opacity: 1;
-}
-
-.wa-sidebar-foot,
 .wa-sidebar-utilities {
   border-top: 1px solid var(--wa-border);
   color: var(--wa-text-muted);
+  flex: none;
   font-size: var(--wa-fs-xs);
   margin-top: auto;
-  padding: 0.75rem 0.5rem 0;
-}
-
-.wa-sidebar-utilities {
-  padding-left: 0;
-  padding-right: 0;
+  padding: 0.75rem 0 0;
 }
 
 .wa-sidebar-utilities .wa-navlist {
@@ -668,12 +658,29 @@ button {
     width: 100%;
   }
 
-  .wa-sidebar-foot {
-    display: none;
+  /* Stacked at narrow widths, the nav is in normal flow: it neither grows nor
+     scrolls on its own, and the utilities become one wrapped row rather than a
+     pinned footer. The collapse control has no rail to collapse to here. */
+  .wa-sidebar-main {
+    flex: none;
+    overflow: visible;
   }
 
-  .wa-navgroup {
-    flex: 1 1 10rem;
+  .wa-sidebar-utilities {
+    border-top: 0;
+    flex: 1 1 100%;
+    margin-top: 0;
+    padding-top: 0;
+  }
+
+  .wa-sidebar-utilities .wa-navlist {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+
+  .wa-nav-collapse {
+    display: none;
   }
 
   .wa-topbar,
@@ -1749,8 +1756,9 @@ button {
     display: none;
   }
 
+  /* Every group is forced open by the component while collapsed, so the lists
+     are rendered without any override here. */
   :root[data-nav-collapsed='true'] .wa-navlist {
-    display: flex !important;
     margin-bottom: 0.25rem;
   }
 
@@ -1762,7 +1770,6 @@ button {
   :root[data-nav-collapsed='true'] .wa-navlink-label,
   :root[data-nav-collapsed='true'] .wa-navlink-tag,
   :root[data-nav-collapsed='true'] .wa-brand-label,
-  :root[data-nav-collapsed='true'] .wa-sidebar-foot,
   :root[data-nav-collapsed='true'] .wa-nav-collapse .wa-navlink-label {
     display: none;
   }
