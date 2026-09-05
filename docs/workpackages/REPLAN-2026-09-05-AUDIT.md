@@ -124,6 +124,14 @@ prove an exact decimal JSON round trip. Four representative serializer boundarie
 local probe; the edit/export lifecycle is not yet implemented. One additional source migration
 is planned beyond the four committed WP-214 migrations, outside Claude's original window.
 
+The shared proposal revision contract now defines normalized decimal inputs, explicit content
+revision references and immutable edit receipts. The existing preview evidence accepts an
+optional frozen proposal revision ID without changing older evidence bytes. All 118 shared tests
+passed, including 10 focused tests; shared typecheck and targeted lint also passed. The first typecheck caught an optional
+array element in the new test fixture; it was fixed and the checks rerun successfully. Persistence,
+edit/decision/export integration and the planned additional migration are still unimplemented.
+No fifth source migration was created by this contract slice.
+
 The main replan now contains a current Claude handoff, including the locally verified
 native-history slice. It documents the four UI HTTP
 contracts, separate provider/mirror states, exact history links, frontend ownership and the

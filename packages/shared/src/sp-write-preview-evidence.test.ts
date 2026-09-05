@@ -59,4 +59,19 @@ describe('frozen SP preview evidence', () => {
       ...evidence.provenance, artifactText: evidence.provenance.artifactText.replace('0.7', '0.6'),
     } })).not.toBe(serializeSpWritePreviewProvenance(evidence));
   });
+
+  it('binds an edited proposal revision without changing pre-revision evidence bytes', () => {
+    const original = fixture();
+    const originalBytes = serializeSpWritePreviewProvenance(original);
+    expect(serializeSpWritePreviewProvenance(JSON.parse(JSON.stringify(original)))).toBe(originalBytes);
+    expect(original.provenance.rows[0]).not.toHaveProperty('proposalRevisionId');
+    const edited = SpWritePreviewEvidence.parse({ ...original, provenance: {
+      ...original.provenance, rows: [{ ...original.provenance.rows[0], proposalRevisionId: id('9') }],
+    } });
+    expect(serializeSpWritePreviewProvenance(edited)).not.toBe(originalBytes);
+    expect(serializeSpWritePreviewGuardrails(edited)).toBe(serializeSpWritePreviewGuardrails(original));
+    expect(serializeSpWritePreviewProvenance({ ...edited, provenance: {
+      ...edited.provenance, rows: [{ ...edited.provenance.rows[0]!, proposalRevisionId: id('10') }],
+    } })).not.toBe(serializeSpWritePreviewProvenance(edited));
+  });
 });

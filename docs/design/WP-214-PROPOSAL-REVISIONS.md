@@ -77,6 +77,9 @@ another worker/orchestrator and separate native-only download semantics.
   then follows the existing mirror lock order. Explicit-ID export refuses missing, nonaccepted
   or stale rows as a whole. It never exports a silently reduced subset. Freeze revision
   references with the batch's existing audit/provenance in the same transaction.
+- Store the selected revision identity on the exact `apply_rows` source row as well. Preview
+  evidence includes that identity in its provenance preimage for edited proposals; older
+  evidence omits the additive field and keeps its original fingerprint bytes.
 - Exported, applied and superseded proposals cannot be edited. Freeze source fields and the
   selected revision once exported. An edit before export invalidates the old reviewed
   selection; an attempted edit afterward cannot change any existing preview/approval/history.
@@ -100,14 +103,17 @@ decimal JSON round trip, not a claim that binary floating-point arithmetic is ex
 ## Exact file scope and implementation order
 
 1. Shared: new `packages/shared/src/recommendation-revisions.ts`, its test and explicit
-   package export. Land and verify request, receipt and revision-reference contracts first.
+   package export; additive provenance identity in `sp-write-preview-evidence.ts` and its
+   tests. Land and verify request, receipt and revision-reference contracts first.
 2. Persistence: new `20260905040000_recommendation_proposal_revisions.sql` and typed schema
-   additions in `packages/db/src/schema/analysis.ts`; new
+   additions in `packages/db/src/schema/analysis.ts` and `schema/apply.ts`; new
    `packages/db/src/queries/recommendation-revisions.ts` and PostgreSQL tests. Reuse the
    existing authenticated actor helper. Add the capability to `packages/db/src/index.ts`.
 3. Integrate effective values/revision checks in `queries/recommendations.ts`, its focused
    tests and the existing export test. Extend `queries/apply-state.ts` only for exact monetary
    scalar text if needed; do not change unrelated state equality or mirror ownership.
+   Extend `queries/sp-write-plan-builder.ts` and its tests to retain and verify the frozen
+   revision identity in preview provenance.
 4. Server: new `apps/web/app/api/recommendations/revise/route.ts` and
    `apps/web/src/recommendations/revisions-http.test.ts`; existing decide/export routes and
    `src/recs-route.test.ts`. Narrow changes in `src/recommendations/export.ts` and its tests

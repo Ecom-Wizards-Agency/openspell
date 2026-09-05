@@ -53,6 +53,8 @@ export const SpWritePreviewEvidence = z.object({
       applyRowId: Uuid,
       recommendationId: Uuid,
       runId: Uuid,
+      /** Present only for an operator revision frozen by the source export. */
+      proposalRevisionId: Uuid.optional(),
     }).strict()).min(1).max(500),
   }).strict(),
 }).strict().superRefine((value, context) => {
