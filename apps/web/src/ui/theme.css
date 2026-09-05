@@ -660,7 +660,8 @@ button {
 
   /* Stacked at narrow widths, the nav is in normal flow: it neither grows nor
      scrolls on its own, and the utilities become one wrapped row rather than a
-     pinned footer. The collapse control has no rail to collapse to here. */
+     pinned footer. The collapse control is hidden next to its base rule below,
+     where the cascade lets the narrow rule win. */
   .wa-sidebar-main {
     flex: none;
     overflow: visible;
@@ -677,10 +678,6 @@ button {
     flex-direction: row;
     flex-wrap: wrap;
     gap: 0.25rem;
-  }
-
-  .wa-nav-collapse {
-    display: none;
   }
 
   .wa-topbar,
@@ -1742,6 +1739,16 @@ button {
   height: 1rem;
   transition: transform 0.15s ease;
   width: 1rem;
+}
+
+/* Below the narrow breakpoint there is no rail to collapse to, so the control
+   is hidden. This block sits after the base `.wa-nav-collapse` rule on purpose:
+   the two share a specificity, and a hide rule placed earlier in the sheet
+   (inside the layout's narrow block) would lose to the base `display: flex`. */
+@media (max-width: 60rem) {
+  .wa-nav-collapse {
+    display: none;
+  }
 }
 
 /* The icon rail. Groups collapse to a single strip of link icons; the labels,

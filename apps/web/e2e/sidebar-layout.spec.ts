@@ -28,15 +28,20 @@ interface Box {
 }
 
 /**
- * 720 tall is the height at which the fully open nav is taller than its box, so
- * that case demands a real scroll. At 1000 tall the same nav currently fits
- * (measured 730px of box against less content), so that case demands the same
- * frame rules and hit tests without pretending there is overflow to scroll.
+ * 720 and 860 tall are heights at which the fully open nav is taller than its
+ * box (measured 33px of overflow at 860), so those cases demand a real scroll.
+ * At 1000 tall the same nav currently fits (measured 730px of box against less
+ * content), so that case demands the same frame rules and hit tests without
+ * pretending there is overflow to scroll.
  */
 const VIEWPORTS = [
   { width: 1280, height: 720, mustScroll: true },
+  { width: 1440, height: 860, mustScroll: true },
   { width: 1440, height: 1000, mustScroll: false },
 ] as const;
+
+/** Below the 60rem breakpoint the sidebar stacks above the content. */
+const NARROW_VIEWPORT = { width: 800, height: 900 } as const;
 
 const CLOSED_KEY = 'openspell.nav.closed.v2';
 
@@ -195,4 +200,37 @@ test('the icon rail shows a visible link for every screen and leaves the remembe
 
   const closedAfter = await page.evaluate((key) => window.localStorage.getItem(key), CLOSED_KEY);
   expect(closedAfter).toBe(closedBefore);
+});
+
+test('at a narrow width the sidebar stacks, the nav is in normal flow and the collapse control is hidden', async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: NARROW_VIEWPORT.width, height: NARROW_VIEWPORT.height });
+  await openDashboard(page);
+
+  // The control is in the DOM (the component does not know the width) but must
+  // not render: there is no rail to collapse to below the breakpoint. Computed
+  // style, not source order, is what the operator sees; a hide rule that loses
+  // the cascade to the base `display: flex` passes source inspection and fails here.
+  const collapse = page.getByTestId('nav-collapse');
+  await expect(collapse).toHaveCount(1);
+  await expect(collapse).toBeHidden();
+
+  const computed = await page.evaluate(() => {
+    const aside = document.querySelector('aside.wa-sidebar');
+    const nav = document.querySelector('nav.wa-sidebar-main');
+    const control = document.querySelector('.wa-nav-collapse');
+    if (!(aside instanceof HTMLElement) || !(nav instanceof HTMLElement) || !(control instanceof HTMLElement)) {
+      throw new Error('sidebar frame missing');
+    }
+    return {
+      asidePosition: getComputedStyle(aside).position,
+      navFlex: getComputedStyle(nav).flex,
+      navOverflowY: getComputedStyle(nav).overflowY,
+      collapseDisplay: getComputedStyle(control).display,
+    };
+  });
+  expect(computed.collapseDisplay).toBe('none');
+  expect(computed.asidePosition).toBe('static');
+  expect(computed.navOverflowY).toBe('visible');
+  expect(computed.navFlex).toBe('0 0 auto');
 });
