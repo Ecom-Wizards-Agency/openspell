@@ -21,7 +21,8 @@ WP-216 is a separate preview-readiness gate.
 - `apps/worker/src/store.hosted-prefix.test.ts` (new integration test);
 - `docs/HANDOVER.md` sections "Hosted migration gates" and "Recommended continuation order";
 - `docs/STATUS.md` rows for WP-197 to WP-207 and the "Release gates" list;
-- `.github/workflows/trusted-kernel-proof.yml` (disable on push, keep on manual dispatch);
+- the trusted kernel-proof workflow's enabled state in repository Actions settings (the file is
+  not edited: the WP-200 boundary test forbids a `workflow_dispatch` trigger);
 - this brief.
 
 No migration file is edited. No file under `tools/hosted-migration-*` is edited or deleted.
@@ -107,7 +108,9 @@ No migration file is edited. No file under `tools/hosted-migration-*` is edited 
    selected path.
 2. Record WP-201 to WP-205 as parked in `docs/STATUS.md`; leave the
    `wp-201-disposable-preparation` branch and its worktree untouched.
-3. Change `.github/workflows/trusted-kernel-proof.yml` to run only on `workflow_dispatch`.
+3. Disable the trusted kernel-proof workflow in the repository's Actions settings (done 2026-09-05
+   with `gh workflow disable`). Do not edit the workflow file; the WP-200 boundary test pins its
+   `workflow_run`-only trigger and forbids `workflow_dispatch`.
 
 ## Authorization
 

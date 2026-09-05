@@ -406,8 +406,10 @@ Selected path for the hosted schema (decision D1): the **rehearsed, scoped atten
 window, with `docs/deploy/hosted-migration-preflight-checks.sql` as its read-only pre/postflight and
 `apps/worker/src/store.hosted-prefix.test.ts` as its disposable-database rehearsal. The WP-201 to
 WP-205 private-supervisor program is parked; the merged `tools/hosted-migration-*` packages remain
-as optional verification only, and the 230-minute trusted kernel-proof workflow now runs on manual
-dispatch only.
+as optional verification only, and the 230-minute trusted kernel-proof workflow is disabled in the
+repository's Actions settings. Its file is unchanged so the WP-200 boundary test, which forbids a
+manual-dispatch trigger for the privileged proof, still holds; re-enable it there if the program
+is resumed.
 
 1. WP-207 window (operator attended, one scoped authorization): hosted ledger from 41 to 46
    versions, postflight recorded here and in `docs/STATUS.md`. Until postflight passes, nothing built
