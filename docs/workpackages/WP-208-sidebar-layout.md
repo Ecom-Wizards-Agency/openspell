@@ -87,8 +87,12 @@ The fix makes the column three flex items with exactly one flexible, scrolling m
 marker is the left border on `.wa-navlink[aria-current='page']` and is unchanged. `.wa-frame` and
 every `.wa-sidebar-foot` selector were also dead and are gone. The narrow block (`max-width:
 60rem`) now resets `.wa-sidebar-main { flex: none; overflow: visible }`, styles
-`.wa-sidebar-utilities` as one wrapped row, hides the no-op `.wa-nav-collapse`, and no longer
-inflates closed groups with `.wa-navgroup { flex: 1 1 10rem }`.
+`.wa-sidebar-utilities` as one wrapped row, and no longer inflates closed groups with
+`.wa-navgroup { flex: 1 1 10rem }`. The no-op `.wa-nav-collapse` is hidden by a second
+`max-width: 60rem` block placed directly after the base `.wa-nav-collapse` rule: the two share a
+specificity, so a hide rule inside the earlier layout block loses to the base `display: flex`.
+The first cut made exactly that mistake and passed source inspection; review caught it with a
+computed-style probe, and the spec now asserts the computed display at a narrow width.
 
 Rail: with `DEFAULT_CLOSED` covering all three workflow groups and the rail hiding group
 summaries, links inside a closed `<details>` were unreachable. `display: flex !important` on the
@@ -100,27 +104,33 @@ stored closed set; the CSS hack is deleted.
 ### Regression evidence for HANDOVER item 12
 
 `apps/web/e2e/sidebar-layout.spec.ts` runs in the `profile-context` process
-(`pnpm --filter @wizard-ads/web test:e2e:profile-context`). Three tests: 1280x720 and 1440x1000
-with every `details.wa-navgroup` forced open, plus the icon rail. Occlusion is asserted with
-`document.elementFromPoint` at each link's centre after `scrollIntoViewIfNeeded`, the footer's box
-must end inside the viewport, no link box may intersect the footer box, the nav is the only scroll
-container (the column's `scrollTop` cannot move), and at 720 the nav must actually scroll. The
-rail case collapses through the real control and requires a visible link for every `NAV_LINKS`
-entry with `localStorage` untouched.
+(`pnpm --filter @wizard-ads/web test:e2e:profile-context`). Five tests: 1280x720, 1440x860 and
+1440x1000 with every `details.wa-navgroup` forced open, the icon rail, and an 800x900 narrow case.
+Occlusion is asserted with `document.elementFromPoint` at each link's centre after
+`scrollIntoViewIfNeeded`, the footer's box must end inside the viewport, no link box may intersect
+the footer box, the nav is the only scroll container (the column's `scrollTop` cannot move), and
+at 720 and 860 the nav must actually scroll. The rail case collapses through the real control and
+requires a visible link for every `NAV_LINKS` entry with `localStorage` untouched. The narrow case
+asserts computed styles, not source order: `.wa-nav-collapse` is `display: none` and hidden, the
+column is `position: static`, and the nav is `flex: 0 0 auto` with `overflow-y: visible`.
 
 Proof the spec fails on the old behavior and passes on the branch, from the same runner command
 with `--grep sidebar-layout`:
 
-- unmodified `theme.css`, new component: 1280x720 fails at the `Sync status` hit test
-  (`elementFromPoint` returns the footer); 1440x1000 fails because `.wa-sidebar-main` computes
-  `overflow-y: visible`; rail passes.
-- unmodified `theme.css` and `sidebar.tsx`: both viewports fail as above and the rail case fails
-  because `/optimizer` has no visible link.
-- branch: all three pass; the whole `profile-context` suite is 6 of 6.
+- `origin/main` `theme.css`, new component: 1280x720 and 1440x860 fail at the `Sync status` hit
+  test (`elementFromPoint` returns the footer); 1440x1000 fails because `.wa-sidebar-main`
+  computes `overflow-y: visible`; the narrow case fails at `toBeHidden` on the collapse control;
+  rail passes.
+- unmodified `theme.css` and `sidebar.tsx`: the viewport cases fail as above and the rail case
+  fails because `/optimizer` has no visible link.
+- first-cut `theme.css` (hide rule inside the earlier narrow block): only the narrow case fails,
+  at `toBeHidden`, because the control computes `display: flex`.
+- branch: all five pass; the whole `profile-context` suite is 8 of 8.
 
 One measured fact worth carrying: at 1440x1000 with every group open the nav box is 730px and the
 current nav fits inside it, so the original bug did not reproduce at 1000px tall and the spec does
-not demand overflow there. 720 tall is the case that reproduces it.
+not demand overflow there. 720 tall reproduces it, and 860 tall overflows by 33px, which is why the
+860 case demands a scroll too.
 
 ### Not done here
 
@@ -128,5 +138,5 @@ not demand overflow there. 720 tall is the case that reproduces it.
 - `apps/web/src/e2e-suite-registry.ts` still lists `profile-context` as owning only
   `profile-context.spec.ts` with 3 tests; it is outside this package's scope and its unit test
   checks only internal consistency, so nothing breaks, but the owner should add
-  `sidebar-layout.spec.ts` and move the count to 6 (total 73).
+  `sidebar-layout.spec.ts` and move the count to 8 (total 75).
 - The mobile drawer under 960px and a pre-paint script for the rail state remain follow-ups.
