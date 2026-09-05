@@ -1,17 +1,81 @@
 /**
- * The cron drain route's gate.
+ * The cron drain route's gate and its scheduled-producer ownership.
  *
- * The only thing worth unit-testing here without a live queue is the door: an
- * unauthenticated caller must never be able to make this route spend Amazon
- * quota. So these check the three ways in are refused — no configured secret, no
- * header, wrong header — and that a correctly authenticated call gets *past* the
- * gate (proven by it failing later, on the missing database, rather than on
- * auth). The draining itself is exercised end to end by the worker's own suite.
+ * The door: an unauthenticated caller must never be able to make this route
+ * spend Amazon quota. So these check the three ways in are refused — no
+ * configured secret, no header, wrong header — and that a correctly
+ * authenticated call gets *past* the gate (proven by it failing later, on the
+ * missing database, rather than on auth).
+ *
+ * The scheduler: this route composes a weekly recommendation producer only for
+ * enabled lane intent, then gates it on fenced authority. The manual "Run
+ * preview" legacy fallback (WP-216) must not turn that producer on. Those
+ * cases swap the database handle and the tick for doubles that record what the
+ * route wired, while every other function stays real.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DbHandle } from '@wizard-ads/db';
+import type { SyncTickDeps, SyncTickResult } from '../../../../src/server/sync-tick';
+import { cronSyncJobTypesFromEnv } from '../../../../src/server/sync-tick';
 import { GET } from './route';
 
+const doubles = vi.hoisted(() => ({
+  authorityRows: [] as unknown[],
+  authoritySql: vi.fn(async () => [] as unknown[]),
+  begin: vi.fn(async () => { throw new Error('scheduled producer must not open a transaction here'); }),
+  closed: 0,
+  tickDeps: [] as SyncTickDeps[],
+}));
+
+vi.mock('@wizard-ads/db', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    createDb: (): DbHandle => ({
+      sql: Object.assign(
+        (...args: unknown[]) => doubles.authoritySql(...(args as [])),
+        { begin: doubles.begin },
+      ) as unknown as DbHandle['sql'],
+      close: async () => { doubles.closed += 1; },
+    } as unknown as DbHandle),
+  };
+});
+
+vi.mock('../../../../src/server/sync-tick', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    runSyncTick: async (deps: SyncTickDeps): Promise<SyncTickResult> => {
+      doubles.tickDeps.push(deps);
+      const enqueued = (await deps.recommendationSchedules?.()) ?? 0;
+      return {
+        ok: true, provisioned: 0, repaired: 0, integrationSchedules: 0, enqueued,
+        requeued: 0, drained: 0, released: 0, budgetHit: false, ms: 0,
+      };
+    },
+  };
+});
+
 const SECRET = ['synthetic', 'cron', 'secret', 'value'].join('-');
+const REVISION = 'e'.repeat(40);
+const LEGACY_AUTHORITY = { protocol: 'legacy', admission: 'legacy', epoch: 0, authorized_revision: null };
+const FENCED_BLOCKED_AUTHORITY = {
+  protocol: 'fenced', admission: 'blocked', epoch: 2, authorized_revision: REVISION,
+};
+const ENV_KEYS = [
+  'CRON_SECRET',
+  'DATABASE_URL',
+  'OPENSPELL_EVO_REPORT_LANE_READY',
+  'OPENSPELL_CREATIVE_SYNC_PRODUCER_READY',
+  'OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST',
+  'OPENSPELL_RECOMMENDATION_LANE_READY',
+  'OPENSPELL_RECOMMENDATION_LANE_REVISION',
+  'WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS',
+  'LWA_CLIENT_ID',
+  'LWA_CLIENT_SECRET',
+  'AMAZON_LWA_CLIENT_ID',
+  'AMAZON_LWA_CLIENT_SECRET',
+] as const;
 
 function request(authorization?: string): Request {
   const headers = new Headers();
@@ -19,51 +83,38 @@ function request(authorization?: string): Request {
   return new Request('https://example.test/api/cron/sync', { headers });
 }
 
+/** Everything a tick needs except the recommendation lane, which each case sets. */
+function configureWiredTick(): void {
+  process.env['CRON_SECRET'] = SECRET;
+  process.env['DATABASE_URL'] = 'postgres://synthetic:synthetic@127.0.0.1:1/synthetic';
+  process.env['WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS'] = '1';
+  // The Amazon client is constructed (never used) before the tick; it only
+  // needs the LWA identity to exist.
+  process.env['AMAZON_LWA_CLIENT_ID'] = ['synthetic', 'lwa', 'client', 'id'].join('-');
+  process.env['AMAZON_LWA_CLIENT_SECRET'] = ['synthetic', 'lwa', 'client', 'value'].join('-');
+}
+
 describe('GET /api/cron/sync', () => {
-  const savedSecret = process.env['CRON_SECRET'];
-  const savedDbUrl = process.env['DATABASE_URL'];
-  const savedReportLane = process.env['OPENSPELL_EVO_REPORT_LANE_READY'];
-  const savedCreativeProducer = process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
-  const savedCreativeAllowlist = process.env['OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST'];
-  const savedRecommendationLane = process.env['OPENSPELL_RECOMMENDATION_LANE_READY'];
-  const savedRecommendationRevision = process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'];
+  const saved = new Map<string, string | undefined>();
 
   beforeEach(() => {
-    delete process.env['CRON_SECRET'];
-    delete process.env['DATABASE_URL'];
-    delete process.env['OPENSPELL_EVO_REPORT_LANE_READY'];
-    delete process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
-    delete process.env['OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST'];
-    delete process.env['OPENSPELL_RECOMMENDATION_LANE_READY'];
-    delete process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'];
+    for (const key of ENV_KEYS) {
+      saved.set(key, process.env[key]);
+      delete process.env[key];
+    }
+    doubles.authorityRows = [];
+    doubles.authoritySql.mockReset();
+    doubles.authoritySql.mockImplementation(async () => doubles.authorityRows);
+    doubles.begin.mockClear();
+    doubles.closed = 0;
+    doubles.tickDeps = [];
   });
 
   afterEach(() => {
-    if (savedSecret === undefined) delete process.env['CRON_SECRET'];
-    else process.env['CRON_SECRET'] = savedSecret;
-    if (savedDbUrl === undefined) delete process.env['DATABASE_URL'];
-    else process.env['DATABASE_URL'] = savedDbUrl;
-    if (savedReportLane === undefined) delete process.env['OPENSPELL_EVO_REPORT_LANE_READY'];
-    else process.env['OPENSPELL_EVO_REPORT_LANE_READY'] = savedReportLane;
-    if (savedCreativeProducer === undefined) {
-      delete process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
-    } else {
-      process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'] = savedCreativeProducer;
-    }
-    if (savedCreativeAllowlist === undefined) {
-      delete process.env['OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST'];
-    } else {
-      process.env['OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST'] = savedCreativeAllowlist;
-    }
-    if (savedRecommendationLane === undefined) {
-      delete process.env['OPENSPELL_RECOMMENDATION_LANE_READY'];
-    } else {
-      process.env['OPENSPELL_RECOMMENDATION_LANE_READY'] = savedRecommendationLane;
-    }
-    if (savedRecommendationRevision === undefined) {
-      delete process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'];
-    } else {
-      process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'] = savedRecommendationRevision;
+    for (const key of ENV_KEYS) {
+      const value = saved.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
   });
 
@@ -136,6 +187,73 @@ describe('GET /api/cron/sync', () => {
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toEqual({
       error: 'cron queue ownership is not configured safely',
+    });
+  });
+
+  describe('recommendation ownership', () => {
+    it('keeps Vercel cron as the recommendations.run claimant in legacy mode and hands it off only with enabled intent', () => {
+      // Deployed job sets, not a producer flag, decide who claims manual previews.
+      expect(cronSyncJobTypesFromEnv({})).toContain('recommendations.run');
+      expect(cronSyncJobTypesFromEnv({ OPENSPELL_RECOMMENDATION_LANE_READY: '0' }))
+        .toContain('recommendations.run');
+      expect(cronSyncJobTypesFromEnv({
+        OPENSPELL_RECOMMENDATION_LANE_READY: '1',
+        OPENSPELL_RECOMMENDATION_LANE_REVISION: REVISION,
+      })).not.toContain('recommendations.run');
+    });
+
+    it('composes no scheduled recommendation producer from legacy manual readiness', async () => {
+      // The exact authority state under which the manual routes answer 202 legacy.
+      doubles.authorityRows = [LEGACY_AUTHORITY];
+      for (const ready of [undefined, '0']) {
+        doubles.tickDeps = [];
+        doubles.authoritySql.mockClear();
+        configureWiredTick();
+        if (ready === undefined) delete process.env['OPENSPELL_RECOMMENDATION_LANE_READY'];
+        else process.env['OPENSPELL_RECOMMENDATION_LANE_READY'] = ready;
+
+        const response = await GET(request(`Bearer ${SECRET}`));
+        expect(response.status).toBe(200);
+        await expect(response.json()).resolves.toMatchObject({ ok: true, enqueued: 0 });
+        expect(doubles.tickDeps).toHaveLength(1);
+        expect(doubles.tickDeps[0]?.recommendationSchedules).toBeUndefined();
+        // Not even consulted: the scheduler decision never reads legacy authority.
+        expect(doubles.authoritySql).not.toHaveBeenCalled();
+        expect(doubles.begin).not.toHaveBeenCalled();
+      }
+    });
+
+    it('composes the producer only for enabled intent and still gates it on fenced authority', async () => {
+      configureWiredTick();
+      process.env['OPENSPELL_RECOMMENDATION_LANE_READY'] = '1';
+      process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'] = REVISION;
+
+      for (const authority of [LEGACY_AUTHORITY, FENCED_BLOCKED_AUTHORITY]) {
+        doubles.authorityRows = [authority];
+        doubles.tickDeps = [];
+        doubles.authoritySql.mockClear();
+        const response = await GET(request(`Bearer ${SECRET}`));
+        expect(response.status).toBe(200);
+        await expect(response.json()).resolves.toMatchObject({ ok: true, enqueued: 0 });
+        expect(doubles.tickDeps[0]?.recommendationSchedules).toBeTypeOf('function');
+        // The hook ran, read fresh authority once, and refused before minting.
+        expect(doubles.authoritySql).toHaveBeenCalledTimes(1);
+        expect(doubles.begin).not.toHaveBeenCalled();
+      }
+    });
+
+    it('never composes the producer without the weekly-runs operator approval', async () => {
+      configureWiredTick();
+      delete process.env['WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS'];
+      process.env['OPENSPELL_RECOMMENDATION_LANE_READY'] = '1';
+      process.env['OPENSPELL_RECOMMENDATION_LANE_REVISION'] = REVISION;
+      doubles.authorityRows = [{
+        protocol: 'fenced', admission: 'scoped', epoch: 3, authorized_revision: REVISION,
+      }];
+      const response = await GET(request(`Bearer ${SECRET}`));
+      expect(response.status).toBe(200);
+      expect(doubles.tickDeps[0]?.recommendationSchedules).toBeUndefined();
+      expect(doubles.authoritySql).not.toHaveBeenCalled();
     });
   });
 });

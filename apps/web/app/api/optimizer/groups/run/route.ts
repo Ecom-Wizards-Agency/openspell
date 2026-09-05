@@ -24,10 +24,11 @@ export async function POST(request: Request): Promise<Response> {
     if (typeof body.groupId !== 'string' || body.groupId.length === 0) {
       throw new Error('groupId is required');
     }
+    // Same fresh legacy-or-fenced decision as the batch route; see there.
     const readiness = await resolveOptimizerPreviewReadiness(database);
     if (!readiness.ready) {
       return Response.json(
-        { error: OPTIMIZER_PREVIEW_UNAVAILABLE_MESSAGE },
+        { error: OPTIMIZER_PREVIEW_UNAVAILABLE_MESSAGE, reason: readiness.reason },
         { status: 503 },
       );
     }
@@ -37,7 +38,7 @@ export async function POST(request: Request): Promise<Response> {
       groupId: body.groupId,
       source: 'web',
     });
-    return Response.json(queued, { status: 202 });
+    return Response.json({ ...queued, mode: readiness.mode }, { status: 202 });
   } catch (error) {
     return errorResponse(error);
   } finally {
