@@ -180,6 +180,40 @@ Dispatch disablement must still permit reconciliation of already attempted work.
 
 ### Time Machine and inverse persistence slice
 
+The mirror slice owns `packages/shared/src/sp-write-mirror.ts` and its tests/export;
+`supabase/migrations/20260905030000_sp_write_mirror_observations.sql` (unused when declared);
+`packages/db/src/schema/{sp-writes,entities}.ts`; new `queries/sp-write-mirror.ts`,
+`queries/keyword-mirror.ts` and tests; and the explicit `sp-write-worker` export. Update the
+exact migration allowances, schema/tenant-fixture coverage and migration inventory assertions.
+
+An immutable mirror receipt binds one persisted observation to its exact operation/action,
+before/observed/after decimal values and optional entity-change ID. Record promotion, already
+current, superseded and missing outcomes separately. A provider conflict must not become an
+attributed OpenSpell mutation merely because its read was performed by the write worker.
+The mirror transaction compares current state and field observation time before promotion,
+records any actual diff and its exact link atomically, and preserves counts on retries.
+Only exact, attributed links may suppress a separate sync entry; unrelated history stays visible.
+
+Ordinary sync currently timestamps rows only after provider listing and updates them without a
+read-time fence (`apps/worker/src/worker.ts:689`, `store.ts:386,455`). An older listing can therefore
+overwrite a newer observed bid. Include a narrow sync integration in this source slice:
+`apps/worker/src/{store,worker}.ts` and their existing tests gain an optional keyword-mirror
+capability and a database read-start timestamp captured before listing. The capability stays
+unconfigured until activation. Add `keywords.bid_observed_at` for field freshness; do not advance
+the full-entity `synced_at` merely because a bid was observed. Generic mirror upserts preserve
+this field. The keyword merge capability owns bid diffs and compares read-start time under the
+same row lock as the native observation writer; it counts stale bid inputs instead of silently
+applying them. Keep older full listings from tombstoning a keyword with newer bid evidence.
+Protect established field evidence from unfenced bid updates, while leaving pre-activation rows
+compatible. Any trigger/context mechanism must be transaction-local and tested for cleanup.
+Declare the exact `queries/entities.ts` change for generic column preservation and its tests.
+
+Wire the inert worker loop to the real mirror writer in a new
+`apps/worker/src/sp-write-outbox/composition.ts` module and test it. No `main.ts` or deployment
+registration occurs here. Tests must race an older ordinary sync against native observation,
+verify no stale bid/tombstone wins, prove exact forward/inverse links and count every offered row.
+The earlier loop callback tests prove orchestration only, not this mirror implementation.
+
 Declare `packages/shared/src/time-machine-writes.ts` and its tests, a write projection query,
 `queries/time-machine.ts` and tests, and server data/cursor wiring. Native history references
 operation/action/change identities and reads ledger values/status; it adds no mutable status

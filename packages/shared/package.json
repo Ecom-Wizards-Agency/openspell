@@ -9,7 +9,8 @@
     ".": "./src/index.ts",
     "./sp-writes": "./src/sp-writes.ts",
     "./sp-write-application": "./src/sp-write-application.ts",
-    "./sp-write-preview-evidence": "./src/sp-write-preview-evidence.ts"
+    "./sp-write-preview-evidence": "./src/sp-write-preview-evidence.ts",
+    "./sp-write-mirror": "./src/sp-write-mirror.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
