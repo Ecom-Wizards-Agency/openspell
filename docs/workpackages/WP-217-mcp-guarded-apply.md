@@ -1,62 +1,130 @@
-# WP-217 — MCP-triggered guarded apply
+# WP-217 — MCP-triggered guarded apply under bounded delegation
 
-Owner: implementer. Starts only after WP-214 is live.
+Owner: implementer. Source design can follow WP-214's application contract; activation requires its
+proven direct Amazon write and inverse. Claude Fable 5.1 owns any key-management UI design.
 
-Depends on: decision D8 in `docs/workpackages/REPLAN-2026-09-05.md`. The operator's stated
-target on 2026-09-05 is the AdLabs model: UI changes go through one approval step; changes
-through the MCP do not, but every one is tracked in the logs. `AGENTS.md` currently says the MCP
-cannot approve its own change, so D8 is an `AGENTS.md` amendment that only the operator can make.
+The operator authorized the direction on 2026-09-05 and requested autonomous implementation.
+The implementer writes the policy amendment; the operator does not need to supply its prose or
+attend implementation. Concrete live key/profile/action bounds are still operator-issued.
+D1/WP-207 and D2/WP-216 remain with Claude.
 
 ## Objective
 
-Let an MCP client with an explicit write-scoped key preview and apply a bounded set of bid
-changes on allowlisted profiles through the same ledger, worker loop, counts, audit and
-resynchronization as WP-214, without a separate UI approval, and with a kill switch.
+Allow an operator-issued write key to apply bounded keyword bid changes through the same
+application service, durable ledger and worker as WP-214. MCP is an additional caller after
+the UI write flow works. A key delegates authority within recorded limits; no per-plan UI
+confirmation is required within that delegation. Read-only keys stay read-only. MCP never calls
+Amazon or grants itself more authority. A separate external HTTP integration API is out of scope.
 
-## Owned files
+## Verified starting point
 
-- `apps/mcp/src/**` (new tools `preview_bid_changes` and `apply_bid_changes`, key scope checks);
-- `supabase/migrations/<timestamp>_mcp_write_scope.sql` (new: `write` scope on `mcp.api_keys`
-  with per-key profile allowlist and per-call caps);
-- `AGENTS.md` "Amazon write contract" rule 1 and `apps/mcp` boundary row (text supplied by the
-  operator's D8 decision);
-- `skills/*/SKILL.md` "Required MCP tools" only if a skill gains a write tool;
-- `docs/STATUS.md` one row.
+- The SQL key-scope enum already contains `write`; `apps/mcp/src/keys.ts` issues/verifies read
+  keys only. The missing work is issuance, verified scope propagation, bounds and revocation.
+- `mcp.api_keys.created_by` is nullable and the verified key record does not carry its owner.
+  A write key needs an immutable key/user/org binding and current owner/admin membership.
+- SP approval currently supports `manual` and `bounded_live_test`, with a user UUID in
+  `approvedBy`. A delegated key is a distinct authorization source, not a forged manual click.
+- WP-214's builder accepts an existing `apply_batch`; direct bid proposals need real staging
+  rows and provenance before using that builder.
+- `apps/mcp/src/server.ts` currently runs a handler before audit insertion and can then report
+  "nothing was changed" on audit failure. This wrapper cannot admit writes safely.
 
-## Proposed `AGENTS.md` amendment (decision D8)
+## Owned files and delivery order
 
-Replace the sentence in "Amazon write contract" rule 1 that reads "`apps/mcp` may create
-drafts and trigger an already approved batch, but it never calls Amazon directly and cannot
-approve its own change in the same operation" with:
+1. Policy/contracts PR: the coordinated `AGENTS.md` sections below; additive delegated-approval
+   shapes in `packages/shared/src/sp-writes.ts` and their tests; exact MCP request schemas.
+   Preserve existing manual/bounded-test behavior and serialize shared-file edits.
+2. Persistence/application PR: a new additive migration for immutable key ownership, delegation
+   versions, caps, daily reservations and durable admission/audit identity; DB schema/query
+   modules and explicit exports. Name files in the implementation scope before editing.
+   Include the SP approval/persistence facade and worker outbox checks needed to recognize a
+   delegated receipt. Do not edit an already-applied migration.
+3. Transport PR: `apps/mcp/src/**`, `apps/web/app/api/mcp-keys/**` for operator-issued keys,
+   and the shared server/application write helpers. MCP reuses the same plan/execution service
+   and status contract as WP-214; its delegated admission has separate authorization. Existing
+   UI writes retain human approval. Key-management UI client design is Claude-owned.
+4. Activation PR: worker/config registration and declaration-based blast tests; a scoped deploy
+   runbook; relevant README/key guidance and this brief's close-out evidence. The current
+   HANDOVER/STATUS owner integrates program updates. Skill docs change only where a tool is
+   actually added; read-only analytical skills do not gain implicit mutation permission.
 
-> `apps/mcp` never calls Amazon directly. A key without the `write` scope can only read and
-> preview. A key with the `write` scope, a profile allowlist and per-call caps may record a plan
-> and start its execution in one operation on behalf of the key's owning user; the key is the
-> recorded actor, the same ledger, worker execution, counts, resynchronization and audit apply,
-> and the environment kill switch can disable both tools without a deploy. Cadences and
-> unattended batches still require their own explicitly enabled configuration.
+## Coordinated AGENTS.md amendment
 
-Also change the `apps/mcp` row of the package table from "cannot self-approve" to "writes
-only through write-scoped keys under the guarded contract". The operator applies this wording
-or supplies their own before the package starts.
+Land the policy change with the authorization contracts before dependent consumers. Preserve
+worker-only execution, exact-plan evidence and all existing default-off behavior. Amend every
+relevant rule together, rather than just the MCP table row:
+
+- In "What this is", rule 2: each write must bind either a human-approved immutable batch or
+  an active, separately operator-issued delegation for the exact profile and action class.
+  UI writes retain the exact-count confirmation. Delegated MCP writes bind the immutable
+  preview, key and owning user to a versioned authorization receipt before execution.
+- The `apps/mcp` table row: authenticated read/preview and bounded delegated admission only;
+  no direct Amazon calls and no issuance or enlargement of its own delegation.
+- Amazon write rule 1: the web server and MCP validate and enqueue through the application service;
+  the worker alone calls Amazon. MCP callers with a valid operator-issued write key
+  may admit a previously recorded plan within that delegation without a separate UI approval.
+- Rule 4: exact human confirmation remains the UI path. The delegated path checks the stored
+  plan fingerprint against key ownership, profile/action scope, expiry, current membership,
+  per-call limits and atomic daily capacity, and records the receipt before enqueueing.
+- Rule 8: a delegated inverse is another separately recorded plan checked against current
+  state and the same active delegation, caps and audit; it is not an unlimited rollback bypass.
+- Rule 9: an enabled delegation authorizes individual MCP calls within its bounds, including
+  calls made by an agent. It does not create an OpenSpell cadence. Cadences retain explicit
+  enablement and their own bounds/kill switch; MCP cannot issue keys, enlarge a delegation,
+  enable a cadence or override a kill switch.
+- Rule 10: live delegated tests name the exact key/profile/action limits and inverse behavior
+  in the scoped test authorization; existing manual/bounded live-test paths remain supported.
+
+The policy change does not enable a key, deploy code or authorize a live provider call.
 
 ## Required behavior
 
-1. Read-only keys are unchanged. A key must carry the `write` scope, a profile allowlist and
-   caps: maximum rows per call, maximum absolute and relative bid delta, and a daily row budget.
-2. `preview_bid_changes` records an `SpWritePlan` through the WP-214 builder and returns the
-   preview with a plan id and a goto link to the UI preview page. Nothing is applied.
-3. `apply_bid_changes(planId)` approves as the key's owning user through the authenticated-actor
-   helper, records the actor as the key, starts the execution and returns the execution id.
-   Every call writes an `audit_log` row with key id, plan id, counts and sanitized outcome.
-4. The environment kill switch `OPENSPELL_MCP_WRITES_READY` gates both tools; unset means the
-   tools are not registered.
-5. Reversion remains available through the UI's inverse plan and Time Machine.
-6. Tests: scope refusal, cap refusal, allowlist refusal, audit row per call, kill switch.
+1. Issuance is an authenticated owner/admin operation outside MCP tools. Bind a non-null owning
+   user, organization, allowed profiles, keyword-bid action class, expiry, per-call row cap,
+   absolute and relative delta caps and daily row budget. Store a versioned delegation; never
+   grandfather existing keys into write permission. Keep raw keys out of logs and fixtures.
+2. Define the request once: an existing apply-batch ID or explicit keyword bid proposals plus a
+   stable client request ID. For proposals, validate tenant/entity scope, canonical decimal
+   strings and current values, then create real `apply_batches`/`apply_rows` with MCP
+   provenance before building the plan. Never synthesize nonexistent source row identities.
+3. Preview stores the immutable plan and returns its ID/fingerprint, exact counts and UI URL.
+   Apply accepts the recorded plan ID/fingerprint and stable request ID. A changed preview
+   requires new admission. The two operations stay distinct even without a human UI click.
+4. Admit transactionally: verify the key and current owner/admin membership, lock the delegation
+   and daily-budget row, validate caps and current plan, reserve capacity, record key ID, owning
+   user ID, delegation version, plan fingerprint, receipt, durable audit and execution identity,
+   and enqueue. If any part fails, no executable outbox work remains. A duplicate request returns
+   the original execution and never consumes daily budget twice. Reusing an ID with different
+   content refuses. Never trust a caller-supplied actor UUID.
+5. Define the budget day/time zone and reservation/release accounting in the contract. Failed
+   or ambiguous execution cannot silently refund capacity and allow duplicate provider calls.
+   Count requested, reserved, attempted, accepted, observed, refused and released capacity.
+6. Recheck revocation, expiry, profile scope and kill switches immediately before provider
+   reservation. A revoked key blocks undispatched work; an already attempted call still records
+   its outcome and observation. Preserve exact prior evidence for recovery.
+7. A single source of current delegation/kill-switch authority must gate MCP admission and
+   the worker. An environment gate may keep routes/tools unregistered at startup;
+   a database-backed switch must stop queued dispatch without a redeploy. Startup registration
+   alone is not a runtime kill switch.
+8. Adapt MCP's audit wrapper so a lost response or post-admission failure returns an execution
+   identity or an explicit unknown outcome, never "nothing was changed" after admission.
+   Read-only audit behavior remains covered by its existing tests.
+9. Read-only keys cannot preview write proposals or apply them. They retain existing analytical
+   reads. Existing UI writes use WP-214's human approval path and are unaffected by delegation.
 
 ## Acceptance
 
-1. A write-scoped key can preview and apply one bid change on one allowlisted profile; the
-   audit log shows the key as actor; the UI status page shows the same execution.
-2. A read-only key is refused; a call above a cap is refused before any plan is recorded.
-3. `AGENTS.md` and `README.md` describe the new boundary; `pnpm check` and skill lint pass.
+1. Shared contracts and persistence land before consumers; source and activation PRs each pass
+   independently. Existing manual and bounded-live-test fixtures remain green.
+2. Fake-provider MCP tests exercise WP-214's application service; existing UI/backend tests
+   remain green under their human-approval mode. Prove no second
+   execution on retries/lost response, no enqueue on audit failure, and atomic daily-budget
+   enforcement for concurrent calls at the final available row.
+3. Test read-only scope refusal, cross-tenant entity/plan refusal, membership removal, key expiry
+   or revocation between preview/apply and before dispatch, stale plan, delta/row cap refusal,
+   kill switch after enqueue, and key/owning-user provenance in audit and status.
+4. After WP-214 proves the UI path, one exact live-test authorization permits a bounded key
+   to perform one MCP bid-change cycle. Reconcile accepted/observed counts and inverse
+   restoration using the same worker path.
+5. `AGENTS.md`, UI/MCP guidance and implementation agree; `pnpm check`, hygiene and skill lint
+   pass. Record live evidence only when it has actually been observed.

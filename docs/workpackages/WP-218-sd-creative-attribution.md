@@ -38,8 +38,10 @@ campaigns and ad groups only.
    probe found one.
 3. `apps/worker`: SD branch of the ingestion with the same snapshot, mapping, ambiguity and
    same-day fact gates; producer enqueues `SB` and `SD` jobs per profile per day.
-4. `packages/db` and `apps/web`: no schema change expected; the Creative page filters by ad
-   product and shows the SD lifecycle states.
+4. Inspect snapshot uniqueness, pending deferral and daily dedupe for product scoping before
+   assuming no schema change. SB pending work must not block or overwrite SD work. Declare
+   any required additive migration after the probe. The implementer owns DB/worker contracts;
+   Claude Fable 5.1 owns Creative-page filter/lifecycle design against those contracts.
 5. Tests: fixture-driven count identities for the SD reader and ingestion; Playwright for the
    product filter.
 

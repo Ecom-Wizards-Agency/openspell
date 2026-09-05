@@ -25,9 +25,13 @@ the preview says so and a pause proposal is a separate reviewed action.
 - `packages/db/src/queries/campaign-creation-persistence.ts` and tests (new);
 - `apps/worker/src/campaign-creation/**` (new executor, registered behind
   `OPENSPELL_CAMPAIGN_CREATION_READY` and a profile allowlist);
-- `apps/web/app/campaigns/create/**` and `apps/web/app/api/campaign-creation/**` (new);
+- `apps/web/app/campaigns/create/**` server loaders/actions and
+  `apps/web/app/api/campaign-creation/**`; Claude Fable 5.1 owns the client components/design;
+- `apps/worker/src/main.ts`, `config.ts` and the relevant activation/blast tests, in a separate
+  activation PR after the inert adapter/persistence/executor source passes;
+- the DB migration-order assertion in `packages/db/src/migrations.test.ts`;
 - `docs/deploy/campaign-creation-activation.md` (new);
-- `docs/STATUS.md` one row.
+- this brief's close-out evidence for the current STATUS owner to integrate.
 
 Not owned: `packages/shared/src/campaign-creation.ts` (the contract from WP-125 is complete;
 stop and report on any needed change), `packages/campaigns` (pure planner stays export-capable).
@@ -51,20 +55,25 @@ stop and report on any needed change), `packages/campaigns` (pure planner stays 
    guardrails, and the statement that Amazon resources cannot be deleted by a rollback.
 3. Approval: the literal `Yes, create N campaigns in Amazon` with the exact campaign count;
    approval runs as the signed-in owner or admin through the authenticated-actor helper.
-4. Execution: worker-only, one plan at a time per profile; for each node write the intent before
-   the call, call once, record the sanitized response, record the Amazon id, and only then
-   release the dependants. Partial success is recorded as partial, never as complete.
+4. Execution: worker-only, one plan at a time per profile. For each eligible node record the
+   intent, call once, record the sanitized response and Amazon ID, observe that exact resource
+   and persist the observation. Release dependants only after the authoritative contract accepts
+   the parent as observed. Pending, missing, conflicting and ambiguous parents stay blocked.
+   Reconcile ambiguous calls without issuing a second create. Preserve partial and pending states.
 5. Counts: requested, attempted, created, failed and refused per entity type reconcile against
    the plan; an HTTP success without an entity-level id is not creation evidence.
-6. Resync: enqueue a scoped `entity.sync` after the last node and show observed versus created.
+6. Resync: observe parents between stages and perform final scoped entity synchronization.
+   Show created and observed separately; end-only synchronization cannot satisfy dependency gates.
 7. Campaigns are created paused unless the plan says otherwise, matching `packages/campaigns`.
-8. Tests: fake provider proving ordering, write-ahead evidence, partial failure handling, refusal
-   on a closed gate, and count reconciliation; Playwright for freeze, preview and confirmation.
+8. Tests: fake provider proving ordering, write-ahead evidence, delayed parent observation,
+   ambiguous create recovery without redispatch, partial failure, closed gates and count
+   reconciliation; Playwright for freeze, preview and confirmation.
 
 ## Authorization
 
-The migration is hosted through the attended procedure of WP-207's runbook with its own exact
-authorization. The worker deployment and each live approval are separate operator actions.
+The migration is hosted through the scoped procedure of WP-207's runbook with its own exact
+authorization. Prepare the immutable worker deployment and exact live preview for authorization;
+covered operations may run autonomously. Creation has no inverse-delete authorization.
 
 ## Acceptance
 

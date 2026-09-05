@@ -1,9 +1,10 @@
 # WP-210 — Creative Performance pilot activation
 
-Owner: implementer, guiding the operator through host, Vercel and Amazon steps.
+Owner: implementer. Operational steps may run autonomously under one scoped authorization.
 
-Depends on: decision D3 in `docs/workpackages/REPLAN-2026-09-05.md`; no migration; no code
-change. Can start on day one and run in parallel with WP-207.
+Depends on: decision D3 in `docs/workpackages/REPLAN-2026-09-05.md`. Runbook preparation can
+start immediately. Prefer activation after Claude completes WP-207; the interim pre-migration
+pilot below is optional and must use the exact reviewed historical revision.
 
 ## Objective
 
@@ -19,9 +20,9 @@ Performance needs an extra kind of job that the website cannot run. Switching it
 1. One always-on program runs on the Evo computer and takes over report downloads for every
    account, not just the pilot, because the switch is global. If that program stops, reports stop
    for everyone until the switch is turned back off. Turning it off is one Vercel setting.
-2. That program needs two secrets in a root-only environment file: the Amazon API application
-   secret and the database connection string. The newer encrypted-credential setup on Evo is for
-   the future fenced worker, not for this pilot.
+2. That program needs two secrets injected into its runtime: the Amazon API application
+   secret and the database connection string. Use the approved runtime credential mechanism and verify it before startup; no secret is
+   copied into a repository or local `.env` file.
 3. You name one client account that runs Sponsored Brands Video ads. Its identifier is looked up
    in the database and placed in a Vercel setting; it never enters Git.
 
@@ -46,38 +47,49 @@ Performance needs an extra kind of job that the website cannot run. Switching it
 1. Profile selection: the operator names the client. Run a read-only query to get the profile
    UUID, confirm `sync_enabled`, and confirm there is no `creative_sync_snapshots` row in status
    `report_pending` for it. Keep the UUID in `_local/` only.
-2. Pinned worker: on the Evo host, in a separate checkout pinned to `397eff8` (the last worker
-   revision before `ed7cb78`; `44da7ac` is the alternative that matches deployed web), run
+2. Pinned worker: on the Evo host, use an immutable release pinned to `397eff8`, a reviewed
+   worker revision before `ed7cb78`. Do not substitute `44da7ac`: its configuration/health
+   interface differs. Resolve and record the full commit and artifact identity. Run
    `pnpm install --frozen-lockfile` and start `pnpm --filter @wizard-ads/worker start` with:
    `DATABASE_URL`, `LWA_CLIENT_ID`, `LWA_CLIENT_SECRET`,
    `WORKER_JOB_TYPES` set to the four types `creative.sync`, `report.request`, `report.poll`
    and `report.fetch` as one comma-separated value,
-   `WORKER_DEPLOYMENT_ROLE` unset, `WORKER_CLAIM_BATCH_SIZE=1`,
+   `WORKER_DEPLOYMENT_ROLE=evo-report-lane`, `WORKER_CLAIM_BATCH_SIZE=1`,
    `WORKER_MAX_CONCURRENT_JOBS=1`, `WORKER_HEALTH_HOST=127.0.0.1`, an explicit unused `PORT`,
-   `OPENSPELL_WORKER_REVISION=397eff8`. Wrap it in a minimal systemd unit with a root-only
-   environment file. Never build this worker from `origin/main` until WP-207 postflight passed.
+   `OPENSPELL_WORKER_REVISION` set to the resolved commit. At this pre-fencing revision the
+   report role disables independent background passes while using legacy claims. The same role
+   on current main selects fenced claims and is not a drop-in replacement. Stage a dedicated
+   systemd release with injected credentials and a verified loopback health binding. Never run
+   current main against the pre-WP-207 schema.
 3. Verify the worker's health endpoint reports the four job types and that it claims nothing
    while no such jobs exist.
 4. Vercel: set `OPENSPELL_EVO_REPORT_LANE_READY=1`, `OPENSPELL_CREATIVE_SYNC_PRODUCER_READY=1`,
    `OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST=<uuid>` on the production environment and redeploy
    the existing `44da7ac` deployment with the new environment only. A malformed value returns
    503 from the cron route and throws on the Creative page, so test the values before redeploying.
-5. First tick: call the cron route once with the bearer secret and reconcile the response:
-   `requestedProfiles=1`, `eligibleProfiles=1`, `enqueuedJobs=1`.
+5. First cycle: reconcile the cron response and durable rows for the profile-local date.
+   A controlled first offer with no previous job should produce 1/1/1. If regular cron wins the
+   race, a deduplicated or deferred-pending result is valid only when exactly one matching daily
+   job and its snapshot are verified. Record enqueued, deduplicated and deferred counts; a
+   successful HTTP response alone does not prove the cycle.
 6. Watch `creative.sync`, then `report.request` for `sbAds`, then `report.poll` on its five-minute
    cadence, then `report.fetch`. Reconcile the logged counts with the queries in
    `creative-pilot-reconcile.sql`: source ads equal parsed ads; mapped plus legacy plus unsupported
    plus ambiguous plus unmapped equal parsed ads; assets and mappings upserted equal read back;
    source rows equal parsed plus refused; parsed equal promoted plus unpromoted; promoted equal
-   canonical. Status must reach `report_pending`, not `blocked`.
+   canonical. `report_pending` is the intermediate snapshot state. Successful promotion must
+   reach snapshot status `completed`; the UI derives lifecycle `complete` from the evidence.
+   Account separately for refused, blocked, pending and terminal zero-row outcomes.
 7. Open `/creative` for the pilot profile with a period that includes profile-local today.
    Expect lifecycle `complete` and rows joined by Amazon Asset ID. If mapped is above zero and
    promoted is zero, Amazon returned no same-day rows; that is a valid outcome, not a code fault.
 8. Stop conditions: stop the pilot worker before the WP-207 window and restart it after
    postflight. Never call `activate_report_worker_fenced_claims()` while this worker runs; after
    activation the legacy claim overload excludes report jobs.
-9. After WP-213, optionally replace the pinned checkout with a general-role worker at the deployed
-   main revision; main's legacy claim path works once `20260901040000` is hosted.
+9. Keep the pinned report claimant until a replacement has its own reviewed startup policy.
+   General role on main starts unrelated background passes; report role selects fenced claims.
+   Neither is a safe automatic upgrade of this pilot. Any replacement must prove legacy queue
+   compatibility, no duplicate timers, exact job ownership and rollback before deployment.
 10. Phase 2, every profile: the operator wants Creative Performance on for all accounts. The
     allowlist parser accepts any number of comma-separated profile UUIDs with no cap
     (`apps/worker/src/deployment-role.ts`, `parseProfileAllowlist`). After the first profile has
@@ -93,19 +105,28 @@ Performance needs an extra kind of job that the website cannot run. Switching it
 
 ## Authorization
 
-Each of these is a separate operator action stated in the current task: placing the two secrets
-on the host, starting the worker, changing the three Vercel variables and redeploying, calling
-the cron route. No Amazon write is involved anywhere in this package.
+After runbook verification, request one scoped activation authorization naming the private
+profile, immutable worker artifact, credential injection, unit startup, Vercel variables and
+redeploy, the read-only Amazon cycle and rollback. Covered steps can run without attendance or
+repeated confirmation. Widening to every sync-enabled profile must be within the recorded scope
+or receive its own authorization. No Amazon mutation is part of this package.
 
 ## Acceptance
 
-1. Health endpoint of the pinned worker shows role general, legacy protocol, exactly four types.
-2. First tick response reconciles to 1/1/1 for the pilot profile.
+1. Health endpoint reports the pinned revision, report role and exactly four types on loopback.
+   This revision does not expose a protocol field; prove legacy custody from source and the
+   counted claim cycle rather than inventing a health field.
+2. Exactly one durable daily job exists for the pilot and the offer/deduplication/pending counts
+   reconcile, including a concurrent cron offer.
 3. Every count identity in step 6 holds and is recorded in the runbook with the values.
 4. `/creative` shows lifecycle `complete` for the pilot profile with rows, or a recorded
    zero-row outcome with the reason.
-5. Rollback is documented and tested once: unset the lane flag, redeploy, confirm Vercel resumes
-   report claims.
+5. Rollback disables the creative producer first, drains or explicitly resolves every creative-
+   linked `sbAds` job and snapshot while the SB-capable worker remains available, then disables
+   the lane flag and redeploys. Producer-on/lane-off is forbidden. Confirm generic report claims
+   return to Vercel, reconcile outstanding creative work and only then stop the pilot. A worker
+   failure that prevents draining is a stop condition needing a bounded recovery procedure;
+   Vercel has no SB Video ingestion runtime to silently finish those jobs.
 
 ## Do not
 

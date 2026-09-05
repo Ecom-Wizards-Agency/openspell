@@ -22,7 +22,9 @@ code, not as the older documents intend.
 - `AGENTS.md`: only the package boundary table, additive rows for `apps/analyst`,
   `packages/datadive-api`, `packages/keepa-api`, `packages/mrp-api`, `packages/sp-api`,
   `tools/adlabs-backfill`, `tools/skill-lint`, `tools/hosted-migration-*`;
-- `README.md` quickstart line that says CI runs "the same four steps" (it runs five);
+- `README.md` and `docs/workpackages/README.md` descriptive/routing text: `pnpm check` has
+  five checks, while CI's check job currently invokes four and has other jobs separately;
+  remove the obsolete permanent WP-00 contract ownership rule;
 - this brief.
 
 ## Required behavior
@@ -46,8 +48,15 @@ code, not as the older documents intend.
 4. The "what we need from you" section is a fillable template the collaborator returns:
    feature list with screenshots, data sources and API scopes, data model, queue or scheduler,
    auth model, deployment, tests, and the three or four screens they consider best.
-5. Fix the stale text in the owned files without changing any rule in `AGENTS.md`.
-6. Run `pnpm hygiene` with the changed files staged; the overview must contain no client names,
+5. Fix stale descriptive text without changing `AGENTS.md` policy. Name the existing cron
+   credential/runtime discrepancy explicitly; do not claim it overrides the written boundary.
+   State that service-role connections bypass RLS, so application org scoping and role checks
+   are mandatory. Existing authenticated-role queries are a different transport.
+6. Reproduction commands must actually emit their tables. MCP registration is multiline;
+   use a multiline parser. Local filenames cannot establish hosted ledger state, and the first
+   30 hosted version numbers differ. Keep source inventory and dated hosted evidence separate.
+   Do not advertise config-file-only environment scans as a complete transitive runtime list.
+7. Run `pnpm hygiene` with the changed files staged; the overview must contain no client names,
    profile identifiers, secrets, thresholds or absolute operator paths.
 
 ## Acceptance

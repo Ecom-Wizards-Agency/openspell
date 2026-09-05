@@ -1,19 +1,23 @@
-# wizard-ads work packages — implementer guide
+# OpenSpell work packages — implementer guide
 
-You are an implementation agent (Codex or Claude Opus) building **wizard-ads**, Ecom Wizards'
-in-house Amazon Advertising tool (AdLabs clone + differentiators). A manager agent (Fable)
-planned the build and reviews your work. Each `WP-XX-*.md` file in this directory is a
-self-contained handover brief: read it, implement it, report against its acceptance checks.
+These briefs describe work on **OpenSpell**. Read `AGENTS.md` first; it is authoritative.
+Numbered packages are delivery records, not permanent owners. Active briefs declare exact file
+scope, and concurrent work must use disjoint files.
+
+For the September 5 re-plan, start with `REPLAN-2026-09-05.md` and its audit companion.
+Claude Fable 5.1 owns frontend design. The operator expects to work with Claude on WP-207/D1
+and WP-216/D2. The implementation agent owns the UI-driven Amazon write path and its later MCP
+integration. Do not infer live authorization from a brief or from available credentials.
 
 ## Program rules (apply to every work package)
 
-1. **Own your package only.** Each WP owns specific directories. Never edit files owned by
-   another WP. Cross-package shapes live in `packages/shared` — if you need a contract change,
-   STOP and report it; only WP-00's owner changes contracts, with manager sign-off.
+1. **Respect active file scope.** Coordinate shared files before editing. Cross-package shapes
+   live in `packages/shared`; approved additive contracts land and are verified before consumers.
+   Historical WP-00 ownership does not override the current `AGENTS.md` contract authority.
 2. **Dependency direction (enforced):** `shared` ← `core`/`strategy`/`ads-api`/`db` ←
    `web`/`worker`/`mcp`. `packages/core` never imports `db` or `ads-api`. `apps/web` never
    imports `ads-api` (all Amazon calls live in the worker).
-3. **This repo will be public.** Never commit: credentials, client names, the profile roster,
+3. **This repo is public.** Never commit: credentials, client names, the profile roster,
    doctrine threshold values, or absolute `/Users/` paths. Tenant-specific values are DB data
    or gitignored `_local/` files; only `*.TEMPLATE.json` is tracked.
 4. **Verify the artifact, not the exit code.** Any list-driven operation must count outputs
@@ -28,7 +32,7 @@ self-contained handover brief: read it, implement it, report against its accepta
 8. **Report format:** when done, summarize per acceptance check: what you ran, what proved it,
    plus anything you consciously deviated on and why. Unresolved blockers go at the top.
 
-## Package ownership map
+## Historical package map
 
 | WP | Owns |
 |---|---|
@@ -50,9 +54,9 @@ self-contained handover brief: read it, implement it, report against its accepta
 
 ## Key facts every implementer should know
 
-- Amazon Ads API access is LIVE (LWA app with `advertising::campaign_management`; refresh
-  token exists operator-side). Live smoke tests read creds from gitignored `_local/` config —
-  ask the operator to place it; never hardcode.
+- Available credentials do not authorize live calls. Inject secrets from approved runtime
+  storage; `_local/` holds bounded non-secret authorization/configuration, not real secrets.
+  Live writes follow `AGENTS.md` and the exact operational scope granted for the task.
 - Reporting v3 is async: request → poll (up to ~3h) → download GZIP_JSON. Throttling is
   HTTP 429 only (sometimes `Retry-After`, never quota headers) → exponential backoff + jitter.
 - Reports omit zero-impression rows; sales restate for 14+ days; same-day data is provisional.
