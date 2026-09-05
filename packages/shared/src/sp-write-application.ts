@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { Uuid } from './primitives.js';
 import { SpWritePreviewEvidence } from './sp-write-preview-evidence.js';
+import { SpWriteMirrorCounts } from './sp-write-mirror.js';
 import {
   ApproveSpWritePlan,
   SpWriteAuthorizationReceipt,
@@ -87,6 +88,7 @@ export const SpWriteOperationDetail = z.object({
   admission: z.enum(['queued', 'approved_pending_start']),
   receipt: SpWriteAuthorizationReceipt,
   snapshot: SpWriteExecutionSnapshot,
+  mirror: SpWriteMirrorCounts,
   original: SpWriteOperationId.nullable(),
   inverses: z.array(SpWriteOperationId),
 }).strict().superRefine((value, context) => {
@@ -125,6 +127,11 @@ export const SpWriteOperationDetail = z.object({
   }
   if (binding != null && value.snapshot.accounting.approvedRows !== binding.counts.providerRows) {
     context.addIssue({ code: 'custom', path: ['snapshot'], message: 'accounting differs from the approved plan count' });
+  }
+  const accounting = value.snapshot.accounting;
+  if (value.mirror.observations !== accounting.observedRequested + accounting.observedExpectedAfterAmbiguous
+    + accounting.observationConflict + accounting.observationMissing) {
+    context.addIssue({ code: 'custom', path: ['mirror'], message: 'mirror counts differ from persisted provider observations' });
   }
   if (value.admission === 'approved_pending_start' && (
     value.snapshot.status !== 'queued'

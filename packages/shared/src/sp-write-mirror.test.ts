@@ -38,8 +38,9 @@ describe('mirror evidence contracts', () => {
   });
 
   it('reconciles every observation and every ordinary sync input exactly once', () => {
-    expect(SpWriteMirrorCounts.safeParse({ observations: 4, promoted: 1, alreadyCurrent: 1, superseded: 1, missing: 1 }).success).toBe(true);
-    expect(SpWriteMirrorCounts.safeParse({ observations: 4, promoted: 1, alreadyCurrent: 1, superseded: 0, missing: 1 }).success).toBe(false);
+    expect(SpWriteMirrorCounts.safeParse({ observations: 4, pending: 0, promoted: 1, alreadyCurrent: 1, superseded: 1, missing: 1 }).success).toBe(true);
+    expect(SpWriteMirrorCounts.safeParse({ observations: 4, pending: 0, promoted: 1, alreadyCurrent: 1, superseded: 0, missing: 1 }).success).toBe(false);
+    expect(SpWriteMirrorCounts.safeParse({ observations: 4, pending: 1, promoted: 1, alreadyCurrent: 1, superseded: 0, missing: 1 }).success).toBe(true);
     const merge = { listed: 10, upserted: 10, currentBidInputs: 7, staleBidInputs: 3, bidChanges: 2, changes: 3,
       tombstonesOffered: 4, tombstoned: 1, staleTombstones: 3 };
     expect(KeywordMirrorMergeCounts.safeParse(merge).success).toBe(true);

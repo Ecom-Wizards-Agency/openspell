@@ -72,12 +72,14 @@ export type SpWriteMirrorReceipt = z.infer<typeof SpWriteMirrorReceipt>;
 const count = z.number().int().nonnegative();
 export const SpWriteMirrorCounts = z.object({
   observations: count,
+  /** Persisted provider observations that have no durable mirror receipt yet. */
+  pending: count,
   promoted: count,
   alreadyCurrent: count,
   superseded: count,
   missing: count,
 }).strict().superRefine((value, context) => {
-  if (value.observations !== value.promoted + value.alreadyCurrent + value.superseded + value.missing) {
+  if (value.observations !== value.pending + value.promoted + value.alreadyCurrent + value.superseded + value.missing) {
     context.addIssue({ code: 'custom', message: 'every observation requires exactly one mirror outcome' });
   }
 });

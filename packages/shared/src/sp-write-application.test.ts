@@ -40,7 +40,8 @@ function operationFixture() {
       providerAccepted: 0, providerRejected: 0, providerAmbiguous: 0, observedRequested: 0,
       observedExpectedAfterAmbiguous: 0, observationConflict: 0, observationMissing: 0,
       pendingObservation: 0, providerCallsCommitted: 0, providerCallsCompleted: 0,
-    } }, original: null, inverses: [],
+    } }, mirror: { observations: 0, pending: 0, promoted: 0, alreadyCurrent: 0, superseded: 0, missing: 0 },
+    original: null, inverses: [],
   };
 }
 
@@ -94,6 +95,7 @@ describe('write application boundary', () => {
     expect(SpWriteOperationDetail.safeParse({ ...fixture, snapshot: {
       status: 'queued', accounting: { ...fixture.snapshot.accounting, approvedRows: 0, pendingDispatch: 0 },
     } }).success).toBe(false);
+    expect(SpWriteOperationDetail.safeParse({ ...fixture, mirror: { ...fixture.mirror, observations: 1, pending: 1 } }).success).toBe(false);
   });
 
   it('keeps inverse lineage in the same cycle and bound to the original profile', () => {

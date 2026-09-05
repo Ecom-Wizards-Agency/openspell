@@ -226,7 +226,7 @@ mirror evidence links, with its exact filename declared after checking migration
 A scoped fact writer validates the observation, locks current mirror state, records the actual
 diff and its observation link, and promotes the observed value atomically. Replays reconcile
 counts. Matching bid values or timestamps alone never justify suppressing an external event.
-Provider observation and mirror resynchronization are separate facts in the status contract.
+Provider observation and mirror resynchronization are separate facts in the status contract. The application status query reads receipts only for observation IDs in its verified ledger snapshot, checks their exact identity/fingerprint, and counts observations lacking receipts as pending.
 
 Each inverse has its own plan/approval and history entry linked to the original operation.
 Preserve the current full-plan inverse contract: all forward actions must be observed at their
