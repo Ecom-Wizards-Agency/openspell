@@ -8,6 +8,7 @@
 import { sql } from 'drizzle-orm';
 import {
   boolean,
+  bigint,
   check,
   foreignKey,
   index,
@@ -34,6 +35,9 @@ import type {
   SpWriteProviderResult,
 } from '@wizard-ads/shared/sp-writes';
 import { ts } from './columns.js';
+import type { SpWriteSourceEvidence } from '@wizard-ads/shared/sp-write-preview-evidence';
+import type { SpWriteMirrorReceipt } from '@wizard-ads/shared/sp-write-mirror';
+import { entityChanges } from './entities.js';
 import {
   adsRegion,
   spWriteActionResolutionKind,
@@ -350,6 +354,25 @@ export const spWritePlans = pgTable(
     ),
   ],
 );
+
+/** WP-214: exact source and guardrail preimages, recorded atomically with a preview. */
+export const spWritePreviewEvidence = pgTable('sp_write_preview_evidence', {
+  planId: uuid('plan_id').primaryKey(),
+  orgId: uuid('org_id').notNull(),
+  profileId: uuid('profile_id').notNull(),
+  artifactText: text('artifact_text').notNull(),
+  artifact: jsonb('artifact').$type<SpWriteSourceEvidence>().notNull(),
+  guardrailPreimage: text('guardrail_preimage').notNull(),
+  provenancePreimage: text('provenance_preimage').notNull(),
+  persistedAt: dbClock('persisted_at'),
+}, (t) => [
+  foreignKey({ name: 'sp_write_preview_evidence_plan_fkey',
+    columns: [t.orgId, t.profileId, t.planId],
+    foreignColumns: [spWritePlans.orgId, spWritePlans.profileId, spWritePlans.planId],
+  }).onDelete('cascade'),
+  unique('sp_write_preview_evidence_tenant_key').on(t.orgId, t.profileId, t.planId),
+  check('sp_write_preview_evidence_text_agrees', sql`${t.artifactText}::jsonb = ${t.artifact}`),
+]);
 
 export const spWritePlanActions = pgTable(
   'sp_write_plan_actions',
@@ -1544,6 +1567,7 @@ export const spWriteObservations = pgTable(
       t.actionId,
     ),
     unique('sp_write_observations_tenant_identity_key').on(t.orgId, t.profileId, t.observationId),
+    unique('sp_write_observations_mirror_identity_key').on(t.orgId, t.profileId, t.observationId, t.executionId, t.planId, t.actionId, t.fingerprint),
     check(
       'sp_write_observations_shape',
       sql`${t.fingerprint} ~ '^[a-f0-9]{64}$' and ${t.actionFingerprint} ~ '^[a-f0-9]{64}$' and ${t.intentFingerprint} ~ '^[a-f0-9]{64}$' and ${t.requestFingerprint} ~ '^[a-f0-9]{64}$' and ((${t.outcome} = 'missing') = (${t.observed} is null)) and ${t.observedAt} <= ${t.persistedAt}`,
@@ -1652,3 +1676,39 @@ export type SpWriteObservationRow = typeof spWriteObservations.$inferSelect;
 export type SpWriteOutboxRow = typeof spWriteOutbox.$inferSelect;
 export type SpWriteLateResultAuditRow = typeof spWriteLateResultAudits.$inferSelect;
 export type SpWriteExecutionAccountingRow = typeof spWriteExecutionAccounting.$inferSelect;
+
+export const spWriteMirrorObservations = pgTable('sp_write_mirror_observations', {
+  observationId: uuid('observation_id').primaryKey(), orgId: uuid('org_id').notNull(), profileId: uuid('profile_id').notNull(),
+  executionId: uuid('execution_id').notNull(), planId: uuid('plan_id').notNull(), actionId: uuid('action_id').notNull(),
+  observationFingerprint: text('observation_fingerprint').notNull(), outcome: text('outcome').notNull(),
+  entityChangeId: bigint('entity_change_id', { mode: 'bigint' }), changeAttribution: text('change_attribution'),
+  artifact: jsonb('artifact').$type<SpWriteMirrorReceipt>().notNull(), reconciledAt: ts('reconciled_at').notNull(),
+}, (t) => [
+  foreignKey({ name: 'sp_write_mirror_observations_source_fkey',
+    columns: [t.orgId, t.profileId, t.observationId, t.executionId, t.planId, t.actionId, t.observationFingerprint],
+    foreignColumns: [spWriteObservations.orgId, spWriteObservations.profileId, spWriteObservations.observationId,
+      spWriteObservations.executionId, spWriteObservations.planId, spWriteObservations.actionId, spWriteObservations.fingerprint],
+  }).onDelete('cascade'),
+  foreignKey({ name: 'sp_write_mirror_observations_diff_fkey', columns: [t.orgId, t.profileId, t.entityChangeId],
+    foreignColumns: [entityChanges.orgId, entityChanges.profileId, entityChanges.id],
+  }).onDelete('cascade'),
+  unique('sp_write_mirror_observations_tenant_key').on(t.orgId, t.profileId, t.observationId),
+  unique('sp_write_mirror_observations_diff_key').on(t.entityChangeId),
+  check('sp_write_mirror_observations_outcome_check', sql`${t.outcome} in ('promoted','already_current','superseded','missing')`),
+  check('sp_write_mirror_observations_change_attribution_check', sql`${t.changeAttribution} in ('write','observation')`),
+  check('sp_write_mirror_observations_diff_shape', sql`(${t.outcome} = 'promoted') = (${t.entityChangeId} is not null) and (${t.outcome} = 'promoted') = (${t.changeAttribution} is not null)`),
+  check('sp_write_mirror_observations_artifact_identity', sql`coalesce(
+    app.sp_write_exact_json_keys(${t.artifact}, array[
+      'schemaVersion','orgId','profileId','executionId','planId','observationId','observationFingerprint',
+      'actionId','amazonEntityId','changeKey','observationOutcome','outcome','before','observed','after',
+      'entityChangeId','changeAttribution','observedAt','reconciledAt','bidObservedAt'
+    ]) and ${t.artifact} ->> 'schemaVersion' = 'openspell.sp-write-mirror-receipt.v1'
+    and ${t.artifact} ->> 'observationId' = ${t.observationId}::text
+    and ${t.artifact} ->> 'orgId' = ${t.orgId}::text and ${t.artifact} ->> 'profileId' = ${t.profileId}::text
+    and ${t.artifact} ->> 'executionId' = ${t.executionId}::text and ${t.artifact} ->> 'planId' = ${t.planId}::text
+    and ${t.artifact} ->> 'actionId' = ${t.actionId}::text and ${t.artifact} ->> 'observationFingerprint' = ${t.observationFingerprint}
+    and ${t.artifact} ->> 'outcome' = ${t.outcome}
+    and (${t.artifact} ->> 'entityChangeId') is not distinct from ${t.entityChangeId}::text
+    and (${t.artifact} ->> 'changeAttribution') is not distinct from ${t.changeAttribution}
+    and (${t.artifact} ->> 'reconciledAt')::timestamptz = ${t.reconciledAt}, false)`),
+]);

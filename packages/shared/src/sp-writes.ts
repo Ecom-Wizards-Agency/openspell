@@ -7,7 +7,7 @@ import {
   Uuid,
 } from './primitives.js';
 
-export const SpWriteSchemaVersion = z.literal('openspell.sp-write-plan.v1');
+export const SpWriteSchemaVersion = z.enum(['openspell.sp-write-plan.v1', 'openspell.sp-write-plan.v2']);
 export type SpWriteSchemaVersion = z.infer<typeof SpWriteSchemaVersion>;
 
 export const SpWriteSha256 = z.string().regex(/^[a-f0-9]{64}$/);
@@ -503,10 +503,23 @@ export const SpWritePlan = z.object({
     || Date.parse(plan.frozenAt) >= Date.parse(plan.expiresAt)) {
     context.addIssue({ code: 'custom', message: 'plan timestamps must be generated, frozen, then unexpired' });
   }
+  if (plan.schemaVersion === 'openspell.sp-write-plan.v2'
+    && [plan.generatedAt, plan.frozenAt, plan.expiresAt].some((at) => !/T\d{2}:\d{2}:\d{2}(?:[.]\d{1,6})?Z$/.test(at))) {
+    context.addIssue({ code: 'custom', message: 'v2 plan timestamps permit at most six fractional digits' });
+  }
 
-  const ordered = orderSpWriteActions(plan.actions);
-  if (JSON.stringify(ordered.map(actionOrderKey)) !== JSON.stringify(plan.actions.map(actionOrderKey))) {
-    context.addIssue({ code: 'custom', path: ['actions'], message: 'plan actions must use canonical order' });
+  if (plan.schemaVersion === 'openspell.sp-write-plan.v1') {
+    const ordered = orderSpWriteActions(plan.actions);
+    if (JSON.stringify(ordered.map(actionOrderKey)) !== JSON.stringify(plan.actions.map(actionOrderKey))) {
+      context.addIssue({ code: 'custom', path: ['actions'], message: 'plan actions must use canonical order' });
+    }
+  } else if (plan.actions.some((action) => action.routeKey !== 'sp.v3.keywords.update'
+    || action.changes.bid === undefined || action.changes.state !== undefined
+    || !SpKeywordBidDecimal.safeParse(action.changes.bid.expected.amount).success
+    || !SpKeywordBidDecimal.safeParse(action.changes.bid.requested.amount).success
+    || action.changes.bid.expected.amount === action.changes.bid.requested.amount
+    || action.sources.length !== 1 || action.sources[0]?.changeKey !== 'keyword.bid')) {
+    context.addIssue({ code: 'custom', path: ['actions'], message: 'v2 plans support keyword bids in source sequence only' });
   }
   if (new Set(plan.actions.map((action) => action.actionId)).size !== plan.actions.length) {
     context.addIssue({ code: 'custom', path: ['actions'], message: 'plan repeats an action ID' });
@@ -573,7 +586,7 @@ function digestSha256(preimage: string, hasher: SpWriteSha256Hasher): SpWriteSha
 export function serializeSpWritePlanFingerprint(rawPlan: SpWritePlan): string {
   const plan = SpWritePlan.parse(rawPlan);
   const { fingerprint: _fingerprint, ...preimage } = plan;
-  return JSON.stringify(['openspell.sp-write-plan.v1', preimage]);
+  return JSON.stringify([plan.schemaVersion, preimage]);
 }
 
 export function verifySpWritePlanFingerprints(
@@ -645,13 +658,20 @@ export function verifySpWriteInversePair(
     || inverse.source.kind !== 'inverse_execution') {
     throw new Error('SP write inverse pairing requires forward and inverse plans');
   }
-  if (inverse.source.sourcePlanId !== forward.id
+  if (inverse.schemaVersion !== forward.schemaVersion
+    || inverse.source.sourcePlanId !== forward.id
     || inverse.source.sourcePlanFingerprint !== forward.fingerprint
     || inverse.orgId !== forward.orgId
     || inverse.profileId !== forward.profileId
     || JSON.stringify(inverse.providerScope) !== JSON.stringify(forward.providerScope)
     || JSON.stringify(inverse.counts) !== JSON.stringify(forward.counts)) {
     throw new Error('SP write inverse plan scope or counts do not match the forward plan');
+  }
+
+  if (forward.schemaVersion === 'openspell.sp-write-plan.v2'
+    && inverse.actions.some((action, index) => action.sources[0]?.kind !== 'inverse_action'
+      || action.sources[0].sourceActionId !== forward.actions[index]?.actionId)) {
+    throw new Error('SP write v2 inverse must preserve the forward source sequence');
   }
 
   const inverseBySource = new Map<string, SpWriteAction>();
@@ -1023,7 +1043,7 @@ export const SpWriteGateSnapshot = z.object({
 }).strict();
 export type SpWriteGateSnapshot = z.infer<typeof SpWriteGateSnapshot>;
 
-export const SpWriteAuthorizationReceipt = z.object({
+export const SpHumanAuthorizationReceiptV1 = z.object({
   schemaVersion: z.literal('openspell.sp-write-authorization-receipt.v1'),
   approvalId: SpWriteUuid,
   approvalRequestId: SpWriteUuid,
@@ -1057,11 +1077,224 @@ export const SpWriteAuthorizationReceipt = z.object({
     context.addIssue({ code: 'custom', message: 'receipt timestamps exceed their authority window' });
   }
 });
+export type SpHumanAuthorizationReceiptV1 = z.infer<typeof SpHumanAuthorizationReceiptV1>;
+
+/** Persisted modes include delegation; human confirmation input stays unchanged. */
+export const SpWriteExecutionApprovalMode = z.enum([...SpWriteApprovalMode.options, 'delegated_mcp']);
+
+/** Positive bid representable by the existing numeric(12,4) keyword mirror. */
+export const SpKeywordBidDecimal = SpCanonicalDecimal.refine((value) => {
+  const [whole, fraction = ''] = value.split('.');
+  return value !== '0' && whole!.length <= 8 && fraction.length <= 4;
+}, 'bid must fit the keyword mirror without rounding');
+
+export const McpKeywordBidProposal = z.object({
+  keywordId: AmazonId, expectedBid: SpKeywordBidDecimal, requestedBid: SpKeywordBidDecimal,
+}).strict().refine((value) => value.expectedBid !== value.requestedBid, 'a proposal must change the bid');
+export type McpKeywordBidProposal = z.infer<typeof McpKeywordBidProposal>;
+
+export const McpBidLimits = z.object({
+  action: z.literal('keyword.bid'),
+  maximumRowsPerCall: z.number().int().min(1).max(500),
+  maximumRowsPerUtcDay: z.number().int().min(1).max(2_147_483_647),
+  maximumAbsoluteDeltaByCurrency: z.array(SpMoney.refine((money) => money.amount !== '0',
+    'absolute delta must be positive')).min(1),
+  /** Ratio, not a percentage: a value of one permits a change equal to the old bid. */
+  maximumRelativeDelta: SpCanonicalDecimal.refine((value) => value !== '0', 'relative delta must be positive'),
+}).strict().superRefine((value, context) => {
+  if (value.maximumRowsPerCall > value.maximumRowsPerUtcDay
+    || !isCanonicalUniqueOrder(value.maximumAbsoluteDeltaByCurrency, (money) => money.currencyCode)) {
+    context.addIssue({ code: 'custom', message: 'limits require sufficient daily capacity and unique sorted currencies' });
+  }
+});
+export type McpBidLimits = z.infer<typeof McpBidLimits>;
+
+export const McpWriteDelegation = z.object({
+  schemaVersion: z.literal('openspell.mcp-write-delegation.v1'),
+  versionId: SpWriteUuid,
+  keyId: SpWriteUuid,
+  keyLabel: z.string().trim().min(1).max(160),
+  orgId: SpWriteUuid,
+  issuerUserId: SpWriteUuid,
+  profiles: z.array(z.object({ profileId: SpWriteUuid, currencyCode: CurrencyCode }).strict()).min(1),
+  issuedAt: SpWriteInstant,
+  expiresAt: SpWriteInstant,
+  limits: McpBidLimits,
+  fingerprint: SpWriteSha256,
+}).strict().superRefine((value, context) => {
+  const lifetime = Date.parse(value.expiresAt) - Date.parse(value.issuedAt);
+  const currencies = [...new Set(value.profiles.map((profile) => profile.currencyCode))].sort();
+  if (lifetime <= 0 || lifetime > 90 * 86_400_000
+    || !isCanonicalUniqueOrder(value.profiles, (profile) => profile.profileId)
+    || JSON.stringify(currencies) !== JSON.stringify(value.limits.maximumAbsoluteDeltaByCurrency.map((money) => money.currencyCode))) {
+    context.addIssue({ code: 'custom', message: 'delegation requires bounded expiry, unique sorted profiles and exact currency limits' });
+  }
+});
+export type McpWriteDelegation = z.infer<typeof McpWriteDelegation>;
+
+export function serializeMcpWriteDelegationFingerprint(raw: McpWriteDelegation): string {
+  const { fingerprint: _fingerprint, ...authority } = McpWriteDelegation.parse(raw);
+  return JSON.stringify(['openspell.mcp-write-delegation-fingerprint.v1', authority]);
+}
+
+export function verifyMcpWriteDelegationFingerprint(raw: unknown, hasher: SpWriteSha256Hasher): McpWriteDelegation {
+  const delegation = McpWriteDelegation.parse(raw);
+  if (digestSha256(serializeMcpWriteDelegationFingerprint(delegation), hasher) !== delegation.fingerprint) {
+    throw new Error('MCP write delegation fingerprint mismatch');
+  }
+  return delegation;
+}
+
+export const McpWriteReservation = z.object({
+  id: SpWriteUuid,
+  day: z.iso.date(),
+  rows: z.number().int().min(1).max(500),
+  /** V1 charges every admitted row, including refused or ambiguous execution. */
+  releasedRows: z.literal(0),
+}).strict();
+export type McpWriteReservation = z.infer<typeof McpWriteReservation>;
+
+export const SpDelegatedAuthorizationReceiptV2 = z.object({
+  schemaVersion: z.literal('openspell.sp-write-authorization-receipt.v2'),
+  approvalId: SpWriteUuid,
+  /** Server-generated global ledger identity, distinct from the key-scoped client request. */
+  approvalRequestId: SpWriteUuid,
+  mcpRequestId: SpWriteUuid,
+  executionId: SpWriteUuid,
+  generation: SpWriteUuid,
+  approvalMode: z.literal('delegated_mcp'),
+  plan: SpWritePlanBinding,
+  preapprovedInversePlan: z.null(),
+  boundedAuthorization: z.null(),
+  /** Delegation issuer; this does not claim the user confirmed this individual batch. */
+  approvedBy: SpWriteUuid,
+  /** Database admission time for this plan under its delegation. */
+  approvedAt: SpWriteInstant,
+  expiresAt: SpWriteInstant,
+  confirmationVersion: z.literal('openspell.mcp-delegated-bid-admission.v1'),
+  gateSnapshot: SpWriteGateSnapshot,
+  mcpGate: z.object({ versionId: SpWriteUuid, enabled: z.literal(true), checkedAt: SpWriteInstant }).strict(),
+  delegation: McpWriteDelegation,
+  reservation: McpWriteReservation,
+}).strict().superRefine((value, context) => {
+  const d = value.delegation;
+  const p = value.plan;
+  if (value.approvedBy !== d.issuerUserId || p.orgId !== d.orgId
+    || !d.profiles.some((profile) => profile.profileId === p.profileId && profile.currencyCode === p.providerScope.currencyCode)
+    || value.reservation.rows !== p.counts.providerRows
+    || value.reservation.rows > d.limits.maximumRowsPerCall
+    || p.counts.logicalChanges !== p.counts.providerRows || p.counts.uniqueEntities !== p.counts.providerRows
+    || p.counts.byRoute['sp.v3.keywords.update'] !== p.counts.providerRows
+    || Object.entries(p.counts.byRoute).some(([route, rows]) => route !== 'sp.v3.keywords.update' && rows !== 0)
+    || value.reservation.day !== value.approvedAt.slice(0, 10)
+    || Date.parse(value.gateSnapshot.checkedAt) > Date.parse(value.approvedAt)
+    || Date.parse(value.mcpGate.checkedAt) > Date.parse(value.approvedAt)
+    || Date.parse(value.approvedAt) < Date.parse(d.issuedAt)
+    || Date.parse(value.approvedAt) >= Date.parse(value.expiresAt)
+    || Date.parse(value.expiresAt) > Math.min(Date.parse(p.expiresAt), Date.parse(d.expiresAt))) {
+    context.addIssue({ code: 'custom', message: 'delegated receipt scope, capacity, actor or authority window disagrees' });
+  }
+});
+export type SpDelegatedAuthorizationReceiptV2 = z.infer<typeof SpDelegatedAuthorizationReceiptV2>;
+
+export const SpWriteAuthorizationReceipt = z.discriminatedUnion('schemaVersion', [
+  SpHumanAuthorizationReceiptV1, SpDelegatedAuthorizationReceiptV2,
+]);
 export type SpWriteAuthorizationReceipt = z.infer<typeof SpWriteAuthorizationReceipt>;
+
+export const SpWriteAuthorizationActor = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('operator'), userId: SpWriteUuid }).strict(),
+  z.object({ kind: z.literal('mcp_key'), userId: SpWriteUuid, keyId: SpWriteUuid,
+    delegationVersionId: SpWriteUuid }).strict(),
+]);
+export type SpWriteAuthorizationActor = z.infer<typeof SpWriteAuthorizationActor>;
+
+/** Historical attribution derives from the immutable receipt, never from a live key join. */
+export function spWriteAuthorizationActor(raw: SpWriteAuthorizationReceipt): SpWriteAuthorizationActor {
+  const receipt = SpWriteAuthorizationReceipt.parse(raw);
+  return receipt.approvalMode === 'delegated_mcp'
+    ? { kind: 'mcp_key', userId: receipt.delegation.issuerUserId, keyId: receipt.delegation.keyId,
+      delegationVersionId: receipt.delegation.versionId }
+    : { kind: 'operator', userId: receipt.approvedBy };
+}
+
+/** Exact delta comparison; a ratio is multiplied as integers, never rounded by division. */
+function relativeDeltaWithin(oldBid: SpCanonicalDecimal, newBid: SpCanonicalDecimal, ratio: SpCanonicalDecimal): boolean {
+  const a = decimalParts(oldBid), b = decimalParts(newBid), r = decimalParts(ratio);
+  const scale = Math.max(a.scale, b.scale);
+  const oldUnits = a.coefficient * 10n ** BigInt(scale - a.scale);
+  const newUnits = b.coefficient * 10n ** BigInt(scale - b.scale);
+  const delta = oldUnits >= newUnits ? oldUnits - newUnits : newUnits - oldUnits;
+  return delta * 10n ** BigInt(r.scale) <= oldUnits * r.coefficient;
+}
+
+/** Pure scope/cap proof. Current membership, revocation, gates and daily capacity remain SQL authority. */
+export function verifyMcpPlanLimits(rawPlan: unknown, rawDelegation: unknown): void {
+  const plan = SpWritePlan.parse(rawPlan);
+  const delegation = McpWriteDelegation.parse(rawDelegation);
+  if (plan.orgId !== delegation.orgId
+    || !delegation.profiles.some((p) => p.profileId === plan.profileId && p.currencyCode === plan.providerScope.currencyCode)
+    || plan.counts.providerRows > delegation.limits.maximumRowsPerCall) {
+    throw new Error('MCP write plan exceeds delegation scope or row limit');
+  }
+  const absolute = delegation.limits.maximumAbsoluteDeltaByCurrency.find((money) => money.currencyCode === plan.providerScope.currencyCode);
+  if (absolute === undefined) throw new Error('MCP write currency is not delegated');
+  for (const action of plan.actions) {
+    if (action.routeKey !== 'sp.v3.keywords.update' || Object.keys(action.changes).length !== 1
+      || action.changes.bid === undefined) throw new Error('MCP delegation permits keyword bids only');
+    const change = action.changes.bid;
+    SpKeywordBidDecimal.parse(change.expected.amount);
+    SpKeywordBidDecimal.parse(change.requested.amount);
+    if (change.expected.amount === change.requested.amount
+      || !decimalDeltaWithin(change.expected.amount, change.requested.amount, absolute.amount)
+      || !relativeDeltaWithin(change.expected.amount, change.requested.amount, delegation.limits.maximumRelativeDelta)) {
+      throw new Error('MCP write bid exceeds delegated delta limits');
+    }
+  }
+}
+
+export function verifyDelegatedSpWriteReceiptArtifacts(
+  rawPlan: unknown, rawDelegation: unknown, rawRequest: unknown,
+  rawReceipt: unknown, rawNow: unknown, hasher: SpWriteSha256Hasher,
+): { plan: SpWritePlan; delegation: McpWriteDelegation; receipt: SpDelegatedAuthorizationReceiptV2 } {
+  const plan = verifySpWritePlanFingerprints(rawPlan, hasher);
+  const delegation = verifyMcpWriteDelegationFingerprint(rawDelegation, hasher);
+  const request = McpBidApplyRequest.parse(rawRequest);
+  const receipt = SpDelegatedAuthorizationReceiptV2.parse(rawReceipt);
+  const now = SpWriteInstant.parse(rawNow);
+  verifyMcpPlanLimits(plan, delegation);
+  if (JSON.stringify(receipt.delegation) !== JSON.stringify(delegation)
+    || JSON.stringify(receipt.plan) !== JSON.stringify(spWritePlanBinding(plan))
+    || receipt.mcpRequestId !== request.requestId || plan.profileId !== request.profileId
+    || plan.id !== request.planId || plan.fingerprint !== request.planFingerprint
+    || (plan.source.kind === 'inverse_execution' && receipt.executionId !== plan.source.sourceExecutionId)
+    || Date.parse(receipt.approvedAt) < Date.parse(plan.frozenAt)
+    || Date.parse(receipt.approvedAt) > Date.parse(now) || Date.parse(now) >= Date.parse(receipt.expiresAt)) {
+    throw new Error('delegated SP receipt differs from its exact admission artifacts');
+  }
+  return { plan, delegation, receipt };
+}
+
+/** No actor or authority artifact can be submitted by the MCP caller. */
+export const McpBidApplyRequest = z.object({
+  requestId: SpWriteUuid, profileId: SpWriteUuid, planId: SpWriteUuid, planFingerprint: SpWriteSha256,
+}).strict();
+export type McpBidApplyRequest = z.infer<typeof McpBidApplyRequest>;
+
+/** Historical rehydration checks the recorded authority at admission, not today's key state. */
+function verifyRecordedDelegatedReceipt(
+  plan: SpWritePlan, receipt: SpWriteAuthorizationReceipt, hasher: SpWriteSha256Hasher,
+): void {
+  if (receipt.approvalMode !== 'delegated_mcp') return;
+  verifyDelegatedSpWriteReceiptArtifacts(plan, receipt.delegation, {
+    requestId: receipt.mcpRequestId, profileId: receipt.plan.profileId,
+    planId: receipt.plan.planId, planFingerprint: receipt.plan.planFingerprint,
+  }, receipt, receipt.approvedAt, hasher);
+}
 
 export type VerifiedSpWriteAuthorizationReceiptArtifacts =
   VerifiedSpWriteApprovalArtifacts & {
-    receipt: SpWriteAuthorizationReceipt;
+    receipt: SpHumanAuthorizationReceiptV1;
   };
 
 export function verifySpWriteAuthorizationReceiptArtifacts(
@@ -1081,7 +1314,7 @@ export function verifySpWriteAuthorizationReceiptArtifacts(
     rawNow,
     hasher,
   );
-  const receipt = SpWriteAuthorizationReceipt.parse(rawReceipt);
+  const receipt = SpHumanAuthorizationReceiptV1.parse(rawReceipt);
   const now = SpWriteInstant.parse(rawNow);
   const expectedInverse = approval.inverse === null
     ? null
@@ -1485,6 +1718,14 @@ export const SpWriteRefusalReason = z.enum([
   'duplicate_intent',
 ]);
 export type SpWriteRefusalReason = z.infer<typeof SpWriteRefusalReason>;
+
+/** Existing worker custody may close invalid delegated authority without a provider call. */
+export const SpWriteAuthoritySettlement = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('unchanged') }).strict(),
+  z.object({ kind: z.literal('refused'), refusedRows: z.number().int().min(1).max(500) }).strict(),
+  z.object({ kind: z.literal('stale_claim') }).strict(),
+]);
+export type SpWriteAuthoritySettlement = z.infer<typeof SpWriteAuthoritySettlement>;
 
 export const SpWritePreDispatchDisposition = z.object({
   schemaVersion: z.literal('openspell.sp-write-predispatch-disposition.v1'),
@@ -1986,6 +2227,7 @@ export function verifySpWriteExecutionEvidence(
 ): SpWriteExecutionEvidence {
   const evidence = SpWriteExecutionEvidence.parse(rawEvidence);
   verifySpWritePlanFingerprints(evidence.plan, hasher);
+  verifyRecordedDelegatedReceipt(evidence.plan, evidence.authorization, hasher);
   for (const observation of evidence.predispatchObservations) {
     verifyFingerprint(
       digestSha256(serializeSpWritePredispatchObservationFingerprint(observation), hasher),
@@ -2050,6 +2292,7 @@ function verifySpWriteJobIdentityArtifacts(
   const plan = verifySpWritePlanFingerprints(rawPlan, hasher);
   const authorization = SpWriteAuthorizationReceipt.parse(rawAuthorization);
   const job = SpWriteFutureJobPayload.parse(rawJob);
+  verifyRecordedDelegatedReceipt(plan, authorization, hasher);
   if (!planBindingAuthorizedByReceipt(plan, authorization)
     || JSON.stringify(jobPlanBinding(job)) !== JSON.stringify({
       planId: plan.id,

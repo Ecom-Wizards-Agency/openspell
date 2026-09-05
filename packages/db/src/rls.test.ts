@@ -7,7 +7,9 @@
  * asserts that the fixture actually put a row in every one of those tables for
  * both orgs: an empty table trivially leaks nothing.
  */
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { reviseRecommendation } from './queries/recommendation-revisions.js';
 import { createTestDatabase, databaseAvailable } from './testing/harness.js';
 import { asAnon, asServiceRole, asUser, tenantTables } from './testing/rls.js';
 import type { TestDatabase } from './testing/harness.js';
@@ -56,6 +58,13 @@ describe.skipIf(!available)('row level security', () => {
              ${USER_B}
         from public.ad_profiles where org_id = ${orgB}::uuid
     `;
+    for (const [orgId, userId] of [[orgA, USER_A], [orgB, USER_B]] as const) {
+      const [rec] = await database.sql<{ id: string; profile_id: string }[]>`
+        select id, profile_id from public.recommendations where org_id = ${orgId} limit 1`;
+      await reviseRecommendation(database, { orgId, userId }, { requestId: randomUUID(),
+        profileId: rec!.profile_id, recommendationId: rec!.id, expectedRevisionId: null,
+        proposedValue: '0.8123', note: 'Synthetic RLS revision evidence' });
+    }
     tables = await tenantTables(database);
   }, 60_000);
 

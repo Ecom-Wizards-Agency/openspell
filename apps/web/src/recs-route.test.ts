@@ -229,9 +229,9 @@ describe.skipIf(!available)('recommendation routes', () => {
     const response = await decide({ ids: [ids['foreign']], decision: 'accepted', note: '' });
     expect(response.status).toBe(200);
     const body = (await response.json()) as { updated: number; refused: unknown[] };
-    // Nothing moved, and nothing about the other tenant's row came back.
+    // Count the offered ID without revealing whether it exists in another tenant.
     expect(body.updated).toBe(0);
-    expect(body.refused).toEqual([]);
+    expect(body.refused).toEqual([{ id: ids['foreign'], status: 'unavailable' }]);
     const foreignId = ids['foreign'] ?? '';
     const [row] = await database.sql<{ status: string }[]>`
       select status::text as status from public.recommendations where id = ${foreignId}

@@ -34,6 +34,7 @@ import {
   type StagedReportDate,
 } from '@wizard-ads/db';
 import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
+import type { KeywordMirrorMergeCounts, KeywordMirrorMergeRequest } from '@wizard-ads/shared/sp-write-mirror';
 import {
   WorkerReportAccounting,
   type WorkerReportAccounting as WorkerReportAccountingShape,
@@ -85,6 +86,8 @@ function asDate(value: Date | string): Date {
 
 export interface EntitySyncOptions {
   adProduct?: 'SP' | 'SB' | 'SD';
+  /** Database time captured before the provider listing when keyword fencing is configured. */
+  readStartedAt?: string;
   /**
    * A full pass re-lists every entity the profile has, so an id the mirror
    * holds and the listing omits really is gone and earns a tombstone. A delta
@@ -106,6 +109,7 @@ export interface EntitySyncCounts {
   duplicates: number;
   changes: number;
   tombstoned: number;
+  keywordMirror?: KeywordMirrorMergeCounts;
 }
 
 /** The store's own narrow logging surface. `console` unless a caller says otherwise. */
@@ -153,6 +157,7 @@ export interface WorkerStore {
    */
   requeueStale(olderThan: string): Promise<number>;
   profile(profileId: string): Promise<AdsProfileContext>;
+  beginEntityRead?(): Promise<string>;
   syncEntities(
     profile: AdsProfileContext,
     entities: readonly EntityRow[],
@@ -252,6 +257,13 @@ export class ClaimOwnershipLost extends Error {
 
 export interface PostgresWorkerStoreOptions {
   claimProtocol?: 'legacy' | 'fenced';
+  keywordMirror?: KeywordMirrorCapability;
+}
+
+/** Injected by the activation composition; ordinary store construction stays compatible. */
+export interface KeywordMirrorCapability {
+  readStartedAt(): Promise<string>;
+  merge(request: KeywordMirrorMergeRequest): Promise<KeywordMirrorMergeCounts>;
 }
 
 /** `deletedAt` arrives as the wire string, not a `Date` — see the note on `asDate`. */
@@ -260,6 +272,8 @@ type ExistingEntity = { amazonId: string; deletedAt: Date | string | null; snaps
 export class PostgresWorkerStore implements WorkerStore {
   private readonly logger: StoreLogger;
   private readonly claimProtocol: 'legacy' | 'fenced';
+  private readonly keywordMirror: KeywordMirrorCapability | undefined;
+  readonly beginEntityRead?: () => Promise<string>;
 
   constructor(
     readonly handle: DbHandle,
@@ -268,6 +282,8 @@ export class PostgresWorkerStore implements WorkerStore {
   ) {
     this.logger = logger ?? { info: (message, details) => console.info(message, details ?? {}) };
     this.claimProtocol = options.claimProtocol ?? 'legacy';
+    this.keywordMirror = options.keywordMirror;
+    if (this.keywordMirror) this.beginEntityRead = () => this.keywordMirror!.readStartedAt();
   }
 
   claim(workerId: string, limit: number, jobTypes?: readonly JobType[]): Promise<ClaimedJob[]> {
@@ -379,6 +395,7 @@ export class PostgresWorkerStore implements WorkerStore {
     options: EntitySyncOptions = {},
   ): Promise<EntitySyncCounts> {
     const { adProduct, full = false } = options;
+    if (this.keywordMirror && options.readStartedAt === undefined) throw new Error('keyword mirror requires the provider read-start time');
     for (const entity of entities) {
       if (entity.profileId !== profile.id) {
         throw new Error(`entity ${entity.amazonId} belongs to profile ${entity.profileId}, expected ${profile.id}`);
@@ -388,6 +405,7 @@ export class PostgresWorkerStore implements WorkerStore {
     let upserted = 0;
     let tombstoned = 0;
     let duplicates = 0;
+    let keywordMirror: KeywordMirrorMergeCounts | undefined;
     const changes: NewEntityChange[] = [];
     const entityTypes = ['portfolio', 'campaign', 'ad_group', 'product_ad', 'keyword', 'target', 'negative'] as const;
 
@@ -408,6 +426,14 @@ export class PostgresWorkerStore implements WorkerStore {
           duplicates: collapsed.duplicateIds.length,
           ids: collapsed.duplicateIds.slice(0, MAX_LOGGED_DUPLICATE_IDS),
         });
+      }
+      if (entityType === 'keyword' && this.keywordMirror) {
+        keywordMirror = await this.keywordMirror.merge({ orgId: profile.orgId, profileId: profile.id,
+          ...(adProduct === undefined ? {} : { adProduct }), full, readStartedAt: options.readStartedAt!,
+          rows: incoming.filter(isType('keyword')) });
+        upserted += keywordMirror.upserted;
+        tombstoned += keywordMirror.tombstoned;
+        continue;
       }
       const existing = await this.existingEntities(profile.id, entityType, adProduct);
       const byId = new Map(existing.map((row) => [row.amazonId, row]));
@@ -470,7 +496,8 @@ export class PostgresWorkerStore implements WorkerStore {
         `entity sync listed ${entities.length} rows but upserted ${upserted} (${duplicates} duplicates)`,
       );
     }
-    return { listed: entities.length, upserted, duplicates, changes: writtenChanges, tombstoned };
+    return { listed: entities.length, upserted, duplicates, changes: writtenChanges + (keywordMirror?.changes ?? 0), tombstoned,
+      ...(keywordMirror === undefined ? {} : { keywordMirror }) };
   }
 
   async ensureReportRequest(

@@ -104,6 +104,7 @@ export async function readDashboardOperatingStatus(
          where b.org_id = ${input.orgId}
            and b.profile_id = ${input.profileId}
            and b.status = 'staged'
+           and b.source_kind = 'legacy_export'
          order by b.exported_at desc, b.id desc
          limit 1
       ) batch on true

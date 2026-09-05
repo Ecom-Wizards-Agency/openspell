@@ -34,6 +34,14 @@ import type { TestDatabase } from './testing/harness.js';
 const available = await databaseAvailable();
 const OWNER_USER_ID = '00000000-0000-4000-8000-000000009188';
 
+// These WP-188 fixtures deliberately stage raw provider plans without source
+// exports or mirror rows. Preserve their original admission contract while
+// exercising the real custody/dispatch migration. Current source-backed
+// admission is covered by queries/sp-write-approval.test.ts.
+const createFacadeTestDatabase = (label: string) => createTestDatabase(label, {
+  throughMigration: '20260905000000_sp_write_preview_evidence.sql',
+});
+
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => {
@@ -406,7 +414,7 @@ async function enableAuthority(database: TestDatabase, tenant: Tenant, seed: num
 
 describe.skipIf(!available)('SP write persistence facade default-off integration', () => {
   it('cannot start, lease, or reserve from an empty authority state', async () => {
-    const database = await createTestDatabase('sp_write_facade_empty');
+    const database = await createFacadeTestDatabase('sp_write_facade_empty');
     try {
       const [seed] = await database.sql<{ seed_tenant_fixture: string }[]>`
         select app.seed_tenant_fixture(
@@ -517,7 +525,7 @@ describe.skipIf(!available)('SP write persistence facade integration', () => {
   let secondTenant: Pick<Tenant, 'orgId' | 'profileId'>;
 
   beforeAll(async () => {
-    database = await createTestDatabase('sp_write_facade');
+    database = await createFacadeTestDatabase('sp_write_facade');
     const [seed] = await database.sql<{ seed_tenant_fixture: string }[]>`
       select app.seed_tenant_fixture('sp-write-facade', ${OWNER_USER_ID}::uuid, 'owner')
     `;
@@ -901,7 +909,7 @@ describe.skipIf(!available)('SP write persistence facade integration', () => {
 
 describe.skipIf(!available)('SP write outbox reservation purge interlock', () => {
   it('commits the reservation winner before a waiting purge fails closed', async () => {
-    const database = await createTestDatabase('sp_write_reservation_purge');
+    const database = await createFacadeTestDatabase('sp_write_reservation_purge');
     const blocker = postgres(database.connectionString, { max: 1, onnotice: () => {} });
     const caller = postgres(database.connectionString, { max: 1, onnotice: () => {} });
     const deleter = postgres(database.connectionString, { max: 1, onnotice: () => {} });

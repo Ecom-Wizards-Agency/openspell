@@ -22,12 +22,14 @@ Three facts shape every design decision in here:
    creation and approved bid, budget, placement, targeting, and state changes may be
    applied directly by the worker. Read-only preview remains the default; no write is
    implicit in viewing, analysing, syncing, or generating a recommendation.
-2. **Every write is an operator-approved batch.** Before execution the UI shows the
-   exact profile, entities, old/new values, guardrails, and change count. The operator
-   explicitly confirms the batch; the worker then applies it idempotently, records every
-   response, resynchronizes the affected entities, and exposes conflicts or failures.
-   Automatic execution exists only for a deliberately configured and enabled cadence with
-   its own bounds and kill switch. Without an active cadence, no unattended batch is pushed.
+2. **Every write has explicit operator authority.** UI writes require confirmation of an
+   immutable batch showing the exact profile, entities, old/new values, guardrails and count.
+   MCP writes may use an active, separately operator-issued delegation for the exact profile
+   and action class. Each delegated call binds its immutable preview, key and owning user to
+   a versioned receipt before execution. The worker applies approved changes idempotently,
+   records every response, resynchronizes entities and exposes conflicts or failures.
+   Scheduled execution requires a deliberately enabled cadence with its own bounds and kill
+   switch; individual calls under a bounded MCP delegation do not create a cadence.
 3. **This repository is public.** Everything below about hygiene follows from that.
 
 Architecture and phase plan: `docs/PLAN.md`. Program status: `docs/STATUS.md`.
@@ -50,7 +52,7 @@ files. Keep this map because these boundaries still define where code belongs.
 | `packages/ui` | Reusable DataGrid, chart, and tile primitives. | Presentation only. |
 | `apps/web` | Next.js operator application. | May preview, approve, and enqueue; never calls Amazon. |
 | `apps/worker` | Sync, reports, schedules, and mutation execution. | Every Amazon API call happens here. |
-| `apps/mcp` | Authenticated MCP interface. | No direct Amazon calls; cannot self-approve. |
+| `apps/mcp` | Authenticated read/preview and bounded delegated admission. | No direct Amazon calls; cannot issue or enlarge its own delegation. |
 | `supabase/` | Migrations, RLS, partitions, and seed structure. | No production execution without scoped authorization. |
 | `fixtures/` | Python-to-TypeScript parity harness. | Synthetic data only. |
 | `tools/crosscheck-cli` | Crosscheck CLI and exit-report generator. | Read-only evidence. |
@@ -117,8 +119,10 @@ Amazon writes are allowed only through this contract:
 
 1. **Worker-only execution.** `apps/web` may validate, preview, approve, and enqueue a
    batch, but it never imports `packages/ads-api` and never receives Amazon credentials.
-   `apps/mcp` may create drafts and trigger an already approved batch, but it never calls
-   Amazon directly and cannot approve its own change in the same operation.
+   `apps/mcp` validates and enqueues through the same application boundary, with no direct
+   Amazon calls. A valid operator-issued write key may admit a separately recorded preview
+   within its delegation without a new UI confirmation. MCP cannot issue or enlarge that
+   delegation; preview and apply remain separate operations.
 2. **Explicit profile enablement.** Production writes require both an environment-level
    write gate and a tenant/profile allowlist. Missing, expired, or mismatched authorization
    fails closed. A read credential or successful sync never implies write permission.
@@ -129,7 +133,10 @@ Amazon writes are allowed only through this contract:
 4. **Unambiguous confirmation.** The final control names Amazon and the exact count, for
    example **“Yes, apply 24 changes to Amazon”** or **“Yes, create 6 campaigns in Amazon.”**
    Selection, confirmation, and execution are separate acts. Stale or changed previews
-   require a new approval.
+   require a new approval. Delegated MCP admission instead checks the saved plan fingerprint
+   against immutable key/user ownership, current owner/admin membership, profile/action scope,
+   expiry, per-call limits and atomic daily capacity. It records the delegated receipt, key
+   audit, reservation and queued work in one transaction; it never records a fabricated click.
 5. **Idempotent, conflict-aware batches.** Every batch and row carries a stable idempotency
    identity. The worker checks the latest synchronized state before mutation, never retries
    a successful row as a new write, and records partial success without presenting the whole
@@ -146,14 +153,20 @@ Amazon writes are allowed only through this contract:
    It refuses blind inversion on conflicts and normally requires a fresh explicit
    confirmation. A bounded live-test authorization may pre-approve the exact inverse as part
    of the same test cycle, so the worker can verify and reverse without waiting for a second
-   operator response. Creation has no delete rollback; any pause/archive proposal is a
-   separate reviewed action.
+   operator response. A delegated MCP inverse is a separately recorded plan checked against
+   current state and the same active delegation, caps, daily capacity and audit requirements.
+   It has no unlimited rollback exemption. Creation has no delete rollback; any pause/archive
+   proposal is a separate reviewed action.
 9. **No automatic execution by accident.** Schedules, optimization cadence, dayparting, AI,
    and webhooks may execute only when the operator deliberately creates and enables a cadence
    for that profile and action class. The cadence carries its own caps, approval provenance,
    next-run visibility, pause control, and kill switch. Without an active cadence, these
-   surfaces may generate previews but cannot push. MCP cannot create or enable a cadence and
-   cannot mutate Amazon without a separately recorded approval.
+   surfaces may generate previews but cannot push. A separately operator-issued delegation
+   authorizes individual MCP calls, including calls made by an agent, within its recorded bounds.
+   MCP cannot issue keys, enlarge authority, create or enable a cadence, or override a kill
+   switch. Database authority rechecks revocation, expiry, membership and gates immediately
+   before a new provider intent is reserved. Already reserved calls may still finish and be
+   observed; closing a gate cannot retract an in-flight request.
 10. **Live tests need scoped authorization.** Unit and integration tests use fake providers and
     synthetic fixtures. A live Amazon write smoke test requires either an exact
     operator-approved action or a current, gitignored
@@ -162,7 +175,8 @@ Amazon writes are allowed only through this contract:
     The worker resolves the final entity, records the immutable preview and inverse, allows
     only one active test mutation, and stops on stale state, conflict, missing observation,
     or any exceeded bound. Never use a live account merely because credentials are available.
-    Profile names and ids never enter a tracked file.
+    Live delegated tests must also name the exact key/profile/action limits and inverse behavior
+    in that scoped authorization. Profile names and ids never enter a tracked file.
 
 ## Public-repo hygiene
 

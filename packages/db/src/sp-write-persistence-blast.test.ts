@@ -8,6 +8,38 @@ import * as persistence from './sp-write-persistence.js';
 import * as workerDatabase from './worker.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+const APPLICATION_CONSUMERS = [
+  'apps/mcp/src/writes-http.test.ts',
+  'apps/mcp/src/writes.ts',
+  'apps/web/app/api/sp-writes/approve/route.ts',
+  'apps/web/app/api/sp-writes/inverse-preview/route.ts',
+  'apps/web/app/api/sp-writes/preview/route.ts',
+  'apps/web/app/api/sp-writes/status/route.ts',
+  'apps/web/src/server/mcp-key-mutations.ts',
+  'apps/web/src/writes/http.ts',
+  'apps/worker/src/sp-write-outbox/loop.test.ts',
+  'apps/worker/src/sp-write-outbox/mcp-history.test.ts',
+].map((path) => `${REPO_ROOT}${path}`);
+const MCP_CONSUMERS = [
+  'apps/mcp/src/writes-http.test.ts',
+  'apps/mcp/src/writes.ts',
+  'apps/web/src/data/mcp-keys.ts',
+  'apps/worker/src/sp-write-outbox/mcp-history.test.ts',
+].map((path) => `${REPO_ROOT}${path}`);
+const WORKER_CONSUMERS = [
+  'apps/worker/src/sp-write-outbox/artifacts.ts',
+  'apps/worker/src/sp-write-outbox/loop.test.ts',
+  'apps/worker/src/sp-write-outbox/loop.ts',
+  'apps/worker/src/sp-write-outbox/mcp-history.test.ts',
+].map((path) => `${REPO_ROOT}${path}`);
+const INERT_WORKER_MARKERS: Record<string, readonly string[]> = {
+  'artifacts.ts': ['sp-write-adapter', '@wizard-ads/db/sp-write-persistence', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence'],
+  'providers.ts': ['sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', '@wizard-ads/db/sp-write-worker'],
+  'loop.ts': ['sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence', '@wizard-ads/db/sp-write-persistence', 'createSpWriteOutboxLedger', 'createSpWriteRuntimeLedger', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
+  'loop.test.ts': ['sp_write_', 'sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence', '@wizard-ads/db/sp-write-persistence', 'createSpWriteOutboxLedger', 'createSpWriteRuntimeLedger', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
+  'composition.ts': ['createSpWriteOutboxLoop', 'createSpWriteWorker', '@wizard-ads/db/sp-write-worker'],
+  'mcp-history.test.ts': ['sp_write_', 'sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence', '@wizard-ads/db/sp-write-persistence', 'createSpWriteOutboxLedger', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
+};
 
 async function sourceFiles(directory: string): Promise<string[]> {
   const files: string[] = [];
@@ -72,21 +104,29 @@ describe('SP write persistence facade blast radius', () => {
     expect(syncJobType.enumValues.some((value) => value.startsWith('sp_write.'))).toBe(false);
   });
 
-  it('has no current app consumer or provider/runtime dependency', async () => {
+  it('allows only declared application consumers and no provider dependency in persistence', async () => {
     const appRoots = ['apps/worker', 'apps/web', 'apps/mcp', 'apps/analyst']
       .map((path) => `${REPO_ROOT}${path}`);
     const appFiles = (await Promise.all(appRoots.map(sourceFiles))).flat();
     expect(appFiles.length).toBeGreaterThan(100);
     const consumers: string[] = [];
+    const applicationConsumers: string[] = [];
+    const mcpConsumers: string[] = [];
     for (const path of appFiles) {
       const text = await readFile(path, 'utf8');
       if (text.includes('@wizard-ads/db/sp-write-persistence')) consumers.push(path);
+      if (text.includes('@wizard-ads/db/sp-write-application')) applicationConsumers.push(path);
+      if (text.includes('@wizard-ads/db/mcp-writes')) mcpConsumers.push(path);
     }
-    expect(consumers).toEqual([]);
+    expect(consumers.sort()).toEqual(WORKER_CONSUMERS);
+    expect(applicationConsumers.sort()).toEqual(APPLICATION_CONSUMERS);
+    expect(mcpConsumers.sort()).toEqual(MCP_CONSUMERS);
 
     const productionFiles = [
       `${REPO_ROOT}packages/db/src/sp-write-persistence.ts`,
       `${REPO_ROOT}packages/db/src/queries/sp-write-persistence.ts`,
+      `${REPO_ROOT}packages/db/src/queries/mcp-writes.ts`,
+      `${REPO_ROOT}packages/db/src/queries/mcp-write-application.ts`,
     ];
     const productionText = (await Promise.all(
       productionFiles.map((path) => readFile(path, 'utf8')),
@@ -107,7 +147,7 @@ describe('SP write persistence facade blast radius', () => {
     expect(productionText).not.toMatch(/\bfetch\s*\(/);
   });
 
-  it('finds no operational activation in apps, CI, seeds, or deployment surfaces', async () => {
+  it('keeps provider activation absent and confines default-off MCP registration to its declared surface', async () => {
     const roots = [
       'apps',
       '.github',
@@ -128,15 +168,23 @@ describe('SP write persistence facade blast radius', () => {
     expect(operationalFiles.length).toBeGreaterThan(150);
 
     const activationMarkers = [
+      'registerMcpWriteTools',
+      'OPENSPELL_MCP_WRITES_ENABLED',
+      '@wizard-ads/db/mcp-writes',
       'sp_write_',
       'SP_WRITE',
       'sp-write-persistence',
+      '@wizard-ads/db/sp-write-application',
       'sp-write-adapter',
       '@wizard-ads/db/sp-write-persistence',
       '@wizard-ads/ads-api/sp-write-adapter',
       'createSpWriteRuntimeLedger',
       'createSpWriteStagingLedger',
       'createSpWriteOutboxLedger',
+      'createSpWriteOutboxLoop',
+      'createSpWriteWorker',
+      '@wizard-ads/db/sp-write-worker',
+      'sp-write-outbox',
       'record_sp_write_plan',
       'reserve_sp_write_provider_call',
       'sp_write.dispatch',
@@ -147,6 +195,24 @@ describe('SP write persistence facade blast radius', () => {
     for (const path of operationalFiles) {
       const source = await readFile(path, 'utf8');
       for (const marker of activationMarkers) {
+        if (marker === '@wizard-ads/db/mcp-writes' && MCP_CONSUMERS.includes(path)) continue;
+        if (marker === 'registerMcpWriteTools' && [
+          `${REPO_ROOT}apps/mcp/src/server.ts`, `${REPO_ROOT}apps/mcp/src/writes.ts`,
+        ].includes(path)) continue;
+        if (marker === 'OPENSPELL_MCP_WRITES_ENABLED' && [
+          `${REPO_ROOT}apps/mcp/src/config.ts`, `${REPO_ROOT}apps/mcp/src/config.test.ts`,
+          `${REPO_ROOT}apps/mcp/src/writes-http.test.ts`,
+        ].includes(path)) continue;
+        if (marker === '@wizard-ads/db/sp-write-application' && APPLICATION_CONSUMERS.includes(path)) continue;
+        if (marker === 'sp_write_' && [
+          `${REPO_ROOT}apps/web/src/writes/http.test.ts`,
+          `${REPO_ROOT}apps/web/src/recommendations/revisions-http.test.ts`,
+          `${REPO_ROOT}apps/web/src/mcp-write-keys-route.test.ts`,
+          `${REPO_ROOT}apps/mcp/src/writes-http.test.ts`,
+        ].includes(path)) continue;
+        const workerRelative = path.startsWith(`${REPO_ROOT}apps/worker/src/sp-write-outbox/`)
+          ? path.slice(`${REPO_ROOT}apps/worker/src/sp-write-outbox/`.length) : '';
+        if (INERT_WORKER_MARKERS[workerRelative]?.includes(marker)) continue;
         if (source.includes(marker)) matches.push({ path, marker });
       }
     }
@@ -156,6 +222,16 @@ describe('SP write persistence facade blast radius', () => {
     const inertSpWriteMigrationSuffixes = [
       '/20260901020000_sp_write_persistence_ledger.sql',
       '/20260901030000_sp_write_outbox_delivery.sql',
+      '/20260905000000_sp_write_preview_evidence.sql',
+      '/20260905010000_sp_write_preview_approval.sql',
+      '/20260905020000_sp_write_application_entry.sql',
+      '/20260905030000_sp_write_mirror_observations.sql',
+      '/20260905040000_recommendation_proposal_revisions.sql',
+      '/20260906000000_mcp_write_delegation_mode.sql',
+      '/20260906010000_mcp_write_delegations.sql',
+      '/20260906020000_mcp_bid_proposal_sources.sql',
+      '/20260906030000_mcp_write_admissions.sql',
+      '/20260906040000_mcp_write_preview_sources.sql',
     ];
     const inertSpWriteMigrations = migrations.filter((path) =>
       inertSpWriteMigrationSuffixes.some((suffix) => path.endsWith(suffix)));

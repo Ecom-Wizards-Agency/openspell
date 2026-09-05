@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   SpWriteAccounting,
   SpWriteAuthorizationReceipt,
+  SpWriteAuthoritySettlement,
   SpWriteExecutionSnapshot,
   SpWriteExecutionStatus,
   SpWriteObservation,
@@ -64,6 +65,7 @@ export type SpWritePersistenceOperation =
   | 'renew_outbox_claim'
   | 'defer_outbox_claim'
   | 'complete_outbox_claim'
+  | 'settle_delegated_authority'
   | 'acquire_dispatch_lease'
   | 'reserve_provider_call'
   | 'read_dispatch_ticket'
@@ -277,6 +279,7 @@ export interface SpWriteOutboxLedger {
     reason: SpWriteDeferReason,
   ): Promise<SpWriteDeferOutcome>;
   completeClaim(claim: SpWriteOutboxClaim): Promise<SpWriteCompleteOutcome>;
+  settleDelegatedAuthority(claim: SpWriteDispatchOutboxClaim): Promise<SpWriteAuthoritySettlement>;
 }
 
 export interface SpWriteRuntimeLedger {
@@ -720,7 +723,7 @@ class DefaultSpWriteStagingLedger implements SpWriteStagingLedger {
         select app.record_sp_write_plan(
           ${artifactText},
           ${planPreimage},
-          ${JSON.stringify(actionProofs)}::jsonb
+          ${JSON.stringify(actionProofs)}::text::jsonb
         )::text
       `;
       const row = exactSingleRow('record_plan', rows);
@@ -766,7 +769,7 @@ class DefaultSpWriteStagingLedger implements SpWriteStagingLedger {
         select app.record_sp_write_bounded_authorization(
           ${artifactText},
           ${fingerprintPreimage},
-          ${JSON.stringify(prepared.bindings)}::jsonb
+          ${JSON.stringify(prepared.bindings)}::text::jsonb
         )::text
       `;
       const row = exactSingleRow('record_bounded_authorization', rows);
@@ -780,6 +783,30 @@ class DefaultSpWriteStagingLedger implements SpWriteStagingLedger {
 
 class DefaultSpWriteOutboxLedger implements SpWriteOutboxLedger {
   constructor(private readonly sql: Sql) {}
+
+  async settleDelegatedAuthority(claim: SpWriteDispatchOutboxClaim): Promise<SpWriteAuthoritySettlement> {
+    const operation = 'settle_delegated_authority' as const;
+    const prepared = parseInput(operation, () => ({
+      outboxId: assertUuid(claim.outboxId), claimEpoch: assertClaimEpoch(claim.claimEpoch),
+      token: claimToken(operation, claim, 'dispatch'),
+    }));
+    return runDatabaseOperation(operation, async () => {
+      const rows = await this.sql<{ decision: string; refused_rows: number; checked_at: Date | string }[]>`
+        select decision, refused_rows, checked_at from app.refuse_invalid_mcp_write_for_claim(
+          ${prepared.outboxId}::uuid, ${prepared.claimEpoch}::bigint, ${prepared.token}::uuid
+        )
+      `;
+      const row = exactSingleRow(operation, rows);
+      if (!hasExactKeys(row, ['decision', 'refused_rows', 'checked_at'])) throw protocolFailure(operation);
+      const checkedAt = parseDatabaseDate(operation, row.checked_at);
+      if (checkedAt.getTime() < parseDatabaseDate(operation, claim.claimedAt).getTime()) throw protocolFailure(operation);
+      const result = SpWriteAuthoritySettlement.safeParse(row.decision === 'refused'
+        ? { kind: row.decision, refusedRows: row.refused_rows }
+        : { kind: row.decision });
+      if (!result.success || (row.decision !== 'refused' && row.refused_rows !== 0)) throw protocolFailure(operation);
+      return Object.freeze(result.data);
+    });
+  }
 
   async claimAvailable(input: unknown): Promise<SpWriteOutboxClaimBatch> {
     const prepared = parseInput('claim_outbox', () => {

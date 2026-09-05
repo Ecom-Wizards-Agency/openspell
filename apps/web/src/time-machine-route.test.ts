@@ -3,7 +3,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { recordEntityChanges } from '@wizard-ads/db';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
+import { seedSyntheticMcpProposal } from '@wizard-ads/db/testing/mcp-write';
 import { POST } from '../app/api/time-machine/reversion/route.js';
+import { GET as download } from '../app/api/recommendations/export/[batchId]/route.js';
 
 const available = await databaseAvailable();
 const OWNER = '74747474-7474-4474-8474-747474747474';
@@ -111,6 +113,22 @@ describe.skipIf(!available)('Time Machine reversion route', () => {
     expectedRows: 1,
     note: 'Synthetic operator reversion',
     confirmation: 'Yes, export reversion',
+  });
+
+  it('refuses MCP source IDs through every legacy download and inverse endpoint', async () => {
+    const source = await seedSyntheticMcpProposal(database, { orgId, userId: OWNER }, profileId);
+    const mcpBatchId = source.artifact.applyBatchId;
+    for (const format of ['rows', 'caps', 'xlsx']) {
+      const response = await download(new Request(`http://localhost/api/recommendations/export/${mcpBatchId}?format=${format}`, {
+        headers: { 'x-wizard-ads-auth-bridge': BRIDGE, 'x-wizard-ads-user-id': OWNER, 'x-wizard-ads-org-id': orgId },
+      }), { params: Promise.resolve({ batchId: mcpBatchId }) });
+      expect(response.status).toBe(404);
+      expect(response.headers.get('content-disposition')).toBeNull();
+    }
+    expect((await request({ ...validBody(), batchId: mcpBatchId })).status).toBe(404);
+    const [stored] = await database.sql<{ inverses: number }[]>`select count(*)::int as inverses
+      from public.apply_batches where source_batch_id = ${mcpBatchId}`;
+    expect(stored?.inverses).toBe(0);
   });
 
   it('requires the exact confirmation and current row count', async () => {

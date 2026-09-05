@@ -24,5 +24,13 @@ describe('MCP configuration', () => {
     });
 
     expect(config.revision).toBe('1234567abcdef');
+    expect(config.writeToolsEnabled).toBe(false);
+  });
+
+  it('requires explicit startup exposure of delegated write tools', () => {
+    const base = { WIZARD_ADS_MCP_DATABASE_URL: 'postgresql://localhost/wizard_ads_test' };
+    expect(configFromEnv({ ...base, OPENSPELL_MCP_WRITES_ENABLED: '1' }).writeToolsEnabled).toBe(true);
+    expect(configFromEnv({ ...base, OPENSPELL_MCP_WRITES_ENABLED: '0' }).writeToolsEnabled).toBe(false);
+    expect(() => configFromEnv({ ...base, OPENSPELL_MCP_WRITES_ENABLED: 'true' })).toThrow('must be 0 or 1');
   });
 });

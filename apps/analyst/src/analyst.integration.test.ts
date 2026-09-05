@@ -84,6 +84,7 @@ describe.skipIf(!available)('daily analyst against dev-seed', () => {
       statementTimeoutSeconds: 30,
       maxRows: 1000,
       maxDownloadBytes: 5_000_000,
+      writeToolsEnabled: false,
     };
     server = await startHttpServer({ config, handle: db });
 

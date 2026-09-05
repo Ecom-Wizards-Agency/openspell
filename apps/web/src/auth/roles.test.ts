@@ -21,6 +21,7 @@ const EXPECTED: Record<OrgRole, Record<Capability, boolean>> = {
     triageFeedback: true,
     manageExperiments: true,
     exportBatches: true,
+    applyAmazonChanges: true,
   },
   admin: {
     read: true,
@@ -31,6 +32,7 @@ const EXPECTED: Record<OrgRole, Record<Capability, boolean>> = {
     triageFeedback: true,
     manageExperiments: true,
     exportBatches: true,
+    applyAmazonChanges: true,
   },
   analyst: {
     read: true,
@@ -41,6 +43,7 @@ const EXPECTED: Record<OrgRole, Record<Capability, boolean>> = {
     triageFeedback: false,
     manageExperiments: true,
     exportBatches: false,
+    applyAmazonChanges: false,
   },
   viewer: {
     read: true,
@@ -51,6 +54,7 @@ const EXPECTED: Record<OrgRole, Record<Capability, boolean>> = {
     triageFeedback: false,
     manageExperiments: false,
     exportBatches: false,
+    applyAmazonChanges: false,
   },
 };
 
@@ -77,6 +81,7 @@ describe('org roles', () => {
     expect(rolesWith('manageMembers')).toEqual(['owner', 'admin']);
     expect(rolesWith('triageFeedback')).toEqual(['owner', 'admin']);
     expect(rolesWith('exportBatches')).toEqual(['owner', 'admin']);
+    expect(rolesWith('applyAmazonChanges')).toEqual(['owner', 'admin']);
   });
 
   it('keeps manageMembers aligned with every org_members write policy', () => {

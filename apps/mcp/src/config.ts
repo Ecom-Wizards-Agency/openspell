@@ -25,6 +25,8 @@ export interface McpConfig {
   maxRows: number;
   /** Hard cap on the bytes `download_data` may return. */
   maxDownloadBytes: number;
+  /** Startup exposure only. Database authority also gates admission and queued dispatch. */
+  writeToolsEnabled: boolean;
 }
 
 export const DEFAULT_MAX_ROWS = 1000;
@@ -60,6 +62,10 @@ export function revisionFromEnv(env: NodeJS.ProcessEnv): string {
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): McpConfig {
+  const writeFlag = env['OPENSPELL_MCP_WRITES_ENABLED'];
+  if (writeFlag !== undefined && writeFlag !== '' && writeFlag !== '0' && writeFlag !== '1') {
+    throw new Error('OPENSPELL_MCP_WRITES_ENABLED must be 0 or 1.');
+  }
   return {
     connectionString: env['WIZARD_ADS_MCP_DATABASE_URL'] ?? required(env, 'DATABASE_URL'),
     port: integer(env, 'WIZARD_ADS_MCP_PORT', 8787),
@@ -70,5 +76,6 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): McpConfig {
     statementTimeoutSeconds: integer(env, 'WIZARD_ADS_MCP_STATEMENT_TIMEOUT', 30),
     maxRows: integer(env, 'WIZARD_ADS_MCP_MAX_ROWS', DEFAULT_MAX_ROWS),
     maxDownloadBytes: integer(env, 'WIZARD_ADS_MCP_MAX_DOWNLOAD_BYTES', DEFAULT_MAX_DOWNLOAD_BYTES),
+    writeToolsEnabled: writeFlag === '1',
   };
 }

@@ -1,3 +1,4 @@
+import { RecommendationRevisionSelection } from '@wizard-ads/shared/recommendation-revisions';
 /**
  * Export accepted proposals as a staged-apply batch.
  *
@@ -37,6 +38,7 @@ export async function POST(request: Request): Promise<Response> {
       client?: unknown;
       today?: unknown;
       ids?: unknown;
+      expectedRevisions?: unknown;
     };
     if (typeof body.runId !== 'string') throw new Error('runId is required');
     if (typeof body.profileId !== 'string') throw new Error('profileId is required');
@@ -45,7 +47,11 @@ export async function POST(request: Request): Promise<Response> {
     }
     const optGroup = typeof body.optGroup === 'string' && body.optGroup.trim() ? body.optGroup.trim() : 'ungrouped';
     const lever = typeof body.lever === 'string' && body.lever.trim() ? body.lever.trim() : 'bid-down';
-    const ids = Array.isArray(body.ids) ? (body.ids.filter((id) => typeof id === 'string') as string[]) : null;
+    if (body.ids !== undefined && body.ids !== null
+      && (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== 'string'))) {
+      throw new Error('ids must contain only proposal ids');
+    }
+    const ids = body.ids == null ? null : body.ids as string[];
 
     const run = await getRecommendationRun(database, { orgId: actor.orgId, runId: body.runId });
     if (run === null) throw new Error('Not found');
@@ -63,6 +69,7 @@ export async function POST(request: Request): Promise<Response> {
       profileId: body.profileId,
       runId: body.runId,
       ids,
+      ...(body.expectedRevisions === undefined ? {} : { expectedRevisions: RecommendationRevisionSelection.parse(body.expectedRevisions) }),
       tag,
       optGroup,
       lever,

@@ -18,6 +18,8 @@ export interface ResolvedApplyState extends ApplyStateTarget {
   supported: boolean;
   present: boolean;
   currentValue: ApplyValue | null;
+  /** Exact scalar text from PostgreSQL, before JSON numeric decoding. */
+  currentValueText: string | null;
   currentSyncedAt: Date | null;
 }
 
@@ -63,6 +65,7 @@ interface ApplyStateRow {
   supported: boolean;
   present: boolean;
   current_value: ApplyValue | null;
+  current_value_text: string | null;
   current_synced_at: Date | string | null;
 }
 
@@ -81,7 +84,7 @@ export async function resolveCurrentApplyStates(
     select offered.row_key, offered.entity_type::text as entity_type,
            offered.entity_id, offered.field,
            resolved.supported, resolved.present,
-           resolved.current_value, resolved.current_synced_at
+           resolved.current_value, resolved.current_value #>> '{}' as current_value_text, resolved.current_synced_at
       from unnest(
              ${input.targets.map((target) => target.key)}::text[],
              ${input.targets.map((target) => target.entityType)}::text[],
@@ -111,6 +114,7 @@ export async function resolveCurrentApplyStates(
     supported: row.supported,
     present: row.present,
     currentValue: row.current_value,
+    currentValueText: row.current_value_text,
     currentSyncedAt: toDateOrNull(row.current_synced_at),
   }));
 }

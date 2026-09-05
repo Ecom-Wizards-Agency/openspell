@@ -48,6 +48,7 @@ function record(reason: string, overrides: Partial<RecommendationRecord> = {}): 
     field: 'bid',
     currentValue: 0.9,
     proposedValue: 0.72,
+    proposalRevisionId: null,
     inputs: inputsFor(reason),
     status: 'proposed',
     decidedBy: null,

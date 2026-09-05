@@ -87,7 +87,7 @@ export function ReversionPanel({ preview, canExport }: ReversionPanelProps) {
         <strong>Guardrails</strong>
         <span>Every row must have one uniquely linked sync observation.</span>
         <span>The current mirror must still equal the exported value.</span>
-        <span>This creates a review file only. OpenSpell does not update Amazon in the current release.</span>
+        <span>This creates a review file only. Creating this export does not change Amazon.</span>
       </div>
 
       <div className="wa-tablewrap">

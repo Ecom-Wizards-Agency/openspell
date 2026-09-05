@@ -25,12 +25,13 @@ export type Capability =
   | 'manageMembers'
   | 'triageFeedback'
   | 'exportBatches'
+  | 'applyAmazonChanges'
   // WP-19: file and edit your own experiments (analyst+); an admin edits any.
   | 'manageExperiments';
 
 const CAPABILITIES: Record<OrgRole, readonly Capability[]> = {
-  owner: ['read', 'editTargets', 'toggleSync', 'manageConnection', 'manageMembers', 'triageFeedback', 'exportBatches', 'manageExperiments'],
-  admin: ['read', 'editTargets', 'toggleSync', 'manageConnection', 'manageMembers', 'triageFeedback', 'exportBatches', 'manageExperiments'],
+  owner: ['read', 'editTargets', 'toggleSync', 'manageConnection', 'manageMembers', 'triageFeedback', 'exportBatches', 'applyAmazonChanges', 'manageExperiments'],
+  admin: ['read', 'editTargets', 'toggleSync', 'manageConnection', 'manageMembers', 'triageFeedback', 'exportBatches', 'applyAmazonChanges', 'manageExperiments'],
   analyst: ['read', 'editTargets', 'manageExperiments'],
   viewer: ['read'],
 };

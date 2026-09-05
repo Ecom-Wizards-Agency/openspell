@@ -14,6 +14,7 @@
 import { pgEnum } from 'drizzle-orm/pg-core';
 import {
   AdProduct,
+  ApplyBatchSourceKind,
   CreativeAttributionState,
   EntityState,
   EntityType,
@@ -40,7 +41,7 @@ import {
   WorkerReportType,
 } from '@wizard-ads/shared';
 import {
-  SpWriteApprovalMode,
+  SpWriteExecutionApprovalMode,
   SpWriteObservationOutcome,
   SpWriteProviderPositionOutcome,
   SpWriteRefusalReason,
@@ -58,6 +59,7 @@ const tuple = <T extends string>(values: readonly T[]): [T, ...T[]] => {
 };
 
 export const orgRole = pgEnum('org_role', ['owner', 'admin', 'analyst', 'viewer']);
+export const applyBatchSourceKind = pgEnum('apply_batch_source_kind', tuple(ApplyBatchSourceKind.options));
 export const connectionStatus = pgEnum('connection_status', [
   'pending',
   'active',
@@ -229,7 +231,7 @@ export const spWritePlanDirection = pgEnum('sp_write_plan_direction', [
 ]);
 export const spWriteApprovalMode = pgEnum(
   'sp_write_approval_mode',
-  tuple(SpWriteApprovalMode.options),
+  tuple(SpWriteExecutionApprovalMode.options),
 );
 export const spWriteActionResolutionKind = pgEnum(
   'sp_write_action_resolution_kind',

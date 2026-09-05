@@ -10,7 +10,12 @@
     "./schema": "./src/schema/index.ts",
     "./recommendation-worker": "./src/recommendation-worker.ts",
     "./sp-write-persistence": "./src/sp-write-persistence.ts",
+    "./sp-write-application": "./src/sp-write-application.ts",
+    "./mcp-writes": "./src/mcp-writes.ts",
+    "./sp-write-worker": "./src/sp-write-worker.ts",
     "./testing": "./src/testing/index.ts",
+    "./testing/sp-write": "./src/testing/sp-write-synthetic-execution.ts",
+    "./testing/mcp-write": "./src/testing/mcp-write-source.ts",
     "./worker": "./src/worker.ts"
   },
   "scripts": {

@@ -7,7 +7,13 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./sp-writes": "./src/sp-writes.ts"
+    "./sp-writes": "./src/sp-writes.ts",
+    "./sp-write-application": "./src/sp-write-application.ts",
+    "./sp-write-preview-evidence": "./src/sp-write-preview-evidence.ts",
+    "./sp-write-mirror": "./src/sp-write-mirror.ts",
+    "./time-machine-writes": "./src/time-machine-writes.ts",
+    "./recommendation-revisions": "./src/recommendation-revisions.ts",
+    "./mcp-writes": "./src/mcp-writes.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

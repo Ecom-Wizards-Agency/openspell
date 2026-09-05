@@ -1,6 +1,7 @@
-# WP-213 — Deploy current main: web, MCP, worker
+# WP-213 — Deploy web/MCP and verify worker compatibility
 
-Owner: implementer, with the operator present for each deployment step.
+Owner: implementer. Execute a tested deployment window under scoped authorization;
+operator attendance is optional.
 
 Depends on: WP-207 postflight at 46 ledger versions; WP-216 merged; WP-208 merged if ready.
 `docs/HANDOVER.md` and `docs/STATUS.md` are edited here only after WP-207 has finished with
@@ -9,8 +10,10 @@ them.
 ## Objective
 
 End the deployment drift: production web at the current main revision through a verified
-candidate, the MCP service on the same revision on the Evo host, and the legacy integration
-worker updated to the same revision. Write the web deployment runbook that does not exist.
+candidate and the MCP service on the same revision on the Evo host. Verify that the existing
+integration worker and any pinned Creative worker remain compatible with the upgraded schema.
+Write the missing web deployment runbook. A new integration-worker release is a separate
+activation deliverable in WP-214, not an in-place update hidden inside this web release.
 
 ## Owned files
 
@@ -53,27 +56,33 @@ worker updated to the same revision. Write the web deployment runbook that does 
 
 ### Worker
 
-5. Update the legacy integration worker on Evo to the deployed main revision with its existing
-   role and job types; the legacy claim path works once `20260901040000` is hosted. Verify its
-   health endpoint, observe two claim cycles, and record `NRestarts=0`.
+5. Keep the legacy integration worker and any WP-210 report worker on their recorded releases.
+   Verify service/artifact identity, exact job ownership, health and two counted claim cycles
+   against the upgraded schema. Record the observed restart count and its change over the
+   verification interval. Do not claim these workers share the web revision.
+   `always-on-worker.md` requires a dedicated immutable release procedure for an integration
+   refresh; do not update a mutable checkout or restore a retired plaintext credential path.
 6. Do not stage or activate the fenced report worker or the recommendation worker; both remain
    later packages. Do not retire `wizard-ads-worker.service`.
 
 ### Freeze
 
-7. Once web, Vercel cron and the worker are on one revision and WP-216 is live, record in
-   `docs/HANDOVER.md` that the optimizer edit and job-creation freeze is lifted.
+7. Once web and its Vercel cron are on one revision, WP-216 is live and every claimant has a
+   recorded compatible artifact and exclusive job set, prove one complete preview lifecycle.
+   Only then record that the optimizer edit and job-creation freeze is lifted.
 
 ## Authorization
 
-Each step in each section is a separate operator action stated in the current task: Vercel
-candidate deploy, promotion, MCP install and activation, worker update. Nothing here authorizes
-a migration, a provider write or a queue-ownership transfer.
+Present one scoped deployment authorization after candidate and rollback preparation. Name
+Vercel candidate/promotion, MCP credential staging/install/activation and the exact previous
+artifacts used for rollback. Execute covered steps autonomously. No migration, provider write,
+integration-worker replacement or queue-ownership transfer is authorized by this package.
 
 ## Acceptance
 
 1. `/api/healthz` on production reports the main revision; the candidate verifier passed.
 2. MCP health reports the same revision; discovery shows 11 tools; audit rows appear.
-3. Worker health reports the revision; two clean claim cycles; `NRestarts=0`.
+3. Both worker artifact identities and job ownership are recorded as applicable; two counted
+   compatible claim cycles and no new restart during verification.
 4. The click-through is recorded per page with no 5xx and no Amazon write.
 5. `docs/HANDOVER.md` and `docs/STATUS.md` reflect the new snapshot; `pnpm hygiene` passes.

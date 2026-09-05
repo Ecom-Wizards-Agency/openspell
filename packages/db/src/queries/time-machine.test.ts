@@ -10,7 +10,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '../testing/harness.js';
 import type { TestDatabase } from '../testing/harness.js';
+import { seedSyntheticWriteHistory } from '../testing/sp-write-synthetic-execution.js';
 import { reconcileEntityChangeLinks, recordEntityChanges } from './entities.js';
+import { getExportBatch } from './recommendations.js';
 import {
   createReversionExport,
   getReversionBatchPreview,
@@ -22,6 +24,44 @@ import {
 const available = await databaseAvailable();
 const USER_A = '71717171-7171-4171-8171-717171717171';
 const USER_B = '72727272-7272-4272-8272-727272727272';
+
+it.skipIf(!available)('retains an ordinary sync event after legacy linking to a native source batch', async () => {
+  const database = await createTestDatabase('native_link_history');
+  try {
+    const [tenant] = await database.sql<{ id: string }[]>`select app.seed_tenant_fixture('native-link-history', ${USER_A}, 'owner') as id`;
+    const orgId = tenant!.id;
+    const [profile] = await database.sql<{ id: string }[]>`select id from public.ad_profiles where org_id = ${orgId}`;
+    const profileId = profile!.id;
+    const history = await seedSyntheticWriteHistory(database, { orgId, userId: USER_A }, profileId);
+    const before = await listTimeline(database, { orgId, profileId });
+    expect(before.filter((entry) => entry.write !== null)).toHaveLength(2);
+    expect(await getReversionBatchPreview(database, { orgId, batchId: history.sourceBatchId })).toBeNull();
+    expect((await listReversionBatches(database, { orgId, profileId })).some((batch) => batch.batchId === history.sourceBatchId)).toBe(false);
+    await expect(createReversionExport(database, { orgId, batchId: history.sourceBatchId,
+      actorId: USER_A, tag: 'refused-native-legacy-inverse', note: 'Synthetic native source must use guarded inverse' }))
+      .rejects.toThrow('Not found');
+    // The original reviewed recommendation artifact remains inspectable.
+    expect(await getExportBatch(database, { orgId, batchId: history.sourceBatchId })).not.toBeNull();
+    const inserted = await database.sql<{ id: string }[]>`insert into public.entity_changes
+      (org_id, profile_id, entity_type, amazon_id, entity_name, field, old_value, new_value, source, observed_at)
+      select org_id, profile_id, entity_type::text::public.entity_type, entity_id, entity_name, field,
+        old_value, new_value, 'sync', clock_timestamp()
+      from public.apply_rows where batch_id = ${history.sourceBatchId} returning id::text`;
+    expect(inserted).toHaveLength(1);
+    const id = inserted[0]!.id;
+    expect(await listTimeline(database, { orgId, profileId })).toHaveLength(before.length + 1);
+    expect(await reconcileEntityChangeLinks(database, { orgId, profileId })).toMatchObject({ offered: 1, linked: 1 });
+    const [linked] = await database.sql<{ batch: string; receipt: boolean }[]>`select apply_batch_id::text as batch,
+      exists(select 1 from public.sp_write_mirror_observations where entity_change_id = ${id}::bigint) as receipt
+      from public.entity_changes where id = ${id}::bigint`;
+    expect(linked).toEqual({ batch: history.sourceBatchId, receipt: false });
+    const after = await listTimeline(database, { orgId, profileId });
+    expect(after).toHaveLength(before.length + 1);
+    expect(after.find((entry) => entry.id === `change:${id}`)?.source).toBe('sync');
+    expect(after.filter((entry) => entry.write !== null).map((entry) => entry.id))
+      .toEqual(before.filter((entry) => entry.write !== null).map((entry) => entry.id));
+  } finally { await database.drop(); }
+}, 60_000);
 
 describe.skipIf(!available)('WP-30 Time Machine queries', () => {
   let database: TestDatabase;
@@ -154,7 +194,7 @@ describe.skipIf(!available)('WP-30 Time Machine queries', () => {
         orgId: orgA,
         profileId: profileA,
         limit: 1,
-        before: { observedAt: cursor.observedAt.toISOString(), id: cursor.id },
+        before: { observedAt: cursor.observedAtExact, id: cursor.id },
       });
 
       expect(second).toHaveLength(1);
@@ -259,6 +299,8 @@ describe.skipIf(!available)('WP-30 Time Machine queries', () => {
     expect(inverse.rows).toHaveLength(1);
     expect(inverse.rows[0]).toMatchObject({ old: 0.71, new: 0.9 });
     expect(inverse.artifactSha256).toMatch(/^[a-f0-9]{64}$/);
+    // Null recommendation lineage is valid for a legacy inverse export.
+    expect((await getExportBatch(database, { orgId: orgA, batchId: inverse.batchId }))?.rows).toEqual(inverse.rows);
 
     const [stored] = await database.sql<{
       source_batch_id: string | null;

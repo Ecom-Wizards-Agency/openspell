@@ -42,6 +42,8 @@ import { ALL_METRICS } from './metrics.js';
 import { FILTER_OPERATORS } from './sql.js';
 import type { DateWindow, FactQuerySpec, FilterCondition, SortSpec } from './sql.js';
 import type { McpConfig } from './config.js';
+import type { McpWriteCredential } from '@wizard-ads/shared/mcp-writes';
+import { registerMcpWriteTools } from './writes.js';
 
 export const SERVER_NAME = 'openspell';
 export const PRODUCT_NAME = 'OpenSpell';
@@ -53,6 +55,7 @@ export interface ServerContext {
   scope: KeyScopeContext;
   keyId: string;
   orgSlug: string;
+  writeCredential?: McpWriteCredential;
 }
 
 // ---------------------------------------------------------------------------
@@ -328,13 +331,19 @@ export function createMcpServer(context: ServerContext): McpServer {
     {
       capabilities: { tools: {}, resources: {} },
       instructions:
-        'OpenSpell: read-only Amazon Advertising analytics for one org. Read the ' +
+        `OpenSpell: Amazon Advertising analytics${context.writeCredential ? ' and bounded keyword bid writes' : ' (read-only)'} for one org. Read the ` +
         'wizardads://instructions resource first, then list_profiles. Every call is audit-logged.',
     },
   );
 
   registerReadTools(server, context);
   registerExperimentTools(server, context);
+  if (context.config.writeToolsEnabled === true && context.writeCredential !== undefined) {
+    if (context.writeCredential.orgId !== context.scope.orgId || context.writeCredential.keyId !== context.keyId) {
+      throw new Error('MCP write credential context differs from authenticated scope');
+    }
+    registerMcpWriteTools(server, context.handle, context.writeCredential);
+  }
   registerResources(server, context);
   return server;
 }
@@ -767,7 +776,8 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
         "The latest successful recommendation run for a profile, with every proposal's full " +
         'inputs provenance: the RPC, the click count, which level of the confidence hierarchy ' +
         'supplied the CVR, which ceiling bound the result and whether a cap clamped it. ' +
-        'MCP provides evidence only; exact operator review and any approved apply live in the web app.',
+        'Review proposals before applying. Separately delegated write keys may use the keyword bid write tools; '
+        + 'read keys provide evidence only.',
       inputSchema: {
         profile_id: profileIdSchema,
         status: z
@@ -887,7 +897,8 @@ function registerResources(server: McpServer, context: ServerContext): void {
             {
               uri: uri.href,
               mimeType: 'text/markdown',
-              text: instructionsDocument(context.orgSlug, profiles.length),
+              text: instructionsDocument(context.orgSlug, profiles.length,
+                context.config.writeToolsEnabled === true && context.writeCredential !== undefined),
             },
           ],
         },

@@ -81,6 +81,7 @@ export async function reconcileEntityChangeLinks(
              on ab.org_id = ar.org_id
             and ab.profile_id = ar.profile_id
             and ab.id = ar.batch_id
+            and ab.source_kind = 'legacy_export'
           where ar.org_id = ec.org_id
             and ar.profile_id = ec.profile_id
             and (case when ar.entity_type = 'placement' then 'campaign' else ar.entity_type::text end)
@@ -132,7 +133,7 @@ export async function upsertMirrorRows<T extends PgTable>(
   if (rows.length === 0) return { listed: 0, upserted: 0 };
 
   const columns = getTableColumns(table) as Record<string, { name: string }>;
-  const keep = new Set(['id', 'profileId', 'amazonId', 'firstSeenAt']);
+  const keep = new Set(['id', 'profileId', 'amazonId', 'firstSeenAt', 'bidObservedAt']);
   const set: Record<string, SQL> = {};
   for (const [property, definition] of Object.entries(columns)) {
     if (keep.has(property)) continue;

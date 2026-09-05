@@ -13,7 +13,7 @@
 import type { DbHandle } from '@wizard-ads/db';
 import { jsonText } from './json.js';
 
-export type AuditOutcome = 'ok' | 'error' | 'gated';
+export type AuditOutcome = 'ok' | 'error' | 'gated' | 'attempted';
 
 export interface AuditEntry {
   orgId: string;

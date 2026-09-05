@@ -1,8 +1,9 @@
 # OpenSpell repository overview for an external collaborator
 
-Generated on 2026-09-05 from `origin/main` at `560d5e2`. Inventory tables in the
-appendix are produced by the commands recorded there; re-run them before trusting a count.
-This document is public-safe: it names no client, profile, credential or threshold.
+Source snapshot: `560d5e2`, reviewed on 2026-09-05. Operational state below is reported
+historical evidence from `docs/HANDOVER.md` and `docs/STATUS.md`, not a fresh production audit.
+Appendix commands identify source inventories; WP-212 owns full reproducible table generation.
+Do not infer hosted state from repository filenames. Review notes: `workpackages/REPLAN-2026-09-05-AUDIT.md`.
 
 ## 1. What OpenSpell is
 
@@ -44,8 +45,10 @@ Merged, not live: Creative Performance data, Query Intelligence with live SQP, D
 live Marketing Stream, weekday review schedules, campaign-scoped optimizer previews, the guarded
 Amazon write path, campaign creation contracts.
 
-Never done: no write has ever been sent to Amazon from this tool. All "apply" paths today
-produce export files consumed by an older Python toolchain.
+The reviewed source has no application consumer of the SP write adapter/ledger and no direct
+write HTTP route. Current apply paths produce exports. WP-214 will connect operator-approved
+UI changes to the Amazon worker, independently of MCP; WP-217 later adds bounded MCP access.
+A separate HTTP integration API for external scripts is out of scope. This source finding does not establish the complete history of live-account activity.
 
 ## 3. Stack and repository layout
 
@@ -98,7 +101,9 @@ The intended rule is that only the worker calls Amazon. The runtime reality is:
   how that will work: immutable preview, explicit confirmation naming Amazon and the exact count,
   idempotent worker execution, counts reconciled, audit, resynchronization.
 
-Design against this reality, not the sentence in the older documents.
+The cron's credential access contradicts the current `AGENTS.md` boundary. Document it as an
+existing exception requiring resolution; it does not authorize new web-hosted Amazon operations.
+New write execution remains worker-only.
 
 ## 5. Data model
 
@@ -153,7 +158,8 @@ are always computed from sums, never averaged.
 corepack enable && pnpm install
 supabase start && supabase db reset          # or plain Postgres plus supabase/tests/supabase-platform-shim.sql
 pnpm --filter @wizard-ads/db seed:dev        # synthetic org, profiles, 60 days of facts; refuses non-localhost
-cp apps/web/env.TEMPLATE apps/web/.env.local
+# Inspect apps/web/env.TEMPLATE; inject local synthetic configuration into the process.
+# Real credentials belong in the approved secret manager/runtime, never a local .env file.
 pnpm --filter @wizard-ads/web dev
 pnpm --filter @wizard-ads/worker start       # optional
 pnpm --filter @wizard-ads/mcp start          # optional; mint a key with pnpm --filter @wizard-ads/mcp keys
@@ -176,8 +182,10 @@ Environment variable names, values never in Git:
 `pnpm check` runs typecheck, lint, every Vitest suite, the hygiene linter and the skill linter.
 Database suites apply the real migrations to a throwaway Postgres and include row-level
 security negative tests. Playwright runs 11 serial suites, each with its own database.
-CI workflows: `ci.yml`, `trusted-kernel-proof.yml`; the second is a long Rust proof for the parked
-program and will be moved to manual dispatch.
+CI's `check` job currently runs typecheck, lint, test and hygiene, plus dedicated deployment
+and migration checks; it does not invoke skill lint. Playwright has a separate job. Workflows
+are `ci.yml` and `trusted-kernel-proof.yml`; moving the latter to manual dispatch is planned
+under Claude-owned WP-207 and has not been done by this review.
 
 ## 10. Public-repository rules you inherit
 
@@ -206,8 +214,9 @@ Hazards to plan for:
 1. The queue is custom Postgres with two schedulers, pg_cron and the Vercel tick. A BullMQ or
    Redis queue would be a second system; port jobs into `sync_jobs` instead.
 2. The web tier connects with a service-role database URL and enforces roles in application
-   code; RLS is the backstop. Code that expects a Supabase client per user request will find
-   app-level scoping instead.
+   code. Service-role connections bypass RLS, so explicit org scoping and authorization are
+   mandatory on every such query. Authenticated-role connections, including the planned human
+   approval transport, are subject to their own RLS and function grants.
 3. Supabase specifics in use: Vault for refresh tokens and integration secrets, pg_cron, and
    `auth.uid()` in RLS policies. A shim exists so CI runs on plain Postgres.
 4. Workspace packages ship raw `.ts` with `.js` import specifiers; Next builds with webpack and
@@ -236,7 +245,9 @@ Please return the same kind of document for your codebase, covering:
 
 ## Appendix A. Workspace packages
 
-Command: `for d in apps/* packages/* tools/*; do [ -f $d/package.json ] && jq -r '"\(.name)"' $d/package.json; done`
+Source discovery: `rg --files apps packages tools -g package.json -g '!node_modules'`.
+The initial table below was source-reviewed; WP-212 will supply the command that emits its
+path/name Markdown verbatim rather than claiming a names-only command reproduces it.
 
 | Path | Package |
 |---|---|
@@ -265,61 +276,63 @@ Command: `for d in apps/* packages/* tools/*; do [ -f $d/package.json ] && jq -r
 
 ## Appendix B. Migrations
 
-Command: `ls supabase/migrations/*.sql`. Files marked "not hosted" are merged but not applied to the
-hosted database as of 2026-09-04.
+Source inventory: `rg --files supabase/migrations -g '*.sql' | sort`. Coverage is the reported
+2026-09-04 schema snapshot, not output of that command. The first 30 actual hosted version
+numbers differ from these canonical repository filenames. Refresh the private ledger mapping
+before applying anything; never push canonical history directly to the hosted project.
 
-| Migration | Hosted state |
+| Canonical repository migration | Reported schema coverage |
 |---|---|
-| 20260813120000_platform.sql | hosted |
-| 20260813120100_tenancy.sql | hosted |
-| 20260813120200_entity_mirror.sql | hosted |
-| 20260813120300_facts.sql | hosted |
-| 20260813120400_partition_automation.sql | hosted |
-| 20260813120500_sync.sql | hosted |
-| 20260813120600_analysis.sql | hosted |
-| 20260813120700_writes.sql | hosted |
-| 20260813120800_product_surface.sql | hosted |
-| 20260813120900_vault_rpcs.sql | hosted |
-| 20260813121000_cron.sql | hosted |
-| 20260813121100_reserved_seams.sql | hosted |
-| 20260814070000_rpc_grants_hardening.sql | hosted |
-| 20260814120000_mcp_api_keys.sql | hosted |
-| 20260814130000_profile_target_total_acos.sql | hosted |
-| 20260814140000_sync_schedule_variant.sql | hosted |
-| 20260814150000_feedback.sql | hosted |
-| 20260814160000_report_request_source.sql | hosted |
-| 20260814170000_profile_sync_schedule_prefs.sql | hosted |
-| 20260814180000_experiments.sql | hosted |
-| 20260814190000_bid_series.sql | hosted |
-| 20260827120000_invitations.sql | hosted |
-| 20260827130000_feedback_dedup.sql | hosted |
-| 20260827140000_integration_connections.sql | hosted |
-| 20260827150000_sync_job_types.sql | hosted |
-| 20260827150100_filtered_job_claims.sql | hosted |
-| 20260827150200_sqp_schedule_payload.sql | hosted |
-| 20260827150300_product_economics.sql | hosted |
-| 20260827150400_keepa_market.sql | hosted |
-| 20260827150500_comparison_report_windows.sql | hosted |
-| 20260829120000_operator_intelligence_foundations.sql | hosted |
-| 20260829130000_time_machine_v2.sql | hosted |
-| 20260829140000_feature_job_types.sql | hosted |
-| 20260829150000_spapi_profile_bindings.sql | hosted |
-| 20260829160000_sb_video_report_type.sql | hosted |
-| 20260829160100_sb_video_observed_ingestion.sql | hosted |
-| 20260830170000_marketing_stream_correctness.sql | hosted |
-| 20260830180000_optimization_weekday_schedules.sql | hosted |
-| 20260831100000_unified_reporting_dual_run.sql | hosted |
-| 20260901000000_contextual_negative_review_exports.sql | hosted |
-| 20260901010000_authenticated_relation_privilege_hardening.sql | hosted |
-| 20260901020000_sp_write_persistence_ledger.sql | not hosted |
-| 20260901030000_sp_write_outbox_delivery.sql | not hosted |
-| 20260901040000_fenced_sync_claims.sql | not hosted |
-| 20260901050000_recommendation_preview_scopes.sql | not hosted |
-| 20260901060000_recommendation_claim_custody.sql | not hosted |
+| 20260813120000_platform.sql | present in reported prefix |
+| 20260813120100_tenancy.sql | present in reported prefix |
+| 20260813120200_entity_mirror.sql | present in reported prefix |
+| 20260813120300_facts.sql | present in reported prefix |
+| 20260813120400_partition_automation.sql | present in reported prefix |
+| 20260813120500_sync.sql | present in reported prefix |
+| 20260813120600_analysis.sql | present in reported prefix |
+| 20260813120700_writes.sql | present in reported prefix |
+| 20260813120800_product_surface.sql | present in reported prefix |
+| 20260813120900_vault_rpcs.sql | present in reported prefix |
+| 20260813121000_cron.sql | present in reported prefix |
+| 20260813121100_reserved_seams.sql | present in reported prefix |
+| 20260814070000_rpc_grants_hardening.sql | present in reported prefix |
+| 20260814120000_mcp_api_keys.sql | present in reported prefix |
+| 20260814130000_profile_target_total_acos.sql | present in reported prefix |
+| 20260814140000_sync_schedule_variant.sql | present in reported prefix |
+| 20260814150000_feedback.sql | present in reported prefix |
+| 20260814160000_report_request_source.sql | present in reported prefix |
+| 20260814170000_profile_sync_schedule_prefs.sql | present in reported prefix |
+| 20260814180000_experiments.sql | present in reported prefix |
+| 20260814190000_bid_series.sql | present in reported prefix |
+| 20260827120000_invitations.sql | present in reported prefix |
+| 20260827130000_feedback_dedup.sql | present in reported prefix |
+| 20260827140000_integration_connections.sql | present in reported prefix |
+| 20260827150000_sync_job_types.sql | present in reported prefix |
+| 20260827150100_filtered_job_claims.sql | present in reported prefix |
+| 20260827150200_sqp_schedule_payload.sql | present in reported prefix |
+| 20260827150300_product_economics.sql | present in reported prefix |
+| 20260827150400_keepa_market.sql | present in reported prefix |
+| 20260827150500_comparison_report_windows.sql | present in reported prefix |
+| 20260829120000_operator_intelligence_foundations.sql | present in reported prefix |
+| 20260829130000_time_machine_v2.sql | present in reported prefix |
+| 20260829140000_feature_job_types.sql | present in reported prefix |
+| 20260829150000_spapi_profile_bindings.sql | present in reported prefix |
+| 20260829160000_sb_video_report_type.sql | present in reported prefix |
+| 20260829160100_sb_video_observed_ingestion.sql | present in reported prefix |
+| 20260830170000_marketing_stream_correctness.sql | present in reported prefix |
+| 20260830180000_optimization_weekday_schedules.sql | present in reported prefix |
+| 20260831100000_unified_reporting_dual_run.sql | present in reported prefix |
+| 20260901000000_contextual_negative_review_exports.sql | present in reported prefix |
+| 20260901010000_authenticated_relation_privilege_hardening.sql | present in reported prefix |
+| 20260901020000_sp_write_persistence_ledger.sql | pending in reported snapshot |
+| 20260901030000_sp_write_outbox_delivery.sql | pending in reported snapshot |
+| 20260901040000_fenced_sync_claims.sql | pending in reported snapshot |
+| 20260901050000_recommendation_preview_scopes.sql | pending in reported snapshot |
+| 20260901060000_recommendation_claim_custody.sql | pending in reported snapshot |
 
 ## Appendix C. Route handlers
 
-Command: `find apps/web/app -name route.ts`
+Command: `rg --files apps/web/app -g route.ts | sort | sed 's#^apps/web/app#- `#; s#/route.ts$#`#'`
 
 - `/api/amazon/oauth/callback`
 - `/api/amazon/oauth/start`
@@ -362,8 +375,10 @@ Command: `find apps/web/app -name route.ts`
 
 ## Appendix D. Reproduction commands
 
-- Pages: `find apps/web/app -name page.tsx`
+- Pages: `rg --files apps/web/app -g page.tsx | sort`
 - Job types: `sed -n '/JobType = z.enum/,/\]/p' packages/shared/src/jobs.ts`
-- MCP tools: `grep -oE "registerTool\(\s*'[a-z_]+'" apps/mcp/src/server.ts`
-- Table counts: `grep -cE "pgTable\(|\.table\(" packages/db/src/schema/*.ts`
-- Env names: `apps/web/env.TEMPLATE`, `apps/worker/src/config.ts`, `apps/mcp/src/config.ts`
+- MCP tools, including multiline calls: `rg -U -o "registerTool\(\s*'[a-z_]+'" apps/mcp/src/server.ts`
+- Table counts: `rg -c 'pgTable\(|\.table\(' packages/db/src/schema -g '*.ts'`
+- Selected env-name sources: `apps/web/env.TEMPLATE`, `apps/worker/src/config.ts`,
+  `apps/mcp/src/config.ts`. These do not cover every imported runtime module or feature flag;
+  the preceding env-name lists are not a complete deployment manifest.

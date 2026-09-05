@@ -1,8 +1,8 @@
 # WP-208 — Sidebar layout and icon rail
 
-Owner: Claude (design). The implementer must not edit the owned files.
+Owner: Claude Fable 5.1 (frontend design). The implementer must not edit the owned files.
 
-Depends on: nothing. Rides on the WP-213 deploy because the bug is live in `44da7ac`.
+Depends on: no runtime package. Finish and hand off `theme.css` before WP-211 edits it. Rides on the WP-213 deploy because the bug is live in `44da7ac`.
 
 ## Objective
 
@@ -25,7 +25,8 @@ summaries, so links inside closed `details` are unreachable in rail mode.
 - `apps/web/src/ui/sidebar.tsx`;
 - `apps/web/e2e/sidebar-layout.spec.ts` (new) and `apps/web/playwright.profile-context.config.ts`
   `testMatch`;
-- `docs/HANDOVER.md` "Known UX and performance follow-ups" items 1 and 12 (close-out only);
+- this brief's close-out for HANDOVER items 1 and 12; the current WP-207/WP-213 document
+  owner integrates it, avoiding concurrent edits;
 - this brief.
 
 ## Required behavior
@@ -53,7 +54,8 @@ summaries, so links inside closed `details` are unreachable in rail mode.
 
 1. Manual check in both themes at about 860 and 1000 pixels tall with all groups open.
 2. The new spec fails on current main and passes on the branch; CI serial e2e is green.
-3. `pnpm check` passes; HANDOVER items 1 and 12 are closed with the corrected mechanism.
+3. `pnpm check` passes; close-out evidence for HANDOVER items 1 and 12 names the corrected
+   mechanism and is handed to the document owner.
 
 Out of scope: a mobile drawer under 960 pixels and a pre-paint script for the rail state; both
 are listed as follow-ups, not built here.

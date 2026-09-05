@@ -82,5 +82,6 @@ function testConfig(): McpConfig {
     statementTimeoutSeconds: 5,
     maxRows: DEFAULT_MAX_ROWS,
     maxDownloadBytes: DEFAULT_MAX_DOWNLOAD_BYTES,
+    writeToolsEnabled: false,
   };
 }
