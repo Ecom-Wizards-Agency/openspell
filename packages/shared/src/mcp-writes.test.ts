@@ -8,7 +8,10 @@ import {
   verifyDelegatedSpWriteReceiptArtifacts, verifyMcpPlanLimits, verifyMcpWriteDelegationFingerprint,
   verifySpWriteAuthorizationReceiptArtifacts, verifySpWriteExecutionEvidence, verifySpWriteJobArtifacts,
 } from './sp-writes.js';
-import { McpBidPreviewRequest, McpWriteStatus, McpWriteStatusRequest } from './mcp-writes.js';
+import {
+  McpBidPreviewRequest, McpWriteStatus, McpWriteStatusRequest, McpKeyTokenDigest,
+  McpWriteKeyIssueRequest, McpWriteKeyIssued, McpWriteKeySummary,
+} from './mcp-writes.js';
 import { SpWriteManualApprovalRequest } from './sp-write-application.js';
 import { TimeMachineNativeWrite } from './time-machine-writes.js';
 
@@ -76,6 +79,21 @@ function execution() {
 }
 
 describe('bounded MCP write contracts', () => {
+  it('keeps token material out of operator policy and persisted key summaries', () => {
+    const d = delegation();
+    const request = { label: d.keyLabel, profileIds: d.profiles.map((profile) => profile.profileId),
+      expiresAt: d.expiresAt, limits: d.limits };
+    const token = ['wza', 'a'.repeat(43)].join('_');
+    const digest = { tokenHash: hash(token), keyPrefix: token.slice(0, 12) };
+    expect(McpWriteKeyIssueRequest.parse(request)).toEqual(request);
+    expect(McpWriteKeyIssueRequest.safeParse({ ...request, ...digest }).success).toBe(false);
+    expect(McpKeyTokenDigest.parse(digest)).toEqual(digest);
+    expect(McpKeyTokenDigest.safeParse({ ...digest, token }).success).toBe(false);
+    expect(McpWriteKeyIssued.parse({ delegation: d, token })).toEqual({ delegation: d, token });
+    const summary = { delegation: d, revokedAt: at, lastUsedAt: null };
+    expect(McpWriteKeySummary.parse(summary)).toEqual(summary);
+    expect(McpWriteKeySummary.safeParse({ ...summary, token }).success).toBe(false);
+  });
   it('preserves legacy human receipt bytes and refuses delegated authority through human approval', () => {
     const { p, d, request, receipt } = artifacts();
     const { delegation: _delegation, reservation: _reservation, mcpGate: _mcpGate, ...common } = receipt;

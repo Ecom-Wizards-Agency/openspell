@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { AmazonId, Uuid } from './primitives.js';
 import { SpWriteOperationDetail, SpWriteOperationId, SpWritePreview } from './sp-write-application.js';
 import {
-  McpBidLimits, McpWriteDelegation, McpWriteReservation, SpKeywordBidDecimal, verifyMcpPlanLimits,
+  McpBidLimits, McpWriteDelegation, McpWriteReservation, SpKeywordBidDecimal, SpWriteSha256, verifyMcpPlanLimits,
 } from './sp-writes.js';
 
 export { McpBidApplyRequest, McpBidLimits, McpWriteDelegation, McpWriteReservation } from './sp-writes.js';
@@ -104,3 +104,28 @@ export const McpWriteKeyIssueRequest = z.object({
   limits: McpBidLimits,
 }).strict();
 export type McpWriteKeyIssueRequest = z.infer<typeof McpWriteKeyIssueRequest>;
+
+export const McpApiKeyScope = z.enum(['read', 'write']);
+export type McpApiKeyScope = z.infer<typeof McpApiKeyScope>;
+
+/** Server-minted token material passed to persistence; the plaintext never enters this contract. */
+export const McpKeyTokenDigest = z.object({
+  tokenHash: SpWriteSha256,
+  keyPrefix: z.string().regex(/^wza_[A-Za-z0-9_-]{8}$/),
+}).strict();
+export type McpKeyTokenDigest = z.infer<typeof McpKeyTokenDigest>;
+
+/** One-time operator response. Never persist this object or include it in an audit event. */
+export const McpWriteKeyIssued = z.object({
+  delegation: McpWriteDelegation,
+  token: z.string().regex(/^wza_[A-Za-z0-9_-]{43}$/),
+}).strict();
+export type McpWriteKeyIssued = z.infer<typeof McpWriteKeyIssued>;
+
+/** Management/history may still display expired or revoked authority. */
+export const McpWriteKeySummary = z.object({
+  delegation: McpWriteDelegation,
+  revokedAt: z.iso.datetime().nullable(),
+  lastUsedAt: z.iso.datetime().nullable(),
+}).strict();
+export type McpWriteKeySummary = z.infer<typeof McpWriteKeySummary>;

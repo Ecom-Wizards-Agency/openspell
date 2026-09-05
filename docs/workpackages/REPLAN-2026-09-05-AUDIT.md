@@ -150,7 +150,7 @@ targeted lint passed. Delegated issuance and admission are the next source slice
 
 ### MCP key authority checkpoint, 2026-09-06
 
-The next additive file is `20260906010000_mcp_write_delegations.sql`. It separates immutable
+Commit `5a783da` adds `20260906010000_mcp_write_delegations.sql`. It separates immutable
 operator-issued key authority from the later atomic write-admission work. Owner/admin issuance
 locks current membership and owned profiles, verifies exact canonical fingerprint bytes and
 policy bounds, and writes the key, immutable delegation and sanitized operator audit together.
@@ -172,6 +172,12 @@ seed an old write row directly and separately prove a read key cannot upgrade. I
 exposed a Date-versus-ISO-string binding error in that new fixture; the fixture is corrected.
 Web issuance, typed database facade, write admission, MCP tools and server-side Time Machine
 key attribution remain outstanding. The authority tests do not establish those capabilities.
+
+The next contract slice separates actor-free operator policy, server-minted token digest,
+one-time plaintext response and persisted management summary. The web issue endpoint will be
+`POST /api/mcp-keys/write`; its loader/action scope is `apps/web/src/data/mcp-keys.ts`, the new
+route, the existing revoke route and synthetic route/data tests. Claude retains all key-management
+client components. Shared contracts are committed before these consumers.
 
 ### Source progress
 
