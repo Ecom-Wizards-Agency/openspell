@@ -1,6 +1,7 @@
 # WP-216 — Optimizer preview legacy fallback
 
-Owner: implementer.
+Owner: Claude for implementation. GPT supplies the reviewed handoff, per the operator's
+2026-09-05 ownership update.
 
 Depends on: decision D2 in `docs/workpackages/REPLAN-2026-09-05.md`. Must be merged before
 WP-213 deploys web from main. Requires `20260901050000` and `20260901060000` hosted (WP-207)
@@ -10,7 +11,8 @@ validates the run row.
 ## Objective
 
 Keep the Optimizer "Run preview" working after a main deploy. On main the two preview routes
-return 503 unless the fenced recommendation lane is fully live, which is weeks away (finding F2).
+return 503 unless the fenced recommendation lane is fully live; that activation is unfinished
+(finding F2).
 At the deployed revision `44da7ac` the same routes have no gate and the Vercel cron runs the
 preview job. Restore that behavior as an explicit legacy mode while keeping the fenced mode
 intact for later.
@@ -21,16 +23,22 @@ intact for later.
 - `apps/web/app/api/optimizer/runs/route.ts` and `apps/web/app/api/optimizer/groups/run/route.ts`
   and their tests;
 - the module that exports `OPTIMIZER_PREVIEW_UNAVAILABLE_MESSAGE` (copy only);
-- `docs/STATUS.md` one row;
+- `apps/worker/src/recommendation-schedule-readiness.test.ts` and the existing preview
+  integration tests in `apps/worker/src/recommendations-run.test.ts`;
+- `apps/web/app/api/cron/sync/route.test.ts` for manual/scheduled ownership regression checks;
 - this brief.
 
 Do not edit `apps/web/app/optimizer/page.tsx` or `campaign-workspace.tsx`; they belong to WP-209.
 
 ## Required behavior
 
-1. `resolveOptimizerPreviewReadiness` returns `{ ready: true, mode: 'legacy' }` when
-   `OPENSPELL_RECOMMENDATION_LANE_READY` is unset or `0`. In that mode the Vercel cron is the only
-   claimant of `recommendations.run`, exactly as at `44da7ac`, so there is no overlapping consumer.
+1. When `OPENSPELL_RECOMMENDATION_LANE_READY` is unset or `0`, query the database authority.
+   Return `{ ready: true, mode: 'legacy' }` only for exactly one valid row with legacy protocol
+   and legacy admission. Unavailable, blocked, fenced, scoped or malformed authority fails
+   closed. Unsetting an environment variable must never bypass a database cutover: after fenced
+   activation the legacy claim SQL excludes `recommendations.run`.
+   Vercel cron owns the manual preview jobs; verify the deployed worker job sets rather than
+   inferring exclusivity from a producer flag.
 2. When the variable is `1` the existing fenced checks apply unchanged and return
    `{ ready: true, mode: 'fenced' }` or the existing refusal reasons.
 3. An invalid value still fails closed with 503 and reason `misconfigured`.
@@ -40,18 +48,65 @@ Do not edit `apps/web/app/optimizer/page.tsx` or `campaign-workspace.tsx`; they 
    in one transaction with the scope columns populated, so the `20260901060000` admission trigger
    accepts the insert. Add a test that inserts through the store against a database with all 46
    migrations applied and asserts the trigger accepts it.
-6. The `packages/shared` contracts are not changed. If the response shape needs a contract, stop
-   and report.
+6. Keep scheduled previews explicitly opted in. The shared readiness helper also gates the
+   general-worker scheduler, while cron independently checks enabled lane intent. Give manual
+   legacy readiness and scheduled fenced readiness separate decisions so changing the manual
+   route cannot activate a second scheduler. Add negative tests for both scheduler call sites.
+   Include a helper change in this owned file if needed; do not widen scheduler admission by
+   accident.
+7. Add `mode` to the authoritative response contract if consumers validate a strict shared
+   response schema. Land that small contract slice before the route change and declare its exact
+   file scope; do not duplicate the contract locally. Record close-out in this brief for the
+   current STATUS owner to integrate.
 
 ## Acceptance
 
-1. Unit tests cover unset, `0`, `1` with each fenced refusal, and an invalid value.
+1. Unit tests cover unset/`0` with each authority state, enabled fenced mode with each refusal,
+   malformed/missing authority, and invalid environment values. Scheduled readiness retains its
+   prior gates in both cron and the general worker.
 2. Route tests prove 202 in legacy mode, 503 with the existing message in fenced refusals, and
    503 on misconfiguration.
-3. The database test in step 5 passes on the 46-file schema.
+3. Both manual routes create exact scoped work on the 46-file legacy schema; the legacy worker
+   claims it, runs it and persists the counted result. Missing authority and post-cutover flag
+   reversal fail closed before enqueue. The database test in step 5 passes.
 4. `pnpm check` passes.
 
 ## Do not
 
 - Remove or weaken any fenced-mode check.
 - Add a hosted setting, deployment or activation; WP-213 owns the deploy.
+
+## Close-out (2026-09-05, for the STATUS owner to integrate)
+
+Landed on branch `wp-216-optimizer-preview-fallback`; no deploy, hosted setting or activation.
+
+- `packages/db/src/queries/recommendation-readiness.ts` now carries two decisions.
+  `resolveOptimizerPreviewReadiness` (manual routes) returns `{ ready: true, mode: 'legacy' }`
+  only for exactly one valid `legacy`/`legacy` authority row while the flag is unset or `0`,
+  `{ ready: true, mode: 'fenced' }` under the unchanged fenced checks when the flag is `1`,
+  and otherwise fails closed with `misconfigured`, `authority_unavailable`,
+  `authority_not_legacy` (flag reversed after the database cutover), `admission_not_legacy`,
+  `authority_not_fenced`, `admission_not_scoped` or `revision_mismatch`.
+  `resolveScheduledRecommendationReadiness` (schedulers) never returns legacy mode: unset or `0`
+  intent is `disabled` with no database read. `enqueueRecommendationSchedulesIfReady` uses the
+  scheduled decision, so the general worker (`createReadinessGatedRecommendationSchedules`) and
+  the cron door keep their prior gates.
+- Both manual routes return `mode` in the 202 body and `{ error, reason }` on 503; the 503
+  message is unchanged. No shared contract exists for these responses (the UI parser in
+  `apps/web/src/optimizer/campaigns.ts` ignores additional keys), so `packages/shared` was not
+  edited.
+- Claimant in legacy mode is Vercel cron: `cronSyncJobTypesFromEnv` keeps `recommendations.run`
+  for unset or `0` intent and removes it only for enabled intent; the deployed Evo
+  recommendation worker contract claims `recommendations.run` only under the fenced protocol.
+  Tests drain the legacy work with the exact cron job set and legacy (token-less) claims.
+- Proof on the 46-file schema (default legacy authority): route tests
+  (`apps/web/src/optimizer-runs-route.test.ts`) and store tests
+  (`apps/worker/src/recommendations-run.test.ts`) show one transaction creating the
+  `recommendation_runs` row, its `recommendations.run` job and scope rows with `scope_version`,
+  `scope_count`, `scope_fingerprint`, `job_id` and `execution_lineage` populated; the
+  `20260901060000` admission trigger accepts the commit and, with admission `blocked`, rejects
+  it with zero artifacts. Scheduler negatives live in
+  `apps/worker/src/recommendation-schedule-readiness.test.ts` and
+  `apps/web/app/api/cron/sync/route.test.ts`.
+- Not owned, untouched: `apps/web/app/optimizer/page.tsx` and `groups/page.tsx` (WP-209) keep
+  reading `readiness.ready` only, so the UI now shows "Run preview" enabled in legacy mode.
