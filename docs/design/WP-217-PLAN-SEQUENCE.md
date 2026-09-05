@@ -36,9 +36,10 @@ protocol distinction without adding an operator setting or a second worker.
   `keyword.bid` change per action, at most eight integer and four fractional digits,
   with no no-op, duplicate entity, action or source. Existing count, scope and time checks
   remain. Its fingerprint binds the version and entire ordered array.
-  The three v2 plan timestamps use canonical UTC milliseconds (`.SSSZ`). Shared JavaScript
-  time comparisons and PostgreSQL otherwise disagree for submillisecond validity windows.
-  Historical v1 timestamp acceptance is unchanged.
+  The three v2 plan timestamps accept UTC instants with at most six fractional digits,
+  preserving the existing database formatter. SQL compares their millisecond-truncated
+  values to match JavaScript validity checks; longer fractions refuse before PostgreSQL
+  can round them. Historical v1 timestamp acceptance is unchanged.
 - `verifyMcpWritePreviewEvidenceArtifacts` requires v2 for the new unreleased MCP source.
   Each action position must match that position's immutable proposal row, including the
   apply-row identity, keyword and before/after values. The standalone parser cannot prove

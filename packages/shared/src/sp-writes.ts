@@ -504,8 +504,8 @@ export const SpWritePlan = z.object({
     context.addIssue({ code: 'custom', message: 'plan timestamps must be generated, frozen, then unexpired' });
   }
   if (plan.schemaVersion === 'openspell.sp-write-plan.v2'
-    && [plan.generatedAt, plan.frozenAt, plan.expiresAt].some((at) => !/[.]\d{3}Z$/.test(at))) {
-    context.addIssue({ code: 'custom', message: 'v2 plan timestamps require canonical UTC milliseconds' });
+    && [plan.generatedAt, plan.frozenAt, plan.expiresAt].some((at) => !/T\d{2}:\d{2}:\d{2}(?:[.]\d{1,6})?Z$/.test(at))) {
+    context.addIssue({ code: 'custom', message: 'v2 plan timestamps permit at most six fractional digits' });
   }
 
   if (plan.schemaVersion === 'openspell.sp-write-plan.v1') {

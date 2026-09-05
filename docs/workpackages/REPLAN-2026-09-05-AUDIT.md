@@ -34,9 +34,11 @@ deployment, credential store or Amazon account was accessed.
 ### MCP producer review and sequence correction, 2026-09-06
 
 The later integrated review reproduced a raw v2 inverse that PostgreSQL could record with
-a one-microsecond validity window but JavaScript could not reload. V2 now specifies canonical
-UTC millisecond plan times, matching both actual producers; v1 timestamp handling is retained.
-The shared amendment precedes the SQL refusal and regression check.
+a one-microsecond validity window but JavaScript could not reload. The initial shared-only
+millisecond-format fix (`43ba21a`) was too narrow: the existing database formatter emits six
+fractional digits. Integrated tests caught that regression before database source commit.
+The corrected v2 contract permits up to six fractional digits and SQL compares truncated
+milliseconds, matching JavaScript. V1 is retained. Shared amendments precede SQL consumers.
 
 The controlled source producer now checks current key/issuer/profile authority and atomically
 records request, source rows, plan, evidence and key-attributed preview audit. Its 32-test local

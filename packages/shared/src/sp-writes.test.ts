@@ -632,12 +632,18 @@ describe('guarded Sponsored Products write contracts', () => {
     expect(() => verifySpWriteInversePair(forward, downgraded, sha256)).toThrow('scope or counts');
   });
 
-  it('uses millisecond timestamps for v2 while preserving historical v1 precision acceptance', () => {
+  it('retains database microseconds but compares v2 validity at millisecond resolution', () => {
     const old = keywordPlan();
     const precise = { ...old, generatedAt: old.generatedAt.replace('.000Z', '.000001Z') };
     expect(SpWritePlan.safeParse(precise).success).toBe(true);
-    expect(SpWritePlan.safeParse({ ...precise, schemaVersion: 'openspell.sp-write-plan.v2' }).success).toBe(false);
+    expect(SpWritePlan.safeParse({ ...precise, schemaVersion: 'openspell.sp-write-plan.v2' }).success).toBe(true);
+    const excessive = { ...old, generatedAt: old.generatedAt.replace('.000Z', '.0000001Z') };
+    expect(SpWritePlan.safeParse(excessive).success).toBe(true);
+    expect(SpWritePlan.safeParse({ ...excessive, schemaVersion: 'openspell.sp-write-plan.v2' }).success).toBe(false);
     expect(SpWritePlan.safeParse({ ...old, schemaVersion: 'openspell.sp-write-plan.v2' }).success).toBe(true);
+    expect(SpWritePlan.safeParse({ ...old, schemaVersion: 'openspell.sp-write-plan.v2',
+      generatedAt: old.frozenAt.replace('.000Z', '.000000Z'), frozenAt: old.frozenAt.replace('.000Z', '.000000Z'),
+      expiresAt: old.frozenAt.replace('.000Z', '.000001Z') }).success).toBe(false);
   });
 
   it('uses canonical exact decimals instead of JavaScript numbers or fixed minor units', () => {
