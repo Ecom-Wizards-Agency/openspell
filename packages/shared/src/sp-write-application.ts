@@ -40,7 +40,9 @@ export const SpWriteManualApprovalRequest = z.object({
   approval: ApproveSpWritePlan.refine((value) => value.approvalMode === 'manual', {
     message: 'the UI approval endpoint accepts manual confirmation only',
   }),
-}).strict();
+}).strict().refine((value) => value.profileId === value.approval.plan.profileId, {
+  path: ['profileId'], message: 'approval must bind the requested profile',
+});
 export type SpWriteManualApprovalRequest = z.infer<typeof SpWriteManualApprovalRequest>;
 
 export const SpWriteOperationRequest = SpWriteOperationId.extend({
@@ -75,17 +77,49 @@ export const SpWriteOperationDetail = z.object({
   original: SpWriteOperationId.nullable(),
   inverses: z.array(SpWriteOperationId),
 }).strict().superRefine((value, context) => {
-  const receiptPlans = [value.receipt.plan.planId, value.receipt.preapprovedInversePlan?.planId];
+  const receiptPlans = [value.receipt.plan, value.receipt.preapprovedInversePlan];
+  const binding = receiptPlans.find((plan) => plan?.planId === value.operation.planId);
   if (value.operation.executionId !== value.receipt.executionId
-    || !receiptPlans.includes(value.operation.planId)) {
+    || binding === undefined || binding === null) {
     context.addIssue({ code: 'custom', path: ['operation'], message: 'operation differs from its receipt' });
   }
-  if (value.original !== null && value.original.planId === value.operation.planId) {
-    context.addIssue({ code: 'custom', path: ['original'], message: 'an operation cannot inverse itself' });
+  const inverseBinding = value.receipt.preapprovedInversePlan;
+  if (inverseBinding !== null && (
+    inverseBinding.direction !== 'inverse'
+    || inverseBinding.planId === value.receipt.plan.planId
+    || inverseBinding.orgId !== value.receipt.plan.orgId
+    || inverseBinding.profileId !== value.receipt.plan.profileId
+    || JSON.stringify(inverseBinding.providerScope) !== JSON.stringify(value.receipt.plan.providerScope)
+    || JSON.stringify(inverseBinding.counts) !== JSON.stringify(value.receipt.plan.counts)
+  )) {
+    context.addIssue({ code: 'custom', path: ['receipt'], message: 'bounded inverse scope differs from its forward plan' });
+  }
+  if (binding != null && (binding.direction === 'inverse') !== (value.original !== null)) {
+    context.addIssue({ code: 'custom', path: ['original'], message: 'only inverse operations require an original link' });
+  }
+  if (value.original !== null && (
+    value.original.planId === value.operation.planId
+    || value.original.executionId !== value.operation.executionId
+    || (binding === inverseBinding && value.original.planId !== value.receipt.plan.planId)
+  )) {
+    context.addIssue({ code: 'custom', path: ['original'], message: 'original link differs from the source cycle' });
   }
   const inversePlans = value.inverses.map((inverse) => inverse.planId);
-  if (new Set(inversePlans).size !== inversePlans.length || inversePlans.includes(value.operation.planId)) {
+  if (new Set(inversePlans).size !== inversePlans.length || inversePlans.includes(value.operation.planId)
+    || value.inverses.some((inverse) => inverse.executionId !== value.operation.executionId)
+    || (binding?.direction === 'inverse' && value.inverses.length !== 0)) {
     context.addIssue({ code: 'custom', path: ['inverses'], message: 'inverse links must be distinct operations' });
+  }
+  if (binding != null && value.snapshot.accounting.approvedRows !== binding.counts.providerRows) {
+    context.addIssue({ code: 'custom', path: ['snapshot'], message: 'accounting differs from the approved plan count' });
+  }
+  if (value.admission === 'approved_pending_start' && (
+    value.snapshot.status !== 'queued'
+    || value.snapshot.accounting.pendingDispatch !== value.snapshot.accounting.approvedRows
+    || Object.entries(value.snapshot.accounting).some(([key, count]) =>
+      !['approvedRows', 'pendingDispatch'].includes(key) && count !== 0)
+  )) {
+    context.addIssue({ code: 'custom', path: ['snapshot'], message: 'unstarted approval cannot contain execution evidence' });
   }
 });
 export type SpWriteOperationDetail = z.infer<typeof SpWriteOperationDetail>;
