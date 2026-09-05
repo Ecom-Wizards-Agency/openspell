@@ -3,7 +3,7 @@ import { Uuid } from './primitives.js';
 import { SpWriteOperationDetail, SpWriteOperationId } from './sp-write-application.js';
 import { SpWriteMirrorCounts, SpWriteMirrorReceipt } from './sp-write-mirror.js';
 import {
-  SpMoney, SpWriteChangeSource, SpWriteExecutionSnapshot, SpWriteObservation, SpWriteRefusalReason,
+  SpMoney, SpWriteAuthorizationActor, spWriteAuthorizationActor, SpWriteChangeSource, SpWriteExecutionSnapshot, SpWriteObservation, SpWriteRefusalReason,
 } from './sp-writes.js';
 
 /** Exact PostgreSQL precision, canonical UTC, suitable for a stable keyset cursor. */
@@ -33,8 +33,7 @@ export function compareTimeMachineCursors(left: TimeMachineCursor, right: TimeMa
   return a.observedAt < b.observedAt ? -1 : a.observedAt > b.observedAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
-// WP-217 adds the key actor together with its delegated authorization receipt.
-export const TimeMachineWriteActor = z.object({ kind: z.literal('operator'), userId: Uuid }).strict();
+export const TimeMachineWriteActor = SpWriteAuthorizationActor;
 export type TimeMachineWriteActor = z.infer<typeof TimeMachineWriteActor>;
 
 export const TimeMachineWritePhase = z.enum([
@@ -76,7 +75,7 @@ export const TimeMachineNativeWrite = z.object({
     || value.change.expected.amount === value.change.requested.amount) {
     context.addIssue({ code: 'custom', message: 'history change or provenance differs from its operation' });
   }
-  if (value.actor.userId !== value.execution.receipt.approvedBy) {
+  if (JSON.stringify(value.actor) !== JSON.stringify(spWriteAuthorizationActor(value.execution.receipt))) {
     context.addIssue({ code: 'custom', message: 'history actor differs from the recorded approver' });
   }
   if ((value.phase === 'refused') !== (value.refusal !== null)) {

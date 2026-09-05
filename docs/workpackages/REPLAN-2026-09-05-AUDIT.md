@@ -104,6 +104,34 @@ WP-217 grounding now traces bearer verification, issuance, frozen source evidenc
 admission, final SQL provider reservation and Time Machine. Three architecture candidates are
 being compared before the delegated authorization contracts. No MCP write key is enabled.
 
+### MCP authorization contract checkpoint, 2026-09-06
+
+[The delegated write design](../design/WP-217-DELEGATED-WRITES.md) records three independent
+candidates and the selected separate application facade. The alternative shared application
+kernel would relocate human orchestration; it was rejected for the unnecessary wider change.
+The selected design preserves the single SP executor, exact old human receipt bytes and
+recommendation source evidence. Admission will record immutable UTC budget charges, audit,
+receipt and outbox in one SQL transaction. No automatic refunds or inverse cap exemptions apply.
+
+The shared source now defines immutable fingerprinted delegation limits and scope, exact
+integer-based absolute/relative bid comparisons, a strict delegated v2 receipt, actor-free MCP
+preview/apply/status/issuance inputs and request-ID recovery. Human confirmation input and its
+v1 receipt verifier remain human/bounded-only. Time Machine's shared actor derives key, issuer
+and delegation version from the immutable receipt. Existing recommendation bid validation now
+aliases the same keyword decimal schema to prevent precision drift. `AGENTS.md` is amended
+coherently for this authorized delegation model; this does not issue a key or enable execution.
+
+All 127 shared tests passed, including eight new MCP contract cases; shared typecheck and
+targeted lint passed. An initial typecheck found a misnamed existing hash helper and it was
+corrected. Independent review compared 600 decimal boundary cases with an integer oracle and
+found no mismatch. It also reproduced an inverse receipt accepting a different source execution
+cycle; the verifier now rejects that mismatch, with a focused regression. Execution/job
+rehydration also verifies the recorded delegation fingerprint and caps without needing today's
+live key, so revoked-key history remains readable. Final review reran the inverse reproducer through three verifier entrypoints and confirmed
+refusal. It also proved old/current parser byte parity for manual and bounded receipts. DB,
+worker and web typechecks pass; staged hygiene passes with the private denylist active. Database delegation/admission, MCP HTTP tools, proposal evidence v2,
+Time Machine server attribution and runtime activation remain unimplemented.
+
 ### Source progress
 
 Proposal revision persistence is implemented on the source branch. The new additive

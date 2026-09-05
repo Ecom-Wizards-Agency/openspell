@@ -1,15 +1,12 @@
 import { z } from 'zod';
 import { CurrencyCode, Uuid } from './primitives.js';
-import { SpCanonicalDecimal } from './sp-writes.js';
+import { SpKeywordBidDecimal } from './sp-writes.js';
 import { SpWriteActor } from './sp-write-application.js';
 
 const id = Uuid.transform((value) => value.toLowerCase());
 
 /** Positive, canonical bid text representable by the keyword mirror without rounding. */
-export const RecommendationBidDecimal = SpCanonicalDecimal.refine((value) => {
-  const [integer, fractional = ''] = value.split('.');
-  return value !== '0' && integer!.length <= 8 && fractional.length <= 4;
-}, { message: 'bid must be positive and fit the keyword decimal precision without rounding' });
+export const RecommendationBidDecimal = SpKeywordBidDecimal;
 export type RecommendationBidDecimal = z.infer<typeof RecommendationBidDecimal>;
 
 /** Accept ordinary entered decimal text; normalize with string operations only. */

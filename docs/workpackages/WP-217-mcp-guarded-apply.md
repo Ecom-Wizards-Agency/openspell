@@ -8,6 +8,15 @@ The implementer writes the policy amendment; the operator does not need to suppl
 attend implementation. Concrete live key/profile/action bounds are still operator-issued.
 D1/WP-207 and D2/WP-216 remain with Claude.
 
+## Current source checkpoint, 2026-09-06
+
+See [the architecture and file scope](../design/WP-217-DELEGATED-WRITES.md). Shared delegated
+v2 receipts and MCP request/status/actor contracts are implemented locally and tested; the
+coordinated policy amendment accompanies them. Human v1 bytes and human-only confirmation
+input remain supported. SQL admission, proposal evidence v2, tools and activation are still
+pending. Two later additive migrations are planned for enum addition then authority/admission;
+no WP-207 window or live target is changed. Detailed test/review evidence is in the replan audit.
+
 ## Objective
 
 Allow an operator-issued write key to apply bounded keyword bid changes through the same
