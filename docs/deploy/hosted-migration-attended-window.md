@@ -3,24 +3,22 @@
 This runbook takes the hosted Supabase ledger from 41 versions (terminal `20260901010000`) to 46
 by applying, in order:
 
-| # | Repository file | Work package | Bytes | SHA-256 |
+| # | Version (repository file starts with this) | Work package | Bytes | SHA-256 |
 |---|---|---|---:|---|
-| 42 | `20260901020000_sp_write_persistence_ledger.sql` | WP-187 | 179749 | `d28e2c3630ac4b59732cde8bb7021ae955c9b36f0b58d0567a7751c14259df67` |
-| 43 | `20260901030000_sp_write_outbox_delivery.sql` | WP-192 | 46611 | `c34fc0a1902abe27f0c33d66c1a083fb32f0fd5df30974baecace674a2219a2c` |
-| 44 | `20260901040000_fenced_sync_claims.sql` | WP-194 | 20101 | `ec96b16f6c2c487404ee15d24cdf58d40d2d079ed0ed12fd5b12bc7abbcd9bf2` |
-| 45 | `20260901050000_recommendation_preview_scopes.sql` | WP-195 | 6379 | `af126c432ca8d523d7483139de3cbf267f3c1d2c68a14b236f2b171fc3811021` |
-| 46 | `20260901060000_recommendation_claim_custody.sql` | WP-196 | 114111 | `937fe566de09413df7a7578bcd3889c36d4465b81c6d03ad0a1773ca3cf0cb84` |
+| 42 | `20260901020000` | WP-187 | 179749 | `d28e2c3630ac4b59732cde8bb7021ae955c9b36f0b58d0567a7751c14259df67` |
+| 43 | `20260901030000` | WP-192 | 46611 | `c34fc0a1902abe27f0c33d66c1a083fb32f0fd5df30974baecace674a2219a2c` |
+| 44 | `20260901040000` | WP-194 | 20101 | `ec96b16f6c2c487404ee15d24cdf58d40d2d079ed0ed12fd5b12bc7abbcd9bf2` |
+| 45 | `20260901050000` | WP-195 | 6379 | `af126c432ca8d523d7483139de3cbf267f3c1d2c68a14b236f2b171fc3811021` |
+| 46 | `20260901060000` | WP-196 | 114111 | `937fe566de09413df7a7578bcd3889c36d4465b81c6d03ad0a1773ca3cf0cb84` |
 
 The digests are the pinned `additions` in `tools/hosted-migration-bundle/src/policy.ts`. The same
 attended procedure applied WP-186 on 2026-09-01. Nothing in this document is itself an
 authorization: the window runs only under the one scoped authorization described in
 `docs/workpackages/WP-207-hosted-migration-window.md`, and `AGENTS.md` program rule 8 governs.
 
-Out of scope for this window, and not to be staged with it: the four WP-214 migrations
-`20260905000000_sp_write_preview_evidence.sql`, `20260905010000_sp_write_preview_approval.sql`,
-`20260905020000_sp_write_application_entry.sql` and
-`20260905030000_sp_write_mirror_observations.sql`. They exist on the separate
-`wp-214-sp-write-source` branch, are not on `main`, are not in the WP-197 policy, and have their own
+Out of scope for this window, and not to be staged with it: the four WP-214 migrations with
+versions `20260905000000`, `20260905010000`, `20260905020000` and `20260905030000`. They exist
+on the separate WP-214 source branch, are not on `main`, are not in the WP-197 policy, and have their own
 later gate. If a dry run ever offers a `20260905*` version, the workdir was staged from the wrong
 checkout: stop.
 
@@ -101,12 +99,8 @@ Copy the five repository files from a clean `main` checkout into the fetched wor
 digests against the table at the top of this document:
 
 ```bash
-for f in \
-  20260901020000_sp_write_persistence_ledger.sql \
-  20260901030000_sp_write_outbox_delivery.sql \
-  20260901040000_fenced_sync_claims.sql \
-  20260901050000_recommendation_preview_scopes.sql \
-  20260901060000_recommendation_claim_custody.sql; do
+for v in 20260901020000 20260901030000 20260901040000 20260901050000 20260901060000; do
+  f=$(basename "$(ls "$REPO/supabase/migrations/${v}_"*.sql)")   # exactly one file per version
   cp "$REPO/supabase/migrations/$f" "$WORKDIR/supabase/migrations/$f"
 done
 (cd "$WORKDIR/supabase/migrations" && sha256sum 2026090102*.sql 2026090103*.sql 2026090104*.sql 2026090105*.sql 2026090106*.sql)

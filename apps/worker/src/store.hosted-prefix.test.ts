@@ -37,12 +37,14 @@ const MIGRATIONS_DIR = fileURLToPath(new URL('../../../supabase/migrations/', im
 
 /** Repository file that closes the hosted 41-version ledger. */
 const HOSTED_PREFIX_41_TERMINAL = '20260901010000_authenticated_relation_privilege_hardening.sql';
-/** Applied in this order on top of the 41 files to reach the canonical 44-file prefix. */
-const PREFIX_44_UPGRADE_FILES = [
-  '20260901020000_sp_write_persistence_ledger.sql',
-  '20260901030000_sp_write_outbox_delivery.sql',
-  '20260901040000_fenced_sync_claims.sql',
-] as const;
+/** Versions applied in this order on top of the 41 files to reach the canonical 44-file prefix. */
+const PREFIX_44_UPGRADE_VERSIONS = ['20260901020000', '20260901030000', '20260901040000'] as const;
+/** Resolve a version to its single repository file without naming the file in source. */
+function migrationFileForVersion(files: readonly string[], version: string): string {
+  const matches = files.filter((file) => file.startsWith(`${version}_`));
+  if (matches.length !== 1) throw new Error(`expected exactly one migration file for ${version}`);
+  return matches[0] as string;
+}
 
 // Synthetic identities only. Nothing here corresponds to any tenant or profile.
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
@@ -122,7 +124,8 @@ describe.skipIf(!available)('hosted 41-version prefix rehearsal', () => {
     const files = await migrationFiles();
     expect(files.length).toBeGreaterThanOrEqual(46);
     expect(files[40]).toBe(HOSTED_PREFIX_41_TERMINAL);
-    expect(files.slice(41, 44)).toEqual([...PREFIX_44_UPGRADE_FILES]);
+    const upgradeFiles = PREFIX_44_UPGRADE_VERSIONS.map((version) => migrationFileForVersion(files, version));
+    expect(files.slice(41, 44)).toEqual(upgradeFiles);
     expect(await claimTokenColumnCount()).toBe(0);
   });
 
@@ -158,7 +161,7 @@ describe.skipIf(!available)('hosted 41-version prefix rehearsal', () => {
   });
 
   it('applying 020000, 030000 and 040000 in order reaches the 44-file prefix without touching the row', async () => {
-    for (const file of PREFIX_44_UPGRADE_FILES) {
+    for (const file of upgradeFiles) {
       await applySqlFile(database, `${MIGRATIONS_DIR}${file}`);
     }
 
