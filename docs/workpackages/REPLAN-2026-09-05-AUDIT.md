@@ -1,10 +1,13 @@
 # Re-plan audit and corrections, 2026-09-05
 
-Reviewed source: `560d5e2`. Original handoff commit: `1e62a92`. The audited handoff is
-`REPLAN-2026-09-05.md`; work takes place on `wp-207-replan-audit`.
+Original reviewed source: `560d5e2`. Original handoff commit: `1e62a92`. The audited handoff is
+`REPLAN-2026-09-05.md`. Documentation review used `wp-207-replan-audit`; authorized source work
+now continues on `wp-214-sp-write-source`. This document records meaningful implementation
+changes as well as the original audit.
 
-This review changes documentation and package scope. It does not implement or activate a write
-path. No hosted database, deployment, credential store or Amazon account was accessed.
+The initial review changed documentation and package scope. Subsequent source work is described
+below. Tests use disposable local PostgreSQL 17 and synthetic provider facts. No hosted database,
+deployment, credential store or Amazon account was accessed.
 
 ## Operator direction incorporated
 
@@ -22,6 +25,44 @@ path. No hosted database, deployment, credential store or Amazon account was acc
 - Source work, testing and review can proceed autonomously. A tested operational window can
   receive one scoped authorization for its exact targets and restoration steps; attendance and
   per-command confirmations are not technical requirements. Live bounds are not invented here.
+- Keep this audit current whenever a meaningful implementation or verification result changes.
+
+## Implementation progress, 2026-09-05
+
+| Change | Verified source and behavior | State |
+|---|---|---|
+| Shared application and immutable source contracts | `packages/shared/src/sp-write-application.ts` and `sp-write-preview-evidence.ts`; exact operation identity includes execution and plan IDs, and frozen evidence retains original export bytes and strategy/group snapshot text. | Committed before dependent implementation. |
+| Immutable previews | `5aa18d8`; `packages/db/src/queries/sp-write-plan-builder.ts` and migration `20260905000000_sp_write_preview_evidence.sql`. Reconstructs the actual export digest, reconciles every source row, preserves exact decimals and timestamp microseconds, and atomically stores plan and policy/provenance evidence. | Local tests prove tenant isolation, immutable replay, false-hash/source/policy refusal, rollback on evidence-storage failure and parent-first locks during concurrent run deletion. |
+| Approval, status and inverse operations | `25e771e`; `sp-write-approval.ts`, `sp-write-operation-read.ts`, `sp-write-inverse-preview.ts` and migration `20260905010000_sp_write_preview_approval.sql`. Direct authenticated approval checks frozen source/current scope, binds retries to the original actor/request, and prevents another confirmation from admitting the same plan again. | Synthetic forward and inverse each reach recorded provider result and observation through the real ledger. Original/inverse operation links are returned in both directions. Lost approval/enqueue responses and enqueue failure preserve a recoverable operation identity. |
+| Verified reversion after an ambiguous response | The inverse builder accepts `observed_after_ambiguous` only when every requested value was subsequently observed, matching the existing shared dispatch contract. | Regression passed. Partial or unresolved observations remain ineligible; current bid/profile/connection changes refuse approval. |
+| UI HTTP backend | `apps/web/app/api/sp-writes/{preview,approve,inverse-preview,status}/route.ts` and `apps/web/src/writes/http.ts`. Uses the existing session/assurance gate, owner/admin capability, fixed-origin JSON POSTs, bounded bodies, strict shared inputs, sanitized error codes and uncached responses. | Local HTTP tests pass preview→approval→status→inverse using the real request database, with no MCP process. Client presentation remains with Claude. |
+| Database client compatibility | JSON text parameters in preview persistence, inverse reads and the existing staging facade now use `::text::jsonb`. Plain request connections otherwise encode serialized proof arrays twice; Drizzle-backed tests did not expose this. | The real HTTP request-database test caught the mismatch and passes after the fix. |
+| Older database and lost-response safety | Migration `20260905020000_sp_write_application_entry.sql` adds `app.approve_sp_write_preview_v1`. Both initial approval and recovery use that versioned entry with the same immutable confirmation identity. | Review reproduced an unsafe fallback when a connection loss masked the missing-function error. The table-based recovery was removed. PostgreSQL regressions now prove zero enqueue both for an absent entry and a masked error, even with a matching existing receipt. |
+
+Latest complete database verification: **478 tests in 48 files passed** with `--maxWorkers=1`.
+After HTTP integration and JSON transport fixes, the affected database suites also passed
+**78 tests**, and HTTP/role/assurance suites passed **15 tests**. Web and DB typechecks and
+targeted lint passed.
+These are local source checks, not hosted or live Amazon proof. The WP-188 raw-plan facade suite
+still runs against its preceding admission contract; new application/HTTP suites exercise current
+migrations and source-backed admission. No lifecycle or custody assertion was removed.
+
+Remaining: worker orchestration and counted mirror reconciliation, native Time Machine projection
+and exact observation links, delegated MCP policy/contracts/persistence/transport, proposal revision
+and completeness handoff, immutable release/activation artifacts, and scoped live proof. The
+current operation links are backend evidence, not a claim that MCP or the Time Machine screen is
+finished. Worker registration and production write enablement have not occurred.
+
+The three new WP-214 migrations are additional source dependencies. They are not silently added
+to Claude's original D1 operational window. Deployment must account for them before exposing the
+new write flow; hosted migration state has not been inspected. The version-specific entrypoint
+refuses admission when its database implementation is absent.
+
+The latest parallel DB run passed 477 of 478 tests; the existing recommendation-preview DDL
+lock test reported a division-by-zero error. That test passed in an isolated retry alongside the
+new approval-entry regressions (12 tests total). No recommendation migration/test was edited.
+The subsequent complete serial DB run passed all 478 tests. The parallel-run failure was not
+reproduced in that run; its cause is not established. These results do not certify parallel CI.
 
 ## Findings incorporated into the briefs
 
@@ -121,14 +162,15 @@ campaign remains unobserved (`packages/shared/src/campaign-creation.test.ts` lin
 - Full prefix upgrade, committed failed-claim recovery and preview lifecycle need the disposable
   database tests assigned to Claude in WP-207/216. Static source and parser calls do not replace
   those tests.
-- The source-phase CI conflict is established by the existing exact-string import bans; the
-  future source PR does not exist yet. Its two-phase allowance needs tests when implemented.
+- Source-phase assertions now admit only the declared HTTP application consumers and local HTTP
+  fixture. Provider execution and worker registration remain forbidden by those checks. The source
+  branch is local; PR/CI and activation evidence remain outstanding.
 - Delegated daily-budget races, durable audit admission, revocation and runtime kill-switch
   behavior are requirements for code that does not exist yet, not passed test claims.
 - WP-212 still owns full reproducible overview inventories. This audit corrected misleading
   claims and discovery commands; it does not certify every overview count or environment list.
 
-## Repository verification
+## Initial audit repository verification
 
 `pnpm check` passed typecheck and lint, then stopped on an existing core timing assertion:
 109.9 ms against a 100 ms limit during concurrent package tests/Rust builds. Its isolated rerun
@@ -167,5 +209,6 @@ Hygiene scanned 1461 of 1462 tracked files, with one existing exemption. The pri
 is absent, so client-name checking was skipped; the documented WP-211 scrub is still required.
 All 12 handoff brief links and 32 audited source citation paths/line bounds were checked.
 The initial audit changed 16 Markdown documents. A subsequent four-document clarification
-made the MCP submission requirement and connection-level acceptance explicit. Runtime source
-and active deployment state are unchanged; the clarification does not claim implemented tools.
+made the MCP submission requirement and connection-level acceptance explicit. That clarification
+changed no runtime source or deployment state. Later implementation is recorded in the progress
+section above; it does not claim deployed tools.

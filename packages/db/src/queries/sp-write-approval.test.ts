@@ -213,6 +213,36 @@ describe.skipIf(!available)('authenticated SP write admission', () => {
     } finally { await grantVersion(enabledVersion); }
   });
 
+  it('does not resume an older receipt when the versioned application entry is absent', async () => {
+    const request = await confirmation();
+    await withAuthenticatedActor(database, { orgId, userId: USER }, (sql) => sql`
+      select app.approve_sp_write_cycle(${request.approval.plan.planId}::uuid, ${JSON.stringify(request.approval)})
+    `);
+    await database.sql.unsafe('alter function app.approve_sp_write_preview_v1(uuid,text) rename to test_absent_write_entry');
+    try {
+      await expect(approveAndQueueSpWrite(database, { orgId, userId: USER }, request))
+        .rejects.toMatchObject({ code: 'outcome_unknown' });
+      expect(await counts(request.approval.plan.planId)).toEqual({ receipts: 1, requests: 0, wakes: 0 });
+      let masked = 0;
+      const sql = new Proxy(database.sql, {
+        get(target, property, receiver) {
+          if (property !== 'begin') return Reflect.get(target, property, receiver);
+          return async (...args: unknown[]) => {
+            try { return await Reflect.apply(target.begin, target, args); }
+            catch { masked += 1; throw new Error('synthetic lost missing-function response'); }
+          };
+        },
+      });
+      await expect(approveAndQueueSpWrite({ sql }, { orgId, userId: USER }, request))
+        .rejects.toMatchObject({ code: 'outcome_unknown' });
+      expect(masked).toBe(2);
+      expect(await counts(request.approval.plan.planId)).toEqual({ receipts: 1, requests: 0, wakes: 0 });
+    } finally {
+      await database.sql.unsafe('alter function app.test_absent_write_entry(uuid,text) rename to approve_sp_write_preview_v1');
+    }
+    expect((await approveAndQueueSpWrite(database, { orgId, userId: USER }, request)).kind).toBe('queued');
+  });
+
   it('keeps known approval recoverable when enqueue fails, then resumes the same operation', async () => {
     const request = await confirmation();
     await database.sql.unsafe(`

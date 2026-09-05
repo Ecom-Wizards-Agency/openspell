@@ -60,7 +60,7 @@ export async function recordSpWritePreviewEvidence(
         ${JSON.stringify(plan)}, ${serializeSpWritePlanFingerprint(plan)},
         ${JSON.stringify(plan.actions.map((action) => ({
           artifactText: JSON.stringify(action), fingerprintPreimage: serializeSpWriteActionFingerprint(action),
-        })))}::jsonb,
+        })))}::text::jsonb,
         ${JSON.stringify(evidence)}, ${serializeSpWritePreviewGuardrails(evidence)},
         ${serializeSpWritePreviewProvenance(evidence)}
       )::text as plan_id

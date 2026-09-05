@@ -8033,8 +8033,17 @@ describe('SP write runtime blast radius', () => {
 
   it('adds no runtime, queue, deployment, hosted, Time Machine, or ApplyRow activation path', async () => {
     const runtimeRoots = ['apps/worker', 'apps/web', 'apps/mcp', 'apps/analyst'];
+    const applicationConsumers = [
+      'apps/web/app/api/sp-writes/approve/route.ts',
+      'apps/web/app/api/sp-writes/inverse-preview/route.ts',
+      'apps/web/app/api/sp-writes/preview/route.ts',
+      'apps/web/app/api/sp-writes/status/route.ts',
+      'apps/web/src/writes/http.ts',
+    ];
+    const seenApplicationConsumers: string[] = [];
     const forbidden = [
       '@wizard-ads/shared/sp-writes',
+      '@wizard-ads/db/sp-write-application',
       '@wizard-ads/ads-api/sp-write-adapter',
       'createSpWriteAdapter',
       'sp_write.dispatch',
@@ -8053,10 +8062,16 @@ describe('SP write runtime blast radius', () => {
       for (const path of files) {
         const source = await readFile(path, 'utf8');
         for (const token of forbidden) {
+          if (token === '@wizard-ads/db/sp-write-application' && source.includes(token)
+            && applicationConsumers.includes(path.slice(REPO_ROOT.length))) {
+            seenApplicationConsumers.push(path.slice(REPO_ROOT.length));
+            continue;
+          }
           if (source.includes(token)) hits.push(`${path.slice(REPO_ROOT.length)}: ${token}`);
         }
       }
     }
+    expect(seenApplicationConsumers.sort()).toEqual(applicationConsumers);
 
     const activationRoots = ['.github', 'docs/deploy'];
     const activationTokens = [
@@ -8167,6 +8182,7 @@ describe('SP write runtime blast radius', () => {
       '/20260901030000_sp_write_outbox_delivery.sql',
       '/20260905000000_sp_write_preview_evidence.sql',
       '/20260905010000_sp_write_preview_approval.sql',
+      '/20260905020000_sp_write_application_entry.sql',
     ];
     const migrationFiles = await sourceFiles(`${REPO_ROOT}supabase/migrations`);
     const spWriteSourceMigrations = migrationFiles.filter((path) =>

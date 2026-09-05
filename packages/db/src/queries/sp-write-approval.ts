@@ -2,30 +2,10 @@ import {
   SpWriteActor, SpWriteAdmission, SpWriteManualApprovalRequest,
 } from '@wizard-ads/shared/sp-write-application';
 import { SpWriteAuthorizationReceipt } from '@wizard-ads/shared/sp-writes';
-import type { DbHandle, QuerySql } from '../client.js';
+import type { DbHandle } from '../client.js';
 import { withAuthenticatedActor } from './authenticated-actor.js';
 import { SpWriteApplicationError } from './sp-write-errors.js';
 import { createSpWriteRuntimeLedger } from './sp-write-persistence.js';
-
-async function priorReceipt(
-  sql: QuerySql, actor: SpWriteActor, request: SpWriteManualApprovalRequest,
-): Promise<SpWriteAuthorizationReceipt | null> {
-  const rows = await sql<{ artifact: unknown }[]>`
-    select receipt.artifact from public.sp_write_authorization_receipts receipt
-    join public.sp_write_approval_requests request
-      on request.org_id = receipt.org_id and request.profile_id = receipt.profile_id
-     and request.approval_request_id = receipt.approval_request_id
-    where receipt.org_id = ${actor.orgId}::uuid and receipt.profile_id = ${request.profileId}::uuid
-      and receipt.plan_id = ${request.approval.plan.planId}::uuid
-      and receipt.approved_by = ${actor.userId}::uuid
-      and request.artifact = ${JSON.stringify(request.approval)}::jsonb
-      and exists(select 1 from public.org_members where org_id = receipt.org_id
-        and user_id = ${actor.userId}::uuid and role in ('owner','admin'))
-  `;
-  if (rows.length === 0) return null;
-  if (rows.length !== 1) throw new SpWriteApplicationError('identity_conflict');
-  return SpWriteAuthorizationReceipt.parse(rows[0]!.artifact);
-}
 
 async function isQueued(
   handle: Pick<DbHandle, 'sql'>, receipt: SpWriteAuthorizationReceipt,
@@ -57,22 +37,26 @@ export async function approveAndQueueSpWrite(
   const actor = SpWriteActor.parse(rawActor);
   const request = SpWriteManualApprovalRequest.parse(rawRequest);
   if (request.approval.plan.orgId !== actor.orgId) throw new SpWriteApplicationError('authorization_refused');
-  let receipt: SpWriteAuthorizationReceipt;
-  try {
-    receipt = await withAuthenticatedActor(handle, actor, async (sql) => {
+  async function confirm(): Promise<SpWriteAuthorizationReceipt> {
+    return withAuthenticatedActor(handle, actor, async (sql) => {
       const rows = await sql<{ artifact: unknown }[]>`
-        select app.approve_sp_write_cycle(${request.approval.plan.planId}::uuid,
+        select app.approve_sp_write_preview_v1(${request.approval.plan.planId}::uuid,
           ${JSON.stringify(request.approval)}) as artifact
       `;
       if (rows.length !== 1) throw new SpWriteApplicationError('outcome_unknown');
       return SpWriteAuthorizationReceipt.parse(rows[0]!.artifact);
     });
+  }
+  let receipt: SpWriteAuthorizationReceipt;
+  try {
+    receipt = await confirm();
   } catch (error) {
-    // A connection can fail after COMMIT. Never invent another confirmation ID.
-    const recovered = await withAuthenticatedActor(handle, actor, (sql) => priorReceipt(sql, actor, request))
-      .catch(() => null);
-    if (recovered === null) throw approvalFailure(error);
-    receipt = recovered;
+    const failure = approvalFailure(error);
+    if (failure.code !== 'outcome_unknown') throw failure;
+    // Recover only through the same versioned, idempotent authority. A dropped
+    // connection can hide a missing-function error on an older database.
+    try { receipt = await confirm(); }
+    catch { throw failure; }
   }
   if (receipt.approvedBy !== actor.userId
     || receipt.approvalRequestId !== request.approval.approvalRequestId

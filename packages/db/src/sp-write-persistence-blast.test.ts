@@ -8,6 +8,13 @@ import * as persistence from './sp-write-persistence.js';
 import * as workerDatabase from './worker.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+const APPLICATION_CONSUMERS = [
+  'apps/web/app/api/sp-writes/approve/route.ts',
+  'apps/web/app/api/sp-writes/inverse-preview/route.ts',
+  'apps/web/app/api/sp-writes/preview/route.ts',
+  'apps/web/app/api/sp-writes/status/route.ts',
+  'apps/web/src/writes/http.ts',
+].map((path) => `${REPO_ROOT}${path}`);
 
 async function sourceFiles(directory: string): Promise<string[]> {
   const files: string[] = [];
@@ -78,11 +85,14 @@ describe('SP write persistence facade blast radius', () => {
     const appFiles = (await Promise.all(appRoots.map(sourceFiles))).flat();
     expect(appFiles.length).toBeGreaterThan(100);
     const consumers: string[] = [];
+    const applicationConsumers: string[] = [];
     for (const path of appFiles) {
       const text = await readFile(path, 'utf8');
       if (text.includes('@wizard-ads/db/sp-write-persistence')) consumers.push(path);
+      if (text.includes('@wizard-ads/db/sp-write-application')) applicationConsumers.push(path);
     }
     expect(consumers).toEqual([]);
+    expect(applicationConsumers.sort()).toEqual(APPLICATION_CONSUMERS);
 
     const productionFiles = [
       `${REPO_ROOT}packages/db/src/sp-write-persistence.ts`,
@@ -131,6 +141,7 @@ describe('SP write persistence facade blast radius', () => {
       'sp_write_',
       'SP_WRITE',
       'sp-write-persistence',
+      '@wizard-ads/db/sp-write-application',
       'sp-write-adapter',
       '@wizard-ads/db/sp-write-persistence',
       '@wizard-ads/ads-api/sp-write-adapter',
@@ -147,6 +158,8 @@ describe('SP write persistence facade blast radius', () => {
     for (const path of operationalFiles) {
       const source = await readFile(path, 'utf8');
       for (const marker of activationMarkers) {
+        if (marker === '@wizard-ads/db/sp-write-application' && APPLICATION_CONSUMERS.includes(path)) continue;
+        if (marker === 'sp_write_' && path === `${REPO_ROOT}apps/web/src/writes/http.test.ts`) continue;
         if (source.includes(marker)) matches.push({ path, marker });
       }
     }
@@ -158,6 +171,7 @@ describe('SP write persistence facade blast radius', () => {
       '/20260901030000_sp_write_outbox_delivery.sql',
       '/20260905000000_sp_write_preview_evidence.sql',
       '/20260905010000_sp_write_preview_approval.sql',
+      '/20260905020000_sp_write_application_entry.sql',
     ];
     const inertSpWriteMigrations = migrations.filter((path) =>
       inertSpWriteMigrationSuffixes.some((suffix) => path.endsWith(suffix)));

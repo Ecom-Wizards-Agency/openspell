@@ -60,7 +60,7 @@ export async function previewSpWriteInverse(
   const [mirror] = await handle.sql<{ matches: number; now: string; expires: string }[]>`
     select count(*)::int as matches, app.sp_write_instant(clock_timestamp()) as now,
       app.sp_write_instant(clock_timestamp() + interval '15 minutes') as expires
-    from jsonb_to_recordset(${JSON.stringify(expected)}::jsonb) as expected(keyword_id text, amount text)
+    from jsonb_to_recordset(${JSON.stringify(expected)}::text::jsonb) as expected(keyword_id text, amount text)
     join public.keywords keyword on keyword.org_id = ${actor.orgId}::uuid
       and keyword.profile_id = ${request.profileId}::uuid and keyword.amazon_id = expected.keyword_id
       and keyword.bid = expected.amount::numeric and keyword.ad_product = 'SP'

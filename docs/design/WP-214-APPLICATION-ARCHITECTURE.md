@@ -75,6 +75,24 @@ requirement. No caller casts a transaction into that facade. Application operati
 source joins, replay, identity recovery and evidence interpretation; transports do not sequence
 low-level ledger methods. The worker alone owns provider orchestration.
 
+The HTTP slice adds `applyAmazonChanges` to `apps/web/src/auth/roles.ts` and its tests for the
+existing owner/admin policy. It uses the shared session/assurance gate, strict shared requests,
+fixed-origin POST checks and bounded JSON reads. The four paths are `/api/sp-writes/preview`,
+`approve`, `inverse-preview` (POST) and `status` (GET). Errors expose controlled codes and
+preserve unknown admission outcomes; responses disable caching. No Amazon client or MCP server
+is loaded by these routes. Client confirmation design remains with Claude.
+The HTTP proof uses the real request database (without Drizzle's serializer overrides).
+It also covers the two serialized-JSON parameters in `queries/sp-write-persistence.ts`;
+bind their text before casting to JSONB so both database client configurations preserve the
+same proof arrays. Apply the same rule to preview persistence and inverse reads.
+`20260905020000_sp_write_application_entry.sql` gives HTTP admission the versioned
+`app.approve_sp_write_preview_v1` entry. Missing application SQL fails before receipt recovery
+or enqueue, even when an older database has an existing approval. This prevents an older
+same-name approval implementation from substituting for the new source checks.
+Recovery calls that same versioned, idempotent entry with the same confirmation identity. It
+does not reconstruct permission through unversioned receipt reads: a connection failure can
+hide the older database's missing-function error. Definite refusals are not retried internally.
+
 ### Preview and human approval
 
 Implementation review found that export rows remain editable and the SP plan retains only

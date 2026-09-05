@@ -720,7 +720,7 @@ class DefaultSpWriteStagingLedger implements SpWriteStagingLedger {
         select app.record_sp_write_plan(
           ${artifactText},
           ${planPreimage},
-          ${JSON.stringify(actionProofs)}::jsonb
+          ${JSON.stringify(actionProofs)}::text::jsonb
         )::text
       `;
       const row = exactSingleRow('record_plan', rows);
@@ -766,7 +766,7 @@ class DefaultSpWriteStagingLedger implements SpWriteStagingLedger {
         select app.record_sp_write_bounded_authorization(
           ${artifactText},
           ${fingerprintPreimage},
-          ${JSON.stringify(prepared.bindings)}::jsonb
+          ${JSON.stringify(prepared.bindings)}::text::jsonb
         )::text
       `;
       const row = exactSingleRow('record_bounded_authorization', rows);
