@@ -105,6 +105,14 @@ typechecks and targeted lint passed. The first new fixture used a nonexistent `c
 run status; it was corrected to the schema's `succeeded` value before these passing runs.
 Claude-owned client files are unchanged. Proposal revision design is the next backend slice.
 
+Population implementation is committed at `4bd9c36`. Its final hygiene invocation **failed**:
+the private denylist became available and exposed 15 existing matches in the three documents
+reserved for Claude's WP-211 scrub. The earlier absence/skipping notes below describe earlier
+runs only. No new population source file was reported. These protected documents were not
+edited here; the current branch's hygiene gate remains failing until the scrub is integrated.
+The local decision trail's initial population checkpoint incorrectly said staged hygiene
+passed; a subsequent correction records the nonzero result and existing-document findings.
+
 The main replan now contains a current Claude handoff, including the locally verified
 native-history slice. It documents the four UI HTTP
 contracts, separate provider/mirror states, exact history links, frontend ownership and the
