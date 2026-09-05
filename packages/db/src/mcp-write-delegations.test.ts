@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { getTableConfig } from 'drizzle-orm/pg-core';
 import {
   McpWriteDelegation, serializeMcpWriteDelegationFingerprint, verifyMcpWriteDelegationFingerprint,
 } from '@wizard-ads/shared/sp-writes';
 import type { Sql } from './client.js';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from './testing/harness.js';
 import { asAnon, asServiceRole, asUser } from './testing/rls.js';
+import { mcpApiKeys, mcpWriteDelegations } from './schema/mcp.js';
 
 const available = await databaseAvailable();
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -61,6 +63,19 @@ describe.skipIf(!available)('operator-issued MCP write authority', () => {
     return row;
   }
   const empty = { keys: 0, delegations: 0, issued: 0, revoked: 0, outbox: 0 };
+
+  it('mirrors every private credential and delegation column without exposing a plaintext token column', async () => {
+    for (const table of [mcpApiKeys, mcpWriteDelegations]) {
+      const config = getTableConfig(table);
+      const columns = await database.sql<{ name: string; not_null: boolean }[]>`
+        select column_name as name, is_nullable = 'NO' as not_null from information_schema.columns
+        where table_schema = ${config.schema!} and table_name = ${config.name} order by column_name
+      `;
+      expect(columns).toEqual(config.columns.map((column) => ({ name: column.name, not_null: column.notNull }))
+        .sort((a, b) => a.name.localeCompare(b.name)));
+      expect(columns.map((column) => column.name)).not.toContain('token');
+    }
+  });
 
   it('atomically stores exact owner authority and a sanitized audit without enabling execution', async () => {
     const d = await fixture();

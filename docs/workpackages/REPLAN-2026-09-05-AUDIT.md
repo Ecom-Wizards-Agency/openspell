@@ -177,7 +177,30 @@ The next contract slice separates actor-free operator policy, server-minted toke
 one-time plaintext response and persisted management summary. The web issue endpoint will be
 `POST /api/mcp-keys/write`; its loader/action scope is `apps/web/src/data/mcp-keys.ts`, the new
 route, the existing revoke route and synthetic route/data tests. Claude retains all key-management
-client components. Shared contracts are committed before these consumers.
+client components. Shared contracts precede these consumers at `7fe1fe9` (128 shared tests passed).
+
+The operator key-management implementation now uses those contracts: an explicit DB facade
+builds authority from authenticated identity, owned profile currencies and database time, then
+verifies the RPC result inside the transaction. A Drizzle mirror covers the private tables.
+The new HTTP endpoint uses the existing session/MFA actor gate, owner/admin capability,
+same-origin bounded JSON, strict policy parsing and no-store responses. The body-free revoke
+endpoint now uses audited operator revocation for both read and write keys. `listMcpWriteKeys`
+exposes immutable limits and revocation metadata without token/hash material for Claude's page.
+
+Eight new/existing key-route/data tests, 14 DB authority/mirror/boundary checks, DB/web
+typechecks and targeted lint pass. The first typecheck required Drizzle's enum object overload;
+the first boundary run required declaring the new error wrapper and synthetic count fixture.
+Independent probes confirm malformed successful RPC output rolls back key/delegation/audit,
+legacy read credentials authenticate before revocation and fail afterward, and membership
+removal/forged input cannot add authority. Unknown failures return sanitized 503 responses
+without claiming no change or exposing token/SQL text.
+
+Deployment dependency: the new web revoke route requires `20260906010000` even with MCP writes
+disabled. A disposable pre-migration probe confirms 503 and an unchanged active read key when
+that RPC is absent. Rehearse/apply the required source migrations before this web revision;
+Claude's original five-file window is insufficient. If issuance loses its response, the plaintext
+cannot be recovered; inspect the key list and revoke the unused issuance before replacing it.
+Write admission, MCP tools, proposal evidence and Time Machine key attribution remain pending.
 
 ### Source progress
 

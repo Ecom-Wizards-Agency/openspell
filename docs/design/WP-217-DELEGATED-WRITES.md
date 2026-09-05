@@ -126,6 +126,8 @@ No key, grant, enabled gate or runtime worker registration is seeded.
    Inventory exact helper changes before implementation. No provider imports in DB.
 4. Transport: `apps/mcp/src/{keys,http,server,config,instructions,audit}.ts`, new write adapter/tests;
    web `src/data/mcp-keys.ts`, `app/api/mcp-keys/**`, shared server JSON helper and issuance fixtures.
+   The key mutation wrapper is `apps/web/src/server/mcp-key-mutations.ts`; new issuance lives at
+   `app/api/mcp-keys/write/route.ts`, with `src/mcp-write-keys-route.test.ts` synthetic coverage.
    No key-management client components. Worker execution uses existing outbox composition.
 5. History: DB Time Machine projection, server timeline labels and synthetic fixtures must derive
    key/issuer from receipt. No live-key join may erase old history. Original and inverse each retain

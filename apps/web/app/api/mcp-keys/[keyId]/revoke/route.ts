@@ -7,26 +7,18 @@
  * than touching a key that is not theirs.
  */
 import { revokeMcpKey } from '../../../../../src/data/mcp-keys';
-import { errorResponse, openWebDatabase, requestActor } from '../../../../../src/server/request-context';
-import { requireCapability } from '../../../../../src/server/org-role';
+import { handleMcpKeyMutation } from '../../../../../src/server/mcp-key-mutations';
 
 export const runtime = 'nodejs';
 
 type RouteContext = { params: Promise<{ keyId: string }> };
 
 export async function POST(request: Request, context: RouteContext): Promise<Response> {
-  const database = openWebDatabase();
-  try {
-    const actor = await requestActor(request.headers);
-    await requireCapability(database, actor, 'manageConnection');
+  return handleMcpKeyMutation(request, async (database, actor) => {
     const { keyId } = await context.params;
 
-    const revoked = await revokeMcpKey(database, actor.orgId, keyId);
+    const revoked = await revokeMcpKey(database, actor, keyId);
     if (!revoked) return Response.json({ error: 'Key not found' }, { status: 404 });
     return Response.json({ revoked: true });
-  } catch (error) {
-    return errorResponse(error);
-  } finally {
-    await database.close();
-  }
+  });
 }

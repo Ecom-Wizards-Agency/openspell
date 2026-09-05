@@ -21,6 +21,9 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import type { Sql } from '@wizard-ads/db';
+import { issueMcpWriteDelegation, listMcpWriteDelegations, revokeMcpKeyAsOperator } from '@wizard-ads/db/mcp-writes';
+import { McpWriteKeyIssued, type McpWriteKeyIssueRequest } from '@wizard-ads/shared/mcp-writes';
+import type { SpWriteActor } from '@wizard-ads/shared/sp-write-application';
 import {
   DEFAULT_MCP_KEY_EXPIRY_DAYS,
   isMcpKeyExpiryDays,
@@ -177,12 +180,20 @@ export async function issueMcpKey(handle: SqlHandle, input: IssueMcpKeyInput): P
  * tenant-scoped, so one org can never revoke another's key by pasting an id.
  * Returns false when no key with that id belongs to the org.
  */
-export async function revokeMcpKey(handle: SqlHandle, orgId: string, keyId: string): Promise<boolean> {
-  const rows = await handle.sql<{ id: string }[]>`
-    update mcp.api_keys
-       set revoked_at = coalesce(revoked_at, now())
-     where id = ${keyId} and org_id = ${orgId}
-     returning id
-  `;
-  return rows.length > 0;
+export async function revokeMcpKey(handle: SqlHandle, actor: SpWriteActor, keyId: string): Promise<boolean> {
+  return revokeMcpKeyAsOperator(handle, actor, keyId);
 }
+
+/** Separate operator issuance: policy cannot supply actor identity or token bytes. */
+export async function issueMcpWriteKey(
+  handle: SqlHandle, actor: SpWriteActor, request: McpWriteKeyIssueRequest,
+): Promise<McpWriteKeyIssued> {
+  const token = generateToken();
+  const delegation = await issueMcpWriteDelegation(handle, actor, request, {
+    tokenHash: hashToken(token), keyPrefix: token.slice(0, STORED_PREFIX_LENGTH),
+  });
+  return McpWriteKeyIssued.parse({ delegation, token });
+}
+
+/** Claude's management page can display these immutable bounds alongside the existing key list. */
+export const listMcpWriteKeys = listMcpWriteDelegations;

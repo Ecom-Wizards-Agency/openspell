@@ -21,7 +21,12 @@ no WP-207 window or live target is changed. The next file,
 `20260906010000_mcp_write_delegations.sql`, implements immutable owner/admin issuance and audited
 revocation. It independently validates canonical scope, limits, identity and fingerprint bytes;
 read credentials cannot be upgraded and write permissions cannot be expanded in place.
-It creates no key during migration and does not implement admission, transport or runtime activation.
+It creates no key during migration. The new operator `POST /api/mcp-keys/write` issues a bounded
+key; `issueMcpWriteKey`/`listMcpWriteKeys` in `apps/web/src/data/mcp-keys.ts` expose Claude's
+server action/loader. Existing read/write revocation now uses the audited RPC. Its migration
+must precede deploying this web revision even if writes stay off; an old schema returns 503
+on revocation. Eight HTTP/data tests and independent atomicity/read-token probes pass.
+MCP write tools, admission and runtime activation are still pending; client components remain Claude-owned.
 Detailed test/review evidence is in the replan audit.
 
 ## Objective

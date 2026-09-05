@@ -13,6 +13,7 @@ const APPLICATION_CONSUMERS = [
   'apps/web/app/api/sp-writes/inverse-preview/route.ts',
   'apps/web/app/api/sp-writes/preview/route.ts',
   'apps/web/app/api/sp-writes/status/route.ts',
+  'apps/web/src/server/mcp-key-mutations.ts',
   'apps/web/src/writes/http.ts',
   'apps/worker/src/sp-write-outbox/loop.test.ts',
 ].map((path) => `${REPO_ROOT}${path}`);
@@ -110,6 +111,7 @@ describe('SP write persistence facade blast radius', () => {
     const productionFiles = [
       `${REPO_ROOT}packages/db/src/sp-write-persistence.ts`,
       `${REPO_ROOT}packages/db/src/queries/sp-write-persistence.ts`,
+      `${REPO_ROOT}packages/db/src/queries/mcp-writes.ts`,
     ];
     const productionText = (await Promise.all(
       productionFiles.map((path) => readFile(path, 'utf8')),
@@ -179,6 +181,7 @@ describe('SP write persistence facade blast radius', () => {
         if (marker === 'sp_write_' && [
           `${REPO_ROOT}apps/web/src/writes/http.test.ts`,
           `${REPO_ROOT}apps/web/src/recommendations/revisions-http.test.ts`,
+          `${REPO_ROOT}apps/web/src/mcp-write-keys-route.test.ts`,
         ].includes(path)) continue;
         const workerRelative = path.startsWith(`${REPO_ROOT}apps/worker/src/sp-write-outbox/`)
           ? path.slice(`${REPO_ROOT}apps/worker/src/sp-write-outbox/`.length) : '';
