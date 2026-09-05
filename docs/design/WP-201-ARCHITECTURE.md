@@ -2912,9 +2912,40 @@ staged root-authority test source that emits it.
 
 #### Exact event-helper protocol and create custody
 
+Every host-side production child is launched only through
+`scripts/child-containment.mjs` and the fixed
+`scripts/child-containment-launcher.mjs`. The parent creates one exclusive 256-bit-named child
+cgroup below its exact delegated cgroup and retains descriptor capabilities for the child and
+parent cgroups. The launcher is a persistent process-group leader. It moves itself into the child
+cgroup through its inherited `cgroup.procs` capability and emits a nonce-bound adoption frame
+before it reads the one-use release pipe. The parent independently requires that the child cgroup
+is populated by exactly that live launcher PID before release; consequently the payload cannot run
+before containment or, for the cut harness, before the fd-7 handoff settles. Only the declared
+payload descriptors cross the second spawn. Cgroup capabilities and the private release, signal,
+status and parent-lifetime channels never reach the payload.
+
+Graceful `SIGINT`/`SIGTERM` is an exact private command to the still-live guardian, which signals
+its pinned process group. Forced settlement writes only to the retained `cgroup.kill` capability;
+there is no parent-side numeric PID or process-group signal fallback. The guardian reports the
+payload PID and terminal result on bounded nonce-bound frames, evacuates itself through the exact
+parent `cgroup.procs` capability, requires `populated 0`, removes empty nested cgroups deepest-first
+and removes the exact child cgroup before terminating. It deliberately terminates itself with
+`SIGKILL` after reporting the payload result, so callers use the authenticated result frame rather
+than mistaking the guardian's terminal signal for the payload's. Parent-control EOF before release
+or while a payload is live triggers the same evacuation, recursive kill, empty proof and exact
+removal path. Parent settlement independently requires payload streams at EOF, release and status
+channels settled, child-cgroup emptiness or authenticated pathname absence, exact pathname absence,
+closed retained descriptors with `EBADF`, and no matching child-cgroup directory descriptor.
+
+`src/containment.test.ts` statically proves that the fixed guardian is the only production source
+that calls raw `spawn`. Its real cgroup tests prove pre-release payload unreachability, recursive
+removal of same-group and detached descendants without touching an unrelated process, and guardian
+cleanup after parent death. This boundary trusts the fixed launcher and same-uid parent as stated
+below; it is containment for trusted proof programs, not a hostile same-uid sandbox.
+
 `scripts/docker-event-helper.mjs` has no caller-selected argument. The wrapper launches it with the
 already-running process's captured `process.execPath`, the fixed resolved script path, and no later
-argument, in an owned process group with an environment containing only `LANG=C` and `LC_ALL=C`.
+argument, in an owned guardian cgroup with an environment containing only `LANG=C` and `LC_ALL=C`.
 Its descriptor table is:
 
 | Descriptor | Direction | Contract |
@@ -3144,7 +3175,7 @@ either hostile peer is in scope, this design is a no-go: stop and amend the arch
 independently hashed derived image with no host input bind rather than weakening the claim.
 
 One outer `try/finally` owns the acquisition container, the ordered proof-container sequence, the
-current event helper, every asynchronous process group and every invocation path. It reads the same
+current event helper, every asynchronous guardian cgroup and every invocation path. It reads the same
 held `/proc/uptime` descriptor with bounded positional reads at offset zero, requires exactly two
 shortest unsigned decimal second fields with bounded fractional digits plus LF and EOF, converts the
 first field into boot-time nanoseconds, samples before and after every state transition, and while a child is live polls it on
@@ -3174,8 +3205,8 @@ the preliminary pre-CLOSE census is classified under the deferred-event rule, an
 its watcher close. Any final event
 emitted before watcher EOF joins the bounded union and is removed/proved absent before the final
 census and the next create.
-Final success waits for zero owned
-process groups, every exact-ID container absent, an empty exact-label census,
+Final success waits for zero populated owned child cgroups, every guardian reaped, every exact-ID
+container absent, an empty exact-label census,
 watcher/socket/pipe settlement and absence of every tracked invocation path. Abrupt host loss or uncatchable `SIGKILL`
 is not claimed recoverable.
 
@@ -3372,7 +3403,7 @@ no-create watcher that proves the daemon's real header/close behavior; and the t
 cuts: before issue, after daemon acceptance and full-ID capture but before parent delivery, and
 after parent custody but before inspect/start. The closed `scripts/interruption-harness.mjs` owns
 those three pause points. `scripts/docker-integration.mjs` is the outer supervisor and starts one
-fresh harness process group per source-literal case.
+fresh release-gated guardian cgroup per source-literal case.
 
 The normal matrix's completed acquisition invocation remains the one authenticated copy source
 while the cuts run. Before each cut, the supervisor creates one new exclusive invocation under the
@@ -3427,8 +3458,9 @@ spawn identity is positively established, and no failed spawn can be retried wit
 
 The supervisor resolves the fixed case launcher and samples the authoritative cut start before it
 marks the handoff `attempted`; once it enters the launcher, it never abandons or reuses the token.
-Before deleting the token, the launcher privately registers the complete child, cleanup, custody
-and handoff identity against the exact error object. It exposes no capability as an error property.
+After deleting the token, every failure path through child creation, handoff settlement and
+release privately registers the complete child, cleanup, custody and handoff identity against the
+exact error object before throwing it. It exposes no capability as an error property.
 The supervisor can consume that private claim exactly once; forged or replayed errors return no
 authority, and descriptor-settlement failure is returned as evidence without losing the claimed
 launch record. A pre-launch failure instead consumes the still-available token through a distinct
@@ -3631,8 +3663,8 @@ both streams. After reaping the harness, the supervisor requires EOF on all five
 pipes (fds `1`, `2`, `4`, `5` and `6`) within the inner deadline, then enters the outer 50-second
 post-reap interval. In its allocated slots it requires the accepted ID absent when supplied, the
 independently queried exact-name and label censuses empty, the original watcher PID/start-time
-identity absent (a reused PID with a different start time does not match), the harness process group
-absent, and the derived invocation path absent under both fixed parents.
+identity absent (a reused PID with a different start time does not match), the harness containment
+empty and removed, and the derived invocation path absent under both fixed parents.
 The before-issue cut instead requires the exact name and label to have remained absent. Every
 ID-owning cut must have the harness itself remove and prove absent that exact ID. The supervisor
 then enters the interval's dedicated ten-second custody slot. Before any cut can pass,
@@ -3653,8 +3685,8 @@ descriptor-only settlement: using the recorded identities, the supervisor enumer
 only its own matching descriptors and proves them absent, without pathname deletion or the
 failed-cut helper. That settlement uses the failed teardown's existing ten-second root/ledger
 descriptor slot; its otherwise inapplicable helper slot remains unused and cannot be borrowed.
-Only after any required success assertion fails, the failed verdict is irrevocably recorded, the harness and complete
-process group are proved reaped and all harness pipes are at EOF may fixed supervisor teardown
+Only after any required success assertion fails, the failed verdict is irrevocably recorded, the harness guardian is
+reaped, its complete cgroup is proved empty and removed, and all harness pipes are at EOF may fixed supervisor teardown
 begin. A child-supplied accepted ID is eligible for supervisor removal only after an independent
 full-ID inspect matches the supervisor-derived exact name, invocation and proof-role labels,
 immutable image reference and expected proof role. Name and label censuses remain diagnostic and
@@ -3797,7 +3829,7 @@ and polls at most every 50 milliseconds while a child is live. Active budgets ar
 either acquisition and 1,500 seconds for the complete normal proof matrix; each hard deadline adds exactly 160 seconds of cleanup
 reserve. This is the inner driver and normal-matrix allocation; only the three outer interruption
 supervisors add their disjoint 50-second post-reap acceptance interval and therefore use 210 seconds.
-Every child from the closed operation table is an asynchronous owned process group capped
+Every child from the closed operation table is an asynchronous owned guardian cgroup capped
 to the remaining absolute deadline. At active-budget expiry or the first caught `SIGINT`, `SIGTERM`
 or `SIGHUP`, cleanup is latched and later signals cannot
 reenter or bypass it. A Docker create client is first allowed at most five seconds to settle so its
@@ -3853,7 +3885,7 @@ the event pipe. Empty output passes. A nonempty output may be deferred only when
 the same one full ID supplied by the sole matching event after census launch; custody comes only
 from that event, and every other nonempty result latches cleanup uncertainty. It then has ten
 seconds to send CLOSE and await socket/ready/event EOF plus child reap: five seconds for graceful
-closure, three after `SIGTERM` and two after `SIGKILL`. The helper is an owned process group under
+closure, three after `SIGTERM` and two after cgroup `SIGKILL`. The helper is an owned guardian cgroup under
 the same deadline; early EOF, disconnect, framing overflow, header hang or failure to settle
 refuses. A sole final event emitted before EOF joins the at-most-two-ID union and is processed from
 the still-reserved per-ID slots after watcher reap; an already-processed duplicate ID consumes no
@@ -3874,7 +3906,7 @@ path for every normal success, ordinary nonzero exit, validation refusal, setup 
 and caught signal. Every post-create outcome removes and absence-checks the unique union of exact
 response/event/name IDs. The original success or refusal is emitted only after child reap, container absence
 watcher settlement and pathname absence are all confirmed; cleanup failure replaces any pending success.
-Path removal runs in a separate asynchronous owned process group through the fixed
+Path removal runs in a separate asynchronous owned guardian cgroup through the fixed
 `scripts/path-cleanup-helper.mjs` descriptor protocol above. It accepts only the fixed parent token,
 invocation value, captured directory device/inode and cleanup-state enum needed to reconstruct and
 authenticate the one directory. Parent and child each revalidate the literal system-temp parent,

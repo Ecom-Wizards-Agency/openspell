@@ -34,6 +34,18 @@ import { setTimeout } from "node:timers";
 import { fileURLToPath, URL } from "node:url";
 import { TextDecoder } from "node:util";
 
+import {
+  abortContainedChild,
+  containedChildEmpty,
+  containedChildReleased,
+  containedChildResult,
+  containedChildSetupError,
+  releaseContainedChild,
+  settleContainedChild,
+  signalContainedChild,
+  spawnContained,
+} from "./child-containment.mjs";
+
 const packageRoots = Object.freeze([
   "tools/hosted-migration-preparation-proof",
   "tools/hosted-migration-root-authority",
@@ -2329,17 +2341,6 @@ function collectBoundedChildPipe(stream, maximumBytes, label, onOverflow) {
   };
 }
 
-function signalOwnedProcessGroup(child, signal) {
-  if (!Number.isSafeInteger(child.pid) || child.pid <= 0) {
-    throw new Error("fresh-root cleanup helper PID missing");
-  }
-  try {
-    process.kill(-child.pid, signal);
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
-  }
-}
-
 function cleanupPollDelay() {
   return new Promise((resolveDelay) => {
     const timer = setTimeout(resolveDelay, 50);
@@ -2352,7 +2353,7 @@ function classifyCleanupChildPoll(closed, sampleNanoseconds, slotDeadlineNanosec
   return closed ? "closed" : "waiting";
 }
 
-async function waitForCleanupChild(childState, slotNanoseconds, budgetState, clock) {
+async function waitForCleanupChild(child, childState, slotNanoseconds, budgetState, clock) {
   const slotStart = advanceHeldFreshRootBudget(
     budgetState,
     "cleanup-work",
@@ -2367,7 +2368,8 @@ async function waitForCleanupChild(childState, slotNanoseconds, budgetState, clo
       clock,
       false,
     ).lastNanoseconds;
-    const beforeDelay = classifyCleanupChildPoll(childState.closed, sample, slotDeadline);
+    const terminal = childState.closed && containedChildEmpty(child);
+    const beforeDelay = classifyCleanupChildPoll(terminal, sample, slotDeadline);
     if (beforeDelay !== "waiting") return beforeDelay === "closed";
     await cleanupPollDelay();
     const postWakeSample = advanceHeldFreshRootBudget(
@@ -2377,7 +2379,7 @@ async function waitForCleanupChild(childState, slotNanoseconds, budgetState, clo
       false,
     ).lastNanoseconds;
     const afterDelay = classifyCleanupChildPoll(
-      childState.closed,
+      childState.closed && containedChildEmpty(child),
       postWakeSample,
       slotDeadline,
     );
@@ -2397,7 +2399,7 @@ function exactPathIsAbsent(path) {
 
 async function runFixedFreshRootCleanup(record, budgetState, clock) {
   const frame = fixedCleanupControlFrame(record);
-  const child = spawn(capturedNodeExecutable, [fixedPathCleanupHelper], {
+  const child = spawnContained(spawn, capturedNodeExecutable, [fixedPathCleanupHelper], {
     cwd: "/",
     detached: true,
     env: { LANG: "C", LC_ALL: "C" },
@@ -2408,12 +2410,13 @@ async function runFixedFreshRootCleanup(record, budgetState, clock) {
     state.spawnError = error;
   });
   child.once("close", (code, signal) => {
+    const containedResult = containedChildResult(child);
     state.closed = true;
-    state.code = code;
-    state.signal = signal;
+    state.code = containedResult === undefined ? code : containedResult.code;
+    state.signal = containedResult === undefined ? signal : containedResult.signal;
   });
   const terminateOnOverflow = () => {
-    try { signalOwnedProcessGroup(child, "SIGKILL"); } catch { /* reported after reap */ }
+    try { signalContainedChild(child, "SIGKILL"); } catch { /* reported after reap */ }
   };
   const diagnosticsResult = collectBoundedChildPipe(
     child.stdio[2],
@@ -2435,14 +2438,16 @@ async function runFixedFreshRootCleanup(record, budgetState, clock) {
 
   try {
     let closed = await waitForCleanupChild(
+      child,
       state,
       cleanupNormalNanoseconds,
       budgetState,
       clock,
     );
     if (!closed) {
-      signalOwnedProcessGroup(child, "SIGTERM");
+      signalContainedChild(child, "SIGTERM");
       closed = await waitForCleanupChild(
+        child,
         state,
         cleanupTermNanoseconds,
         budgetState,
@@ -2450,8 +2455,9 @@ async function runFixedFreshRootCleanup(record, budgetState, clock) {
       );
     }
     if (!closed) {
-      signalOwnedProcessGroup(child, "SIGKILL");
+      signalContainedChild(child, "SIGKILL");
       closed = await waitForCleanupChild(
+        child,
         state,
         cleanupKillNanoseconds,
         budgetState,
@@ -2459,6 +2465,19 @@ async function runFixedFreshRootCleanup(record, budgetState, clock) {
       );
     }
     if (!closed) throw new Error("fresh-root cleanup helper did not reap");
+    if (!containedChildReleased(child)) {
+      throw new Error("fresh-root cleanup helper release pipe did not settle");
+    }
+    const containmentSetupError = containedChildSetupError(child);
+    if (containmentSetupError !== undefined) throw containmentSetupError;
+    const containmentSettlement = settleContainedChild(child);
+    if (!containmentSettlement.settled) {
+      throw new AggregateError(
+        containmentSettlement.errors,
+        "fresh-root cleanup helper containment failed",
+        { cause: containmentSettlement.errors[0] },
+      );
+    }
     if (state.spawnError !== undefined) {
       throw new Error("fresh-root cleanup helper spawn failed", { cause: state.spawnError });
     }
@@ -2499,12 +2518,60 @@ async function runFixedFreshRootCleanup(record, budgetState, clock) {
       outcome: "helper-complete-and-parent-absent",
     });
   } catch (error) {
-    if (!state.closed) {
-      try { signalOwnedProcessGroup(child, "SIGKILL"); } catch { /* residue is reported below */ }
-    }
-    const failure = error instanceof Error
+    const primary = error instanceof Error
       ? error
       : new Error("fresh-root cleanup helper failed", { cause: error });
+    const cleanupErrors = [];
+    let terminal = false;
+    try {
+      terminal = state.closed && containedChildEmpty(child);
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    if (!terminal) {
+      try {
+        signalContainedChild(child, "SIGKILL");
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      try {
+        terminal = await waitForCleanupChild(
+          child,
+          state,
+          cleanupKillNanoseconds,
+          budgetState,
+          clock,
+        );
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    if (!terminal) {
+      cleanupErrors.push(new Error("fresh-root cleanup helper retained child residue"));
+    } else {
+      if (!containedChildReleased(child)) {
+        cleanupErrors.push(new Error("fresh-root cleanup helper release pipe did not settle"));
+      }
+      try {
+        const settlement = settleContainedChild(child);
+        if (!settlement.settled) {
+          cleanupErrors.push(new AggregateError(
+            settlement.errors,
+            "fresh-root cleanup helper containment failed",
+            { cause: settlement.errors[0] },
+          ));
+        }
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    const failure = cleanupErrors.length === 0
+      ? primary
+      : new AggregateError(
+          [primary, ...cleanupErrors],
+          "fresh-root cleanup helper and containment settlement failed",
+          { cause: primary },
+        );
     Object.defineProperty(failure, "cleanup", {
       configurable: false,
       enumerable: true,
@@ -3039,18 +3106,37 @@ function handoffIdentityFromState(state) {
   );
 }
 
-function registerHandoffFailure(recovery, child, spawnError, handoffSettlement) {
-  const handoffError =
-    handoffSettlement.closeError ??
-    handoffSettlement.probeError ??
-    new Error("fresh-root handoff descriptor remained open");
-  const failure = spawnError === undefined
-    ? handoffError
-    : new AggregateError(
-      [spawnError, handoffError],
-      "fresh-root spawn and handoff settlement failed",
-      { cause: spawnError },
-    );
+function descriptorSettlementErrors(settlement) {
+  return [settlement.closeError, settlement.probeError].filter(
+    (error) => error !== undefined,
+  );
+}
+
+function exactOrderedFailure(errors, message, fallbackMessage) {
+  const ordered = [...errors];
+  if (ordered.length === 0) ordered.push(new Error(fallbackMessage));
+  return ordered.length === 1
+    ? ordered[0]
+    : new AggregateError(ordered, message, { cause: ordered[0] });
+}
+
+function descriptorSettlementFailure(settlement, message) {
+  const errors = descriptorSettlementErrors(settlement);
+  if (errors.length === 0 && settlement.settled) return undefined;
+  return exactOrderedFailure(
+    errors,
+    message,
+    "fresh-root handoff descriptor remained open",
+  );
+}
+
+function bindFreshRootHandoffFailure(
+  failure,
+  recovery,
+  child,
+  spawnError,
+  handoffSettlement,
+) {
   freshRootHandoffFailures.set(failure, Object.freeze({
     expected: recovery.expected,
     handoffSettlement,
@@ -3060,26 +3146,65 @@ function registerHandoffFailure(recovery, child, spawnError, handoffSettlement) 
   return failure;
 }
 
+function registerHandoffFailure(recovery, child, spawnError, handoffSettlement) {
+  const handoffErrors = descriptorSettlementErrors(handoffSettlement);
+  if (handoffErrors.length === 0) {
+    handoffErrors.push(new Error("fresh-root handoff descriptor remained open"));
+  }
+  const failure = exactOrderedFailure(
+    [spawnError, ...handoffErrors].filter((error) => error !== undefined),
+    "fresh-root spawn and handoff settlement failed",
+    "fresh-root handoff failed",
+  );
+  return bindFreshRootHandoffFailure(
+    failure,
+    recovery,
+    child,
+    spawnError,
+    handoffSettlement,
+  );
+}
+
 function settleHandoffForClaim(state) {
   const expected = handoffIdentityFromState(state);
+  const failures = [];
+  let finalSettlement;
   try {
     const initial = settlePrivateDescriptor(state.handoffRoot, expected);
-    state.descriptorSettlement.handoffRoot = initial.settled;
-    if (initial.settled && initial.closeError === undefined && initial.probeError === undefined) {
-      return initial;
+    const initialFailure = descriptorSettlementFailure(
+      initial,
+      "fresh-root initial handoff settlement failed",
+    );
+    if (initialFailure !== undefined) failures.push(initialFailure);
+    finalSettlement = initial;
+    if (!initial.settled) {
+      finalSettlement = settlePrivateDescriptorIdentity(expected, [state.custodyRoot]);
+      const retryFailure = descriptorSettlementFailure(
+        finalSettlement,
+        "fresh-root handoff identity retry failed",
+      );
+      if (retryFailure !== undefined) failures.push(retryFailure);
     }
-    const settlement = settlePrivateDescriptorIdentity(expected, [state.custodyRoot]);
-    state.descriptorSettlement.handoffRoot = settlement.settled;
-    return settlement;
   } catch (error) {
-    state.descriptorSettlement.handoffRoot = false;
-    return Object.freeze({
+    failures.push(error);
+    finalSettlement = Object.freeze({
       closeError: undefined,
       expected,
       probeError: error,
       settled: false,
     });
   }
+  state.descriptorSettlement.handoffRoot = finalSettlement.settled;
+  return Object.freeze({
+    handoffSettlement: finalSettlement,
+    recoveryFailure: failures.length === 0
+      ? undefined
+      : exactOrderedFailure(
+        failures,
+        "fresh-root handoff cleanup failed",
+        "fresh-root handoff cleanup failed",
+      ),
+  });
 }
 
 function launchFixedFreshRootCut(token, program) {
@@ -3097,13 +3222,15 @@ function launchFixedFreshRootCut(token, program) {
   let child;
   let spawnError;
   try {
-    child = spawn(
+    child = spawnContained(
+      spawn,
       capturedNodeExecutable,
       ["--input-type=module", "--eval", program],
       {
         cwd: proofPackageDirectory,
         detached: true,
         env: { LANG: "C", LC_ALL: "C" },
+        holdRelease: true,
         stdio: ["ignore", "pipe", "pipe", "pipe", "pipe", "pipe", "pipe", state.handoffRoot],
       },
     );
@@ -3127,7 +3254,34 @@ function launchFixedFreshRootCut(token, program) {
     handoffSettlement.closeError !== undefined ||
     handoffSettlement.probeError !== undefined
   ) {
+    if (child !== undefined) abortContainedChild(child);
     throw registerHandoffFailure(recovery, child, spawnError, handoffSettlement);
+  }
+  if (child !== undefined) {
+    try {
+      releaseContainedChild(child);
+    } catch (error) {
+      const primary = error instanceof Error
+        ? error
+        : new Error("fresh-root contained child release failed", { cause: error });
+      let failure = primary;
+      try {
+        abortContainedChild(child);
+      } catch (abortError) {
+        failure = new AggregateError(
+          [primary, abortError],
+          "fresh-root contained child release and abort failed",
+          { cause: primary },
+        );
+      }
+      throw bindFreshRootHandoffFailure(
+        failure,
+        recovery,
+        child,
+        spawnError,
+        handoffSettlement,
+      );
+    }
   }
   return freshRootLaunchFromRecovery(recovery, child, spawnError);
 }
@@ -3149,22 +3303,28 @@ export function claimFreshRootHandoffFailure(error) {
   if (failure === undefined) return undefined;
   freshRootHandoffFailures.delete(error);
   let handoffSettlement = failure.handoffSettlement;
+  let recoveryFailure;
   if (!handoffSettlement.settled) {
     try {
       handoffSettlement = settlePrivateDescriptorIdentity(
         failure.expected,
         failure.protectedDescriptors,
       );
+      recoveryFailure = descriptorSettlementFailure(
+        handoffSettlement,
+        "fresh-root handoff identity recovery failed",
+      );
     } catch (settlementError) {
       handoffSettlement = Object.freeze({
-        closeError: failure.handoffSettlement.closeError,
+        closeError: undefined,
         expected: failure.expected,
         probeError: settlementError,
         settled: false,
       });
+      recoveryFailure = settlementError;
     }
   }
-  return Object.freeze({ handoffSettlement, launch: failure.launch });
+  return Object.freeze({ handoffSettlement, launch: failure.launch, recoveryFailure });
 }
 
 export function claimFreshRootCleanup(token) {
@@ -3174,9 +3334,9 @@ export function claimFreshRootCleanup(token) {
   }
   state.phase = "cleanup-claimed";
   freshRootTokens.delete(token);
-  const handoffSettlement = settleHandoffForClaim(state);
+  const settlement = settleHandoffForClaim(state);
   return Object.freeze({
-    handoffSettlement,
+    handoffSettlement: settlement.handoffSettlement,
     launch: freshRootLaunchFromRecovery(
       Object.freeze({
         cleanup: freshRootCleanupFromState(state),
@@ -3185,6 +3345,7 @@ export function claimFreshRootCleanup(token) {
       undefined,
       undefined,
     ),
+    recoveryFailure: settlement.recoveryFailure,
   });
 }
 

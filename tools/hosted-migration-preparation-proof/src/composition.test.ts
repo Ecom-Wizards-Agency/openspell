@@ -147,6 +147,10 @@ type CargoModule = {
   readonly prepareFreshLedgerBackedRoot: typeof prepareFreshLedgerBackedRoot;
   readonly stageFixedSourceSnapshot: typeof stageFixedSourceSnapshot;
   readonly fixtureSpawnError?: Error;
+  readonly fixtureReleaseError?: Error;
+  readonly fixtureAbortError?: Error;
+  readonly fixtureDescriptorCloseError?: Error;
+  readonly fixtureDescriptorProbeError?: Error;
   readonly fixtureClassifyCleanupChildPoll?: (
     closed: boolean,
     sampleNanoseconds: bigint,
@@ -191,6 +195,14 @@ async function copiedCargoModule(
     join(packageDirectory, "scripts/path-cleanup-helper.mjs"),
     join(dirname(modulePath), "path-cleanup-helper.mjs"),
   );
+  copyFileSync(
+    join(packageDirectory, "scripts/child-containment.mjs"),
+    join(dirname(modulePath), "child-containment.mjs"),
+  );
+  copyFileSync(
+    join(packageDirectory, "scripts/child-containment-launcher.mjs"),
+    join(dirname(modulePath), "child-containment-launcher.mjs"),
+  );
   writeFileSync(
     modulePath,
     transform(readFileSync(join(packageDirectory, "scripts/cargo.mjs"), "utf8")),
@@ -199,6 +211,33 @@ async function copiedCargoModule(
     `${pathToFileURL(modulePath).href}?fixture=${randomBytes(8).toString("hex")}`
   ) as CargoModule;
   return { directory, module };
+}
+
+async function settleCopiedContainedChild(
+  directory: string,
+  child: NonNullable<ReturnType<typeof launchBeforeIssueFreshRoot>["child"]>,
+): Promise<void> {
+  const containment = await import(
+    pathToFileURL(join(
+      directory,
+      "tools/hosted-migration-preparation-proof/scripts/child-containment.mjs",
+    )).href
+  ) as {
+    readonly abortContainedChild: (value: typeof child) => void;
+    readonly settleContainedChild: (value: typeof child) => {
+      readonly empty: boolean;
+      readonly errors: readonly Error[];
+      readonly settled: boolean;
+    };
+  };
+  containment.abortContainedChild(child);
+  if (child.exitCode === null && child.signalCode === null) await once(child, "close");
+  const status = child.stdio[9];
+  if (status !== null && "readableEnded" in status && !status.readableEnded) {
+    await once(status, "end");
+  }
+  expect(containment.settleContainedChild(child)).toMatchObject({ empty: true, settled: true });
+  for (const stream of child.stdio) stream?.destroy();
 }
 
 type CompactCompleteFixture = {
@@ -358,11 +397,14 @@ function compactFixtureTransform(
   injections: {
     readonly afterDirectoryCreate?: string;
     readonly afterInvocationSync?: string;
+    readonly abortFailure?: boolean;
     readonly beforeSettledSourceVerification?: string;
     readonly exposeCleanupPollClassifier?: boolean;
     readonly exposeDescriptorSettlement?: boolean;
     readonly firstDescriptorCloseFailure?: boolean;
+    readonly firstDescriptorProbeFailure?: boolean;
     readonly initialFailure?: "random" | "sample";
+    readonly releaseFailure?: boolean;
     readonly spawnFailure?: boolean;
   } = {},
 ): (source: string) => string {
@@ -425,14 +467,26 @@ function compactFixtureTransform(
       source = replaceExactly(
         source,
         settlement,
-        `let fixtureDescriptorCloseFailure = true;\n\n${settlement}`,
+        `let fixtureDescriptorCloseFailure = true;\n` +
+          `let fixtureDescriptorProbeFailure = ${injections.firstDescriptorProbeFailure === true};\n` +
+          `const fixtureDescriptorCloseError = new Error("fixture descriptor close failure");\n` +
+          `const fixtureDescriptorProbeError = new Error("fixture descriptor probe failure");\n\n${settlement}`,
       );
       const close = `try {\n    closeSync(descriptor);\n  } catch (error) {\n    closeError = error;\n  }`;
       source = replaceExactly(
         source,
         close,
-        `try {\n    if (fixtureDescriptorCloseFailure) {\n      fixtureDescriptorCloseFailure = false;\n      throw new Error("fixture descriptor close failure");\n    }\n    closeSync(descriptor);\n  } catch (error) {\n    closeError = error;\n  }`,
+        `try {\n    if (fixtureDescriptorCloseFailure) {\n      fixtureDescriptorCloseFailure = false;\n      throw fixtureDescriptorCloseError;\n    }\n    closeSync(descriptor);\n  } catch (error) {\n    closeError = error;\n  }`,
       );
+      if (injections.firstDescriptorProbeFailure === true) {
+        const probe = `let observed;\n  probeError = undefined;\n  try {\n    observed = observePrivateDescriptor(descriptor);`;
+        source = replaceExactly(
+          source,
+          probe,
+          `let observed;\n  probeError = undefined;\n  try {\n    if (fixtureDescriptorProbeFailure) {\n      fixtureDescriptorProbeFailure = false;\n      throw fixtureDescriptorProbeError;\n    }\n    observed = observePrivateDescriptor(descriptor);`,
+        );
+      }
+      source += "\nexport { fixtureDescriptorCloseError, fixtureDescriptorProbeError };\n";
     }
     if (injections.spawnFailure === true) {
       source = replaceExactly(
@@ -443,10 +497,38 @@ function compactFixtureTransform(
       );
       source = replaceExactly(
         source,
-        "    child = spawn(\n      capturedNodeExecutable,",
-        "    throw fixtureSpawnError;\n    child = spawn(\n      capturedNodeExecutable,",
+        "    child = spawnContained(\n      spawn,\n      capturedNodeExecutable,",
+        "    throw fixtureSpawnError;\n    child = spawnContained(\n      spawn,\n      capturedNodeExecutable,",
       );
       source += "\nexport { fixtureSpawnError };\n";
+    }
+    if (injections.releaseFailure === true) {
+      source = replaceExactly(
+        source,
+        "function launchFixedFreshRootCut(token, program) {",
+        'const fixtureReleaseError = new Error("fixture contained child release failure");\n\n' +
+          "function launchFixedFreshRootCut(token, program) {",
+      );
+      source = replaceExactly(
+        source,
+        "      releaseContainedChild(child);",
+        "      throw fixtureReleaseError;",
+      );
+      source += "\nexport { fixtureReleaseError };\n";
+    }
+    if (injections.abortFailure === true) {
+      source = replaceExactly(
+        source,
+        "function launchFixedFreshRootCut(token, program) {",
+        'const fixtureAbortError = new Error("fixture contained child abort failure");\n\n' +
+          "function launchFixedFreshRootCut(token, program) {",
+      );
+      source = replaceExactly(
+        source,
+        "        abortContainedChild(child);",
+        "        throw fixtureAbortError;",
+      );
+      source += "\nexport { fixtureAbortError };\n";
     }
     if (injections.initialFailure === "sample") {
       source = replaceExactly(
@@ -1251,9 +1333,10 @@ describe("WP-201 composition boundary", () => {
       expect(launch.child?.spawnfile).toBe(process.execPath);
       expect(launch.child?.spawnargs).toEqual([
         process.execPath,
-        "--input-type=module",
-        "--eval",
-        'import{runBeforeIssueCut}from"./scripts/interruption-harness.mjs";await runBeforeIssueCut()',
+        join(
+          fixtureModule.directory,
+          "tools/hosted-migration-preparation-proof/scripts/child-containment-launcher.mjs",
+        ),
       ]);
       expect(handoff).toMatchObject({
         ledgerDigest: sha256(compact.ledger),
@@ -1301,10 +1384,7 @@ describe("WP-201 composition boundary", () => {
       );
     } finally {
       if (launchedChild !== undefined) {
-        for (const stream of launchedChild.stdio) stream?.destroy();
-        if (launchedChild.exitCode === null && launchedChild.signalCode === null) {
-          await once(launchedChild, "exit");
-        }
+        await settleCopiedContainedChild(fixtureModule.directory, launchedChild);
       }
       for (const descriptor of descriptors.reverse()) closeSync(descriptor);
       if (reusedCallerDescriptor !== undefined) closeSync(reusedCallerDescriptor);
@@ -1563,16 +1643,74 @@ describe("WP-201 composition boundary", () => {
         compact.ledger,
       );
     } finally {
-      for (const stream of child?.stdio ?? []) stream?.destroy();
-      if (child !== undefined && child.exitCode === null && child.signalCode === null) {
-        await once(child, "exit");
-      }
+      if (child !== undefined) await settleCopiedContainedChild(fixtureModule.directory, child);
       if (ledgerDescriptor !== undefined) closeSync(ledgerDescriptor);
       if (custodyRoot !== undefined) closeSync(custodyRoot);
       await source.sourceHandle.close();
       if (copiedPath !== undefined) removeFixture(copiedPath);
       removeFixture(source.invocation);
       removeFixture(fixtureModule.directory);
+    }
+  });
+
+  it("preserves ordered close and probe failures while a clean retry settles custody", async () => {
+    for (const spawnFailure of [false, true]) {
+      const compact = compactCompleteFixture();
+      const fixtureModule = await copiedCargoModule(
+        sourceIndexBytes(),
+        compactFixtureTransform(compact, {
+          firstDescriptorCloseFailure: true,
+          firstDescriptorProbeFailure: true,
+          spawnFailure,
+        }),
+      );
+      const source = await createCompleteInvocationFixture(fixtureModule.module, compact);
+      let child: ReturnType<typeof fixtureModule.module.launchBeforeIssueFreshRoot>["child"];
+      let copiedPath: string | undefined;
+      let custodyRoot: number | undefined;
+      let ledgerDescriptor: number | undefined;
+      try {
+        const token = await fixtureModule.module.prepareFreshLedgerBackedRoot({
+          sourceDirectory: source.sourceHandle,
+        });
+        let caught: unknown;
+        try {
+          fixtureModule.module.launchBeforeIssueFreshRoot(token);
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(AggregateError);
+        const failure = caught as AggregateError;
+        const expected = spawnFailure
+          ? [
+              fixtureModule.module.fixtureSpawnError,
+              fixtureModule.module.fixtureDescriptorCloseError,
+              fixtureModule.module.fixtureDescriptorProbeError,
+            ]
+          : [
+              fixtureModule.module.fixtureDescriptorCloseError,
+              fixtureModule.module.fixtureDescriptorProbeError,
+            ];
+        expect(failure.errors).toEqual(expected);
+        expect(failure.cause).toBe(expected[0]);
+        const claimed = fixtureModule.module.claimFreshRootHandoffFailure(failure);
+        expect(claimed).toBeDefined();
+        expect(claimed?.handoffSettlement).toMatchObject({ settled: true });
+        expect(claimed?.recoveryFailure).toBeUndefined();
+        child = claimed?.launch.child;
+        copiedPath = claimed?.launch.cleanup.path;
+        custodyRoot = claimed?.launch.custody.custodyRoot;
+        ledgerDescriptor = claimed?.launch.custody.ledgerDescriptor;
+        expect(fixtureModule.module.claimFreshRootHandoffFailure(failure)).toBeUndefined();
+      } finally {
+        if (child !== undefined) await settleCopiedContainedChild(fixtureModule.directory, child);
+        if (ledgerDescriptor !== undefined) closeSync(ledgerDescriptor);
+        if (custodyRoot !== undefined) closeSync(custodyRoot);
+        await source.sourceHandle.close();
+        if (copiedPath !== undefined) removeFixture(copiedPath);
+        removeFixture(source.invocation);
+        removeFixture(fixtureModule.directory);
+      }
     }
   });
 
@@ -1600,6 +1738,99 @@ describe("WP-201 composition boundary", () => {
         "invalid or consumed",
       );
     } finally {
+      if (ledgerDescriptor !== undefined) closeSync(ledgerDescriptor);
+      if (custodyRoot !== undefined) closeSync(custodyRoot);
+      await source.sourceHandle.close();
+      if (copiedPath !== undefined) removeFixture(copiedPath);
+      removeFixture(source.invocation);
+      removeFixture(fixtureModule.directory);
+    }
+  });
+
+  it("privately preserves recovery custody when contained release fails", async () => {
+    const compact = compactCompleteFixture();
+    const fixtureModule = await copiedCargoModule(
+      sourceIndexBytes(),
+      compactFixtureTransform(compact, { releaseFailure: true }),
+    );
+    const source = await createCompleteInvocationFixture(fixtureModule.module, compact);
+    let child: ReturnType<typeof fixtureModule.module.launchBeforeIssueFreshRoot>["child"];
+    let copiedPath: string | undefined;
+    let custodyRoot: number | undefined;
+    let ledgerDescriptor: number | undefined;
+    try {
+      const token = await fixtureModule.module.prepareFreshLedgerBackedRoot({
+        sourceDirectory: source.sourceHandle,
+      });
+      let caught: unknown;
+      try {
+        fixtureModule.module.launchBeforeIssueFreshRoot(token);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBe(fixtureModule.module.fixtureReleaseError);
+      await expect(fixtureModule.module.abandonFreshRootHandoff(token)).rejects.toThrow(
+        "invalid or consumed",
+      );
+      const claimed = fixtureModule.module.claimFreshRootHandoffFailure(caught);
+      expect(claimed).toBeDefined();
+      expect(claimed?.handoffSettlement).toMatchObject({ settled: true });
+      expect(claimed?.recoveryFailure).toBeUndefined();
+      expect(claimed?.launch.outcome).toBe("spawned");
+      child = claimed?.launch.child;
+      copiedPath = claimed?.launch.cleanup.path;
+      custodyRoot = claimed?.launch.custody.custodyRoot;
+      ledgerDescriptor = claimed?.launch.custody.ledgerDescriptor;
+      expect(fixtureModule.module.claimFreshRootHandoffFailure(caught)).toBeUndefined();
+      expect(fixtureModule.module.claimFreshRootHandoffFailure(new Error("forged"))).toBeUndefined();
+    } finally {
+      if (child !== undefined) await settleCopiedContainedChild(fixtureModule.directory, child);
+      if (ledgerDescriptor !== undefined) closeSync(ledgerDescriptor);
+      if (custodyRoot !== undefined) closeSync(custodyRoot);
+      await source.sourceHandle.close();
+      if (copiedPath !== undefined) removeFixture(copiedPath);
+      removeFixture(source.invocation);
+      removeFixture(fixtureModule.directory);
+    }
+  });
+
+  it("orders contained release and abort failures under the exact release cause", async () => {
+    const compact = compactCompleteFixture();
+    const fixtureModule = await copiedCargoModule(
+      sourceIndexBytes(),
+      compactFixtureTransform(compact, { abortFailure: true, releaseFailure: true }),
+    );
+    const source = await createCompleteInvocationFixture(fixtureModule.module, compact);
+    let child: ReturnType<typeof fixtureModule.module.launchBeforeIssueFreshRoot>["child"];
+    let copiedPath: string | undefined;
+    let custodyRoot: number | undefined;
+    let ledgerDescriptor: number | undefined;
+    try {
+      const token = await fixtureModule.module.prepareFreshLedgerBackedRoot({
+        sourceDirectory: source.sourceHandle,
+      });
+      let caught: unknown;
+      try {
+        fixtureModule.module.launchBeforeIssueFreshRoot(token);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(AggregateError);
+      const failure = caught as AggregateError;
+      expect(failure.errors).toEqual([
+        fixtureModule.module.fixtureReleaseError,
+        fixtureModule.module.fixtureAbortError,
+      ]);
+      expect(failure.cause).toBe(fixtureModule.module.fixtureReleaseError);
+      const claimed = fixtureModule.module.claimFreshRootHandoffFailure(failure);
+      expect(claimed).toBeDefined();
+      child = claimed?.launch.child;
+      copiedPath = claimed?.launch.cleanup.path;
+      custodyRoot = claimed?.launch.custody.custodyRoot;
+      ledgerDescriptor = claimed?.launch.custody.ledgerDescriptor;
+      expect(fixtureModule.module.claimFreshRootHandoffFailure(failure)).toBeUndefined();
+    } finally {
+      if (child !== undefined) await settleCopiedContainedChild(fixtureModule.directory, child);
       if (ledgerDescriptor !== undefined) closeSync(ledgerDescriptor);
       if (custodyRoot !== undefined) closeSync(custodyRoot);
       await source.sourceHandle.close();

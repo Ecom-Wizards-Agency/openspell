@@ -7,6 +7,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import {
+  containedChildSetupError,
+  signalContainedChild,
+  spawnContained,
+} from "../scripts/child-containment.mjs";
+
 import type { CUT_CASES } from "../scripts/proof-engine.mjs";
 
 import {
@@ -92,13 +98,19 @@ function writeProtocolFixture(directory: string, entropyFailure = false): string
   const eventHelperPath = fileURLToPath(
     new URL("../scripts/docker-event-helper.mjs", import.meta.url),
   );
+  const containmentPath = fileURLToPath(
+    new URL("../scripts/child-containment.mjs", import.meta.url),
+  );
   const source = readFileSync(harnessPath, "utf8");
   const relativeImport = 'from "./docker-event-helper.mjs";';
+  const containmentImport = 'from "./child-containment.mjs";';
   expect(source.split(relativeImport)).toHaveLength(2);
+  expect(source.split(containmentImport)).toHaveLength(2);
   const entropyCapture = "const capturedRandomBytes = randomBytes;";
   expect(source.split(entropyCapture)).toHaveLength(2);
   const transformed = source
     .replace(relativeImport, `from ${JSON.stringify(pathToFileURL(eventHelperPath).href)};`)
+    .replace(containmentImport, `from ${JSON.stringify(pathToFileURL(containmentPath).href)};`)
     .replace(
       entropyCapture,
       entropyFailure
@@ -2668,7 +2680,7 @@ function reapedCutStructure() {
       accepted: true,
       audit: true,
     }),
-    groupAbsent: true,
+    containmentEmpty: true,
   });
 }
 
@@ -2722,6 +2734,7 @@ async function transformedCutObserverModule(): Promise<{
     "./acquisition-archive.mjs",
     "./docker-event-helper.mjs",
     "./cargo.mjs",
+    "./child-containment.mjs",
     "./proof-engine.mjs",
     "./test.mjs",
   ]) {
@@ -2766,6 +2779,7 @@ async function transformedFailedTeardownModule(hooks: object): Promise<{
     "./acquisition-archive.mjs",
     "./docker-event-helper.mjs",
     "./cargo.mjs",
+    "./child-containment.mjs",
     "./proof-engine.mjs",
     "./test.mjs",
   ]) {
@@ -2867,10 +2881,10 @@ export const reduceCutSupervisorCursor = (...args) => hooks.reduceCutSupervisorC
   writeFileSync(join(directory, "cargo.mjs"), hookSource, { mode: 0o600 });
   writeFileSync(join(directory, "proof-engine.mjs"), proofSource, { mode: 0o600 });
   writeFileSync(join(directory, "private-hooks.mjs"), hookSource, { mode: 0o600 });
-
   let source = readFileSync(integrationPath, "utf8");
   for (const relativeSpecifier of [
     "./acquisition-archive.mjs",
+    "./child-containment.mjs",
     "./docker-event-helper.mjs",
     "./test.mjs",
   ]) {
@@ -4379,11 +4393,11 @@ describe("WP-201 strict Docker and interruption protocols", () => {
       },
       launchFreshRoot: () => {
         recoveryEvents.push("launch");
-        child = spawn(
+        child = spawnContained(
+          spawn,
           process.execPath,
           ["--input-type=module", "--eval", "setTimeout(() => {}, 20);"],
           {
-            detached: true,
             stdio: ["ignore", "pipe", "pipe", "pipe", "pipe", "pipe", "pipe"],
           },
         );
@@ -4410,13 +4424,81 @@ describe("WP-201 strict Docker and interruption protocols", () => {
     } finally {
       if (child !== undefined && child.exitCode === null && child.signalCode === null) {
         try {
-          process.kill(-(child.pid ?? 0), "SIGKILL");
+          signalContainedChild(child, "SIGKILL");
         } catch {
           // The fixture child may have settled between the state check and signal.
         }
         await new Promise<void>((resolvePromise) => child!.once("close", () => resolvePromise()));
       }
       removeRunCutFixture(recoveryFixture);
+    }
+
+    const retryClose = new Error("fixture retry close failure");
+    const retryProbe = new Error("fixture retry probe failure");
+    const retryFailure = new AggregateError(
+      [retryClose, retryProbe],
+      "fixture handoff retry failed",
+      { cause: retryClose },
+    );
+    const teardownFailure = new Error("fixture teardown failure");
+    const failedRecoveryHooks = {
+      ...successHooks,
+      claimFreshRootHandoffFailure(error: unknown) {
+        expect(error).toBe(handoffFailure);
+        return Object.freeze({
+          handoffSettlement: Object.freeze({ settled: true }),
+          launch: Object.freeze({ child: undefined, cleanup, custody, outcome: "not-created" }),
+          recoveryFailure: retryFailure,
+        });
+      },
+      createBootTimeSample: (value: bigint) => Object.freeze({ nanoseconds: value }),
+      createCutSupervisorCursor(): FixtureCursor {
+        return Object.freeze({
+          active: Object.freeze({ endNs: 10_000n * secondNs }),
+          failed: false,
+          index: 0,
+          operations: Object.freeze([]),
+          phase: "harness",
+        });
+      },
+      launchFreshRoot: () => {
+        throw handoffFailure;
+      },
+      reduceCutSupervisorCursor(cursor: FixtureCursor, event: { readonly type: string }) {
+        expect(event.type).toBe("harness-failed-reaped");
+        return Object.freeze({ ...cursor, phase: "failed-ready" });
+      },
+      async runFailedCutTeardown() {
+        return Object.freeze({
+          cursor: Object.freeze({ phase: "failed-complete" }),
+          errors: Object.freeze([teardownFailure]),
+        });
+      },
+    };
+    const failedRecoveryFixture = await transformedRunCutModule(failedRecoveryHooks);
+    try {
+      let caught: unknown;
+      try {
+        await failedRecoveryFixture.module.wp201RunCutFixture(
+          Object.freeze({}),
+          "before-issue",
+          recoveryClock,
+          Object.freeze({}),
+          new AbortController().signal,
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(AggregateError);
+      expect((caught as AggregateError).cause).toBe(handoffFailure);
+      expect((caught as AggregateError).errors).toEqual([
+        handoffFailure,
+        retryFailure,
+        teardownFailure,
+      ]);
+      expect(retryFailure.errors).toEqual([retryClose, retryProbe]);
+    } finally {
+      removeRunCutFixture(failedRecoveryFixture);
     }
   }, 20_000);
 
@@ -4436,26 +4518,24 @@ describe("WP-201 strict Docker and interruption protocols", () => {
       invocation,
       sample: clock(0n),
     });
-    const child = spawn("/openspell-wp201-deliberately-missing", [], {
-      detached: true,
+    const child = spawnContained(spawn, "/openspell-wp201-deliberately-missing", [], {
+      cwd: "/",
+      env: { LANG: "C", LC_ALL: "C" },
       stdio: ["ignore", "pipe", "pipe", "pipe", "pipe", "pipe", "pipe"],
     });
-    const emitted = new Promise<Error>((resolvePromise) => child.once("error", resolvePromise));
     try {
-      const [observed, exactError] = await Promise.all([
-        fixture.observeCutHarness(
-          Object.freeze({ child, outcome: "spawned" }),
-          cursor,
-          token,
-          "before-issue",
-          observerClock,
-        ),
-        emitted,
-      ]);
+      const observed = await fixture.observeCutHarness(
+        Object.freeze({ child, outcome: "spawned" }),
+        cursor,
+        token,
+        "before-issue",
+        observerClock,
+      );
+      const exactError = containedChildSetupError(child);
       expect(observed.outcome).toBe("failed");
       expect(observed.error).toBe(exactError);
-      expect(exactError).toMatchObject({ code: "ENOENT" });
-      expect(exactError.message).not.toContain("/proc/undefined");
+      expect(exactError).toMatchObject({ code: "ENOENT", name: "ContainedPayloadSpawnError" });
+      expect(exactError?.message).not.toContain("/proc/undefined");
       const failed = reduceCutSupervisorCursor(
         cursor,
         { type: "harness-reaped", receipt: observed.receipt },

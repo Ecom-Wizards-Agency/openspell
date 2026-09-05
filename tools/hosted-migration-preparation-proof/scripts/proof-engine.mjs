@@ -3265,7 +3265,7 @@ export function createCutHarnessReapReceipt(options) {
     options.structural,
     options.structural.kind === "not-created"
       ? ["kind"]
-      : ["kind", "releaseWriterClosed", "eof", "groupAbsent"],
+      : ["kind", "releaseWriterClosed", "eof", "containmentEmpty"],
     "cut harness structure",
   );
   const notCreated = options.structural.kind === "not-created";
@@ -3282,7 +3282,7 @@ export function createCutHarnessReapReceipt(options) {
     );
     if (
       options.structural.releaseWriterClosed !== true ||
-      options.structural.groupAbsent !== true ||
+      options.structural.containmentEmpty !== true ||
       Object.values(options.structural.eof).some((value) => value !== true)
     ) {
       throw new Error("cut harness not fully reaped");
@@ -3297,7 +3297,7 @@ export function createCutHarnessReapReceipt(options) {
         accepted: true,
         audit: true,
       }),
-      groupAbsent: true,
+      containmentEmpty: true,
     });
   } else {
     structural = Object.freeze({ kind: "not-created" });

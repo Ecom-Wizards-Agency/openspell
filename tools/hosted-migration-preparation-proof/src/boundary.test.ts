@@ -790,6 +790,7 @@ describe("private preparation-proof package boundary", () => {
     expect(readdirSync(sourceDirectory).sort()).toEqual([
       "boundary.test.ts",
       "composition.test.ts",
+      "containment.test.ts",
       "interruption.test.ts",
       "lib.rs",
     ]);
@@ -813,6 +814,7 @@ describe("private preparation-proof package boundary", () => {
     expect(readdirSync(sourceDirectory).sort()).toEqual([
       "boundary.test.ts",
       "composition.test.ts",
+      "containment.test.ts",
       "interruption.test.ts",
       "lib.rs",
     ]);

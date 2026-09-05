@@ -24,6 +24,15 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL, URL } from "node:url";
 
 import { extractAcquisitionArchive } from "./acquisition-archive.mjs";
+import {
+  containedChildEmpty,
+  containedChildReleased,
+  containedChildResult,
+  containedChildSetupError,
+  settleContainedChild,
+  signalContainedChild,
+  spawnContained,
+} from "./child-containment.mjs";
 import { buildDockerEventOpenFrame } from "./docker-event-helper.mjs";
 import {
   claimFreshRootCleanup,
@@ -294,26 +303,6 @@ function createRecoveryBootClock(originalClock, errors) {
   });
 }
 
-function signalGroup(pid, signal) {
-  if (!Number.isInteger(pid) || pid <= 0) return;
-  try {
-    process.kill(-pid, signal);
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
-  }
-}
-
-function groupAbsent(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return true;
-  try {
-    process.kill(-pid, 0);
-    return false;
-  } catch (error) {
-    if (error?.code === "ESRCH") return true;
-    throw error;
-  }
-}
-
 function ownedChildTerminal(observation) {
   try {
     const channels = [observation.stdout, observation.stderr, ...observation.extra].filter(
@@ -321,7 +310,8 @@ function ownedChildTerminal(observation) {
     );
     return (
       observation.state.closed &&
-      groupAbsent(observation.child.pid) &&
+      containedChildEmpty(observation.child) &&
+      containedChildReleased(observation.child) &&
       channels.every((channel) => channel.ended)
     );
   } catch {
@@ -400,9 +390,10 @@ function observeChild(child, options = {}) {
     }
   });
   child.once("close", (status, signal) => {
+    const containedResult = containedChildResult(child);
     state.closed = true;
-    state.status = status;
-    state.signal = signal;
+    state.status = containedResult === undefined ? status : containedResult.code;
+    state.signal = containedResult === undefined ? signal : containedResult.signal;
     finish();
   });
   return Object.freeze({
@@ -418,27 +409,7 @@ function observeChild(child, options = {}) {
 }
 
 function signalObservedGroup(observation, signal) {
-  if (
-    observation.state.closed ||
-    observation.child.exitCode !== null ||
-    observation.child.signalCode !== null
-  ) {
-    return;
-  }
-  if (observation.state.identityError !== undefined) throw observation.state.identityError;
-  if (observation.state.startTime === undefined) {
-    if (observation.state.error !== undefined) return;
-    refuse("owned child process identity unavailable");
-  }
-  try {
-    if (processStartTime(observation.child.pid) !== observation.state.startTime) {
-      refuse("owned child process identity changed");
-    }
-  } catch (error) {
-    if (error?.code === "ENOENT") return;
-    throw error;
-  }
-  signalGroup(observation.child.pid, signal);
+  signalContainedChild(observation.child, signal);
 }
 
 async function writePipe(stream, bytes, end) {
@@ -477,7 +448,7 @@ async function settleObserved(observation, options) {
   let killSent = false;
   activeChild = observation;
   try {
-    while (!observation.state.closed) {
+    while (!observation.state.closed || !containedChildEmpty(observation.child)) {
       const now = clock.sample();
       if (
         ((caughtSignal !== undefined && options.ignoreSignal !== true) || now >= normalDeadlineNs) &&
@@ -496,13 +467,14 @@ async function settleObserved(observation, options) {
         signalObservedGroup(observation, "SIGKILL");
         refuse("owned child failed to reap");
       }
-      await Promise.race([observation.closed, delay(POLL_MS)]);
+      if (observation.state.closed) await delay(POLL_MS);
+      else await Promise.race([observation.closed, delay(POLL_MS)]);
     }
     await waitUntil(
       clock,
       killDeadlineNs,
-      () => groupAbsent(observation.child.pid),
-      "process group residue",
+      () => containedChildReleased(observation.child),
+      "child release-pipe settlement deadline",
       options.ignoreSignal === true,
     );
     const channels = [observation.stdout, observation.stderr, ...observation.extra].filter(
@@ -515,16 +487,35 @@ async function settleObserved(observation, options) {
       "owned child output settlement deadline",
       options.ignoreSignal === true,
     );
-    if (observation.state.error !== undefined) throw observation.state.error;
+    const settlementErrors = [];
+    if (observation.state.error !== undefined) settlementErrors.push(observation.state.error);
+    const containmentSetupError = containedChildSetupError(observation.child);
+    if (containmentSetupError !== undefined) settlementErrors.push(containmentSetupError);
     const channelErrors = channels
       .map((channel) => channel.error)
       .filter((error) => error !== undefined);
     if (channelErrors.length > 0) {
-      throw new AggregateError(channelErrors, "owned child output failed", {
+      settlementErrors.push(new AggregateError(channelErrors, "owned child output failed", {
         cause: channelErrors[0],
+      }));
+    }
+    if (channels.some((channel) => channel.overflow)) {
+      settlementErrors.push(new Error("owned child output cap"));
+    }
+    const containmentSettlement = settleContainedChild(observation.child);
+    if (!containmentSettlement.settled) {
+      settlementErrors.push(new AggregateError(
+        containmentSettlement.errors,
+        "owned child containment settlement failed",
+        { cause: containmentSettlement.errors[0] },
+      ));
+    }
+    if (settlementErrors.length === 1) throw settlementErrors[0];
+    if (settlementErrors.length > 1) {
+      throw new AggregateError(settlementErrors, "owned child settlement failed", {
+        cause: settlementErrors[0],
       });
     }
-    if (channels.some((channel) => channel.overflow)) refuse("owned child output cap");
     return Object.freeze({
       status: observation.state.status,
       stdout: observation.stdout?.bytes() ?? Buffer.alloc(0),
@@ -588,7 +579,7 @@ async function runProcess(executable, arguments_, options) {
     operationDeadlines(options.clock, options.hardDeadlineNs, options.cleanup);
   let child;
   try {
-    child = spawn(executable, arguments_, {
+    child = spawnContained(spawn, executable, arguments_, {
       cwd: options.cwd,
       detached: true,
       env: options.env,
@@ -1129,7 +1120,7 @@ async function startWatcher(context, target) {
     ? acquisitionContainerName(context.invocation)
     : proofContainerName(context.invocation, target.rowId);
   revalidateDockerAnchor(context.dockerAnchor, context.clock);
-  const child = spawn(NODE_EXECUTABLE, [EVENT_HELPER], {
+  const child = spawnContained(spawn, NODE_EXECUTABLE, [EVENT_HELPER], {
     cwd: "/",
     detached: true,
     env: { LANG: "C", LC_ALL: "C" },
@@ -1328,7 +1319,8 @@ function hostNamespaceGate() {
 async function startAcquisition(context, id, acquisitionHandle) {
   revalidateDockerAnchor(context.dockerAnchor, context.clock);
   const prefix = dockerPrefix(context.invocation, context.rootPath);
-  const child = spawn(
+  const child = spawnContained(
+    spawn,
     prefix[0],
     [...prefix.slice(1), ...dockerOperationArguments("acquisition-start-attach", { id })],
     {
@@ -1371,7 +1363,8 @@ async function startAcquisition(context, id, acquisitionHandle) {
 async function startProof(context, id, rowId) {
   revalidateDockerAnchor(context.dockerAnchor, context.clock);
   const prefix = dockerPrefix(context.invocation, context.rootPath);
-  const child = spawn(
+  const child = spawnContained(
+    spawn,
     prefix[0],
     [...prefix.slice(1), ...dockerOperationArguments("proof-start-attach", { id })],
     {
@@ -1659,7 +1652,7 @@ async function runAcquisitionAndMatrix(root, sourceRows, clock, dockerAnchor, ru
 }
 
 async function runPathHelper(root, state, clock, hardDeadlineNs) {
-  const child = spawn(NODE_EXECUTABLE, [PATH_HELPER], {
+  const child = spawnContained(spawn, NODE_EXECUTABLE, [PATH_HELPER], {
     cwd: "/",
     detached: true,
     env: { LANG: "C", LC_ALL: "C" },
@@ -1773,7 +1766,6 @@ function requireCutLocalAbsence(cleanup, identity) {
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
-  if (!groupAbsent(Number(identity.watcherPid))) refuse("cut watcher process group remained live");
 }
 
 function identityRecord(descriptor) {
@@ -1949,7 +1941,7 @@ function settleMatchingCustody(cleanup, custody) {
 async function runFailedPathHelper(cleanup, custody, clock, deadlines, onStage) {
   let child;
   try {
-    child = spawn(NODE_EXECUTABLE, [PATH_HELPER], {
+    child = spawnContained(spawn, NODE_EXECUTABLE, [PATH_HELPER], {
       cwd: "/",
       detached: true,
       env: { LANG: "C", LC_ALL: "C" },
@@ -2062,7 +2054,8 @@ function cutChildTerminal(observation) {
   try {
     return (
       observation.state.closed &&
-      groupAbsent(observation.child.pid) &&
+      containedChildEmpty(observation.child) &&
+      containedChildReleased(observation.child) &&
       observation.child.stdio[3]?.destroyed === true &&
       observation.stdout?.ended === true &&
       observation.stderr?.ended === true &&
@@ -2085,7 +2078,7 @@ function cutChildStructure(observation) {
       accepted: true,
       audit: true,
     }),
-    groupAbsent: true,
+    containmentEmpty: true,
   });
 }
 
@@ -2119,6 +2112,10 @@ async function observeCutHarness(launch, cursor, harnessToken, cutCase, clock) {
       "cut harness spawn deadline",
     );
     if (observation.state.error !== undefined) throw observation.state.error;
+    if (observation.state.closed) {
+      const setupError = containedChildSetupError(child);
+      if (setupError !== undefined) throw setupError;
+    }
     if (!observation.state.spawned) refuse("cut harness closed before spawn");
     const harnessStartTime = processStartTime(child.pid);
     await waitUntil(
@@ -2159,7 +2156,7 @@ async function observeCutHarness(launch, cursor, harnessToken, cutCase, clock) {
     ) {
       refuse("cut process identity before signal");
     }
-    process.kill(child.pid, "SIGTERM");
+    signalContainedChild(child, "SIGTERM");
     await waitUntil(
       clock,
       cursor.activeDeadlineNs,
@@ -2699,7 +2696,9 @@ async function runCut(sourceDirectory, cutCase, clock, dockerAnchor, signal) {
       const claimed = claimFreshRootHandoffFailure(error);
       if (claimed !== undefined) {
         launch = claimed.launch;
-        if (!claimed.handoffSettlement.settled) {
+        if (claimed.recoveryFailure !== undefined) {
+          cleanupErrors.push(claimed.recoveryFailure);
+        } else if (!claimed.handoffSettlement.settled) {
           cleanupErrors.push(incompleteHandoffSettlement(claimed.handoffSettlement));
         }
       }
@@ -2796,7 +2795,9 @@ async function runCut(sourceDirectory, cutCase, clock, dockerAnchor, signal) {
     try {
       const claimed = claimFreshRootCleanup(freshToken);
       launch = claimed.launch;
-      if (!claimed.handoffSettlement.settled) {
+      if (claimed.recoveryFailure !== undefined) {
+        cleanupErrors.push(claimed.recoveryFailure);
+      } else if (!claimed.handoffSettlement.settled) {
         cleanupErrors.push(incompleteHandoffSettlement(claimed.handoffSettlement));
       }
     } catch (error) {

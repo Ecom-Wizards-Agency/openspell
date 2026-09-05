@@ -20,6 +20,16 @@ import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, URL } from "node:url";
 import { buildDockerEventOpenFrame } from "./docker-event-helper.mjs";
+import {
+  containedChildEmpty,
+  containedChildPayloadPid,
+  containedChildReleased,
+  containedChildResult,
+  containedChildSetupError,
+  settleContainedChild,
+  signalContainedChild,
+  spawnContained,
+} from "./child-containment.mjs";
 
 const ROOT_HANDOFF_FD = 7;
 const RELEASE_FD = 3;
@@ -638,24 +648,12 @@ function captureStream(stream, maximumBytes) {
   });
 }
 
-function processGroupAbsent(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return true;
-  try {
-    process.kill(-pid, 0);
-    return false;
-  } catch (error) {
-    if (error?.code === "ESRCH") return true;
-    throw error;
-  }
+function processGroupAbsent(child) {
+  return containedChildEmpty(child);
 }
 
-function signalProcessGroup(pid, signal) {
-  if (!Number.isInteger(pid) || pid <= 0) return;
-  try {
-    process.kill(-pid, signal);
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
-  }
+function signalProcessGroup(child, signal) {
+  signalContainedChild(child, signal);
 }
 
 function assertNoRootDescriptorInChild(pid, admission) {
@@ -698,9 +696,10 @@ function registerOwnedChild(context, child, origin) {
     state.spawnError = error;
   });
   child.once("close", (status, signal) => {
+    const containedResult = containedChildResult(child);
     state.closed = true;
-    state.status = status;
-    state.signal = signal;
+    state.status = containedResult === undefined ? status : containedResult.code;
+    state.signal = containedResult === undefined ? signal : containedResult.signal;
     settle();
   });
   const ownership = {
@@ -807,7 +806,8 @@ async function waitForChildSettlement(ownership, options) {
     .filter((channel) => channel !== null);
   while (
     !observation.state.closed ||
-    !processGroupAbsent(observation.child.pid) ||
+    !processGroupAbsent(observation.child) ||
+    !containedChildReleased(observation.child) ||
     channels.some((channel) => !channel.ended)
   ) {
     const now = synchronizeRevocation(options.context);
@@ -837,7 +837,7 @@ async function waitForChildSettlement(ownership, options) {
       settlement.stage === "settle" &&
       now >= settlement.deadlines.normalDeadlineNs
     ) {
-      signalProcessGroup(observation.child.pid, "SIGTERM");
+      signalProcessGroup(observation.child, "SIGTERM");
       settlement.stage = "term";
       if (options.onStage !== undefined) options.onStage("term", now);
     }
@@ -845,7 +845,7 @@ async function waitForChildSettlement(ownership, options) {
       settlement.stage === "term" &&
       now >= settlement.deadlines.termDeadlineNs
     ) {
-      signalProcessGroup(observation.child.pid, "SIGKILL");
+      signalProcessGroup(observation.child, "SIGKILL");
       settlement.stage = "kill";
       if (options.onStage !== undefined) options.onStage("kill", now);
     }
@@ -858,6 +858,17 @@ async function waitForChildSettlement(ownership, options) {
   const settledAtNs = synchronizeRevocation(options.context);
   if (settledAtNs >= settlement.deadlines.killDeadlineNs) {
     noteExpiry(settledAtNs);
+  }
+  const containmentErrors = [];
+  const setupError = containedChildSetupError(observation.child);
+  if (setupError !== undefined) containmentErrors.push(setupError);
+  const containment = settleContainedChild(observation.child);
+  if (!containment.settled) {
+    containmentErrors.push(new AggregateError(
+      containment.errors,
+      "owned child containment settlement failed",
+      { cause: containment.errors[0] },
+    ));
   }
   const result = Object.freeze({
     extra: Object.freeze(observation.extra.map((channel) => channel.bytes())),
@@ -873,10 +884,17 @@ async function waitForChildSettlement(ownership, options) {
     throw new Error("owned child settled after operation cap");
   }
   if (
+    containmentErrors.length > 0 ||
     observation.state.spawnError !== undefined ||
     channels.some((channel) => channel.error !== undefined || channel.overflow)
   ) {
-    throw new Error("owned child output or spawn refusal");
+    const failure = new Error("owned child output, spawn, or containment refusal");
+    if (containmentErrors.length > 0) {
+      throw new AggregateError([failure, ...containmentErrors], failure.message, {
+        cause: failure,
+      });
+    }
+    throw failure;
   }
   return result;
 }
@@ -914,7 +932,7 @@ async function settleRegisteredChild(
         killNs,
       );
     } catch (error) {
-      signalProcessGroup(ownership.child.pid, "SIGKILL");
+      signalProcessGroup(ownership.child, "SIGKILL");
       throw error;
     }
   }
@@ -1096,9 +1114,8 @@ async function runDocker(context, arguments_, options = {}) {
     guardNormalDockerDispatch(context, options.normalOperation);
   }
   if (options.beforeNormalSpawn !== undefined) options.beforeNormalSpawn();
-  const child = spawn(prefix[0], [...prefix.slice(1), ...arguments_], {
+  const child = spawnContained(spawn, prefix[0], [...prefix.slice(1), ...arguments_], {
     cwd: "/",
-    detached: true,
     env: context.modules.proofEngine.dockerEnvironment(
       context.admission.invocation,
       context.admission.path,
@@ -1592,9 +1609,8 @@ async function startWatcher(context) {
       sample: bootSample(context),
       token: watcherToken,
     });
-  const child = spawn(capturedNodeExecutable, [DOCKER_EVENT_HELPER], {
+  const child = spawnContained(spawn, capturedNodeExecutable, [DOCKER_EVENT_HELPER], {
     cwd: "/",
-    detached: true,
     env: { LANG: "C", LC_ALL: "C" },
     stdio: ["ignore", "ignore", "pipe", "pipe", "pipe", "pipe"],
   });
@@ -1613,7 +1629,6 @@ async function startWatcher(context) {
     },
     context.admission,
   );
-  const startTime = readProcessStartTime(child.pid);
   const watcher = {
     child,
     closeSent: false,
@@ -1621,7 +1636,8 @@ async function startWatcher(context) {
     ownership,
     ready: observation.extra[0],
     event: observation.extra[1],
-    startTime,
+    payloadPid: undefined,
+    startTime: undefined,
   };
   context.watcher = watcher;
   child.stdio[5].on("data", () => {
@@ -1652,6 +1668,18 @@ async function startWatcher(context) {
     throw new Error("watcher READY refusal");
   }
   context.modules.proofEngine.parseDockerEventReadyFrame(watcher.ready.bytes());
+  await waitForCondition(
+    context,
+    () => containedChildPayloadPid(child) !== undefined || observation.state.closed,
+    context.activeDeadlineNs,
+    "watcher payload identity",
+  );
+  watcher.payloadPid = containedChildPayloadPid(child);
+  if (watcher.payloadPid === undefined || observation.state.closed) {
+    throw new Error("watcher payload identity refusal");
+  }
+  watcher.startTime = readProcessStartTime(watcher.payloadPid);
+  assertNoRootDescriptorInChild(watcher.payloadPid, context.admission);
   synchronizeRevocation(context);
   if (context.signalState.latched) {
     throw new Error("watcher READY after revocation");
@@ -1710,7 +1738,7 @@ async function waitForWatcherEvent(context) {
 
 function watcherIdentityStillLive(watcher) {
   try {
-    return readProcessStartTime(watcher.child.pid) === watcher.startTime;
+    return readProcessStartTime(watcher.payloadPid) === watcher.startTime;
   } catch (error) {
     if (error?.code === "ENOENT") return false;
     throw error;
@@ -1741,7 +1769,7 @@ function emitIdentity(context, cutCase) {
       context.admission.inode.toString(),
       context.admission.mountId,
       context.ledger.digest,
-      String(context.watcher.child.pid),
+      String(context.watcher.payloadPid),
       context.watcher.startTime,
       "",
     ].join("\n"),
@@ -1843,9 +1871,8 @@ async function runPathCleanup(context, execution) {
     normalDeadlineNs: execution.window.normalEndNs,
     termDeadlineNs: execution.window.termEndNs,
   });
-  const child = spawn(capturedNodeExecutable, [PATH_CLEANUP_HELPER], {
+  const child = spawnContained(spawn, capturedNodeExecutable, [PATH_CLEANUP_HELPER], {
     cwd: "/",
-    detached: true,
     env: { LANG: "C", LC_ALL: "C" },
     stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
   });

@@ -7,6 +7,16 @@ import process from "node:process";
 import { clearTimeout, setTimeout } from "node:timers";
 import { fileURLToPath, pathToFileURL, URL } from "node:url";
 
+import {
+  containedChildEmpty,
+  containedChildReleased,
+  containedChildResult,
+  containedChildSetupError,
+  settleContainedChild,
+  signalContainedChild,
+  spawnContained,
+} from "./child-containment.mjs";
+
 const ACQUISITION_CONTROLLER_LENGTH = 9_956;
 const ACQUISITION_CONTROLLER_SHA256 =
   "72290e827399c5e6eb4c597312a65fbd6402c2d8ad87993c7e336a27f6d48258";
@@ -2147,7 +2157,7 @@ function observeOwnedChild(child, clock, deadlineNanoseconds) {
   let processGroupResidual = false;
   let status = null;
   let exitSignal = null;
-  let groupAbsenceConfirmed = false;
+  let containmentAbsenceConfirmed = false;
   let deadlineTimer;
   let absenceTimer;
   let termDeadlineNanoseconds;
@@ -2164,7 +2174,18 @@ function observeOwnedChild(child, clock, deadlineNanoseconds) {
   }
 
   function completeIfSettled() {
-    if (finished || !closed || !groupAbsenceConfirmed) return;
+    if (
+      finished ||
+      !closed ||
+      !containmentAbsenceConfirmed ||
+      !containedChildReleased(child)
+    ) return;
+    const setupError = containedChildSetupError(child);
+    const containment = settleContainedChild(child);
+    if (setupError !== undefined || !containment.settled) {
+      spawnFailed = true;
+      processGroupResidual = !containment.empty;
+    }
     finished = true;
     clearTimers();
     finish({
@@ -2182,28 +2203,24 @@ function observeOwnedChild(child, clock, deadlineNanoseconds) {
   }
 
   function signalGroup(signal) {
-    if (!Number.isInteger(child.pid) || child.pid <= 0) return;
     try {
-      process.kill(-child.pid, signal);
-    } catch (error) {
-      if (error?.code !== "ESRCH") spawnFailed = true;
+      signalContainedChild(child, signal);
+    } catch {
+      spawnFailed = true;
     }
   }
 
   function groupIsAbsent() {
-    if (!Number.isInteger(child.pid) || child.pid <= 0) return true;
     try {
-      process.kill(-child.pid, 0);
-      return false;
-    } catch (error) {
-      if (error?.code === "ESRCH") return true;
+      return containedChildEmpty(child);
+    } catch {
       spawnFailed = true;
       return false;
     }
   }
 
   function scheduleAbsenceProbe() {
-    if (finished || groupAbsenceConfirmed || absenceTimer !== undefined) return;
+    if (finished || containmentAbsenceConfirmed || absenceTimer !== undefined) return;
     absenceTimer = setTimeout(() => {
       absenceTimer = undefined;
       probeGroupAbsence();
@@ -2211,9 +2228,9 @@ function observeOwnedChild(child, clock, deadlineNanoseconds) {
   }
 
   function probeGroupAbsence() {
-    if (finished || groupAbsenceConfirmed) return;
+    if (finished || containmentAbsenceConfirmed) return;
     if (groupIsAbsent()) {
-      groupAbsenceConfirmed = true;
+      containmentAbsenceConfirmed = true;
       completeIfSettled();
       return;
     }
@@ -2298,8 +2315,9 @@ function observeOwnedChild(child, clock, deadlineNanoseconds) {
     if (closed) return;
     const now = sampleOrRefuse();
     closed = true;
-    status = childStatus;
-    exitSignal = signal;
+    const containedResult = containedChildResult(child);
+    status = containedResult === undefined ? childStatus : containedResult.code;
+    exitSignal = containedResult === undefined ? signal : containedResult.signal;
     if (now >= deadlineNanoseconds) deadlineExpired = true;
     sampleOrRefuse();
     probeGroupAbsence();
@@ -2326,19 +2344,20 @@ async function runFixedVitest(clock) {
   const deadline = absoluteDeadline(clock, VITEST_DEADLINE_MILLISECONDS);
   let child;
   try {
-    child = spawn(
+    child = spawnContained(
+      spawn,
       process.execPath,
       [
         VITEST_ENTRY,
         "run",
         "src/boundary.test.ts",
         "src/composition.test.ts",
+        "src/containment.test.ts",
         "src/interruption.test.ts",
       ],
       {
         cwd: PACKAGE_DIRECTORY,
         env: CHILD_ENVIRONMENT,
-        detached: true,
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -2361,10 +2380,9 @@ async function runFixedDockerIntegration(clock) {
   );
   let child;
   try {
-    child = spawn(process.execPath, [DOCKER_INTEGRATION], {
+    child = spawnContained(spawn, process.execPath, [DOCKER_INTEGRATION], {
       cwd: PACKAGE_DIRECTORY,
       env: CHILD_ENVIRONMENT,
-      detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch {
