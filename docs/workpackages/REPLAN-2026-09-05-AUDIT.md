@@ -148,6 +148,31 @@ PostgreSQL refuses and rolls the label back, then commits the migration and veri
 It also counts zero keys, grants, gates, receipts and outbox wakes afterward. DB typecheck and
 targeted lint passed. Delegated issuance and admission are the next source slice.
 
+### MCP key authority checkpoint, 2026-09-06
+
+The next additive file is `20260906010000_mcp_write_delegations.sql`. It separates immutable
+operator-issued key authority from the later atomic write-admission work. Owner/admin issuance
+locks current membership and owned profiles, verifies exact canonical fingerprint bytes and
+policy bounds, and writes the key, immutable delegation and sanitized operator audit together.
+Write keys cannot be upgraded, expanded, deleted or unrevoked in place. Their audited revocation
+preserves authority/history. Last-use tracking and existing read-key issuance still work. The
+migration seeds no key, gate or work item, and is outside WP-207's window.
+
+Direct PostgreSQL tests cover malformed inputs with zero side effects, permission refusal,
+concurrent membership downgrade, duplicate issuance, immutable evidence, revocation replay,
+organization purge and rollback when audit insertion fails. Independent executable review found
+two SQL/shared discrepancies: malformed UUID/time fields and semantically equivalent fingerprint
+JSON with different bytes could be stored but later fail runtime verification. Both are corrected
+and reproducers now refuse. Unicode/escaping and numeric-boundary parity were independently
+verified. A final duration check uses exactly 2,160 hours so session timezone/DST cannot enlarge
+the 90-day lifetime. All 36 focused DB checks, DB typecheck and targeted lint pass.
+
+The existing MCP read suite passes all 58 tests after its legacy-write fixture is updated to
+seed an old write row directly and separately prove a read key cannot upgrade. Its first run
+exposed a Date-versus-ISO-string binding error in that new fixture; the fixture is corrected.
+Web issuance, typed database facade, write admission, MCP tools and server-side Time Machine
+key attribution remain outstanding. The authority tests do not establish those capabilities.
+
 ### Source progress
 
 Proposal revision persistence is implemented on the source branch. The new additive

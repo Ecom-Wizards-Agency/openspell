@@ -17,7 +17,12 @@ input remain supported. SQL admission, proposal evidence v2, tools and activatio
 pending. The first additive migration is implemented: `20260906000000_mcp_write_delegation_mode.sql`
 adds only the enum label, verified by a PostgreSQL commit-boundary proof and 27 checks. It
 commits before the later authority/admission migration can consume that label;
-no WP-207 window or live target is changed. Detailed test/review evidence is in the replan audit.
+no WP-207 window or live target is changed. The next file,
+`20260906010000_mcp_write_delegations.sql`, implements immutable owner/admin issuance and audited
+revocation. It independently validates canonical scope, limits, identity and fingerprint bytes;
+read credentials cannot be upgraded and write permissions cannot be expanded in place.
+It creates no key during migration and does not implement admission, transport or runtime activation.
+Detailed test/review evidence is in the replan audit.
 
 ## Objective
 

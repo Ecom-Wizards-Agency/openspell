@@ -106,11 +106,12 @@ unattempted rows. Already reserved calls may finish and be observed; no kill swi
 committed intent or an in-flight HTTP request. Reconciliation remains available after revocation.
 Sample database UTC day after acquiring locks; crossing midnight does not charge a queued row twice.
 
-Plan two additive migrations, checking inventory before creation:
+The first two additive migrations isolate enum setup and key issuance:
 `20260906000000_mcp_write_delegation_mode.sql` adds the mode enum label only;
-`20260906010000_mcp_guarded_write_admission.sql` consumes it after the first migration commits.
-Both use the five-second lock timeout and advisory DDL lock. A third source-evidence migration
-may be split for review if needed. None belongs to Claude's original WP-207 window.
+`20260906010000_mcp_write_delegations.sql` adds immutable operator-issued key authority and
+audited revocation. Admission/capacity and distinct proposal evidence follow in separately
+declared migrations. Any enum consumer must run after the first migration commits.
+Every file uses the five-second lock timeout and advisory DDL lock. None belongs to Claude's original WP-207 window.
 No key, grant, enabled gate or runtime worker registration is seeded.
 
 ## File scope and delivery
