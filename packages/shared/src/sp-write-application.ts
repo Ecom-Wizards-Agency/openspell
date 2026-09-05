@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { Uuid } from './primitives.js';
+import { SpWritePreviewEvidence } from './sp-write-preview-evidence.js';
 import {
   ApproveSpWritePlan,
   SpWriteAuthorizationReceipt,
@@ -53,9 +54,21 @@ export type SpWriteOperationRequest = z.infer<typeof SpWriteOperationRequest>;
 export const SpWritePreview = z.object({
   plan: SpWritePlan,
   binding: SpWritePlanBinding,
+  /** Inverses refer to their recorded source operation instead of a new export. */
+  evidence: SpWritePreviewEvidence.nullable(),
 }).strict().superRefine((value, context) => {
   if (JSON.stringify(spWritePlanBinding(value.plan)) !== JSON.stringify(value.binding)) {
     context.addIssue({ code: 'custom', path: ['binding'], message: 'preview binding differs from its plan' });
+  }
+  if ((value.plan.direction === 'forward') !== (value.evidence !== null)
+    || (value.evidence !== null && (
+      value.evidence.planId !== value.plan.id
+      || value.plan.source.kind !== 'apply_batch'
+      || value.evidence.provenance.applyBatchId !== value.plan.source.applyBatchId
+      || value.evidence.provenance.rows.length !== value.plan.counts.providerRows
+      || JSON.stringify(value.evidence.guardrails.providerScope) !== JSON.stringify(value.plan.providerScope)
+    ))) {
+    context.addIssue({ code: 'custom', path: ['evidence'], message: 'preview needs the exact frozen source evidence' });
   }
 });
 export type SpWritePreview = z.infer<typeof SpWritePreview>;
