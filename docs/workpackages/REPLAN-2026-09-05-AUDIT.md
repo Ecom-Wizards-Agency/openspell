@@ -86,6 +86,14 @@ exposed two DB migration-lock tests failing with `division by zero`; this failur
 investigation. The subsequent DB run without file parallelism passed all 508 tests in 53 files. No timeout was widened and no
 production behavior was changed to suppress the failure. Full `pnpm check` is not yet green.
 
+The remaining package run passed the existing MCP, analyst, backfill and crosscheck suites,
+then found Claude's newly merged fallback fixture still asserted exactly 46 migration files.
+This branch has 51. The only fallback integration change is in
+`apps/worker/src/recommendations-run.test.ts`: require the actual custody migration needed
+by the test, while the harness continues to apply every migration. All 23 tests in that file
+and targeted lint passed; the initial run's three skipped lifecycle cases now execute and pass.
+The fallback runtime implementation is unchanged. Web and UI checks remain pending.
+
 WP-217 grounding now traces bearer verification, issuance, frozen source evidence, manual
 admission, final SQL provider reservation and Time Machine. Three architecture candidates are
 being compared before the delegated authorization contracts. No MCP write key is enabled.

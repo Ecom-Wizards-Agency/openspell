@@ -948,7 +948,9 @@ describe.skipIf(!databaseAvailableForLegacyStore)('legacy-mode preview enqueue o
 
   beforeAll(async () => {
     database = await createTestDatabase('wp216_legacy_store');
-    expect(await migrationFiles()).toHaveLength(46);
+    // The harness applies every migration. Require the custody gate this
+    // regression exercises without rejecting later additive migrations.
+    expect(await migrationFiles()).toContain('20260901060000_recommendation_claim_custody.sql');
     const [authority] = await database.sql<{ protocol: string; admission: string }[]>`
       select protocol, admission from public.get_recommendation_claim_authority()
     `;
