@@ -142,7 +142,11 @@ describe.skipIf(!available)('SP write HTTP application', () => {
     expect(queued.snapshot.accounting.pendingDispatch).toBe(1);
     await executeSyntheticKeywordWrite(database, frozen.plan, queued.receipt);
     try {
-      expect((await detail(admission.operation)).snapshot.accounting.observedRequested).toBe(1);
+      const observed = await detail(admission.operation);
+      expect(observed.snapshot.accounting.observedRequested).toBe(1);
+      // This fixture appends provider evidence and directly edits the synthetic
+      // mirror; it supplies no native reconciliation receipt.
+      expect(observed.mirror).toEqual({ observations: 1, pending: 1, promoted: 0, alreadyCurrent: 0, superseded: 0, missing: 0 });
       const inverseResponse = await inverse(post({ requestId: randomUUID(), profileId, original: admission.operation }));
       expect(inverseResponse.status).toBe(200);
       const inversePreview = SpWritePreview.parse(await inverseResponse.json());

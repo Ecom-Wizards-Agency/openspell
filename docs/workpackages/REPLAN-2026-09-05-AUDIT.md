@@ -48,7 +48,7 @@ deployment, credential store or Amazon account was accessed.
 
 | Ordinary keyword-sync fencing | `queries/keyword-mirror.ts` captures database time before provider listing, serializes mirror promotion with native observations, and atomically writes actual keyword diffs. The optional worker-store capability counts stale bids and tombstones, preserves newer full-entity evidence, and passes counts into the durable sync-job result. | Four PostgreSQL tests passed for stale values, tombstones/resurrection, precision/scope refusal and rollback on lost diff rows. Two real-worker tests passed for a concurrent native observation and for a write that completes during an ordinary listing. Worker typecheck and targeted lint passed. The capability remains unconfigured in runtime entrypoints. The broader regressions passed **122 worker tests in three files** and **76 DB tests in four files**, including the existing ordinary-sync cases and persistence boundaries. |
 
-| Mirror status contract | `SpWriteOperationDetail` now requires separate mirror counts, including observations still awaiting a receipt. The observation total must match the verified provider ledger. | Eleven shared tests and shared typecheck passed before the status-query implementation. |
+| Mirror status contract | `SpWriteOperationDetail` now requires separate mirror counts, including observations still awaiting a receipt. The observation total must match the verified provider ledger. | Eleven shared tests and shared typecheck passed before the status-query implementation. The query now verifies receipts only for observations in the ledger snapshot. Three worker tests, 12 DB tests and four HTTP tests passed; DB/web typechecks and targeted lint passed. The HTTP fixture truthfully reports one pending mirror receipt despite its synthetic direct mirror edit. |
 
 Latest complete database verification: **478 tests in 48 files passed** with `--maxWorkers=1`.
 After HTTP integration and JSON transport fixes, the affected database suites also passed
@@ -63,7 +63,7 @@ These are local source checks, not hosted or live Amazon proof. The WP-188 raw-p
 still runs against its preceding admission contract; new application/HTTP suites exercise current
 migrations and source-backed admission. No lifecycle or custody assertion was removed.
 
-Remaining: mirror status projection, native Time Machine projection
+Remaining: native Time Machine projection
 and exact observation links, delegated MCP policy/contracts/persistence/transport, proposal revision
 and completeness handoff, immutable release/activation artifacts, and scoped live proof. The
 current operation links are backend evidence, not a claim that MCP or the Time Machine screen is

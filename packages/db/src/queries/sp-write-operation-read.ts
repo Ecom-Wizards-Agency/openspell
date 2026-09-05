@@ -4,6 +4,7 @@ import {
 import type { DbHandle } from '../client.js';
 import { SpWriteApplicationError } from './sp-write-errors.js';
 import { createSpWriteRuntimeLedger } from './sp-write-persistence.js';
+import { readSpWriteMirrorCounts } from './sp-write-mirror.js';
 
 /** Read ledger evidence under exact tenant/operation identity; no status is cached. */
 export async function readSpWriteOperation(
@@ -48,7 +49,7 @@ export async function readSpWriteOperation(
   return SpWriteOperationDetail.parse({
     operation: { executionId: request.executionId, planId: request.planId },
     admission: admission.queued ? 'queued' : 'approved_pending_start',
-    receipt, snapshot,
+    receipt, snapshot, mirror: await readSpWriteMirrorCounts(handle, evidence),
     original: plan.source.kind === 'inverse_execution'
       ? { executionId: plan.source.sourceExecutionId, planId: plan.source.sourcePlanId } : null,
     inverses: inverseRows.map((inverse) => ({ executionId: request.executionId, planId: inverse.plan_id })),

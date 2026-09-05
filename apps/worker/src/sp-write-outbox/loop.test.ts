@@ -276,6 +276,7 @@ describe.skipIf(!available)('inert SP write worker with real ledger and fake HTT
   });
 
   it('sends one attempt, observes it, reconciles counts and never dispatches it again', async () => {
+    expect((await detail()).mirror).toEqual({ observations: 0, pending: 0, promoted: 0, alreadyCurrent: 0, superseded: 0, missing: 0 });
     expect((await listSpWriteProviderPlans(database, [profileId], true, true)).map((plan) => plan.id)).toEqual([preview.plan.id]);
     const worker = loop();
     expect(await worker.tick()).toEqual({ kind: 'completed', attemptedCalls: 1 });
@@ -283,6 +284,7 @@ describe.skipIf(!available)('inert SP write worker with real ledger and fake HTT
     expect((await detail()).snapshot.accounting).toMatchObject({ approvedRows: 1, intentCommitted: 1, providerAccepted: 1, pendingObservation: 1 });
     expect(await worker.tick()).toEqual({ kind: 'completed', attemptedCalls: 0 });
     expect((await detail()).snapshot).toMatchObject({ status: 'succeeded', accounting: { observedRequested: 1, pendingObservation: 0 } });
+    expect((await detail()).mirror).toEqual({ observations: 1, pending: 0, promoted: 1, alreadyCurrent: 0, superseded: 0, missing: 0 });
     expect(mirror).toHaveBeenCalledTimes(1);
     const [current] = await database.sql<{ bid: string; links: number }[]>`select bid::text,
       (select count(*)::int from public.sp_write_mirror_observations where plan_id = ${preview.plan.id} and change_attribution = 'write') as links
@@ -366,6 +368,9 @@ describe.skipIf(!available)('inert SP write worker with real ledger and fake HTT
     const worker = loop();
     expect((await worker.tick()).attemptedCalls).toBe(1);
     expect(await worker.tick()).toEqual({ kind: 'deferred', attemptedCalls: 0 });
+    const status = await detail();
+    expect(status.snapshot.status).toBe('succeeded');
+    expect(status.mirror).toEqual({ observations: 1, pending: 1, promoted: 0, alreadyCurrent: 0, superseded: 0, missing: 0 });
     const [row] = await database.sql<{ state: string }[]>`select head.state::text from app.sp_write_outbox_delivery_heads head
       join public.sp_write_outbox source using (outbox_id) where source.kind = 'observe_and_recover' and source.plan_id = ${preview.plan.id}`;
     expect(row!.state).toBe('available');

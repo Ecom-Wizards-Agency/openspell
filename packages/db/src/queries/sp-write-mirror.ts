@@ -1,7 +1,16 @@
 import { createHash } from 'node:crypto';
-import { SpWriteMirrorReceipt } from '@wizard-ads/shared/sp-write-mirror';
-import { SpWriteObservation, serializeSpWriteObservationFingerprint } from '@wizard-ads/shared/sp-writes';
+import { SpWriteMirrorCounts, SpWriteMirrorReceipt } from '@wizard-ads/shared/sp-write-mirror';
+import { SpWriteObservation, serializeSpWriteObservationFingerprint, type SpWriteExecutionEvidence } from '@wizard-ads/shared/sp-writes';
 import type { DbHandle } from '../client.js';
+
+// PostgreSQL emits six fractional digits; ledger JSON can retain fewer. Do not
+// compare through Date, which would erase a real sub-millisecond difference.
+function canonicalInstant(value: string): string {
+  return value.replace(/\.(\d+)Z$/, (_match, fraction: string) => {
+    const significant = fraction.replace(/0+$/, '');
+    return significant.length === 0 ? 'Z' : `.${significant}Z`;
+  });
+}
 
 /** Reconciles one already persisted provider observation. This performs no Amazon call. */
 export async function reconcileSpWriteObservation(
@@ -21,4 +30,37 @@ export async function reconcileSpWriteObservation(
     throw new Error('SP write mirror receipt identity mismatch');
   }
   return receipt;
+}
+
+/** Only immutable observations included in this verified execution snapshot are counted. */
+export async function readSpWriteMirrorCounts(
+  handle: Pick<DbHandle, 'sql'>, evidence: SpWriteExecutionEvidence,
+): Promise<SpWriteMirrorCounts> {
+  const counts: SpWriteMirrorCounts = { observations: evidence.observations.length, pending: evidence.observations.length,
+    promoted: 0, alreadyCurrent: 0, superseded: 0, missing: 0 };
+  if (counts.observations === 0) return SpWriteMirrorCounts.parse(counts);
+  const observations = new Map(evidence.observations.map((observation) => [observation.observationId, observation]));
+  const rows = await handle.sql<{ artifact: unknown }[]>`
+    select artifact from public.sp_write_mirror_observations
+    where org_id = ${evidence.plan.orgId}::uuid and profile_id = ${evidence.plan.profileId}::uuid
+      and execution_id = ${evidence.authorization.executionId}::uuid and plan_id = ${evidence.plan.id}::uuid
+      and observation_id = any(${[...observations.keys()]}::uuid[])`;
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const receipt = SpWriteMirrorReceipt.parse(row.artifact);
+    const observation = observations.get(receipt.observationId);
+    const action = evidence.plan.actions.find((candidate) => candidate.actionId === receipt.actionId);
+    if (observation === undefined || action === undefined || seen.has(receipt.observationId)
+      || receipt.observationFingerprint !== observation.fingerprint || receipt.actionId !== observation.actionId
+      || receipt.observationOutcome !== observation.outcome || canonicalInstant(receipt.observedAt) !== canonicalInstant(observation.observedAt)
+      || receipt.orgId !== evidence.plan.orgId || receipt.profileId !== evidence.plan.profileId
+      || receipt.executionId !== evidence.authorization.executionId || receipt.planId !== evidence.plan.id
+      || action.routeKey !== 'sp.v3.keywords.update'
+      || receipt.amazonEntityId !== action.entity.keywordId) throw new Error('SP write mirror status evidence mismatch');
+    seen.add(receipt.observationId);
+    counts.pending -= 1;
+    if (receipt.outcome === 'already_current') counts.alreadyCurrent += 1;
+    else counts[receipt.outcome] += 1;
+  }
+  return SpWriteMirrorCounts.parse(counts);
 }
