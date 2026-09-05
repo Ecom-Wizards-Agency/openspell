@@ -71,6 +71,25 @@ lock; their exact identities and compatibility considerations are now in the WP-
 The second window must precede deployment of a web revision containing native Time Machine:
 its read queries require the new evidence tables even when write execution is disabled.
 
+### Integration checkpoint, 2026-09-06
+
+Proposal revisions are committed at `bfde49f`, following shared decision contracts at
+`bbc0eb5`. Merge `2ad012e` brings published main `325c689` and Claude's merged sidebar (#138),
+optimizer fallback (#139) and hygiene scrub (#140) into this source branch without conflicts.
+This supersedes the earlier ancestry/hygiene status: `fc29fb9` is now an ancestor and the
+private-denylist hygiene scan passes. Protected worktrees and WP-207-owned files were not edited.
+
+All 22 workspace typechecks and repository lint passed on the merged source. The default
+combined tests failed on two 10-second crosscheck cleanup hooks, with all 65 assertions passed.
+An independent rerun passed all seven crosscheck suites and cleanup. Serializing packages then
+exposed two DB migration-lock tests failing with `division by zero`; this failure is still under
+investigation. The subsequent DB run without file parallelism passed all 508 tests in 53 files. No timeout was widened and no
+production behavior was changed to suppress the failure. Full `pnpm check` is not yet green.
+
+WP-217 grounding now traces bearer verification, issuance, frozen source evidence, manual
+admission, final SQL provider reservation and Time Machine. Three architecture candidates are
+being compared before the delegated authorization contracts. No MCP write key is enabled.
+
 ### Source progress
 
 Proposal revision persistence is implemented on the source branch. The new additive
@@ -110,8 +129,8 @@ Independent final review found no new blocking bypass. Its disposable PostgreSQL
 head tampering and post-export edits, preserved exact revision/value through the native preview,
 and refused historical replay after membership revocation. A forced transaction interleaving was
 not independently reproduced; the normal concurrent edit/edit and edit/export tests passed here.
-The current hygiene scan and integration of Claude's newly merged work remain pending; these
-results are not a full-tree check or live proof.
+The later integration checkpoint above records the now-passing hygiene scan and the remaining
+combined-test failures. These focused results are not a full-tree check or live proof.
 
 | Change | Verified source and behavior | State |
 |---|---|---|
