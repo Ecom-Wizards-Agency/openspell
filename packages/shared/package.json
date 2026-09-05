@@ -7,7 +7,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./sp-writes": "./src/sp-writes.ts"
+    "./sp-writes": "./src/sp-writes.ts",
+    "./sp-write-application": "./src/sp-write-application.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
