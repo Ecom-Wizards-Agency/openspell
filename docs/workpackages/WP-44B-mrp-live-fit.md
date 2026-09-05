@@ -10,9 +10,9 @@
   `get_new_to_brand_customers`, `get_product_metrics`, `get_search_query_performance`,
   `get_zero_sales_search_terms`.
 - `get_sellers({})` returns PROSE in `result`: lines like
-  `1. AlphaInfuse | Seller id: 38762002188 | Selling partner id: ... | Region: North
-  America | Type: CPG | Access: owned`. Two sellers connected today: AlphaInfuse
-  (38762002188), Svens Island (38023880194).
+  `1. <seller name> | Seller id: <numeric seller id> | Selling partner id: ... | Region:
+  <region, e.g. North America> | Type: <seller type> | Access: <access level>`. Two sellers
+  connected today (Client A and Client B), each with its own numeric seller id.
 - `get_product_metrics` requires `{asin, seller_ids: int[], marketplace_ids: string[],
   date_from, date_to}` — SINGLE ASIN per call (additionalProperties: false). Calling it
   without an asin errors (this is why the current handler dies with MrpToolCallError →
@@ -30,8 +30,9 @@ supports it) to the live shape:
 
 1. **Seller mapping**: call `get_sellers`, parse the prose lines (number, name, seller id,
    selling partner id, region, access) with a tolerant line parser + tests. Match sellers
-   to our ad_profiles by normalized name (case/space-insensitive: "AlphaInfuse" ↔
-   profile account_name "Alphainfuse"; "Svens Island" exact) within the connection's org,
+   to our ad_profiles by normalized name (case/space-insensitive: Client A's seller name
+   differs from its profile `account_name` only in letter case; Client B's two-word name
+   matches exactly) within the connection's org,
    preferring sync-enabled profiles in the seller's region (North America → US/CA).
    `integration_connections.config.seller_map` (`{"<profileId>": <sellerId>}`) overrides
    auto-matching. Profiles without a matched seller are skipped WITH a recorded note, not
