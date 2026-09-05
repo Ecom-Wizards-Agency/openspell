@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260901060000_recommendation_claim_custody.sql');
+    expect(files.at(-1)).toBe('20260905000000_sp_write_preview_evidence.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -732,7 +732,8 @@ describe.skipIf(!available)('migrations', () => {
          and c.relname like 'sp_write_%'
        order by c.relname
     `;
-    expect(spTenantTables).toHaveLength(23);
+    expect(spTenantTables).toHaveLength(24);
+    expect(spTenantTables).toContainEqual({ table_name: 'sp_write_preview_evidence' });
     for (const { table_name: tableName } of spTenantTables) {
       const [beforePurge] = await database.sql<{ count: number }[]>`
         select count(*)::int as count

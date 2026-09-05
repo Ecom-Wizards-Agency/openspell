@@ -10,6 +10,7 @@
     "./schema": "./src/schema/index.ts",
     "./recommendation-worker": "./src/recommendation-worker.ts",
     "./sp-write-persistence": "./src/sp-write-persistence.ts",
+    "./sp-write-application": "./src/sp-write-application.ts",
     "./testing": "./src/testing/index.ts",
     "./worker": "./src/worker.ts"
   },

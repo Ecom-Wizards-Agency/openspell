@@ -34,6 +34,7 @@ import type {
   SpWriteProviderResult,
 } from '@wizard-ads/shared/sp-writes';
 import { ts } from './columns.js';
+import type { SpWritePreviewEvidence } from '@wizard-ads/shared/sp-write-preview-evidence';
 import {
   adsRegion,
   spWriteActionResolutionKind,
@@ -350,6 +351,25 @@ export const spWritePlans = pgTable(
     ),
   ],
 );
+
+/** WP-214: exact source and guardrail preimages, recorded atomically with a preview. */
+export const spWritePreviewEvidence = pgTable('sp_write_preview_evidence', {
+  planId: uuid('plan_id').primaryKey(),
+  orgId: uuid('org_id').notNull(),
+  profileId: uuid('profile_id').notNull(),
+  artifactText: text('artifact_text').notNull(),
+  artifact: jsonb('artifact').$type<SpWritePreviewEvidence>().notNull(),
+  guardrailPreimage: text('guardrail_preimage').notNull(),
+  provenancePreimage: text('provenance_preimage').notNull(),
+  persistedAt: dbClock('persisted_at'),
+}, (t) => [
+  foreignKey({ name: 'sp_write_preview_evidence_plan_fkey',
+    columns: [t.orgId, t.profileId, t.planId],
+    foreignColumns: [spWritePlans.orgId, spWritePlans.profileId, spWritePlans.planId],
+  }).onDelete('cascade'),
+  unique('sp_write_preview_evidence_tenant_key').on(t.orgId, t.profileId, t.planId),
+  check('sp_write_preview_evidence_text_agrees', sql`${t.artifactText}::jsonb = ${t.artifact}`),
+]);
 
 export const spWritePlanActions = pgTable(
   'sp_write_plan_actions',

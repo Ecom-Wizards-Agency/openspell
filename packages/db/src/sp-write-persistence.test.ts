@@ -1502,7 +1502,9 @@ function spWriteDrizzleConfigs() {
   for (const candidate of Object.values(dbSchema)) {
     try {
       const config = getTableConfig(candidate as PgTable);
-      if (config.schema === undefined && config.name.startsWith('sp_write_')) {
+      // This suite is pinned to WP-187. WP-214 proves its later evidence table separately.
+      if (config.schema === undefined && config.name.startsWith('sp_write_')
+        && config.name !== 'sp_write_preview_evidence') {
         configs.push(config);
       }
     } catch {
@@ -8163,6 +8165,7 @@ describe('SP write runtime blast radius', () => {
     const spWriteSourceMigrationSuffixes = [
       '/20260901020000_sp_write_persistence_ledger.sql',
       '/20260901030000_sp_write_outbox_delivery.sql',
+      '/20260905000000_sp_write_preview_evidence.sql',
     ];
     const migrationFiles = await sourceFiles(`${REPO_ROOT}supabase/migrations`);
     const spWriteSourceMigrations = migrationFiles.filter((path) =>

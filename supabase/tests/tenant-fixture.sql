@@ -577,6 +577,13 @@ begin
           p_slug || '-profile-1', v_conn, 'NA', p_slug || '-market', 'USD', 'sp_v3',
           now() - interval '10 minutes', now() - interval '9 minutes',
           now() + interval '1 hour', 2, 2, 2);
+  -- Generic RLS fixture only, like the inert SP plan above. It is deliberately
+  -- not an application-valid preview and cannot pass artifact verification.
+  if to_regclass('public.sp_write_preview_evidence') is not null then
+    insert into public.sp_write_preview_evidence
+      (plan_id, org_id, profile_id, artifact_text, artifact, guardrail_preimage, provenance_preimage)
+    values (v_sp_plan, v_org, v_profile, '{}', '{}'::jsonb, '[]', '[]');
+  end if;
   insert into public.sp_write_plan_actions
     (org_id, profile_id, plan_id, action_id, action_index, route_key,
      amazon_entity_id, artifact_text, artifact, fingerprint_preimage, fingerprint)
