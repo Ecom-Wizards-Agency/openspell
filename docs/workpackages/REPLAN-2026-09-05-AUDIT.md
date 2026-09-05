@@ -132,6 +132,12 @@ array element in the new test fixture; it was fixed and the checks rerun success
 edit/decision/export integration and the planned additional migration are still unimplemented.
 No fifth source migration was created by this contract slice.
 
+This contract slice is committed at `903e793`. A separate-model review checked the parking
+evidence, recent test claims and decision trail. Missing contract checkpoints and ambiguous
+older evidence paths were corrected with append-only trail entries and rechecked. Repository
+hygiene still fails on the 15 protected-document findings above. This review does not establish
+production activation, hosted migration success or MCP write completion.
+
 The main replan now contains a current Claude handoff, including the locally verified
 native-history slice. It documents the four UI HTTP
 contracts, separate provider/mirror states, exact history links, frontend ownership and the
