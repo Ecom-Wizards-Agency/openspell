@@ -76,3 +76,13 @@ One line per decision the manager (Fable) or operator makes between work package
   beat list shifts to: scoped MCP keys (shipped), 4-role model vs their Owner+Admin,
   approval-gated writes vs their unattended scheduled optimizer, goto-link governance, and
   cross-profile analytics. Specs in tools/recon/ are now UI-verified.
+- **2026-09-05 · Public-tree hygiene scrub done; history rewrite is a separate pending
+  decision** (WP-211 step 1). Account labels, client names, and provider seller identifiers
+  were removed from `docs/design/AUDIT-2026-08-27.md`, `docs/design/QA-2026-08-27.md`, and
+  `docs/workpackages/WP-44B-mrp-live-fit.md` in favour of neutral placeholders ("the pilot
+  account", "Client A"); the removed terms live only in the operator's gitignored
+  `_local/hygiene-denylist.txt`, so `pnpm hygiene` now fails if any of them returns. The
+  terms remain in earlier commits of the public history. Rewriting that history (force-push,
+  every clone and worktree re-based, open PR branches rebuilt, forks and caches out of our
+  control) is a distinct decision with its own scope and authorization; it is pending and
+  did not block the current-tree scrub.
