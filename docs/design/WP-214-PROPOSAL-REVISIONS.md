@@ -118,12 +118,17 @@ decimal JSON round trip, not a claim that binary floating-point arithmetic is ex
    `apps/web/src/recommendations/revisions-http.test.ts`; existing decide/export routes and
    `src/recs-route.test.ts`. Narrow changes in `src/recommendations/export.ts` and its tests
    may enforce the checked money boundary. Claude owns client/page components throughout.
+   Share the existing bounded JSON parser through `src/server/json-mutation.ts`, with a narrow
+   import change in `src/writes/http.ts`; update the server fixture in `src/recommendations/view.test.ts`.
 5. Run current custody/RLS, export, race and HTTP regressions. Update WP-214, the main replan
    and its audit with the actual migration inventory and verification results.
+   Persistence verification includes `packages/db/src/rls.test.ts`, `migrations.test.ts`,
+   `sp-write-persistence-blast.test.ts` and `sp-write-persistence.test.ts` for the new schema inventory;
+   preserve the existing worker-registration prohibitions in those checks.
 
-The proposed migration is a fifth additional WP-214 source migration, beyond the four already
-committed. It is not implemented by this design and is not part of Claude's original five-file
-WP-207 window. It must retain the five-second lock timeout/advisory DDL lock and receive its
+The migration is a fifth additional WP-214 source migration, beyond the four previously
+committed. Its implementation is in progress and is not part of Claude's original five-file
+WP-207 window. It retains the five-second lock timeout/advisory DDL lock and must receive its
 own rehearsal/review before inclusion in the later source deployment window. Existing
 custody migrations, Claude's protected files and parked supervisor work remain outside scope.
 

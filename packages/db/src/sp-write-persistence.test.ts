@@ -8202,6 +8202,7 @@ describe('SP write runtime blast radius', () => {
       '/20260905010000_sp_write_preview_approval.sql',
       '/20260905020000_sp_write_application_entry.sql',
       '/20260905030000_sp_write_mirror_observations.sql',
+      '/20260905040000_recommendation_proposal_revisions.sql',
     ];
     const migrationFiles = await sourceFiles(`${REPO_ROOT}supabase/migrations`);
     const spWriteSourceMigrations = migrationFiles.filter((path) =>

@@ -73,6 +73,46 @@ its read queries require the new evidence tables even when write execution is di
 
 ### Source progress
 
+Proposal revision persistence is implemented on the source branch. The new additive
+`20260905040000_recommendation_proposal_revisions.sql` is a fifth WP-214 migration, outside
+Claude's original WP-207 window. It retains the five-second lock timeout/advisory DDL lock.
+The implementation preserves engine rows, appends immutable edit receipts, resets prior review,
+routes authenticated decisions through one atomic audited function, and freezes selected revision
+identities in exports. It also extends the existing SQL preview source assertion to validate the
+effective revised value. This remains locally verified source; it has not been deployed.
+
+Independent review reproduced direct-RPC acceptance of whitespace-only notes and identified
+different proposal lock orders between export and decision. SQL note validation now follows the
+shared whitespace rules; export prelocks the exact selected rows in UUID order before rendering.
+Analysts retain proposal review rights. The first test attempt stopped at an undeclared `zod`
+import in the DB package; validation was moved to the authoritative shared contract instead.
+Local lifecycle, concurrency and rollback tests now pass. Seven revision tests cover exact
+replay after later edits, concurrent edit/edit and edit/export, rollback on edit and decision
+audit failure, membership revocation, direct RPC input refusal, immutable source history and
+complete missing/stale selection accounting. The real SQL preview accepts an edited export
+and binds its frozen revision ID. All 28 affected web tests passed, including numeric JSON
+and Excel downloads, existing write HTTP behavior and server view fixtures. No approval is
+added by the edit/review/export flow.
+
+All 119 shared tests passed; DB/web typechecks and targeted lint passed. The broader DB run
+passed 76 tests and failed one activation scan because the new HTTP test reads the synthetic
+approval ledger. That exact test path was added to the existing test-only allowance; runtime
+registration remains prohibited. The subsequent 33-test run passed the revision lifecycle,
+schema and activation-scan suites. A separate 36-test run passed the real preview and schema
+checks; earlier RLS/export/population regressions also passed. Schema review caught a stale
+authenticated UPDATE policy after the privilege was revoked; the additive migration now
+removes that policy and keeps analyst decisions behind the audited RPC. The old cross-tenant
+HTTP test was updated to require a counted, nondisclosing `unavailable` refusal. A test-fixture
+handle mismatch was corrected before the passing typechecks.
+
+Independent final review found no new blocking bypass. Its disposable PostgreSQL probe refused
+24 malformed/unauthorized direct calls with zero revision/audit/head changes, refused receipt/base/
+head tampering and post-export edits, preserved exact revision/value through the native preview,
+and refused historical replay after membership revocation. A forced transaction interleaving was
+not independently reproduced; the normal concurrent edit/edit and edit/export tests passed here.
+The current hygiene scan and integration of Claude's newly merged work remain pending; these
+results are not a full-tree check or live proof.
+
 | Change | Verified source and behavior | State |
 |---|---|---|
 | Shared application and immutable source contracts | `packages/shared/src/sp-write-application.ts` and `sp-write-preview-evidence.ts`; exact operation identity includes execution and plan IDs, and frozen evidence retains original export bytes and strategy/group snapshot text. | Committed before dependent implementation. |

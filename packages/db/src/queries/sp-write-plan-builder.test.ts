@@ -9,7 +9,8 @@ import { createTestDatabase, databaseAvailable, type TestDatabase } from '../tes
 import { withAuthenticatedActor } from './authenticated-actor.js';
 import { previewSpWrite } from './sp-write-plan-builder.js';
 import { recordSpWritePreviewEvidence } from './sp-write-preview-evidence.js';
-import { exportAcceptedRecommendations } from './recommendations.js';
+import { decideRecommendations, exportAcceptedRecommendations } from './recommendations.js';
+import { reviseRecommendation } from './recommendation-revisions.js';
 
 const available = await databaseAvailable();
 const USER = '31313131-3131-4131-8131-313131313131';
@@ -197,13 +198,35 @@ describe.skipIf(!available)('immutable SP keyword bid preview', () => {
     expect(await storedCount(request.requestId)).toBe(0);
   });
 
-  it('refuses a recommendation reassigned to another entity after export', async () => {
+  it('freezes a recommendation entity after export', async () => {
     const source = await batch();
-    await database.sql`update public.recommendations set entity_id = 'unrelated-keyword'
-      where org_id = ${orgId} and export_batch_id = ${source.batchId}`;
-    const request = { requestId: randomUUID(), profileId, applyBatchId: source.batchId };
-    await expect(previewSpWrite(database, { orgId, userId: USER }, request)).rejects.toMatchObject({ code: 'source_changed' });
-    expect(await storedCount(request.requestId)).toBe(0);
+    await expect(database.sql`update public.recommendations set entity_id = 'unrelated-keyword'
+      where org_id = ${orgId} and export_batch_id = ${source.batchId}`).rejects.toThrow('source is frozen');
+  });
+
+  it('binds an edited proposal through decision, exact export bytes and the real SQL preview assertion', async () => {
+    const [rec] = await database.sql<{ id: string }[]>`insert into public.recommendations
+      (org_id,profile_id,run_id,reason,entity_type,entity_id,ad_product,field,current_value,proposed_value,inputs)
+      values (${orgId},${profileId},${runId},'high_acos','keyword','kw-1','SP','bid','0.9'::jsonb,'0.7'::jsonb,'{}'::jsonb)
+      returning id`;
+    const revision = await reviseRecommendation(database, { orgId, userId: USER }, { requestId: randomUUID(),
+      profileId, recommendationId: rec!.id, expectedRevisionId: null, proposedValue: '0.8123', note: 'Synthetic revised preview' });
+    const refs = [{ recommendationId: rec!.id, revisionId: revision.revisionId }];
+    await decideRecommendations(database, { orgId, actorId: USER, ids: [rec!.id], expectedRevisions: refs, decision: 'accepted' });
+    const exported = await exportAcceptedRecommendations(database, { orgId, profileId, runId, ids: [rec!.id],
+      expectedRevisions: refs, actorId: USER, tag: 'synthetic-revised-preview', optGroup: 'synthetic', lever: 'bid-down', note: 'Exact edited preview' });
+    const request = { requestId: randomUUID(), profileId, applyBatchId: exported.batchId };
+    const preview = await previewSpWrite(database, { orgId, userId: USER }, request);
+    expect(preview.evidence!.provenance.rows).toEqual([{ applyRowId: expect.any(String), recommendationId: rec!.id,
+      runId, proposalRevisionId: revision.revisionId }]);
+    expect(preview.evidence!.provenance.artifactText).toBe(serializeApplyRows(exported.rows));
+    expect(preview.plan.actions[0]).toMatchObject({ changes: { bid: {
+      expected: { amount: '0.9' }, requested: { amount: '0.8123' },
+    } } });
+    const changed = structuredClone(preview.evidence!);
+    delete changed.provenance.rows[0]!.proposalRevisionId;
+    await expect(recordSpWritePreviewEvidence(database, preview.plan, changed)).rejects.toThrow();
+    expect(await storedCount(request.requestId)).toBe(1);
   });
 
   it('rolls the plan and actions back when its evidence cannot be recorded', async () => {

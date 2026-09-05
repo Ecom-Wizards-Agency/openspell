@@ -57,6 +57,7 @@ export * from './queries/partitions.js';
 export * from './queries/profiles.js';
 export * from './queries/optimization-groups.js';
 export * from './queries/recommendations.js';
+export { reviseRecommendation, RecommendationRevisionError } from './queries/recommendation-revisions.js';
 export * from './queries/recommendation-readiness.js';
 export * from './queries/report-promotion.js';
 export * from './queries/sqp.js';

@@ -174,13 +174,15 @@ authorization for a second window containing these additional WP-214 migrations 
 | `20260905010000_sp_write_preview_approval.sql` | Frozen-source checks around the existing approval function; tighter function permissions |
 | `20260905020000_sp_write_application_entry.sql` | Version-specific authenticated application approval entrypoint |
 | `20260905030000_sp_write_mirror_observations.sql` | Exact observation/diff links, keyword bid freshness and guarded mirror updates |
+| `20260905040000_recommendation_proposal_revisions.sql` | Immutable proposal revisions, atomic review decisions, frozen export revision identities and revision-aware preview validation |
 
 Each begins with `set local lock_timeout = '5s'` and the shared transaction-scoped advisory
 DDL lock. Keep changes in new migration files and preserve existing evidence. Rehearsal
 must cover the stricter approval behavior and mirror triggers as well as creation of new
-objects. Apply all four before deploying any web revision containing the native Time Machine
-queries; that existing page also reads their evidence tables. The versioned application entry
-must exist before exposing approval. Every ordinary
+objects. The first four precede any web revision containing the native Time Machine
+queries; that existing page also reads their evidence tables. The fifth migration precedes
+deployment of the revised recommendation loader, review and export consumers. The versioned
+application entry must exist before exposing approval. Every ordinary
 entity-sync owner must receive the keyword-mirror capability before enabling native writes.
 Do not mix this second window into WP-207 or use source tests as hosted-application evidence.
 

@@ -115,6 +115,7 @@ interface SourceRow {
   entity_state: string | null;
   synced_at: Date | string | null;
   recommendation_id: string | null;
+  proposal_revision_id: string | null;
   run_id: string | null;
   strategy_snapshot: string | null;
   strategy_goal: string | null;
@@ -176,7 +177,7 @@ async function buildPlan(
            r.clicks::text, r.revenue::text,
            k.bid::text as current_bid, k.ad_product::text, k.deleted_at,
            k.state::text as entity_state, k.synced_at,
-           r.recommendation_id::text, rec.run_id::text, run.strategy_snapshot::text,
+           r.recommendation_id::text, r.proposal_revision_id::text, rec.run_id::text, run.strategy_snapshot::text,
            run.strategy_goal, run.group_id::text, run.group_snapshot::text
       from public.apply_rows r
       left join public.keywords k
@@ -240,7 +241,9 @@ async function buildPlan(
       applyBatchId: request.applyBatchId, artifactText, artifactSha256: batch.artifact_sha256,
       exportedAt: batch.exported_at, tag: batch.tag,
       optGroup: batch.opt_group, lever: batch.lever, note: batch.note,
-      rows: rows.map((row) => ({ applyRowId: row.id, recommendationId: row.recommendation_id, runId: row.run_id })),
+      rows: rows.map((row) => ({ applyRowId: row.id, recommendationId: row.recommendation_id, runId: row.run_id,
+        ...(row.proposal_revision_id === null ? {} : { proposalRevisionId: row.proposal_revision_id }),
+      })),
     },
   });
   const nowRows = await sql<{ now: Date | string }[]>`select clock_timestamp() as now`;

@@ -176,7 +176,10 @@ describe('SP write persistence facade blast radius', () => {
       const source = await readFile(path, 'utf8');
       for (const marker of activationMarkers) {
         if (marker === '@wizard-ads/db/sp-write-application' && APPLICATION_CONSUMERS.includes(path)) continue;
-        if (marker === 'sp_write_' && path === `${REPO_ROOT}apps/web/src/writes/http.test.ts`) continue;
+        if (marker === 'sp_write_' && [
+          `${REPO_ROOT}apps/web/src/writes/http.test.ts`,
+          `${REPO_ROOT}apps/web/src/recommendations/revisions-http.test.ts`,
+        ].includes(path)) continue;
         const workerRelative = path.startsWith(`${REPO_ROOT}apps/worker/src/sp-write-outbox/`)
           ? path.slice(`${REPO_ROOT}apps/worker/src/sp-write-outbox/`.length) : '';
         if (INERT_WORKER_MARKERS[workerRelative]?.includes(marker)) continue;
@@ -193,6 +196,7 @@ describe('SP write persistence facade blast radius', () => {
       '/20260905010000_sp_write_preview_approval.sql',
       '/20260905020000_sp_write_application_entry.sql',
       '/20260905030000_sp_write_mirror_observations.sql',
+      '/20260905040000_recommendation_proposal_revisions.sql',
     ];
     const inertSpWriteMigrations = migrations.filter((path) =>
       inertSpWriteMigrationSuffixes.some((suffix) => path.endsWith(suffix)));

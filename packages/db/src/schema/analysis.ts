@@ -29,6 +29,7 @@ import type {
   RecommendationInputs,
   TenantStrategy,
 } from '@wizard-ads/shared';
+import type { RecommendationRevisionReceipt, RecommendationRevisionRequest } from '@wizard-ads/shared/recommendation-revisions';
 import { money, ts } from './columns.js';
 import {
   adProduct,
@@ -254,6 +255,7 @@ export const recommendations = pgTable(
     decidedBy: uuid('decided_by').references(() => authUsers.id, { onDelete: 'set null' }),
     decidedAt: ts('decided_at'),
     exportBatchId: uuid('export_batch_id'),
+    proposalRevisionId: uuid('proposal_revision_id'),
     createdAt: ts('created_at').notNull().defaultNow(),
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
@@ -268,6 +270,27 @@ export const recommendations = pgTable(
     uniqueIndex('recommendations_org_profile_id_key').on(t.orgId, t.profileId, t.id),
   ],
 );
+
+/** Immutable operator edits; the original engine row and run population remain intact. */
+export const recommendationProposalRevisions = pgTable('recommendation_proposal_revisions', {
+  id: uuid('id').primaryKey(),
+  orgId: uuid('org_id').notNull(),
+  profileId: uuid('profile_id').notNull(),
+  recommendationId: uuid('recommendation_id').notNull(),
+  previousRevisionId: uuid('previous_revision_id'),
+  actorId: uuid('actor_id').notNull(),
+  requestId: uuid('request_id').notNull(),
+  request: jsonb('request').$type<RecommendationRevisionRequest>().notNull(),
+  receipt: jsonb('receipt').$type<RecommendationRevisionReceipt>().notNull(),
+  createdAt: ts('created_at').notNull().defaultNow(),
+}, (t) => [
+  foreignKey({ name: 'recommendation_proposal_revisions_parent_fkey',
+    columns: [t.orgId, t.profileId, t.recommendationId],
+    foreignColumns: [recommendations.orgId, recommendations.profileId, recommendations.id] }),
+  unique('recommendation_proposal_revisions_identity_key').on(t.orgId, t.profileId, t.recommendationId, t.id),
+  unique('recommendation_proposal_revisions_request_key').on(t.orgId, t.actorId, t.requestId),
+  unique('recommendation_proposal_revisions_successor_key').on(t.recommendationId, t.previousRevisionId).nullsNotDistinct(),
+]);
 
 export const insights = pgTable(
   'insights',

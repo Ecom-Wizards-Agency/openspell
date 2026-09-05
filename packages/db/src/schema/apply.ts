@@ -81,6 +81,7 @@ export const applyRows = pgTable(
       .notNull()
       .references(() => adProfiles.id, { onDelete: 'cascade' }),
     recommendationId: uuid('recommendation_id'),
+    proposalRevisionId: uuid('proposal_revision_id'),
     entityType: applyEntityType('entity_type').notNull(),
     entityId: text('entity_id').notNull(),
     entityName: text('entity_name'),

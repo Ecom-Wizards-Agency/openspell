@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260905030000_sp_write_mirror_observations.sql');
+    expect(files.at(-1)).toBe('20260905040000_recommendation_proposal_revisions.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -521,7 +521,7 @@ describe.skipIf(!available)('migrations', () => {
       'unified_reporting_bindings', 'unified_report_runs', 'unified_report_operations',
       // analysis
       'recommendation_preview_batches', 'recommendation_runs', 'recommendation_run_campaigns',
-      'recommendations', 'insights', 'crosscheck_results',
+      'recommendations', 'recommendation_proposal_revisions', 'insights', 'crosscheck_results',
       // writes
       'apply_batches', 'apply_rows', 'campaign_maps',
       // product surface

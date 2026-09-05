@@ -1,3 +1,4 @@
+import { RecommendationRevisionSelection } from '@wizard-ads/shared/recommendation-revisions';
 /**
  * Accept, dismiss or re-open proposals — one, or a filtered set in bulk.
  *
@@ -32,6 +33,7 @@ export async function POST(request: Request): Promise<Response> {
       ids?: unknown;
       decision?: unknown;
       note?: unknown;
+      expectedRevisions?: unknown;
     };
     if (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== 'string')) {
       throw new Error('ids must be an array of proposal ids');
@@ -47,6 +49,7 @@ export async function POST(request: Request): Promise<Response> {
       decision: body.decision as RecommendationDecision,
       actorId: actor.userId,
       note,
+      ...(body.expectedRevisions === undefined ? {} : { expectedRevisions: RecommendationRevisionSelection.parse(body.expectedRevisions) }),
     });
     // Offered against changed: a bulk decision that silently moved fewer rows
     // than it was given is the failure mode worth naming in the response.
