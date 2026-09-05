@@ -28,6 +28,7 @@
 import { createHash } from 'node:crypto';
 import {
   OptimizationRunScheduleContext,
+  RecommendationPopulation,
   normalizeOptimizationGroupSnapshot,
   serializeApplyRows,
 } from '@wizard-ads/shared';
@@ -359,22 +360,39 @@ export async function getRecommendationRun(
  * set by spend and scanning it. `limit` exists as a safety valve, not as a page
  * size.
  */
+export interface RecommendationListOptions {
+  orgId: string;
+  runId?: string | null;
+  profileId?: string | null;
+  statuses?: readonly string[] | null;
+  reasons?: readonly string[] | null;
+  /** Only the proposals stamped with this export batch. */
+  exportBatchId?: string | null;
+  limit?: number;
+}
+
+export interface RecommendationWindow {
+  rows: RecommendationRecord[];
+  population: RecommendationPopulation;
+}
+
+/** Compatibility loader; use the counted window when presenting a population. */
 export async function listRecommendations(
   handle: RecommendationQueryHandle,
-  options: {
-    orgId: string;
-    runId?: string | null;
-    profileId?: string | null;
-    statuses?: readonly string[] | null;
-    reasons?: readonly string[] | null;
-    /** Only the proposals stamped with this export batch. */
-    exportBatchId?: string | null;
-    limit?: number;
-  },
+  options: RecommendationListOptions,
 ): Promise<RecommendationRecord[]> {
+  return (await listRecommendationWindow(handle, options)).rows;
+}
+
+/** Rows and exact filtered population come from one SQL statement snapshot. */
+export async function listRecommendationWindow(
+  handle: RecommendationQueryHandle,
+  options: RecommendationListOptions,
+): Promise<RecommendationWindow> {
+  const limit = RecommendationPopulation.shape.limit.parse(options.limit ?? 20_000);
   const statuses = options.statuses && options.statuses.length > 0 ? [...options.statuses] : null;
   const reasons = options.reasons && options.reasons.length > 0 ? [...options.reasons] : null;
-  const rows = await handle.sql<RecommendationRow[]>`
+  const rows = await handle.sql<(RecommendationRow & { total_count: string })[]>`
     select c.id, c.run_id, c.org_id, c.profile_id, c.reason::text as reason,
            c.entity_type::text as entity_type, c.entity_id, c.entity_name,
            c.ad_product::text as ad_product, c.campaign_id, c.ad_group_id,
@@ -384,7 +402,7 @@ export async function listRecommendations(
            c.field, c.current_value, c.proposed_value, c.inputs, c.status::text as status,
            c.decided_by, c.decided_at, c.export_batch_id, batch.tag as export_batch_tag,
            note.payload ->> 'note' as decision_note,
-           c.created_at
+           c.created_at, (count(*) over ())::text as total_count
       from public.recommendations c
       -- A campaign-level proposal may carry its id only in entity_id, so resolve
       -- through both rather than leaving the campaign unknown and refusing the
@@ -416,9 +434,15 @@ export async function listRecommendations(
        and (${statuses}::text[] is null or c.status::text = any (${statuses}::text[]))
        and (${reasons}::text[] is null or c.reason::text = any (${reasons}::text[]))
      order by c.created_at, c.id
-     limit ${options.limit ?? 20000}
+     limit ${limit}
   `;
-  return rows.map(toRecord);
+  const total = rows.length === 0 ? 0 : Number(rows[0]!.total_count);
+  const population = RecommendationPopulation.parse({ loaded: rows.length, total, limit, truncated: rows.length < total });
+  if (new Set(rows.map((row) => row.id)).size !== rows.length
+    || rows.some((row) => Number(row.total_count) !== total)) {
+    throw new Error('recommendation population identities or counts do not reconcile');
+  }
+  return { rows: rows.map(toRecord), population };
 }
 
 export interface DecisionResult {
@@ -847,10 +871,13 @@ export async function getExportBatch(
     return out;
   });
 
-  const proposals = await listRecommendations(handle, {
+  const proposals = await listRecommendationWindow(handle, {
     orgId: options.orgId,
     exportBatchId: options.batchId,
   });
+  if (proposals.population.truncated) {
+    throw new Error('Export proposal population exceeds the download limit; a partial artifact cannot be returned.');
+  }
 
   return {
     id: batch.id,
@@ -863,7 +890,7 @@ export async function getExportBatch(
     status: batch.status,
     createdAt: toDate(batch.created_at),
     rows,
-    proposals,
+    proposals: proposals.rows,
   };
 }
 

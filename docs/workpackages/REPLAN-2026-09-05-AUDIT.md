@@ -95,8 +95,15 @@ The native Time Machine slice is committed at `d74c5de`.
 The recommendation population handoff now has a shared contract and declared file scope in
 the application architecture. Exact loaded/total/limit counts must reconcile with the
 truncation flag. Two focused contract tests and shared typecheck passed before dependent
-implementation. The DB loader and export-completeness guard are next; Claude-owned client
-files are unchanged.
+implementation. The additive `listRecommendationWindow` DB loader now returns exact metadata
+and rows from one SQL statement using `count(*) over()` before the 20,000-row cap. It reconciles
+safe counts and unique row IDs; the legacy array loader retains its interface. Export download
+now refuses a truncated proposal population instead of losing workbook create rows.
+Five DB tests passed, including a counted 20,001-row export fixture, scoped/filtered/empty
+populations and existing export drift checks; 16 web route regressions passed. DB/web
+typechecks and targeted lint passed. The first new fixture used a nonexistent `completed`
+run status; it was corrected to the schema's `succeeded` value before these passing runs.
+Claude-owned client files are unchanged. Proposal revision design is the next backend slice.
 
 The main replan now contains a current Claude handoff, including the locally verified
 native-history slice. It documents the four UI HTTP
