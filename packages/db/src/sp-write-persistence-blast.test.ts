@@ -23,9 +23,10 @@ const WORKER_CONSUMERS = [
 ].map((path) => `${REPO_ROOT}${path}`);
 const INERT_WORKER_MARKERS: Record<string, readonly string[]> = {
   'artifacts.ts': ['sp-write-adapter', '@wizard-ads/db/sp-write-persistence', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence'],
-  'providers.ts': ['sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter'],
-  'loop.ts': ['sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence', '@wizard-ads/db/sp-write-persistence', 'createSpWriteOutboxLedger', 'createSpWriteRuntimeLedger'],
-  'loop.test.ts': ['sp_write_', 'sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence', '@wizard-ads/db/sp-write-persistence', 'createSpWriteOutboxLedger', 'createSpWriteRuntimeLedger'],
+  'providers.ts': ['sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', '@wizard-ads/db/sp-write-worker'],
+  'loop.ts': ['sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence', '@wizard-ads/db/sp-write-persistence', 'createSpWriteOutboxLedger', 'createSpWriteRuntimeLedger', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
+  'loop.test.ts': ['sp_write_', 'sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence', '@wizard-ads/db/sp-write-persistence', 'createSpWriteOutboxLedger', 'createSpWriteRuntimeLedger', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
+  'composition.ts': ['createSpWriteOutboxLoop', 'createSpWriteWorker', '@wizard-ads/db/sp-write-worker'],
 };
 
 async function sourceFiles(directory: string): Promise<string[]> {
@@ -160,6 +161,10 @@ describe('SP write persistence facade blast radius', () => {
       'createSpWriteRuntimeLedger',
       'createSpWriteStagingLedger',
       'createSpWriteOutboxLedger',
+      'createSpWriteOutboxLoop',
+      'createSpWriteWorker',
+      '@wizard-ads/db/sp-write-worker',
+      'sp-write-outbox',
       'record_sp_write_plan',
       'reserve_sp_write_provider_call',
       'sp_write.dispatch',
@@ -187,6 +192,7 @@ describe('SP write persistence facade blast radius', () => {
       '/20260905000000_sp_write_preview_evidence.sql',
       '/20260905010000_sp_write_preview_approval.sql',
       '/20260905020000_sp_write_application_entry.sql',
+      '/20260905030000_sp_write_mirror_observations.sql',
     ];
     const inertSpWriteMigrations = migrations.filter((path) =>
       inertSpWriteMigrationSuffixes.some((suffix) => path.endsWith(suffix)));

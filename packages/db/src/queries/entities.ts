@@ -132,7 +132,7 @@ export async function upsertMirrorRows<T extends PgTable>(
   if (rows.length === 0) return { listed: 0, upserted: 0 };
 
   const columns = getTableColumns(table) as Record<string, { name: string }>;
-  const keep = new Set(['id', 'profileId', 'amazonId', 'firstSeenAt']);
+  const keep = new Set(['id', 'profileId', 'amazonId', 'firstSeenAt', 'bidObservedAt']);
   const set: Record<string, SQL> = {};
   for (const [property, definition] of Object.entries(columns)) {
     if (keep.has(property)) continue;

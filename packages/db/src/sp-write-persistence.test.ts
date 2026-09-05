@@ -1504,8 +1504,9 @@ function spWriteDrizzleConfigs() {
       const config = getTableConfig(candidate as PgTable);
       // This suite is pinned to WP-187. WP-214 proves its later evidence table separately.
       if (config.schema === undefined && config.name.startsWith('sp_write_')
-        && config.name !== 'sp_write_preview_evidence') {
-        configs.push(config);
+        && !['sp_write_preview_evidence', 'sp_write_mirror_observations'].includes(config.name)) {
+        configs.push({ ...config, uniqueConstraints: config.uniqueConstraints.filter((constraint) =>
+          constraint.name !== 'sp_write_observations_mirror_identity_key') });
       }
     } catch {
       // The schema namespace also exports enums and helpers, which are not tables.
@@ -8043,9 +8044,10 @@ describe('SP write runtime blast radius', () => {
     ];
     const inertWorkerImports: Record<string, readonly string[]> = {
       'apps/worker/src/sp-write-outbox/artifacts.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter'],
-      'apps/worker/src/sp-write-outbox/loop.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter'],
-      'apps/worker/src/sp-write-outbox/providers.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter'],
-      'apps/worker/src/sp-write-outbox/loop.test.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter'],
+      'apps/worker/src/sp-write-outbox/loop.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
+      'apps/worker/src/sp-write-outbox/providers.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter', '@wizard-ads/db/sp-write-worker'],
+      'apps/worker/src/sp-write-outbox/loop.test.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
+      'apps/worker/src/sp-write-outbox/composition.ts': ['createSpWriteOutboxLoop', 'createSpWriteWorker', '@wizard-ads/db/sp-write-worker'],
     };
     const seenApplicationConsumers: string[] = [];
     const forbidden = [
@@ -8053,6 +8055,10 @@ describe('SP write runtime blast radius', () => {
       '@wizard-ads/db/sp-write-application',
       '@wizard-ads/ads-api/sp-write-adapter',
       'createSpWriteAdapter',
+      'createSpWriteOutboxLoop',
+      'createSpWriteWorker',
+      '@wizard-ads/db/sp-write-worker',
+      'sp-write-outbox',
       'sp_write.dispatch',
       'sp_write.observe',
       'reserve_sp_write_provider_call',
@@ -8083,6 +8089,10 @@ describe('SP write runtime blast radius', () => {
 
     const activationRoots = ['.github', 'docs/deploy'];
     const activationTokens = [
+      'createSpWriteOutboxLoop',
+      'createSpWriteWorker',
+      '@wizard-ads/db/sp-write-worker',
+      'sp-write-outbox',
       'sp_write.dispatch',
       'sp_write.observe',
       'reserve_sp_write_provider_call',
@@ -8191,6 +8201,7 @@ describe('SP write runtime blast radius', () => {
       '/20260905000000_sp_write_preview_evidence.sql',
       '/20260905010000_sp_write_preview_approval.sql',
       '/20260905020000_sp_write_application_entry.sql',
+      '/20260905030000_sp_write_mirror_observations.sql',
     ];
     const migrationFiles = await sourceFiles(`${REPO_ROOT}supabase/migrations`);
     const spWriteSourceMigrations = migrationFiles.filter((path) =>

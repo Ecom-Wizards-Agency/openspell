@@ -41,7 +41,9 @@ deployment, credential store or Amazon account was accessed.
 | Inert worker orchestration | `apps/worker/src/sp-write-outbox/{artifacts,providers,loop}.ts` and explicit `@wizard-ads/db/sp-write-worker` reads. Resolves credentials before claim, checks current dispatch gates before provider access, admits attempts only with a fresh reservation ticket, and keeps reconciliation available when dispatch closes. | **13 real-ledger/fake-HTTP tests passed**, including recovery after both real deadlines, durable recovery with unavailable credentials, and later observation after the real delivery backoff. Mirror persistence is a required callback and is not implemented by this slice; no entrypoint registration. |
 | Partial refusal and large batches | The ledger may refuse only stale positions. Adapter compilation now accepts a unique selection of unchanged actions from the verified full plan; the worker selects unresolved actions from ledger evidence and preserves the original plan fingerprint. | Mixed-batch and 101-row probes passed: one stale row remains untouched while the valid row completes; 101 accepted and observed rows reconcile across exactly two provider calls. The larger probe exposed different collation between plan ordering and predispatch evidence; provider calls now use the evidence contract's exact entity/action ordering. |
 | Mirror concurrency scope | Normal entity sync captures its persistence timestamp after provider listing and performs unconditional mirror upserts (`apps/worker/src/worker.ts:689`, `store.ts:386,455`). An older listing can overwrite a newer bid observation. | The next mirror slice now includes a database read-start timestamp, field freshness, atomic keyword bid reconciliation and stale tombstone protection. Exact files and migration `20260905030000` are declared in the application architecture; implementation and race proof remain pending. |
-| Mirror contracts | `packages/shared/src/sp-write-mirror.ts` defines separate promotion/current/superseded/missing receipts, exact decimal and bigint transport, attribution of actual diffs, and reconciled ordinary-sync counts. | All **107 shared tests** passed, plus shared typecheck and targeted lint. Dependent persistence has not landed yet. |
+| Mirror contracts | `packages/shared/src/sp-write-mirror.ts` defines separate promotion/current/superseded/missing receipts, exact decimal and bigint transport, attribution of actual diffs, and reconciled ordinary-sync counts. | All **107 shared tests** passed, plus shared typecheck and targeted lint. Dependent persistence is implemented in the following slice. |
+
+| Native mirror persistence and inert composition | Migration `20260905030000_sp_write_mirror_observations.sql`, `packages/db/src/queries/sp-write-mirror.ts` and `apps/worker/src/sp-write-outbox/composition.ts`. Atomically records an observation receipt, updates the keyword bid when current evidence permits it, and links the exact entity-change ID. Conflicting observations retain separate attribution. | Local tests prove concurrent replay creates one diff, receipt-storage failure rolls back the bid/diff together, and a forward/inverse pair creates two distinct diffs and restores the starting bid. Current-schema parity, RLS, immutability and worker-only RPC permissions passed alongside 53 persistence/blast checks (55 tests total). Ordinary sync fencing and Time Machine projection still need their dependent implementations. |
 
 Latest complete database verification: **478 tests in 48 files passed** with `--maxWorkers=1`.
 After HTTP integration and JSON transport fixes, the affected database suites also passed
@@ -50,17 +52,19 @@ targeted lint passed.
 The later worker slice passed **13 integration tests** in 98 seconds, **335 Ads API tests**
 (including 64 adapter/codec tests), and **53 persistence/blast tests**. Worker typecheck and targeted lint passed. The recovery test
 uses real database deadlines and delivery backoff; it does not alter immutable timestamps.
+With real mirror persistence connected, all **16 worker integration tests** passed in 100 seconds.
+DB/worker typechecks, targeted lint and hygiene also passed for this slice.
 These are local source checks, not hosted or live Amazon proof. The WP-188 raw-plan facade suite
 still runs against its preceding admission contract; new application/HTTP suites exercise current
 migrations and source-backed admission. No lifecycle or custody assertion was removed.
 
-Remaining: counted mirror reconciliation and worker composition, native Time Machine projection
+Remaining: ordinary keyword-sync freshness/counting, mirror status projection, native Time Machine projection
 and exact observation links, delegated MCP policy/contracts/persistence/transport, proposal revision
 and completeness handoff, immutable release/activation artifacts, and scoped live proof. The
 current operation links are backend evidence, not a claim that MCP or the Time Machine screen is
 finished. Worker registration and production write enablement have not occurred.
 
-The three new WP-214 migrations are additional source dependencies. They are not silently added
+The four new WP-214 migrations (the fourth currently in source review) are additional source dependencies. They are not silently added
 to Claude's original D1 operational window. Deployment must account for them before exposing the
 new write flow; hosted migration state has not been inspected. The version-specific entrypoint
 refuses admission when its database implementation is absent.
@@ -170,7 +174,7 @@ campaign remains unobserved (`packages/shared/src/campaign-creation.test.ts` lin
   database tests assigned to Claude in WP-207/216. Static source and parser calls do not replace
   those tests.
 - Source-phase assertions now admit only the declared HTTP application consumers and local HTTP
-  fixture. Provider execution and worker registration remain forbidden by those checks. The source
+  fixture. Only the declared inert provider adapter/loop modules may execute in synthetic tests; entrypoint registration remains forbidden by those checks. The source
   branch is local; PR/CI and activation evidence remain outstanding.
 - Delegated daily-budget races, durable audit admission, revocation and runtime kill-switch
   behavior are requirements for code that does not exist yet, not passed test claims.

@@ -3,11 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSpWriteAdapter, type SpWriteAdapter } from '@wizard-ads/ads-api/sp-write-adapter';
 import { exportAcceptedRecommendations } from '@wizard-ads/db';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
-import { approveAndQueueSpWrite, previewSpWrite, readSpWriteOperation } from '@wizard-ads/db/sp-write-application';
+import { approveAndQueueSpWrite, previewSpWrite, previewSpWriteInverse, readSpWriteOperation } from '@wizard-ads/db/sp-write-application';
 import { createSpWriteOutboxLedger, createSpWriteRuntimeLedger } from '@wizard-ads/db/sp-write-persistence';
-import { listSpWriteProviderPlans, readSpWriteDatabaseTime, readSpWriteRecoveryResult } from '@wizard-ads/db/sp-write-worker';
+import { listSpWriteProviderPlans, readSpWriteDatabaseTime, readSpWriteRecoveryResult, reconcileSpWriteObservation } from '@wizard-ads/db/sp-write-worker';
 import type { SpWriteAdmission, SpWritePreview } from '@wizard-ads/shared/sp-write-application';
-import type { SpWriteObservation, SpWritePlan } from '@wizard-ads/shared/sp-writes';
+import { SpWriteObservation, type SpWritePlan } from '@wizard-ads/shared/sp-writes';
 import { hasher, makeReservationArtifacts, providerKey, remainingAttemptMs } from './artifacts.js';
 import { createSpWriteOutboxLoop } from './loop.js';
 
@@ -95,9 +95,11 @@ describe.skipIf(!available)('inert SP write worker with real ledger and fake HTT
         return new Response(JSON.stringify({ keywords: body.keywordIdFilter.include.map((keywordId) => ({ keywordId, bid: providerBids.get(keywordId) ?? bid, state: 'ENABLED' })) }));
       },
     }, { hasher });
-    // Mirror persistence is a required capability; this synthetic probe deliberately does not
-    // claim that a provider observation alone has updated the product's entity mirror.
-    mirror = vi.fn(async () => true);
+    mirror = vi.fn(async (observation) => {
+      const receipt = await reconcileSpWriteObservation(database, observation);
+      expect(['promoted', 'already_current']).toContain(receipt.outcome);
+      return true;
+    });
   }, 60_000);
 
   afterEach(async () => { await database?.drop(); });
@@ -124,6 +126,87 @@ describe.skipIf(!available)('inert SP write worker with real ledger and fake HTT
     await database.sql`update public.sp_write_environment_gate_head set version_id = ${version}`;
   }
 
+  async function unmirroredObservation() {
+    mirror.mockResolvedValue(false);
+    const worker = loop();
+    expect((await worker.tick()).attemptedCalls).toBe(1);
+    expect((await worker.tick()).kind).toBe('deferred');
+    const [row] = await database.sql<{ artifact: unknown }[]>`select artifact from public.sp_write_observations where plan_id = ${preview.plan.id}`;
+    return SpWriteObservation.parse(row!.artifact);
+  }
+
+  it('races mirror receipt creation and refuses unfenced bid writes without leaking transaction context', async () => {
+    const observation = await unmirroredObservation();
+    const receipts = await Promise.all([
+      reconcileSpWriteObservation(database, observation), reconcileSpWriteObservation(database, observation),
+    ]);
+    expect(receipts[0]).toEqual(receipts[1]);
+    expect(receipts[0]!.outcome).toBe('promoted');
+    const [count] = await database.sql<{ receipts: number; diffs: number }[]>`
+      select count(*)::int as receipts, count(entity_change_id)::int as diffs from public.sp_write_mirror_observations
+      where observation_id = ${observation.observationId}`;
+    expect(count).toEqual({ receipts: 1, diffs: 1 });
+    await expect(database.sql`update public.keywords set bid = 0.8 where org_id = ${orgId} and amazon_id = 'kw-1'`)
+      .rejects.toMatchObject({ code: '55000' });
+    await expect(database.sql`update public.keywords set bid_observed_at = null where org_id = ${orgId} and amazon_id = 'kw-1'`)
+      .rejects.toMatchObject({ code: '55000' });
+    await expect(database.sql.begin(async (sql) => {
+      await sql`select set_config('app.keyword_bid_read_started_at', '2026-01-01T00:00:00.000Z', true)`;
+      await sql`update public.keywords set bid = 0.8, bid_observed_at = '2026-01-01T00:00:00.000Z'
+        where org_id = ${orgId} and amazon_id = 'kw-1'`;
+    })).rejects.toMatchObject({ code: '55000' });
+    const [context] = await database.sql<{ value: string | null }[]>`select nullif(current_setting('app.keyword_bid_read_started_at', true), '') as value`;
+    expect(context!.value).toBeNull();
+    expect(await reconcileSpWriteObservation(database, observation)).toEqual(receipts[0]);
+  });
+
+  it('rolls back the bid and diff together if mirror receipt persistence fails', async () => {
+    const observation = await unmirroredObservation();
+    const [before] = await database.sql<{ count: number }[]>`select count(*)::int as count from public.entity_changes where org_id = ${orgId}`;
+    await database.sql.unsafe(`create function app.synthetic_mirror_failure() returns trigger language plpgsql as $$
+      begin raise exception 'synthetic mirror storage failure'; end $$;
+      create trigger synthetic_mirror_failure before insert on public.sp_write_mirror_observations
+      for each row execute function app.synthetic_mirror_failure()`);
+    await expect(reconcileSpWriteObservation(database, observation)).rejects.toMatchObject({ code: 'P0001' });
+    const [after] = await database.sql<{ bid: string; observed: string | null; diffs: number; receipts: number; context: string | null }[]>`
+      select bid::text, bid_observed_at::text as observed,
+        (select count(*)::int from public.entity_changes where org_id = ${orgId}) as diffs,
+        (select count(*)::int from public.sp_write_mirror_observations where observation_id = ${observation.observationId}) as receipts,
+        nullif(current_setting('app.keyword_bid_read_started_at', true), '') as context
+      from public.keywords where org_id = ${orgId} and amazon_id = 'kw-1'`;
+    expect(after).toEqual({ bid: '0.9000', observed: null, diffs: before!.count, receipts: 0, context: null });
+    await database.sql.unsafe('drop trigger synthetic_mirror_failure on public.sp_write_mirror_observations; drop function app.synthetic_mirror_failure()');
+    expect((await reconcileSpWriteObservation(database, observation)).outcome).toBe('promoted');
+  });
+
+  it('links distinct forward and inverse mirror diffs while restoring the original bid', async () => {
+    const worker = loop();
+    expect((await worker.tick()).attemptedCalls).toBe(1);
+    expect((await worker.tick()).kind).toBe('completed');
+    const inverse = await previewSpWriteInverse(database, { orgId, userId: OWNER }, {
+      requestId: randomUUID(), profileId, original: admission.operation,
+    });
+    const inverseAdmission = await approveAndQueueSpWrite(database, { orgId, userId: OWNER }, { profileId, approval: {
+      approvalRequestId: randomUUID(), plan: inverse.binding, approvalMode: 'manual',
+      confirmationVersion: 'openspell.amazon-sp-write-confirmation.v1', boundedAuthorization: null, preapprovedInversePlan: null,
+    } });
+    expect((await worker.tick()).attemptedCalls).toBe(1);
+    expect((await worker.tick()).kind).toBe('completed');
+    const receipts = await database.sql<{ plan_id: string; execution_id: string; before: string; after: string; diff: string }[]>`
+      select plan_id::text, execution_id::text, artifact #>> '{before,amount}' as before,
+        artifact #>> '{after,amount}' as after, entity_change_id::text as diff
+      from public.sp_write_mirror_observations where execution_id = ${admission.operation.executionId}
+      order by reconciled_at`;
+    expect(receipts.map(({ diff: _diff, ...row }) => row)).toEqual([
+      { plan_id: preview.plan.id, execution_id: admission.operation.executionId, before: '0.9', after: '0.7' },
+      { plan_id: inverse.plan.id, execution_id: inverseAdmission.operation.executionId, before: '0.7', after: '0.9' },
+    ]);
+    expect(new Set(receipts.map((row) => row.diff)).size).toBe(2);
+    expect((await detail()).inverses).toContainEqual(inverseAdmission.operation);
+    const [row] = await database.sql<{ bid: string }[]>`select bid::text from public.keywords where org_id = ${orgId} and amazon_id = 'kw-1'`;
+    expect(row!.bid).toBe('0.9000'); expect(puts).toBe(2);
+  });
+
   it('sends one attempt, observes it, reconciles counts and never dispatches it again', async () => {
     expect((await listSpWriteProviderPlans(database, [profileId], true, true)).map((plan) => plan.id)).toEqual([preview.plan.id]);
     const worker = loop();
@@ -133,6 +216,10 @@ describe.skipIf(!available)('inert SP write worker with real ledger and fake HTT
     expect(await worker.tick()).toEqual({ kind: 'completed', attemptedCalls: 0 });
     expect((await detail()).snapshot).toMatchObject({ status: 'succeeded', accounting: { observedRequested: 1, pendingObservation: 0 } });
     expect(mirror).toHaveBeenCalledTimes(1);
+    const [current] = await database.sql<{ bid: string; links: number }[]>`select bid::text,
+      (select count(*)::int from public.sp_write_mirror_observations where plan_id = ${preview.plan.id} and change_attribution = 'write') as links
+      from public.keywords where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = 'kw-1'`;
+    expect(current).toEqual({ bid: '0.7000', links: 1 });
     expect(await worker.tick()).toEqual({ kind: 'idle', attemptedCalls: 0 });
     expect(puts).toBe(1); expect(reads).toBe(2);
   });

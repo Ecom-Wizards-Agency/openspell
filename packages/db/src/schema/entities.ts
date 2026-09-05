@@ -125,6 +125,8 @@ export const keywords = pgTable(
     keywordText: text('keyword_text').notNull(),
     matchType: matchType('match_type').notNull(),
     bid: money('bid', 12, 4),
+    /** Freshness of this field; observing a bid does not refresh the whole entity. */
+    bidObservedAt: ts('bid_observed_at'),
   },
   (t) => [
     uniqueIndex('keywords_profile_id_amazon_id_key').on(t.profileId, t.amazonId),
@@ -191,6 +193,7 @@ export const entityChanges = pgTable(
   },
   (t) => [
     index('entity_changes_profile_time_idx').on(t.profileId, t.observedAt),
+    uniqueIndex('entity_changes_tenant_identity_key').on(t.orgId, t.profileId, t.id),
     uniqueIndex('entity_changes_apply_row_once_key')
       .on(t.applyRowId)
       .where(sql`${t.applyRowId} is not null`),
