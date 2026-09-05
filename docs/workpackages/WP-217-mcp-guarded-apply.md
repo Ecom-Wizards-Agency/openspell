@@ -70,7 +70,7 @@ relevant rule together, rather than just the MCP table row:
   plan fingerprint against key ownership, profile/action scope, expiry, current membership,
   per-call limits and atomic daily capacity, and records the receipt before enqueueing.
 - Rule 8: a delegated inverse is another separately recorded plan checked against current
-  state and the same active delegation, caps and audit; it is not an unlimited rollback bypass.
+state and the same active delegation, caps and audit; it is not an unlimited rollback bypass.
 - Rule 9: an enabled delegation authorizes individual MCP calls within its bounds, including
   calls made by an agent. It does not create an OpenSpell cadence. Cadences retain explicit
   enablement and their own bounds/kill switch; MCP cannot issue keys, enlarge a delegation,
@@ -130,7 +130,11 @@ not be presented as successfully applied changes.
 
 Time Machine must offer a guarded inverse of an eligible MCP change against current synchronized
 state. UI-triggered reversion uses human approval; MCP-triggered reversion uses its active bounded
-delegation. Record the inverse as its own plan/execution linked to the original. Both directions
+delegation. Record the inverse as its own plan operation linked to the original. The current
+ledger reuses the execution cycle id, so both the execution id and plan id identify each direction.
+The initial inverse must cover the full source plan and requires every source action to be
+observed at its requested value; partial results remain visible but cannot use a subset inverse.
+Both directions
 and the inverse's pending/accepted/observed/failed state remain visible. Refuse stale/conflicting
 inversions; never erase or rewrite the original event.
 

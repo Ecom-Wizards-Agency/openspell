@@ -70,8 +70,10 @@ Activation PR:
   checkout/plaintext setup from `always-on-worker.md`.
 - This brief's close-out evidence for the current STATUS owner to integrate.
 
-The existing SP write contracts remain authoritative. Only the separately declared proposal-
-revision slice may add its shared shape and migration here. `recommendations/review.tsx` and
+The existing SP write contracts remain authoritative. The application/history contracts and
+query modules are declared in the [application architecture](../design/WP-214-APPLICATION-ARCHITECTURE.md); they reuse the
+existing SP artifacts. The separately declared proposal-revision and exact observation-link
+slices may add their shared shapes and migrations before dependent code. `recommendations/review.tsx` and
 all approval-page client design belong to Claude. Other migration changes require a separate
 reviewed contract/persistence slice before dependent source.
 
@@ -124,7 +126,10 @@ reviewed contract/persistence slice before dependent source.
    with the signed-in owner or admin's user id, never through the service-role handle alone. The
    RPC lives in schema `app`; do not route it through PostgREST.
 7. After approval the route calls the runtime ledger's `startExecution`, which emits the outbox
-   wake, and returns the execution id. A status route reports requested, accepted, attempted,
+   wake and returns its **outbox id**. Return the execution id from the approval receipt together
+   with the plan id; never expose the outbox id as the execution identity. Forward and inverse
+   plans can share an execution cycle, so status and history identify an operation by both ids.
+   A status route reports requested, accepted, attempted,
    succeeded, failed, refused and resynchronized counts from `sp_write_execution_accounting`.
 
 ### Outbox loop (apps/worker)
