@@ -224,6 +224,7 @@ describe.skipIf(!available)('immutable SP keyword bid preview', () => {
       expected: { amount: '0.9' }, requested: { amount: '0.8123' },
     } } });
     const changed = structuredClone(preview.evidence!);
+    if (changed.schemaVersion !== 'openspell.sp-write-preview-evidence.v1') throw new Error('expected recommendation evidence');
     delete changed.provenance.rows[0]!.proposalRevisionId;
     await expect(recordSpWritePreviewEvidence(database, preview.plan, changed)).rejects.toThrow();
     expect(await storedCount(request.requestId)).toBe(1);
@@ -340,7 +341,8 @@ describe.skipIf(!available)('immutable SP keyword bid preview', () => {
     const original = await previewSpWrite(database, { orgId, userId: USER }, request);
     for (const changedFact of ['goal', 'grant'] as const) {
       const { plan, evidence } = structuredClone(original);
-      if (evidence === null || plan.source.kind !== 'apply_batch') throw new Error('missing forward evidence');
+      if (evidence?.schemaVersion !== 'openspell.sp-write-preview-evidence.v1'
+        || plan.source.kind !== 'apply_batch') throw new Error('missing recommendation forward evidence');
       plan.id = randomUUID();
       evidence.planId = plan.id;
       if (changedFact === 'goal') evidence.guardrails.policies[0]!.strategyGoal = 'different-goal';
@@ -379,7 +381,8 @@ describe.skipIf(!available)('immutable SP keyword bid preview', () => {
       requestId: randomUUID(), profileId, applyBatchId: exported.batchId,
     });
     expect(preview.plan.counts.providerRows).toBe(2);
-    expect(preview.evidence?.provenance.rows.map((row) => row.recommendationId)).toEqual(recommendationIds);
+    if (preview.evidence?.schemaVersion !== 'openspell.sp-write-preview-evidence.v1') throw new Error('expected recommendation evidence');
+    expect(preview.evidence.provenance.rows.map((row) => row.recommendationId)).toEqual(recommendationIds);
     expect(JSON.parse(preview.evidence!.provenance.artifactText)).toEqual([
       { entity_type: 'keyword', entity_id: 'kw-export-z', field: 'bid', old: 0.9, new: 0.7, name: 'Synthetic export keyword', clicks: 12, revenue: 15 },
       { entity_type: 'keyword', entity_id: 'kw-export-a', field: 'bid', old: 0.9, new: 0.7, name: 'Synthetic export keyword', clicks: 12, revenue: 15 },

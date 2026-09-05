@@ -79,7 +79,7 @@ describe.skipIf(!available)('authenticated SP write admission', () => {
       requestId: randomUUID(), profileId, applyBatchId: exported.batchId,
     });
     if (lifetimeMs !== undefined) {
-      if (preview.evidence === null) throw new Error('forward preview missing source evidence');
+      if (preview.evidence?.schemaVersion !== 'openspell.sp-write-preview-evidence.v1') throw new Error('recommendation preview missing source evidence');
       preview.plan.id = randomUUID();
       preview.evidence.planId = preview.plan.id;
       preview.plan.expiresAt = new Date(Date.now() + lifetimeMs).toISOString();

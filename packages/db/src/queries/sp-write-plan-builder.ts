@@ -286,7 +286,9 @@ export async function previewSpWrite(
   });
   if (snapshot.existing) return snapshot.preview;
   try {
-    if (snapshot.preview.evidence === null) throw new SpWriteApplicationError('invalid_request');
+    if (snapshot.preview.evidence?.schemaVersion !== 'openspell.sp-write-preview-evidence.v1') {
+      throw new SpWriteApplicationError('invalid_request');
+    }
     await recordSpWritePreviewEvidence(handle, snapshot.preview.plan, snapshot.preview.evidence);
     return snapshot.preview;
   } catch (error) {
