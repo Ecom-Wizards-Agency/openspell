@@ -62,7 +62,8 @@ function artifacts(p = plan(), d = delegation()) {
   const request = McpBidApplyRequest.parse({ requestId: id('8'), profileId: p.profileId,
     planId: p.id, planFingerprint: p.fingerprint });
   const receipt = SpDelegatedAuthorizationReceiptV2.parse({ schemaVersion: 'openspell.sp-write-authorization-receipt.v2',
-    approvalId: id('9'), approvalRequestId: request.requestId, executionId: id('17'), generation: id('10'),
+    approvalId: id('9'), approvalRequestId: id('25'), mcpRequestId: request.requestId,
+    executionId: id('17'), generation: id('10'),
     approvalMode: 'delegated_mcp', plan: spWritePlanBinding(p), preapprovedInversePlan: null, boundedAuthorization: null,
     approvedBy: d.issuerUserId, approvedAt: at, expiresAt: later,
     confirmationVersion: 'openspell.mcp-delegated-bid-admission.v1',
@@ -231,17 +232,35 @@ describe('bounded MCP write contracts', () => {
   });
   it('preserves legacy human receipt bytes and refuses delegated authority through human approval', () => {
     const { p, d, request, receipt } = artifacts();
-    const { delegation: _delegation, reservation: _reservation, mcpGate: _mcpGate, ...common } = receipt;
+    const { delegation: _delegation, reservation: _reservation, mcpGate: _mcpGate,
+      mcpRequestId: _mcpRequestId, ...common } = receipt;
     const legacy = { ...common, schemaVersion: 'openspell.sp-write-authorization-receipt.v1', approvalMode: 'manual',
       confirmationVersion: 'openspell.amazon-sp-write-confirmation.v1' };
     expect(JSON.stringify(SpWriteAuthorizationReceipt.parse(legacy))).toBe(JSON.stringify(SpHumanAuthorizationReceiptV1.parse(legacy)));
-    const human = { approvalRequestId: request.requestId, plan: receipt.plan, approvalMode: 'manual',
+    const human = { approvalRequestId: receipt.approvalRequestId, plan: receipt.plan, approvalMode: 'manual',
       confirmationVersion: 'openspell.amazon-sp-write-confirmation.v1', boundedAuthorization: null, preapprovedInversePlan: null };
     expect(verifySpWriteAuthorizationReceiptArtifacts(p, null, human, null, legacy, at, hasher).receipt.approvalMode).toBe('manual');
     expect(() => verifySpWriteAuthorizationReceiptArtifacts(p, null, human, null, receipt, at, hasher)).toThrow();
     expect(ApproveSpWritePlan.safeParse({ ...human, approvalMode: 'delegated_mcp' }).success).toBe(false);
     expect(SpWriteManualApprovalRequest.safeParse({ profileId: p.profileId, approval: request }).success).toBe(false);
     expect(verifyDelegatedSpWriteReceiptArtifacts(p, d, request, receipt, at, hasher).receipt).toEqual(receipt);
+  });
+
+  it('binds the external request independently of the global approval identity', () => {
+    const { p, d, request, receipt } = artifacts();
+    expect(receipt.approvalRequestId).not.toBe(request.requestId);
+    expect(verifyDelegatedSpWriteReceiptArtifacts(p, d, request, receipt, at, hasher).receipt.mcpRequestId)
+      .toBe(request.requestId);
+    expect(() => verifyDelegatedSpWriteReceiptArtifacts(p, d,
+      { ...request, requestId: receipt.approvalRequestId }, receipt, at, hasher)).toThrow();
+    const { mcpRequestId: _mcpRequestId, ...missingRequest } = receipt;
+    expect(SpDelegatedAuthorizationReceiptV2.safeParse(missingRequest).success).toBe(false);
+
+    const secondDelegation = { ...d, keyId: id('26'), versionId: id('27') };
+    secondDelegation.fingerprint = hash(serializeMcpWriteDelegationFingerprint(secondDelegation));
+    const secondReceipt = { ...receipt, approvalRequestId: id('28'), delegation: secondDelegation };
+    expect(verifyDelegatedSpWriteReceiptArtifacts(p, secondDelegation, request, secondReceipt, at, hasher).receipt)
+      .toEqual(secondReceipt);
   });
 
   it('requires immutable fingerprinted scope and refuses enlarged or substituted delegation artifacts', () => {

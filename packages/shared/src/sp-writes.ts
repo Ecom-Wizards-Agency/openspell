@@ -1157,7 +1157,9 @@ export type McpWriteReservation = z.infer<typeof McpWriteReservation>;
 export const SpDelegatedAuthorizationReceiptV2 = z.object({
   schemaVersion: z.literal('openspell.sp-write-authorization-receipt.v2'),
   approvalId: SpWriteUuid,
+  /** Server-generated global ledger identity, distinct from the key-scoped client request. */
   approvalRequestId: SpWriteUuid,
+  mcpRequestId: SpWriteUuid,
   executionId: SpWriteUuid,
   generation: SpWriteUuid,
   approvalMode: z.literal('delegated_mcp'),
@@ -1263,7 +1265,7 @@ export function verifyDelegatedSpWriteReceiptArtifacts(
   verifyMcpPlanLimits(plan, delegation);
   if (JSON.stringify(receipt.delegation) !== JSON.stringify(delegation)
     || JSON.stringify(receipt.plan) !== JSON.stringify(spWritePlanBinding(plan))
-    || receipt.approvalRequestId !== request.requestId || plan.profileId !== request.profileId
+    || receipt.mcpRequestId !== request.requestId || plan.profileId !== request.profileId
     || plan.id !== request.planId || plan.fingerprint !== request.planFingerprint
     || (plan.source.kind === 'inverse_execution' && receipt.executionId !== plan.source.sourceExecutionId)
     || Date.parse(receipt.approvedAt) < Date.parse(plan.frozenAt)
@@ -1285,7 +1287,7 @@ function verifyRecordedDelegatedReceipt(
 ): void {
   if (receipt.approvalMode !== 'delegated_mcp') return;
   verifyDelegatedSpWriteReceiptArtifacts(plan, receipt.delegation, {
-    requestId: receipt.approvalRequestId, profileId: receipt.plan.profileId,
+    requestId: receipt.mcpRequestId, profileId: receipt.plan.profileId,
     planId: receipt.plan.planId, planFingerprint: receipt.plan.planFingerprint,
   }, receipt, receipt.approvedAt, hasher);
 }

@@ -61,6 +61,12 @@ receipt contains its full immutable delegation, request identity, exact plan bin
 version and UTC admission reservation. Human receipt verification rejects the delegated branch;
 a separate pure verifier checks its fingerprints, exact scope, caps and receipt agreement.
 
+Delegated v2 records the external `mcpRequestId` separately from the server-generated global
+`approvalRequestId`. Client request identities are scoped by org/key, while the existing
+approval ledger has a global primary key. The immutable admission mapping joins these identities;
+live and historical receipt verification use `mcpRequestId` for the external request binding.
+Human v1 receipts retain their existing fields and serialization.
+
 Delegation is immutable and one per key. It records key ID, label snapshot, org, owning issuer,
 version, issue/expiry times, explicit sorted profiles and profile currencies, keyword-bid action,
 per-call row maximum, per-UTC-day rows, absolute delta by currency and relative delta ratio.

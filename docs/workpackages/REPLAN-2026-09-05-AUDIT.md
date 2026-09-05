@@ -31,6 +31,23 @@ deployment, credential store or Amazon account was accessed.
 
 ## Implementation progress, 2026-09-05
 
+### Delegated admission identity correction, 2026-09-06
+
+The controlled source checkpoint is committed at `605548e`. All three admission design
+reviews identified the same mismatch: external apply request IDs are scoped by org/key,
+but `sp_write_approval_requests.approval_request_id` is a global primary key. Delegated v2
+now records an explicit `mcpRequestId`, verified against the external request, separately
+from its server-generated `approvalRequestId`. Historical receipt rehydration uses the
+external ID too. Human v1 shape and bytes remain unchanged. Shared verification passes
+137 tests in 12 files, plus typecheck and targeted lint. SQL admission and MCP tools remain
+pending; this shared correction precedes their implementation.
+
+The committed source snapshot also passes plain `eslint .` from a clean detached worktree,
+using the installed ESLint binary directly. An initial `pnpm lint` attempt there stopped
+at pnpm's guard against replacing the external symlinked dependency directory, before lint
+ran. No original dependency directory or lint rule was changed. This confirms the earlier
+plain-lint errors came from ignored exploratory scripts rather than tracked source.
+
 ### MCP producer review and sequence correction, 2026-09-06
 
 **Verified source result:** controlled keyword proposal preparation and its atomic audit,
